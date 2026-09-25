@@ -7,10 +7,14 @@
 //! a fixed size, and a new page starts whenever one is full. A page never
 //! changes size, so a cell's normalised rectangle never moves once handed out.
 //!
-//! A drawn cell is sampled only inside its own rectangle: the icon layer
-//! draws a flag 1:1 or minified onto whole device pixels, so every bilinear
-//! footprint stays within the cell and what its neighbours hold (another flag
-//! or nothing) does not reach a pixel.
+//! A drawn cell is sampled only inside its own rectangle, though cells have no
+//! gutters. At a UI scale of 1.0 the icon layer draws a flag 1:1 or minified
+//! onto whole device pixels, so every bilinear footprint already stays within
+//! the cell. A scaled layer magnifies or minifies further, so the sprite
+//! shader then clamps every tap to the cell's texel-centre window and
+//! averages the texels a minified pixel covers
+//! ([`super::sprites::filter_mode`]); what the neighbours hold (another flag
+//! or nothing) never reaches a pixel.
 
 use std::{
     io,

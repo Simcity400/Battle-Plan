@@ -3,13 +3,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { desktopAvailable, errorMessage } from './api';
 import { Icon } from '../components/Icons';
 
-interface VideoOptions { useGameSettings: boolean; uiScale: number; vsync: boolean }
-interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null }
+interface VideoOptions { useGameSettings: boolean; uiScale: number; vsync: boolean; mapUiScale: number | null }
+interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null; gameMapUiScale: number | null; mapUiScaleChoices: number[] }
 
 const VSYNC = 'VSync';
 const INTERFACE_SCALE = 'Interface scale';
+const MAP_UI_SCALE = 'Map UI scale';
 /** Option row labels, in order; settings search reveals rows by these. */
-export const VIDEO_OPTION_LABELS = [VSYNC, INTERFACE_SCALE];
+export const VIDEO_OPTION_LABELS = [VSYNC, INTERFACE_SCALE, MAP_UI_SCALE];
+const MATCH_GAME = 'match';
 
 export function useVideoSettings(enabled: boolean, userFolder?: string) {
   const [reply, setReply] = useState<VideoReply | null>(null);
@@ -26,7 +28,7 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
     return () => { active = false; };
   }, [enabled, retry, userFolder]);
   return {
-    draft, error, gameError: reply?.gameSettingsError,
+    draft, error, gameError: reply?.gameSettingsError, gameMapUiScale: reply?.gameMapUiScale ?? null, mapUiScaleChoices: reply?.mapUiScaleChoices ?? [],
     dirty: !!draft && JSON.stringify(draft) !== JSON.stringify(reply?.settings),
     canReset: !!reply?.gameSettings,
     update: (value: Partial<VideoOptions>) => { if (draft) setDraft({ ...draft, ...value, useGameSettings: false }); },
@@ -51,6 +53,13 @@ export default function VideoControls({ video, busy }: { video: ReturnType<typeo
       {desktopAvailable ? <select disabled={!enabled} value={video.draft?.uiScale ?? ''} onChange={event => video.update({ uiScale: Number(event.currentTarget.value) })}>
         {!video.draft && <option value="">{video.error ? 'Unavailable' : 'Loading...'}</option>}{[...new Set([...Array.from({ length: 16 }, (_, index) => 75 + index * 5), ...(video.draft ? [video.draft.uiScale] : [])])].sort((a, b) => a - b).map(scale => <option key={scale} value={scale}>{scale}%</option>)}
       </select> : <span className="graphics-unavailable">Browser zoom</span>}
+    </label>
+    <label className="map-option-row"><span>{MAP_UI_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About map UI scale" data-tooltip="Size of counters, map icons, labels, combat bubbles, the combat window and map tooltips. Match game draws them as large as the game shows them on this desktop, from its settings.txt and pdx_settings.txt display settings."><Icon name="info" /></span></span>
+      {desktopAvailable ? <select disabled={!enabled} value={video.draft ? video.draft.mapUiScale ?? MATCH_GAME : ''} onChange={event => { const value = event.currentTarget.value; video.update({ mapUiScale: value === MATCH_GAME ? null : Number(value) }); }}>
+        {!video.draft && <option value="">{video.error ? 'Unavailable' : 'Loading...'}</option>}
+        <option value={MATCH_GAME}>{video.gameMapUiScale === null ? 'Match game (default)' : `Match game (${video.gameMapUiScale}%)`}</option>
+        {[...new Set([...video.mapUiScaleChoices, ...(video.draft?.mapUiScale != null ? [video.draft.mapUiScale] : [])])].sort((a, b) => a - b).map(scale => <option key={scale} value={scale}>{scale}%</option>)}
+      </select> : <span className="graphics-unavailable">Desktop only</span>}
     </label>
   </>;
 }

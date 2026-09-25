@@ -102,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let next = Config {
                     game_dir: game,
                     user_dir: user,
+                    ..config.clone()
                 };
                 match next.save() {
                     Ok(()) => {

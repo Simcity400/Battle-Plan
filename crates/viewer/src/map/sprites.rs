@@ -5,8 +5,12 @@
 //! 2048 x 1152 frame (R1 section 0): the map-icon layer draws 1:1 with no GUI
 //! scaling. Section 6.7 confirms it independently on the 27 px counter plate.
 //! So this pass takes rectangles in device pixels, snaps them to the pixel grid
-//! and converts to clip space on the CPU — there is no projection matrix and no
-//! scale factor anywhere in it.
+//! and converts to clip space on the CPU — there is no projection matrix.
+//!
+//! The one scale factor is the viewer's own interface scale
+//! ([`super::ui_scale`]): callers lay the batch out in interface pixels and
+//! [`device_corners`] multiplies each snapped rectangle into device pixels at
+//! upload. At 1.0, which a dump uses, interface and device pixels are the same.
 //!
 //! Every glyph of [`super::text`] goes through the same batch, so a label's
 //! sprite and its text are one draw when they share a page. Quads are grouped
@@ -393,13 +397,71 @@ impl Batch {
     }
 }
 
-/// `position`, `uv` and `color`, already in clip space.
+/// A quad's `x, y, width, height` in interface pixels as device-pixel corners
+/// `x0, y0, x1, y1`.
+///
+/// The rectangle is rounded to whole interface pixels first: the layout adds up
+/// `.gui` integers on top of a projected anchor, so the fractional part is the
+/// anchor's alone, and keeping it would resample a 1:1 sprite. The corners are
+/// then scaled and rounded to device pixels, corners rather than sizes, so
+/// quads that touch in interface pixels still touch on screen and every edge
+/// stays on the pixel grid. At a scale of 1.0 this is the plain rounding.
+pub fn device_corners(rect: [f32; 4], ui_scale: f32) -> [f32; 4] {
+    let x0 = rect[0].round();
+    let y0 = rect[1].round();
+    let corners = [x0, y0, x0 + rect[2].round(), y0 + rect[3].round()];
+    corners.map(|value| (value * ui_scale).round())
+}
+
+/// The texel-centre window a quad's atlas rectangle is sampled inside, as the
+/// shader's `window` computes it: the rectangle inset by half a texel on every
+/// side, so no bilinear tap reaches a neighbouring frame, glyph or flag cell.
+/// A rectangle narrower than a texel collapses to its centre.
+///
+/// A 1:1 or minified quad on whole device pixels already samples inside it,
+/// so this changes nothing there. A magnified one, which a UI scale above 1.0
+/// draws, samples its edge pixels past the last texel centre; clamping them to
+/// the window repeats the cell's edge texels, which is what an edge-extended
+/// gutter around the cell would hold. The shader's `window` is the one that
+/// runs; this is its specification for the tests.
+#[cfg(test)]
+pub fn sample_window(uv: [f32; 4], texels: [u32; 2]) -> [f32; 4] {
+    let mut out = [0.0; 4];
+    for axis in 0..2 {
+        let half = 0.5 / texels[axis].max(1) as f32;
+        let low = uv[axis].min(uv[axis + 2]);
+        let high = uv[axis].max(uv[axis + 2]);
+        let middle = (low + high) * 0.5;
+        out[axis] = (low + half).min(middle);
+        out[axis + 2] = (high - half).max(middle);
+    }
+    out
+}
+
+/// `position`, `uv` and `color`, already in clip space; `cell` is the quad's
+/// whole atlas rectangle and `filter` one of [`filter_mode`]'s values.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 2],
     uv: [f32; 2],
     color: [f32; 4],
+    cell: [f32; 4],
+    filter: f32,
+}
+
+/// How the shader samples a batch drawn at `ui_scale`: 0 the plain bilinear
+/// tap of the unscaled layer, whose output a scale of 1.0 keeps exactly; 1 that
+/// tap clamped to the cell's texel-centre window when magnified; 2 clamped and averaged over
+/// every texel a pixel covers when minified, so the icon does not alias.
+pub fn filter_mode(ui_scale: f32) -> f32 {
+    if ui_scale == 1.0 {
+        0.0
+    } else if ui_scale > 1.0 {
+        1.0
+    } else {
+        2.0
+    }
 }
 
 /// Every icon page on the GPU, shared by the sprite batch and the name pass.
@@ -444,9 +506,12 @@ impl IconTextures {
         };
         Ok(Self {
             bound,
-            // The batch draws at 1:1 on integer pixel corners, so the top mip
-            // is the only one a sample can land in; saying so outright keeps a
-            // driver's derivative estimate out of the result.
+            // The batch samples the top mip only: at 1:1 on integer pixel
+            // corners that is the only one a sample can land in, and a mip of
+            // an atlas would blend neighbouring cells. Scaled quads keep to
+            // their cells through the shader's window and area filter instead
+            // (`SpritePass::upload`); saying so outright keeps a driver's
+            // derivative estimate out of the result.
             screen: clamp("icon screen sampler", wgpu::MipmapFilterMode::Nearest, 0.0),
             trilinear: clamp(
                 "icon trilinear sampler",
@@ -573,7 +638,8 @@ impl SpritePass {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4
+                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4,
+                        4 => Float32
                     ],
                 })],
             },
@@ -699,15 +765,16 @@ impl SpritePass {
 
     /// Turns one frame's quads into vertices, grouped by texture.
     ///
-    /// Rectangles are rounded to whole device pixels first: the layout adds up
-    /// `.gui` integers on top of a projected anchor, so the fractional part is
-    /// the anchor's alone, and keeping it would resample a 1:1 sprite.
+    /// `batch` is in interface pixels and `ui_scale` device pixels per
+    /// interface pixel; see [`device_corners`] for the snapping and
+    /// [`filter_mode`] for the sampling.
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         batch: &Batch,
         size: [u32; 2],
+        ui_scale: f32,
     ) {
         self.runs.clear();
         self.count = 0;
@@ -730,15 +797,13 @@ impl SpritePass {
         let width = size[0] as f32;
         let height = size[1] as f32;
         let mut vertices: Vec<Vertex> = Vec::with_capacity(order.len() * 6);
+        let filter = filter_mode(ui_scale);
         for index in order {
             let quad = batch.quads[index];
             if self.group(quad.texture).is_none() {
                 continue;
             }
-            let x0 = quad.rect[0].round();
-            let y0 = quad.rect[1].round();
-            let x1 = x0 + quad.rect[2].round();
-            let y1 = y0 + quad.rect[3].round();
+            let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
             let clip = |x: f32, y: f32| [x / width * 2.0 - 1.0, 1.0 - y / height * 2.0];
             // counters: a rotated quad turns about its own centre, with `y`
             // down, so a positive angle is clockwise on screen.
@@ -761,6 +826,8 @@ impl SpritePass {
                     position: clip(x, y),
                     uv: [u, v],
                     color: quad.color,
+                    cell: quad.uv,
+                    filter,
                 }
             };
             let [u0, v0, u1, v1] = quad.uv;
@@ -871,11 +938,13 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 /// The whole pass: positions arrive in clip space, so there is no transform.
-const SHADER: &str = r#"
+pub(super) const SHADER: &str = r#"
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) cell: vec4<f32>,
+    @location(3) @interpolate(flat) sampling: f32,
 }
 
 @group(0) @binding(0) var page: texture_2d<f32>;
@@ -886,12 +955,52 @@ fn vertex_main(
     @location(0) position: vec2<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) cell: vec4<f32>,
+    @location(4) sampling: f32,
 ) -> VertexOut {
     var out: VertexOut;
     out.clip = vec4<f32>(position, 0.0, 1.0);
     out.uv = uv;
     out.color = color;
+    out.cell = cell;
+    out.sampling = sampling;
     return out;
+}
+
+// `sample_window` in sprites.rs: the cell inset by half a texel.
+fn window(cell: vec4<f32>, texels: vec2<f32>) -> vec4<f32> {
+    let half = 0.5 / texels;
+    let low = min(cell.xy, cell.zw);
+    let high = max(cell.xy, cell.zw);
+    let middle = (low + high) * 0.5;
+    return vec4<f32>(min(low + half, middle), max(high - half, middle));
+}
+
+// `filter_mode` in sprites.rs: 0 one plain tap; 1 one tap clamped to the
+// cell's window; 2 the texels a minified pixel covers, up to 4 x 4, each
+// clamped. The derivatives are taken before any branch.
+fn texel(uv: vec2<f32>, cell: vec4<f32>, sampling: f32) -> vec4<f32> {
+    let dx = dpdx(uv);
+    let dy = dpdy(uv);
+    if (sampling < 0.5) {
+        return textureSampleLevel(page, page_sampler, uv, 0.0);
+    }
+    let texels = vec2<f32>(textureDimensions(page, 0));
+    let bounds = window(cell, texels);
+    var taps = 1u;
+    if (sampling > 1.5) {
+        let footprint = max(abs(dx), abs(dy)) * texels;
+        taps = u32(clamp(ceil(max(footprint.x, footprint.y) - 0.001), 1.0, 4.0));
+    }
+    var sum = vec4<f32>(0.0);
+    for (var j = 0u; j < taps; j = j + 1u) {
+        for (var i = 0u; i < taps; i = i + 1u) {
+            let offset = (vec2<f32>(f32(i), f32(j)) + 0.5) / f32(taps) - 0.5;
+            let at = clamp(uv + dx * offset.x + dy * offset.y, bounds.xy, bounds.zw);
+            sum = sum + textureSampleLevel(page, page_sampler, at, 0.0);
+        }
+    }
+    return sum / f32(taps * taps);
 }
 
 // The atlases are authored straight, not premultiplied (R2 5.3), so the colour
@@ -900,7 +1009,7 @@ fn vertex_main(
 // luminance grey, then the colour with its alpha negated back.
 @fragment
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let sample = textureSample(page, page_sampler, in.uv);
+    let sample = texel(in.uv, in.cell, in.sampling);
     if (in.color.a < 0.0) {
         let grey = dot(sample.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
         return vec4<f32>(grey, grey, grey, sample.a) * vec4<f32>(in.color.rgb, -in.color.a);
@@ -1009,5 +1118,92 @@ mod tests {
         );
         assert_eq!(batch.quads[1].texture, 3);
         assert_eq!(batch.quads[1].color, [0.5, 0.5, 0.5, 1.0]);
+    }
+
+    /// Every device pixel of a quad: its bilinear footprint in texels along x,
+    /// with the sample clamped to `window` when one is given.
+    fn footprints(
+        rect: [f32; 4],
+        ui_scale: f32,
+        uv: [f32; 4],
+        texels: u32,
+        window: Option<[f32; 4]>,
+    ) -> Vec<(f32, f32)> {
+        let [x0, _, x1, _] = device_corners(rect, ui_scale);
+        (x0 as u32..x1 as u32)
+            .map(|pixel| {
+                let t = (pixel as f32 + 0.5 - x0) / (x1 - x0);
+                let mut u = uv[0] + (uv[2] - uv[0]) * t;
+                if let Some(window) = window {
+                    u = u.clamp(window[0], window[2]);
+                }
+                let texel = u * texels as f32;
+                (texel - 0.5, texel + 0.5)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_scaled_flag_does_not_bleed_into_the_next_cell() {
+        // A 41-texel flag cell at texels 82..123 of a 512-texel page, with other
+        // flags on both sides, drawn 1:1 at 41 interface pixels.
+        let texels = 512;
+        let uv = [82.0 / 512.0, 0.0, 123.0 / 512.0, 1.0];
+        let rect = [100.0, 0.0, 41.0, 26.0];
+        let inside = |(low, high): (f32, f32)| low >= 82.0 - 1e-3 && high <= 123.0 + 1e-3;
+        // At 1.25 the edge pixels' taps reach a quarter texel into each neighbour.
+        let unclamped = footprints(rect, 1.25, uv, texels, None);
+        assert!(!inside(unclamped[0]) && !inside(*unclamped.last().unwrap()));
+        let window = sample_window(uv, [texels, 1]);
+        for scale in [0.75, 1.0, 1.25, 1.5, 2.0, 3.0] {
+            let pixels = footprints(rect, scale, uv, texels, Some(window));
+            assert!(pixels.iter().copied().all(inside), "{scale}");
+        }
+        // At 1:1 the window moves no sample: every pixel is a texel centre.
+        let clamped = footprints(rect, 1.0, uv, texels, Some(window));
+        let free = footprints(rect, 1.0, uv, texels, None);
+        assert_eq!(clamped.len(), 41);
+        for (a, b) in clamped.iter().zip(&free) {
+            assert!((a.0 - b.0).abs() < 1e-3, "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_scaled_batch_changes_how_it_samples() {
+        assert_eq!(filter_mode(1.0), 0.0);
+        assert_eq!(filter_mode(1.25), 1.0);
+        assert_eq!(filter_mode(0.75), 2.0);
+    }
+
+    #[test]
+    fn a_window_narrower_than_a_texel_collapses_to_its_centre() {
+        let window = sample_window([0.5, 0.25, 0.5, 0.75], [4, 4]);
+        assert_eq!(window, [0.5, 0.375, 0.5, 0.625]);
+        // Flipped rectangles keep their bounds ordered.
+        assert_eq!(sample_window([0.75, 0.0, 0.25, 1.0], [4, 1])[0], 0.375);
+    }
+
+    #[test]
+    fn at_scale_one_the_corners_are_the_plain_rounding() {
+        assert_eq!(
+            device_corners([10.4, 20.6, 29.0, 27.0], 1.0),
+            [10.0, 21.0, 39.0, 48.0]
+        );
+    }
+
+    #[test]
+    fn scaled_quads_that_touch_in_interface_pixels_still_touch_on_screen() {
+        // Two 10-pixel cells side by side at 1.25: rounding sizes would give
+        // 13 + 13 from 13 and 25, overlapping by a pixel.
+        let left = device_corners([10.0, 0.0, 10.0, 10.0], 1.25);
+        let right = device_corners([20.0, 0.0, 10.0, 10.0], 1.25);
+        assert_eq!(left, [13.0, 0.0, 25.0, 13.0]);
+        assert_eq!(right[0], left[2]);
+        assert_eq!(right, [25.0, 0.0, 38.0, 13.0]);
+        // The owner's display: 2048 interface pixels fill 2560 device pixels.
+        assert_eq!(
+            device_corners([0.0, 0.0, 2048.0, 1152.0], 1.25),
+            [0.0, 0.0, 2560.0, 1440.0]
+        );
     }
 }

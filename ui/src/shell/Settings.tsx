@@ -45,7 +45,7 @@ const searchItems: SettingsTarget[] = [
   { section: 'appearance', title: 'Interface font', id: 'appearance-interface-font', keywords: 'typeface font inter typography' },
   { section: 'appearance', title: 'Display font', id: 'appearance-display-font', keywords: 'typeface headings typography' },
   ...[...MAP_OPTION_LABELS.slice(0, 2), ...VIDEO_OPTION_LABELS, ...MAP_OPTION_LABELS.slice(2)]
-    .map(title => ({ section: 'graphics' as const, title, keywords: title === MAP_OPTION_LABELS[0] ? 'msaa' : title === VIDEO_OPTION_LABELS[1] ? 'zoom ui size' : 'map graphics' })),
+    .map(title => ({ section: 'graphics' as const, title, keywords: title === MAP_OPTION_LABELS[0] ? 'msaa' : title === VIDEO_OPTION_LABELS[1] ? 'zoom ui size' : title === VIDEO_OPTION_LABELS[2] ? 'counters icons labels size gui_scale' : 'map graphics' })),
   { section: 'graphics', title: 'Visual mods', keywords: 'mods artwork' },
   { section: 'diagnostics', title: 'Recording', id: 'diagnostics-recording', keywords: 'gaps branches coverage format' },
   { section: 'diagnostics', title: 'Native map', id: 'diagnostics-map', keywords: 'viewer report' },

@@ -158,10 +158,13 @@ impl Window {
     pub fn close(&mut self) {
         *self = Self::default();
     }
+    /// Lays the open window out on a frame of `extent` interface pixels; the
+    /// batch and every hit rectangle are in interface pixels too
+    /// ([`crate::map::ui_scale`]).
     pub fn draw(
         &mut self,
         document: &Document,
-        viewport: [u32; 2],
+        extent: [f32; 2],
         perspective: &crate::map::perspective::Choice,
     ) -> io::Result<Option<Drawn>> {
         let Some(selection) = self.selection else {
@@ -189,7 +192,7 @@ impl Window {
             Selection::Naval(_) => "navalcombatview",
             Selection::NavalResult(_) => "navalcombatresultswindow",
         }];
-        let mut rect = root.rect([0.0, 0.0, viewport[0] as f32, viewport[1] as f32])?;
+        let mut rect = root.rect([0.0, 0.0, extent[0], extent[1]])?;
         rect[0] += self.offset[0];
         rect[1] += self.offset[1];
         let mut drawn = Drawn {

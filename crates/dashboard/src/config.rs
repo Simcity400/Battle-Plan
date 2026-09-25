@@ -9,6 +9,10 @@ use std::{fs, io, path::PathBuf};
 pub struct Config {
     pub game_dir: PathBuf,
     pub user_dir: PathBuf,
+    /// The standalone viewer's map interface scale; absent matches the game on
+    /// screen. The desktop host keeps its own and sends it to the viewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_scale: Option<f32>,
 }
 
 impl Config {
@@ -30,6 +34,17 @@ impl Config {
     pub fn save(&self) -> io::Result<()> {
         self.resolve_options()?;
         fs::write(Self::path()?, serde_json::to_vec_pretty(self)?)
+    }
+
+    /// Stores only the interface scale, keeping the saved folders as they are
+    /// even when they are not chosen yet.
+    pub fn save_ui_scale(scale: Option<f32>) -> io::Result<()> {
+        if scale.is_some_and(|scale| !crate::protocol::MAP_UI_SCALE_RANGE.contains(&scale)) {
+            return Err(invalid("Invalid map UI scale"));
+        }
+        let mut config = Self::load()?;
+        config.ui_scale = scale;
+        fs::write(Self::path()?, serde_json::to_vec_pretty(&config)?)
     }
 
     pub fn resolve_options(&self) -> io::Result<ResolveOptions> {

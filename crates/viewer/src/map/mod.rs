@@ -65,6 +65,8 @@ pub mod text;
 pub mod textures;
 // trees
 pub mod trees;
+// the screen-space interface's scale
+pub mod ui_scale;
 // close zoom
 pub mod unit_models;
 pub mod visibility;

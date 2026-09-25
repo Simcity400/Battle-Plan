@@ -73,6 +73,8 @@ use crate::{
 pub struct View {
     pub camera: Camera,
     pub viewport: [u32; 2],
+    /// Device pixels per interface pixel; see [`crate::map::ui_scale`].
+    pub ui_scale: f32,
 }
 
 /// What the window wants built.
@@ -1164,13 +1166,14 @@ impl Coordinator {
             );
         }
         submit("names", Box::new(|view| Part::Names(view.place_names())));
-        let (camera, viewport) = (want.view.camera, want.view.viewport);
+        let (camera, viewport, ui_scale) =
+            (want.view.camera, want.view.viewport, want.view.ui_scale);
         let overlay_perspective = want.perspective.clone();
         submit(
             "overlay",
             Box::new(move |view| {
                 Part::Overlay(
-                    view.prepare_overlay(camera, viewport, &overlay_perspective)
+                    view.prepare_overlay(camera, viewport, ui_scale, &overlay_perspective)
                         .map(Box::new),
                 )
             }),
@@ -1557,6 +1560,7 @@ mod tests {
                 [100, 100],
             ),
             viewport: [100, 100],
+            ui_scale: 1.0,
         }
     }
 

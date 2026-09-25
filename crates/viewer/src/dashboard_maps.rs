@@ -185,6 +185,8 @@ impl Drop for ScenePermit {
 }
 
 pub struct DashboardMaps {
+    /// The process-wide interface scale setting every map view draws at.
+    pub(crate) ui_scale: crate::map::ui_scale::Setting,
     config: Config,
     options: Options,
     service: Arc<Service>,
@@ -272,6 +274,7 @@ impl DashboardMaps {
             pixels: limits.pixels,
         });
         Ok(Self {
+            ui_scale: Default::default(),
             config,
             options,
             service,
@@ -851,6 +854,7 @@ impl DashboardMaps {
                         .widget_map_settings(&source.source.replay(), &view.target.id)
                         .graphics;
                 }
+                view.viewer.ui_scale = self.ui_scale;
                 view.viewer.map_ui(&mut map_ui, frame, &view.target);
             } else {
                 map_ui.centered_and_justified(|ui| {

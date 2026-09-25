@@ -19,6 +19,7 @@ fn standalone_map_shaders_validate() {
         ("post", include_str!("post.wgsl")),
         ("post_luts", include_str!("post_luts.wgsl")),
         ("shadow", include_str!("shadow.wgsl")),
+        ("sprites", super::sprites::SHADER),
     ] {
         validate(name, source);
     }

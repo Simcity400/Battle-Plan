@@ -402,7 +402,7 @@ impl NativeHost {
         {
             return Ok(());
         }
-        let vsync = crate::video::current_vsync(window)?;
+        let display = crate::video::launch_actions(window)?;
         let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
         if inner.process.is_some() {
             return Ok(());
@@ -465,10 +465,7 @@ impl NativeHost {
             inner.pending.bounds = inner.bounds;
             inner.pending.visibility = Some(inner.status.visible);
         }
-        inner
-            .pending
-            .actions
-            .push_back(dashboard::protocol::MapAction::Vsync { enabled: vsync });
+        inner.pending.actions.extend(display);
         inner.process = Some(Process { child, _job: job });
         drop(inner);
 

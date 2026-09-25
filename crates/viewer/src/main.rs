@@ -31,7 +31,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division is extrapolated along its recorded route by its recorded ETA
-         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise and the entity animation\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise and the entity animation\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with interface rectangles\n             (device pixels at --ui-scale 1), sprite frames and text\n           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel\n             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -163,6 +163,11 @@ struct Options {
     layers: map::layers::Omissions,
     /// Write the actual rendered counter quads, grouped into plates.
     counters_json: Option<PathBuf>,
+    /// `--ui-scale`: device pixels per interface pixel of the screen-space map
+    /// interface. A dump renders at the game's frame size, where the verified
+    /// comparison pipeline uses 1.0, so that is the default; the window
+    /// otherwise uses its setting ([`map::ui_scale`]).
+    ui_scale: Option<f32>,
     // borders
     /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised **in addition to** the
     /// hour's recorded `StateFlags`, so an hour whose flags are short can still be scored against
@@ -321,6 +326,25 @@ impl Options {
                     }
                     options.upscale = Some(factor);
                 }
+                Some("--ui-scale") => {
+                    let value = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .ok_or_else(|| invalid(USAGE))?;
+                    let scale = value
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|scale| map::ui_scale::valid(*scale))
+                        .ok_or_else(|| {
+                            let range = dashboard::protocol::MAP_UI_SCALE_RANGE;
+                            invalid(format!(
+                                "the UI scale must be a number from {} to {}",
+                                range.start(),
+                                range.end()
+                            ))
+                        })?;
+                    options.ui_scale = Some(scale);
+                }
                 Some("--allow-unverified-content") => options.allow_unverified = true,
                 Some("--out") => {
                     options.out = Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
@@ -449,6 +473,12 @@ impl Options {
         }
         if options.counters_json.is_some() && !options.headless_dump {
             return Err(invalid("--counters-json requires --dump"));
+        }
+        if options.ui_scale.is_some() && !(options.headless_dump || options.window_dump) {
+            return Err(invalid(
+                "--ui-scale sets a dump's map interface scale and requires --dump or --window-dump; \
+                 the window uses its UI scale setting",
+            ));
         }
         if options.compare.is_some() {
             if options.combat.is_some() {
@@ -829,16 +859,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {warning}");
         }
         // counters: bases, labels, counters and combats in priority order.
-        let (mut label_batch, label_report, counter_report, raid_report) =
-            document.overlay_batch(camera, options.size, &options.perspective, omitted)?;
+        let ui_scale = options.ui_scale.unwrap_or(1.0);
+        let (mut label_batch, label_report, counter_report, raid_report) = document.overlay_batch(
+            camera,
+            options.size,
+            ui_scale,
+            &options.perspective,
+            omitted,
+        )?;
         for warning in label_report.warnings() {
             eprintln!("Warning: {warning}");
         }
         if let Some(path) = &options.counters_json {
-            let census = document
-                .icons
-                .counters
-                .census(&label_batch, &document.icons.fonts);
+            let census =
+                document
+                    .icons
+                    .counters
+                    .census(&label_batch, &document.icons.fonts, ui_scale);
             std::fs::write(path, serde_json::to_vec_pretty(&census)?)?;
         }
         if let Some(selector) = options.combat {
@@ -848,7 +885,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Draw until every flag and portrait the window asked for is decoded.
             let drawn = loop {
                 let before = document.icons.lazy.version();
-                let drawn = window.draw(&document, options.size, &options.perspective)?;
+                let drawn = window.draw(
+                    &document,
+                    map::ui_scale::extent(options.size, ui_scale),
+                    &options.perspective,
+                )?;
                 document.icons.lazy.settle();
                 if document.icons.lazy.version() == before {
                     break drawn;
@@ -946,6 +987,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     names: (!omitted.labels).then_some(&placements),
                     layer_alpha: fade.0,
                     sprites: Some(&label_batch),
+                    ui_scale,
                 },
                 // trees
                 season: document.tree_season(),
@@ -1567,6 +1609,37 @@ mod tests {
         // The fraction is measured from a named recorded hour.
         assert!(parse(&["campaign.battleplan", "--hour-fraction", "0.5"]).is_err());
         assert!(parse(&["--compare", "a.png", "b.png", "--hour-fraction", "0.5"]).is_err());
+    }
+
+    #[test]
+    fn a_dump_takes_an_optional_ui_scale_and_the_window_refuses_one() {
+        let dump = |scale: &str| {
+            parse(&[
+                "--dump",
+                "c.battleplan",
+                "--hour",
+                "60832633",
+                "--out",
+                "frame.png",
+                "--ui-scale",
+                scale,
+            ])
+        };
+        assert_eq!(dump("1.25").unwrap().ui_scale, Some(1.25));
+        for bad in ["0", "0.4", "3.5", "x", "NaN"] {
+            assert!(dump(bad).is_err(), "`{bad}` should be refused");
+        }
+        let plain = parse(&[
+            "--dump",
+            "c.battleplan",
+            "--hour",
+            "60832633",
+            "--out",
+            "frame.png",
+        ])
+        .unwrap();
+        assert_eq!(plain.ui_scale, None);
+        assert!(parse(&["campaign.battleplan", "--ui-scale", "1.25"]).is_err());
     }
 
     #[test]

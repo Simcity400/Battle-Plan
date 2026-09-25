@@ -75,6 +75,12 @@ pub enum NativeEvent {
     },
 }
 
+/// The manual map interface scales the viewer accepts. `RangeInclusive::contains`
+/// is false for NaN, so it also refuses a non-number.
+pub const MAP_UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
+/// The manual map interface scales the settings offer, in percent.
+pub const MAP_UI_SCALE_CHOICES: [u32; 11] = [50, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300];
+
 /// Small, explicit map controls. No raw tables or image pixels cross this channel.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
@@ -85,6 +91,10 @@ pub enum MapAction {
     },
     Vsync {
         enabled: bool,
+    },
+    /// The screen-space map interface's scale; `None` matches the game on screen.
+    UiScale {
+        scale: Option<f32>,
     },
     Configure {
         options: MapOptions,
@@ -124,6 +134,11 @@ impl MapAction {
             Self::Folders { game, user } => {
                 validate_local_path(game)?;
                 validate_local_path(user)?;
+            }
+            Self::UiScale { scale } => {
+                if scale.is_some_and(|scale| !MAP_UI_SCALE_RANGE.contains(&scale)) {
+                    return Err("Invalid map UI scale");
+                }
             }
             Self::Inspect | Self::Vsync { .. } => {}
         }

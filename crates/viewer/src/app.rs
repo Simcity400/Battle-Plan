@@ -252,6 +252,10 @@ fn seek_open_target(
     (!matches).then(|| seek.open_request())
 }
 
+/// The Match game scale and its note, keyed by the monitors' generation and
+/// the document's content.
+type MatchGame = ((u64, usize), (f32, Option<String>));
+
 pub struct Viewer {
     dashboard: Option<Box<crate::dashboard_maps::DashboardMaps>>,
     dashboard_active: bool,
@@ -295,6 +299,16 @@ pub struct Viewer {
     /// Whether the map is graded through the engine's post chain.
     postfx: bool,
     pub(crate) graphics: dashboard::protocol::MapGraphics,
+    /// The screen-space map interface's scale setting; see [`map::ui_scale`].
+    /// The desktop host sets it with `MapAction::UiScale`; the standalone
+    /// window keeps it in `viewer.json`.
+    pub(crate) ui_scale: map::ui_scale::Setting,
+    /// The Match game scale and its note, keyed by the monitors' generation
+    /// and the document's content, so a frame only re-resolves on a change.
+    match_game: Option<MatchGame>,
+    /// The monitor size and display scale the window last saw; a change asks
+    /// for the monitors to be read again.
+    monitor_seen: Option<(Option<egui::Vec2>, Option<f32>)>,
     map_preferences_seen: Option<(String, Option<Vec<String>>, u32, u8)>,
     // hours
     /// The timeline's position; the map follows it as hours are built.
@@ -347,6 +361,7 @@ pub struct Viewer {
         i32,
         Camera,
         [u32; 2],
+        f32,
         map::perspective::Choice,
     )>,
     /// The hour's camera-independent icon tables, parsed once per (branch,
@@ -513,6 +528,14 @@ impl Viewer {
         // counters: the header's control starts where the command line put it.
         let perspective = options.perspective.clone();
         let hidden_since = embedded.as_ref().map(|_| Instant::now());
+        // The monitors are read off the UI thread; start before the first map.
+        map::ui_scale::refresh_monitors(|| ());
+        // Embedded, the host owns the setting and sends it before the map.
+        let ui_scale = if embedded.is_some() {
+            map::ui_scale::Setting::MatchGame
+        } else {
+            map::ui_scale::Setting::from_stored(config.ui_scale)
+        };
         Self {
             dashboard: None,
             dashboard_active: false,
@@ -541,6 +564,9 @@ impl Viewer {
             // where the command line put it.
             postfx: options.postfx,
             graphics: Default::default(),
+            ui_scale,
+            match_game: None,
+            monitor_seen: None,
             map_preferences_seen: None,
             config,
             options,
@@ -1016,6 +1042,9 @@ impl Viewer {
                     frame.set_wgpu_surface_config(config);
                 }
             }
+            MapAction::UiScale { scale } => {
+                self.ui_scale = map::ui_scale::Setting::from_stored(scale);
+            }
             MapAction::Configure { options } => {
                 self.perspective.country = options.country.map_or(
                     map::perspective::Country::Recorded,
@@ -1055,6 +1084,7 @@ impl Viewer {
                 let config = Config {
                     game_dir: PathBuf::from(game),
                     user_dir: PathBuf::from(user),
+                    ..self.config.clone()
                 };
                 match config.save() {
                     Ok(()) => {
@@ -1427,6 +1457,91 @@ impl Viewer {
         }
     }
 
+    /// Asks for the monitors to be read again when this window's monitor or
+    /// display scale changes; a no-op otherwise.
+    fn watch_monitors(
+        monitor_seen: &mut Option<(Option<egui::Vec2>, Option<f32>)>,
+        ctx: &egui::Context,
+    ) {
+        let seen = ctx.input(|input| {
+            let viewport = input.viewport();
+            (viewport.monitor_size, viewport.native_pixels_per_point)
+        });
+        if *monitor_seen != Some(seen) {
+            *monitor_seen = Some(seen);
+            let ctx = ctx.clone();
+            map::ui_scale::refresh_monitors(move || ctx.request_repaint());
+        }
+    }
+
+    /// The Match game scale for `document` and its note, resolved again only
+    /// when the monitors have been re-read or the content changed.
+    fn match_game<'a>(
+        match_game: &'a mut Option<MatchGame>,
+        document: &Document,
+    ) -> &'a (f32, Option<String>) {
+        let key = (
+            map::ui_scale::monitors_generation(),
+            Arc::as_ptr(&document.content) as usize,
+        );
+        if match_game.as_ref().is_none_or(|(cached, _)| *cached != key) {
+            let monitors = map::ui_scale::monitors();
+            let resolved = map::ui_scale::Setting::MatchGame.resolve(
+                document.game_display.as_ref().map_err(String::as_str),
+                monitors
+                    .as_ref()
+                    .as_ref()
+                    .map(Vec::as_slice)
+                    .map_err(String::as_str),
+            );
+            *match_game = Some((key, resolved));
+        }
+        &match_game.as_ref().expect("resolved above").1
+    }
+
+    /// The standalone window's "UI scale" setting, saved to `viewer.json`.
+    fn ui_scale_control(&mut self, ui: &mut egui::Ui) {
+        let matched = self
+            .document
+            .as_ref()
+            .and(self.match_game.as_ref())
+            .map(|(_, (scale, _))| *scale);
+        let label = |setting: map::ui_scale::Setting| match setting {
+            map::ui_scale::Setting::MatchGame => match matched {
+                Some(scale) => format!("Match game ({:.0}%)", scale * 100.0),
+                None => "Match game (default)".into(),
+            },
+            map::ui_scale::Setting::Manual(scale) => format!("{:.0}%", scale * 100.0),
+        };
+        let mut selected = self.ui_scale;
+        ui.label("UI scale");
+        egui::ComboBox::from_id_salt("ui_scale")
+            .selected_text(label(selected))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut selected,
+                    map::ui_scale::Setting::MatchGame,
+                    label(map::ui_scale::Setting::MatchGame),
+                );
+                for percent in dashboard::protocol::MAP_UI_SCALE_CHOICES {
+                    let setting = map::ui_scale::Setting::Manual(percent as f32 / 100.0);
+                    ui.selectable_value(&mut selected, setting, label(setting));
+                }
+            })
+            .response
+            .on_hover_text(
+                "Size of counters, map icons, labels, combat bubbles, the combat window and map \
+                 tooltips. Match game draws them as large as the game shows them on this desktop.",
+            );
+        if selected != self.ui_scale {
+            self.ui_scale = selected;
+            match Config::save_ui_scale(selected.stored()) {
+                Ok(()) => self.config.ui_scale = selected.stored(),
+                Err(error) => self.error = Some(format!("viewer.json: {error}")),
+            }
+        }
+    }
+
     fn paths(&mut self, ctx: &egui::Context) {
         let mut show = self.settings;
         let mut save = false;
@@ -1451,6 +1566,7 @@ impl Viewer {
             let config = Config {
                 game_dir: PathBuf::from(&self.game_text),
                 user_dir: PathBuf::from(&self.user_text),
+                ..self.config.clone()
             };
             match config.save() {
                 Ok(()) => {
@@ -1797,7 +1913,12 @@ impl Viewer {
                     )
                 }
             };
-            hours::View { camera, viewport }
+            hours::View {
+                camera,
+                viewport,
+                // The first frame lays the icons out again at its own scale.
+                ui_scale: 1.0,
+            }
         });
         // Playing, the builders reach far enough ahead to stay in front of the
         // clock; paused, a step either way is already built.
@@ -2128,6 +2249,7 @@ impl Viewer {
             hour,
             view.camera,
             view.viewport,
+            view.ui_scale,
             self.perspective.clone(),
         ));
         self.overlay_fraction = None;
@@ -2346,6 +2468,25 @@ impl Viewer {
             warnings.extend(placements.warnings.iter().cloned());
         }
         warnings.extend(self.label_report.warnings());
+        // The screen-space interface's scale. A capture keeps the dump's, 1.0
+        // unless `--ui-scale` names one, so a `--window-dump` and a `--dump` of
+        // the same state stay the same frame.
+        let pinned = self.capture.as_ref().and_then(|capture| capture.pinned);
+        let ui_scale = match pinned {
+            Some(_) => self.options.ui_scale.unwrap_or(1.0),
+            None => {
+                Self::watch_monitors(&mut self.monitor_seen, ui.ctx());
+                let setting = self.ui_scale;
+                let (matched, note) = Self::match_game(&mut self.match_game, document);
+                match setting {
+                    map::ui_scale::Setting::Manual(scale) => scale,
+                    map::ui_scale::Setting::MatchGame => {
+                        warnings.extend(note.iter().cloned());
+                        *matched
+                    }
+                }
+            }
+        };
         if !self.dashboard_map && self.embedded.is_none() {
             egui::ScrollArea::vertical()
                 .id_salt("warnings")
@@ -2370,7 +2511,6 @@ impl Viewer {
         // depend on this display's scale factor or on where the warning area
         // wrapped. Every other frame renders the map area at device pixels,
         // which is the space the projection and the overlay batch already use.
-        let pinned = self.capture.as_ref().and_then(|capture| capture.pinned);
         let pixels = match pinned {
             Some((size, _)) => size,
             None => [
@@ -2398,17 +2538,20 @@ impl Viewer {
                 (position.y - rect.top()) * scale,
             ]
         };
+        // The interface is laid out in interface pixels, so its hit tests are
+        // too: counters, combat bubbles, the combat window and its lists.
+        let extent = map::ui_scale::extent(pixels, ui_scale);
         if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.combat.close();
         }
         let combat_geometry = self
             .combat
-            .draw(document, pixels, &self.perspective)
+            .draw(document, extent, &self.perspective)
             .map_err(|error| error.to_string())?;
         let point = response
             .hover_pos()
             .or_else(|| response.interact_pointer_pos())
-            .map(physical);
+            .map(|position| map::ui_scale::to_interface(physical(position), ui_scale));
         if response.drag_started() {
             self.combat.dragging = point.is_some_and(|point| {
                 combat_geometry.as_ref().is_some_and(|window| {
@@ -2446,8 +2589,8 @@ impl Viewer {
             }
             if response.dragged() && self.combat.dragging {
                 let delta = response.drag_delta();
-                self.combat.offset[0] += delta.x * scale;
-                self.combat.offset[1] += delta.y * scale;
+                self.combat.offset[0] += delta.x * scale / ui_scale;
+                self.combat.offset[1] += delta.y * scale / ui_scale;
             }
             if let Some(side) = point.and_then(|point| {
                 combat_geometry
@@ -2579,6 +2722,7 @@ impl Viewer {
         self.last_view = Some(hours::View {
             camera,
             viewport: pixels,
+            ui_scale,
         });
         let names_key = (document.playback.branch(), document.playback.hour());
         if self.placements_at != Some(names_key) {
@@ -2598,6 +2742,7 @@ impl Viewer {
             document.playback.hour(),
             camera,
             pixels,
+            ui_scale,
             self.perspective.clone(),
         );
         let overlay_timer = Instant::now();
@@ -2631,7 +2776,7 @@ impl Viewer {
             }
             let tables = &self.overlay_tables.as_ref().expect("parsed above").3;
             self.prepared_overlay = Some(
-                now.prepare_overlay_cached(camera, pixels, tables)
+                now.prepare_overlay_cached(camera, pixels, ui_scale, tables)
                     .map_err(|error| error.to_string())?,
             );
             self.overlay_at = Some(overlay_key);
@@ -2643,7 +2788,7 @@ impl Viewer {
                 .prepared_overlay
                 .as_mut()
                 .expect("prepared above")
-                .draw(&now, camera, pixels, Default::default())
+                .draw(&now, camera, pixels, ui_scale, Default::default())
                 .map_err(|error| error.to_string())?;
             self.label_report = label_report;
             self.counter_report = counter_report;
@@ -2668,7 +2813,7 @@ impl Viewer {
         let mut combat_batch;
         let label_batch = if let Some(drawn) = self
             .combat
-            .draw(document, pixels, &self.perspective)
+            .draw(document, extent, &self.perspective)
             .map_err(|error| error.to_string())?
         {
             warnings.extend(drawn.warnings.iter().cloned());
@@ -2712,6 +2857,7 @@ impl Viewer {
                         names: self.placements.as_ref(),
                         layer_alpha: fade.0,
                         sprites: Some(label_batch),
+                        ui_scale,
                     },
                     // trees
                     season: now.tree_season(),
@@ -2788,26 +2934,40 @@ impl Viewer {
         );
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
-        // The game shows a moving division's arrival in its counter's tooltip, so the
-        // hovered counter's line replaces the map's own hint.
-        let arrival = point.filter(|_| !over_combat).and_then(|point| {
-            let hit = self
-                .counter_report
-                .arrivals
-                .iter()
-                .rev()
-                .find(|hit| hit.contains(point))?;
-            let arrival = map::counter_eta::arrival(document.playback.hour(), hit.remaining)?;
-            Some(map::counter_eta::sentence(
-                &arrival,
-                hit.ours,
-                &date(arrival.hour),
-            ))
+        // The map's tooltip is part of its interface, so it is sized like the
+        // sprites: egui's default text size, padding, gap and wrap width taken
+        // as interface pixels, times the UI scale, in device pixels. egui lays
+        // it out at that size, so its text is rasterised there, not stretched.
+        let points = |interface: f32| map::ui_scale::points(interface, ui_scale, scale);
+        let style = ui.style().clone();
+        let mut tooltip = egui::Tooltip::for_enabled(&response);
+        tooltip.popup = tooltip
+            .popup
+            .frame(egui::Frame::popup(&style).inner_margin(style.spacing.menu_margin * points(1.0)))
+            .gap(points(4.0))
+            .width(points(style.spacing.tooltip_width));
+        tooltip.show(|ui| {
+            // The game shows a moving division's arrival in its counter's
+            // tooltip, so the hovered counter's line replaces the map's hint.
+            let arrival = point.filter(|_| !over_combat).and_then(|point| {
+                let hit = self
+                    .counter_report
+                    .arrivals
+                    .iter()
+                    .rev()
+                    .find(|hit| hit.contains(point))?;
+                let arrival = map::counter_eta::arrival(document.playback.hour(), hit.remaining)?;
+                Some(map::counter_eta::sentence(
+                    &arrival,
+                    hit.ours,
+                    &date(arrival.hour),
+                ))
+            });
+            let text = arrival.unwrap_or_else(|| "Drag to pan · Scroll to zoom".into());
+            ui.set_max_width(points(style.spacing.tooltip_width));
+            let size = points(egui::TextStyle::Body.resolve(&style).size);
+            ui.label(egui::RichText::new(text).size(size));
         });
-        match arrival {
-            Some(text) => response.on_hover_text(text),
-            None => response.on_hover_text("Drag to pan · Scroll to zoom"),
-        };
         self.rendered = Some(Playhead {
             branch: document.playback.branch(),
             hour: document.playback.hour(),
@@ -2835,6 +2995,7 @@ impl eframe::App for Viewer {
         if self.dashboard_active
             && let Some(dashboard) = &mut self.dashboard
         {
+            dashboard.ui_scale = self.ui_scale;
             dashboard.ui(ui, frame);
             if let Some(embedded) = &mut self.embedded {
                 embedded.report_maps(dashboard.states());
@@ -2898,6 +3059,7 @@ impl eframe::App for Viewer {
                 if ui.button("Folders").clicked() {
                     self.settings = true;
                 }
+                self.ui_scale_control(ui);
                 ui.separator();
                 // counters: the game's two map controls, a viewing country and
                 // the fog-of-war switch. The chooser lists every country the
