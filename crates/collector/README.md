@@ -68,7 +68,7 @@ Governance, Orders, Ordinary and Presentation each have a reserved pool slot and
 
 ## Cadence and freshness
 
-[cadence.rs](../replay/src/cadence.rs) is the authority. Map data is hourly, with established four-hourly exceptions for slow-changing inputs such as relations and buildings. Character identities and unit leaders are hourly; persistent character roles and traits use their shared daily slot. Other panel data uses daily slots too. Keep shared-source families together and preserve the approved cadence when comparing capture implementations.
+[cadence.rs](../replay/src/cadence.rs) is the authority. Map data is hourly, with established four-hourly exceptions for slow-changing inputs such as relations and province names. Buildings are hourly: bombing changes a building's mesh and fire within the hour. Character identities and unit leaders are hourly; persistent character roles and traits use their shared daily slot. Other panel data uses daily slots too. Keep shared-source families together and preserve the approved cadence when comparing capture implementations.
 
 Static means the **whole table** cannot change after a save loads. Static tables are captured on full hours: branch start, keyframe, load or gap. Character portraits remain hourly because new generals can appear even when an existing character's portrait tokens do not change.
 

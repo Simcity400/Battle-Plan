@@ -107,6 +107,7 @@ impl Captured {
             healthy_level: r.healthy_level,
             countries: countries[r.countries_start..r.countries_start + r.countries_len as usize]
                 .to_vec(),
+            countries_unreadable: r.countries_unreadable,
         })]
     }
 }

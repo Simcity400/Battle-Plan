@@ -52,6 +52,7 @@ use crate::{
         camera::Camera,
         demilitarized::{Zone, ZonePlan},
         gradient::LayerPlane,
+        map_buildings::PreparedBuildings,
         models::ModelField,
         name_pass::Placements,
         orders::OrderField,
@@ -198,7 +199,7 @@ pub struct Layers {
     pub political: Arc<Political>,
     pub borders: Arc<Borders>,
     pub rails: Arc<Rails>,
-    pub buildings: Arc<Shared<ModelField>>,
+    pub buildings: Arc<Shared<PreparedBuildings>>,
     pub trains: TrainPlan,
     pub aircraft: AircraftPlan,
     pub units: PreparedModels,
@@ -235,7 +236,7 @@ enum Part {
     Names(io::Result<Placements>),
     Overlay(io::Result<Box<PreparedOverlay>>),
     Rails(io::Result<Arc<Rails>>),
-    Buildings(io::Result<Arc<Shared<ModelField>>>),
+    Buildings(io::Result<Arc<Shared<PreparedBuildings>>>),
     Movers(io::Result<Box<Movers>>),
     Fog(io::Result<(IntelMap, Limitations, Arc<Header>)>),
     Snow(io::Result<Arc<SnowMud>>),
@@ -340,7 +341,7 @@ struct Slots {
     political: Arc<Slot<Political>>,
     borders: Arc<Slot<Borders>>,
     rails: Arc<Slot<Rails>>,
-    buildings: Arc<Slot<Shared<ModelField>>>,
+    buildings: Arc<Slot<Shared<PreparedBuildings>>>,
 }
 
 impl Slots {
@@ -532,7 +533,7 @@ struct Pending {
     names: Option<Placements>,
     overlay: Option<PreparedOverlay>,
     rails: Option<Arc<Rails>>,
-    buildings: Option<Arc<Shared<ModelField>>>,
+    buildings: Option<Arc<Shared<PreparedBuildings>>>,
     movers: Option<Movers>,
     fog: Option<(IntelMap, Limitations, Arc<Header>)>,
     snow: Option<Arc<SnowMud>>,

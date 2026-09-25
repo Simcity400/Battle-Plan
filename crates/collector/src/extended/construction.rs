@@ -1856,7 +1856,6 @@ fn source<R>(rows: &CaptureRows<R>) -> Result<(Outcome, &[R]), TableView> {
 fn building(row: &cbuilding::Row) -> rows::BuildingRow {
     rows::BuildingRow {
         location: row.location,
-        state: row.state,
         building_type: row.building_type,
         ordinal: row.ordinal,
         status_flags: row.status_flags,
@@ -2772,7 +2771,6 @@ mod tests {
         captured.collaboration.outcome = Outcome::Rows { len: 1 };
         captured.buildings.state_buildings.rows[0] = cbuilding::Row {
             location: u32::MAX,
-            state: 7,
             building_type: 99,
             ordinal: 4,
             status_flags: 0x102,
@@ -2783,7 +2781,6 @@ mod tests {
         };
         captured.buildings.province_buildings.rows[0] = cbuilding::Row {
             location: 12,
-            state: 0,
             status_flags: 1,
             ..captured.buildings.state_buildings.rows[0]
         };
@@ -2909,7 +2906,10 @@ mod tests {
             complete::<tables::StateBuildings>(&views[0])[0].partial_health,
             i64::MIN
         );
-        assert_eq!(complete::<tables::ProvinceBuildings>(&views[1])[0].state, 0);
+        assert_eq!(
+            complete::<tables::ProvinceBuildings>(&views[1])[0].status_flags,
+            1
+        );
         assert_eq!(
             complete::<tables::StateBaseResources>(&views[2])[0].amount,
             i64::MIN + 1

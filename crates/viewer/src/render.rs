@@ -20,7 +20,7 @@ use crate::map::{
     borders::BorderMeshes,
     demilitarized::Zone,
     // close zoom
-    map_buildings::MapBuildingAssets,
+    map_buildings::{MapBuildingAssets, PreparedBuildings},
     // the map's table frame
     mapframe::{FrameAssets, FrameGeometry},
     models::ModelField,
@@ -71,7 +71,9 @@ pub struct MapLayers<'a> {
     pub sprawl: &'a Sprawl,
     pub map_buildings: &'a MapBuildingAssets,
     /// This hour's placed buildings, from [`MapBuildingAssets::field`].
-    pub map_building_field: &'a ModelField,
+    pub map_building_field: &'a PreparedBuildings,
+    /// Cameras visited before this frame; see [`Scene::visit_map_buildings`].
+    pub building_cameras: &'a [crate::map::camera::Camera],
     pub rail_assets: &'a RailAssets,
     pub rail_mesh: &'a RailMesh,
     pub aircraft: &'a std::sync::Arc<crate::map::aircraft::AircraftAssets>,
@@ -382,6 +384,7 @@ pub fn dump_png(
     layers: MapLayers<'_>,
     // names
     icons: &MapIcons,
+    settle: f32,
     request: Request<'_>,
     path: &Path,
     banner: Option<&str>,
@@ -460,7 +463,9 @@ pub fn dump_png(
                 &queue,
                 layers.map_buildings,
                 layers.map_building_field.clone(),
+                None,
             )?;
+            scene.visit_map_buildings(layers.building_cameras, request.size);
         }
         if !layers.omitted.rails {
             scene.set_railways(&device, &queue, layers.rail_assets, layers.rail_mesh)?;
@@ -519,6 +524,24 @@ pub fn dump_png(
         )?;
         // fog of war
         scene.set_fog_of_war(&queue, &layers.intel_map.texels, layers.intel_map.fog)?;
+        // `--settle`: play the preceding seconds, one frame a second, so entity
+        // events and particles are under way when the frame renders.
+        let steps = settle.ceil() as u32;
+        for step in 0..steps {
+            let at = request.animation_time + step as f32 * settle / steps as f32;
+            scene.render(
+                &device,
+                &queue,
+                Request {
+                    animation_time: at,
+                    ..request
+                },
+            )?;
+        }
+        let request = Request {
+            animation_time: request.animation_time + settle,
+            ..request
+        };
         // A first frame warms the pipeline caches so the timing below measures
         // the steady-state cost the window pays.
         scene.render(&device, &queue, request)?;

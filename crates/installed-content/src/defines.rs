@@ -168,6 +168,16 @@ impl Defines {
         Ok(wide as i32)
     }
 
+    /// `NDefines.<section>.<name>`, which must be a Lua string.
+    pub fn text(&self, section: &str, name: &str) -> io::Result<String> {
+        match self.value(section, name)? {
+            Value::String(text) => Ok(text.to_str().map_err(lua_error)?.to_owned()),
+            _ => Err(invalid(format!(
+                "NDefines.{section}.{name} is not a string"
+            ))),
+        }
+    }
+
     /// A table define's numbers in `lua_next` order, as the native table
     /// loaders (`142059cf0`) walk it.
     pub fn numbers(&self, section: &str, name: &str) -> io::Result<Vec<f64>> {
@@ -271,6 +281,8 @@ mod tests {
             ["A", "B", "C"].map(|name| wide.int32("N", name).unwrap()),
             [-2, 1, 0]
         );
+        assert_eq!(values.text("NGraphics", "NAME").unwrap(), "gfx/a#b.tga");
+        assert!(values.text("NGraphics", "CUTOFF").is_err());
         assert_eq!(
             values.fixed5_array("NGame", "LEVELS").unwrap(),
             [0, 60_000, 100_002, -200_000]

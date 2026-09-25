@@ -1,4 +1,10 @@
-//! Content coverage policy 1 and local resolution of machine-free layer ids.
+//! Content coverage policy 2 and local resolution of machine-free layer ids.
+//!
+//! Policy 2 covers the policy-1 roots plus every `.asset` and `.gfx` descriptor
+//! below `gfx`: the engine registers entities, meshes and particles from every
+//! such file (`1401806B0` for `.asset`, `14208CA80` for `.gfx`), so a mod that
+//! changes one changes the content identity. Meshes, animations and textures
+//! stay outside and are read unverified.
 //!
 //! The vanilla hash includes the base covered paths plus the covered paths of
 //! built-in virtual roots in their install-relative namespaces:
@@ -109,7 +115,13 @@ pub struct ResolvedLayers {
     /// rather than failing. The covered path never consults this (it verifies
     /// per read).
     uncovered_memo: std::sync::Arc<std::sync::Mutex<UncoveredMemo>>,
+    /// The `gfx/models` texture index and the `gfx` descriptor roster, each
+    /// built once per layer roster and shared by every model library.
+    texture_index: Memo<crate::mesh::TextureIndex>,
+    descriptor_roster: Memo<crate::mesh::Roster>,
 }
+
+type Memo<T> = std::sync::Arc<std::sync::Mutex<Option<(Vec<String>, std::sync::Arc<T>)>>>;
 
 /// Memoized uncovered resolutions with the roster they were resolved against.
 #[derive(Debug, Default)]
@@ -199,11 +211,18 @@ fn below(path: &str, directory: &str) -> bool {
             .is_some_and(|tail| tail.starts_with('/'))
 }
 
+/// The root whose `.asset` and `.gfx` descriptors policy 2 adds.
+const DESCRIPTOR_ROOT: &str = "gfx";
+
+fn is_descriptor(lower: &str) -> bool {
+    below(lower, DESCRIPTOR_ROOT) && (lower.ends_with(".asset") || lower.ends_with(".gfx"))
+}
+
 /// Music, sound, video, loading screens, launcher, crash reporter and logs are
 /// outside this closed set. A descriptor is added separately to the layer hash.
 pub fn covered(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
-    ROOTS.iter().any(|root| below(&lower, root))
+    (is_descriptor(&lower) || ROOTS.iter().any(|root| below(&lower, root)))
         && !lower.split('/').any(|part| {
             matches!(
                 part,
@@ -220,7 +239,7 @@ pub fn covered(path: &str) -> bool {
         })
 }
 
-/// Policy 1: sorted (u32 LE path byte length, UTF-8 relative path, SHA-256)
+/// Sorted (u32 LE path byte length, UTF-8 relative path, SHA-256)
 /// tuples. Length framing makes the list unambiguous, including empty layers.
 pub fn layer_hash(files: &BTreeMap<String, [u8; 32]>) -> io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
@@ -372,7 +391,12 @@ impl ResolvedLayer {
     fn inventory(&mut self) -> io::Result<()> {
         match &self.source {
             LayerSource::Folder(root) => {
-                for directory in ROOTS {
+                // `gfx` holds the descriptors and the covered `gfx/*` roots.
+                let walked = ROOTS
+                    .iter()
+                    .filter(|directory| !below(directory, DESCRIPTOR_ROOT))
+                    .chain(std::iter::once(&DESCRIPTOR_ROOT));
+                for directory in walked {
                     let path = root.join(directory);
                     if path.try_exists()? {
                         collect_folder(root, &path, &mut self.files)?;
@@ -614,6 +638,33 @@ impl ResolvedLayers {
             }
         }
         Ok(files.into_iter().map(|file| file.path).collect())
+    }
+
+    /// The engine's `gfx/models` texture index.
+    pub fn texture_index(&self) -> io::Result<std::sync::Arc<crate::mesh::TextureIndex>> {
+        self.memoized(&self.texture_index, crate::mesh::TextureIndex::read)
+    }
+
+    /// Every descriptor below `gfx`, as [`crate::mesh::Roster`] reads it.
+    pub fn descriptor_roster(&self) -> io::Result<std::sync::Arc<crate::mesh::Roster>> {
+        self.memoized(&self.descriptor_roster, crate::mesh::Roster::read)
+    }
+
+    fn memoized<T>(
+        &self,
+        memo: &Memo<T>,
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<std::sync::Arc<T>> {
+        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
+        let mut memo = memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((cached, value)) = memo.as_ref()
+            && *cached == roster
+        {
+            return Ok(std::sync::Arc::clone(value));
+        }
+        let value = std::sync::Arc::new(build(self)?);
+        *memo = Some((roster, std::sync::Arc::clone(&value)));
+        Ok(value)
     }
 
     /// Load-order position of the layer an effective covered path comes from.
@@ -1355,6 +1406,8 @@ fn gather_selected(
             layers: vec![vanilla],
             effective: BTreeMap::new(),
             uncovered_memo: Default::default(),
+            texture_index: Default::default(),
+            descriptor_roster: Default::default(),
             visual: Vec::new(),
         };
         let mut order_notes = Vec::new();
@@ -1608,6 +1661,8 @@ mod tests {
             "common/countries/colors.txt",
             "gfx/interface/x.dds",
             "gfx/flags/GER.tga",
+            "gfx/entities/buildings.asset",
+            "GFX/Models/Buildings/supply_station.GFX",
             "localisation/english/x.yml",
         ] {
             assert!(covered(path));
@@ -1615,6 +1670,8 @@ mod tests {
         for path in [
             "music/x.ogg",
             "gfx/models/x.mesh",
+            "gfx/models/x.dds",
+            "gfx/sound/x.asset",
             "gfx/loadingscreens/x.dds",
             "map_backup/x.bmp",
             "launcher/logs/x.txt",
@@ -1895,6 +1952,8 @@ mod tests {
             ],
             effective: BTreeMap::new(),
             uncovered_memo: Default::default(),
+            texture_index: Default::default(),
+            descriptor_roster: Default::default(),
             visual: Vec::new(),
         };
         assert_eq!(layers.read_uncovered("gfx/fonts/hoi.fnt").unwrap(), b"over");
@@ -1911,6 +1970,8 @@ mod tests {
             ],
             effective: BTreeMap::new(),
             uncovered_memo: Default::default(),
+            texture_index: Default::default(),
+            descriptor_roster: Default::default(),
             visual: Vec::new(),
         };
         assert_eq!(

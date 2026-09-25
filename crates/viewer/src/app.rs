@@ -1973,9 +1973,7 @@ impl Viewer {
                     && (playhead.hour - behind..=playhead.hour + ahead).contains(hour)
             });
         self.ready = keep;
-        if !gone.is_empty() {
-            dropper.drop_later(gone);
-        }
+        let mut passed = gone;
         laps.lap("hours_poll");
         let target = (playhead.branch, playhead.hour);
         let shown_at = self
@@ -2022,15 +2020,26 @@ impl Viewer {
                 if let Some(key) = on_the_way {
                     next = self.ready.remove(&key);
                     let later = self.ready.split_off(&key);
-                    let passed = std::mem::replace(&mut self.ready, later);
-                    if let Some(dropper) = &self.dropper {
-                        dropper.drop_later(passed);
-                    }
+                    passed.extend(std::mem::replace(&mut self.ready, later));
                 }
             }
         }
         if let Some(built) = next {
-            self.apply_hour(state, document, built, laps)?;
+            // The hour on screen of any epoch: a perspective change starts a new
+            // build epoch, but the scene's building history does not depend on
+            // the viewing country, so it continues across it.
+            let on_screen = self.shown.as_ref().map(|shown| (shown.branch, shown.hour));
+            let skipped = skipped_hours(on_screen, (built.branch, built.hour), |hour| {
+                let key = (built.branch, hour);
+                let passed_hour = self.ready.get(&key).or_else(|| passed.get(&key))?;
+                Some(Arc::clone(&passed_hour.layers.as_ref().ok()?.buildings))
+            });
+            self.apply_hour(state, document, built, skipped, laps)?;
+        }
+        if !passed.is_empty()
+            && let Some(dropper) = &self.dropper
+        {
+            dropper.drop_later(passed);
         }
         // The divisions glide past the playhead's hour only when it is the
         // hour on screen.
@@ -2057,6 +2066,7 @@ impl Viewer {
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
         built: hours::Built,
+        skipped: Option<Vec<Arc<hours::Shared<map::map_buildings::PreparedBuildings>>>>,
         laps: &mut Laps,
     ) -> Result<(), std::io::Error> {
         let hours::Built {
@@ -2150,11 +2160,15 @@ impl Viewer {
         }
         laps.lap("rails_upload");
         if uploaded.buildings != Some(buildings.id) {
+            let skipped = skipped
+                .as_ref()
+                .map(|hours| hours.iter().map(|hour| &hour.value).collect::<Vec<_>>());
             scene.set_map_buildings(
                 &state.device,
                 &state.queue,
                 &document.map_buildings,
                 buildings.value.clone(),
+                skipped.as_deref(),
             )?;
             uploaded.buildings = Some(buildings.id);
         }
@@ -3368,9 +3382,60 @@ fn filter_tags<'a>(tags: &'a [String], filter: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// What the hours strictly between the hour on screen and `next` built,
+/// oldest first, so the scene's building history advances through them; empty
+/// for the same hour rebuilt. `None` when `next` is on another branch, earlier,
+/// or a passed hour is not built: the scene then treats it as a seek.
+fn skipped_hours<T>(
+    shown: Option<(replay::BranchId, i32)>,
+    (branch, next): (replay::BranchId, i32),
+    built: impl Fn(i32) -> Option<T>,
+) -> Option<Vec<T>> {
+    let (shown_branch, from) = shown?;
+    if shown_branch != branch || next < from {
+        return None;
+    }
+    (from + 1..next).map(built).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_move_over_built_hours_is_a_skip_and_anything_else_a_seek() {
+        let built = |hour: i32| (hour != 13).then_some(hour);
+        assert_eq!(
+            skipped_hours(Some((1, 10)), (1, 13), built),
+            Some(vec![11, 12])
+        );
+        assert_eq!(skipped_hours(Some((1, 10)), (1, 11), built), Some(vec![]));
+        assert_eq!(
+            skipped_hours(Some((1, 10)), (1, 10), built),
+            Some(vec![]),
+            "same hour"
+        );
+        assert_eq!(
+            skipped_hours(Some((1, 10)), (1, 15), built),
+            None,
+            "13 is not built"
+        );
+        assert_eq!(
+            skipped_hours(Some((1, 10)), (1, 9), built),
+            None,
+            "backwards"
+        );
+        assert_eq!(
+            skipped_hours(Some((2, 10)), (1, 12), built),
+            None,
+            "another branch"
+        );
+        assert_eq!(
+            skipped_hours(None, (1, 12), built),
+            None,
+            "nothing on screen"
+        );
+    }
 
     #[test]
     fn the_chooser_filters_thousands_of_tags_without_cloning_them() {

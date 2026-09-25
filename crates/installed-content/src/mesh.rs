@@ -44,7 +44,10 @@
 //! frame the engine shows an entity that has just entered its default state is
 //! sample 0, and that is the one evaluated here.
 
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use crate::{ResolvedLayers, parser};
 
@@ -1465,7 +1468,20 @@ pub struct EntityDefinition {
     /// the first is taken.
     pub states: Vec<EntityState>,
     pub get_state_from_parent: Option<bool>,
-    pub locators: Vec<(String, Transform)>,
+    pub locators: Vec<(String, Locator)>,
+}
+
+/// One entity `locator`: a transform in entity space, or in the space of its
+/// `parent_joint`. `SEntityLocatorReader::ReadMember` (`14233BE00`) reads
+/// `name`, `position`, `rotation` (degrees), `scale` (default 1) and
+/// `parent_joint`; the lexer registers `locator` as token 0x1FF and
+/// `parent_joint` as 0x200 (`14008AA8B`..`14008AAE7`). `14227D8C0` resolves
+/// the joint name; one the skeleton lacks is logged and the locator stays in
+/// entity space. No vanilla entity names a joint.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Locator {
+    pub transform: Transform,
+    pub parent_joint: Option<String>,
 }
 
 /// Authored state variants retain their order and events, including states with no clip.
@@ -1547,7 +1563,7 @@ pub struct InheritedEntity<'a> {
     /// State name to animation id, the nearest declaration winning.
     pub states: BTreeMap<&'a str, Vec<&'a EntityState>>,
     pub get_state_from_parent: Option<bool>,
-    pub locators: BTreeMap<&'a str, Transform>,
+    pub locators: BTreeMap<&'a str, &'a Locator>,
 }
 
 impl Descriptors {
@@ -1587,8 +1603,8 @@ impl Descriptors {
                 }
             }
             out.get_state_from_parent = out.get_state_from_parent.or(current.get_state_from_parent);
-            for (name, transform) in &current.locators {
-                out.locators.entry(name).or_insert(*transform);
+            for (name, locator) in &current.locators {
+                out.locators.entry(name).or_insert(locator);
             }
             let mut local = BTreeMap::<&str, Vec<&EntityState>>::new();
             for state in &current.states {
@@ -1690,9 +1706,8 @@ impl Descriptors {
 
 /// Reads the `pdxmesh` and `entity` blocks of the named descriptor files.
 ///
-/// `gfx/entities` is outside the content coverage policy ([archived rendering notes](#)
-/// section 4), so the files go through [`ResolvedLayers::read_uncovered`] and
-/// are **not** hash-verified; the viewer states that limitation once.
+/// Descriptors below `gfx` are covered and verified; any other file goes
+/// through [`ResolvedLayers::read_uncovered`] unverified.
 ///
 /// A file that is not present is skipped rather than refused, so a descriptor
 /// a DLC layer adds can be listed unconditionally. Errors are named for a file
@@ -1707,7 +1722,7 @@ pub fn read_descriptors(layers: &ResolvedLayers, paths: &[&str]) -> io::Result<D
         };
         let document =
             parser::parse(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
-        collect(&document, path, &mut out);
+        let _ = collect(&document, path, &mut out);
     }
     Ok(out)
 }
@@ -1717,35 +1732,199 @@ pub fn read_descriptors(layers: &ResolvedLayers, paths: &[&str]) -> io::Result<D
 pub fn parse_descriptors(bytes: &[u8], path: &str) -> io::Result<Descriptors> {
     let document = parser::parse(bytes)?;
     let mut out = Descriptors::default();
-    collect(&document, path, &mut out);
+    let _ = collect(&document, path, &mut out);
     Ok(out)
 }
 
-fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) {
+/// Adds one file's blocks; returns the names that replaced an earlier block.
+fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) -> Vec<String> {
     let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
+    let mut replaced = Vec::new();
     for item in &document.items {
         match item.key.as_deref() {
             Some(b"objectTypes") => {
                 for block in item.value.items().unwrap_or(&[]) {
                     if block.key.as_deref() == Some(b"pdxmesh")
                         && let Some(definition) = mesh_definition(&block.value)
+                        && let Some(old) = out.meshes.insert(definition.name.clone(), definition)
                     {
-                        out.meshes.insert(definition.name.clone(), definition);
+                        replaced.push(old.name);
                     }
                 }
             }
             Some(b"entity") => {
-                if let Some(definition) = entity_definition(&item.value) {
-                    out.entities.insert(definition.name.clone(), definition);
+                if let Some(definition) = entity_definition(&item.value)
+                    && let Some(old) = out.entities.insert(definition.name.clone(), definition)
+                {
+                    replaced.push(old.name);
                 }
             }
             Some(b"animation") => {
-                if let Some(definition) = animation_definition(&item.value, directory) {
-                    out.animations.insert(definition.name.clone(), definition);
+                if let Some(definition) = animation_definition(&item.value, directory)
+                    && let Some(old) = out.animations.insert(definition.name.clone(), definition)
+                {
+                    replaced.push(old.name);
                 }
             }
             _ => {}
         }
+    }
+    replaced
+}
+
+/// Drops unmatched closing braces and closes blocks left open at the end,
+/// leaving strings and comments alone. Several shipped descriptors need it,
+/// and the game loads them; callers use it only after a parse fails.
+pub fn balanced_blocks(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let (mut depth, mut quoted, mut comment, mut escaped) = (0usize, false, false, false);
+    for &b in bytes {
+        if comment {
+            out.push(b);
+            if b == b'\n' {
+                comment = false;
+            }
+            continue;
+        }
+        if quoted {
+            out.push(b);
+            if b == b'"' && !escaped {
+                quoted = false;
+            }
+            escaped = b == b'\\' && !escaped;
+            continue;
+        }
+        match b {
+            b'#' => comment = true,
+            b'"' => quoted = true,
+            b'{' => depth += 1,
+            b'}' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        out.push(b);
+    }
+    out.push(b'\n');
+    out.extend(std::iter::repeat_n(b'}', depth));
+    out
+}
+
+/// Every descriptor the engine loads from `gfx`, wherever content declares it.
+///
+/// `14208CA80` loads the `objectTypes` of every `.gfx` and `1401806B0` the
+/// entities and animations of every `.asset` below `gfx`, recursively; no file
+/// name is derived from an identifier. Files are read in recorded (layer, path)
+/// order, with stray braces balanced as the engine's reader tolerates them.
+#[derive(Clone, Debug, Default)]
+pub struct Roster {
+    pub descriptors: Descriptors,
+    /// Names declared more than once. Which declaration the engine keeps is
+    /// unverified, so a consumer refuses them.
+    pub ambiguous: BTreeSet<String>,
+    /// Entities that `clone` a parent not declared earlier in their own file.
+    /// `CAssetFactory::ReadMember` (`142338C30`) registers a clone only once
+    /// its parent is registered, and the cross-file order is unverified.
+    pub unordered_clones: BTreeSet<String>,
+    /// Files that do not parse even when closed, with the error.
+    pub unreadable: Vec<String>,
+}
+
+impl Roster {
+    pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
+        let mut roster = Self::default();
+        for path in layers.descriptor_paths("gfx", &[".gfx", ".asset"])? {
+            let bytes = layers.read_uncovered(&path)?;
+            // Sprite and particle files declare none of these blocks.
+            if ![&b"pdxmesh"[..], b"entity", b"animation"]
+                .iter()
+                .any(|word| bytes.windows(word.len()).any(|window| window == *word))
+            {
+                continue;
+            }
+            match parser::parse(&bytes).or_else(|_| parser::parse(&balanced_blocks(&bytes))) {
+                Ok(document) => roster.add(&document, &path),
+                Err(error) => roster.unreadable.push(format!("{path} ({error})")),
+            }
+        }
+        Ok(roster)
+    }
+
+    fn add(&mut self, document: &parser::Document, path: &str) {
+        let mut local = BTreeSet::new();
+        for item in document.get_all(b"entity") {
+            let Some(fields) = item.items() else {
+                continue;
+            };
+            let Some(name) = text(fields, b"name").map(unquote) else {
+                continue;
+            };
+            let clone = text(fields, b"clone").map(unquote);
+            if clone.is_some_and(|parent| !parent.is_empty() && !local.contains(&parent)) {
+                self.unordered_clones.insert(name.clone());
+            }
+            local.insert(name);
+        }
+        self.ambiguous
+            .extend(collect(document, path, &mut self.descriptors));
+    }
+}
+
+/// `InitTextureLookup(gfx/models)`: `142251F00` indexes every `.dds` and
+/// `.tga` below `gfx/models` by its stored basename.
+#[derive(Clone, Debug, Default)]
+pub struct TextureIndex {
+    paths: BTreeMap<String, String>,
+    /// Basenames several files share. The engine keeps the first its
+    /// enumeration reaches, an order not established here.
+    ambiguous: BTreeSet<String>,
+}
+
+impl TextureIndex {
+    pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
+        Ok(Self::new(
+            layers.descriptor_paths("gfx/models", &[".dds", ".tga"])?,
+        ))
+    }
+
+    pub fn new(paths: impl IntoIterator<Item = String>) -> Self {
+        let mut index = Self::default();
+        for path in paths {
+            // The suffix test is byte-exact.
+            if !(path.ends_with(".dds") || path.ends_with(".tga")) {
+                continue;
+            }
+            let basename = path.rsplit('/').next().unwrap_or(&path).to_owned();
+            match index.paths.get(&basename) {
+                Some(existing) if existing != &path => {
+                    index.ambiguous.insert(basename);
+                }
+                Some(_) => {}
+                None => {
+                    index.paths.insert(basename, path);
+                }
+            }
+        }
+        index
+    }
+
+    /// The one path `14224CC00` requests for a material texture.
+    /// `142251230` looks the authored string up byte-exactly after spelling
+    /// its first `.tga` as `.dds`; a miss keeps the mesh directory plus the
+    /// authored name.
+    pub fn resolve(&self, directory: &str, authored: &str) -> Result<String, String> {
+        let key = authored.replacen(".tga", ".dds", 1);
+        if self.ambiguous.contains(&key) {
+            return Err(format!("{key} names several gfx/models textures"));
+        }
+        Ok(match self.paths.get(&key) {
+            Some(path) => path.clone(),
+            None if directory.is_empty() => authored.to_owned(),
+            None => format!("{directory}/{authored}"),
+        })
     }
 }
 
@@ -1915,9 +2094,22 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                 let x = Transform::from_trs([0.0; 3], [r[0].sin(), 0.0, 0.0, r[0].cos()], 1.0);
                 let y = Transform::from_trs([0.0; 3], [0.0, r[1].sin(), 0.0, r[1].cos()], 1.0);
                 let z = Transform::from_trs([0.0; 3], [0.0, 0.0, r[2].sin(), r[2].cos()], 1.0);
-                let mut transform = y.compose(&x).compose(&z);
+                let scale = text(fields, b"scale")
+                    .and_then(|value| value.trim().parse::<f32>().ok())
+                    .unwrap_or(1.0);
+                let mut transform = y.compose(&x).compose(&z).compose(&Transform::from_trs(
+                    [0.0; 3],
+                    [0.0, 0.0, 0.0, 1.0],
+                    scale,
+                ));
                 transform.translation = vector(b"position");
-                Some((unquote(text(fields, b"name")?), transform))
+                Some((
+                    unquote(text(fields, b"name")?),
+                    Locator {
+                        transform,
+                        parent_joint: text(fields, b"parent_joint").map(unquote),
+                    },
+                ))
             })
             .collect(),
         states,
@@ -1938,6 +2130,67 @@ fn unquote(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_locators_keep_their_position_and_parent_joint() {
+        let parsed = parse_descriptors(
+            br#"entity = { name = "e" pdxmesh = "m"
+                locator = { name = "a" position = { 1 2 3 } }
+                locator = { name = "b" position = { 0 1 0 } scale = 2 parent_joint = "hand" } }"#,
+            "gfx/entities/x.asset",
+        )
+        .unwrap();
+        let locators = &parsed.entities["e"].locators;
+        assert_eq!(locators[0].0, "a");
+        assert_eq!(locators[0].1.transform.translation, [1.0, 2.0, 3.0]);
+        assert_eq!(locators[0].1.parent_joint, None);
+        assert_eq!(locators[1].1.parent_joint.as_deref(), Some("hand"));
+        assert!((locators[0].1.transform.uniform_scale() - 1.0).abs() < 1e-6);
+        assert!((locators[1].1.transform.uniform_scale() - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn texture_lookup_is_byte_exact_by_basename_and_refuses_shared_names() {
+        let index = TextureIndex::new(
+            [
+                "gfx/models/buildings/a_diffuse.dds",
+                "gfx/models/nospec.dds",
+                "gfx/models/x/shared.dds",
+                "gfx/models/y/shared.dds",
+                "gfx/models/upper.DDS",
+            ]
+            .map(String::from),
+        );
+        let resolve = |authored| index.resolve("gfx/models/units", authored);
+        assert_eq!(resolve("nospec.dds").unwrap(), "gfx/models/nospec.dds");
+        assert_eq!(
+            resolve("a_diffuse.tga").unwrap(),
+            "gfx/models/buildings/a_diffuse.dds"
+        );
+        assert_eq!(
+            resolve("Nospec.dds").unwrap(),
+            "gfx/models/units/Nospec.dds"
+        );
+        assert_eq!(resolve("upper.DDS").unwrap(), "gfx/models/units/upper.DDS");
+        assert!(resolve("shared.dds").is_err());
+    }
+
+    #[test]
+    fn the_roster_names_repeats_and_clones_of_other_files() {
+        let mut roster = Roster::default();
+        let first = parser::parse(
+            br#"entity = { name = "a" pdxmesh = "m" }
+entity = { name = "b" clone = "a" }
+entity = { name = "c" clone = "z" }"#,
+        )
+        .unwrap();
+        roster.add(&first, "gfx/entities/one.asset");
+        let second = parser::parse(br#"entity = { name = "a" pdxmesh = "n" }"#).unwrap();
+        roster.add(&second, "gfx/entities/two.asset");
+        assert_eq!(roster.unordered_clones, BTreeSet::from(["c".to_owned()]));
+        assert_eq!(roster.ambiguous, BTreeSet::from(["a".to_owned()]));
+        assert_eq!(roster.descriptors.entities.len(), 3);
+    }
 
     #[test]
     fn sampled_pose_uses_first_joint_definition_across_lods() {

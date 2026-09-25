@@ -27,18 +27,13 @@ pub enum Cadence {
 pub const fn cadence(table: TableId) -> Cadence {
     use Cadence::{Daily, FourHourly, Static};
     match table {
-        // Cannot change after the save loads.
-        // The session's DLC set is fixed once the save loads.
+        // Cannot change after the save loads (the DLC set included).
         TableId::LexicalTokens | TableId::SimulationFeatures => Static,
-        // Relations feed the perspective; buildings feed the building layer.
+        // Relations feed the perspective.
         TableId::RelationOpinions | TableId::RelationTuples => FourHourly(1),
         // Province names are live overrides: set_province_name and
         // reset_province_name effects can change them after a save loads.
-        // Building detection gates the building layer and follows its cadence.
-        TableId::StateBuildings
-        | TableId::ProvinceBuildings
-        | TableId::BuildingDetection
-        | TableId::ProvinceNames => FourHourly(3),
+        TableId::ProvinceNames => FourHourly(3),
         // Daily slots: whole shared-source families stay together. The
         // technology and resource definitions are static too, but their
         // daily consumers walk them as one census, so they share the slot.
@@ -244,6 +239,10 @@ mod tests {
             TableId::WeatherProvinces,
             TableId::LandCombatDivisions,
             TableId::AirBaseRegistrations,
+            // Bombing changes a building's mesh and fire within the hour.
+            TableId::StateBuildings,
+            TableId::ProvinceBuildings,
+            TableId::BuildingDetection,
         ] {
             assert_eq!(cadence(table), Cadence::Hourly, "{table:?}");
             assert_eq!(refresh_text(table), "hourly");
@@ -261,11 +260,6 @@ mod tests {
                 TableId::ProjectHistory,
             ][..],
             &[TableId::RelationOpinions, TableId::RelationTuples],
-            &[
-                TableId::StateBuildings,
-                TableId::ProvinceBuildings,
-                TableId::BuildingDetection,
-            ],
             &[
                 TableId::VariantDefinitions,
                 TableId::VariantModules,

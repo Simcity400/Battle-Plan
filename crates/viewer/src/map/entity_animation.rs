@@ -2,7 +2,8 @@
 //! variants/propagation: 14227b5e0; start offset/speed: 1422755a0.
 //! Presentation seed is 0x414e494d XOR the stable unit handle. The engine's
 //! shared RNG state and state-entry times are not recorded. Reconstructed
-//! combat entry phases are UNVERIFIED; recorded entity clocks would settle them.
+//! combat entry phases remain reconstructions. Clocks and state-entry history
+//! belong to the viewer, never the recording client's renderer.
 
 use super::models::{ModelInstance, PaletteJoint};
 use installed_content::mesh::{self, EntityState, JointPose, Transform};
@@ -17,6 +18,11 @@ pub const RETREAT: u32 = 4;
 pub const SUPPORT: u32 = 5;
 pub const TRAINING: u32 = 6;
 pub const TRAIN: u32 = 7;
+/// `141663e70` switches building entities between these authored states. They
+/// use their own state-entry clock and authored random starts, without the
+/// unit figure's reconstructed phase spread.
+pub const BUILDING_IDLE: u32 = 8;
+pub const BUILDING_DAMAGED: u32 = 9;
 pub fn state_name(state: u32) -> &'static str {
     match state {
         MOVE => "move",
@@ -29,6 +35,8 @@ pub fn state_name(state: u32) -> &'static str {
         // deliberately maps idle to train_locomotive_1_moving, and move to
         // its stationary clip. Choosing a state by its English name is wrong.
         TRAIN => "idle",
+        BUILDING_IDLE => "idle",
+        BUILDING_DAMAGED => "damaged",
         _ => "idle",
     }
 }
@@ -46,9 +54,31 @@ pub struct Node {
     pub follows_parent: bool,
     pub parent: Option<(usize, String, String)>,
     pub scale: f32,
+    /// The pdxmesh scale inside `scale`. The engine bakes it into the mesh
+    /// and skeleton, so event particles do not carry it.
+    pub mesh_scale: f32,
     pub skin_base: Option<u32>,
     pub rigid: u32,
-    pub locators: BTreeMap<String, Transform>,
+    /// Entity locators in the node's frame, with their `parent_joint`.
+    pub locators: BTreeMap<String, (Transform, Option<String>)>,
+}
+
+/// A joint's pose under which event particles take the entity scale only:
+/// the engine's baked skeleton keeps the scaled joint position but not the
+/// pdxmesh scale in its basis (`14226EF30` via `1422621F0`).
+pub fn joint_event_local(joint: &Transform, mesh_scale: f32) -> Transform {
+    joint.compose(&Transform::from_trs(
+        [0.0; 3],
+        [0.0, 0.0, 0.0, 1.0],
+        1.0 / mesh_scale.max(f32::EPSILON),
+    ))
+}
+
+/// A locator's node-space transform: under its parent joint's pose when the
+/// skeleton has that joint (`14226EF30`, locator x joint world), otherwise in
+/// entity space, as the engine keeps a locator whose joint it cannot find.
+pub fn locator_local(locator: &Transform, joint: Option<&Transform>) -> Transform {
+    joint.map_or(*locator, |joint| joint.compose(locator))
 }
 #[derive(Clone, Default)]
 pub struct Rig {
@@ -231,7 +261,9 @@ impl Player {
                     Playing {
                         requested: chosen,
                         clip,
-                        start: if previous.is_none() {
+                        start: if previous.is_none()
+                            && !matches!(instance.animation, BUILDING_IDLE | BUILDING_DAMAGED)
+                        {
                             -phase
                         } else {
                             time - phase
@@ -389,7 +421,11 @@ impl Player {
                 }
                 for (event_index, (event, age)) in authored.into_iter().enumerate() {
                     let event_clock = if event.trigger_once {
-                        time + instance.animation_phase
+                        if matches!(instance.animation, BUILDING_IDLE | BUILDING_DAMAGED) {
+                            self.nodes[index].as_ref().map_or(age, |p| time - p.start)
+                        } else {
+                            time + instance.animation_phase
+                        }
                     } else {
                         age
                     };
@@ -400,9 +436,20 @@ impl Player {
                         .mesh
                         .joint(&event.node)
                         .and_then(|j| pose.get(j.index as usize))
-                        .copied()
-                        .or_else(|| node.locators.get(&event.node).copied())
-                        .or_else(|| node.mesh.bind_pose(&event.node))
+                        .map(|joint| joint_event_local(joint, node.mesh_scale))
+                        .or_else(|| {
+                            let (locator, joint) = node.locators.get(&event.node)?;
+                            let joint = joint
+                                .as_deref()
+                                .and_then(|name| node.mesh.joint(name))
+                                .and_then(|joint| pose.get(joint.index as usize));
+                            Some(locator_local(locator, joint))
+                        })
+                        .or_else(|| {
+                            node.mesh
+                                .bind_pose(&event.node)
+                                .map(|joint| joint_event_local(&joint, node.mesh_scale))
+                        })
                         .unwrap_or(Transform::IDENTITY);
                     let transform = own.compose(&local);
                     if transform.uniform_scale() <= 1e-6 {
@@ -438,4 +485,123 @@ pub fn world_transform(instance: ModelInstance) -> Transform {
         [0.0, 0.0, 0.0, 1.0],
         instance.scale,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn building_rig() -> Rig {
+        let clip = |name: &str, events| Clip {
+            state: EntityState {
+                name: name.into(),
+                chance: 1.0,
+                speed: 1.0,
+                events,
+                ..EntityState::default()
+            },
+            animation: None,
+        };
+        Rig {
+            nodes: vec![Node {
+                mesh: Arc::new(mesh::Mesh::default()),
+                clips: vec![
+                    clip("idle", Vec::new()),
+                    clip(
+                        "damaged",
+                        vec![mesh::EntityEvent {
+                            time: 0.1,
+                            particle: Some("building_damaged_particle".into()),
+                            trigger_once: true,
+                            ..mesh::EntityEvent::default()
+                        }],
+                    ),
+                ],
+                default: "idle".into(),
+                follows_parent: false,
+                parent: None,
+                scale: 1.0,
+                mesh_scale: 1.0,
+                skin_base: None,
+                rigid: 0,
+                locators: BTreeMap::new(),
+            }],
+            start: 0,
+            end: 1,
+        }
+    }
+
+    #[test]
+    fn a_joint_event_keeps_the_joint_position_but_not_the_mesh_scale() {
+        let mesh_scale = 0.14;
+        let own = Transform::from_trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 0.8 * mesh_scale);
+        let joint = Transform::from_trs([0.0, 10.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0);
+        let world = own.compose(&joint_event_local(&joint, mesh_scale));
+        let at = world.transform_point([0.0; 3]);
+        assert!((at[1] - 10.0 * 0.8 * mesh_scale).abs() < 1e-5, "{at:?}");
+        assert!((world.uniform_scale() - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_locator_follows_its_parent_joint_pose() {
+        let mut locator = Transform::IDENTITY;
+        locator.translation = [0.0, 1.0, 0.0];
+        let joint = Transform::from_trs([5.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0);
+        assert_eq!(
+            locator_local(&locator, Some(&joint)).transform_point([0.0; 3]),
+            [5.0, 1.0, 0.0]
+        );
+        assert_eq!(
+            locator_local(&locator, None).transform_point([0.0; 3]),
+            [0.0, 1.0, 0.0],
+            "a joint the skeleton lacks leaves the locator in entity space"
+        );
+    }
+
+    #[test]
+    fn building_damage_event_uses_state_entry_and_repair_stops_it() {
+        let rig = building_rig();
+        let mut player = Player::new(&rig);
+        let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
+        let mut events = Vec::new();
+        let mut instance = ModelInstance {
+            animation: BUILDING_IDLE,
+            animation_seed: 81,
+            scale: 1.0,
+            ..ModelInstance::default()
+        };
+        player.evaluate(&rig, instance, 50.0, &mut palette, &mut events);
+        assert_eq!(player.nodes[0].as_ref().unwrap().start, 50.0);
+        assert!(events.is_empty());
+
+        instance.animation = BUILDING_DAMAGED;
+        player.evaluate(&rig, instance, 60.0, &mut palette, &mut events);
+        assert!(events.is_empty());
+        player.evaluate(&rig, instance, 60.2, &mut palette, &mut events);
+        assert_eq!(events.len(), 1);
+        assert!((events[0].age - 0.1).abs() < 0.00001);
+
+        events.clear();
+        instance.animation = BUILDING_IDLE;
+        player.evaluate(&rig, instance, 61.0, &mut palette, &mut events);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn newly_created_damaged_building_does_not_use_the_global_elapsed_clock() {
+        let rig = building_rig();
+        let mut player = Player::new(&rig);
+        let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
+        let mut events = Vec::new();
+        let instance = ModelInstance {
+            animation: BUILDING_DAMAGED,
+            scale: 1.0,
+            ..ModelInstance::default()
+        };
+        player.evaluate(&rig, instance, 120.0, &mut palette, &mut events);
+        assert!(events.is_empty());
+        player.evaluate(&rig, instance, 120.2, &mut palette, &mut events);
+        assert_eq!(events.len(), 1);
+        assert!((events[0].age - 0.1).abs() < 0.00001);
+    }
 }

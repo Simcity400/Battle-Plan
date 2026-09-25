@@ -72,7 +72,7 @@ pub(super) fn compare(
         (
             "ProvinceSupply",
             complete::<tables::ProvinceSupply>(frame).map(<[_]>::len),
-            "province supply rows are runtime simulation caches; the save has no established direct representation of supply factor, railway health, canonical indices, cached levels or flags; authored map levels and UI supply are not substituted",
+            "province supply rows are runtime simulation caches; the save has no established direct representation of controller and capital-country indices, supply-node and naval-base levels or flags; authored map levels and UI supply are not substituted",
         ),
         (
             "ResourceDefinitions",

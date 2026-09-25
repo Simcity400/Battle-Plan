@@ -32,11 +32,26 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division is extrapolated along its recorded route by its recorded ETA
-         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise and the entity animation\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with interface rectangles\n             (device pixels at --ui-scale 1), sprite frames and text\n           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel\n             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise and the entity animation\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --settle <seconds>, play that many seconds before the frame so entity events\n             (damaged fire and smoke) and particles are under way; renders at the clock plus it\n           --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with interface rectangles\n             (device pixels at --ui-scale 1), sprite frames and text\n           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel\n             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn parse_placement(value: &str) -> io::Result<map::camera::Placement> {
+    let values = value
+        .split(',')
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid("camera requires world-x,world-z,height"))?;
+    if values.len() != 3 || !values.iter().all(|value| value.is_finite()) {
+        return Err(invalid("camera requires finite world-x,world-z,height"));
+    }
+    Ok(map::camera::Placement {
+        center: [values[0], values[1]],
+        height: values[2],
+    })
 }
 
 // counters: the glide between recorded hours
@@ -109,6 +124,11 @@ struct Options {
     /// frame, then score that frame with it. Every consumer of `vGlobalTime`
     /// reads it, which is the fog-of-war noise and the entity animation.
     presentation_time: f32,
+    /// `--dump --settle <seconds>`: frames played on the presentation clock
+    /// before the dump, one second apart, so entity events such as a damaged
+    /// building's fire and smoke and weather particles are under way as in a
+    /// running viewer. The dump then renders at `presentation_time + settle`.
+    settle: f32,
     /// `--dump --map-time <seconds>`: the map scene's own clock, which frame33840
     /// shows is a different one — `vGlobalTime` 547.981 and `FoWTime` 547.978
     /// against the border pass's `vTime_Transparency.x` 206.792, the river's
@@ -134,6 +154,10 @@ struct Options {
     /// `map::perspective`.
     perspective: map::perspective::Choice,
     camera: Option<map::camera::Placement>,
+    /// `--dump --building-camera <x,z,height>`, repeatable: cameras the map
+    /// visited before this frame, in order. Map buildings keep what those views
+    /// created, as a live session does.
+    building_cameras: Vec<map::camera::Placement>,
     size: [u32; 2],
     game_dir: Option<PathBuf>,
     user_dir: Option<PathBuf>,
@@ -365,12 +389,14 @@ impl Options {
                     | "--width"
                     | "--height"
                     | "--camera"
+                    | "--building-camera"
                     | "--perspective"
                     | "--fog"
                     | "--animation-time"
                     | "--animation-step"
                     | "--window-frames"
                     | "--presentation-time"
+                    | "--settle"
                     | "--map-time",
                 ) => {
                     let value = args
@@ -401,7 +427,7 @@ impl Options {
                                 options.animation_step = seconds;
                             }
                         }
-                        "--presentation-time" | "--map-time" => {
+                        "--presentation-time" | "--map-time" | "--settle" => {
                             let seconds = value
                                 .parse::<f32>()
                                 .ok()
@@ -409,10 +435,10 @@ impl Options {
                             let seconds = seconds.ok_or_else(|| {
                                 invalid("a presentation clock must be finite nonnegative seconds")
                             })?;
-                            if arg == "--presentation-time" {
-                                options.presentation_time = seconds;
-                            } else {
-                                options.map_time = seconds;
+                            match arg.to_str() {
+                                Some("--presentation-time") => options.presentation_time = seconds,
+                                Some("--settle") => options.settle = seconds,
+                                _ => options.map_time = seconds,
                             }
                         }
                         "--window-frames" => {
@@ -434,21 +460,9 @@ impl Options {
                             options.size[1] =
                                 value.parse().map_err(|_| invalid("invalid height"))?
                         }
-                        "--camera" => {
-                            let values = value
-                                .split(',')
-                                .map(str::parse::<f32>)
-                                .collect::<Result<Vec<_>, _>>()
-                                .map_err(|_| invalid("camera requires world-x,world-z,height"))?;
-                            if values.len() != 3 || !values.iter().all(|value| value.is_finite()) {
-                                return Err(invalid(
-                                    "camera requires finite world-x,world-z,height",
-                                ));
-                            }
-                            options.camera = Some(map::camera::Placement {
-                                center: [values[0], values[1]],
-                                height: values[2],
-                            });
+                        "--camera" => options.camera = Some(parse_placement(&value)?),
+                        "--building-camera" => {
+                            options.building_cameras.push(parse_placement(&value)?)
                         }
                         // counters
                         "--perspective" => {
@@ -471,6 +485,9 @@ impl Options {
         }
         if options.layers != map::layers::Omissions::default() && !options.headless_dump {
             return Err(invalid("--layers omits named passes and requires --dump"));
+        }
+        if !options.building_cameras.is_empty() && !options.headless_dump {
+            return Err(invalid("--building-camera requires --dump"));
         }
         if options.counters_json.is_some() && !options.headless_dump {
             return Err(invalid("--counters-json requires --dump"));
@@ -540,10 +557,12 @@ impl Options {
         {
             return Err(invalid("animation sampling options require --window-dump"));
         }
-        if (options.presentation_time != 0.0 || options.map_time != 0.0) && !options.headless_dump {
+        if (options.presentation_time != 0.0 || options.map_time != 0.0 || options.settle != 0.0)
+            && !options.headless_dump
+        {
             return Err(invalid(
-                "--presentation-time and --map-time set the clocks a dump otherwise renders at zero; the \
-                 window runs its own, and --window-dump samples it with --animation-time",
+                "--presentation-time, --map-time and --settle set the clocks a dump otherwise renders \
+                 at zero; the window runs its own, and --window-dump samples it with --animation-time",
             ));
         }
         if options.out.is_some() && options.replay.is_none() {
@@ -821,20 +840,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let map_size = map::camera::MapSize::of(&document.map);
         let defines = document.map_defines;
+        let place = |placement: map::camera::Placement| {
+            let [min, max] = defines.heights;
+            if !(min..=max).contains(&placement.height) {
+                return Err(invalid(format!(
+                    "camera height must be between the content's CAMERA_MIN_HEIGHT {min} \
+                     and CAMERA_MAX_HEIGHT {max}"
+                )));
+            }
+            Ok(placement.on(map_size, defines))
+        };
         let camera = match options.camera {
             None => Camera::fit(map_size, defines, options.size),
-            Some(placement) => {
-                let [min, max] = defines.heights;
-                if !(min..=max).contains(&placement.height) {
-                    return Err(invalid(format!(
-                        "camera height must be between the content's CAMERA_MIN_HEIGHT {min} \
-                         and CAMERA_MAX_HEIGHT {max}"
-                    ))
-                    .into());
-                }
-                placement.on(map_size, defines)
-            }
+            Some(placement) => place(placement)?,
         };
+        let building_cameras = options
+            .building_cameras
+            .iter()
+            .map(|placement| place(*placement))
+            .collect::<io::Result<Vec<_>>>()?;
         let (unit_model_field, unit_report) =
             document.unit_model_field(&options.perspective, camera.height)?;
         // fog of war: the hour's `IntelMap` for the viewing country and the fog
@@ -948,6 +972,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 sprawl: &document.sprawl,
                 map_buildings: &document.map_buildings,
                 map_building_field: &map_building_field,
+                building_cameras: &building_cameras,
                 rail_assets: &document.rail_assets,
                 rail_mesh: &rail_mesh,
                 aircraft: &document.aircraft,
@@ -969,6 +994,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             },
             // names
             &document.icons,
+            options.settle,
             Request {
                 size: options.size,
                 camera,
@@ -1012,8 +1038,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             camera.center[0], camera.center[1], camera.height
         );
         println!(
-            "Presentation clocks: vGlobalTime {} s, map scene {} s",
-            options.presentation_time, options.map_time
+            "Presentation clocks: vGlobalTime {} s (after {} s settled), map scene {} s",
+            options.presentation_time + options.settle,
+            options.settle,
+            options.map_time
         );
         println!(
             "Terrain grid: {} quads at step {}; render {:.1} ms (cpu {:.1}, gpu {:.1})",
@@ -1169,23 +1197,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             summary.entities,
             summary.meshes,
             camera.height,
-            map::models::draws_city_sprawl(camera.height),
+            map::models::draws_city_sprawl(&camera),
             report.sprawl_drawn,
             document.sprawl_build.as_secs_f64() * 1000.0
         );
         println!(
-            "Map buildings: {} authored slots, {} built rows, {} entities placed, {} drawn; \
+            "Map buildings: {} admitted slots, {} built rows, {} entities selected, {} drawn; \
+             {} damaged, {} destroyed, {} in the hysteresis band; \
              {} rows with an unnamed type token, {} with no slot at their location; \
-             {} slots hidden by fog of war, {} hub slots the port or city graphics carry, \
-             {} undetected foreign need_detection slots hidden, {} kept with detection unrecorded",
+             {} slots hidden by fog of war, {} hub slots the port or city graphics carry \
+             ({} kept, naval bases incomplete), {} undetected foreign need_detection slots hidden, \
+             {} kept with detection unrecorded",
             building_summary.slots,
             building_summary.built,
             building_summary.placed,
             report.map_buildings_drawn,
+            building_summary.damaged,
+            building_summary.destroyed,
+            building_summary.uncertain_damage,
             building_summary.unnamed_tokens,
             building_summary.missing_slots,
             building_summary.fogged,
             building_summary.hubs_left_to_another_layer,
+            building_summary.unknown_hub_membership,
             building_summary.undetected,
             building_summary.unknown_detection
         );
@@ -1202,7 +1236,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             rail_mesh.unanchored,
             rail_mesh.samples,
             rail_mesh.vertices.len(),
-            map::railways::railway_alpha(camera.height),
+            map::railways::railway_alpha(&camera),
             camera.height,
             document.rail_build.as_secs_f64() * 1000.0
         );
@@ -1295,7 +1329,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         // counters
         println!(
-            "Counters: {} land ({} between provinces), {} naval; {} air bases ({} showing their plane count, {} hidden by fog of war), {} naval bases; {} land combats, {} naval combats; {} stacks with no anchor",
+            "Counters: {} land ({} between provinces), {} naval; {} air bases ({} showing their plane count, {} hidden by fog of war), {} naval bases ({} with an unreadable country list); {} land combats, {} naval combats; {} stacks with no anchor",
             counter_report.land_counters,
             counter_report.moving,
             counter_report.naval_counters,
@@ -1303,6 +1337,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.air_base_counts,
             counter_report.hidden_air_bases,
             counter_report.naval_bases,
+            counter_report.unknown_naval_base_lists,
             counter_report.land_combats,
             counter_report.naval_combats,
             counter_report.unanchored
@@ -1768,6 +1803,19 @@ mod tests {
         };
         assert_eq!(dump("547.981").unwrap().presentation_time, 547.981);
         assert_eq!(dump("0").unwrap().presentation_time, 0.0);
+        let settled = parse(&[
+            "--dump",
+            "c.battleplan",
+            "--hour",
+            "1",
+            "--out",
+            "f.png",
+            "--settle",
+            "20",
+        ])
+        .unwrap();
+        assert_eq!(settled.settle, 20.0);
+        assert!(parse(&["c.battleplan", "--settle", "20"]).is_err());
         assert!(dump("-1").is_err());
         assert!(dump("nan").is_err());
         assert!(dump("inf").is_err());
@@ -1884,6 +1932,23 @@ mod tests {
         .unwrap();
         assert_eq!(reference.center, [3010.0, 1568.0]);
         assert_eq!(reference.height, 310.178);
+        let visited = parse(&[
+            "--dump",
+            "c.battleplan",
+            "--hour",
+            "1",
+            "--out",
+            "f.png",
+            "--building-camera",
+            "1,2,100",
+            "--building-camera",
+            "3,4,90",
+        ])
+        .unwrap()
+        .building_cameras;
+        assert_eq!(visited.len(), 2);
+        assert_eq!(visited[1].center, [3.0, 4.0]);
+        assert!(parse(&["c.battleplan", "--building-camera", "1,2,100"]).is_err());
         for bad in ["3010,1568", "3010,1568,inf", "a,b,c"] {
             assert!(
                 parse(&[

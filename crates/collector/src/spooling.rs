@@ -1604,9 +1604,12 @@ impl Processor {
             stats.table_ns[replay::rows::TableId::VariantStats.index()],
             stats.table_ns[replay::rows::TableId::VariantUpgrades.index()],
         ];
+        // The shared state/province walk is charged to StateBuildings; the
+        // hourly detection walk beside it is the third entry.
         let buildings_walk_ns = [
             stats.table_ns[replay::rows::TableId::StateBuildings.index()],
             stats.table_ns[replay::rows::TableId::ProvinceBuildings.index()],
+            stats.table_ns[replay::rows::TableId::BuildingDetection.index()],
         ];
         // The owned war-vector acquisition is charged to WarRelations.
         let wars_walk_ns = [stats.table_ns[replay::rows::TableId::WarRelations.index()]];
@@ -2667,7 +2670,10 @@ mod tests {
         processor.stats.table_ns[replay::rows::TableId::Players.index()] = 401;
         processor.stats.table_ns[replay::rows::TableId::WorldTension.index()] = 501;
         processor.stats.table_ns[replay::rows::TableId::WarRelations.index()] = 601;
+        processor.stats.table_ns[replay::rows::TableId::StateBuildings.index()] = 701;
+        processor.stats.table_ns[replay::rows::TableId::BuildingDetection.index()] = 703;
         let status = processor.status();
+        assert_eq!(status["buildings_walk_ns"], json!([701, 0, 703]));
         assert_eq!(status["research_walk_ns"], json!([11, 22, 33]));
         assert_eq!(status["wars_walk_ns"], json!([601]));
         // New game-thread copy-only mirrors for the coupled unit, air,

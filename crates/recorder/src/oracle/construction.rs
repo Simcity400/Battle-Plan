@@ -60,48 +60,55 @@ macro_rules! production_fields {
     }};
 }
 
-/// `NavalBases` against the saved `naval_base` province buildings.
+/// `NavalBases` against the saved port province buildings.
 ///
-/// province's eligible port buildings, so for the one `naval_base` a province
-/// carries they are its saved `level` and `healthy_levels`. The base's own
-/// country (`(CNavalBase + 8) + 0x10`) and its `+0x40` country list are not
-/// serialized at all, so they are stated as a limitation rather than checked.
+/// province's eligible port buildings, the content's `is_port` types, so they
+/// are the sums of those buildings' saved `level` and `healthy_levels`. The
+/// base's own country (`(CNavalBase + 8) + 0x10`) and its `+0x40` country list
+/// are not serialized at all, so they are stated as a limitation.
 pub(super) fn naval_bases(
     rows: &[replay::rows::NavalBaseRow],
     saved: &BTreeMap<saved::BuildingKey, saved::Building>,
+    port_types: &BTreeSet<Vec<u8>>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let ports: BTreeMap<u32, &saved::Building> = saved
-        .iter()
-        .filter(|((_, kind), _)| kind.as_slice() == b"naval_base")
-        .map(|((province, _), building)| (*province, building))
-        .collect();
+    let mut ports: BTreeMap<u32, (i32, i32)> = BTreeMap::new();
+    for ((province, kind), building) in saved {
+        if port_types.contains(kind) {
+            let sums = ports.entry(*province).or_default();
+            sums.0 += i32::from(building.level);
+            sums.1 += i32::from(building.healthy_level);
+        }
+    }
     let mut seen = BTreeSet::new();
     let mut count = 0;
     for row in rows {
         if !seen.insert(row.province) {
             return Err(invalid("duplicate naval base province"));
         }
-        let Some(building) = ports.get(&row.province) else {
+        let Some(&(level, healthy_level)) = ports.get(&row.province) else {
             // The hash keeps a base while its level is zero, so only a
             // positive level has to have a saved building behind it.
             if row.level > 0 {
                 report.difference(
                     format!("NavalBase {} membership", row.province),
                     "replay row with a positive level",
-                    "no saved naval_base building",
+                    "no saved port building",
                 );
             }
             continue;
         };
         let label = format!("NavalBase {}", row.province);
+        if row.countries_unreadable {
+            report.difference(
+                format!("{label}.countries"),
+                "unreadable: null list with a positive count",
+                "a list the game can read",
+            );
+        }
         for (name, actual, expected) in [
-            ("level", row.level, i32::from(building.level)),
-            (
-                "healthy_level",
-                row.healthy_level,
-                i32::from(building.healthy_level),
-            ),
+            ("level", row.level, level),
+            ("healthy_level", row.healthy_level, healthy_level),
         ] {
             if actual != expected {
                 report.difference(format!("{label}.{name}"), actual, expected);
@@ -114,7 +121,7 @@ pub(super) fn naval_bases(
             report.difference(
                 format!("NavalBase {province} membership"),
                 "absent from replay",
-                "saved naval_base building",
+                "saved port building",
             );
         }
     }
@@ -130,30 +137,9 @@ pub(super) fn buildings(
     rows: &[replay::rows::BuildingRow],
     saved: &BTreeMap<saved::BuildingKey, saved::Building>,
     province_scope: bool,
-    membership: &installed_content::save::MapMembership,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
-    hour: replay::Hour,
 ) -> io::Result<()> {
-    let table = if province_scope {
-        replay::rows::TableId::ProvinceBuildings
-    } else {
-        replay::rows::TableId::StateBuildings
-    };
-    // Tier-4 slot3; cadence table is the single source of truth.
-    if !report.refresh_is_current(table, hour) {
-        report.limitation(
-            &format!(
-                "StateBuildings/ProvinceBuildings {}",
-                replay::cadence::STAGGER_LIMITATION
-            ),
-            format!(
-                "{table:?} refreshes on {} (oracle hour {hour})",
-                replay::cadence::refresh_text(table)
-            ),
-        );
-        return Ok(());
-    }
     let table = if province_scope {
         "ProvinceBuildings"
     } else {
@@ -170,22 +156,12 @@ pub(super) fn buildings(
         }
         *captured_counts.entry(row.location).or_default() += 1;
         let subject = format!("{table}.{}.token({})", row.location, row.building_type);
-        let state = if province_scope {
-            membership
-                .provinces
-                .get(&row.location)
-                .ok_or_else(|| invalid("building province absent from verified map content"))?
-                .unwrap_or(0)
-        } else {
-            row.location
-        };
-        value(report, &format!("{subject}.state"), row.state, state);
         let name = match token(names, row.building_type) {
             Ok(name) => name,
             Err(reason) => {
                 unresolved.insert(row.location);
                 report.limitation(
-                    &format!("building {reason}; named identity, ordinal, levels and partial health cannot be matched; location/state checks continue"),
+                    &format!("building {reason}; named identity, ordinal, levels and partial health cannot be matched; location and row-count checks continue"),
                     subject,
                 );
                 continue;
@@ -934,7 +910,6 @@ mod tests {
         let names = BTreeMap::from([(31, b"factory".as_slice())]);
         let building = replay::rows::BuildingRow {
             location: 1,
-            state: 1,
             building_type: 31,
             level: i16::MIN,
             healthy_level: -2,
@@ -963,10 +938,8 @@ mod tests {
             &[building],
             &saved.state_buildings,
             false,
-            &Default::default(),
             &names,
             &mut report,
-            3,
         )
         .unwrap();
         railway_construction(&[rail.clone()], &saved, &links, &mut report).unwrap();
@@ -1109,12 +1082,8 @@ mod tests {
     #[test]
     fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
         let saved = saved_pack(b"countries={} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
-        let membership = installed_content::save::MapMembership {
-            provinces: BTreeMap::from([(7, Some(1))]),
-        };
         let row = replay::rows::BuildingRow {
             location: 7,
-            state: 2,
             building_type: 99,
             ordinal: 77,
             level: i16::MIN,
@@ -1127,14 +1096,11 @@ mod tests {
             std::slice::from_ref(&row),
             &saved.province_buildings,
             true,
-            &membership,
             &BTreeMap::new(),
             &mut report,
-            3,
         )
         .unwrap();
-        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-        assert!(report.differences[0].contains(".state"));
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["ProvinceBuildings"], 0);
         assert!(
             report
@@ -1145,18 +1111,13 @@ mod tests {
 
         let mut extra = row.clone();
         extra.building_type += 1;
-        extra.state = 1;
-        let mut first = row;
-        first.state = 1;
         let mut report = Report::default();
         buildings(
-            &[first, extra],
+            &[row, extra],
             &saved.province_buildings,
             true,
-            &membership,
             &BTreeMap::new(),
             &mut report,
-            3,
         )
         .unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
@@ -1209,14 +1170,10 @@ mod tests {
             (11, b"factory\0tail".as_slice()),
             (12, b"oil\0tail".as_slice()),
         ]);
-        let membership = installed_content::save::MapMembership {
-            provinces: BTreeMap::from([(7, Some(1))]),
-        };
         let mut report = Report::default();
         buildings(
             &[replay::rows::BuildingRow {
                 location: 7,
-                state: 2,
                 building_type: 11,
                 level: i16::MIN,
                 partial_health: i64::MIN,
@@ -1224,14 +1181,11 @@ mod tests {
             }],
             &saved.province_buildings,
             true,
-            &membership,
             &names,
             &mut report,
-            3,
         )
         .unwrap();
-        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-        assert!(report.differences[0].contains(".state"));
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
 
         let mut content = saved::BaseResources::default();
         content
@@ -1249,8 +1203,8 @@ mod tests {
             &mut report,
         )
         .unwrap();
-        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
-        assert!(report.differences[1].contains("row_count"));
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("row_count"));
 
         let germany = CountryRow {
             tag: b"GER".to_vec(),
@@ -1276,14 +1230,14 @@ mod tests {
             &mut report,
         )
         .unwrap();
-        assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
         assert!(
-            report.differences[2..]
+            report.differences[1..]
                 .iter()
                 .any(|difference| difference.contains("cost"))
         );
         assert!(
-            report.differences[2..]
+            report.differences[1..]
                 .iter()
                 .any(|difference| difference.contains("target_location"))
         );
@@ -1306,20 +1260,15 @@ mod tests {
     #[test]
     fn resolved_province_buildings_compare_signed_zero_values_and_named_membership() {
         let saved = saved_pack(b"countries={} states={7={buildings={port={level=9 healthy_levels=9 partial_health=0}}}} provinces={7={buildings={factory={level=0 healthy_levels=0 partial_health=0} port={level=-32768 healthy_levels=-1 partial_health=-90071992547.40993}}}}");
-        let membership = installed_content::save::MapMembership {
-            provinces: BTreeMap::from([(7, Some(2))]),
-        };
         let names = BTreeMap::from([(91, b"factory".as_slice()), (92, b"port".as_slice())]);
         let rows = [
             replay::rows::BuildingRow {
                 location: 7,
-                state: 2,
                 building_type: 91,
                 ..Default::default()
             },
             replay::rows::BuildingRow {
                 location: 7,
-                state: 2,
                 building_type: 92,
                 ordinal: 1,
                 level: i16::MIN,
@@ -1329,16 +1278,7 @@ mod tests {
             },
         ];
         let mut report = Report::default();
-        buildings(
-            &rows,
-            &saved.province_buildings,
-            true,
-            &membership,
-            &names,
-            &mut report,
-            3,
-        )
-        .unwrap();
+        buildings(&rows, &saved.province_buildings, true, &names, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["ProvinceBuildings"], 2);
 
@@ -1351,10 +1291,8 @@ mod tests {
             &changed,
             &saved.province_buildings,
             true,
-            &membership,
             &names,
             &mut report,
-            3,
         )
         .unwrap();
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
@@ -1365,10 +1303,8 @@ mod tests {
             &rows,
             &saved.province_buildings,
             true,
-            &membership,
             &wrong_names,
             &mut report,
-            3,
         )
         .unwrap();
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
@@ -1379,13 +1315,49 @@ mod tests {
                 &[rows[0].clone(), rows[0].clone()],
                 &saved.province_buildings,
                 true,
-                &membership,
                 &names,
                 &mut Report::default(),
-                3,
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn naval_bases_sum_the_contents_port_buildings() {
+        let saved = saved_pack(b"countries={} states={} provinces={7={buildings={dock={level=2 healthy_levels=1 partial_health=0} pier={level=3 healthy_levels=3 partial_health=0} factory={level=5 healthy_levels=5 partial_health=0}}}}");
+        let ports = BTreeSet::from([b"dock".to_vec(), b"pier".to_vec()]);
+        let mut row = replay::rows::NavalBaseRow {
+            province: 7,
+            level: 5,
+            healthy_level: 4,
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        naval_bases(
+            std::slice::from_ref(&row),
+            &saved.province_buildings,
+            &ports,
+            &mut report,
+        )
+        .unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        row.level = 2;
+        let mut report = Report::default();
+        naval_bases(
+            &[row.clone()],
+            &saved.province_buildings,
+            &ports,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        // An unreadable country list is named on its own base, never waived.
+        row.level = 5;
+        row.countries_unreadable = true;
+        let mut report = Report::default();
+        naval_bases(&[row], &saved.province_buildings, &ports, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert_eq!(report.compared_tables["NavalBases"], 1);
     }
 
     #[test]
@@ -1631,32 +1603,5 @@ mod tests {
             .is_err()
         );
         assert!(manpower(&mut report, "unresolved", [(0, 999, 7)], &saved, &links).is_err());
-    }
-
-    #[test]
-    fn staggered_off_hours_skips_buildings_and_prints_refresh_hour() {
-        let mut report = Report::default();
-        buildings(
-            &[replay::rows::BuildingRow {
-                location: 1,
-                ..Default::default()
-            }],
-            &std::collections::BTreeMap::new(),
-            false,
-            &Default::default(),
-            &std::collections::BTreeMap::new(),
-            &mut report,
-            0,
-        )
-        .unwrap();
-        assert!(report.differences.is_empty());
-        assert!(
-            report
-                .limitations
-                .keys()
-                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
-            "{:?}",
-            report.limitations.keys()
-        );
     }
 }
