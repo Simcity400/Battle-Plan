@@ -1,4 +1,13 @@
 //! Slot assignments from observed research tables, with explicit coverage and bounds.
+//!
+//! Research is read one country slice per hour (see the collector README), so
+//! a country's rows are observed at their `sample_hour`, usually a day apart,
+//! and carried rows are ignored. Consecutive reads with no unobservable hour
+//! between them are continuous: a new assignment is bounded by the previous
+//! read, unless an hour between them was unobservable or a scheduled read
+//! of the country was missed (reads more than a day apart). Assignment,
+//! cancellation, completion and slot changes are read within the hour;
+//! modifier-only changes appear at the country's next slice read.
 use super::{CountryParams, LoadContext, Product, artwork};
 use crate::{
     Artwork, ResearchBonus, ResearchCoverage, ResearchDetails, ResearchEntry, ResearchHistory,
@@ -121,6 +130,18 @@ struct Country {
     pending: Vec<(u32, usize, u32, i32, i32)>,
     /// Append-only retained allocations, excluding the fixed history header.
     retained_bytes: usize,
+    /// The sample hour of the last observed research read.
+    last_read: Option<i32>,
+    /// Set before each observation: the previous read's hour when every
+    /// recorded hour since it was intact. Research is read one country slice
+    /// per hour, so consecutive reads of a country are usually a day apart;
+    /// they are still continuous observations.
+    read_after: Option<i32>,
+}
+
+/// Whether an observation at `hour` directly continues one at `last`.
+fn follows(read_after: Option<i32>, last: i32, hour: i32) -> bool {
+    last.checked_add(1) == Some(hour) || read_after == Some(last)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -202,10 +223,10 @@ fn history_growth(history: &ResearchHistory, before: &HistoryMark) -> usize {
             .sum::<usize>()
 }
 
-fn cover(coverage: &mut Vec<ResearchCoverage>, hour: i32) {
+fn cover(coverage: &mut Vec<ResearchCoverage>, hour: i32, read_after: Option<i32>) {
     if let Some(last) = coverage
         .last_mut()
-        .filter(|last| last.last_hour.checked_add(1) == Some(hour))
+        .filter(|last| follows(read_after, last.last_hour, hour))
     {
         last.last_hour = hour;
     } else {
@@ -252,12 +273,13 @@ impl Country {
         {
             return;
         }
+        let read_after = self.read_after;
         let continuous = self.identity == Some(identity)
             && self
                 .history
                 .coverage
                 .last()
-                .is_some_and(|c| c.last_hour.checked_add(1) == Some(hour));
+                .is_some_and(|c| follows(read_after, c.last_hour, hour));
         if !continuous {
             self.samples.clear();
         }
@@ -433,7 +455,7 @@ impl Country {
             };
             if let Some(last) = slot.progress.last_mut().filter(|last| {
                 continuous
-                    && last.last_hour.checked_add(1) == Some(hour)
+                    && follows(read_after, last.last_hour, hour)
                     && last.entry_first_observed_hour == sample.entry_first_observed_hour
                     && last.base_days_raw == sample.base_days_raw
                     && last.progress_raw == sample.progress_raw
@@ -455,7 +477,8 @@ impl Country {
         details: Option<&BTreeMap<u32, ResearchDetails>>,
     ) {
         let previous = self.history.coverage.last().map(|c| c.last_hour);
-        let continuous = previous.and_then(|h| h.checked_add(1)) == Some(hour)
+        let read_after = self.read_after;
+        let continuous = previous.is_some_and(|p| follows(read_after, p, hour))
             && self.identity == Some(identity);
         if !continuous {
             self.continuity_start_hour = hour;
@@ -500,7 +523,7 @@ impl Country {
                 }
             });
         self.identity = Some(identity);
-        cover(&mut self.history.coverage, hour);
+        cover(&mut self.history.coverage, hour, read_after);
         for slot in &mut self.history.slots {
             let current = slots.iter().find(|s| s.index == slot.index);
             if let Some(&(handle, level, researched)) = self.active.get(&slot.index) {
@@ -560,7 +583,7 @@ impl Country {
                     self.history.slots.len() - 1
                 });
             let slot = &mut self.history.slots[position];
-            cover(&mut slot.availability, hour);
+            cover(&mut slot.availability, hour, read_after);
             if row.technology_present == 0 || self.active.contains_key(&row.index) {
                 continue;
             }
@@ -623,7 +646,7 @@ impl Country {
             if let Some(last) = slot
                 .states
                 .last_mut()
-                .filter(|last| continuous && last.last_hour.checked_add(1) == Some(hour))
+                .filter(|last| continuous && follows(read_after, last.last_hour, hour))
             {
                 let mut comparable = state.clone();
                 comparable.first_hour = last.first_hour;
@@ -751,6 +774,10 @@ fn research_branch_selected(
         replay::rows::TableId::ResearchModifiers,
     ];
     let mut countries: BTreeMap<String, Country> = BTreeMap::new();
+    // The latest recorded hour whose research inputs could not be observed,
+    // including missing hours. A read after it cannot continue one before it.
+    let mut last_bad: Option<i32> = None;
+    let mut last_frame: Option<i32> = None;
     for block in replay.index.iter().filter(|b| b.branch == branch) {
         check_cancel(cancelled)?;
         let mut decoder = FrameDecoder::for_tables(&selected);
@@ -759,10 +786,16 @@ fn research_branch_selected(
         };
         for frame in frames {
             check_cancel(cancelled)?;
+            if last_frame.is_some_and(|previous| previous.checked_add(1) != Some(frame.hour)) {
+                last_bad = Some(frame.hour.saturating_sub(1));
+            }
+            last_frame = Some(frame.hour);
             let Ok(decoded) = decoder.advance(&frame) else {
+                last_bad = Some(frame.hour);
                 break;
             };
             if validate_campaign(decoded, replay).is_err() {
+                last_bad = Some(frame.hour);
                 break;
             }
             let (Ok(rows), Ok(links), Ok(inputs)) = (
@@ -770,18 +803,15 @@ fn research_branch_selected(
                 decoded.complete::<tables::CountryLinks>(),
                 decoded.complete::<tables::ResearchInputs>(),
             ) else {
+                last_bad = Some(frame.hour);
                 continue;
             };
             let inventory = decoded.complete::<tables::ResearchTechnologies>().ok();
             let bonuses = decoded.complete::<tables::ResearchAppliedBonuses>().ok();
             let modifier_rows = decoded.complete::<tables::ResearchModifiers>().ok();
-            if inputs.iter().any(|input| {
-                links
-                    .binary_search_by_key(&input.country, |link| link.id)
-                    .is_err()
-            }) {
-                continue;
-            }
+            // Each country joins only the input rows of its own linked IDs, so
+            // a row whose country has no link is ignored; it never hides the
+            // reads of linked countries in the same frame.
             for country in rows {
                 // Compare the tag before any per-country work.
                 if selected_tag.is_some_and(|selected| selected.as_bytes() != country.tag) {
@@ -805,15 +835,46 @@ fn research_branch_selected(
                     .iter()
                     .filter(|input| ids.contains(&input.country))
                     .collect();
+                // Rows keep the hour they were read at. Observe a read only in
+                // the frame of its own hour; carried rows add nothing.
+                let Some(read) = inputs.first().map(|input| input.sample_hour) else {
+                    continue;
+                };
+                if read != frame.hour || inputs.iter().any(|input| input.sample_hour != read) {
+                    continue;
+                }
                 let state = countries.entry(tag.to_owned()).or_default();
+                if state.last_read.is_some_and(|last| read <= last) {
+                    continue;
+                }
+                // Continuous with the previous read only when no recorded hour
+                // between them was unobservable and no scheduled read of this
+                // owner was missed (each owner is read at least once a day).
+                state.read_after = state.last_read.filter(|&last| {
+                    last_bad.is_none_or(|bad| bad <= last)
+                        && i64::from(read) - i64::from(last)
+                            <= i64::from(replay::cadence::STAGGER_PERIOD)
+                });
+                // Bonuses and modifiers join only when they come from the same read.
+                let bonuses = bonuses.filter(|rows| {
+                    rows.iter()
+                        .filter(|row| ids.contains(&row.country))
+                        .all(|row| row.sample_hour == read)
+                });
+                let modifier_rows = modifier_rows.filter(|rows| {
+                    rows.iter()
+                        .filter(|row| ids.contains(&row.country))
+                        .all(|row| row.sample_hour == read)
+                });
                 state.observe_inputs(
                     (country.id, canonical),
-                    frame.hour,
+                    read,
                     &inputs,
                     inventory,
                     bonuses,
                     modifier_rows,
                 );
+                state.last_read = Some(read);
             }
             check_budget(&countries)?;
         }
@@ -1144,6 +1205,7 @@ mod tests {
                 cost_reduction_raw: None,
                 speed_bonus_raw: 50_000,
                 ahead_reduction_raw: 200_000,
+                sample_hour: 0,
             },
             ResearchAppliedBonusRow {
                 country: 11,

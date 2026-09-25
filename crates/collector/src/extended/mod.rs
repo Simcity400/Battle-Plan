@@ -353,6 +353,8 @@ impl Captured {
 
     /// Freeze this callback's primary activity before any shared source visitor.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
+        // A frame whose sliced job never runs must not report an older read.
+        self.governance.reset_research_selection(hour, force_full);
         self.air.prepare_hour(hour, force_full);
         self.fog.prepare_hour(hour, force_full);
         self.naval_history.prepare_hour(hour, force_full);
@@ -508,8 +510,10 @@ impl Captured {
         state: usize,
         hour: i32,
         force_full: bool,
+        fingerprints: Box<crate::slicing::SliceFingerprints>,
     ) -> crate::acquisition_jobs::ResearchRequest {
         crate::acquisition_jobs::ResearchRequest {
+            fingerprints,
             countries: Arc::clone(countries),
             context: governance::CaptureContext {
                 base,
@@ -523,14 +527,19 @@ impl Captured {
 
     /// Return the research rows and charge their costs to the family report.
     /// A failed job publishes its own failure; it never erases the family.
+    /// Returns the fingerprint store: forgotten if the job was interrupted
+    /// (every owner is then new and read at the next hour), and with this
+    /// hour's selection invalidated if any research table was not read
+    /// completely, so its owners are read again at the next hour.
     pub(crate) fn restore_research_request(
         &mut self,
         mut request: crate::acquisition_jobs::ResearchRequest,
         report: Result<crate::acquisition_jobs::ResearchReport, crate::acquisition::Failure>,
-    ) {
+    ) -> Box<crate::slicing::SliceFingerprints> {
         let ticks = match report {
             Ok(report) => report.ticks,
             Err(failure) => {
+                request.fingerprints.forget();
                 request.part.fail(
                     request.context,
                     match failure {
@@ -549,6 +558,32 @@ impl Captured {
                 family.ticks[index] = cost;
             }
         }
+        let outcomes = self.governance.outcomes();
+        if governance::RESEARCH.iter().any(|&index| {
+            !matches!(outcomes[index], Outcome::Rows { .. })
+                && !matches!(outcomes[index], Outcome::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
+        }) {
+            self.governance
+                .research_selection()
+                .invalidate(&mut request.fingerprints);
+        }
+        request.fingerprints
+    }
+
+    /// One sliced family's read at this frame's hour (`slicing::FAMILIES`).
+    pub(crate) fn family_selection(&self, family: usize) -> &crate::slicing::SliceSelection {
+        match family {
+            crate::slicing::RESEARCH => self.governance.research_selection(),
+            _ => unreachable!("unregistered sliced family {family}"),
+        }
+    }
+
+    /// The owners whose rows this frame read for a sliced table.
+    pub(crate) fn slice_selection(
+        &self,
+        table: TableId,
+    ) -> Option<&crate::slicing::SliceSelection> {
+        crate::slicing::family_of(table).map(|family| self.family_selection(family))
     }
 
     /// Loan the worker-only families after Focus delegation is decided.
@@ -2951,8 +2986,15 @@ mod tests {
             Some(crate::acquisition::Failure::Stopped),
         ] {
             let mut captured = Captured::with_capacities(&Capacities::default());
+            captured.prepare_hour(hour, force_full);
             let bytes = captured.allocated_bytes();
-            let research = captured.take_research_request(&countries, 11, 0x1000, hour, force_full);
+            // Owner 7 (in this hour's slice) was seen, unchanged, before this hour.
+            let mut store = Box::new(crate::slicing::SliceFingerprints::new());
+            let mut seen = crate::slicing::SliceSelection::for_test(0, true, &[]);
+            seen.scan(&mut store, 7, Some(1));
+            store.finish_scan();
+            let research =
+                captured.take_research_request(&countries, 11, 0x1000, hour, force_full, store);
             // The family keeps no research capacity while the part is loaned.
             assert!(captured.allocated_bytes() < bytes);
             let governance =
@@ -2964,7 +3006,14 @@ mod tests {
                 None => Ok(crate::acquisition_jobs::ResearchReport { ticks: [5, 6, 7] }),
                 Some(failure) => Err(failure),
             };
-            captured.restore_research_request(research, report);
+            let mut store = captured.restore_research_request(research, report);
+            // This hour's research read was not published (a job failure
+            // forgets the store; a complete job whose tables are not all
+            // complete invalidates its selection), so owner 7 is read again
+            // at the next hour although nothing changed.
+            let mut next = crate::slicing::SliceSelection::for_test(hour + 1, false, &[]);
+            next.scan(&mut store, 7, Some(1));
+            assert!(next.contains(7), "{failure:?}");
             assert_eq!(captured.allocated_bytes(), bytes);
             let outcomes = captured.governance.outcomes();
             let family = captured

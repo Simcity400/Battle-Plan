@@ -534,7 +534,7 @@ fn research_tables(captured: &Captured) -> Vec<TableView> {
 fn loaned_only(world: &World) -> Captured {
     let mut captured = captured();
     let mut part = captured.take_research();
-    part.capture(world, context(0, true));
+    part.capture(world, context(0, true), &mut SliceFingerprints::new());
     captured.restore_research(part);
     captured
 }
@@ -656,11 +656,11 @@ fn family_capture_with_loaned_research_yields_the_part_rows() {
         let mut captured = captured();
         let mut part = captured.take_research();
         if research_first {
-            part.capture(&world, context(0, true));
+            part.capture(&world, context(0, true), &mut SliceFingerprints::new());
             captured.capture(&world, BASE, GAME_STATE, 0, true);
         } else {
             captured.capture(&world, BASE, GAME_STATE, 0, true);
-            part.capture(&world, context(0, true));
+            part.capture(&world, context(0, true), &mut SliceFingerprints::new());
         }
         captured.restore_research(part);
         assert_eq!(
@@ -682,7 +682,7 @@ fn governance_failure_keeps_successful_research_rows() {
     let mut captured = captured();
     let mut part = captured.take_research();
     captured.fail_owned_capture(context, REASON);
-    part.capture(&world, context);
+    part.capture(&world, context, &mut SliceFingerprints::new());
     captured.restore_research(part);
     assert_eq!(research(&captured), expected);
     assert_eq!(research_tables(&captured), alone);
@@ -720,7 +720,7 @@ fn research_part_failure_publishes_reason_or_cadence_skip() {
             captured.capture(&world, BASE, GAME_STATE, hour, force_full);
             let family = captured.outcomes();
             // Rows from a successful walk must not survive the later failure.
-            part.capture(&world, context);
+            part.capture(&world, context, &mut SliceFingerprints::new());
             part.fail(context, "research acquisition panicked");
             captured.restore_research(part);
             let outcomes = captured.outcomes();
@@ -744,4 +744,102 @@ fn research_part_failure_publishes_reason_or_cadence_skip() {
             }
         }
     }
+}
+
+/// Country IDs of the research rows a capture produced.
+fn owners(captured: &Captured) -> Vec<u32> {
+    let mut owners: Vec<_> = research(captured).inputs.iter().map(|r| r.slot.country).collect();
+    owners.dedup();
+    owners
+}
+
+fn slice_capture(world: &World, hour: i32, fingerprints: &mut SliceFingerprints) -> Captured {
+    let mut captured = captured();
+    let mut part = captured.take_research();
+    part.capture(world, context(hour, false), fingerprints);
+    captured.restore_research(part);
+    captured
+}
+
+/// A full-hour read: every country is read and observed once.
+fn primed(world: &World) -> SliceFingerprints {
+    let mut fingerprints = SliceFingerprints::new();
+    let mut captured = captured();
+    let mut part = captured.take_research();
+    part.capture(world, context(0, true), &mut fingerprints);
+    captured.restore_research(part);
+    fingerprints
+}
+
+#[test]
+fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
+    let world = World::new();
+    let mut fingerprints = primed(&world);
+    // Country 1 is slice 1, country 3 slice 3; hour 25 is slot 1 again.
+    for (hour, expected) in [(1, vec![1]), (3, vec![3]), (5, vec![]), (25, vec![1])] {
+        let captured = slice_capture(&world, hour, &mut fingerprints);
+        assert_eq!(owners(&captured), expected, "hour {hour}");
+        let selection = captured.research_selection();
+        assert_eq!(selection.hour, hour);
+        assert_eq!(selection.early_count, 0);
+        assert_eq!(selection.scanned, 2);
+        assert_eq!(selection.contains(1), hour % 24 == 1);
+        assert_eq!(selection.contains(3), hour % 24 == 3);
+        // Every emitted row carries this read's hour.
+        for view in research_tables(&captured) {
+            let TableView::Complete(rows) = view else {
+                panic!("slice tables complete")
+            };
+            match rows {
+                TableRows::ResearchInputs(rows) => assert!(rows.iter().all(|r| r.sample_hour == hour)),
+                TableRows::ResearchAppliedBonuses(rows) => {
+                    assert!(rows.iter().all(|r| r.sample_hour == hour))
+                }
+                TableRows::ResearchModifiers(rows) => assert!(rows.iter().all(|r| r.sample_hour == hour)),
+                other => panic!("unexpected {:?}", other.table()),
+            }
+        }
+    }
+    // The slice rows equal that country's rows from a full read.
+    let full = research(&loaned_only(&world));
+    let slice = research(&slice_capture(&world, 3, &mut fingerprints));
+    let only = |rows: &Research| {
+        (
+            rows.inputs.iter().filter(|r| r.slot.country == 3).copied().collect::<Vec<_>>(),
+            rows.modifiers.iter().filter(|r| r.country == 3).copied().collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(only(&slice), only(&full));
+}
+
+#[test]
+fn a_changed_assignment_is_read_early_but_daily_progress_waits_for_the_slice() {
+    let mut world = World::new();
+    // A country seen for the first time is read at once, outside its slice.
+    let mut fresh = SliceFingerprints::new();
+    assert_eq!(owners(&slice_capture(&world, 5, &mut fresh)), [1, 3]);
+    // After a full hour, nobody is read outside its slice.
+    let mut fingerprints = primed(&world);
+    assert!(owners(&slice_capture(&world, 5, &mut fingerprints)).is_empty());
+    // Daily progress moves: no early read.
+    let technology = SECOND.origin + TECH;
+    world.put(technology + engine::ctechnology::LIVE_PROGRESS, 260_000_i64.to_le_bytes());
+    let captured = slice_capture(&world, 6, &mut fingerprints);
+    assert!(owners(&captured).is_empty());
+    assert_eq!(captured.research_selection().early_count, 0);
+    // A new slot speed (written on assignment) reads country 3 now, in full.
+    world.put(SECOND.origin + SLOT + engine::cresearch_slot::RESEARCH_SPEED, 95_000_i64.to_le_bytes());
+    let captured = slice_capture(&world, 7, &mut fingerprints);
+    assert_eq!(owners(&captured), [3]);
+    let selection = captured.research_selection();
+    assert_eq!(selection.early_count, 1);
+    assert!(selection.contains(3) && !selection.contains(1));
+    assert!(!research(&captured).modifiers.is_empty());
+    // Seen now: the next hour does not read it again.
+    assert!(owners(&slice_capture(&world, 8, &mut fingerprints)).is_empty());
+    // After an interrupted job the store is forgotten: every country is new
+    // and is read at the next hour, then settles again.
+    fingerprints.forget();
+    assert_eq!(owners(&slice_capture(&world, 9, &mut fingerprints)), [1, 3]);
+    assert!(owners(&slice_capture(&world, 10, &mut fingerprints)).is_empty());
 }

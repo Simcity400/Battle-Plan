@@ -35,6 +35,7 @@ mod read_accounting;
 mod roster;
 mod runtime;
 mod sampling;
+mod slicing;
 mod snapshot_plan;
 mod spooling;
 mod table_capture;

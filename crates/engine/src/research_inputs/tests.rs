@@ -480,3 +480,76 @@ fn bonus_rosters_are_bounded_before_reading_entries_and_stop_after_resolution() 
     );
     assert!(memory.calls.get() < 10);
 }
+
+#[test]
+fn fingerprint_ignores_daily_progress_and_follows_assignment_writers() {
+    let fingerprint = |bytes: &[u8]| fingerprint_country(&MemoryTrace::new(bytes), 0, COUNTRY);
+    let base = fixture(true, true);
+    let reference = fingerprint(&base).unwrap();
+    assert_eq!(fingerprint(&base).unwrap(), reference);
+    // Daily-only writers: progress and banked idle days.
+    for (at, value) in [
+        (TECH + ctechnology::LIVE_PROGRESS, 900_000_i64),
+        (SLOT + cresearch_slot::BANKED_DAYS, 300_000_i64),
+    ] {
+        let mut changed = base.clone();
+        put(&mut changed, at, value.to_le_bytes());
+        assert_eq!(
+            fingerprint(&changed).unwrap(),
+            reference,
+            "daily field at {at:#x}"
+        );
+    }
+    // Any-hour writers: assignment, speed, applied days, level, classifier,
+    // applied bonuses and the slot roster.
+    for (at, bytes) in [
+        (
+            SLOT + cresearch_slot::TECHNOLOGY_HANDLE,
+            8_u32.to_le_bytes().to_vec(),
+        ),
+        (
+            SLOT + cresearch_slot::RESEARCH_SPEED,
+            170_000_i64.to_le_bytes().to_vec(),
+        ),
+        (
+            SLOT + cresearch_slot::APPLIED_DAYS,
+            100_000_i64.to_le_bytes().to_vec(),
+        ),
+        (TECH + ctechnology::LEVEL, 1_i32.to_le_bytes().to_vec()),
+        (
+            TECH + ctechnology::CLASSIFIER,
+            ctechnology::CLASSIFIER_COMPLETED.to_le_bytes().to_vec(),
+        ),
+        (
+            TECH + ctechnology::APPLIED_SPEED_BONUS,
+            50_000_i64.to_le_bytes().to_vec(),
+        ),
+        (
+            TECH + ctechnology::APPLIED_BONUS_IDS + 8,
+            0_u32.to_le_bytes().to_vec(),
+        ),
+        (
+            STATUS + ctechnology_status::RESEARCH_SLOTS_DATA + 8,
+            2_u32.to_le_bytes().to_vec(),
+        ),
+    ] {
+        let mut changed = base.clone();
+        changed[at..at + bytes.len()].copy_from_slice(&bytes);
+        assert_ne!(
+            fingerprint(&changed).unwrap(),
+            reference,
+            "any-hour field at {at:#x}"
+        );
+    }
+    // Cancelling the assignment changes it too; idle slots still fingerprint.
+    let idle = fixture(false, false);
+    assert_ne!(fingerprint(&idle).unwrap(), reference);
+    // No readable status is an error, never an equal fingerprint.
+    let mut broken = base.clone();
+    put(
+        &mut broken,
+        COUNTRY + crate::ccountry::TECHNOLOGY_STATUS,
+        0_u64.to_le_bytes(),
+    );
+    assert!(fingerprint(&broken).is_err());
+}

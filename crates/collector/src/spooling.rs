@@ -335,6 +335,9 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     pending: Vec<PendingBranch>,
     staggered_cache: BTreeMap<replay::rows::TableId, CachedTable>,
     staggered_branch: Option<BranchId>,
+    /// The latest complete rows of each sliced table on `sliced_branch`.
+    sliced_cache: BTreeMap<replay::rows::TableId, Arc<TableRows>>,
+    sliced_branch: Option<BranchId>,
     variables_scratch: ScriptVariableComparison,
     research_shadow: ResearchShadow,
     character_shadow: CharacterShadow,
@@ -376,6 +379,8 @@ impl Campaign {
             pending: Vec::new(),
             staggered_cache: BTreeMap::new(),
             staggered_branch: None,
+            sliced_cache: BTreeMap::new(),
+            sliced_branch: None,
             variables_scratch: ScriptVariableComparison::default(),
             research_shadow: ResearchShadow::default(),
             character_shadow: CharacterShadow::default(),
@@ -438,6 +443,89 @@ impl<B: SegmentBackend> Campaign<B> {
         let observation = self.tracker.observe(loaded, hour, signal, gaps)?;
         self.pending_branch(observation.branch);
         Ok(observation.branch)
+    }
+
+    /// Replace the rows of the owners this frame read in each sliced table's
+    /// latest complete rows on this branch. A full read replaces everything.
+    /// Without earlier complete rows a slice cannot stand alone: the table is
+    /// unavailable and the next hour must read every slice (returns true).
+    /// A failed slice publishes its failure and keeps the earlier rows, whose
+    /// own sample hours show their age once a later slice completes the table.
+    fn merge_sliced_inputs<'a>(
+        &mut self,
+        source: &mut FrameInput,
+        selection: impl Fn(TableId) -> Option<&'a crate::slicing::SliceSelection>,
+    ) -> bool {
+        if self.sliced_branch != Some(source.branch) {
+            self.sliced_cache.clear();
+            self.sliced_branch = Some(source.branch);
+        }
+        let mut retry = false;
+        for table in TableId::ALL {
+            if !replay::cadence::is_sliced(table) {
+                continue;
+            }
+            let input = &mut source.tables[table.index()];
+            let Some(selection) = selection(table) else {
+                *input = TableInput::Sampled(unavailable("sliced table has no owner selection"));
+                continue;
+            };
+            let captured = |owner| selection.contains(owner);
+            let live = |owner| selection.live(owner);
+            match input {
+                TableInput::Sampled(TableView::Complete(rows)) => {
+                    let fresh = std::mem::replace(rows, TableRows::empty(table));
+                    let merged = if selection.force_full {
+                        fresh
+                    } else if let Some(previous) = self.sliced_cache.get(&table) {
+                        match replay::sliced::merge_slice(previous, fresh, captured, live) {
+                            Ok(merged) => merged,
+                            Err(error) => {
+                                *input = TableInput::Sampled(unavailable(&error.to_string()));
+                                retry = true;
+                                continue;
+                            }
+                        }
+                    } else {
+                        *input = TableInput::Sampled(unavailable(
+                            "sliced table has no earlier complete rows on this branch; full refresh requested",
+                        ));
+                        retry = true;
+                        continue;
+                    };
+                    let merged = Arc::new(merged);
+                    self.sliced_cache.insert(table, Arc::clone(&merged));
+                    *input = TableInput::SharedComplete(merged);
+                }
+                // A partial read replaces only the owners it returned rows for:
+                // selected owners it never reached keep their earlier rows (and
+                // sample hours) in this truncated view. The view is not cached,
+                // so the next hour merges into the last complete rows; the
+                // collector reads the unpublished owners again at that hour.
+                TableInput::Sampled(TableView::Truncated { rows, missing }) => {
+                    let missing = *missing;
+                    let fresh = std::mem::replace(rows, TableRows::empty(table));
+                    let returned = replay::sliced::owners(&fresh);
+                    let replaced =
+                        |owner: u32| captured(owner) && returned.binary_search(&owner).is_ok();
+                    if let Some(previous) = self.sliced_cache.get(&table) {
+                        *input = TableInput::Sampled(
+                            match replay::sliced::merge_slice(previous, fresh, replaced, live) {
+                                Ok(rows) => TableView::Truncated { rows, missing },
+                                Err(error) => unavailable(&error.to_string()),
+                            },
+                        );
+                    } else {
+                        *input = TableInput::Sampled(unavailable(
+                            "sliced table has no earlier complete rows on this branch; full refresh requested",
+                        ));
+                        retry = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        retry
     }
 
     // Spool-internal carry-forward keeps format-neutral byte-identical output.
@@ -963,6 +1051,56 @@ fn read_counts_json(counts: ReadCounts) -> Value {
     })
 }
 
+/// One sliced family's reads and fingerprint scans, per recorded frame.
+#[derive(Default)]
+struct SliceWork {
+    frames: u64,
+    full_frames: u64,
+    scanned: u64,
+    out_of_range: u64,
+    out_of_range_max: u32,
+    early: u64,
+    early_max: u32,
+    scan_ticks: u64,
+    scan_ticks_max: u64,
+}
+
+impl SliceWork {
+    fn observe(&mut self, selection: &crate::slicing::SliceSelection) {
+        self.frames += 1;
+        self.full_frames += u64::from(selection.force_full);
+        self.scanned += u64::from(selection.scanned);
+        self.out_of_range += u64::from(selection.out_of_range);
+        self.out_of_range_max = self.out_of_range_max.max(selection.out_of_range);
+        self.early += u64::from(selection.early_count);
+        self.early_max = self.early_max.max(selection.early_count);
+        self.scan_ticks = self.scan_ticks.saturating_add(selection.scan_ticks);
+        self.scan_ticks_max = self.scan_ticks_max.max(selection.scan_ticks);
+    }
+
+    fn json(&self, frequency: u64) -> Value {
+        let ns = |ticks: u64| {
+            (u128::from(ticks) * 1_000_000_000)
+                .checked_div(u128::from(frequency))
+                .unwrap_or(0)
+                .min(u128::from(u64::MAX)) as u64
+        };
+        json!({
+            "frames": self.frames,
+            "full_frames": self.full_frames,
+            "owners_scanned": self.scanned,
+            "owners_out_of_fingerprint_range": self.out_of_range,
+            "owners_out_of_fingerprint_range_max": self.out_of_range_max,
+            "early_reads": self.early,
+            "early_reads_max": self.early_max,
+            "scan_ns": ns(self.scan_ticks),
+            "scan_mean_ns": ns(self.scan_ticks).checked_div(self.frames).unwrap_or(0),
+            "scan_max_ns": ns(self.scan_ticks_max),
+            "scope": "a sliced family reads one owner slice per hour plus owners whose change fingerprint changed (early reads); scan time is the fingerprint pass inside the family's worker job, not game-thread time; full frames read every owner; owners out of fingerprint range (ID >= 65536) are read in their slice only",
+        })
+    }
+}
+
 /// A daily or four-hourly table that truncated waits for its slot otherwise; a
 /// static table that failed would wait for the next keyframe.
 fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
@@ -976,7 +1114,10 @@ fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
             replay::cadence::Cadence::FourHourly(_) | replay::cadence::Cadence::Daily(_) => {
                 matches!(input, TableInput::Sampled(TableView::Truncated { .. }))
             }
-            replay::cadence::Cadence::Hourly => false,
+            // A failed, truncated or dropped slice read is read again at the
+            // next hour (SliceSelection::invalidate); the merge requests a full
+            // refresh only when it has no earlier rows to merge into.
+            replay::cadence::Cadence::Hourly | replay::cadence::Cadence::Sliced => false,
         }
     })
 }
@@ -1013,6 +1154,7 @@ struct Statistics {
     conversion_packs: [Distribution; crate::extended::PACK_NAMES.len()],
     frame_encoding: Distribution,
     record_writes: Distribution,
+    slices: BTreeMap<&'static str, SliceWork>,
 }
 
 impl Default for Statistics {
@@ -1051,6 +1193,7 @@ impl Default for Statistics {
             conversion_packs: std::array::from_fn(|_| Distribution::default()),
             frame_encoding: Distribution::default(),
             record_writes: Distribution::default(),
+            slices: BTreeMap::new(),
         }
     }
 }
@@ -1315,6 +1458,18 @@ impl Processor {
     }
 
     pub(crate) fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
+        // A clockless frame read nothing; its selections belong to an older hour.
+        for (index, family) in crate::slicing::FAMILIES
+            .iter()
+            .enumerate()
+            .filter(|_| captured.clock.is_some())
+        {
+            self.stats
+                .slices
+                .entry(family.name)
+                .or_default()
+                .observe(captured.extended.family_selection(index));
+        }
         self.stats.war_snapshots.observe(
             captured.wars_snapshot_sampled,
             captured.wars_snapshot.stats(),
@@ -1403,7 +1558,10 @@ impl Processor {
             Some(&mut intel),
             Some(&mut projection),
         );
-        let retry_full = needs_retry(&source.tables);
+        let sliced_retry = campaign.merge_sliced_inputs(&mut source, |table| {
+            captured.extended.slice_selection(table)
+        });
+        let retry_full = needs_retry(&source.tables) || sliced_retry;
         let skipped = campaign.apply_staggered_inputs(&mut source);
         let work = WorkSample {
             conversion: current_qpc() - conversion_started,
@@ -1689,6 +1847,11 @@ impl Processor {
         ];
         let value = json!({
             "order_instance_counters": self.stats.order_counters.json(),
+            "slices": crate::slicing::FAMILIES.iter().filter_map(|family| self.stats.slices.get(family.name).map(|work| {
+                let mut value = work.json(self.session.qpc_frequency);
+                value["owner"] = json!(format!("{:?}", family.owner));
+                (family.name.to_string(), value)
+            })).collect::<serde_json::Map<_, _>>(),
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
             "callback_work": stats.callback.json(),
@@ -3691,6 +3854,8 @@ mod tests {
                 pending: Vec::new(),
                 staggered_cache: BTreeMap::new(),
                 staggered_branch: None,
+                sliced_cache: BTreeMap::new(),
+                sliced_branch: None,
                 variables_scratch: ScriptVariableComparison::default(),
                 research_shadow: ResearchShadow::default(),
                 character_shadow: CharacterShadow::default(),
@@ -3959,6 +4124,160 @@ mod tests {
             [ReadCounts::ZERO; TABLE_COUNT]
         );
         assert_eq!(processor.status()["table_reads_frames"], 0);
+    }
+
+    fn research_rows(rows: &[(u32, u32, i64, i32)]) -> TableRows {
+        TableRows::ResearchInputs(
+            rows.iter()
+                .map(|&(country, index, progress_raw, sample_hour)| {
+                    replay::rows::ResearchInputRow {
+                        country,
+                        index,
+                        progress_raw,
+                        sample_hour,
+                        ..Default::default()
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    fn sliced_input(branch: BranchId, hour: i32, view: TableView) -> FrameInput {
+        let mut input: FrameInput = staggered_frame(branch, hour, false).into();
+        input.tables[TableId::ResearchInputs.index()] = TableInput::Sampled(view);
+        input
+    }
+
+    fn merged(input: &FrameInput) -> &TableInput {
+        &input.tables[TableId::ResearchInputs.index()]
+    }
+
+    fn merge_with(
+        campaign: &mut Campaign<MemoryBackend>,
+        input: &mut FrameInput,
+        selection: crate::slicing::SliceSelection,
+    ) -> bool {
+        campaign.merge_sliced_inputs(input, |_| Some(&selection))
+    }
+
+    #[test]
+    fn slices_replace_only_their_owners_and_keep_other_owners_rows_and_hours() {
+        use crate::slicing::SliceSelection;
+        let (mut campaign, _) = campaign();
+        // Without earlier complete rows a slice cannot stand alone.
+        let mut orphan = sliced_input(1, 1, TableView::Complete(research_rows(&[(1, 0, 5, 1)])));
+        assert!(merge_with(
+            &mut campaign,
+            &mut orphan,
+            SliceSelection::for_test(1, false, &[])
+        ));
+        assert!(matches!(
+            merged(&orphan),
+            TableInput::Sampled(TableView::Unavailable { .. })
+        ));
+        // A full read is complete by itself.
+        let full_rows =
+            research_rows(&[(1, 0, 10, 0), (1, 1, 11, 0), (3, 0, 30, 0), (25, 0, 250, 0)]);
+        let mut full = sliced_input(1, 0, TableView::Complete(full_rows.clone()));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut full,
+            SliceSelection::for_test(0, true, &[])
+        ));
+        let TableInput::SharedComplete(rows) = merged(&full) else {
+            panic!("full read complete")
+        };
+        assert_eq!(**rows, full_rows);
+        // Hour 1 reads slice 1 (owners 1 and 25) plus an early re-read of 3.
+        // Owner 1 lost a slot, owner 25 is gone, owner 3 changed; the rest stays.
+        let mut slice = sliced_input(
+            1,
+            1,
+            TableView::Complete(research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)])),
+        );
+        assert!(!merge_with(
+            &mut campaign,
+            &mut slice,
+            SliceSelection::for_test(1, false, &[3])
+        ));
+        let TableInput::SharedComplete(rows) = merged(&slice) else {
+            panic!("slice merged")
+        };
+        assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
+        // Hour 2 reads nobody here; owners keep their own sample hours.
+        let mut quiet = sliced_input(1, 2, TableView::Complete(research_rows(&[])));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut quiet,
+            SliceSelection::for_test(2, false, &[])
+        ));
+        let TableInput::SharedComplete(rows) = merged(&quiet) else {
+            panic!("quiet merged")
+        };
+        assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
+        // A failed slice publishes its failure and keeps the earlier rows.
+        let mut failed = sliced_input(1, 3, unavailable("research acquisition panicked"));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut failed,
+            SliceSelection::for_test(3, false, &[])
+        ));
+        assert!(matches!(
+            merged(&failed),
+            TableInput::Sampled(TableView::Unavailable { .. })
+        ));
+        // A truncated slice keeps everyone else and publishes what it read.
+        let mut partial = sliced_input(
+            1,
+            27,
+            TableView::Truncated {
+                rows: research_rows(&[(3, 0, 33, 27)]),
+                missing: 1,
+            },
+        );
+        // Owner 1 is selected early but the truncated walk never reached it:
+        // it keeps its earlier row and sample hour instead of disappearing.
+        assert!(!merge_with(
+            &mut campaign,
+            &mut partial,
+            SliceSelection::for_test(27, false, &[1])
+        ));
+        let TableInput::Sampled(TableView::Truncated { rows, missing: 1 }) = merged(&partial)
+        else {
+            panic!("truncated slice merged")
+        };
+        assert_eq!(*rows, research_rows(&[(1, 0, 12, 1), (3, 0, 33, 27)]));
+        // The truncated read did not replace the base for later slices.
+        let mut later = sliced_input(1, 28, TableView::Complete(research_rows(&[])));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut later,
+            SliceSelection::for_test(28, false, &[])
+        ));
+        let TableInput::SharedComplete(rows) = merged(&later) else {
+            panic!("later merged")
+        };
+        assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
+        // A new branch starts without earlier rows.
+        // A complete census that no longer sees owner 3 drops its rows now,
+        // not at its next slice; owner 1 was seen and keeps its row.
+        let mut vanished = sliced_input(1, 30, TableView::Complete(research_rows(&[])));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut vanished,
+            SliceSelection::for_test(30, false, &[]).with_census(&[1])
+        ));
+        let TableInput::SharedComplete(rows) = merged(&vanished) else {
+            panic!("census merged")
+        };
+        assert_eq!(**rows, research_rows(&[(1, 0, 12, 1)]));
+        // A new branch starts without earlier rows.
+        let mut other = sliced_input(2, 29, TableView::Complete(research_rows(&[])));
+        assert!(merge_with(
+            &mut campaign,
+            &mut other,
+            SliceSelection::for_test(29, false, &[])
+        ));
     }
 
     fn staggered_frame(branch: BranchId, hour: i32, skip: bool) -> DecodedFrame {

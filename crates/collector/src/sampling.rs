@@ -546,6 +546,12 @@ pub struct Shared {
     /// it after the hook is quiescent.
     pub pending: UnsafeCell<LossBatch>,
     cadence: UnsafeCell<CadenceState>,
+    /// Research assignment fingerprints; loaned to the Research job each hour.
+    /// Only the game thread takes and returns it.
+    /// One store per sliced family (`slicing::FAMILIES`), loaned to that
+    /// family's job each hour. Only the game thread takes and returns them.
+    slice_fingerprints: [UnsafeCell<Option<Box<crate::slicing::SliceFingerprints>>>;
+        crate::slicing::FAMILIES.len()],
     /// Fresh country authentication for this quiescent callback. Game thread only.
     country_cache: UnsafeCell<Arc<Cache>>,
     pub eta_inputs: EtaInputStats,
@@ -649,6 +655,9 @@ impl Shared {
             roster_ready: AtomicBool::new(false),
             pending: UnsafeCell::new(LossBatch::default()),
             cadence: UnsafeCell::new(CadenceState::default()),
+            slice_fingerprints: std::array::from_fn(|_| {
+                UnsafeCell::new(Some(Box::new(crate::slicing::SliceFingerprints::new())))
+            }),
             country_cache: UnsafeCell::new(country_cache),
             eta_inputs: EtaInputStats::default(),
             force_next: AtomicBool::new(false),
@@ -835,6 +844,23 @@ pub(crate) fn completed_callback_ticks(base: &AtomicI64, tail: &AtomicI64) -> Op
 /// Restore an owned frame's absorbed witnesses, record its lost hour and return
 /// the buffer. Shared by every queue-full branch; no new loss reasons.
 fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
+    // The dropped hour's sliced reads are never published: read them again.
+    // A clockless frame read nothing, and its selections belong to an older hour.
+    let read = frame.clock.is_some();
+    for (family, fingerprints) in shared
+        .slice_fingerprints
+        .iter()
+        .enumerate()
+        .filter(|_| read)
+    {
+        // SAFETY: game thread only; every store was returned by this callback.
+        if let Some(fingerprints) = unsafe { &mut *fingerprints.get() }.as_mut() {
+            frame
+                .extended
+                .family_selection(family)
+                .invalidate(fingerprints);
+        }
+    }
     unsafe {
         *shared.pending.get() = frame.dropped_before;
         (&mut *shared.pending.get()).push(frame.clock);
@@ -1289,6 +1315,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             let world_pending = queue!(acquisition::Job::World(world_request));
             // The longest hourly jobs go out first: the block ends when they do.
             // The research tables are loaned before the family that owns them.
+            // SAFETY: only this callback takes and returns the store.
+            let fingerprints =
+                unsafe { &mut *shared.slice_fingerprints[crate::slicing::RESEARCH].get() }
+                    .take()
+                    .expect("research fingerprints returned by the previous callback");
             let research_pending = queue!(acquisition::Job::Research(
                 frame.extended.take_research_request(
                     &country_snapshot,
@@ -1296,6 +1327,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     state,
                     clock.hour,
                     force_full,
+                    fingerprints,
                 )
             ));
             // Governance waits for the World join only to learn whether World
@@ -2357,9 +2389,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 });
                 (request, report)
             };
-            frame
+            let fingerprints = frame
                 .extended
                 .restore_research_request(research_request, research_report);
+            // SAFETY: only this callback takes and returns the store.
+            unsafe {
+                *shared.slice_fingerprints[crate::slicing::RESEARCH].get() = Some(fingerprints)
+            };
             // Only the core roster feeds portraits. Independent role and
             // trait jobs need their verdicts here, before the typed fallback;
             // they must not delay dispatch of unrelated map/gated/late work.
@@ -4307,6 +4343,38 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_frame_invalidates_its_sliced_reads_and_a_clockless_one_does_not() {
+        use crate::slicing::{RESEARCH, SliceSelection};
+        let shared = Shared::new(0, 0, 1);
+        // SAFETY: test thread only; nothing else holds the store.
+        let store = || {
+            unsafe { &mut *shared.slice_fingerprints[RESEARCH].get() }
+                .as_mut()
+                .unwrap()
+        };
+        let owners = [(7, Some(1)), (9, Some(1))];
+        let early_at = |hour: i32| {
+            let mut next = SliceSelection::for_test(hour, false, &[]);
+            for (owner, value) in owners {
+                next.scan(store(), owner, value);
+            }
+            store().finish_scan();
+            [7, 9].map(|owner| next.contains(owner))
+        };
+        early_at(0);
+        assert_eq!(early_at(1), [false, false]);
+        for (clock, expected) in [(Some(clock(7, 1)), [true, false]), (None, [false, false])] {
+            let index = shared.free.pop().expect("pooled buffer");
+            let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+            frame.extended.prepare_hour(7, false);
+            frame.clock = clock;
+            drop_owned_frame(&shared, frame, index);
+            // Hour 7's slice (owner 7) was not published: read it again at hour 8.
+            assert_eq!(early_at(8), expected, "clock {:?}", clock.map(|c| c.hour));
+        }
+    }
+
+    #[test]
     fn decode_queue_full_takes_the_existing_gap_branch_with_existing_counters() {
         let shared = Shared::new(0, 0, 1);
         let index = shared.free.pop().expect("pooled buffer");
@@ -4704,7 +4772,8 @@ mod tests {
                 let slot = hour.rem_euclid(24);
                 for table in TableId::ALL {
                     let expected = match cadence(table) {
-                        Cadence::Hourly => true,
+                        // A sliced table reads one owner slice every hour.
+                        Cadence::Hourly | Cadence::Sliced => true,
                         Cadence::FourHourly(s) => s as i32 == hour.rem_euclid(4),
                         Cadence::Daily(s) => s as i32 == slot,
                         Cadence::Static => false,
@@ -4721,7 +4790,7 @@ mod tests {
             }
             for table in TableId::ALL {
                 let expected = match cadence(table) {
-                    Cadence::Hourly => 24,
+                    Cadence::Hourly | Cadence::Sliced => 24,
                     Cadence::FourHourly(_) => 6,
                     Cadence::Daily(_) => 1,
                     Cadence::Static => 0,

@@ -19,6 +19,7 @@ Value equality and sample freshness are separate:
 - A fresh successful acquisition may equal the previous values and encode as `Unchanged`, while advancing its sample origin.
 - A carried table retains the original sample hour, even though it appears in a later frame.
 - Failed, truncated or skipped acquisition must not be marked as a fresh complete sample.
+- Sliced tables (`Cadence::Sliced`) carry a sample hour in every row. Each hour replaces only the rows of the owners read at that hour, so one complete table mixes rows read at different hours. A row's `sample_hour`, never the frame's hour, is when its values were true.
 
 Keep those distinctions through encoding, decoding, inspection, analytics and oracle joins. Do not infer freshness from a sibling table or the current frame's hour. Startup, branch/load transitions and keyframes must retain the full-refresh and self-contained-baseline behavior required by the format.
 

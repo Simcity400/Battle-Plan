@@ -93,6 +93,8 @@ pub(crate) struct ResearchRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub part: governance::ResearchPart,
+    /// The attachment's only fingerprint store, loaned for this hour.
+    pub fingerprints: Box<crate::slicing::SliceFingerprints>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ResearchReport {
@@ -947,7 +949,9 @@ fn run_with_memory(
         Job::Research(request) => {
             let cached = request.countries.roster_view(memory);
             Report::Research(ResearchReport {
-                ticks: request.part.capture(&cached, request.context),
+                ticks: request
+                    .part
+                    .capture(&cached, request.context, &mut request.fingerprints),
             })
         }
         Job::IntelResidual(request) => {

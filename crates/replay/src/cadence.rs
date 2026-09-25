@@ -2,10 +2,12 @@
 //!
 //! Hourly: map inputs, character identities and unit leaders. Daily: panel
 //! data, including persistent character roles and traits, walked once per 24
-//! game-hours in a fixed slot so every hour costs about the same. Static: data
-//! that cannot change after a save loads, walked only on a full hour (branch
-//! start, keyframe, load, gap). Off-slot hours record [`SKIPPED_REASON`] and
-//! the replay carries the last walk forward.
+//! game-hours in a fixed slot so every hour costs about the same. Sliced: large
+//! per-country tables refreshed one owner slice per hour, so each owner is
+//! read once per day and no hour reads the whole table; every row carries the
+//! hour it was read at. Static: data that cannot change after a save loads,
+//! walked only on a full hour (branch start, keyframe, load, gap). Off-slot
+//! hours record [`SKIPPED_REASON`] and the replay carries the last walk forward.
 
 use crate::rows::TableId;
 
@@ -21,12 +23,32 @@ pub enum Cadence {
     /// Map-visible but slow to change: every 4th hour, in the given slot.
     FourHourly(u32),
     Daily(u32),
+    /// One owner slice per hour ([`slice_of`]); a full hour reads every slice.
+    /// Rows keep their own sample hour; the recorder merges each slice into
+    /// the previous complete table.
+    Sliced,
     Static,
 }
 
+/// The hour slot at which an owner's rows of a [`Cadence::Sliced`] table are
+/// refreshed. Owners are native country IDs, so the split follows live data.
+pub const fn slice_of(owner: u32) -> u32 {
+    owner % STAGGER_PERIOD as u32
+}
+
+/// Whether `owner`'s rows of a sliced table are read at this hour.
+pub fn slice_active(owner: u32, hour: crate::Hour, force_full: bool) -> bool {
+    force_full || slice_of(owner) == hour.rem_euclid(STAGGER_PERIOD) as u32
+}
+
 pub const fn cadence(table: TableId) -> Cadence {
-    use Cadence::{Daily, FourHourly, Static};
+    use Cadence::{Daily, FourHourly, Sliced, Static};
     match table {
+        // Research inputs change at least daily for every researching country;
+        // a whole-table walk is the family's largest cost.
+        TableId::ResearchInputs | TableId::ResearchAppliedBonuses | TableId::ResearchModifiers => {
+            Sliced
+        }
         // Cannot change after the save loads (the DLC set included).
         TableId::LexicalTokens | TableId::SimulationFeatures => Static,
         // Relations feed the perspective.
@@ -139,8 +161,13 @@ pub const fn cadence(table: TableId) -> Cadence {
 pub const fn refresh_slot(table: TableId) -> Option<u32> {
     match cadence(table) {
         Cadence::Daily(slot) => Some(slot),
-        Cadence::Hourly | Cadence::FourHourly(_) | Cadence::Static => None,
+        Cadence::Hourly | Cadence::FourHourly(_) | Cadence::Sliced | Cadence::Static => None,
     }
+}
+
+/// Refreshed one owner slice per hour and merged into the previous table.
+pub const fn is_sliced(table: TableId) -> bool {
+    matches!(cadence(table), Cadence::Sliced)
 }
 
 /// Not walked every hour; off-hours carry the last walk forward.
@@ -158,7 +185,8 @@ pub fn is_refresh(table: TableId, hour: crate::Hour) -> bool {
 impl Cadence {
     pub fn is_refresh(self, hour: crate::Hour) -> bool {
         match self {
-            Cadence::Hourly => true,
+            // Every hour reads one slice.
+            Cadence::Hourly | Cadence::Sliced => true,
             Cadence::FourHourly(slot) => hour.rem_euclid(4) == slot as i32,
             Cadence::Daily(slot) => hour.rem_euclid(STAGGER_PERIOD) == slot as i32,
             Cadence::Static => false,
@@ -189,6 +217,7 @@ impl Cadence {
         const FOUR: [&str; 4] = ["H%4==0", "H%4==1", "H%4==2", "H%4==3"];
         match self {
             Cadence::Hourly => "hourly",
+            Cadence::Sliced => "one country slice per hour",
             Cadence::FourHourly(slot) => FOUR[slot as usize],
             Cadence::Daily(slot) => DAILY[slot as usize],
             Cadence::Static => "static",
@@ -206,7 +235,7 @@ mod tests {
             for table in TableId::ALL {
                 let hits = (base..base + 24).filter(|h| is_refresh(table, *h)).count();
                 let expected = match cadence(table) {
-                    Cadence::Hourly => 24,
+                    Cadence::Hourly | Cadence::Sliced => 24,
                     Cadence::FourHourly(_) => 6,
                     Cadence::Daily(_) => 1,
                     Cadence::Static => 0,
@@ -278,6 +307,22 @@ mod tests {
         assert_eq!(refresh_text(TableId::LexicalTokens), "static");
         assert!(is_staggered(TableId::LexicalTokens));
         assert_eq!(refresh_slot(TableId::LexicalTokens), None);
+    }
+
+    #[test]
+    fn sliced_tables_read_every_owner_once_per_day_and_everything_on_full_hours() {
+        assert!(is_sliced(TableId::ResearchInputs));
+        assert!(!is_staggered(TableId::ResearchInputs));
+        assert_eq!(refresh_slot(TableId::ResearchModifiers), None);
+        for owner in [0, 1, 23, 24, 439, 5_000, u32::MAX] {
+            for base in [0, 60_827_795, -48] {
+                let hits = (base..base + 24)
+                    .filter(|hour| slice_active(owner, *hour, false))
+                    .count();
+                assert_eq!(hits, 1, "owner {owner} near {base}");
+                assert!(slice_active(owner, base, true));
+            }
+        }
     }
 
     #[test]

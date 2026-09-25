@@ -108,7 +108,7 @@ fn compare_pack(
     if frame.complete::<tables::ResearchInputs>().is_ok()
         || frame.complete::<tables::ResearchAppliedBonuses>().is_ok()
     {
-        report.limitation("hourly research inputs and applied-bonus attribution have synthetic reader/codec coverage but no fresh-save oracle validation; the existing Research comparison covers only its own staggered tables", "ResearchInputs, ResearchAppliedBonuses");
+        report.limitation("sliced research inputs and applied-bonus attribution have synthetic reader/codec coverage but no fresh-save oracle validation; rows keep their own sample hour, and the existing Research comparison covers only its own staggered tables", "ResearchInputs, ResearchAppliedBonuses");
     }
     attempt!("DecisionCounts", compare_decision_counts);
     attempt!("Decisions", compare_decisions);

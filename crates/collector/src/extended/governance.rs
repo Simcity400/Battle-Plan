@@ -4,6 +4,7 @@
 use crate::{
     read_accounting,
     sampling::qpc,
+    slicing::{SliceFingerprints, SliceSelection},
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
 use engine::{
@@ -186,7 +187,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("Preferred tactic and operands", 11, &[11, 12]),
     ("Technology sharing", 13, &[13, 14]),
     ("Power balance and children", 15, &[15, 16, 17, 18]),
-    ("Hourly research inputs, bonuses and modifiers", 19, &[19, 20, 21]),
+    ("Sliced research inputs, bonuses and modifiers", 19, &[19, 20, 21]),
 ];
 
 /// Callback-local inputs for an exclusively owned governance acquisition.
@@ -322,26 +323,39 @@ pub struct Captured {
     /// The hourly research tables are loaned to their own job for this
     /// callback; `capture` leaves them to it and `restore_research` returns them.
     research_loaned: bool,
+    /// Which countries the research rows cover (see `ResearchPart`).
+    research_selection: SliceSelection,
 }
 
 /// Research inputs, applied bonuses and modifiers: the governance family's
-/// largest hourly walk, acquired by its own job so it overlaps the rest of
-/// the family instead of lengthening it. Same rows, order and outcomes.
+/// largest walk, acquired by its own job so it overlaps the rest of the
+/// family. The tables are [`replay::cadence::Cadence::Sliced`]: each hour reads
+/// one country slice, plus every country whose assignment fingerprint changed
+/// since it was last observed, and the recorder merges the result into the
+/// previous complete tables. Rows keep each read's own order and outcomes.
 pub(crate) struct ResearchPart {
     inputs: CaptureRows<engine::research_inputs::Row>,
     bonuses: CaptureRows<engine::research_inputs::BonusRow>,
     modifiers: CaptureRows<engine::research_modifiers::Row>,
+    selection: SliceSelection,
 }
 
 /// Indices of the research tables in `TABLES`.
 pub(crate) const RESEARCH: [usize; 3] = [19, 20, 21];
 
 impl ResearchPart {
-    /// Walk the research tables once for this callback, with the family
-    /// walk's per-country order, capacities and failure scope. Skipped hours
-    /// read nothing. Returns ticks indexed like `RESEARCH`; the shared walk
-    /// is charged to ResearchInputs, as it was inside the family walk.
-    pub(crate) fn capture(&mut self, memory: &impl Memory, context: CaptureContext) -> [u64; 3] {
+    /// Read this hour's research rows: every country on a full hour, else
+    /// the hour's country slice and every country whose assignment
+    /// fingerprint changed since it was last observed. The fingerprint only
+    /// adds reads; it never replaces one. Returns ticks indexed like
+    /// `RESEARCH`; the scan and walk are charged to ResearchInputs.
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        fingerprints: &mut SliceFingerprints,
+    ) -> [u64; 3] {
+        self.selection.reset(context.hour, context.force_full);
         let enabled = RESEARCH.map(|index| {
             replay::cadence::should_walk(TABLES[index], context.hour, context.force_full)
         });
@@ -373,6 +387,31 @@ impl ResearchPart {
             match ccountry::Reader::new(memory, context.base, context.game_state) {
                 Err(reason) => fail(&mut outcomes, reason),
                 Ok(countries) => {
+                    // Scan first, so a changed country joins this hour's read.
+                    let scan = qpc();
+                    let mut census = true;
+                    for slot in 1..countries.count() {
+                        let country = match countries.at(slot) {
+                            Ok(Some(country)) => country,
+                            Ok(None) => continue,
+                            Err(_) => {
+                                census = false;
+                                continue;
+                            }
+                        };
+                        let value = engine::research_inputs::fingerprint_country(
+                            memory,
+                            context.base,
+                            country.pointer,
+                        )
+                        .ok();
+                        self.selection.scan(fingerprints, country.id, value);
+                    }
+                    fingerprints.finish_scan();
+                    if census {
+                        self.selection.finish_census();
+                    }
+                    self.selection.scan_ticks = elapsed(scan);
                     for slot in 1..countries.count() {
                         let country = match countries.at(slot) {
                             Ok(Some(country)) => country,
@@ -382,6 +421,9 @@ impl ResearchPart {
                                 break;
                             }
                         };
+                        if !self.selection.contains(country.id) {
+                            continue;
+                        }
                         let input_start = outcomes[0].len();
                         let (inputs, bonuses) = engine::research_inputs::walk_country(
                             memory,
@@ -441,6 +483,7 @@ impl ResearchPart {
         self.inputs.outcome = inputs;
         self.bonuses.outcome = bonuses;
         self.modifiers.outcome = modifiers;
+        self.selection.reset(context.hour, context.force_full);
     }
 }
 
@@ -454,6 +497,7 @@ impl Captured {
             inputs: std::mem::replace(&mut self.research_inputs, CaptureRows::new(0)),
             bonuses: std::mem::replace(&mut self.research_bonuses, CaptureRows::new(0)),
             modifiers: std::mem::replace(&mut self.research_modifiers, CaptureRows::new(0)),
+            selection: std::mem::replace(&mut self.research_selection, SliceSelection::new(false)),
         }
     }
 
@@ -465,6 +509,19 @@ impl Captured {
         self.research_inputs = part.inputs;
         self.research_bonuses = part.bonuses;
         self.research_modifiers = part.modifiers;
+        self.research_selection = part.selection;
+    }
+
+    /// Start a frame's research selection at its hour; the job resets it again.
+    pub(crate) fn reset_research_selection(&mut self, hour: i32, force_full: bool) {
+        if !self.research_loaned {
+            self.research_selection.reset(hour, force_full);
+        }
+    }
+
+    /// The countries whose research rows this frame's read replaced.
+    pub(crate) fn research_selection(&self) -> &SliceSelection {
+        &self.research_selection
     }
 }
 
@@ -532,6 +589,7 @@ impl Captured {
             dictionary_required: 0,
             focus_raw_mode: false,
             research_loaned: false,
+            research_selection: SliceSelection::new(capacity.rows[19] != 0),
         }
     }
 
@@ -2103,6 +2161,7 @@ impl Captured {
                 ahead_reduction_raw: r.ahead_reduction_raw,
                 speed_bonus_raw: r.speed_bonus_raw,
                 bonus_count: r.bonus_count,
+                sample_hour: self.research_selection.hour,
             })),
 
             wrap(view::<tables::ResearchAppliedBonuses, _>(&self.research_bonuses, |_| true, |r| rows::ResearchAppliedBonusRow {
@@ -2116,10 +2175,12 @@ impl Captured {
                 ahead_reduction_raw: r.value.ahead_reduction_raw,
                 speed_bonus_raw: r.value.speed_bonus_raw,
                 cost_reduction_raw: r.cost_reduction_raw,
+                sample_hour: self.research_selection.hour,
             })),
             wrap(view::<tables::ResearchModifiers, _>(&self.research_modifiers, |_| true, |r| rows::ResearchModifierRow {
                 country: r.country, index: r.index, ordinal: r.ordinal, technology_handle: r.technology_handle,
                 kind: match r.kind { engine::research_modifiers::Kind::Technology => rows::ResearchModifierRow::TECHNOLOGY, engine::research_modifiers::Kind::CountrySpeed => rows::ResearchModifierRow::COUNTRY_SPEED, engine::research_modifiers::Kind::CategorySpeed => rows::ResearchModifierRow::CATEGORY_SPEED, engine::research_modifiers::Kind::DesignTeam => rows::ResearchModifierRow::DESIGN_TEAM, engine::research_modifiers::Kind::Experience => rows::ResearchModifierRow::EXPERIENCE, engine::research_modifiers::Kind::Sharing => rows::ResearchModifierRow::SHARING, engine::research_modifiers::Kind::License => rows::ResearchModifierRow::LICENSE, engine::research_modifiers::Kind::Scientist => rows::ResearchModifierRow::SCIENTIST, engine::research_modifiers::Kind::Year => rows::ResearchModifierRow::YEAR, engine::research_modifiers::Kind::AheadFactor => rows::ResearchModifierRow::AHEAD_FACTOR, engine::research_modifiers::Kind::MinimumSpeed => rows::ResearchModifierRow::MINIMUM_SPEED, engine::research_modifiers::Kind::CountrySource => rows::ResearchModifierRow::COUNTRY_SOURCE, engine::research_modifiers::Kind::IdeaSource => rows::ResearchModifierRow::IDEA_SOURCE, engine::research_modifiers::Kind::ScriptSource => rows::ResearchModifierRow::SCRIPT_SOURCE, engine::research_modifiers::Kind::ScientistSource => rows::ResearchModifierRow::SCIENTIST_SOURCE, engine::research_modifiers::Kind::SharingMultiplier => rows::ResearchModifierRow::SHARING_MULTIPLIER, engine::research_modifiers::Kind::SharingMaximum => rows::ResearchModifierRow::SHARING_MAXIMUM, engine::research_modifiers::Kind::ModifierMetadata => rows::ResearchModifierRow::MODIFIER_METADATA, engine::research_modifiers::Kind::ScientistCategory => rows::ResearchModifierRow::SCIENTIST_CATEGORY, engine::research_modifiers::Kind::SharingMember => rows::ResearchModifierRow::SHARING_MEMBER, engine::research_modifiers::Kind::SharingPredecessor => rows::ResearchModifierRow::SHARING_PREDECESSOR, engine::research_modifiers::Kind::SharingFilter => rows::ResearchModifierRow::SHARING_FILTER, engine::research_modifiers::Kind::SharingCategory => rows::ResearchModifierRow::SHARING_CATEGORY, engine::research_modifiers::Kind::SharingDoctrine => rows::ResearchModifierRow::SHARING_DOCTRINE, engine::research_modifiers::Kind::SharingMissingMember => rows::ResearchModifierRow::SHARING_MISSING_MEMBER }, raw: r.raw, auxiliary: r.auxiliary, count: r.count, source_id: r.source_id, name: r.name.as_bytes().to_vec(),
+                sample_hour: self.research_selection.hour,
             })),
 
         ]

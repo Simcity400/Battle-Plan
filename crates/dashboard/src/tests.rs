@@ -193,6 +193,131 @@ fn research_slot_states_preserve_effects_idle_and_gaps_without_hourly_duplicates
     assert_eq!(slot.availability.len(), 2);
 }
 
+/// One recorded hour of a sliced research recording: the rows read at
+/// `read` (with that read's assignments) carried into hour `hour`.
+fn sliced_research_frame(hour: i32, read: i32, assignments: &[Option<u32>]) -> DecodedFrame {
+    let mut frame = research_frame(1, read, assignments, &[]);
+    fixture_research_inputs(&mut frame);
+    let mut carried = research_frame(1, hour, assignments, &[]);
+    carried.tables[TableId::ResearchInputs.index()] =
+        frame.tables[TableId::ResearchInputs.index()].clone();
+    carried.tables[TableId::ResearchAppliedBonuses.index()] =
+        frame.tables[TableId::ResearchAppliedBonuses.index()].clone();
+    carried
+}
+
+#[test]
+fn sliced_research_reads_a_day_apart_are_continuous_observations() {
+    // Country 11 is read at 100, 124 and 148; its rows are carried between.
+    // Tech 1 is replaced by tech 2 between the first and second reads.
+    let mut frames = Vec::new();
+    for hour in 100..=150 {
+        let (read, assignment) = match hour {
+            100..=123 => (100, Some(1)),
+            124..=147 => (124, Some(2)),
+            _ => (148, Some(2)),
+        };
+        frames.push(sliced_research_frame(hour, read, &[assignment]));
+    }
+    let histories =
+        crate::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
+    let history = &histories["GER"];
+    // One continuous coverage span, from the first read to the last.
+    assert_eq!(
+        history.coverage,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: 148
+        }]
+    );
+    let entries = &history.slots[0].entries;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].token, "tech_1");
+    assert_eq!(entries[0].outcome, crate::ResearchOutcome::Switched);
+    assert_eq!(entries[0].ended_by_hour, Some(124));
+    // The switch happened after the previous read, bounded to a day.
+    assert_eq!(entries[1].token, "tech_2");
+    assert_eq!(entries[1].first_observed_hour, 124);
+    assert_eq!(entries[1].started_after_hour, Some(100));
+    assert_eq!(entries[1].last_observed_hour, 148);
+    assert_eq!(entries[1].outcome, crate::ResearchOutcome::Active);
+}
+
+#[test]
+fn an_unobservable_hour_between_sliced_reads_breaks_their_continuity() {
+    let mut frames = Vec::new();
+    for hour in 100..=124 {
+        let read = if hour < 124 { 100 } else { 124 };
+        let mut frame = sliced_research_frame(hour, read, &[Some(1)]);
+        if hour == 110 {
+            *frame.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
+                reason: "synthetic failed slice".into(),
+            };
+        }
+        frames.push(frame);
+    }
+    let histories =
+        crate::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
+    let history = &histories["GER"];
+    assert_eq!(history.coverage.len(), 2);
+    let entries = &history.slots[0].entries;
+    assert_eq!(entries[0].outcome, crate::ResearchOutcome::Unknown);
+    assert_eq!(entries[1].started_after_hour, None);
+}
+
+#[test]
+fn a_missed_sliced_read_of_an_owner_breaks_its_continuity() {
+    // Country 11 is read at 100, its read at 124 did not happen (its rows are
+    // carried with sample hour 100), and it is read again at 148.
+    let mut frames = Vec::new();
+    for hour in 100..=148 {
+        let read = if hour < 148 { 100 } else { 148 };
+        frames.push(sliced_research_frame(hour, read, &[Some(1)]));
+    }
+    let histories =
+        crate::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
+    let history = &histories["GER"];
+    assert_eq!(history.coverage.len(), 2);
+    let entries = &history.slots[0].entries;
+    assert_eq!(entries[0].outcome, crate::ResearchOutcome::Unknown);
+    assert_eq!(entries[1].started_after_hour, None);
+}
+
+#[test]
+fn an_unlinked_input_row_does_not_hide_linked_reads_in_its_frame() {
+    // Country 11 is read at 100 and 124; the 124 frame also carries a row of
+    // country 999, which has no CountryLinks entry.
+    let mut frames = Vec::new();
+    for hour in 100..=124 {
+        let read = if hour < 124 { 100 } else { 124 };
+        let mut frame = sliced_research_frame(hour, read, &[Some(1)]);
+        if hour == 124 {
+            let TableView::Complete(TableRows::ResearchInputs(rows)) =
+                &mut *frame.tables[TableId::ResearchInputs.index()]
+            else {
+                panic!("fixture research inputs")
+            };
+            rows.push(replay::rows::ResearchInputRow {
+                country: 999,
+                sample_hour: 124,
+                ..Default::default()
+            });
+        }
+        frames.push(frame);
+    }
+    let histories =
+        crate::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
+    let history = &histories["GER"];
+    assert_eq!(
+        history.coverage,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: 124
+        }]
+    );
+    assert_eq!(history.slots[0].entries[0].last_observed_hour, 124);
+}
+
 #[test]
 fn research_never_dates_through_gaps_or_country_reuse_and_cache_is_branch_scoped() {
     let mut missing = research_frame(1, 101, &[Some(1)], &[]);
@@ -961,6 +1086,8 @@ fn fixture_research_inputs(frame: &mut DecodedFrame) {
                     research_speed_raw: s.research_speed_raw,
                     banked_days_raw: s.banked_days_raw,
                     applied_days_raw: s.applied_days_raw,
+                    // Every fixture hour reads every country.
+                    sample_hour: frame.hour,
                     ..Default::default()
                 };
                 if s.technology_present != 0 {
