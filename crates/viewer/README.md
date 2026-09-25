@@ -1,6 +1,6 @@
 # viewer
 
-When embedded in the desktop shell, the web UI owns map controls and the timeline. Its bounded `MapAction` commands update the same viewing-country, fog and capture state as the standalone controls. The old embedded egui panels are omitted; on-demand diagnostics are returned to Settings through `MapDetails`. Native battle-marker/detail interaction is unchanged.
+When embedded in the desktop shell, the web UI owns map controls and the timeline. Its bounded `MapAction` commands update the same viewing-country, fog and capture state as the standalone controls. The old embedded egui panels are omitted; on-demand diagnostics are returned to Settings through `MapDetails`, and diagnostics mode (below) draws them over the embedded maps. Native battle-marker/detail interaction is unchanged.
 
 The native map and playback application. It resolves the recording's game assets and renders its recorded state. The desktop host embeds this same viewer; there is not a separate web map renderer.
 
@@ -18,6 +18,10 @@ On first run, choose the game and Paradox user folders. Local settings are store
 
 **UI scale** sizes the screen-space map interface: counters, map icons, VP/city labels, combat bubbles, the combat window and map tooltips. The default, *Match game*, draws them as large as the game shows them on screen: its effective `gui_scale`, clamped as the engine does while it reads `settings.txt`, applied to its frame, times the stretch of that frame onto its monitor. The game is not DPI aware, so Windows stretches its window by the monitor's display scale; a borderless frame is the monitor's desktop as the game sees it (2048x1152 for a 2560x1440 monitor at 125%). Mode, size and monitor are `settings.txt`'s with the user folder's `pdx_settings.txt` applied on top, in the engine's order ([settings.rs](../installed-content/src/settings.rs)); the game's command-line display overrides are not visible to the viewer. Without readable display settings it draws at 1.0 and says so in the warnings. The standalone window keeps a manual value in `viewer.json`; the desktop host sends its own. World-space names and the 3D map are not scaled. Dumps render at the game's frame size with scale 1.0, the verified comparison pipeline; `--ui-scale <factor>` changes that for `--dump` and `--window-dump`.
 
+### Diagnostics
+
+Technical stats (layer build times, table row counts, raw hours, branch evidence) and data limitations are hidden during normal viewing. **Diagnostics** in the header or F3 shows them and saves the choice in `viewer.json`; `--diagnostics` shows them for one run without saving. The desktop app has its own switch (see the [desktop guide](../desktop/README.md#where-to-work)). Over embedded maps they sit in a box laid out in UI-scale interface pixels, like the map's tooltip. Hidden diagnostics cost nothing per frame: their text is not built. Machine-readable outputs are unaffected: `--dump` and window captures print every limitation, `--counters-json` is unchanged, and the desktop's Settings > Diagnostics report builds them on request.
+
 `--perspective <TAG>|recorded` chooses the viewing country. `--fog on|off` controls fog; turning fog off does not remove the country perspective. Missing or mismatching covered content is refused. Some visual assets are outside the recorded hash policy; the [installed-content guide](../installed-content/README.md#asset-contracts) explains that warning. See `--help` for the full CLI.
 
 ## Rendering rules
@@ -30,9 +34,9 @@ The map size is the content's provinces bitmap (`MAP_SIZE`), carried by `camera:
 
 Windowed playback and headless export use the same wgpu rendering path. Preserve the game's verified camera, asset selection, texture colour spaces, shader inputs, blend/depth states and draw order. Do not hide a missing rendering term with a fitted global brightness or colour correction.
 
-Recorded values remain exact. Between hourly samples, moving divisions may glide along their recorded routes using recorded remaining time; the warning area states this presentation exception. Do not interpolate other recorded data. Effects whose seeds, phase or runtime state were not recorded must remain explicitly identified as reconstructions, not exact observations.
+Recorded values remain exact. Between hourly samples, moving divisions may glide along their recorded routes using recorded remaining time; the data limitations state this presentation exception. Do not interpolate other recorded data. Effects whose seeds, phase or runtime state were not recorded must remain explicitly identified as reconstructions, not exact observations.
 
-Show gaps, unavailable tables, wrong-viewpoint inputs and unsupported content honestly. A carried background sample does not become fresh because the map renders another hour. New visible features may require new recorded operands; do not fabricate them in the renderer.
+Show gaps, unavailable tables, wrong-viewpoint inputs and unsupported content honestly: in diagnostics mode and in the machine-readable outputs for agents. A carried background sample does not become fresh because the map renders another hour. New visible features may require new recorded operands; do not fabricate them in the renderer.
 
 The main map is an HDR scene. World-space country names draw before post-processing; screen labels and counters are output overlays. Water samples a separate single-sample underwater target and blends over ordinary terrain. Preserve the target formats and pass/depth order in [scene.rs](src/map/scene.rs): changing a transparent pass can alter later layers even when its geometry is unchanged.
 
@@ -51,7 +55,7 @@ Keep coordinate conversions with their caller: bitmap rows run downward, world Z
 | Movement, orders and units | [counter_move.rs](src/map/counter_move.rs), [orders.rs](src/map/orders.rs), [unit_models.rs](src/map/unit_models.rs), [trains.rs](src/map/trains.rs), [aircraft.rs](src/map/aircraft.rs). Share movement geometry between counters and figures; preserve route and admission rules. |
 | Trees, buildings and models | [trees.rs](src/map/trees.rs), [sprawl.rs](src/map/sprawl.rs), [map_buildings.rs](src/map/map_buildings.rs), [models.rs](src/map/models.rs). Preserve authored/generated geometry and shader variants. Ordinary map meshes do not inherit terrain's gradient borders or occupation stripes. Building entities come from every `gfx` descriptor, slots from the content's spawn buckets, thresholds from `NDefines`; the scene keeps each slot's destroyed-mesh history, and every entity created below the update distance stays drawn above it, from its own camera since the last seek (`--building-camera` gives a dump that history). Floating harbours are left to the naval-base layer. |
 | Weather | [weather.rs](src/map/weather.rs), [weather_effects.rs](src/map/weather_effects.rs), [post.rs](src/map/post.rs). The snow/mud grid averages the game's recorded per-province display bytes, so it needs no history; winter grading uses raw province snow. Particles start empty when a region's weather starts. |
-| Availability and limitations | [tables.rs](src/map/tables.rs). Missing old-format operands, wrong-viewpoint data and reconstructed presentation must remain visible to the user. |
+| Availability and limitations | [tables.rs](src/map/tables.rs). Missing old-format operands, wrong-viewpoint data and reconstructed presentation must remain visible in diagnostics mode and in the machine-readable outputs for agents (owner decision, 2026-09-25). |
 
 ## Fidelity limits
 

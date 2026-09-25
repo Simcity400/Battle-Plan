@@ -263,11 +263,26 @@ struct Outgoing {
     maps: BTreeMap<String, DashboardMapState>,
     map_order: VecDeque<String>,
     data: VecDeque<DataEvent>,
+    /// An odd number of diagnostics-shortcut presses not yet sent; two presses
+    /// between sends cancel out.
+    toggle_diagnostics: bool,
 }
 
 impl Outgoing {
+    /// Records one diagnostics-shortcut press; a second press before the
+    /// writer sends it cancels the first.
+    fn toggle_diagnostics(&mut self) {
+        self.toggle_diagnostics = !self.toggle_diagnostics;
+    }
+
+    /// The toggle event to send, if an odd number of presses is pending.
+    fn take_toggle_diagnostics(&mut self) -> Option<NativeEvent> {
+        std::mem::take(&mut self.toggle_diagnostics).then_some(NativeEvent::ToggleDiagnostics)
+    }
+
     fn is_empty(&self) -> bool {
-        self.ready.is_none()
+        !self.toggle_diagnostics
+            && self.ready.is_none()
             && self.details.is_none()
             && self.state.is_none()
             && self.error.is_none()
@@ -528,6 +543,7 @@ impl Parent {
                             .data
                             .pop_front()
                             .map(|response| NativeEvent::Data { response }),
+                        outgoing.take_toggle_diagnostics(),
                     ];
                     drop(outgoing);
                     output.output_space.notify_all();
@@ -661,6 +677,19 @@ impl Controller {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .details = Some(details);
+        self.shared.output_ready.notify_one();
+    }
+
+    /// Asks the host to flip its diagnostics choice; it answers with
+    /// `MapAction::Diagnostics`.
+    pub fn toggle_diagnostics(&self) {
+        let mut outgoing = self
+            .shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        outgoing.toggle_diagnostics();
+        drop(outgoing);
         self.shared.output_ready.notify_one();
     }
 
@@ -1169,6 +1198,24 @@ unsafe extern "system" fn window_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_diagnostics_presses_before_a_send_cancel_out() {
+        let mut outgoing = Outgoing::default();
+        assert!(outgoing.is_empty());
+        outgoing.toggle_diagnostics();
+        outgoing.toggle_diagnostics();
+        assert!(outgoing.is_empty());
+        assert!(outgoing.take_toggle_diagnostics().is_none());
+        outgoing.toggle_diagnostics();
+        assert!(!outgoing.is_empty());
+        assert!(matches!(
+            outgoing.take_toggle_diagnostics(),
+            Some(NativeEvent::ToggleDiagnostics)
+        ));
+        // Sent once: the press is consumed.
+        assert!(outgoing.is_empty() && outgoing.take_toggle_diagnostics().is_none());
+    }
 
     #[test]
     fn unload_cancels_an_earlier_open_but_allows_a_later_reopen() {

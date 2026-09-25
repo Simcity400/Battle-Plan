@@ -73,6 +73,10 @@ pub enum NativeEvent {
     Data {
         response: DataEvent,
     },
+    /// The user pressed the diagnostics shortcut in the native map. The host
+    /// owns the saved choice, so it toggles it and sends the result back as
+    /// [`MapAction::Diagnostics`].
+    ToggleDiagnostics,
 }
 
 /// The manual map interface scales the viewer accepts. `RangeInclusive::contains`
@@ -95,6 +99,10 @@ pub enum MapAction {
     /// The screen-space map interface's scale; `None` matches the game on screen.
     UiScale {
         scale: Option<f32>,
+    },
+    /// Shows or hides technical stats and data limitations over every map.
+    Diagnostics {
+        enabled: bool,
     },
     Configure {
         options: MapOptions,
@@ -140,7 +148,7 @@ impl MapAction {
                     return Err("Invalid map UI scale");
                 }
             }
-            Self::Inspect | Self::Vsync { .. } => {}
+            Self::Inspect | Self::Vsync { .. } | Self::Diagnostics { .. } => {}
         }
         Ok(())
     }
@@ -495,6 +503,23 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_diagnostics_switch_crosses_the_pipe_both_ways() {
+        let action: super::MapAction =
+            serde_json::from_str(r#"{"kind":"diagnostics","enabled":true}"#).unwrap();
+        assert!(matches!(
+            action,
+            super::MapAction::Diagnostics { enabled: true }
+        ));
+        assert!(action.validate().is_ok());
+        let event = serde_json::to_string(&super::NativeEvent::ToggleDiagnostics).unwrap();
+        assert_eq!(event, r#"{"event":"toggle_diagnostics"}"#);
+        assert!(matches!(
+            serde_json::from_str(&event).unwrap(),
+            super::NativeEvent::ToggleDiagnostics
+        ));
     }
 
     #[test]

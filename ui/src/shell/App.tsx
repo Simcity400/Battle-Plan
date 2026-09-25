@@ -21,6 +21,7 @@ import './shell.css';
 import { useReplayLibrary } from '../dashboard/replayLibrary';
 import type { ContentFolders, ReplayMetadata } from './api';
 import { hasMapOverlay, isMapOverlay } from './mapOverlays';
+import { useDiagnosticsShortcut } from './diagnosticsSetting';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
@@ -118,6 +119,7 @@ function MapState({ icon = 'map', eyebrow, title, children, busy = false, alert 
 export default function App() {
   const appearance = useAppearance();
   const sidebar = useSidebarState();
+  useDiagnosticsShortcut();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('folders');
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget | null>(null);
   const lastView = useRef<Tab>(desktopAvailable ? 'map' : 'analytics');

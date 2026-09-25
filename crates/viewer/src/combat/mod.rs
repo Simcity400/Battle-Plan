@@ -143,11 +143,16 @@ pub struct Window {
     )>,
 }
 impl Window {
-    pub fn warnings(&self) -> Vec<String> {
-        self.cached
-            .as_ref()
-            .map(|cache| cache.4.warnings.clone())
-            .unwrap_or_default()
+    /// What the open window cannot show exactly: its bindings' gaps and the
+    /// combat artwork's. Built on request, never per frame; empty when no
+    /// window is open.
+    pub fn warnings(&self, document: &Document) -> Vec<String> {
+        let Some(cache) = self.cached.as_ref().filter(|_| self.selection.is_some()) else {
+            return Vec::new();
+        };
+        let mut warnings = cache.4.warnings.clone();
+        warnings.extend(document.icons.combat.warnings.iter().cloned());
+        warnings
     }
     pub fn open(&mut self, selection: Selection) {
         *self = Self {
@@ -428,8 +433,6 @@ impl Window {
             drawn.rect[2] = drawn.rect[2].max(quad.rect[0] + quad.rect[2] - drawn.rect[0]);
             drawn.rect[3] = drawn.rect[3].max(quad.rect[1] + quad.rect[3] - drawn.rect[1]);
         }
-        drawn.warnings = bindings.warnings.clone();
-        drawn.warnings.extend(assets.warnings.iter().cloned());
         Ok(Some(drawn))
     }
 }
@@ -440,7 +443,6 @@ pub struct Drawn {
     pub rect: [f32; 4],
     pub close: Option<[f32; 4]>,
     pub lists: [Option<[f32; 4]>; 4],
-    pub warnings: Vec<String>,
     pub scroll_buttons: Vec<([f32; 4], usize, i32)>,
 }
 impl Drawn {

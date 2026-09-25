@@ -12,13 +12,13 @@ Content identity uses the versioned coverage policy and layer hashes. A local ca
 
 ## Refuse mismatches clearly
 
-The viewer must refuse missing or mismatching recorded content. An unverified identity is also refused unless the user explicitly enables `--allow-unverified-content`. That override keeps a visible warning and does not waive hash checks.
+The viewer must refuse missing or mismatching recorded content. An unverified identity is also refused unless the user explicitly enables `--allow-unverified-content`. That override does not waive hash checks. Its warning shows in the viewer's diagnostics mode and in the machine-readable outputs, and exported and captured images keep their UNVERIFIED CONTENT banner (owner decision, 2026-09-25).
 
 Keep absent files, unknown data and parse failures distinct from valid empty values. Preserve exact fixed-point and integer representations for save comparisons. Do not fill missing runtime caches from guesses just because a text save cannot represent them; the oracle should state the limitation.
 
 ## Asset contracts
 
-Loading an asset does not prove its bytes were verified. [content.rs](src/content.rs) owns the versioned coverage roots. `ResolvedLayers::read_uncovered` can load visual assets outside those roots, but those bytes are not hash-verified and the viewer must say so. Covered paths still use normal verification. Do not silence this warning or expand the coverage policy incidentally during a rendering change.
+Loading an asset does not prove its bytes were verified. [content.rs](src/content.rs) owns the versioned coverage roots. `ResolvedLayers::read_uncovered` can load visual assets outside those roots, but those bytes are not hash-verified and the viewer must say so: in diagnostics mode and in the machine-readable outputs (owner decision, 2026-09-25). Covered paths still use normal verification. Do not remove this warning or expand the coverage policy incidentally during a rendering change.
 
 Preserve palette indices and image origin in [BMP](src/image/bmp.rs), and authored mip levels, cube faces and original extents in [DDS](src/image/dds.rs). The viewer chooses linear or sRGB sampling for each resource's role; there is no correct blanket conversion for all textures.
 

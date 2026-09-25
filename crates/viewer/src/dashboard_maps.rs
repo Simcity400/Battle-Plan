@@ -22,7 +22,7 @@ use eframe::{egui, wgpu};
 
 use crate::{
     Config, Options,
-    app::{Viewer, date, load_scene},
+    app::{Viewer, date, load_scene, map_overlay},
     document::{Content, Document, InitialHour},
     hours::{Resources, SharedDecoder},
     map::scene::Scene,
@@ -54,7 +54,6 @@ struct MapView {
     loading: Option<SceneLoad>,
     permit: Option<Arc<ScenePermit>>,
     error: Option<String>,
-    warnings: bool,
     admission_error: Option<String>,
 }
 
@@ -201,6 +200,8 @@ pub struct DashboardMaps {
     limits: MapLimits,
     budget: Arc<SceneBudget>,
     waiting_source: Option<PathBuf>,
+    /// The host's diagnostics choice, passed on to every map.
+    diagnostics: bool,
 }
 
 struct MapLimits {
@@ -287,7 +288,16 @@ impl DashboardMaps {
             limits,
             budget,
             waiting_source: None,
+            diagnostics: false,
         })
+    }
+
+    /// Shows or hides every map's stats and data limitations.
+    pub fn set_diagnostics(&mut self, enabled: bool) {
+        self.diagnostics = enabled;
+        for view in self.views.values_mut() {
+            view.viewer.diagnostics = enabled;
+        }
     }
 
     pub fn wait_for_source(&mut self, path: Option<PathBuf>) {
@@ -484,13 +494,13 @@ impl DashboardMaps {
             if let Some(mut old) = self.views.remove(&target.id) {
                 old.retire(frame);
             }
+            let target_id = target.id.clone();
             self.views.insert(
                 target.id.clone(),
                 MapView {
                     target,
                     source,
                     error,
-                    warnings: false,
                     loading: None,
                     admission_error: None,
                     permit: None,
@@ -502,6 +512,9 @@ impl DashboardMaps {
                     )),
                 },
             );
+            if let Some(view) = self.views.get_mut(&target_id) {
+                view.viewer.diagnostics = self.diagnostics;
+            }
         }
         let live: BTreeSet<_> = self
             .views
@@ -863,54 +876,26 @@ impl DashboardMaps {
                 });
             }
             let state = view.state();
-            let warnings = view.viewer.map_warnings();
-            if state.loading || !warnings.is_empty() {
-                let overlay_rect = egui::Rect::from_min_size(
-                    clip.min + egui::vec2(8.0, 8.0),
-                    egui::vec2(
-                        (clip.width() - 16.0).max(1.0),
-                        (clip.height() * 0.4).max(1.0),
-                    ),
-                );
-                let mut overlay = ui.new_child(
-                    egui::UiBuilder::new()
-                        .id_salt((id, "status"))
-                        .max_rect(overlay_rect)
-                        .layout(egui::Layout::top_down(egui::Align::Min)),
-                );
-                overlay.set_clip_rect(clip);
-                egui::Frame::new()
-                    .fill(egui::Color32::from_black_alpha(220))
-                    .inner_margin(6)
-                    .show(&mut overlay, |ui| {
-                        if state.loading {
-                            ui.label(match state.hour {
-                                Some(hour) => format!(
-                                    "Showing {} · Loading {}",
-                                    date(hour),
-                                    date(view.target.hour)
-                                ),
-                                None => format!("Loading {}", date(view.target.hour)),
-                            });
-                        }
-                        if !warnings.is_empty() {
-                            if ui
-                                .small_button(format!("{} data limitations", warnings.len()))
-                                .clicked()
-                            {
-                                view.warnings = !view.warnings;
-                            }
-                            if view.warnings {
-                                egui::ScrollArea::vertical()
-                                    .max_height((overlay_rect.height() - 50.0).max(24.0))
-                                    .show(ui, |ui| {
-                                        for warning in warnings {
-                                            ui.colored_label(egui::Color32::YELLOW, warning);
-                                        }
-                                    });
-                            }
-                        }
-                    });
+            // Diagnostics show only when the user turned them on; the loading
+            // status always shows.
+            let diagnostics = view.viewer.diagnostics && view.viewer.has_map();
+            if state.loading || diagnostics {
+                let points = view.viewer.interface_points;
+                map_overlay(ui, clip, (id, "status"), points, |ui, height| {
+                    if state.loading {
+                        ui.label(match state.hour {
+                            Some(hour) => format!(
+                                "Showing {} · Loading {}",
+                                date(hour),
+                                date(view.target.hour)
+                            ),
+                            None => format!("Loading {}", date(view.target.hour)),
+                        });
+                    }
+                    if diagnostics {
+                        view.viewer.diagnostics_ui(ui, height);
+                    }
+                });
             }
         }
     }

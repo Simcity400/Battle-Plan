@@ -1,8 +1,16 @@
-//! Application UI scale, the native map's interface scale and presentation settings. Never changes the user's monitor mode or installed content.
+//! Application UI scale, the native map's interface scale, presentation settings
+//! and the maps' diagnostics switch. Never changes the user's monitor mode or installed content.
 use crate::native::NativeHost;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, sync::Mutex};
-use tauri::{Manager, State, WebviewWindow};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 // Ignore legacy window dimensions/mode when reading existing preferences.
@@ -15,6 +23,11 @@ pub struct VideoSettings {
     /// The native map interface's scale in percent; `None` matches the game on screen.
     #[serde(default)]
     pub map_ui_scale: Option<f64>,
+    /// Whether maps show technical stats and data limitations. Off by default.
+    /// It is not a game setting: inheriting the game's display settings and the
+    /// Apply form keep it, and only [`set_map_diagnostics`] changes it.
+    #[serde(default)]
+    pub map_diagnostics: bool,
 }
 impl Default for VideoSettings {
     fn default() -> Self {
@@ -23,6 +36,7 @@ impl Default for VideoSettings {
             ui_scale: 100.0,
             vsync: true,
             map_ui_scale: None,
+            map_diagnostics: false,
         }
     }
 }
@@ -45,10 +59,15 @@ impl VideoSettings {
         }
     }
 }
-pub struct VideoState(pub Mutex<Result<VideoSettings, String>>);
+/// The saved settings, and whether `--diagnostics` turned the maps'
+/// diagnostics on for this run without saving it.
+pub struct VideoState(pub Mutex<Result<VideoSettings, String>>, AtomicBool);
 impl Default for VideoState {
     fn default() -> Self {
-        Self(Mutex::new(load()))
+        let requested = std::env::args_os()
+            .skip(1)
+            .any(|argument| argument == "--diagnostics");
+        Self(Mutex::new(load()), AtomicBool::new(requested))
     }
 }
 fn path() -> Result<PathBuf, String> {
@@ -136,6 +155,7 @@ fn parse_game_display(document: &installed_content::parser::Document) -> Result<
         ui_scale: scale * 100.0,
         vsync,
         map_ui_scale: None,
+        map_diagnostics: false,
     };
     settings.validate()?;
     Ok(settings)
@@ -196,7 +216,7 @@ pub fn restore(window: &WebviewWindow) -> Result<(), String> {
         if settings.use_game_settings
             && let Ok(game) = game_settings(window)
         {
-            *settings = game;
+            *settings = inherit_game(settings, game);
         }
         apply_scale(window, settings)?;
     }
@@ -221,7 +241,7 @@ pub fn video_settings(
                 enabled: game.vsync,
             })?;
         }
-        settings = game;
+        settings = inherit_game(&settings, game);
         *stored = Ok(settings.clone());
     }
     Ok(reply(&window, settings))
@@ -233,7 +253,7 @@ pub fn set_video_settings(
     host: State<'_, NativeHost>,
     settings: VideoSettings,
 ) -> Result<VideoReply, String> {
-    let settings = if settings.use_game_settings {
+    let mut settings = if settings.use_game_settings {
         game_settings(&window)?
     } else {
         settings
@@ -247,6 +267,12 @@ pub fn set_video_settings(
     }
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
     let previous = stored.clone().unwrap_or_default();
+    // The form does not carry the diagnostics choice; keep the saved one, from
+    // the file when the settings could not be restored.
+    settings.map_diagnostics = match &*stored {
+        Ok(stored) => stored.map_diagnostics,
+        Err(_) => load().is_ok_and(|saved| saved.map_diagnostics),
+    };
     let result = (|| {
         if stored.is_err() || settings.ui_scale != previous.ui_scale {
             apply_scale(&window, &settings)?;
@@ -273,6 +299,79 @@ pub fn set_video_settings(
     Ok(reply(&window, settings))
 }
 
+/// Settings taken over from the game's display settings. The diagnostics
+/// choice is not a game setting, so the current one is kept.
+fn inherit_game(current: &VideoSettings, game: VideoSettings) -> VideoSettings {
+    VideoSettings {
+        map_diagnostics: current.map_diagnostics,
+        ..game
+    }
+}
+
+/// Whether maps show diagnostics: `--diagnostics` for this run until the user
+/// changes it, otherwise the saved choice.
+fn effective_map_diagnostics(requested: bool, stored: &Result<VideoSettings, String>) -> bool {
+    requested
+        || stored
+            .as_ref()
+            .is_ok_and(|settings| settings.map_diagnostics)
+}
+
+pub fn current_map_diagnostics(state: &VideoState) -> bool {
+    state
+        .0
+        .lock()
+        .is_ok_and(|stored| effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored))
+}
+
+/// The settings to save with the diagnostics choice `enabled`. Settings that
+/// could not be restored (an unreadable file or a failed zoom) start again
+/// from what `load` reads, so the other saved settings are kept.
+fn with_map_diagnostics(
+    stored: &Result<VideoSettings, String>,
+    enabled: bool,
+    load: impl FnOnce() -> Result<VideoSettings, String>,
+) -> Result<VideoSettings, String> {
+    let mut next = match stored {
+        Ok(settings) => settings.clone(),
+        Err(_) => load()?,
+    };
+    next.map_diagnostics = enabled;
+    Ok(next)
+}
+
+/// Saves the maps' diagnostics choice (`None` flips it), sends it to the
+/// native viewer and tells the frontend. Returns the new choice.
+pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<bool, String> {
+    let state = app.state::<VideoState>();
+    let mut stored = state.0.lock().map_err(|e| e.to_string())?;
+    let enabled = enabled
+        .unwrap_or_else(|| !effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored));
+    let next = with_map_diagnostics(&stored, enabled, load)?;
+    save(&next)?;
+    *stored = Ok(next);
+    state.1.store(false, Ordering::Release);
+    // Sent before the lock is released, so two changes reach the viewer in the
+    // order they were saved.
+    app.state::<NativeHost>().set_diagnostics(enabled);
+    drop(stored);
+    let _ = app.emit("map-diagnostics", enabled);
+    Ok(enabled)
+}
+
+#[tauri::command]
+pub fn map_diagnostics(state: State<'_, VideoState>) -> bool {
+    current_map_diagnostics(&state)
+}
+
+#[tauri::command]
+pub fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<bool, String> {
+    // Settings shows the failure even when the keyboard shortcut asked.
+    change_map_diagnostics(&app, enabled).inspect_err(|error| {
+        let _ = app.emit("map-diagnostics-error", error);
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,7 +387,51 @@ mod tests {
         )
         .unwrap();
         assert!(!old.use_game_settings);
+        // Diagnostics stay off unless a saved file turned them on.
+        assert!(!old.map_diagnostics && !settings.map_diagnostics);
+        assert!(!VideoSettings::default().map_diagnostics);
         assert_eq!(old.map_ui_scale, None);
+    }
+
+    #[test]
+    fn diagnostics_follow_the_flag_until_changed_and_survive_game_settings() {
+        let on = VideoSettings {
+            map_diagnostics: true,
+            ..VideoSettings::default()
+        };
+        let off = Ok(VideoSettings::default());
+        // `--diagnostics` shows them for the run whatever is saved; without it
+        // the saved choice decides, and an unreadable file means off.
+        assert!(effective_map_diagnostics(true, &off));
+        assert!(effective_map_diagnostics(false, &Ok(on.clone())));
+        assert!(!effective_map_diagnostics(false, &off));
+        assert!(!effective_map_diagnostics(false, &Err("unreadable".into())));
+        // Inheriting the game's display settings (restore, video_settings)
+        // keeps the choice.
+        let game = VideoSettings {
+            ui_scale: 125.0,
+            ..VideoSettings::default()
+        };
+        let inherited = inherit_game(&on, game);
+        assert!(inherited.map_diagnostics && inherited.ui_scale == 125.0);
+        // Saving the choice keeps the other settings, and settings that could
+        // not be restored start again from the file rather than the defaults.
+        let saved = with_map_diagnostics(&Ok(game_like(110.0)), true, || unreachable!()).unwrap();
+        assert!(saved.map_diagnostics && saved.ui_scale == 110.0);
+        let repaired =
+            with_map_diagnostics(&Err("zoom failed".into()), false, || Ok(game_like(90.0)))
+                .unwrap();
+        assert!(!repaired.map_diagnostics && repaired.ui_scale == 90.0);
+        assert!(with_map_diagnostics(&Err("x".into()), true, || Err("bad file".into())).is_err());
+    }
+
+    fn game_like(ui_scale: f64) -> VideoSettings {
+        VideoSettings {
+            use_game_settings: false,
+            ui_scale,
+            map_diagnostics: true,
+            ..VideoSettings::default()
+        }
     }
 
     #[test]

@@ -3,7 +3,10 @@
 use crate::invalid;
 use installed_content::ResolveOptions;
 use serde::{Deserialize, Serialize};
-use std::{fs, io, path::PathBuf};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Config {
@@ -13,6 +16,11 @@ pub struct Config {
     /// screen. The desktop host keeps its own and sends it to the viewer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_scale: Option<f32>,
+    /// Whether the standalone viewer shows its technical stats and data
+    /// limitations over the map. Off unless the user turns it on; the desktop
+    /// host keeps its own choice and sends it to the viewer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub diagnostics: bool,
 }
 
 impl Config {
@@ -24,16 +32,42 @@ impl Config {
     }
 
     pub fn load() -> io::Result<Self> {
-        match fs::read(Self::path()?) {
+        Self::load_from(&Self::path()?)
+    }
+
+    fn load_from(path: &Path) -> io::Result<Self> {
+        match fs::read(path) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error),
         }
     }
 
+    /// Stores the folders. The saved diagnostics choice is kept as it is on
+    /// disk; only [`Config::save_diagnostics`] changes it.
     pub fn save(&self) -> io::Result<()> {
         self.resolve_options()?;
-        fs::write(Self::path()?, serde_json::to_vec_pretty(self)?)
+        self.save_at(&Self::path()?)
+    }
+
+    fn save_at(&self, path: &Path) -> io::Result<()> {
+        let config = Self {
+            diagnostics: Self::load_from(path).is_ok_and(|stored| stored.diagnostics),
+            ..self.clone()
+        };
+        fs::write(path, serde_json::to_vec_pretty(&config)?)
+    }
+
+    /// Stores only the diagnostics choice, keeping the saved folders as they
+    /// are even when they are not chosen yet.
+    pub fn save_diagnostics(enabled: bool) -> io::Result<()> {
+        Self::save_diagnostics_at(&Self::path()?, enabled)
+    }
+
+    fn save_diagnostics_at(path: &Path, enabled: bool) -> io::Result<()> {
+        let mut config = Self::load_from(path)?;
+        config.diagnostics = enabled;
+        fs::write(path, serde_json::to_vec_pretty(&config)?)
     }
 
     /// Stores only the interface scale, keeping the saved folders as they are
@@ -63,5 +97,43 @@ impl Config {
             .join("HOI4Replay")
             .join("viewer"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use std::path::Path;
+
+    #[test]
+    fn saving_folders_keeps_the_diagnostics_choice_and_the_choice_keeps_folders() {
+        let folder = std::env::temp_dir().join(format!("hoi4-config-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("viewer.json");
+        let _ = std::fs::remove_file(&path);
+        // Off unless saved: a missing file and an older file without the key.
+        assert!(!Config::load_from(&path).unwrap().diagnostics);
+        std::fs::write(&path, br#"{"game_dir":"G","user_dir":"U"}"#).unwrap();
+        assert!(!Config::load_from(&path).unwrap().diagnostics);
+        Config::save_diagnostics_at(&path, true).unwrap();
+        let saved = Config::load_from(&path).unwrap();
+        assert!(saved.diagnostics && saved.game_dir == Path::new("G"));
+        // A folder save from a copy that still says off keeps the saved choice.
+        let folders = Config {
+            game_dir: "G2".into(),
+            user_dir: "U2".into(),
+            ..Config::default()
+        };
+        folders.save_at(&path).unwrap();
+        let saved = Config::load_from(&path).unwrap();
+        assert!(saved.diagnostics && saved.user_dir == Path::new("U2"));
+        // Turning it off removes the key rather than writing false.
+        Config::save_diagnostics_at(&path, false).unwrap();
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("diagnostics")
+        );
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 }

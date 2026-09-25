@@ -162,9 +162,97 @@ struct ShownHour {
     political_summary: (usize, usize),
     political_build: Duration,
     limitations: map::tables::Limitations,
-    snow_line: String,
+    /// What the weather table held, the snow and mud grid's size and how long
+    /// it took to rasterise. Kept raw so ordinary viewing formats nothing.
+    snow: (map::weather::Summary, [u32; 2], Duration),
     /// The header's country list and viewing tag, built with the hour.
     header: Arc<hours::Header>,
+}
+
+impl ShownHour {
+    /// The hour's technical stats, shown only in diagnostics mode.
+    fn stats(&self) -> [String; 2] {
+        let (filled, distinct) = self.political_summary;
+        let (summary, [width, height], build) = &self.snow;
+        [
+            format!(
+                "Political layer: {filled} provinces filled in {distinct} country colors, rebuilt in {:.0} ms",
+                self.political_build.as_secs_f64() * 1000.0
+            ),
+            format!(
+                "Snow and mud: {}; {width}x{height} grid rasterised in {:.0} ms",
+                summary.line(),
+                build.as_secs_f64() * 1000.0
+            ),
+        ]
+    }
+}
+
+/// Where [`map_overlay`] puts its box inside the map's `clip` rectangle, with
+/// `points` egui points per interface pixel: an 8-pixel inset and at most 40%
+/// of the map's height.
+fn overlay_rect(clip: egui::Rect, points: f32) -> egui::Rect {
+    let inset = 8.0 * points;
+    egui::Rect::from_min_size(
+        clip.min + egui::vec2(inset, inset),
+        egui::vec2(
+            (clip.width() - 2.0 * inset).max(1.0),
+            (clip.height() * 0.4).max(1.0),
+        ),
+    )
+}
+
+/// Scales `style`'s text and spacing by `points` egui points per interface
+/// pixel, so egui lays the text out at its final size rather than stretching it.
+fn scale_style(style: &mut egui::Style, points: f32) {
+    for font in style.text_styles.values_mut() {
+        font.size *= points;
+    }
+    let spacing = &mut style.spacing;
+    spacing.item_spacing *= points;
+    spacing.button_padding *= points;
+    spacing.interact_size *= points;
+    spacing.icon_width *= points;
+    spacing.icon_width_inner *= points;
+    spacing.icon_spacing *= points;
+    spacing.indent *= points;
+    let scroll = &mut spacing.scroll;
+    scroll.bar_width *= points;
+    scroll.bar_inner_margin *= points;
+    scroll.bar_outer_margin *= points;
+    scroll.floating_width *= points;
+    scroll.floating_allocated_width *= points;
+    scroll.handle_min_length *= points;
+}
+
+/// Draws a translucent box over the top of a native map's `clip` rectangle for
+/// its loading status and diagnostics. `add` gets the height its lists may use.
+///
+/// The box is part of the map's screen-space interface, so like the map's
+/// tooltip (`map::ui_scale`) it is laid out in interface pixels: `points` is
+/// egui points per interface pixel, the UI scale over the pixels per point.
+pub(crate) fn map_overlay(
+    ui: &mut egui::Ui,
+    clip: egui::Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    points: f32,
+    add: impl FnOnce(&mut egui::Ui, f32),
+) {
+    let rect = overlay_rect(clip, points);
+    let mut overlay = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(id)
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    overlay.set_clip_rect(clip);
+    scale_style(overlay.style_mut(), points);
+    egui::Frame::new()
+        .fill(egui::Color32::from_black_alpha(220))
+        .inner_margin(egui::Margin::same(6) * points)
+        .show(&mut overlay, |ui| {
+            add(ui, (rect.height() - 50.0 * points).max(24.0 * points))
+        });
 }
 
 /// The ids of the shared hour layers the scene holds (`hours::Shared`), so an
@@ -195,6 +283,32 @@ const WARNING_SHARE: f32 = 0.4;
 /// The height the recorded-table list scrolls within, for the same reason: 148
 /// tables wrap to twenty lines, and the bottom panel grew to hold every one.
 const TABLE_LIST_HEIGHT: f32 = 96.0;
+
+/// Shows or hides diagnostics in the standalone and embedded viewer; the
+/// desktop's web interface uses the same key.
+const DIAGNOSTICS_KEY: egui::Key = egui::Key::F3;
+
+/// Whether `event` is the diagnostics shortcut: a first press of the key with
+/// no modifier, as the web interface's handler takes it.
+fn is_diagnostics_shortcut(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key,
+            pressed: true,
+            repeat: false,
+            modifiers,
+            ..
+        } if *key == DIAGNOSTICS_KEY && modifiers.is_none()
+    )
+}
+
+/// Whether diagnostics start shown: `--diagnostics` for this run, otherwise
+/// the standalone viewer's saved choice. An embedded viewer waits for the
+/// desktop host's choice instead of reading `viewer.json`.
+fn initial_diagnostics(requested: bool, saved: bool, embedded: bool) -> bool {
+    requested || (!embedded && saved)
+}
 
 // capture
 /// A readback of the window's map target, pending until a frame has been drawn.
@@ -264,7 +378,19 @@ pub struct Viewer {
     loaded_config: Option<Config>,
     rendered: Option<Playhead>,
     rendered_sequence: u64,
+    /// The last frame's data limitations, built only while they are shown or
+    /// a capture will print them.
     map_warnings: Vec<String>,
+    /// Whether technical stats and data limitations are shown with the map.
+    /// Off by default: the standalone viewer saves the choice in
+    /// `viewer.json`, the desktop host sends its own, and `--diagnostics`
+    /// turns it on for one run.
+    pub(crate) diagnostics: bool,
+    /// Whether an embedded map's diagnostics box lists its data limitations.
+    diagnostics_open: bool,
+    /// egui points per interface pixel at the last map frame, which lays out
+    /// the diagnostics box over an embedded map ([`map_overlay`]).
+    pub(crate) interface_points: f32,
     embedded: Option<crate::embedded::Controller>,
     embedded_open: Option<crate::embedded::OpenRequest>,
     embedded_seek: Option<crate::embedded::Seek>,
@@ -545,6 +671,13 @@ impl Viewer {
             rendered: None,
             rendered_sequence: 0,
             map_warnings: Vec::new(),
+            diagnostics: initial_diagnostics(
+                options.diagnostics,
+                config.diagnostics,
+                embedded.is_some(),
+            ),
+            diagnostics_open: false,
+            interface_points: 1.0,
             embedded,
             embedded_open: None,
             embedded_seek: None,
@@ -631,6 +764,8 @@ impl Viewer {
         options.combat = None;
         let mut viewer = Self::create(config, options, None, Arc::new(Mutex::new(None)), None, gpu);
         viewer.dashboard_map = true;
+        // The dashboard passes on the host's choice, not the standalone one.
+        viewer.diagnostics = false;
         viewer.dropper = Some(Arc::clone(&resources.dropper));
         viewer.shared_resources = Some(resources);
         viewer.settings = false;
@@ -797,8 +932,87 @@ impl Viewer {
         }
     }
 
-    pub(crate) fn map_warnings(&self) -> &[String] {
-        &self.map_warnings
+    /// Everything the hour on screen could not draw exactly. The hour's own
+    /// gaps lead, because they are the part that changes with the hour; the
+    /// persistent content limitations and the political layer's follow, in
+    /// the order `--dump` prints them, so a capture beside a dump lists the
+    /// same lines in the same order. Names and labels are drawn later in the
+    /// frame, so theirs come from the last drawn frame, which is this hour's
+    /// after the first repaint. The Match game UI scale's note follows when
+    /// that scale is in use. The open battle window's gaps are not included:
+    /// the frame adds them after it draws the window, and
+    /// `report_map_details` adds them itself.
+    fn collect_warnings(&self, document: &Document) -> Vec<String> {
+        let Some(shown) = &self.shown else {
+            return Vec::new();
+        };
+        let mut limitations = shown.limitations.clone();
+        limitations.set_fraction(document.hour_fraction);
+        let mut warnings = limitations.lines();
+        warnings.extend(document.warnings.iter().cloned());
+        warnings.extend(shown.political_warnings.iter().cloned());
+        if let Some(placements) = &self.placements {
+            warnings.extend(placements.warnings.iter().cloned());
+        }
+        warnings.extend(self.label_report.warnings());
+        // A capture renders at the dump's scale, not Match game's.
+        let pinned = self
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.pinned.is_some());
+        if self.ui_scale == map::ui_scale::Setting::MatchGame
+            && !pinned
+            && let Some((_, (_, Some(note)))) = &self.match_game
+        {
+            warnings.push(note.clone());
+        }
+        warnings
+    }
+
+    /// The diagnostics an embedded map shows over itself: the hour's stats and
+    /// its data limitations, collapsed behind their count.
+    pub(crate) fn diagnostics_ui(&mut self, ui: &mut egui::Ui, max_height: f32) {
+        if let Some(shown) = &self.shown {
+            for line in shown.stats() {
+                ui.weak(line);
+            }
+        }
+        if self.map_warnings.is_empty() {
+            return;
+        }
+        if ui
+            .small_button(format!("{} data limitations", self.map_warnings.len()))
+            .clicked()
+        {
+            self.diagnostics_open = !self.diagnostics_open;
+        }
+        if self.diagnostics_open {
+            egui::ScrollArea::vertical()
+                .max_height(max_height)
+                .show(ui, |ui| {
+                    for warning in &self.map_warnings {
+                        ui.colored_label(egui::Color32::YELLOW, warning);
+                    }
+                });
+        }
+    }
+
+    /// Flips diagnostics mode from the viewer's own control or shortcut. The
+    /// standalone viewer saves the choice in `viewer.json`; an embedded viewer
+    /// asks the desktop host, which owns the choice and sends it back.
+    fn toggle_diagnostics(&mut self) {
+        if let Some(embedded) = &self.embedded {
+            embedded.toggle_diagnostics();
+            return;
+        }
+        self.diagnostics = !self.diagnostics;
+        self.save_diagnostics();
+    }
+
+    fn save_diagnostics(&mut self) {
+        if let Err(error) = Config::save_diagnostics(self.diagnostics) {
+            self.error = Some(format!("Could not save the diagnostics setting: {error}"));
+        }
     }
 
     fn embedded_logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -834,7 +1048,8 @@ impl Viewer {
                         )
                     });
                 match created {
-                    Ok(dashboard) => {
+                    Ok(mut dashboard) => {
+                        dashboard.set_diagnostics(self.diagnostics);
                         self.embedded_open = None;
                         self.embedded_seek = None;
                         self.dashboard = Some(Box::new(dashboard));
@@ -1043,6 +1258,12 @@ impl Viewer {
             MapAction::UiScale { scale } => {
                 self.ui_scale = map::ui_scale::Setting::from_stored(scale);
             }
+            MapAction::Diagnostics { enabled } => {
+                self.diagnostics = enabled;
+                if let Some(dashboard) = &mut self.dashboard {
+                    dashboard.set_diagnostics(enabled);
+                }
+            }
             MapAction::Configure { options } => {
                 self.perspective.country = options.country.map_or(
                     map::perspective::Country::Recorded,
@@ -1107,7 +1328,16 @@ impl Viewer {
         let Some(embedded) = &self.embedded else {
             return;
         };
-        let mut messages = self.map_warnings.clone();
+        // Built here on demand, since ordinary viewing no longer keeps them.
+        let mut messages = self
+            .document
+            .as_ref()
+            .map(|document| {
+                let mut warnings = self.collect_warnings(document);
+                warnings.extend(self.combat.warnings(document));
+                warnings
+            })
+            .unwrap_or_default();
         messages.extend(self.error.iter().cloned());
         messages.extend(self.map_error.iter().cloned());
         messages.extend(self.capture_note.iter().cloned());
@@ -1609,16 +1839,17 @@ impl Viewer {
                 .selected_text(format!("Session {session_number}"))
                 .show_ui(ui, |ui| {
                     for (index, session) in document.playback.replay().sessions.iter().enumerate() {
-                        ui.selectable_value(
-                            &mut selected_session,
-                            session.id,
+                        let label = if self.diagnostics {
                             format!(
                                 "Session {} · process {} · {}",
                                 index + 1,
                                 session.process_id,
                                 session.sample_boundary
-                            ),
-                        );
+                            )
+                        } else {
+                            format!("Session {}", index + 1)
+                        };
+                        ui.selectable_value(&mut selected_session, session.id, label);
                     }
                 });
             if selected_session != playhead_session
@@ -1641,11 +1872,13 @@ impl Viewer {
                         .iter()
                         .filter(|branch| branch.session == selected_session)
                     {
-                        ui.selectable_value(
-                            &mut selected_branch,
-                            branch.id,
-                            format!("Branch {} · {:?}", branch.id, branch.reason),
-                        );
+                        // Why the recorder started the branch is diagnostics.
+                        let label = if self.diagnostics {
+                            format!("Branch {} · {:?}", branch.id, branch.reason)
+                        } else {
+                            format!("Branch {}", branch.id)
+                        };
+                        ui.selectable_value(&mut selected_branch, branch.id, label);
                     }
                 });
             if selected_branch != playhead.branch {
@@ -1660,6 +1893,10 @@ impl Viewer {
                     }
                     None => self.error = Some(format!("unknown branch {selected_branch}")),
                 }
+            }
+            // Branch lineage evidence is diagnostics.
+            if !self.diagnostics {
+                return;
             }
             if let Some(branch) = document
                 .playback
@@ -1793,13 +2030,15 @@ impl Viewer {
             let displayed = playhead.hour;
             let fraction = playhead.fraction;
             ui.strong(date(displayed));
-            if fraction > 0.0 {
-                ui.weak(format!("Hour {displayed} + {fraction:.2} h"));
-            } else {
-                ui.weak(format!("Hour {displayed}"));
-            }
-            if document.playback.hour() != displayed || document.playback.branch() != branch {
-                ui.weak(format!("drawing hour {}", document.playback.hour()));
+            if self.diagnostics {
+                if fraction > 0.0 {
+                    ui.weak(format!("Hour {displayed} + {fraction:.2} h"));
+                } else {
+                    ui.weak(format!("Hour {displayed}"));
+                }
+                if document.playback.hour() != displayed || document.playback.branch() != branch {
+                    ui.weak(format!("drawing hour {}", document.playback.hour()));
+                }
             }
             // colour
             ui.checkbox(&mut self.postfx, "Colour grading")
@@ -2120,7 +2359,7 @@ impl Viewer {
                     political_summary: (0, 0),
                     political_build: Duration::ZERO,
                     limitations: Default::default(),
-                    snow_line: String::new(),
+                    snow: Default::default(),
                     header: Default::default(),
                 });
                 return Ok(());
@@ -2284,12 +2523,10 @@ impl Viewer {
             political_build: political.layers.build,
             limitations,
             header,
-            snow_line: format!(
-                "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
-                snow_mud.summary.line(),
-                snow_mud.width,
-                snow_mud.height,
-                snow_mud.build.as_secs_f64() * 1000.0
+            snow: (
+                snow_mud.summary,
+                [snow_mud.width, snow_mud.height],
+                snow_mud.build,
             ),
         };
         dropper.drop_later(self.shown.replace(shown));
@@ -2471,24 +2708,6 @@ impl Viewer {
             return Ok(());
         };
         laps.lap("hour_misc");
-        // The hour on screen may be one the collector had not finished filling;
-        // what that costs the render leads the warning area, because it is the
-        // part that changes with the hour. The persistent content limitations
-        // and the political layer's follow, in the order `--dump` prints them,
-        // so a capture beside a dump lists the same lines in the same order.
-        let mut limitations = shown.limitations.clone();
-        limitations.set_fraction(document.hour_fraction);
-        let mut warnings = limitations.lines();
-        laps.lap("limitations");
-        warnings.extend(document.warnings.iter().cloned());
-        warnings.extend(self.combat.warnings());
-        warnings.extend(shown.political_warnings.iter().cloned());
-        // Names and labels are drawn later in the frame; their gaps show from
-        // the last drawn frame, which is this hour's after the first repaint.
-        if let Some(placements) = &self.placements {
-            warnings.extend(placements.warnings.iter().cloned());
-        }
-        warnings.extend(self.label_report.warnings());
         // The screen-space interface's scale. A capture keeps the dump's, 1.0
         // unless `--ui-scale` names one, so a `--window-dump` and a `--dump` of
         // the same state stay the same frame.
@@ -2498,17 +2717,25 @@ impl Viewer {
             None => {
                 Self::watch_monitors(&mut self.monitor_seen, ui.ctx());
                 let setting = self.ui_scale;
-                let (matched, note) = Self::match_game(&mut self.match_game, document);
+                let (matched, _) = Self::match_game(&mut self.match_game, document);
                 match setting {
                     map::ui_scale::Setting::Manual(scale) => scale,
-                    map::ui_scale::Setting::MatchGame => {
-                        warnings.extend(note.iter().cloned());
-                        *matched
-                    }
+                    map::ui_scale::Setting::MatchGame => *matched,
                 }
             }
         };
-        if !self.dashboard_map && self.embedded.is_none() {
+        // Ordinary viewing builds none of this text: only diagnostics mode
+        // shows it and only a capture prints it (the desktop's on-demand
+        // report rebuilds it in `report_map_details`).
+        let build_warnings = self.diagnostics || self.capture.is_some();
+        let mut warnings = if build_warnings {
+            self.collect_warnings(document)
+        } else {
+            Vec::new()
+        };
+        laps.lap("limitations");
+        self.interface_points = map::ui_scale::points(1.0, ui_scale, ui.ctx().pixels_per_point());
+        if self.diagnostics && !self.dashboard_map && self.embedded.is_none() {
             egui::ScrollArea::vertical()
                 .id_salt("warnings")
                 .max_height(ui.available_height() * WARNING_SHARE)
@@ -2518,13 +2745,9 @@ impl Viewer {
                         ui.colored_label(egui::Color32::YELLOW, warning);
                     }
                 });
-            let (filled, distinct) = shown.political_summary;
-            ui.weak(format!(
-            "Political layer: {filled} provinces filled in {distinct} country colors, rebuilt in {:.0} ms",
-            shown.political_build.as_secs_f64() * 1000.0
-        ));
-            // weather
-            ui.weak(&shown.snow_line);
+            for line in shown.stats() {
+                ui.weak(line);
+            }
         }
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
         // capture: `--window-dump` renders at the size it was asked for rather
@@ -2837,7 +3060,9 @@ impl Viewer {
             .draw(document, extent, &self.perspective)
             .map_err(|error| error.to_string())?
         {
-            warnings.extend(drawn.warnings.iter().cloned());
+            if build_warnings {
+                warnings.extend(self.combat.warnings(document));
+            }
             combat_batch = self.overlay.as_ref().expect("built above").clone();
             combat_batch.quads.extend(drawn.batch.quads);
             &combat_batch
@@ -2957,6 +3182,19 @@ impl Viewer {
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
             egui::Color32::WHITE,
         );
+        // The desktop's campaign map has no panels, so its diagnostics sit
+        // over the map; dashboard maps draw theirs beside their loading status.
+        if self.diagnostics && self.embedded.is_some() && !self.dashboard_map {
+            map_overlay(
+                ui,
+                rect.intersect(ui.clip_rect()),
+                "diagnostics",
+                self.interface_points,
+                |ui, height| {
+                    self.diagnostics_ui(ui, height);
+                },
+            );
+        }
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
         // The map's tooltip is part of its interface, so it is sized like the
@@ -3016,6 +3254,9 @@ impl eframe::App for Viewer {
             .is_some_and(|embedded| !embedded.visible())
         {
             return;
+        }
+        if ui.input(|input| input.events.iter().any(is_diagnostics_shortcut)) {
+            self.toggle_diagnostics();
         }
         if self.dashboard_active
             && let Some(dashboard) = &mut self.dashboard
@@ -3085,6 +3326,17 @@ impl eframe::App for Viewer {
                     self.settings = true;
                 }
                 self.ui_scale_control(ui);
+                let mut diagnostics = self.diagnostics;
+                if ui
+                    .checkbox(&mut diagnostics, "Diagnostics")
+                    .on_hover_text(
+                        "Show technical stats and data limitations with the map (F3). \
+                         Captures and dumps report them either way",
+                    )
+                    .changed()
+                {
+                    self.toggle_diagnostics();
+                }
                 ui.separator();
                 // counters: the game's two map controls, a viewing country and
                 // the fog-of-war switch. The chooser lists every country the
@@ -3146,11 +3398,13 @@ impl eframe::App for Viewer {
                          viewing country",
                     );
                 // names: the header names every layer that reaches a pixel.
-                ui.weak(format!(
-                    "Viewed as {}, fog of war {} · Terrain, water, political fill, borders, names and labels",
-                    viewing.as_deref().unwrap_or("no country"),
-                    if self.perspective.fog { "on" } else { "off" },
-                ));
+                if self.diagnostics {
+                    ui.weak(format!(
+                        "Viewed as {}, fog of war {} · Terrain, water, political fill, borders, names and labels",
+                        viewing.as_deref().unwrap_or("no country"),
+                        if self.perspective.fog { "on" } else { "off" },
+                    ));
+                }
             });
             ui.add_space(5.0);
             if let Some(error) = &self.error {
@@ -3192,6 +3446,7 @@ impl eframe::App for Viewer {
                         crate::playback::Current::Gap { reason, .. } => {
                             ui.colored_label(egui::Color32::LIGHT_RED, format!("Gap: {reason}"));
                         }
+                        crate::playback::Current::Frame(_) if !self.diagnostics => {}
                         crate::playback::Current::Frame(frame) => {
                             egui::ScrollArea::vertical()
                                 .id_salt("tables")
@@ -3614,6 +3869,77 @@ mod tests {
             None
         );
         assert!(seek.matches(path, Some("120:30:0")));
+    }
+
+    #[test]
+    fn the_map_overlay_scales_with_the_interface() {
+        let clip = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(800.0, 600.0));
+        let unscaled = super::overlay_rect(clip, 1.0);
+        assert_eq!(unscaled.min, egui::pos2(108.0, 58.0));
+        assert_eq!(unscaled.width(), 784.0);
+        let scaled = super::overlay_rect(clip, 1.5);
+        assert_eq!(scaled.min, egui::pos2(112.0, 62.0));
+        assert_eq!(scaled.width(), 776.0);
+        assert_eq!(scaled.height(), unscaled.height());
+        let mut style = egui::Style::default();
+        let body = egui::TextStyle::Body.resolve(&style).size;
+        let spacing = style.spacing.item_spacing;
+        let (indent, bar) = (style.spacing.indent, style.spacing.scroll.bar_width);
+        super::scale_style(&mut style, 1.5);
+        assert_eq!(egui::TextStyle::Body.resolve(&style).size, body * 1.5);
+        assert_eq!(style.spacing.item_spacing, spacing * 1.5);
+        assert_eq!(style.spacing.indent, indent * 1.5);
+        assert_eq!(style.spacing.scroll.bar_width, bar * 1.5);
+    }
+
+    #[test]
+    fn the_diagnostics_flag_shows_them_for_a_run_over_the_saved_choice() {
+        use super::initial_diagnostics;
+        // Standalone: the flag shows them whatever is saved; otherwise the
+        // saved choice decides.
+        assert!(initial_diagnostics(true, false, false));
+        assert!(initial_diagnostics(false, true, false));
+        assert!(!initial_diagnostics(false, false, false));
+        // Embedded: `viewer.json` is the standalone viewer's, so only the flag
+        // counts until the host sends its choice.
+        assert!(!initial_diagnostics(false, true, true));
+        assert!(initial_diagnostics(true, false, true));
+    }
+
+    #[test]
+    fn only_a_bare_first_f3_press_toggles_diagnostics() {
+        let press = |pressed, repeat, modifiers| egui::Event::Key {
+            key: egui::Key::F3,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers,
+        };
+        assert!(super::is_diagnostics_shortcut(&press(
+            true,
+            false,
+            egui::Modifiers::NONE
+        )));
+        assert!(!super::is_diagnostics_shortcut(&press(
+            false,
+            false,
+            egui::Modifiers::NONE
+        )));
+        assert!(!super::is_diagnostics_shortcut(&press(
+            true,
+            true,
+            egui::Modifiers::NONE
+        )));
+        assert!(!super::is_diagnostics_shortcut(&press(
+            true,
+            false,
+            egui::Modifiers::CTRL
+        )));
+        assert!(!super::is_diagnostics_shortcut(&press(
+            true,
+            false,
+            egui::Modifiers::SHIFT
+        )));
     }
 
     #[test]

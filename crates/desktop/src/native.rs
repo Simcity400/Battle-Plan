@@ -140,6 +140,9 @@ struct Inner {
     active_dashboard: bool,
     shutting_down: bool,
     last_diagnostic: Option<String>,
+    /// The last diagnostics choice sent with [`NativeHost::set_diagnostics`],
+    /// which a viewer started afterwards takes over its launch-time read.
+    diagnostics: Option<bool>,
 }
 
 #[derive(Clone, Default)]
@@ -308,6 +311,29 @@ impl NativeHost {
         Ok(())
     }
 
+    /// Sends the diagnostics choice to a running viewer, including one still
+    /// starting, and keeps it for a viewer `ensure_started` starts later.
+    /// The caller holds the saved choice's lock, so changes arrive in the
+    /// order they were saved.
+    pub fn set_diagnostics(&self, enabled: bool) {
+        use dashboard::protocol::MapAction;
+        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        inner.diagnostics = Some(enabled);
+        if inner.process.is_none() || inner.shutting_down {
+            return;
+        }
+        inner
+            .pending
+            .actions
+            .retain(|action| !matches!(action, MapAction::Diagnostics { .. }));
+        inner
+            .pending
+            .actions
+            .push_back(MapAction::Diagnostics { enabled });
+        drop(inner);
+        self.shared.1.notify_all();
+    }
+
     pub fn set_view(
         &self,
         window: &WebviewWindow,
@@ -403,7 +429,11 @@ impl NativeHost {
             return Ok(());
         }
         let display = crate::video::launch_actions(window)?;
+        let saved_diagnostics =
+            crate::video::current_map_diagnostics(&window.state::<crate::video::VideoState>());
         let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+        // A change saved after the read above has already reached `set_diagnostics`.
+        let diagnostics = inner.diagnostics.unwrap_or(saved_diagnostics);
         if inner.process.is_some() {
             return Ok(());
         }
@@ -466,6 +496,12 @@ impl NativeHost {
             inner.pending.visibility = Some(inner.status.visible);
         }
         inner.pending.actions.extend(display);
+        inner
+            .pending
+            .actions
+            .push_back(dashboard::protocol::MapAction::Diagnostics {
+                enabled: diagnostics,
+            });
         inner.process = Some(Process { child, _job: job });
         drop(inner);
 
@@ -552,6 +588,14 @@ impl NativeHost {
         }
         match event {
             NativeEvent::MapDetails { details } => inner.status.map_details = Some(details),
+            NativeEvent::ToggleDiagnostics => {
+                // The shortcut pressed in the native map; the host owns the choice.
+                drop(inner);
+                if let Err(error) = crate::video::change_map_diagnostics(app, None) {
+                    let _ = app.emit("map-diagnostics-error", error);
+                }
+                return;
+            }
             NativeEvent::Data { response } => {
                 drop(inner);
                 crate::dashboard_service::receive_data(app, response);

@@ -4,15 +4,23 @@ import type { DesktopState, ReplayMetadata } from './api';
 import { formatDateTime } from '../dashboard/calendar';
 import { Icon } from '../components/Icons';
 import { SettingsBlock } from './appearance/AppearanceSettings';
+import { useMapDiagnostics } from './diagnosticsSetting';
 
-/** Recording coverage and the native map's latest report, collected when the page opens. */
+/** The maps' diagnostics switch, recording coverage and the native map's latest report, collected when the page opens. */
 export default function MapDiagnostics({ native, metadata }: { native: DesktopState | null; metadata: ReplayMetadata | null }) {
   const [error, setError] = useState<string | null>(null);
   const details = native?.mapDetails;
   const ready = desktopAvailable && !!native?.ready;
   const inspect = () => { setError(null); void mapAction({ kind: 'inspect' }).catch(cause => setError(errorMessage(cause))); };
   useEffect(() => { if (ready) inspect(); }, [ready]);
+  const overlay = useMapDiagnostics();
   return <div className="diagnostics-settings">
+    <SettingsBlock id="diagnostics-overlay" title="On the map">
+      <label className="map-option-row"><span>Show diagnostics on maps <span className="folder-info" tabIndex={0} role="img" aria-label="About map diagnostics" data-tooltip="Technical stats and data limitations over the campaign map and map widgets. Off for normal viewing. F3 toggles them anywhere in the app."><Icon name="info" /></span></span>
+        {desktopAvailable ? <input type="checkbox" role="switch" disabled={overlay.enabled === null} aria-busy={overlay.enabled === null} checked={overlay.enabled ?? false} onChange={event => overlay.set(event.currentTarget.checked)} /> : <span className="graphics-unavailable">Desktop only</span>}
+      </label>
+      {overlay.error && <div className="settings-group-body"><p className="map-menu-error" role="alert">{overlay.error}</p></div>}
+    </SettingsBlock>
     <SettingsBlock id="diagnostics-recording" title="Recording">
       {metadata ? <>
         <div className="settings-row"><span className="settings-row-text"><strong data-tooltip={metadata.path}>{recordingName(metadata.path)}</strong>

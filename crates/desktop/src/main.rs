@@ -137,7 +137,7 @@ fn seek_map(
 fn main() {
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "battle-plan\n\nreplay-desktop [recording.battleplan] [viewer options]\n\nMap keeps the existing native viewer. Analytics opens in its own side tab.\nViewer options such as --game-dir, --user-dir, --branch, --hour and --camera\nare forwarded to the native viewer. Run viewer --help for the full list.\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
+            "battle-plan\n\nreplay-desktop [recording.battleplan] [viewer options]\n\nMap keeps the existing native viewer. Analytics opens in its own side tab.\nViewer options such as --game-dir, --user-dir, --branch, --hour and --camera\nare forwarded to the native viewer. --diagnostics shows the maps' technical\nstats and data limitations for this run; F3 or Settings > Diagnostics toggles\nand saves them. Run viewer --help for the full list.\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
         );
         return;
     }
@@ -159,6 +159,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             video::video_settings,
             video::set_video_settings,
+            video::map_diagnostics,
+            video::set_map_diagnostics,
             desktop_state,
             set_map_view,
             select_native_view,

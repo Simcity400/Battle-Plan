@@ -24,7 +24,7 @@ export const settingsSections: { id: SettingsSection; label: string; icon: IconN
   { id: 'folders', label: 'Folders', icon: 'folder', description: 'Where the game, your Paradox user files and your recordings live.' },
   { id: 'appearance', label: 'Appearance', icon: 'palette', description: 'Themes, backdrop, glass and typography. Saved on this device.' },
   { id: 'graphics', label: 'Map graphics', icon: 'map', description: 'Defaults for every campaign map. Campaigns and individual map widgets can override them.' },
-  { id: 'diagnostics', label: 'Diagnostics', icon: 'info', description: 'Recording coverage and the most recent native map report.' },
+  { id: 'diagnostics', label: 'Diagnostics', icon: 'info', description: 'Map diagnostics, recording coverage and the most recent native map report.' },
 ];
 
 /** A search result: a section, and the row to reveal by element id or by its visible label. */
@@ -47,6 +47,7 @@ const searchItems: SettingsTarget[] = [
   ...[...MAP_OPTION_LABELS.slice(0, 2), ...VIDEO_OPTION_LABELS, ...MAP_OPTION_LABELS.slice(2)]
     .map(title => ({ section: 'graphics' as const, title, keywords: title === MAP_OPTION_LABELS[0] ? 'msaa' : title === VIDEO_OPTION_LABELS[1] ? 'zoom ui size' : title === VIDEO_OPTION_LABELS[2] ? 'counters icons labels size gui_scale' : 'map graphics' })),
   { section: 'graphics', title: 'Visual mods', keywords: 'mods artwork' },
+  { section: 'diagnostics', title: 'Show diagnostics on maps', id: 'diagnostics-overlay', keywords: 'stats limitations warnings debug overlay f3' },
   { section: 'diagnostics', title: 'Recording', id: 'diagnostics-recording', keywords: 'gaps branches coverage format' },
   { section: 'diagnostics', title: 'Native map', id: 'diagnostics-map', keywords: 'viewer report' },
 ];
