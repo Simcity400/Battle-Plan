@@ -74,6 +74,15 @@ For pass isolation, `--dump ... --layers trees` **omits** trees; it does not sel
 
 `--window-dump` checks the windowed path; its `--animation-time`, `--animation-step` and `--window-frames` options select a repeatable sequence. For headless dumps, `--presentation-time` and `--map-time` set separate clocks that otherwise start at zero; they do not recover native capture times. Match output resolution, upscale and exclusions before comparing. See [main.rs](src/main.rs) or `--help` for accepted combinations.
 
+Performance profiling uses environment variables. None of them costs anything when it is unset.
+
+- `BATTLE_PLAN_VIEWER_PROFILE` prints per-frame CPU laps. With `--window-dump`, it also drives a paced sweep. `play:<hours per second>` plays, `pan:<units per second>` and `zoom:<factor per second>` move the camera, and `hours` steps the hour.
+- `BATTLE_PLAN_VIEWER_PROFILE_HZ` and `BATTLE_PLAN_VIEWER_PROFILE_SWEEP` set the sweep's pace and length. They default to 60 Hz and 120 frames.
+- `BATTLE_PLAN_VIEWER_NO_VSYNC` removes the window's vsync.
+- `BATTLE_PLAN_VIEWER_GPU_WAIT` waits out each window frame's submission and reports it as `gpu` on the `PROFILE frame` line.
+- `BATTLE_PLAN_VIEWER_GPU_PASSES` prints each pass group's GPU time from timestamp queries ([gpu_passes.rs](src/map/gpu_passes.rs)). Each line carries the frame number of the matching `PROFILE frame` or `BENCH frame` line. Collecting them waits on the GPU, so take frame times from a separate run.
+- `BATTLE_PLAN_VIEWER_BENCH_FRAMES=<n>` makes a `--dump` render n more frames at 120 Hz clocks after writing its PNG, and print their CPU and drain times. With `BATTLE_PLAN_VIEWER_PROFILE`, it also prints the render laps.
+
 For local checks and the coordinated end-to-end smoke workflow, see [AGENTS.md](../../AGENTS.md) and the [recorder guide](../recorder/README.md). Embedded lifecycle/control belongs in [desktop](../desktop/README.md) and the [dashboard crate](../dashboard/README.md), not the renderer.
 
 ## Historical evidence

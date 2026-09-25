@@ -25,6 +25,7 @@ pub mod division_eta;
 pub mod entity_animation;
 pub mod entity_effects;
 pub mod frame;
+pub mod gpu_passes;
 pub mod gradient;
 // names
 // close zoom: the shared static-mesh pass and the layers built on it

@@ -96,6 +96,10 @@ pub struct MapLayers<'a> {
 
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
     let mut configuration = eframe::egui_wgpu::WgpuConfiguration::default();
+    // Profiling only: frame pacing without the display's vsync.
+    if std::env::var_os("BATTLE_PLAN_VIEWER_NO_VSYNC").or_else(|| std::env::var_os("HOI4_VIEWER_NO_VSYNC")).is_some() {
+        configuration.surface.present_mode = wgpu::PresentMode::AutoNoVsync;
+    }
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut configuration.wgpu_setup {
         setup.device_descriptor = Arc::new(device_descriptor);
     }
@@ -119,9 +123,13 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     let limits = adapter.limits();
     // Atlases built on the CPU page to this side ([`crate::map::atlas_pages`]).
     crate::map::atlas_pages::record_device_limit(limits.max_texture_dimension_2d);
-    let features = adapter.features()
-        & (wgpu::Features::TEXTURE_COMPRESSION_BC
-            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+    let mut wanted = wgpu::Features::TEXTURE_COMPRESSION_BC
+        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+    // Profiling only: per-pass GPU timestamps (`map::gpu_passes`).
+    if crate::map::gpu_passes::requested() {
+        wanted |= crate::map::gpu_passes::features();
+    }
+    let features = adapter.features() & wanted;
     let sample_mask = [1, 2, 4, 8]
         .into_iter()
         .filter(|&count| {
@@ -540,6 +548,9 @@ pub fn dump_png(
             render_banner(&scene, &device, &queue, text)?;
         }
         write_png(&scene, &device, &queue, path)?;
+        // After the PNG: the benchmark advances clocks a re-render cannot
+        // rewind, such as the weather particles'.
+        bench_frames(&mut scene, &device, &queue, request)?;
         let grid = scene.grid();
         Ok(DumpReport {
             adapter: format!("{} ({:?})", info.name, info.backend),
@@ -565,4 +576,62 @@ pub fn dump_png(
             grading: scene.grading(),
         })
     })
+}
+
+/// Profiling only: `BATTLE_PLAN_VIEWER_BENCH_FRAMES=<n>` renders `n` more frames of
+/// the dumped hour, after its PNG is written, with both clocks advancing at
+/// 120 Hz. Each prints `cpu`, the milliseconds `Scene::render` took to encode
+/// and submit, and `drained`, the milliseconds from that call until the GPU
+/// finished the frame. With `BATTLE_PLAN_VIEWER_PROFILE` it adds the render laps.
+fn bench_frames(
+    scene: &mut Scene,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    request: Request<'_>,
+) -> io::Result<()> {
+    let Some(frames) = std::env::var("BATTLE_PLAN_VIEWER_BENCH_FRAMES").or_else(|_| std::env::var("HOI4_VIEWER_BENCH_FRAMES"))
+        .ok()
+        .and_then(|frames| frames.parse::<u32>().ok())
+    else {
+        return Ok(());
+    };
+    let wait = |device: &wgpu::Device| {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map(|_| ())
+            .map_err(io::Error::other)
+    };
+    for frame in 0..frames {
+        let step = (frame + 1) as f32 / 120.0;
+        scene.label_frame(u64::from(frame));
+        let start = std::time::Instant::now();
+        scene.render(
+            device,
+            queue,
+            Request {
+                animation_time: request.animation_time + step,
+                map_time: request.map_time + step,
+                ..request
+            },
+        )?;
+        let cpu = start.elapsed().as_secs_f64() * 1000.0;
+        wait(device)?;
+        let drained = start.elapsed().as_secs_f64() * 1000.0;
+        let laps = if crate::map::counter_move::profiling() {
+            let [animate, overlay, encode, submit] = scene.render_laps();
+            format!(
+                " laps animate={animate:.3} overlay_upload={overlay:.3} encode={encode:.3} submit={submit:.3} detail {}",
+                scene.detail_laps()
+            )
+        } else {
+            String::new()
+        };
+        crate::map::counter_move::profile_print(format!(
+            "BENCH frame {frame} cpu {cpu:.3} drained {drained:.3}{laps}"
+        ));
+    }
+    Ok(())
 }

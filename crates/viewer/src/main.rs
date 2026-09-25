@@ -8,6 +8,7 @@ mod hours;
 mod map;
 mod parallel;
 mod playback;
+mod profiling;
 mod render;
 mod table_access;
 mod worker_priority;
@@ -1416,7 +1417,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> std::process::ExitCode {
-    match run() {
+    let result = run();
+    // Profiling lines are written by a thread of their own; every mode waits
+    // for them, a headless dump included.
+    map::counter_move::profile_flush();
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");

@@ -88,12 +88,7 @@ impl Laps {
     }
 
     fn line(&self) -> String {
-        self.laps
-            .iter()
-            .filter(|(_, ms)| *ms >= 0.05)
-            .map(|(name, ms)| format!("{name}={ms:.2}"))
-            .collect::<Vec<_>>()
-            .join(" ")
+        crate::profiling::laps_line(&self.laps, 0.05)
     }
 }
 
@@ -116,21 +111,22 @@ fn gpu_wait(device: &wgpu::Device) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Holds a profiled capture's frames to a 60 Hz display's pace.
+/// Holds a profiled capture's frames to a display's pace,
+/// `BATTLE_PLAN_VIEWER_PROFILE_HZ` (60 unless set).
 ///
 /// A `--window-dump` frame does not wait for a display, so unpaced it runs at
 /// hundreds of frames a second and a sweep that advances the playhead by
-/// `speed / 60` hours a frame outruns the builders, which work in wall time.
+/// `speed / hz` hours a frame outruns the builders, which work in wall time.
 /// The wait falls before the frame's laps start, so it is not a frame's cost.
 fn pace_profiled_frame() -> Duration {
-    const PERIOD: Duration = Duration::from_micros(16_667);
+    let period = Duration::from_secs_f64(1.0 / crate::profiling::hz());
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     let started = Instant::now();
     let Ok(mut last) = LAST.lock() else {
         return Duration::ZERO;
     };
     if let Some(previous) = *last {
-        let due = previous + PERIOD;
+        let due = previous + period;
         while let Some(left) = due.checked_duration_since(Instant::now()) {
             if left > Duration::from_millis(2) {
                 std::thread::sleep(left - Duration::from_millis(2));
@@ -513,7 +509,7 @@ impl Viewer {
                 if std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).is_ok_and(|mode| mode == "seek_end") {
                     1921
                 } else {
-                    241
+                    crate::profiling::sweep().end
                 }
             } else {
                 1
@@ -1780,7 +1776,7 @@ impl Viewer {
         // repaints is a fraction of an hour, which `Document::hour_fraction`
         // carries into the division positions. A pause leaves the fraction
         // where it is, so the frame does not jump when it stops.
-        // A profiled capture's sweep moves the playhead itself, at its paced 60 Hz.
+        // A profiled capture's sweep moves the playhead itself, at its paced rate.
         if self.playing && !(map::counter_move::profiling() && self.capture.is_some()) {
             let elapsed = self.last_step.elapsed().as_secs_f64();
             self.last_step = Instant::now();
@@ -2835,6 +2831,7 @@ impl Viewer {
             .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         let scene = self.scene.as_mut().unwrap();
         scene.set_graphics(self.graphics);
+        scene.label_frame(u64::from(self.profile_frame));
         scene
             .render(
                 &state.device,
@@ -2890,7 +2887,7 @@ impl Viewer {
         laps.lap("render");
         if map::counter_move::profiling() {
             map::counter_move::profile_print(format!(
-                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {}",
+                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {}",
                 self.profile_frame,
                 document.hour_fraction,
                 camera.height,
@@ -2905,7 +2902,10 @@ impl Viewer {
                 encode,
                 submit,
                 gpu_wait(&state.device),
-                laps.line()
+                laps.line(),
+                self.scene
+                    .as_ref()
+                    .map_or_else(String::new, |scene| scene.detail_laps())
             ));
         }
         // A capture waits until every flag and portrait its frame asked for
@@ -3209,15 +3209,25 @@ impl eframe::App for Viewer {
                 // Deterministic diagnostic sweep, including at a replay's final
                 // hour. Ordinary playback continues to use the timeline clock.
                 let mode = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).unwrap_or_default();
+                let sweep_frames = crate::profiling::sweep();
+                // `hours`: one hour forward at the sweep's start, back at its middle.
+                let middle = sweep_frames.start + sweep_frames.len() as u32 / 2;
                 if let Some(playhead) = &mut self.playhead {
-                    if (self.profile_frame == 121 || self.profile_frame == 181) && mode == "hours" {
-                        playhead.hour += if self.profile_frame == 121 { 1 } else { -1 };
+                    if mode == "hours"
+                        && (self.profile_frame == sweep_frames.start
+                            || self.profile_frame == middle)
+                    {
+                        playhead.hour += if self.profile_frame == sweep_frames.start {
+                            1
+                        } else {
+                            -1
+                        };
                         playhead.fraction = 0.0;
                     }
                     // A cold seek: jump to the branch's last hour, whose
                     // per-branch caches (the snow and mud display cache) start
                     // empty.
-                    if self.profile_frame == 121
+                    if self.profile_frame == sweep_frames.start
                         && mode == "seek_end"
                         && let Some((_, last)) = document.playback.range(playhead.branch)
                     {
@@ -3226,24 +3236,26 @@ impl eframe::App for Viewer {
                     }
                 }
                 // Steady playback at `play:<hours per second>`, sampled as a
-                // 60 Hz clock over frames 121..240, as the timeline would run.
+                // clock at the profiled pace over the sweep, as the timeline would run.
                 let playing = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE"))
                     .ok()
                     .and_then(|mode| mode.strip_prefix("play:")?.parse::<f32>().ok());
-                self.playing = playing.is_some() && (121..241).contains(&self.profile_frame);
+                self.playing =
+                    playing.is_some() && crate::profiling::sweep().contains(&self.profile_frame);
                 if let Some(speed) = playing {
                     // The builders reach as far ahead as the timeline at this speed.
                     self.speed = speed as u32;
                 }
                 if let Some(speed) = playing
-                    && (121..241).contains(&self.profile_frame)
+                    && crate::profiling::sweep().contains(&self.profile_frame)
                     && let Some(mut moved) = self.playhead
                 {
                     let last = document
                         .playback
                         .range(moved.branch)
                         .map_or(moved.hour, |(_, last)| last);
-                    let fraction = f64::from(moved.fraction) + f64::from(speed) / 60.0;
+                    let fraction =
+                        f64::from(moved.fraction) + f64::from(speed) / crate::profiling::hz();
                     self.advance_playhead(&mut moved, fraction, last);
                     self.playhead = Some(moved);
                 }
@@ -3252,33 +3264,40 @@ impl eframe::App for Viewer {
                     && !mode.starts_with("zoom:")
                     && let Some(playhead) = &mut self.playhead
                 {
-                    playhead.fraction = if self.profile_frame < 121 || self.profile_frame >= 241 {
+                    playhead.fraction = if !crate::profiling::sweep().contains(&self.profile_frame)
+                    {
                         self.options.hour_fraction
                     } else {
-                        ((self.profile_frame - 121) % 120) as f32 / 120.0
+                        ((self.profile_frame - sweep_frames.start) % 120) as f32 / 120.0
                     };
                 }
                 // A camera sweep: `pan:<world units per second>` drifts the
                 // pinned camera east, `zoom:<height factor per second>`
-                // compounds its height, over frames 121..240 with the hour
+                // compounds its height, over the sweep's frames with the hour
                 // held. Every frame rebuilds the overlay synchronously for
                 // its camera, which is the interactive-pan cost being
                 // measured; the hour builders chase the moving view behind
                 // it. Needs the pinned `--camera` the harness passes.
                 let sweep = mode
                     .strip_prefix("pan:")
-                    .and_then(|rate| rate.parse::<f32>().ok().map(|rate| (rate / 60.0, 1.0)))
+                    .and_then(|rate| {
+                        rate.parse::<f32>()
+                            .ok()
+                            .map(|rate| (rate / crate::profiling::hz() as f32, 1.0))
+                    })
                     .or_else(|| {
                         mode.strip_prefix("zoom:").and_then(|factor| {
                             factor
                                 .parse::<f32>()
                                 .ok()
                                 .filter(|factor| *factor > 0.0)
-                                .map(|factor| (0.0, factor.powf(1.0 / 60.0)))
+                                .map(|factor| {
+                                    (0.0, factor.powf(1.0 / crate::profiling::hz() as f32))
+                                })
                         })
                     });
                 if let Some((dx, zoom)) = sweep
-                    && (121..241).contains(&self.profile_frame)
+                    && crate::profiling::sweep().contains(&self.profile_frame)
                     && let Some(capture) = self.capture.as_mut()
                     && let Some((_, camera)) = capture.pinned.as_mut()
                     && let Some(camera) = camera.as_mut()
