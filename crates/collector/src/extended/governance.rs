@@ -319,6 +319,153 @@ pub struct Captured {
     /// before the ready handoff. Preserved across
     /// `reset` (set per hour, cleared by the worker after decode).
     pub(crate) focus_raw_mode: bool,
+    /// The hourly research tables are loaned to their own job for this
+    /// callback; `capture` leaves them to it and `restore_research` returns them.
+    research_loaned: bool,
+}
+
+/// Research inputs, applied bonuses and modifiers: the governance family's
+/// largest hourly walk, acquired by its own job so it overlaps the rest of
+/// the family instead of lengthening it. Same rows, order and outcomes.
+pub(crate) struct ResearchPart {
+    inputs: CaptureRows<engine::research_inputs::Row>,
+    bonuses: CaptureRows<engine::research_inputs::BonusRow>,
+    modifiers: CaptureRows<engine::research_modifiers::Row>,
+}
+
+/// Indices of the research tables in `TABLES`.
+pub(crate) const RESEARCH: [usize; 3] = [19, 20, 21];
+
+impl ResearchPart {
+    /// Walk the research tables once for this callback, with the family
+    /// walk's per-country order, capacities and failure scope. Skipped hours
+    /// read nothing. Returns ticks indexed like `RESEARCH`; the shared walk
+    /// is charged to ResearchInputs, as it was inside the family walk.
+    pub(crate) fn capture(&mut self, memory: &impl Memory, context: CaptureContext) -> [u64; 3] {
+        let enabled = RESEARCH.map(|index| {
+            replay::cadence::should_walk(TABLES[index], context.hour, context.force_full)
+        });
+        let mut outcomes = [Outcome::Rows { len: 0 }; 3];
+        for (outcome, &active) in outcomes.iter_mut().zip(&enabled) {
+            if !active {
+                *outcome = Outcome::Unavailable {
+                    reason: replay::cadence::SKIPPED_REASON,
+                };
+            }
+        }
+        let mut ticks = [0; 3];
+        if enabled[0] {
+            let _reads = read_accounting::table(TABLES[RESEARCH[0]]);
+            let started = qpc();
+            let research_context = engine::research_inputs::Context::read(memory, context.base);
+            let modifier_context = if enabled[2] {
+                engine::research_modifiers::Context::read(memory, context.base)
+            } else {
+                Err("research modifiers not sampled")
+            };
+            let fail = |outcomes: &mut [Outcome; 3], reason| {
+                for (outcome, &active) in outcomes.iter_mut().zip(&enabled) {
+                    if active {
+                        *outcome = Outcome::Unavailable { reason };
+                    }
+                }
+            };
+            match ccountry::Reader::new(memory, context.base, context.game_state) {
+                Err(reason) => fail(&mut outcomes, reason),
+                Ok(countries) => {
+                    for slot in 1..countries.count() {
+                        let country = match countries.at(slot) {
+                            Ok(Some(country)) => country,
+                            Ok(None) => continue,
+                            Err(reason) => {
+                                fail(&mut outcomes, reason);
+                                break;
+                            }
+                        };
+                        let input_start = outcomes[0].len();
+                        let (inputs, bonuses) = engine::research_inputs::walk_country(
+                            memory,
+                            context.base,
+                            country.pointer,
+                            country.id,
+                            research_context,
+                            &mut self.inputs.rows[outcomes[0].len()..],
+                            &mut self.bonuses.rows[outcomes[1].len()..],
+                        );
+                        if enabled[2] {
+                            let modifiers = match inputs {
+                                Outcome::Rows { len } => engine::research_modifiers::walk_country(
+                                    memory,
+                                    context.base,
+                                    &countries,
+                                    country,
+                                    modifier_context,
+                                    &self.inputs.rows[input_start..input_start + len],
+                                    &mut self.modifiers.rows[outcomes[2].len()..],
+                                ),
+                                _ => Outcome::Unavailable {
+                                    reason: "research modifier assignments incomplete",
+                                },
+                            };
+                            append(&mut outcomes[2], modifiers);
+                        }
+                        append(&mut outcomes[0], inputs);
+                        append(&mut outcomes[1], bonuses);
+                    }
+                }
+            }
+            ticks[0] = elapsed(started);
+        }
+        self.inputs.outcome = outcomes[0];
+        self.bonuses.outcome = outcomes[1];
+        self.modifiers.outcome = outcomes[2];
+        ticks
+    }
+
+    /// Terminal completion after an accepted worker failure. Partial rows
+    /// cannot become publishable, cadence skips stay skips, and nothing is read.
+    pub(crate) fn fail(&mut self, context: CaptureContext, reason: &'static str) {
+        let [inputs, bonuses, modifiers] = RESEARCH.map(|index| {
+            let active = replay::cadence::should_walk(TABLES[index], context.hour, context.force_full);
+            Outcome::Unavailable {
+                reason: if active {
+                    reason
+                } else {
+                    replay::cadence::SKIPPED_REASON
+                },
+            }
+        });
+        self.inputs.reset();
+        self.bonuses.reset();
+        self.modifiers.reset();
+        self.inputs.outcome = inputs;
+        self.bonuses.outcome = bonuses;
+        self.modifiers.outcome = modifiers;
+    }
+}
+
+impl Captured {
+    /// Loan the research rows to their own job. Allocation-free: the
+    /// placeholders have no capacity, and `capture` leaves them untouched.
+    pub(crate) fn take_research(&mut self) -> ResearchPart {
+        debug_assert!(!self.research_loaned, "research part already loaned");
+        self.research_loaned = true;
+        ResearchPart {
+            inputs: std::mem::replace(&mut self.research_inputs, CaptureRows::new(0)),
+            bonuses: std::mem::replace(&mut self.research_bonuses, CaptureRows::new(0)),
+            modifiers: std::mem::replace(&mut self.research_modifiers, CaptureRows::new(0)),
+        }
+    }
+
+    /// Return the loaned research rows with their outcomes. Call after the
+    /// family is restored and before any view, growth or publication.
+    pub(crate) fn restore_research(&mut self, part: ResearchPart) {
+        debug_assert!(self.research_loaned, "research part was not loaned");
+        self.research_loaned = false;
+        self.research_inputs = part.inputs;
+        self.research_bonuses = part.bonuses;
+        self.research_modifiers = part.modifiers;
+    }
 }
 
 impl Captured {
@@ -384,6 +531,7 @@ impl Captured {
             dictionary: vec![ctechnology_template::Entry::default(); capacity.dictionary],
             dictionary_required: 0,
             focus_raw_mode: false,
+            research_loaned: false,
         }
     }
 
@@ -622,9 +770,6 @@ impl Captured {
             balances: &mut self.balances.rows,
             balance_members: &mut self.balance_members.rows,
             ranges: &mut self.ranges.rows,
-            research_inputs: &mut self.research_inputs.rows,
-            research_bonuses: &mut self.research_bonuses.rows,
-            research_modifiers: &mut self.research_modifiers.rows,
             overrides: &mut self.overrides.rows,
             focus_text: &mut self.focus_text.first,
             definition_text: &mut self.definition_text.first,
@@ -659,6 +804,10 @@ impl Captured {
             walk[0] = false;
             walk[1] = false;
         }
+        // The research tables belong to `ResearchPart`, walked by its own job.
+        for index in RESEARCH {
+            walk[index] = false;
+        }
         let first = acquire(memory, base, game_state, self.buffers(), &walk);
         self.focus.outcome = first.outcomes[0];
         self.completed.outcome = first.outcomes[1];
@@ -679,9 +828,6 @@ impl Captured {
         self.balance_members.outcome = first.outcomes[16];
         self.ranges.outcome = first.outcomes[17];
         self.overrides.outcome = first.outcomes[18];
-        self.research_bonuses.outcome = first.outcomes[20];
-        self.research_modifiers.outcome = first.outcomes[21];
-        self.research_inputs.outcome = first.outcomes[19];
         self.focus_text.len = first.lens[0];
         self.focus_text.required = first.required[0];
         self.definition_text.len = first.lens[1];
@@ -784,9 +930,6 @@ struct Buffers<'a> {
     balances: &'a mut [power_balance_record::Row],
     balance_members: &'a mut [power_balance_record::MemberRow],
     ranges: &'a mut [power_balance_range::Row],
-    research_inputs: &'a mut [engine::research_inputs::Row],
-    research_bonuses: &'a mut [engine::research_inputs::BonusRow],
-    research_modifiers: &'a mut [engine::research_modifiers::Row],
     overrides: &'a mut [power_balance_gfx_override::Row],
     focus_text: &'a mut [u8],
     definition_text: &'a mut Vec<u8>,
@@ -868,19 +1011,7 @@ fn acquire(
     if enabled[11] {
         o.ticks[11] += elapsed(started);
     }
-    let started = qpc();
-    let research_context = if enabled[19] {
-        engine::research_inputs::Context::read(memory, base)
-    } else {
-        Err("research inputs not sampled")
-    };
-    if enabled[19] {
-        o.ticks[19] += elapsed(started);
-    }
-    let started = qpc();
-    let modifier_context = if enabled[21] { engine::research_modifiers::Context::read(memory, base) } else { Err("research modifiers not sampled") };
-    if enabled[21] { o.ticks[19] += elapsed(started); }
-    if enabled[..13].iter().chain(&enabled[19..]).any(|&value| value) {
+    if enabled[..13].iter().any(|&value| value) {
         let started = qpc();
         let countries = read_accounting::with_table(TABLES[5], || {
             ccountry::Reader::new(memory, base, game_state)
@@ -888,10 +1019,8 @@ fn acquire(
         o.ticks[5] += elapsed(started);
         match countries {
             Err(reason) => {
-                for index in (0..13).chain(19..N) {
-                    if enabled[index] {
-                        o.outcomes[index] = Outcome::Unavailable { reason };
-                    }
+                for (outcome, _) in o.outcomes[..13].iter_mut().zip(&enabled[..13]).filter(|(_, active)| **active) {
+                    *outcome = Outcome::Unavailable { reason };
                 }
             }
             Ok(countries) => {
@@ -903,10 +1032,8 @@ fn acquire(
                         Ok(Some(country)) => country,
                         Ok(None) => continue,
                         Err(reason) => {
-                            for index in (0..13).chain(19..N) {
-                                if enabled[index] {
-                                    o.outcomes[index] = Outcome::Unavailable { reason };
-                                }
+                            for (outcome, _) in o.outcomes[..13].iter_mut().zip(&enabled[..13]).filter(|(_, active)| **active) {
+                                *outcome = Outcome::Unavailable { reason };
                             }
                             break;
                         }
@@ -973,24 +1100,6 @@ fn acquire(
                         );
                         append(&mut o.outcomes[3], result);
                         o.ticks[3] += elapsed(started);
-                    }
-                    if enabled[19] {
-                        let started = qpc();
-                        let input_start = o.outcomes[19].len();
-                        let (inputs, bonuses) = engine::research_inputs::walk_country(memory, base,
-                            country.pointer, country.id, research_context,
-                            &mut b.research_inputs[o.outcomes[19].len()..],
-                            &mut b.research_bonuses[o.outcomes[20].len()..]);
-                        if enabled[21] {
-                            let modifiers = match inputs {
-                                Outcome::Rows { len } => engine::research_modifiers::walk_country(memory, base, &countries, country, modifier_context, &b.research_inputs[input_start..input_start + len], &mut b.research_modifiers[o.outcomes[21].len()..]),
-                                _ => Outcome::Unavailable { reason: "research modifier assignments incomplete" },
-                            };
-                            append(&mut o.outcomes[21], modifiers);
-                        }
-                        append(&mut o.outcomes[19], inputs);
-                        append(&mut o.outcomes[20], bonuses);
-                        o.ticks[19] += elapsed(started);
                     }
                     if enabled[5] {
                         let _reads = read_accounting::table(TABLES[5]);
@@ -3517,3 +3626,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "governance_research_tests.rs"]
+mod research_tests;

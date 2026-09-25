@@ -41,7 +41,7 @@ const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
 const CHARACTER_PARTS: usize = extended::characters::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
-pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst; 1 division inputs copy + divisions/intel dispatch + character parts, relations, ordinary, slow and supply parts; 2 World join + governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels join";
+pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels, World, Research, off-slot Governance first); 1 division inputs copy + divisions/intel dispatch + character parts, relations, ordinary, slow and supply parts; 2 World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels join";
 pub const INITIAL_CAPACITIES: [usize; 9] = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
 
 /// Countries has one row per canonical slot and CountryLinks one per raw
@@ -1273,6 +1273,49 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     ship_census,
                 )
             ));
+            let world_request = acquire_world_request(
+                &country_snapshot,
+                shared.base,
+                state,
+                frame.extended.focus_pilot().focus_copy_context(
+                    shared.base,
+                    state,
+                    replay::cadence::should_walk(TableId::Focus, clock.hour, force_full),
+                ),
+                frame.extended.economy_rest_pilot(),
+                clock.hour,
+                force_full,
+            );
+            let world_pending = queue!(acquisition::Job::World(world_request));
+            // The longest hourly jobs go out first: the block ends when they do.
+            // The research tables are loaned before the family that owns them.
+            let research_pending = queue!(acquisition::Job::Research(
+                frame.extended.take_research_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                )
+            ));
+            // Governance waits for the World join only to learn whether World
+            // delegated this hour's Focus walk. Off the Focus slot there is
+            // nothing to delegate, so it leaves in the first burst instead.
+            let focus_hour = replay::cadence::should_walk(TableId::Focus, clock.hour, force_full);
+            let early_governance = (!focus_hour).then(|| {
+                // Off the Focus slot World delegates nothing: the loaned family
+                // must not carry an older delegation into this capture.
+                frame.extended.focus_pilot().focus_raw_mode = false;
+                let request = frame.extended.take_governance_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                );
+                let bytes = request.allocated_bytes();
+                (queue!(acquisition::Job::Governance(request)), bytes)
+            });
             let orders_request = frame
                 .extended
                 .take_orders_request(&mut frame.map.orders, shared.base);
@@ -1323,20 +1366,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     },
                 )
             ));
-            let world_request = acquire_world_request(
-                &country_snapshot,
-                shared.base,
-                state,
-                frame.extended.focus_pilot().focus_copy_context(
-                    shared.base,
-                    state,
-                    replay::cadence::should_walk(TableId::Focus, clock.hour, force_full),
-                ),
-                frame.extended.economy_rest_pilot(),
-                clock.hour,
-                force_full,
-            );
-            let world_pending = queue!(acquisition::Job::World(world_request));
             let provinces_pending = queue!(acquisition::Job::Provinces(
                 acquisition::ProvincesRequest::take(shared.base, state, &mut frame.provinces)
             ));
@@ -1732,8 +1761,12 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 construction_active && (terminal || construction_rest_report.raw_ok);
             frame.extended.economy_rest_pilot().rest_raw_mode =
                 terminal || economy_rest_report.raw_ok;
-            frame.extended.focus_pilot().focus_raw_mode =
-                focus_active && (terminal || focus_report.raw_ok);
+            // An early-loaned family already holds its (false) delegation; the
+            // pilot here would be its vacant placeholder.
+            if early_governance.is_none() {
+                frame.extended.focus_pilot().focus_raw_mode =
+                    focus_active && (terminal || focus_report.raw_ok);
+            }
             if let Some(part) = world.production {
                 if production_rest_report.raw_ok && !terminal && !production_rest_report.plan_failed
                 {
@@ -1771,15 +1804,21 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 economy_rest_report.raw_ok = false;
                 focus_report.raw_ok = false;
             }
-            let governance_request = frame.extended.take_governance_request(
-                &country_snapshot,
-                shared.base,
-                state,
-                clock.hour,
-                force_full,
-            );
-            let governance_bytes = governance_request.allocated_bytes();
-            let governance_pending = queue!(acquisition::Job::Governance(governance_request));
+            // On the Focus slot the delegation is settled now; the family follows.
+            let (governance_pending, governance_bytes) = match early_governance {
+                Some(early) => early,
+                None => {
+                    let request = frame.extended.take_governance_request(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        clock.hour,
+                        force_full,
+                    );
+                    let bytes = request.allocated_bytes();
+                    (queue!(acquisition::Job::Governance(request)), bytes)
+                }
+            };
             let presentation_request =
                 frame
                     .extended
@@ -2303,6 +2342,24 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             frame
                 .extended
                 .restore_governance_request(governance_request, governance_report);
+            // Research returns into the restored family and charges its costs there.
+            let (research_request, research_report) = {
+                // SAFETY: this thread still owns the live acquisition boundary.
+                let completed = unsafe { finish_acquisition(shared, &mut batch, research_pending) };
+                let acquisition::Job::Research(request) = completed.request else {
+                    unreachable!("Research ticket type")
+                };
+                let report = completed.report.map(|report| {
+                    let acquisition::Report::Research(report) = report else {
+                        unreachable!("Research report type")
+                    };
+                    report
+                });
+                (request, report)
+            };
+            frame
+                .extended
+                .restore_research_request(research_request, research_report);
             // Only the core roster feeds portraits. Independent role and
             // trait jobs need their verdicts here, before the typed fallback;
             // they must not delay dispatch of unrelated map/gated/late work.

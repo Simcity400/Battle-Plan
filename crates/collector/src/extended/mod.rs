@@ -499,6 +499,58 @@ impl Captured {
         })
     }
 
+    /// Loan the governance family's hourly research tables to their own job.
+    /// Take before the family itself; restore after the family is restored.
+    pub(crate) fn take_research_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> crate::acquisition_jobs::ResearchRequest {
+        crate::acquisition_jobs::ResearchRequest {
+            countries: Arc::clone(countries),
+            context: governance::CaptureContext {
+                base,
+                game_state: state,
+                hour,
+                force_full,
+            },
+            part: self.governance.take_research(),
+        }
+    }
+
+    /// Return the research rows and charge their costs to the family report.
+    /// A failed job publishes its own failure; it never erases the family.
+    pub(crate) fn restore_research_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::ResearchRequest,
+        report: Result<crate::acquisition_jobs::ResearchReport, crate::acquisition::Failure>,
+    ) {
+        let ticks = match report {
+            Ok(report) => report.ticks,
+            Err(failure) => {
+                request.part.fail(
+                    request.context,
+                    match failure {
+                        crate::acquisition::Failure::Panicked => "research acquisition panicked",
+                        crate::acquisition::Failure::Stopped => {
+                            "research acquisition stopped before reading"
+                        }
+                    },
+                );
+                [0; 3]
+            }
+        };
+        self.governance.restore_research(request.part);
+        if let Some(family) = self.governance_report.as_mut() {
+            for (index, cost) in governance::RESEARCH.into_iter().zip(ticks) {
+                family.ticks[index] = cost;
+            }
+        }
+    }
+
     /// Loan the worker-only families after Focus delegation is decided.
     /// Restore after Gated returns construction and before table publication.
     pub(crate) fn take_governance_request(
@@ -2886,6 +2938,70 @@ mod tests {
             );
             captured.restore_ordinary_request(request, None);
             assert_eq!(Arc::strong_count(&countries), 1);
+        }
+    }
+
+    #[test]
+    fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failure() {
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let (hour, force_full) = (7, false);
+        for failure in [
+            None,
+            Some(crate::acquisition::Failure::Panicked),
+            Some(crate::acquisition::Failure::Stopped),
+        ] {
+            let mut captured = Captured::with_capacities(&Capacities::default());
+            let bytes = captured.allocated_bytes();
+            let research = captured.take_research_request(&countries, 11, 0x1000, hour, force_full);
+            // The family keeps no research capacity while the part is loaned.
+            assert!(captured.allocated_bytes() < bytes);
+            let governance =
+                captured.take_governance_request(&countries, 11, 0x1000, hour, force_full);
+            // Governance fails; its restore must not reach the loaned research rows.
+            captured
+                .restore_governance_request(governance, Err(crate::acquisition::Failure::Panicked));
+            let report = match failure {
+                None => Ok(crate::acquisition_jobs::ResearchReport { ticks: [5, 6, 7] }),
+                Some(failure) => Err(failure),
+            };
+            captured.restore_research_request(research, report);
+            assert_eq!(captured.allocated_bytes(), bytes);
+            let outcomes = captured.governance.outcomes();
+            let family = captured
+                .governance_report
+                .expect("governance report restored");
+            match failure {
+                None => {
+                    // Costs land on the research tables; the family's failure
+                    // did not replace the research outcomes.
+                    for (index, cost) in governance::RESEARCH.into_iter().zip([5, 6, 7]) {
+                        assert_eq!(family.ticks[index], cost);
+                        assert!(!matches!(
+                            outcomes[index],
+                            Outcome::Unavailable { reason } if reason == "governance acquisition panicked"
+                        ));
+                    }
+                }
+                Some(failure) => {
+                    let expected = match failure {
+                        crate::acquisition::Failure::Panicked => "research acquisition panicked",
+                        crate::acquisition::Failure::Stopped => {
+                            "research acquisition stopped before reading"
+                        }
+                    };
+                    for index in governance::RESEARCH {
+                        assert_eq!(family.ticks[index], 0);
+                        assert_eq!(outcomes[index], Outcome::Unavailable { reason: expected });
+                    }
+                }
+            }
+            // The family's own tables carry the family failure either way.
+            assert_eq!(
+                outcomes[5],
+                Outcome::Unavailable {
+                    reason: "governance acquisition panicked"
+                }
+            );
         }
     }
 

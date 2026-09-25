@@ -87,6 +87,17 @@ impl GovernanceRequest {
         GovernanceReport::default()
     }
 }
+/// The governance family's hourly research tables, walked beside the rest
+/// of the family (see `governance::ResearchPart`).
+pub(crate) struct ResearchRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub context: governance::CaptureContext,
+    pub part: governance::ResearchPart,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ResearchReport {
+    pub ticks: [u64; 3],
+}
 pub(crate) struct IntelResidualRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: intel::CaptureContext,
@@ -271,6 +282,7 @@ pub(crate) enum Job {
     Divisions(DivisionsRequest),
     World(WorldRequest),
     Governance(GovernanceRequest),
+    Research(ResearchRequest),
     Intel(IntelRequest),
     Presentation(PresentationRequest),
     EtaInputs(EtaInputsRequest),
@@ -312,6 +324,7 @@ pub(crate) enum Report {
     Divisions(sampling::DivisionsCopyReport),
     World(WorldReport),
     Governance(GovernanceReport),
+    Research(ResearchReport),
     Intel(fog::IntelCopyReport),
     Presentation(division_presentation::CaptureReport),
     EtaInputs(division_eta_inputs::CaptureReport),
@@ -357,6 +370,7 @@ pub(crate) enum Role {
     Divisions,
     World,
     Governance,
+    Research,
     Intel,
     Presentation,
     EtaInputs,
@@ -411,6 +425,7 @@ impl Role {
             Self::Divisions => T::Divisions,
             Self::World => T::ProvinceSupply,
             Self::Governance => T::Politics,
+            Self::Research => T::ResearchInputs,
             Self::Intel => T::UnitIntel,
             Self::Presentation => T::DivisionMovement,
             Self::EtaInputs => T::DivisionEtaInputs,
@@ -434,11 +449,15 @@ impl Role {
 }
 
 impl Role {
-    /// Claim order when workers are scarce: the block segment that joins the
-    /// role, lower first. ShipModels is dispatched first anyway.
+    /// Claim order when workers are scarce, lower first and FIFO among equals.
+    /// World, Governance and Research come first because the block ends when
+    /// they do; the rest follow the block segment that joins them. ShipModels
+    /// is submitted before everything, so it starts at once while workers are
+    /// idle, despite its late claim priority.
     pub(crate) fn priority(self) -> u8 {
         match self {
-            Self::World => 0,
+            // The longest hourly jobs start first: the block ends when they do.
+            Self::World | Self::Governance | Self::Research => 0,
             Self::AirWing => 1,
             Self::Divisions
             | Self::Intel
@@ -468,8 +487,7 @@ impl Role {
             | Self::Countries
             | Self::Wars
             | Self::Factions => 4,
-            Self::Governance
-            | Self::SupplyTrains
+            Self::SupplyTrains
             | Self::CharacterPortraits
             | Self::ProvinceUnitOrder
             | Self::Relations
@@ -483,7 +501,7 @@ impl Role {
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 40;
+pub(crate) const ROLE_COUNT: usize = 41;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -507,6 +525,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Divisions,
     Role::World,
     Role::Governance,
+    Role::Research,
     Role::Intel,
     Role::Presentation,
     Role::EtaInputs,
@@ -553,6 +572,7 @@ impl Job {
             Self::Divisions(..) => Role::Divisions,
             Self::World(..) => Role::World,
             Self::Governance(..) => Role::Governance,
+            Self::Research(..) => Role::Research,
             Self::Intel(..) => Role::Intel,
             Self::Presentation(..) => Role::Presentation,
             Self::EtaInputs(..) => Role::EtaInputs,
@@ -922,6 +942,12 @@ fn run_with_memory(
                 governance,
                 variants,
                 buildings,
+            })
+        }
+        Job::Research(request) => {
+            let cached = request.countries.roster_view(memory);
+            Report::Research(ResearchReport {
+                ticks: request.part.capture(&cached, request.context),
             })
         }
         Job::IntelResidual(request) => {
