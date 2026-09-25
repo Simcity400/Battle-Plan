@@ -3140,11 +3140,6 @@ mod tests {
                 "exactly one row",
             ),
             (
-                TableId::WeatherLimits,
-                TableRows::WeatherLimits(vec![]),
-                "exactly one row",
-            ),
-            (
                 TableId::Clock,
                 TableRows::Clock(vec![wrong_clock]),
                 "hour differs",

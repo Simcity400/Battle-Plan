@@ -276,8 +276,6 @@ packs!(
     air,
     army_icon_inputs,
     division_order_caches,
-    weather_passes,
-    weather_neighbours,
     counter_state,
     naval_counters,
     country_counters,
@@ -830,9 +828,7 @@ impl Captured {
         std::mem::swap(&mut self.leader_paths, &mut packs.leader_paths);
         std::mem::swap(&mut self.map_names, &mut packs.map_names);
         std::mem::swap(&mut self.division_templates, &mut packs.division_templates);
-        std::mem::swap(&mut self.weather_neighbours, &mut packs.weather_neighbours);
         std::mem::swap(&mut self.movement_defines, &mut packs.movement_defines);
-        std::mem::swap(&mut self.weather_passes, &mut packs.weather_passes);
     }
 
     /// Loan the order census and the plans to the Orders job.
@@ -1484,13 +1480,7 @@ impl Captured {
                 self.leader_portraits.sources(),
             );
             scatter(&leader_paths::TABLES, cost, &mut ticks);
-            staggered!(
-                map_names,
-                division_templates,
-                weather_neighbours,
-                movement_defines,
-                weather_passes
-            );
+            staggered!(map_names, division_templates, movement_defines);
         }
         if let Some(done) = self.gated_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
@@ -1817,15 +1807,13 @@ impl OrdinaryPacks {
 }
 
 /// The slow-changing live-memory packs (leader sprites, names, templates,
-/// static defines, weather passes): a second pool job from the first burst.
+/// static defines): a second pool job from the first burst.
 pub(crate) struct SlowPacks {
     pub(crate) leader_portraits: leader_portraits::Captured,
     pub(crate) leader_paths: leader_paths::Captured,
     pub(crate) map_names: map_names::Captured,
     pub(crate) division_templates: division_templates::Captured,
-    pub(crate) weather_neighbours: weather_neighbours::Captured,
     pub(crate) movement_defines: movement_defines::Captured,
-    pub(crate) weather_passes: weather_passes::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -1836,10 +1824,7 @@ impl SlowPacks {
         self.map_names.fail_capture(hour, force_full, reason);
         self.division_templates
             .fail_capture(hour, force_full, reason);
-        self.weather_neighbours
-            .fail_capture(hour, force_full, reason);
         self.movement_defines.fail_capture(hour, force_full, reason);
-        self.weather_passes.fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
@@ -1849,9 +1834,7 @@ impl SlowPacks {
             + self.leader_paths.allocated_bytes()
             + self.map_names.allocated_bytes()
             + self.division_templates.allocated_bytes()
-            + self.weather_neighbours.allocated_bytes()
             + self.movement_defines.allocated_bytes()
-            + self.weather_passes.allocated_bytes()
     }
 
     fn spare() -> Box<Self> {
@@ -1860,9 +1843,7 @@ impl SlowPacks {
             leader_paths: leader_paths::Captured::vacant(),
             map_names: map_names::Captured::vacant(),
             division_templates: division_templates::Captured::vacant(),
-            weather_neighbours: weather_neighbours::Captured::vacant(),
             movement_defines: movement_defines::Captured::with_capacities(&Default::default()),
-            weather_passes: weather_passes::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         })
     }
@@ -1891,13 +1872,7 @@ impl SlowPacks {
             self.leader_paths
                 .capture(memory, base, game_state, self.leader_portraits.sources());
         scatter(&leader_paths::TABLES, cost, &mut ticks);
-        staggered!(
-            map_names,
-            division_templates,
-            weather_neighbours,
-            movement_defines,
-            weather_passes
-        );
+        staggered!(map_names, division_templates, movement_defines);
         self.ticks = ticks;
     }
 }
@@ -2621,9 +2596,7 @@ mod tests {
             leader_paths::TABLES.as_slice(),
             map_names::TABLES.as_slice(),
             division_templates::TABLES.as_slice(),
-            weather_neighbours::TABLES.as_slice(),
             movement_defines::TABLES.as_slice(),
-            weather_passes::TABLES.as_slice(),
         ]
         .concat();
         let gated = [

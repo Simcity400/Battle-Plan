@@ -28,7 +28,7 @@ pub const fn cadence(table: TableId) -> Cadence {
     use Cadence::{Daily, FourHourly, Static};
     match table {
         // Cannot change after the save loads.
-        TableId::LexicalTokens | TableId::WeatherProvinceNeighbours => Static,
+        TableId::LexicalTokens => Static,
         // Relations feed the perspective; buildings feed the building layer.
         TableId::RelationOpinions | TableId::RelationTuples => FourHourly(1),
         // Province names are live overrides: set_province_name and
@@ -107,9 +107,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::TheatreAreas => Daily(18),
         // Raids stay hourly: RaidTargets is the same walk's map-icon projection.
         TableId::SunkShips | TableId::Focus | TableId::CompletedFocuses => Daily(19),
-        TableId::IntelligenceAgencies | TableId::OperationTokens | TableId::WeatherPassState => {
-            Daily(20)
-        }
+        TableId::IntelligenceAgencies | TableId::OperationTokens => Daily(20),
         TableId::RadarCoverage
         | TableId::AirAces
         | TableId::PeaceConferences
@@ -128,7 +126,6 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::NavalSupremacy
         | TableId::Operations
         | TableId::OperationAssignments
-        | TableId::WeatherRegionPasses
         | TableId::SunkConvoys => Daily(23),
         _ => Cadence::Hourly,
     }
@@ -232,7 +229,7 @@ mod tests {
             TableId::ProvinceVisibility,
             TableId::ShipModels,
             TableId::SupplyNodes,
-            TableId::WeatherProvincePasses,
+            TableId::WeatherProvinces,
             TableId::LandCombatDivisions,
             TableId::AirBaseRegistrations,
         ] {

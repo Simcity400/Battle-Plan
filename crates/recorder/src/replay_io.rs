@@ -852,7 +852,7 @@ mod tests {
         use replay::{
             branches::{BranchReason, BranchStart},
             frame::Metrics,
-            rows::{CampaignRow, ClockRow, SunkShipsRow, WeatherLimitsRow, WorldTensionRow},
+            rows::{CampaignRow, ClockRow, SunkShipsRow, WorldTensionRow},
         };
         let id = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6".to_vec();
         let session = Record::SessionStart(SessionStart {
@@ -903,17 +903,9 @@ mod tests {
                     TableId::SunkShips => {
                         TableUpdate::Snapshot(TableRows::SunkShips(vec![SunkShipsRow::default()]))
                     }
-                    TableId::WeatherLimits => {
-                        TableUpdate::Snapshot(TableRows::WeatherLimits(vec![
-                            WeatherLimitsRow::default(),
-                        ]))
-                    }
                     TableId::WorldTension => TableUpdate::Snapshot(TableRows::WorldTension(vec![
                         WorldTensionRow::default(),
                     ])),
-                    TableId::WeatherPassState => {
-                        TableUpdate::Snapshot(TableRows::WeatherPassState(vec![Default::default()]))
-                    }
                     TableId::CounterSettings => {
                         TableUpdate::Snapshot(TableRows::CounterSettings(vec![Default::default()]))
                     }

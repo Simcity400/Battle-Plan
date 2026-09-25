@@ -1469,10 +1469,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     frame.extended.radar_pilot().radar_raw_mode = false;
                     None
                 };
-            let weather_ctx = extended::weather::WeatherCopyContext {
-                base: shared.base,
-                game_state: state,
-            };
+            let weather_ctx = extended::weather::WeatherCopyContext { game_state: state };
             let weather_pending = {
                 let payload = decode::acquire_weather_job();
                 queue!(acquisition::Job::Weather(acquisition::RawRequest {
@@ -2813,7 +2810,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             }
             // Hourly weather measured copy-only above; same install for
             // the calibration counters. The manager header is
-            // anchor-charged to the limits slot, matching the read-group
+            // anchor-charged to the regions slot, matching the read-group
             // convention.
             if weather_report.raw_ok {
                 for (slot, table) in decode::WEATHER.iter().enumerate() {

@@ -10,10 +10,8 @@
 //! the camera) and every frame takes whatever hours have
 //! finished ([`Built`]); the frame that shows an hour only uploads it.
 //!
-//! A coordinator uses its own [`Playback`] or a source-shared decoder. Maps
-//! using the same [`Resources`], replay and content also share each branch's
-//! snow and mud history, whose hours are walked in order. For each decoded
-//! hour, the coordinator hands the independent parts of that hour to a pool of
+//! A coordinator uses its own [`Playback`] or a source-shared decoder. For
+//! each decoded hour, the coordinator hands the independent parts of that hour to a pool of
 //! worker threads and assembles them as they come back. Hours are dispatched
 //! in the order the window will need them — the playhead, the hours ahead of
 //! it, then the hours just behind it — and at most one pool's worth at a
@@ -64,7 +62,7 @@ use crate::{
         textures::IntelMap,
         trains::TrainPlan,
         unit_models::PreparedModels,
-        weather::{self, SnowMud, WeatherHistory},
+        weather::SnowMud,
         weather_effects,
     },
     playback::{Current, Playback},
@@ -205,7 +203,7 @@ pub struct Layers {
     pub aircraft: AircraftPlan,
     pub units: PreparedModels,
     pub orders: OrderField,
-    pub effects: weather_effects::Warmed,
+    pub effects: weather_effects::Prepared,
     pub intel: IntelMap,
     /// Shared so the window can hold the grid it uploaded and compare.
     pub snow_mud: Arc<SnowMud>,
@@ -248,7 +246,7 @@ struct Movers {
     aircraft: AircraftPlan,
     units: PreparedModels,
     orders: OrderField,
-    effects: weather_effects::Warmed,
+    effects: weather_effects::Prepared,
 }
 
 impl Part {
@@ -441,7 +439,6 @@ impl Drop for Pool {
 pub struct Resources {
     pool: Arc<Pool>,
     decoders: Mutex<BTreeMap<usize, Weak<SharedDecoder>>>,
-    weather: Mutex<BTreeMap<(usize, usize), Weak<SharedWeather>>>,
     pub dropper: Arc<Dropper>,
 }
 
@@ -450,7 +447,6 @@ impl Resources {
         Ok(Arc::new(Self {
             pool: Arc::new(Pool::new(builder_count())?),
             decoders: Mutex::new(BTreeMap::new()),
-            weather: Mutex::new(BTreeMap::new()),
             dropper: Arc::new(Dropper::new()?),
         }))
     }
@@ -476,80 +472,6 @@ impl Resources {
         })));
         decoders.insert(key, Arc::downgrade(&decoder));
         Ok(decoder)
-    }
-
-    fn weather(
-        &self,
-        content: Arc<Content>,
-        replay: Arc<Replay>,
-    ) -> io::Result<Arc<SharedWeather>> {
-        let key = (
-            Arc::as_ptr(&replay) as usize,
-            Arc::as_ptr(&content) as usize,
-        );
-        let mut histories = self.weather.lock().map_err(|_| stopped())?;
-        histories.retain(|_, history| history.strong_count() > 0);
-        if let Some(history) = histories.get(&key).and_then(Weak::upgrade) {
-            return Ok(history);
-        }
-        // The owner retains both Arcs, so neither address can be reused while
-        // this entry upgrades. Content identity also fixes the map and regions.
-        let history = Arc::new(SharedWeather::new(content, replay));
-        histories.insert(key, Arc::downgrade(&history));
-        Ok(history)
-    }
-}
-
-/// Ordered weather reconstruction for one immutable replay/content pair.
-/// Its lock is used on coordinators, before any raster jobs reach the pool;
-/// history reconstruction never waits for a pool job or a shared decoder.
-struct SharedWeather {
-    content: Arc<Content>,
-    replay: Arc<Replay>,
-    state: Mutex<WeatherState>,
-}
-
-struct WeatherState {
-    history: WeatherHistory,
-    // Share snapshots still held by coordinators or raster jobs. The registry
-    // retains no additional snapshot payloads beyond WeatherHistory's cache.
-    snapshots: BTreeMap<(BranchId, Hour), Weak<weather::Snapshot>>,
-}
-
-impl SharedWeather {
-    fn new(content: Arc<Content>, replay: Arc<Replay>) -> Self {
-        Self {
-            content,
-            replay,
-            state: Mutex::new(WeatherState {
-                history: WeatherHistory::new(),
-                snapshots: BTreeMap::new(),
-            }),
-        }
-    }
-
-    fn snapshot(&self, frame: &replay::frame::DecodedFrame) -> io::Result<Arc<weather::Snapshot>> {
-        let key = (frame.branch, frame.hour);
-        let mut state = self.state.lock().map_err(|_| stopped())?;
-        if let Some(snapshot) = state.snapshots.get(&key).and_then(Weak::upgrade) {
-            return Ok(snapshot);
-        }
-        let snapshot = Arc::new(state.history.snapshot(
-            &self.content.map,
-            &self.content.strategic_regions,
-            &self.replay,
-            frame,
-        )?);
-        // Only successful results enter the cache. Existing history errors and
-        // branch/load reconstruction rules stay with WeatherHistory.
-        state
-            .snapshots
-            .retain(|_, snapshot| snapshot.strong_count() > 0);
-        if state.snapshots.len() >= FRAME_CACHE {
-            state.snapshots.pop_first();
-        }
-        state.snapshots.insert(key, Arc::downgrade(&snapshot));
-        Ok(snapshot)
     }
 }
 
@@ -638,21 +560,19 @@ fn part_rank(part: &Part) -> u8 {
     }
 }
 
-/// Lap order: the serial decode and snow-history walks first, then parts in
-/// fixed order.
+/// Lap order: the serial decode first, then parts in fixed order.
 fn lap_rank(name: &str) -> u8 {
     match name {
         "decode" => 0,
-        "snow_history" => 1,
-        "political" => 2,
-        "names" => 3,
-        "overlay" => 4,
-        "rails" => 5,
-        "buildings" => 6,
-        "movers" => 7,
-        "fog" => 8,
-        "snow" => 9,
-        _ => 10,
+        "political" => 1,
+        "names" => 2,
+        "overlay" => 3,
+        "rails" => 4,
+        "buildings" => 5,
+        "movers" => 6,
+        "fog" => 7,
+        "snow" => 8,
+        _ => 9,
     }
 }
 
@@ -833,7 +753,6 @@ struct Coordinator {
     shared_decoder: Option<Arc<SharedDecoder>>,
     requested: Arc<Mutex<Option<(u64, Want)>>>,
     frames: FrameCache,
-    weather: Arc<SharedWeather>,
     strategic: Option<Arc<LayerPlane>>,
     want: Option<Want>,
     epoch: u64,
@@ -843,8 +762,6 @@ struct Coordinator {
     sent: BTreeMap<(BranchId, Hour), u64>,
     /// How many built hours have been sent, of any epoch.
     sends: u64,
-    /// Snow and mud caches of recently built hours, so a step back walks nothing.
-    snapshots: BTreeMap<(BranchId, Hour), Arc<weather::Snapshot>>,
     /// The shared parts of the hours last dispatched, which the neighbouring
     /// hours' parts compare with.
     slots: BTreeMap<(BranchId, Hour), Slots>,
@@ -968,7 +885,6 @@ impl Coordinator {
             keep.contains(key)
                 && (*order >= want.received || (key.0 == want.branch && want.have.contains(&key.1)))
         });
-        self.snapshots.retain(|key, _| keep.contains(key));
         self.slots.retain(|key, _| keep.contains(key));
         self.want = Some(want);
     }
@@ -1081,20 +997,6 @@ impl Coordinator {
             laps: vec![("decode", decode_ms)],
             view: want.view,
         };
-        // The source/content history is walked in order before submitting any
-        // pool work. Other maps can reuse this snapshot; rasterisation stays
-        // with each view's parts.
-        let weather_started = Instant::now();
-        let snapshot = match self.snapshots.get(&(branch, hour)) {
-            Some(snapshot) => Ok(Arc::clone(snapshot)),
-            None => self.weather.snapshot(&frame).inspect(|snapshot| {
-                self.snapshots.insert((branch, hour), Arc::clone(snapshot));
-            }),
-        };
-        pending.laps.push((
-            "snow_history",
-            weather_started.elapsed().as_secs_f64() * 1000.0,
-        ));
         if self.strategic.is_none() {
             match political::strategic_layer(&self.content.map, &self.content.strategic_regions) {
                 Ok(plane) => self.strategic = Some(Arc::new(plane)),
@@ -1284,7 +1186,7 @@ impl Coordinator {
                         aircraft: view.aircraft_plan(&movers_perspective)?,
                         units: view.prepare_unit_models(&movers_perspective)?,
                         orders: view.order_field(&movers_perspective)?,
-                        effects: weather_effects::warm(
+                        effects: weather_effects::prepare(
                             &view.weather_effects,
                             weather_effects::field(view.frame)?,
                             camera,
@@ -1315,15 +1217,7 @@ impl Coordinator {
         );
         submit(
             "snow",
-            Box::new(move |view| {
-                Part::Snow(
-                    snapshot
-                        .and_then(|snapshot| {
-                            weather::grid(&view.map, &view.assets.perm_snow, &snapshot, view.frame)
-                        })
-                        .map(Arc::new),
-                )
-            }),
+            Box::new(move |view| Part::Snow(view.snow_mud().map(Arc::new))),
         );
         true
     }
@@ -1359,16 +1253,11 @@ impl Pipeline {
     /// while spiking the frames they arrived on.
     pub fn new(content: Arc<Content>, replay: Arc<Replay>) -> io::Result<Self> {
         let parallel = builder_count();
-        let weather = Arc::new(SharedWeather::new(
-            Arc::clone(&content),
-            Arc::clone(&replay),
-        ));
         Self::start(
             content,
             replay,
             Arc::new(Pool::new(parallel)?),
             None,
-            weather,
             parallel,
         )
     }
@@ -1379,14 +1268,12 @@ impl Pipeline {
         resources: &Resources,
     ) -> io::Result<Self> {
         let decoder = resources.decoder(Arc::clone(&replay))?;
-        let weather = resources.weather(Arc::clone(&content), Arc::clone(&replay))?;
         // Dashboard maps ask for one absolute target, without per-map lookahead.
         Self::start(
             content,
             replay,
             Arc::clone(&resources.pool),
             Some(decoder),
-            weather,
             1,
         )
     }
@@ -1396,7 +1283,6 @@ impl Pipeline {
         replay: Arc<Replay>,
         pool: Arc<Pool>,
         shared_decoder: Option<Arc<SharedDecoder>>,
-        weather: Arc<SharedWeather>,
         parallel: usize,
     ) -> io::Result<Self> {
         let (events, inbox) = mpsc::channel();
@@ -1408,14 +1294,12 @@ impl Pipeline {
             shared_decoder,
             requested: Arc::clone(&requested),
             frames: FrameCache::default(),
-            weather,
             strategic: None,
             want: None,
             epoch: 0,
             pending: BTreeMap::new(),
             sent: BTreeMap::new(),
             sends: 0,
-            snapshots: BTreeMap::new(),
             slots: BTreeMap::new(),
             pool,
             parallel,

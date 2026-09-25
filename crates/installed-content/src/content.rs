@@ -572,6 +572,50 @@ impl ResolvedLayers {
         listed
     }
 
+    /// Every effective file under `prefix` ending in one of `extensions`,
+    /// covered or not, in (layer, path) order. Each layer's folder or archive is listed
+    /// directly, so this works whatever the coverage policy includes, and
+    /// `replace_path` and case precedence follow the covered overlay. Read the
+    /// results with [`Self::read_uncovered`], which verifies covered paths;
+    /// the listing seeds its lookup so each read opens one file.
+    pub fn descriptor_paths(&self, prefix: &str, extensions: &[&str]) -> io::Result<Vec<String>> {
+        let prefix = normalize_relative(prefix)?.to_ascii_lowercase();
+        let extensions: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
+        if extensions
+            .iter()
+            .any(|e| !e.starts_with('.') || e.len() < 2 || e.contains('/'))
+        {
+            return Err(invalid("descriptor extension must be a dot and a suffix"));
+        }
+        let mut effective = BTreeMap::new();
+        let mut listings = Vec::with_capacity(self.layers.len());
+        for (index, layer) in self.layers.iter().enumerate() {
+            let listing = listed_files(index, &layer.source, &prefix, &extensions)?;
+            apply_overlay(
+                &mut effective,
+                index,
+                matches!(layer.source, LayerSource::Archive(_)),
+                listing.keys(),
+                &layer.replace_paths,
+            )?;
+            listings.push(listing);
+        }
+        let mut files: Vec<_> = effective.into_values().collect();
+        files.sort_by(|a, b| a.layer.cmp(&b.layer).then_with(|| a.path.cmp(&b.path)));
+        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
+        let mut memo = self
+            .uncovered_memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for file in &files {
+            if !covered(&file.path) {
+                let hit = listings[file.layer].get(&file.path).cloned();
+                memo.insert(roster.clone(), file.path.clone(), hit);
+            }
+        }
+        Ok(files.into_iter().map(|file| file.path).collect())
+    }
+
     /// Load-order position of the layer an effective covered path comes from.
     pub(crate) fn layer_index(&self, relative: &str) -> Option<usize> {
         self.effective
@@ -805,6 +849,81 @@ fn folded_path(root: &Path, relative: &str) -> io::Result<Option<PathBuf>> {
         }
     }
     Ok(Some(path))
+}
+
+/// One layer's files below a lower-case `prefix` with a lower-case suffix,
+/// with the layer's own case and where each is read from. Links and
+/// case-ambiguous names are refused.
+fn listed_files(
+    index: usize,
+    source: &LayerSource,
+    prefix: &str,
+    extensions: &[String],
+) -> io::Result<BTreeMap<String, UncoveredHit>> {
+    let mut paths = BTreeMap::new();
+    let mut folded = BTreeSet::new();
+    let mut admit = |relative: String, hit: UncoveredHit| -> io::Result<()> {
+        let lower = relative.to_ascii_lowercase();
+        if below(&lower, prefix) && extensions.iter().any(|e| lower.ends_with(e.as_str())) {
+            if !folded.insert(lower) {
+                return Err(invalid(format!(
+                    "layer holds case-ambiguous paths: {relative}"
+                )));
+            }
+            paths.insert(relative, hit);
+        }
+        Ok(())
+    };
+    match source {
+        LayerSource::Folder(root) => {
+            let Some(directory) = folded_path(root, prefix)? else {
+                return Ok(paths);
+            };
+            if !directory.is_dir() {
+                return Ok(paths);
+            }
+            let mut pending = vec![directory];
+            while let Some(directory) = pending.pop() {
+                for entry in directory_entries(&directory)? {
+                    let kind = entry.file_type()?;
+                    if kind.is_symlink() {
+                        return Err(invalid(format!(
+                            "content layer contains a symbolic link: {}",
+                            entry.path().display()
+                        )));
+                    }
+                    if kind.is_dir() {
+                        pending.push(entry.path());
+                    } else if kind.is_file() {
+                        let path = entry.path();
+                        let relative = normalize_relative(text_path(
+                            path.strip_prefix(root)
+                                .map_err(|_| invalid("layer path escaped root"))?,
+                        )?)?;
+                        admit(relative, UncoveredHit::Folder(path))?;
+                    }
+                }
+            }
+        }
+        LayerSource::Archive(path) => {
+            let mut archive = zip::ZipArchive::new(File::open(path)?)?;
+            for member in 0..archive.len() {
+                let entry = archive.by_index(member)?;
+                if !entry.is_dir() {
+                    let name = entry.name().to_owned();
+                    let relative = normalize_relative(&name)?;
+                    admit(
+                        relative,
+                        UncoveredHit::Archive {
+                            layer: index,
+                            member: name,
+                        },
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(paths)
 }
 
 fn apply_overlay<'a>(
@@ -1813,6 +1932,79 @@ mod tests {
         );
         assert!(layers.read_uncovered("../escape").is_err());
         assert!(layers.read_uncovered("gfx/fonts/absent.fnt").is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn descriptor_paths_list_nested_files_in_layer_order_and_honour_replace_path() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_installed_content_descriptors_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let (base, over, replacing) = (root.join("base"), root.join("over"), root.join("rep"));
+        for (dir, files) in [
+            (
+                &base,
+                &[
+                    "gfx/Particles/a.asset",
+                    "gfx/particles/deep/b.ASSET",
+                    "gfx/particles/c.txt",
+                ][..],
+            ),
+            (
+                &over,
+                &["gfx/particles/A.asset", "gfx/particles/z.asset"][..],
+            ),
+            (
+                &replacing,
+                &["gfx/particles/new/n.asset", "interface/w.gfx"][..],
+            ),
+        ] {
+            for file in files {
+                let path = dir.join(file);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, b"x").unwrap();
+            }
+        }
+        let mut layers = ResolvedLayers {
+            layers: vec![
+                folder_layer("base", &base, Vec::new()),
+                folder_layer("over", &over, Vec::new()),
+            ],
+            ..Default::default()
+        };
+        // The base file keeps its layer until the override takes the name.
+        assert_eq!(
+            layers
+                .descriptor_paths("gfx/particles", &[".asset"])
+                .unwrap(),
+            [
+                "gfx/Particles/deep/b.ASSET",
+                "gfx/particles/A.asset",
+                "gfx/particles/z.asset"
+            ]
+        );
+        layers.layers.push(folder_layer(
+            "rep",
+            &replacing,
+            vec!["gfx/particles".into()],
+        ));
+        assert_eq!(
+            layers
+                .descriptor_paths("gfx/particles", &[".asset", ".txt"])
+                .unwrap(),
+            ["gfx/particles/new/n.asset"]
+        );
+        // Covered roots list too, so a coverage policy change cannot hide
+        // descriptors.
+        assert!(covered("interface/w.gfx"));
+        assert_eq!(
+            layers.descriptor_paths("interface", &[".gfx"]).unwrap(),
+            ["interface/w.gfx"]
+        );
+        assert!(layers.descriptor_paths("gfx", &["asset"]).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -406,7 +406,7 @@ impl Role {
             Self::Projects => T::ProjectPrograms,
             Self::Lexical => T::LexicalTokens,
             Self::Session => T::WorldTension,
-            Self::Weather => T::WeatherLimits,
+            Self::Weather => T::WeatherRegions,
             Self::Radar => T::RadarCoverage,
             Self::Divisions => T::Divisions,
             Self::World => T::ProvinceSupply,

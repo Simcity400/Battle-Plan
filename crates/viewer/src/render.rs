@@ -520,10 +520,6 @@ pub fn dump_png(
                 timeout: None,
             })
             .map_err(io::Error::other)?;
-        // The first render queues new weather simulations' warm-ups within its
-        // frame budget; draining finishes them, so the timed render below draws
-        // exactly the fully warmed weather the synchronous path drew.
-        scene.finish_weather();
         let start = std::time::Instant::now();
         // The animation time is 0 and the overlay is the same one, so a
         // headless dump is deterministic.

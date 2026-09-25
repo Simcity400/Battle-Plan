@@ -1250,7 +1250,7 @@ mod tests {
         branches::Parentage,
         frame::{FrameEncoder, Metrics, TableUpdate},
         identity::Roster,
-        rows::{CampaignRow, ClockRow, SunkShipsRow, WeatherLimitsRow, WorldTensionRow},
+        rows::{CampaignRow, ClockRow, SunkShipsRow, WorldTensionRow},
         spool::{encode_record, recover_prefix},
     };
 
@@ -1306,14 +1306,8 @@ mod tests {
             }]));
         tables[TableId::SunkShips.index()] =
             TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
-        tables[TableId::WeatherLimits.index()] =
-            TableView::Complete(TableRows::WeatherLimits(vec![WeatherLimitsRow::default()]));
         tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
-        tables[TableId::WeatherPassState.index()] =
-            TableView::Complete(TableRows::WeatherPassState(vec![
-                crate::rows::WeatherPassStateRow::default(),
-            ]));
         tables[TableId::CounterSettings.index()] =
             TableView::Complete(TableRows::CounterSettings(vec![
                 crate::rows::CounterSettingsRow::default(),

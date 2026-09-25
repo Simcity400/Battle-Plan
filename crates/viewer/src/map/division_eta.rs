@@ -230,27 +230,25 @@ fn indexed<R, V: Copy>(rows: &[R], key: impl Fn(&R) -> (u32, V)) -> OperandIndex
     OperandIndex::Dense(out)
 }
 
-/// `cweather_manager::movement_snow`, recomposed from the three hourly weather
-/// tables and indexed by province id. `None` where the census is short of a
-/// table, which refuses rather than reading a missing operand as no snow.
+/// `cweather_manager::movement_snow` from the recorded words: permanent plus
+/// current snow, wrapping as the engine adds, clamped to the ceiling, indexed
+/// by province id. `None` where the snow census or the ceiling is missing,
+/// which refuses rather than reading a missing operand as no snow.
 fn snow_provinces(frame: &DecodedFrame) -> io::Result<Option<OperandIndex<bool>>> {
-    let limits = rows::<tables::WeatherLimits>(frame)?;
-    let passes = rows::<tables::WeatherProvincePasses>(frame)?;
     let provinces = rows::<tables::WeatherProvinces>(frame)?;
-    let Some(max_snow) = limits.rows().first().map(|row| row.max_snow) else {
+    let regions = rows::<tables::WeatherRegions>(frame)?;
+    let Some(ceiling) = regions.rows().first().map(|row| row.max_snow) else {
         return Ok(None);
     };
-    if !passes.is_complete() || !provinces.is_complete() {
+    if !provinces.is_complete() {
         return Ok(None);
     }
-    // A province with no weather record has no snow, as the native getter has,
-    // so only the recorded provinces need a slot.
-    let permanent = indexed(passes.rows(), |row| (row.province, row.permanent_snow));
-    let out = indexed(provinces.rows(), |row| {
-        let permanent = permanent.get(row.id).unwrap_or(0);
-        (row.id, permanent.wrapping_add(row.snow).min(max_snow) > 0)
-    });
-    Ok(Some(out))
+    Ok(Some(indexed(provinces.rows(), |row| {
+        (
+            row.id,
+            row.permanent_snow.wrapping_add(row.snow).min(ceiling) > 0,
+        )
+    })))
 }
 
 #[cfg(test)]
@@ -260,11 +258,12 @@ mod tests {
         frame::{Metrics, TableView},
         rows::{
             DivisionEtaInputsRow, DivisionMovementRow, DivisionRow, ProvinceRow, StateRow, TableId,
-            TableRows, WeatherLimitsRow, WeatherProvincePassRow, WeatherProvinceRow,
+            TableRows, WeatherProvinceRow, WeatherRegionRow,
         },
     };
 
     const DIVISION: u64 = 7;
+
     /// The one branch with a flat recorded speed, so the expected pair is arithmetic.
     const INVASION_SPEED: i64 = 700_000;
 
@@ -295,18 +294,6 @@ mod tests {
                 (1..=provinces)
                     .map(|id| WeatherProvinceRow {
                         id,
-                        ..Default::default()
-                    })
-                    .collect(),
-            ),
-        );
-        put(
-            &mut frame,
-            TableId::WeatherProvincePasses,
-            TableRows::WeatherProvincePasses(
-                (1..=provinces)
-                    .map(|province| WeatherProvincePassRow {
-                        province,
                         ..Default::default()
                     })
                     .collect(),
@@ -393,17 +380,17 @@ mod tests {
         let mut frame = frame();
         put(
             &mut frame,
-            TableId::MovementDefines,
-            TableRows::MovementDefines(vec![MovementDefinesRow {
-                invasion_speed: INVASION_SPEED,
+            TableId::WeatherRegions,
+            TableRows::WeatherRegions(vec![WeatherRegionRow {
+                max_snow: 20_000,
                 ..Default::default()
             }]),
         );
         put(
             &mut frame,
-            TableId::WeatherLimits,
-            TableRows::WeatherLimits(vec![WeatherLimitsRow {
-                max_snow: 20_000,
+            TableId::MovementDefines,
+            TableRows::MovementDefines(vec![MovementDefinesRow {
+                invasion_speed: INVASION_SPEED,
                 ..Default::default()
             }]),
         );
@@ -414,18 +401,6 @@ mod tests {
                 (1..=3)
                     .map(|id| WeatherProvinceRow {
                         id,
-                        ..Default::default()
-                    })
-                    .collect(),
-            ),
-        );
-        put(
-            &mut frame,
-            TableId::WeatherProvincePasses,
-            TableRows::WeatherProvincePasses(
-                (1..=3)
-                    .map(|province| WeatherProvincePassRow {
-                        province,
                         ..Default::default()
                     })
                     .collect(),
@@ -563,14 +538,6 @@ mod tests {
             TableRows::WeatherProvinces(vec![WeatherProvinceRow {
                 id: destination,
                 snow: 0,
-                ..Default::default()
-            }]),
-        );
-        put(
-            &mut frame,
-            TableId::WeatherProvincePasses,
-            TableRows::WeatherProvincePasses(vec![WeatherProvincePassRow {
-                province: destination,
                 permanent_snow: 1,
                 ..Default::default()
             }]),
@@ -601,7 +568,8 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        // (1 - 1 snow + 0.5 infrastructure) * 400000 = 200000 speed.
+        // (1 - 1 snow + 0.5 infrastructure) * 400000 = 200000 speed: the
+        // destination's permanent snow alone makes it snowy.
         let etas = Etas::read(&frame).unwrap();
         assert_eq!(etas.get(DIVISION), Some((50_000, 50_000)));
         assert_eq!(etas.report().refused, 0);
@@ -609,14 +577,17 @@ mod tests {
 
     #[test]
     fn a_missing_operand_refuses_the_row_instead_of_deriving_without_it() {
-        // The snow census is part of the edge speed, so losing it refuses.
-        let mut frame = derivable(vec![350_000, 700_000]);
-        frame.tables[TableId::WeatherProvinces.index()] = TableView::Unavailable {
-            reason: "dropped for the test".into(),
-        };
-        let etas = Etas::read(&frame).unwrap();
-        assert_eq!(etas.get(DIVISION), None);
-        assert_eq!((etas.report().derived, etas.report().refused), (0, 1));
+        // The snow census and its ceiling are part of the edge speed, so losing
+        // either refuses.
+        for table in [TableId::WeatherProvinces, TableId::WeatherRegions] {
+            let mut frame = derivable(vec![350_000, 700_000]);
+            frame.tables[table.index()] = TableView::Unavailable {
+                reason: "dropped for the test".into(),
+            };
+            let etas = Etas::read(&frame).unwrap();
+            assert_eq!(etas.get(DIVISION), None);
+            assert_eq!((etas.report().derived, etas.report().refused), (0, 1));
+        }
 
         // An incomplete adjacency walk is a diagnostic, not a refusal: the leg
         // distances hold the native fallback, so the pair derives as recorded.

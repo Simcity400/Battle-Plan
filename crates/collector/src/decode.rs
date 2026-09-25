@@ -236,15 +236,10 @@ pub const ECONOMY_REST: [TableId; 10] = [
     TableId::PurchaseContracts,
 ];
 
-/// Hourly weather family in calibration/report order: [limits, regions,
-/// provinces]. Hourly like every Tier-H table (no refresh gate). The manager
-/// header is anchor-charged to the limits slot, matching the read-group
-/// convention.
-pub const WEATHER: [TableId; 3] = [
-    TableId::WeatherLimits,
-    TableId::WeatherRegions,
-    TableId::WeatherProvinces,
-];
+/// Hourly weather family in calibration/report order: [regions, provinces].
+/// Hourly like every Tier-H table (no refresh gate). The manager header is
+/// anchor-charged to the regions slot, matching the read-group convention.
+pub const WEATHER: [TableId; 2] = [TableId::WeatherRegions, TableId::WeatherProvinces];
 
 /// Hourly capitulation table in calibration/report order: [capitulation].
 /// Hourly like every Tier-H table (no refresh gate).
@@ -560,11 +555,9 @@ static RADAR_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
 static INTEL_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static INTEL_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static INTEL_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
-static WEATHER_COPY_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-static WEATHER_DECODE_NS: [AtomicU64; 3] =
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-static WEATHER_RAW_BYTES: [AtomicU64; 3] =
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static WEATHER_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static WEATHER_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static WEATHER_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static CAPITULATION_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static CAPITULATION_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static CAPITULATION_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
@@ -2291,7 +2284,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         && let Some(payload) = job.weather_payload.as_ref()
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-        let mut decode_ticks = [0; 3];
+        let mut decode_ticks = [0; 2];
         frame.extended.weather_pilot().decode_weather_payload(
             shared.base,
             payload,
@@ -2660,9 +2653,9 @@ pub struct Calibration {
     pub intel_copy_ns: [u64; 1],
     pub intel_decode_ns: [u64; 1],
     pub intel_raw_bytes: [u64; 1],
-    pub weather_copy_ns: [u64; 3],
-    pub weather_decode_ns: [u64; 3],
-    pub weather_raw_bytes: [u64; 3],
+    pub weather_copy_ns: [u64; 2],
+    pub weather_decode_ns: [u64; 2],
+    pub weather_raw_bytes: [u64; 2],
     pub capitulation_copy_ns: [u64; 1],
     pub capitulation_decode_ns: [u64; 1],
     pub capitulation_raw_bytes: [u64; 1],
@@ -2780,7 +2773,7 @@ impl Calibration {
             "weather_copy_ns": self.weather_copy_ns.as_slice(),
             "weather_decode_ns": self.weather_decode_ns.as_slice(),
             "weather_raw_bytes": self.weather_raw_bytes.as_slice(),
-            "weather_tables": ["WeatherLimits", "WeatherRegions", "WeatherProvinces"],
+            "weather_tables": ["WeatherRegions", "WeatherProvinces"],
             "capitulation_copy_ns": self.capitulation_copy_ns.as_slice(),
             "capitulation_decode_ns": self.capitulation_decode_ns.as_slice(),
             "capitulation_raw_bytes": self.capitulation_raw_bytes.as_slice(),

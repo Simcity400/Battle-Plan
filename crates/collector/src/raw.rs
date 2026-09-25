@@ -598,6 +598,16 @@ impl<const N: usize> RawLog<N> {
         self.update_capacity_charge();
     }
 
+    /// Preflight `extra` more bytes before any read that must not be
+    /// retried: when they do not fit, mark overflow and the size to grow to.
+    pub fn reserve(&mut self, extra: usize) {
+        let end = self.bytes.len().saturating_add(extra);
+        if end > self.bytes.capacity() {
+            self.required_bytes = self.required_bytes.max(end);
+            self.overflowed = true;
+        }
+    }
+
     /// Guarded copy of one span into the pool. Returns the pool offset of the
     /// copied bytes on success and records failures with the affected-table
     /// mask. Empty spans read nothing (matching `Memory`), null or

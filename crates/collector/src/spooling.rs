@@ -3968,8 +3968,7 @@ mod tests {
 
     fn staggered_frame(branch: BranchId, hour: i32, skip: bool) -> DecodedFrame {
         use replay::rows::{
-            CampaignRow, ClockRow, SunkShipsRow, TableId, TableRows, WeatherLimitsRow,
-            WorldTensionRow,
+            CampaignRow, ClockRow, SunkShipsRow, TableId, TableRows, WorldTensionRow,
         };
         let mut tables =
             std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
@@ -3983,14 +3982,8 @@ mod tests {
             }]));
         tables[TableId::SunkShips.index()] =
             TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
-        tables[TableId::WeatherLimits.index()] =
-            TableView::Complete(TableRows::WeatherLimits(vec![WeatherLimitsRow::default()]));
         tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
-        tables[TableId::WeatherPassState.index()] =
-            TableView::Complete(TableRows::WeatherPassState(vec![
-                replay::rows::WeatherPassStateRow::default(),
-            ]));
         tables[TableId::CounterSettings.index()] =
             TableView::Complete(TableRows::CounterSettings(vec![
                 replay::rows::CounterSettingsRow::default(),

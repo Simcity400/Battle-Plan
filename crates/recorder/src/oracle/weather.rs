@@ -9,7 +9,6 @@ use replay::{frame::DecodedFrame, rows::tables};
 use super::{Report, complete, invalid};
 
 pub(super) fn compare(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Result<()> {
-    let limits = report.attempt("WeatherLimits", |report| compare_limits(frame, report));
     let provinces = report.attempt("WeatherProvinces", |report| {
         compare_provinces(frame, saved, report)
     });
@@ -17,29 +16,20 @@ pub(super) fn compare(frame: &DecodedFrame, saved: &Save, report: &mut Report) -
         compare_regions(frame, saved, report)
     });
     report.limitation(
-        "weather Boolean serializer AFDC0 preserves zero/nonzero truth only; nonzero native byte values are indistinguishable in text saves",
-        "WeatherProvinces.mud; WeatherRegions.light_rain, heavy_rain, snow, blizzard, sandstorm, arctic_water",
+        "the save holds neither the snow ceiling +0x1f8 nor permanent snow +0x30; a load recomputes both from content",
+        "WeatherRegions.max_snow, WeatherProvinces.permanent_snow: census only",
     );
-    if limits && provinces && regions {
+    report.limitation(
+        "weather Boolean serializer AFDC0 preserves zero/nonzero truth only; nonzero native byte values are indistinguishable in text saves",
+        "WeatherRegions.light_rain, heavy_rain, snow, blizzard, sandstorm, arctic_water",
+    );
+    if provinces && regions {
         Ok(())
     } else {
         Err(invalid(
             "weather comparison incomplete; see per-table errors",
         ))
     }
-}
-
-fn compare_limits(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
-    let limits = complete::<tables::WeatherLimits>(frame)?;
-    if limits.len() != 1 {
-        return Err(invalid("weather limits must contain one singleton row"));
-    }
-    report.compared("WeatherLimits", 0);
-    report.limitation(
-        "CWeatherManager serializer F0D8E0 omits native max_water +0x1a8 and max_snow +0x1f8; content-derived ceilings are not substituted for captured words",
-        "WeatherLimits: one decoded row, zero save comparisons",
-    );
-    Ok(())
 }
 
 fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Result<()> {
@@ -72,36 +62,7 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
                     expected.province,
                 );
             }
-            report.scalar(
-                &label,
-                "temperature",
-                Some(actual.temperature),
-                expected.temperature.as_ref(),
-            );
-            sparse_scalar(
-                report,
-                &label,
-                "water",
-                actual.water,
-                expected.water.as_ref(),
-            );
             sparse_scalar(report, &label, "snow", actual.snow, expected.snow.as_ref());
-            sparse_scalar(
-                report,
-                &label,
-                "temperature_offset",
-                actual.temperature_change,
-                expected.temperature_offset.as_ref(),
-            );
-            truth(report, &format!("{label}.mud"), actual.mud, expected.mud);
-            let count = expected.custom_modifiers.as_ref().map_or(0, Vec::len);
-            if u64::from(actual.custom_modifier_count) != count as u64 {
-                report.difference(
-                    format!("{label}.custom_modifier_count"),
-                    actual.custom_modifier_count,
-                    count,
-                );
-            }
         }
         for id in provinces.keys() {
             report.difference(format!("weather province {id}"), "present", "absent");
@@ -115,8 +76,8 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
     }
     report.compared("WeatherProvinces", compared_provinces);
     report.limitation(
-        "province serializer F0DBB0 omits native custom_mud +0x138; the captured cache cannot be reconstructed from saved modifier entries because it may retain an earlier weather pass",
-        "WeatherProvinces.custom_mud",
+        "the manager serializer F0D8E0 omits the display byte arrays +0x310/+0x328; a load rebuilds them from the passes",
+        "WeatherProvinces.display_snow, display_mud: census only",
     );
     Ok(())
 }
@@ -143,23 +104,6 @@ fn compare_regions(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> i
             compared_regions += 1;
             if Some(actual.id) != expected.region {
                 report.difference(format!("{label}.region"), Some(actual.id), expected.region);
-            }
-            report.scalar(
-                &label,
-                "temperature",
-                Some(actual.temperature),
-                expected.temperature.as_ref(),
-            );
-            let next_change_hour = expected
-                .next_weather_change
-                .map(|date| date.engine_hour())
-                .transpose()?;
-            if Some(actual.next_change_hour) != next_change_hour {
-                report.difference(
-                    format!("{label}.next_weather_change"),
-                    Some(actual.next_change_hour),
-                    next_change_hour,
-                );
             }
             for (name, captured, saved) in [
                 ("rain_light", actual.light_rain, expected.rain_light),
@@ -223,7 +167,7 @@ mod tests {
     use super::*;
     use replay::{
         frame::{Metrics, TableView},
-        rows::{TableId, TableRows, WeatherLimitsRow, WeatherProvinceRow, WeatherRegionRow},
+        rows::{TableId, TableRows, WeatherProvinceRow, WeatherRegionRow},
     };
 
     #[test]
@@ -233,7 +177,7 @@ mod tests {
 date=1936.1.1.1 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
 countries={} states={} provinces={}
 weather={
-    provinces={0={province=0 temperature=90071992547.40993
+    provinces={0={province=0 snow=90071992547.40993 temperature=1
         temperature_offset=-0.00001 mud=yes custom_modifiers={mud=-1 mud=7}}}
     regions={0={region=0 temperature=-90071992547.40993
         next_weather_change=1936.1.2.1 rain_light=yes}}
@@ -249,40 +193,29 @@ weather={
                 reason: "outside weather comparison".into(),
             }),
         };
-        frame.tables[TableId::WeatherLimits.index()] =
-            TableView::Complete(TableRows::WeatherLimits(vec![WeatherLimitsRow {
-                max_water: i64::MAX,
-                max_snow: i64::MIN,
-            }]));
         frame.tables[TableId::WeatherProvinces.index()] =
             TableView::Complete(TableRows::WeatherProvinces(vec![WeatherProvinceRow {
                 id: 0,
-                water: 0,
-                snow: 0,
-                temperature: 9_007_199_254_740_993,
-                temperature_change: -1,
-                mud: 255,
-                custom_mud: 7,
-                custom_modifier_count: 2,
+                snow: 9_007_199_254_740_993,
+                permanent_snow: 4_000_000,
+                display_snow: 128,
+                display_mud: 255,
             }]));
         frame.tables[TableId::WeatherRegions.index()] =
             TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow {
                 id: 0,
-                temperature: -9_007_199_254_740_993,
-                next_change_hour: hour + 24,
                 light_rain: 255,
                 ..Default::default()
             }]));
         let mut report = Report::default();
         compare(&frame, &saved, &mut report).unwrap();
         assert!(report.differences.is_empty());
-        assert_eq!(report.scalar_checks, 5);
+        assert_eq!(report.scalar_checks, 1);
         assert_eq!(report.limitations.len(), 3);
 
         for (table, name, scalar_checks) in [
-            (TableId::WeatherLimits, "WeatherLimits", 5),
-            (TableId::WeatherProvinces, "WeatherProvinces", 1),
-            (TableId::WeatherRegions, "WeatherRegions", 4),
+            (TableId::WeatherProvinces, "WeatherProvinces", 0),
+            (TableId::WeatherRegions, "WeatherRegions", 1),
         ] {
             let original = frame.tables[table.index()].clone();
             frame.tables[table.index()] = if table == TableId::WeatherProvinces {
@@ -301,7 +234,7 @@ weather={
             assert_eq!(report.scalar_checks, scalar_checks);
             assert_eq!(report.failed_comparisons.len(), 1);
             assert!(report.failed_comparisons.contains_key(name));
-            assert_eq!(report.compared_tables.len(), 2);
+            assert_eq!(report.compared_tables.len(), 1);
             assert!(!report.compared_tables.contains_key(name));
             frame.tables[table.index()] = original;
         }
@@ -311,7 +244,7 @@ weather={
         else {
             unreachable!();
         };
-        rows[0].temperature -= 1;
+        rows[0].snow -= 1;
         let mut report = Report::default();
         compare(&frame, &saved, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
