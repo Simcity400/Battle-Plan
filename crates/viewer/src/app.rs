@@ -179,6 +179,8 @@ struct Uploaded {
     /// update window, so most hours rasterise the same grid; comparing it is a
     /// memcmp beside a whole-texture write and the winter-volume pass.
     snow_mud: Option<Arc<map::weather::SnowMud>>,
+    /// The intel map on the GPU; hours with the same fog share one.
+    intel: Option<Arc<map::textures::IntelMap>>,
 }
 
 /// The largest share of the central panel the warning area may take before it
@@ -330,7 +332,7 @@ pub struct Viewer {
     /// units upload), so zooming never reallocates mid-gesture.
     unit_capacity: Option<(replay::BranchId, i32, u64)>,
     // names
-    placements: Option<Placements>,
+    placements: Option<Arc<Placements>>,
     placements_at: Option<(replay::BranchId, i32)>,
     /// `None` until the first frame seeds it settled at that frame's own camera
     /// height; see [`Viewer::map`].
@@ -2232,10 +2234,11 @@ impl Viewer {
         laps.lap("border_classes");
         // weather: an hour whose grid equals the one on the GPU writes nothing.
         let same_snow = uploaded.snow_mud.as_ref().is_some_and(|had| {
-            had.width == snow_mud.width
-                && had.height == snow_mud.height
-                && had.texels == snow_mud.texels
-                && had.province_snow == snow_mud.province_snow
+            Arc::ptr_eq(had, &snow_mud)
+                || had.width == snow_mud.width
+                    && had.height == snow_mud.height
+                    && had.texels == snow_mud.texels
+                    && had.province_snow == snow_mud.province_snow
         });
         if !same_snow {
             scene.set_snow_mud(
@@ -2249,7 +2252,15 @@ impl Viewer {
             uploaded.snow_mud = Some(Arc::clone(&snow_mud));
         }
         laps.lap("snow_upload");
-        scene.set_fog_of_war(&state.queue, &intel.texels, intel.fog)?;
+        // fog of war: hours whose fog did not change share the grid on the GPU.
+        if uploaded
+            .intel
+            .as_ref()
+            .is_none_or(|had| !Arc::ptr_eq(had, &intel))
+        {
+            scene.set_fog_of_war(&state.queue, &intel.texels, intel.fog)?;
+            uploaded.intel = Some(Arc::clone(&intel));
+        }
         laps.lap("fog_upload");
         dropper.drop_later(self.placements.replace(names));
         self.placements_at = Some((branch, hour));
@@ -2738,7 +2749,7 @@ impl Viewer {
         if self.placements_at != Some(names_key) {
             match now.place_names() {
                 Ok(placements) => {
-                    self.placements = Some(placements);
+                    self.placements = Some(Arc::new(placements));
                     self.placements_at = Some(names_key);
                 }
                 Err(error) => return Err(error.to_string()),
@@ -2865,7 +2876,7 @@ impl Viewer {
                     no_shadows: false,
                     // names
                     overlay: Overlay {
-                        names: self.placements.as_ref(),
+                        names: self.placements.as_deref(),
                         layer_alpha: fade.0,
                         sprites: Some(label_batch),
                         ui_scale,

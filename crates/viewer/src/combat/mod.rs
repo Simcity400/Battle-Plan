@@ -175,7 +175,8 @@ impl Window {
         if !self.cached.as_ref().is_some_and(|(b, h, s, p, _)| {
             (*b, *h, *s) == (branch, hour, selection) && p == perspective
         }) {
-            let mut bindings = Bindings::read(document, selection, &document.vision(perspective)?)?;
+            let mut bindings =
+                Bindings::read(document, selection, &*document.vision(perspective)?)?;
             if let Some((_, _, previous, _, shown)) = &self.cached
                 && *previous == selection
             {

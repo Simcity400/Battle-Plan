@@ -53,17 +53,18 @@ use crate::{
         demilitarized::{Zone, ZonePlan},
         gradient::LayerPlane,
         map_buildings::PreparedBuildings,
+        memo::{Keyed, Recent},
         models::ModelField,
-        name_pass::Placements,
+        name_pass::{NameAreas, PlacedAreas, Placements},
         orders::OrderField,
         perspective,
         political::{self, FrameKey, PoliticalLayers},
-        railways::RailMesh,
+        railways::{RailMesh, RailNetwork},
         tables::Limitations,
-        textures::IntelMap,
+        textures::{self, IntelMap},
         trains::TrainPlan,
         unit_models::PreparedModels,
-        weather::SnowMud,
+        weather::{self, SnowMud},
         weather_effects,
     },
     playback::{Current, Playback},
@@ -205,13 +206,15 @@ pub struct Layers {
     pub units: PreparedModels,
     pub orders: OrderField,
     pub effects: weather_effects::Prepared,
-    pub intel: IntelMap,
+    /// Shared by the hours whose fog is the same, so the window writes it once.
+    pub intel: Arc<IntelMap>,
     /// Shared so the window can hold the grid it uploaded and compare.
     pub snow_mud: Arc<SnowMud>,
     /// Worded at fraction 0; the window sets its own fraction before reading.
     pub limitations: Limitations,
     pub header: Arc<Header>,
-    pub names: Placements,
+    /// Shared by the hours whose named areas are the same.
+    pub names: Arc<Placements>,
     pub overlay: PreparedOverlay,
 }
 
@@ -233,12 +236,12 @@ pub struct Built {
 
 enum Part {
     Political(io::Result<(Arc<Political>, Arc<Borders>)>),
-    Names(io::Result<Placements>),
+    Names(io::Result<Arc<Placements>>),
     Overlay(io::Result<Box<PreparedOverlay>>),
     Rails(io::Result<Arc<Rails>>),
     Buildings(io::Result<Arc<Shared<PreparedBuildings>>>),
     Movers(io::Result<Box<Movers>>),
-    Fog(io::Result<(IntelMap, Limitations, Arc<Header>)>),
+    Fog(io::Result<(Arc<IntelMap>, Limitations, Arc<Header>)>),
     Snow(io::Result<Arc<SnowMud>>),
 }
 
@@ -351,6 +354,39 @@ impl Slots {
             borders: Slot::new(),
             rails: Slot::new(),
             buildings: Slot::new(),
+        }
+    }
+}
+
+/// Hour layers the next hours usually rebuild unchanged, kept by what they
+/// were built from (`map::memo`). A hit hands back the same allocation, so the
+/// window, which remembers what it uploaded, uploads nothing for it.
+struct Memos {
+    /// Country names, by the areas and names they place.
+    names: Recent<NameAreas, Placements>,
+    /// Each country area's placed name, so a moved front re-places only the
+    /// areas it changed.
+    placed: PlacedAreas,
+    /// The railway, by the recorded network it is drawn from.
+    rails: Recent<RailNetwork, Rails>,
+    /// The snow and mud grid, by the `WeatherProvinces` table it rasterises.
+    snow: Keyed<SnowMud>,
+    /// The intel map, by the viewing country's rebuilt province bytes.
+    intel: Recent<Option<BTreeMap<u32, u8>>, IntelMap>,
+}
+
+/// How many recent values each memo keeps: the pool builds several hours at
+/// once, and a step back or a perspective switch returns to a recent one.
+const MEMO_ENTRIES: usize = 8;
+
+impl Memos {
+    fn new() -> Self {
+        Self {
+            names: Recent::new(MEMO_ENTRIES),
+            placed: PlacedAreas::default(),
+            rails: Recent::new(MEMO_ENTRIES),
+            snow: Keyed::new(weather::TABLES, MEMO_ENTRIES),
+            intel: Recent::new(MEMO_ENTRIES),
         }
     }
 }
@@ -530,12 +566,12 @@ struct Pending {
     alive: Arc<AtomicBool>,
     started: Instant,
     political: Option<(Arc<Political>, Arc<Borders>)>,
-    names: Option<Placements>,
+    names: Option<Arc<Placements>>,
     overlay: Option<PreparedOverlay>,
     rails: Option<Arc<Rails>>,
     buildings: Option<Arc<Shared<PreparedBuildings>>>,
     movers: Option<Movers>,
-    fog: Option<(IntelMap, Limitations, Arc<Header>)>,
+    fog: Option<(Arc<IntelMap>, Limitations, Arc<Header>)>,
     snow: Option<Arc<SnowMud>>,
     received: usize,
     error: Option<String>,
@@ -794,6 +830,7 @@ struct Coordinator {
     /// The shared parts of the hours last dispatched, which the neighbouring
     /// hours' parts compare with.
     slots: BTreeMap<(BranchId, Hour), Slots>,
+    memos: Arc<Memos>,
     pool: Arc<Pool>,
     parallel: usize,
     events: Sender<Event>,
@@ -1166,7 +1203,17 @@ impl Coordinator {
                 }),
             );
         }
-        submit("names", Box::new(|view| Part::Names(view.place_names())));
+        let memos = Arc::clone(&self.memos);
+        submit(
+            "names",
+            Box::new(move |view| {
+                Part::Names(view.name_areas().and_then(|areas| {
+                    memos.names.get_or_insert_with(areas.clone(), || {
+                        Ok(Arc::new(view.place_name_areas(&areas, &memos.placed)))
+                    })
+                }))
+            }),
+        );
         let (camera, viewport, ui_scale) =
             (want.view.camera, want.view.viewport, want.view.ui_scale);
         let overlay_perspective = want.perspective.clone();
@@ -1182,14 +1229,18 @@ impl Coordinator {
         {
             let fill = Fill(Arc::clone(&slots.rails));
             let near = slots_of(&neighbours, |slots| &slots.rails);
+            let memos = Arc::clone(&self.memos);
             submit(
                 "rails",
                 Box::new(move |view| {
-                    Part::Rails(view.rail_mesh().map(|mesh| {
-                        let bridges = view.bridges.field(&mesh);
-                        let rails = Shared::share(wait_all(near), (mesh, bridges));
+                    Part::Rails(RailNetwork::read(view.frame).and_then(|network| {
+                        let rails = memos.rails.get_or_insert_with(network.clone(), || {
+                            let mesh = view.rail_mesh_of(&network);
+                            let bridges = view.bridges.field(&mesh);
+                            Ok::<_, io::Error>(Shared::share(wait_all(near), (mesh, bridges)))
+                        })?;
                         fill.set(Some(Arc::clone(&rails)));
-                        rails
+                        Ok(rails)
                     }))
                 }),
             );
@@ -1232,13 +1283,20 @@ impl Coordinator {
             }),
         );
         let fog_perspective = want.perspective.clone();
+        let memos = Arc::clone(&self.memos);
         submit(
             "fog",
             Box::new(move |view| {
                 Part::Fog((|| {
+                    let vision = view.vision(&fog_perspective)?;
+                    let fog = vision.province_fog();
+                    let intel = memos.intel.get_or_insert_with(fog.cloned(), || {
+                        textures::intel_map(&view.map, fog).map(Arc::new)
+                    })?;
+                    let limitations = view.limitations_with(&fog_perspective, Some(&intel))?;
                     Ok((
-                        view.intel_map(&fog_perspective)?,
-                        view.limitations(&fog_perspective)?,
+                        intel,
+                        limitations,
                         Arc::new(Header {
                             countries: view.country_tags()?,
                             viewing: view
@@ -1250,9 +1308,16 @@ impl Coordinator {
                 })())
             }),
         );
+        let memos = Arc::clone(&self.memos);
         submit(
             "snow",
-            Box::new(move |view| Part::Snow(view.snow_mud().map(Arc::new))),
+            Box::new(move |view| {
+                Part::Snow(view.snow_cells().and_then(|cells| {
+                    memos.snow.get_or_build(view.frame, (), |projected| {
+                        weather::grid_from_cells(cells, projected).map(Arc::new)
+                    })
+                }))
+            }),
         );
         true
     }
@@ -1336,6 +1401,7 @@ impl Pipeline {
             sent: BTreeMap::new(),
             sends: 0,
             slots: BTreeMap::new(),
+            memos: Arc::new(Memos::new()),
             pool,
             parallel,
             events: events.clone(),
@@ -1679,6 +1745,37 @@ mod tests {
         let slot = Slot::<u32>::new();
         drop(Fill(Arc::clone(&slot)));
         assert_eq!(slot.wait(), None);
+    }
+
+    #[test]
+    fn the_intel_map_follows_the_viewing_countrys_province_bytes() {
+        let memos = Memos::new();
+        let built = std::cell::Cell::new(0);
+        let intel = |fog: Option<BTreeMap<u32, u8>>| {
+            memos
+                .intel
+                .get_or_insert_with(fog.clone(), || {
+                    built.set(built.get() + 1);
+                    Ok::<_, ()>(Arc::new(IntelMap {
+                        texels: fog.map_or_else(Vec::new, |fog| fog.into_values().collect()),
+                        fog: true,
+                    }))
+                })
+                .unwrap()
+        };
+        let german = intel(Some(BTreeMap::from([(1, 150), (2, 0)])));
+        // Another country, or the same one after its sight changed: rebuilt.
+        let soviet = intel(Some(BTreeMap::from([(1, 0), (2, 150)])));
+        // Fog off draws no fog: a key of its own.
+        let clear = intel(None);
+        assert_eq!(built.get(), 3);
+        assert!(!Arc::ptr_eq(&german, &soviet) && !Arc::ptr_eq(&german, &clear));
+        // Back to the first view: the same grid, nothing uploaded again.
+        assert!(Arc::ptr_eq(
+            &german,
+            &intel(Some(BTreeMap::from([(1, 150), (2, 0)])))
+        ));
+        assert_eq!(built.get(), 3);
     }
 
     #[test]

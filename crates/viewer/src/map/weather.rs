@@ -32,7 +32,7 @@ use std::{io, time::Duration, time::Instant};
 use installed_content::map::MapData;
 use replay::{
     frame::DecodedFrame,
-    rows::{WeatherProvinceRow, tables},
+    rows::{TableId, WeatherProvinceRow, tables},
 };
 
 use super::{gradient::ProvinceMap, tables::rows, textures::SNOW_MUD_BLOCK};
@@ -90,18 +90,42 @@ pub fn grid_size(width: u32, height: u32) -> [u32; 2] {
     [width / SNOW_MUD_BLOCK, height / SNOW_MUD_BLOCK]
 }
 
-/// The hour's grid from its recorded display bytes. A truncated or
-/// unavailable table draws its missing provinces bare and says so.
+/// Every table [`grid`] reads; the window keeps a grid while the hours share
+/// them (`crate::map::memo`).
+pub const TABLES: &[TableId] = &[TableId::WeatherProvinces];
+
+/// The hour's grid from its recorded display bytes, pixel by pixel: the
+/// reference [`grid_from_cells`] is tested against. A truncated or unavailable
+/// table draws its missing provinces bare and says so.
+#[cfg(test)]
 pub fn grid(map: &MapData, perm_snow: &[bool], frame: &DecodedFrame) -> io::Result<SnowMud> {
+    let image = ProvinceMap {
+        width: map.width,
+        height: map.height,
+        ids: &map.province_ids,
+    };
+    let largest = map.province_ids.iter().copied().max().unwrap_or(0);
+    grid_with(largest, frame, |bytes| rasterise(&image, perm_snow, bytes))
+}
+
+/// The hour's grid from its recorded display bytes, through the map's
+/// precomputed cell composition, which reads each cell's few provinces instead
+/// of its sixteen pixels. A truncated or unavailable table draws its missing
+/// provinces bare and says so.
+pub fn grid_from_cells(cells: &SnowCells, frame: &DecodedFrame) -> io::Result<SnowMud> {
+    grid_with(cells.largest, frame, |bytes| Ok(cells.average(bytes)))
+}
+
+/// Reads the hour's bytes and turns `average`'s cells into the texture.
+/// `largest` is the largest province id of the image.
+fn grid_with(
+    largest: u32,
+    frame: &DecodedFrame,
+    average: impl FnOnce(&[[u8; 2]]) -> io::Result<(u32, u32, Vec<u8>)>,
+) -> io::Result<SnowMud> {
     let view = rows::<tables::WeatherProvinces>(frame)?;
     let recorded = view.rows();
-    let largest = map
-        .province_ids
-        .iter()
-        .copied()
-        .chain(recorded.iter().map(|row| row.id))
-        .max()
-        .unwrap_or(0) as usize;
+    let largest = recorded.iter().map(|row| row.id).fold(largest, u32::max) as usize;
     let mut bytes = vec![[0_u8; 2]; largest + 1];
     let mut province_snow = vec![None; largest + 1];
     let mut summary = Summary {
@@ -124,12 +148,7 @@ pub fn grid(map: &MapData, perm_snow: &[bool], frame: &DecodedFrame) -> io::Resu
         summary.shown_mud += usize::from(display_mud != 0);
     }
     let start = Instant::now();
-    let image = ProvinceMap {
-        width: map.width,
-        height: map.height,
-        ids: &map.province_ids,
-    };
-    let (width, height, cells) = rasterise(&image, perm_snow, &bytes)?;
+    let (width, height, cells) = average(&bytes)?;
     let texels = cells
         .chunks_exact(2)
         .flat_map(|cell| [cell[1], cell[0], cell[0], cell[1]])
@@ -144,10 +163,110 @@ pub fn grid(map: &MapData, perm_snow: &[bool], frame: &DecodedFrame) -> io::Resu
     })
 }
 
+/// Which provinces each grid cell's sixteen pixels read, so an hour's grid
+/// costs one pass over the cells rather than over every pixel.
+///
+/// A cell's sum is the same integer [`rasterise`] adds pixel by pixel: every
+/// `perm_snow` pixel counts 255 snow, every other pixel its province's snow
+/// byte, and every pixel its province's mud byte.
+pub struct SnowCells {
+    /// The image's largest province id.
+    largest: u32,
+    width: u32,
+    height: u32,
+    /// Each cell's entries: `offsets[cell]..offsets[cell + 1]`.
+    offsets: Vec<u32>,
+    /// A province and how many of the cell's pixels read its snow and mud.
+    entries: Vec<(u32, u8, u8)>,
+    /// How many of the cell's pixels are `perm_snow`.
+    perm: Vec<u8>,
+}
+
+impl SnowCells {
+    pub fn new(map: &MapData, perm_snow: &[bool]) -> io::Result<Self> {
+        let image = ProvinceMap {
+            width: map.width,
+            height: map.height,
+            ids: &map.province_ids,
+        };
+        image.validate()?;
+        if perm_snow.len() != image.ids.len() {
+            return Err(invalid(format!(
+                "the perm_snow mask holds {} flags for {} province pixels",
+                perm_snow.len(),
+                image.ids.len()
+            )));
+        }
+        let [width, height] = grid_size(image.width, image.height);
+        let count = width as usize * height as usize;
+        let mut offsets = Vec::with_capacity(count + 1);
+        let mut entries: Vec<(u32, u8, u8)> = Vec::with_capacity(count * 2);
+        let mut perm = Vec::with_capacity(count);
+        offsets.push(0);
+        for cell_z in 0..height {
+            for cell_x in 0..width {
+                let start = entries.len();
+                let mut perm_pixels = 0u8;
+                for step_z in 0..SNOW_MUD_BLOCK {
+                    let world_z = cell_z * SNOW_MUD_BLOCK + step_z;
+                    for step_x in 0..SNOW_MUD_BLOCK {
+                        let column = cell_x * SNOW_MUD_BLOCK + step_x;
+                        let row = image.height - 1 - world_z;
+                        let at = (row * image.width + column) as usize;
+                        let province = image.ids[at];
+                        let snow = u8::from(!perm_snow[at]);
+                        perm_pixels += u8::from(perm_snow[at]);
+                        match entries[start..]
+                            .iter_mut()
+                            .find(|(id, _, _)| *id == province)
+                        {
+                            Some(entry) => {
+                                entry.1 += snow;
+                                entry.2 += 1;
+                            }
+                            None => entries.push((province, snow, 1)),
+                        }
+                    }
+                }
+                perm.push(perm_pixels);
+                offsets.push(entries.len() as u32);
+            }
+        }
+        Ok(Self {
+            largest: image.ids.iter().copied().max().unwrap_or(0),
+            width,
+            height,
+            offsets,
+            entries,
+            perm,
+        })
+    }
+
+    /// [`rasterise`]'s cells for these per-province bytes.
+    fn average(&self, bytes: &[[u8; 2]]) -> (u32, u32, Vec<u8>) {
+        let area = SNOW_MUD_BLOCK * SNOW_MUD_BLOCK;
+        let mut cells = vec![0u8; self.perm.len() * 2];
+        for (cell, out) in cells.chunks_exact_mut(2).enumerate() {
+            let mut snow = u32::from(self.perm[cell]) * u32::from(u8::MAX);
+            let mut mud = 0u32;
+            let range = self.offsets[cell] as usize..self.offsets[cell + 1] as usize;
+            for &(province, snow_pixels, pixels) in &self.entries[range] {
+                let [province_snow, province_mud] =
+                    bytes.get(province as usize).copied().unwrap_or([0; 2]);
+                snow += u32::from(snow_pixels) * u32::from(province_snow);
+                mud += u32::from(pixels) * u32::from(province_mud);
+            }
+            out.copy_from_slice(&[(snow / area) as u8, (mud / area) as u8]);
+        }
+        (self.width, self.height, cells)
+    }
+}
+
 /// Averages the per-province display bytes into the grid, as `140f00200`:
 /// sixteen source pixels per cell, a pixel outside the image reading province
 /// 0 but still counting, and an integer division by sixteen. Row 0 of the
 /// result is world `z = 0`, the image's last row. Two bytes a cell: snow, mud.
+#[cfg(test)]
 fn rasterise(
     image: &ProvinceMap<'_>,
     perm_snow: &[bool],
@@ -317,6 +436,60 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_cell_composition_averages_exactly_as_the_pixels_do() {
+        // A 16 x 8 image with a province boundary through most cells and
+        // perm_snow on a diagonal, against every byte pattern below.
+        let ids: Vec<u32> = (0..128u32).map(|at| 1 + (at * 7 + at / 16) % 5).collect();
+        let perm: Vec<bool> = (0..128).map(|at| at % 9 == 0).collect();
+        let map = MapData {
+            width: 16,
+            height: 8,
+            province_ids: ids,
+            definitions: Default::default(),
+            country_colors: Default::default(),
+        };
+        let cells = SnowCells::new(&map, &perm).unwrap();
+        for seed in 0..20u32 {
+            let rows = (1..=6u32)
+                .map(|id| {
+                    let byte = |salt: u32| ((id * 97 + seed * 31 + salt) % 256) as u8;
+                    row(id, i64::from(id), byte(1), byte(2))
+                })
+                .collect();
+            let frame = frame(TableView::Complete(TableRows::WeatherProvinces(rows)));
+            let pixels = grid(&map, &perm, &frame).unwrap();
+            let composed = grid_from_cells(&cells, &frame).unwrap();
+            assert_eq!(pixels.texels, composed.texels, "seed {seed}");
+            assert_eq!(pixels.province_snow, composed.province_snow);
+            assert_eq!(pixels.summary, composed.summary);
+        }
+    }
+
+    #[test]
+    fn odd_sizes_leave_the_same_edge_pixels_out_of_both_paths() {
+        // 18 x 10 pixels: a 4 x 2 grid, and the last two columns and rows
+        // belong to no cell in either path.
+        let ids: Vec<u32> = (0..180u32).map(|at| 1 + (at * 11 + at / 18) % 7).collect();
+        let perm: Vec<bool> = (0..180).map(|at| at % 13 == 0).collect();
+        let map = MapData {
+            width: 18,
+            height: 10,
+            province_ids: ids,
+            definitions: Default::default(),
+            country_colors: Default::default(),
+        };
+        let cells = SnowCells::new(&map, &perm).unwrap();
+        let rows = (1..=7u32)
+            .map(|id| row(id, 0, (id * 37 % 256) as u8, (id * 91 % 256) as u8))
+            .collect();
+        let frame = frame(TableView::Complete(TableRows::WeatherProvinces(rows)));
+        let pixels = grid(&map, &perm, &frame).unwrap();
+        let composed = grid_from_cells(&cells, &frame).unwrap();
+        assert_eq!([composed.width, composed.height], [4, 2]);
+        assert_eq!(pixels.texels, composed.texels);
     }
 
     #[test]
