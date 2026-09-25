@@ -23,6 +23,13 @@ use serde::Serialize;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 const MAX_WORKERS: usize = 15;
+/// Longest a collector spins on its awaited running job before it parks.
+/// A woken collector must win a CPU back from every other ready thread, which
+/// can take much longer than the job's remaining work. It spins only while a
+/// worker is idle, so the spin takes no CPU from queued work. The cap is the
+/// recorder's whole per-hour game-thread budget (2 ms): a join that outlives
+/// it has already missed the target, and parking then costs one wake.
+const JOIN_SPIN: std::time::Duration = std::time::Duration::from_millis(2);
 static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +122,8 @@ pub(crate) struct Calibration {
     pub rejected: u64,
     pub caller_executed: u64,
     pub worker_executed: u64,
+    /// Spin episodes of collectors awaiting a running job (see `JOIN_SPIN`).
+    pub spins: u64,
 }
 
 #[derive(Default)]
@@ -126,6 +135,7 @@ struct Counters {
     rejected: u64,
     caller_executed: u64,
     worker_executed: u64,
+    spins: u64,
 }
 
 // Slots are preallocated. Keep completion counters inline to avoid a per-job
@@ -240,7 +250,8 @@ impl<J, R> State<J, R> {
         Some((index, request))
     }
 
-    fn stop(&mut self) {
+    /// Cancel queued work. Each cancelled completion is published for spinners.
+    fn stop(&mut self, published: &[AtomicU64]) {
         self.stop = true;
         while let Some(index) = self.ready.pop_front() {
             let Payload::Queued(request) =
@@ -257,6 +268,7 @@ impl<J, R> State<J, R> {
             });
             self.counters.stopped = self.counters.stopped.saturating_add(1);
             self.counters.completed = self.counters.completed.saturating_add(1);
+            published[index].fetch_max(self.slots[index].generation, Ordering::Release);
             #[cfg(feature = "callback_profile")]
             if let Payload::Complete(completion) = &mut self.slots[index].payload {
                 completion.profile.published_qpc = crate::sampling::qpc();
@@ -280,6 +292,10 @@ struct Shared<J, R> {
     work_ready: Condvar,
     run: Box<Runner<J, R>>,
     thread_ids: Vec<AtomicU32>,
+    /// Per slot: the generation whose completion was last published. A
+    /// spinning collector reads this without the state lock; the completion
+    /// itself is still taken under the lock.
+    published: Vec<AtomicU64>,
     join_failed: AtomicBool,
 }
 
@@ -301,7 +317,7 @@ impl<J, R> Shared<J, R> {
     }
 
     fn stop(&self) {
-        self.lock().stop();
+        self.lock().stop(&self.published);
         self.changed.notify_all();
         self.work_ready.notify_all();
     }
@@ -340,7 +356,7 @@ impl<J, R> Shared<J, R> {
         let stopped = report.is_err();
         if stopped {
             state.counters.panicked = state.counters.panicked.saturating_add(1);
-            state.stop();
+            state.stop(&self.published);
         }
         state.slots[index].payload = Payload::Complete(Completion {
             request,
@@ -360,6 +376,7 @@ impl<J, R> Shared<J, R> {
         });
         state.active -= 1;
         state.counters.completed = state.counters.completed.saturating_add(1);
+        let generation = state.slots[index].generation;
         if caller {
             state.counters.caller_executed = state.counters.caller_executed.saturating_add(1);
         } else {
@@ -379,6 +396,10 @@ impl<J, R> Shared<J, R> {
             completion.profile.wake_end_qpc = crate::sampling::qpc();
         }
         drop(state);
+        // After unlock, so a spinner that sees it does not contend for the
+        // lock this worker still holds. Monotonic: a delayed store for a slot
+        // that was collected and reused cannot hide a later generation.
+        self.published[index].fetch_max(generation, Ordering::Release);
         if stopped {
             self.work_ready.notify_all();
         }
@@ -419,6 +440,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         // this counts fixed executor storage, not OS thread stacks.
         let allocated_bytes = size_of::<Shared<J, R>>()
             + state.allocated_bytes()
+            + capacity * size_of::<AtomicU64>()
             + thread_ids.capacity() * size_of::<AtomicU32>()
             + threads.capacity() * size_of::<JoinHandle<()>>()
             + size_of_val(&run);
@@ -429,6 +451,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             work_ready: Condvar::new(),
             run: Box::new(run),
             thread_ids,
+            published: (0..capacity).map(|_| AtomicU64::new(0)).collect(),
             join_failed: AtomicBool::new(false),
         });
         let pool = Self {
@@ -571,6 +594,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         let finish_lock_wait_ticks = crate::sampling::qpc()
             .saturating_sub(finish_lock_begin)
             .max(0) as u64;
+        let mut spin_until = None;
         loop {
             let slot = state.slots.get_mut(ticket.slot)?;
             if slot.generation != ticket.generation || matches!(slot.payload, Payload::Vacant) {
@@ -600,6 +624,29 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             if queued && let Some((index, request)) = state.take_ready(Some(ticket)) {
                 drop(state);
                 self.shared.execute(index, request, true);
+                state = self.shared.lock();
+            } else if !queued
+                && !state.stop
+                && state.active < self.shared.thread_ids.len()
+                && *spin_until.get_or_insert_with(|| std::time::Instant::now() + JOIN_SPIN)
+                    > std::time::Instant::now()
+            {
+                // A worker is running this ticket and another worker is idle,
+                // so a CPU is spare: spin on this ticket only, outside the
+                // lock, then recheck under the lock. Queued tickets, a busy
+                // pool and a spent budget park as before.
+                let deadline = spin_until.expect("spin deadline set");
+                state.counters.spins = state.counters.spins.saturating_add(1);
+                drop(state);
+                let published = &self.shared.published[ticket.slot];
+                while published.load(Ordering::Acquire) != ticket.generation {
+                    for _ in 0..64 {
+                        std::hint::spin_loop();
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                }
                 state = self.shared.lock();
             } else {
                 state = self.shared.wait(state);
@@ -635,6 +682,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             rejected: state.counters.rejected,
             caller_executed: state.counters.caller_executed,
             worker_executed: state.counters.worker_executed,
+            spins: state.counters.spins,
         }
     }
 
@@ -698,12 +746,31 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     }
 }
 
-/// One acquisition worker per hardware thread beyond the collecting callback.
-/// These reads are memory-latency bound, so SMT siblings add real throughput,
-/// and the game's own threads are parked for the whole block. Query once before
-/// hook install; this neither pins threads nor changes game affinity.
+/// One acquisition worker per logical CPU the game may run on, beyond the
+/// collecting callback. These reads are memory-latency bound, so SMT siblings
+/// add real throughput, and the game's own threads are parked for the whole
+/// block. The game's process affinity counts, not the machine's CPUs: with more
+/// workers than allowed CPUs, a join spinning "while a worker is idle" would
+/// take a CPU from queued work. Query once before hook install; this neither
+/// pins threads nor changes game affinity.
 pub(crate) fn recommended_worker_count() -> usize {
-    worker_count_for_topology(std::thread::available_parallelism().map_or(1, usize::from))
+    let machine = std::thread::available_parallelism().map_or(1, usize::from);
+    worker_count_for_cpus(machine, allowed_cpus())
+}
+
+/// Workers for `machine` logical CPUs of which the process may use `allowed`
+/// (None: affinity unreadable, use the machine count).
+fn worker_count_for_cpus(machine: usize, allowed: Option<usize>) -> usize {
+    worker_count_for_topology(allowed.map_or(machine, |allowed| allowed.min(machine)))
+}
+
+/// Logical CPUs in the game process's affinity mask (current processor group).
+fn allowed_cpus() -> Option<usize> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
+    let (mut process, mut system) = (0_usize, 0_usize);
+    // SAFETY: the pseudo-handle needs no close; both outputs are valid locals.
+    let ok = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
+    (ok != 0 && process != 0).then(|| process.count_ones() as usize)
 }
 
 /// Hardware threads minus the callback, within the pool's admitted range.
@@ -1192,6 +1259,144 @@ mod tests {
         assert_eq!(active_before_release, 1);
         assert!(!stopped_before_release);
         assert_eq!(pool.calibration().active, 0);
+    }
+
+    fn wait_until_running<J: Send + 'static, R: Copy + Send + 'static>(
+        pool: &Pool<J, R>,
+        active: usize,
+    ) {
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while pool.calibration().active < active {
+            assert!(std::time::Instant::now() < limit, "job never started");
+            std::thread::yield_now();
+        }
+    }
+
+    /// A runner that counts starts, then sleeps its request in milliseconds.
+    fn sleeping_pool(workers: usize) -> (Pool<u64, u64>, Arc<AtomicU64>) {
+        let started = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&started);
+        let pool = Pool::start(workers, 4, move |sleep_ms: &mut u64| {
+            counter.fetch_add(1, Ordering::AcqRel);
+            std::thread::sleep(std::time::Duration::from_millis(*sleep_ms));
+            *sleep_ms
+        })
+        .unwrap();
+        pool.reserve_worker_slots(4).unwrap();
+        (pool, started)
+    }
+
+    fn wait_for_starts(started: &AtomicU64, count: u64) {
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while started.load(Ordering::Acquire) < count {
+            assert!(std::time::Instant::now() < limit, "job never started");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn collector_spins_on_its_running_ticket_only_while_a_worker_is_idle() {
+        let (pool, started) = sleeping_pool(2);
+        // One running job, one idle worker: the join spins and collects it.
+        // The job outlasts scheduling noise so the join finds it running.
+        let short = unsafe { pool.submit_with_priority(&mut Some(20), 0, true) }.unwrap();
+        wait_for_starts(&started, 1);
+        assert_eq!(pool.finish(short).unwrap().report.unwrap(), 20);
+        let after_short = pool.calibration().spins;
+        assert!(after_short >= 1);
+        // A job longer than the cap is still collected after the spin parks.
+        let long_ms = JOIN_SPIN.as_millis() as u64 * 25;
+        let long = unsafe { pool.submit_with_priority(&mut Some(long_ms), 0, true) }.unwrap();
+        wait_for_starts(&started, 2);
+        assert_eq!(pool.finish(long).unwrap().report.unwrap(), long_ms);
+        let calibration = pool.calibration();
+        assert!(calibration.spins > after_short);
+        // Worker-only tickets are never executed by the collector.
+        assert_eq!(calibration.caller_executed, 0);
+        assert_eq!(calibration.worker_executed, 2);
+        assert!(pool.finish(short).is_none());
+        // A slot reused by a later generation is not mistaken for the old one.
+        let again = unsafe { pool.submit_with_priority(&mut Some(2), 0, true) }.unwrap();
+        assert_eq!(pool.finish(again).unwrap().report.unwrap(), 2);
+    }
+
+    #[test]
+    fn collector_parks_without_spinning_when_every_worker_is_busy() {
+        let (pool, started) = sleeping_pool(1);
+        let running = unsafe { pool.submit_with_priority(&mut Some(20), 0, true) }.unwrap();
+        wait_for_starts(&started, 1);
+        // Queued behind the only worker, then running on it: never a spare CPU.
+        let queued = unsafe { pool.submit_with_priority(&mut Some(2), 0, true) }.unwrap();
+        assert_eq!(pool.finish(queued).unwrap().report.unwrap(), 2);
+        assert_eq!(pool.finish(running).unwrap().report.unwrap(), 20);
+        assert_eq!(pool.calibration().spins, 0);
+    }
+
+    #[test]
+    fn a_panic_during_a_spin_is_collected_and_cancels_queued_work() {
+        // Gates hold both jobs running until the queue is arranged, so the
+        // scenario does not depend on scheduling speed.
+        let panic_gate = Arc::new(AtomicBool::new(false));
+        let slow_gate = Arc::new(AtomicBool::new(false));
+        let (panic_now, slow_done) = (Arc::clone(&panic_gate), Arc::clone(&slow_gate));
+        let pool = Pool::start(2, 4, move |value: &mut u64| {
+            let gate = if *value == 99 { &panic_now } else { &slow_done };
+            if *value == 99 || *value == 50 {
+                while !gate.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            }
+            if *value == 99 {
+                panic!("synthetic acquisition panic");
+            }
+            *value
+        })
+        .unwrap();
+        pool.reserve_worker_slots(4).unwrap();
+        let slow = unsafe { pool.submit_with_priority(&mut Some(50), 0, true) }.unwrap();
+        wait_until_running(&pool, 1);
+        let failing = unsafe { pool.submit_with_priority(&mut Some(99), 0, true) }.unwrap();
+        wait_until_running(&pool, 2);
+        // Both workers are busy, so this ticket waits in the queue.
+        let queued = unsafe { pool.submit_with_priority(&mut Some(7), 0, true) }.unwrap();
+        panic_gate.store(true, Ordering::Release);
+        assert!(matches!(
+            pool.finish(failing).unwrap().report,
+            Err(Failure::Panicked)
+        ));
+        // The panic cancelled the queued ticket and published it for waiters.
+        assert!(matches!(
+            pool.finish(queued).unwrap().report,
+            Err(Failure::Stopped)
+        ));
+        assert_eq!(
+            pool.shared.published[queued.slot].load(Ordering::Acquire),
+            queued.generation
+        );
+        // The slow job was already running and completes normally.
+        slow_gate.store(true, Ordering::Release);
+        assert_eq!(pool.finish(slow).unwrap().report.unwrap(), 50);
+    }
+
+    #[test]
+    fn process_affinity_limits_the_pool_below_the_machine_count() {
+        // A 16-thread machine with the game held to 4 CPUs: 3 workers.
+        assert_eq!(worker_count_for_cpus(16, Some(4)), 3);
+        assert_eq!(worker_count_for_cpus(16, Some(16)), 15);
+        // Unreadable affinity falls back to the machine count.
+        assert_eq!(worker_count_for_cpus(16, None), 15);
+        // A mask wider than the reported machine (another processor group)
+        // never raises the count; one allowed CPU still keeps one worker.
+        assert_eq!(worker_count_for_cpus(8, Some(64)), 7);
+        assert_eq!(worker_count_for_cpus(16, Some(1)), 1);
+        assert_eq!(worker_count_for_cpus(64, Some(40)), MAX_WORKERS);
+    }
+
+    #[test]
+    fn the_pool_never_exceeds_the_cpus_this_process_may_use() {
+        let allowed = allowed_cpus().expect("process affinity readable");
+        assert!(allowed >= 1);
+        assert!(recommended_worker_count() <= allowed.saturating_sub(1).max(1));
     }
 
     #[test]

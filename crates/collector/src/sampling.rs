@@ -762,6 +762,12 @@ impl Shared {
         index
     }
 
+    /// At most one reusable capture buffer is free: the next callback may wait
+    /// in `take_frame` for the decode and spool threads to return one.
+    pub fn buffers_backlogged(&self) -> bool {
+        self.free.len() <= 1
+    }
+
     pub fn acquisition_failed(&self) -> bool {
         self.acquisition_panics.load(Ordering::Acquire) != 0
     }

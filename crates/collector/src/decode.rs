@@ -1609,6 +1609,7 @@ pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
 /// off to the spool ready queue in the same order; no reorder buffer exists.
 fn decode_loop() {
     let mut air_bases_memo = AirBasesMemo::default();
+    let mut priority = crate::runtime::OwnPriority::new();
     loop {
         if STOP.load(Ordering::Acquire) {
             break;
@@ -1619,6 +1620,7 @@ fn decode_loop() {
             continue;
         }
         let shared = unsafe { &*shared_ptr };
+        priority.follow(shared.buffers_backlogged());
         match shared.decode_queue.pop() {
             Some(job) => process_owned_job(shared, job, &mut air_bases_memo),
             None => {

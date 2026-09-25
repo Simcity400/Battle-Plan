@@ -26,7 +26,7 @@ use std::{
     ptr,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -726,6 +726,7 @@ fn add_decode_status(status: &mut Value) {
         let load = |slot: &std::sync::atomic::AtomicU64| slot.load(Ordering::Relaxed);
         let eta_hours = load(&eta.hours);
         let eta_mean = |value: u64| value.checked_div(eta_hours).unwrap_or(0);
+        status["background_priority"] = background_priority_status();
         status["eta_inputs"] = json!({
             "hours": eta_hours,
             "walks": load(&eta.walks),
@@ -950,8 +951,11 @@ fn spool_loop(
     let mut startup_unknown = 0_u64;
     let mut work = WorkerWork::new();
     let mut reported = Instant::now() - Duration::from_secs(1);
+    let mut priority = OwnPriority::new();
     loop {
+        priority.follow(shared.buffers_backlogged());
         while let Some(index) = shared.ready.pop() {
+            priority.follow(shared.buffers_backlogged());
             let service_started = sampling::qpc();
             work.queue_peak_observed = work.queue_peak_observed.max(shared.ready.len() + 1);
             let mut elapsed = sampling::completed_callback_ticks(
@@ -1271,6 +1275,64 @@ fn spool_loop(
         );
     }
     drain_result.map(|()| last_warning)
+}
+
+static PRIORITY_LOWERED: AtomicU64 = AtomicU64::new(0);
+static PRIORITY_RAISED: AtomicU64 = AtomicU64::new(0);
+static PRIORITY_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// Priority of one collector-owned background thread (decode, spool). It runs
+/// below normal so a woken game thread and the hour's acquisition workers find
+/// a CPU first, except while the capture buffers are backlogged: then the game
+/// thread may be waiting in `take_frame` for exactly this thread, so it runs at
+/// normal priority until the backlog drains. Only the calling thread is
+/// changed; game threads, their priorities and affinities are never touched.
+/// A failed change keeps the previous priority, which is slower, never wrong.
+pub(crate) struct OwnPriority {
+    below_normal: Option<bool>,
+}
+
+impl OwnPriority {
+    pub(crate) const fn new() -> Self {
+        Self { below_normal: None }
+    }
+
+    /// Call between work items with the current backlog verdict.
+    pub(crate) fn follow(&mut self, backlogged: bool) {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+            THREAD_PRIORITY_NORMAL,
+        };
+        let below_normal = !backlogged;
+        if self.below_normal == Some(below_normal) {
+            return;
+        }
+        let priority = if below_normal {
+            THREAD_PRIORITY_BELOW_NORMAL
+        } else {
+            THREAD_PRIORITY_NORMAL
+        };
+        // SAFETY: the pseudo-handle names only the calling thread and needs no close.
+        if unsafe { SetThreadPriority(GetCurrentThread(), priority) } == 0 {
+            PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if below_normal {
+            PRIORITY_LOWERED.fetch_add(1, Ordering::Relaxed);
+        } else {
+            PRIORITY_RAISED.fetch_add(1, Ordering::Relaxed);
+        }
+        self.below_normal = Some(below_normal);
+    }
+}
+
+fn background_priority_status() -> serde_json::Value {
+    json!({
+        "lowered": PRIORITY_LOWERED.load(Ordering::Relaxed),
+        "raised_for_backlog": PRIORITY_RAISED.load(Ordering::Relaxed),
+        "failures": PRIORITY_FAILURES.load(Ordering::Relaxed),
+        "scope": "cumulative priority changes of the decode and spool threads: below normal while idle or keeping up, normal while every reusable capture buffer but at most one is in flight (the game thread may then be waiting for them); failures keep the previous priority",
+    })
 }
 
 #[cfg(test)]
