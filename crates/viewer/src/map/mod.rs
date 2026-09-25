@@ -18,6 +18,7 @@ pub mod counter_order;
 pub mod counter_portraits;
 pub mod counter_status;
 pub mod counters;
+pub mod country_index;
 // borders: the demilitarised-zone bucket bank
 pub mod demilitarized;
 // counters: the one ETA source, recorded or derived
