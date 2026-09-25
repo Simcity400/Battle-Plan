@@ -2797,11 +2797,17 @@ impl Viewer {
             ));
         }
         // A capture waits until every flag and portrait its frame asked for
-        // has decoded and been laid out, as a headless dump does.
+        // has decoded and been laid out, as a headless dump does. The overlay's own layout version
+        // is the reference, not a version read here: a background load that landed after the
+        // layout but before this check would otherwise let the frame save without it.
         if let Some(capture) = self.capture.as_mut() {
-            let before = document.icons.lazy.version();
+            // Anything the settle decodes moves the version, which makes the overlay stale.
             document.icons.lazy.settle();
-            if document.icons.lazy.version() != before {
+            let laid_out = self
+                .prepared_overlay
+                .as_ref()
+                .is_some_and(|prepared| !prepared.is_stale(&now));
+            if !laid_out || document.icons.lazy.has_pending() {
                 capture.remaining = capture.remaining.max(1);
             }
         }

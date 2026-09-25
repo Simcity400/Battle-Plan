@@ -83,7 +83,7 @@ pub struct Row {
     pub division: u64,
     pub name: crate::msvc_string::Text<256>,
     pub strength: i64,
-    /// Committed strength bar multiplies raw CArmy+468 (140C6F8B0).
+    /// Committed strength bar multiplies raw [`carmy::STRENGTH_FACTOR`] (140C6F8B0).
     pub strength_combat_factor: i64,
     /// Fuel icon140C6F960: CArmy+620,stat+120,define33197D0; all raw fixed5.
     pub fuel_inputs: [i64; 3],
@@ -212,7 +212,7 @@ pub fn capture_stats(
     copy_input_spans(
         memory,
         [
-            (pointer, 0x468),
+            (pointer, carmy::STRENGTH_FACTOR),
             (pointer, 0x620),
             (stat, 0x120),
             (base, 0x0331_97d0),

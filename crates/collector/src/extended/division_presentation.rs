@@ -284,6 +284,7 @@ impl Captured {
                 has_order: r.has_order,
                 no_orders: r.no_orders,
                 invalid_orders: r.invalid_orders,
+                strength_factor: r.strength_factor,
             },
         );
         let Some(paths) = self.paths.first.get(..self.paths.len) else {
@@ -589,6 +590,7 @@ mod tests {
             maximum_hit_points: i64::MAX,
             has_order: 0,
             no_orders: 0,
+            strength_factor: 57_038,
             ..Default::default()
         };
         let [
@@ -612,8 +614,13 @@ mod tests {
             (&[7, 3, 7][..], 300, &[u32::MAX][..])
         );
         assert_eq!(
-            (s[0].entrenchment, s[0].maximum_hit_points, s[0].no_orders),
-            (i64::MIN, i64::MAX, 0)
+            (
+                s[0].entrenchment,
+                s[0].maximum_hit_points,
+                s[0].no_orders,
+                s[0].strength_factor
+            ),
+            (i64::MIN, i64::MAX, 0, 57_038)
         );
         let mut baseline = std::array::from_fn(|_| unavailable("outside presentation fixture"));
         for (id, view) in TABLES.into_iter().zip(capture.tables()) {

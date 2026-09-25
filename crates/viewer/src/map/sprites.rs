@@ -342,7 +342,7 @@ impl Batch {
     }
 
     // counters
-    /// Adds the leftmost `fill` of one frame, clipping the rectangle and the uv.
+    /// Adds the leftmost `pixels` of one frame, clipping the rectangle and the uv.
     ///
     /// This is how the counter bars are filled: `mapicons.gui` declares
     /// `bar_org` and `bar_str` with `rotation = 1.5708`, which turns the
@@ -357,14 +357,17 @@ impl Batch {
         sheet: &SpriteSheet,
         at: [f32; 2],
         size: [f32; 2],
-        fill: f32,
+        pixels: f32,
         color: [f32; 4],
     ) {
-        let fill = fill.clamp(0.0, 1.0);
-        let width = (size[0] * fill).floor();
+        // A full native counter bar covers one pixel past its sprite
+        // (`super::counter_inputs::bar_pixels`); the texture is one flat colour, so the quad
+        // simply stretches over it.
+        let width = pixels.clamp(0.0, size[0] + 1.0).floor();
         if width < 1.0 {
             return;
         }
+        let fill = (width / size[0]).min(1.0);
         let [u0, v0, u1, v1] = sheet.frame_uv(0);
         self.quads.push(Quad {
             texture: sheet.texture,
