@@ -399,6 +399,8 @@ function Start-Candidate($candidate, [string]$runDir) {
     $process = Start-Process -FilePath $recorderExe -ArgumentList @('record', '--once', '--out', ('"' + $recording + '"'), '--user-dir', ('"' + $userPath + '"')) `
         -WorkingDirectory $frozen -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $runDir 'recorder.stdout.log') -RedirectStandardError (Join-Path $runDir 'recorder.stderr.log')
+    # Windows PowerShell reports ExitCode only if the process handle was opened before the exit.
+    $null = $process.Handle
     $attached = [pscustomobject]@{ process = $process; recording = $recording; status = $null; active = $null; frozen = $frozen }
     try {
         $activePath = Join-Path $recording 'active.json'
