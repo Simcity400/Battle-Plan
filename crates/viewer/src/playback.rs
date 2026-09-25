@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, io, sync::Arc};
 
+use crate::blocks::BlockReader;
 use replay::{
     BranchId, Hour, SessionId,
     branches::Parentage,
@@ -24,7 +25,7 @@ pub enum Current {
 
 struct CachedBlock {
     index: usize,
-    frames: Result<Vec<Frame>, String>,
+    frames: Result<Arc<Vec<Frame>>, String>,
     decoder: FrameDecoder,
     next: usize,
     applied_hour: Option<Hour>,
@@ -47,6 +48,9 @@ pub struct Playback {
     hour: Hour,
     current: Current,
     cache: Option<CachedBlock>,
+    /// Reads blocks ahead of this playback and frees passed ones elsewhere;
+    /// without one, blocks are read and freed on the calling thread.
+    reader: Option<Arc<BlockReader>>,
     parent_support: BTreeMap<BranchId, Option<bool>>,
     #[cfg(test)]
     block_loads: usize,
@@ -79,6 +83,7 @@ impl Playback {
             hour,
             current: gap(branch, hour, "hour has not been decoded".into()),
             cache: None,
+            reader: None,
             parent_support: BTreeMap::new(),
             #[cfg(test)]
             block_loads: 0,
@@ -87,6 +92,14 @@ impl Playback {
 
     pub fn replay(&self) -> &Replay {
         &self.replay
+    }
+
+    /// Reads blocks through `reader`, which must read this playback's replay:
+    /// the next block of the branch is read ahead whenever a block is loaded.
+    pub fn with_reader(mut self, reader: Arc<BlockReader>) -> Self {
+        debug_assert!(Arc::ptr_eq(reader.replay(), &self.replay));
+        self.reader = Some(reader);
+        self
     }
 
     /// A handle to the same replay for a worker thread.
@@ -164,6 +177,34 @@ impl Playback {
         self.seek(branch, first)
     }
 
+    /// The hour a seek to `hour` of `branch` would walk from: the last hour the
+    /// decoder applied in that hour's block when it is still before `hour`,
+    /// else the hour before the block's keyframe. `None` when no block holds it,
+    /// or when the block failed at or before `hour`: that seek is a gap with no
+    /// walk at all.
+    pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<Hour> {
+        let index = self.replay.index.iter().position(|index| {
+            index.branch == branch && index.first_hour <= hour && hour <= index.last_hour
+        })?;
+        if self.cache.as_ref().is_some_and(|cache| {
+            cache.index == index
+                && (cache.frames.is_err()
+                    || cache
+                        .failure
+                        .as_ref()
+                        .is_some_and(|(failed, _)| *failed <= hour))
+        }) {
+            return None;
+        }
+        let continued = self
+            .cache
+            .as_ref()
+            .filter(|cache| cache.index == index && cache.failure.is_none())
+            .and_then(|cache| cache.applied_hour)
+            .filter(|applied| *applied < hour);
+        Some(continued.unwrap_or(self.replay.index[index].first_hour - 1))
+    }
+
     /// Seek to exactly this hour. A hole never borrows the last displayed rows.
     /// Only the target block may be decompressed; backward seeks reuse its frames.
     /// Intermediate hours advance the baseline without copying their decoded rows.
@@ -196,11 +237,27 @@ impl Playback {
         };
 
         if self.cache.as_ref().is_none_or(|cache| cache.index != index) {
-            let frames = self
-                .replay
-                .read_block(&self.replay.index[index])
-                .map_err(|error| format!("unreadable block: {error}"));
-            self.cache = Some(CachedBlock {
+            let frames = match &self.reader {
+                Some(reader) => {
+                    let frames = reader.block(index);
+                    // The branch's next block, read while this one plays.
+                    if self
+                        .replay
+                        .index
+                        .get(index + 1)
+                        .is_some_and(|next| next.branch == branch)
+                    {
+                        reader.prefetch(index + 1);
+                    }
+                    frames
+                }
+                None => self
+                    .replay
+                    .read_block(&self.replay.index[index])
+                    .map(Arc::new)
+                    .map_err(|error| format!("unreadable block: {error}")),
+            };
+            let passed = self.cache.replace(CachedBlock {
                 index,
                 frames,
                 decoder: FrameDecoder::new(),
@@ -208,6 +265,9 @@ impl Playback {
                 applied_hour: None,
                 failure: None,
             });
+            if let Some(reader) = &self.reader {
+                reader.drop_later(passed);
+            }
             #[cfg(test)]
             {
                 self.block_loads += 1;
@@ -341,7 +401,7 @@ fn unknown_branch(branch: BranchId) -> io::Error {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use replay::{
         branches::{BranchReason, BranchStart, Gap},
@@ -544,7 +604,7 @@ mod tests {
         }
     }
 
-    fn records(id: u64, hours: &[Hour]) -> Vec<Record> {
+    pub(crate) fn records(id: u64, hours: &[Hour]) -> Vec<Record> {
         let mut records = vec![
             Record::SessionStart(session(id)),
             Record::BranchStart(BranchStart {
@@ -573,7 +633,7 @@ mod tests {
         records
     }
 
-    fn fixture() -> Replay {
+    pub(crate) fn fixture() -> Replay {
         let mut records = records(1, &[100, 101, 104, 105, 820]);
         records.push(Record::Gap(Gap {
             branch: 1,
@@ -658,6 +718,78 @@ mod tests {
     }
 
     #[test]
+    fn a_reader_reads_the_next_block_ahead_and_matches_the_shared_reader() {
+        let replay = Arc::new(fixture());
+        let reader = BlockReader::new(
+            Arc::clone(&replay),
+            Arc::new(crate::hours::Dropper::new().unwrap()),
+        );
+        let mut playback = Playback::unloaded(Arc::clone(&replay))
+            .unwrap()
+            .with_reader(Arc::clone(&reader));
+        let reads = || reader.reads.load(std::sync::atomic::Ordering::SeqCst);
+        for hour in [100, 101, 102, 104, 105, 100] {
+            assert_seek_matches_shared(&mut playback, 1, hour);
+        }
+        // The first block, then the second read ahead of the playhead.
+        reader.settle();
+        assert_eq!(reads(), 2);
+        assert_seek_matches_shared(&mut playback, 1, 820);
+        assert_eq!(reads(), 2, "the read-ahead block served the boundary");
+        // The second block is current now, with no block after it.
+        assert_eq!(reader.kept(), (Some(1), None));
+        // Back to the first block: read again, and the second read ahead of
+        // it is the one already kept.
+        assert_seek_matches_shared(&mut playback, 1, 105);
+        reader.settle();
+        assert_eq!(reads(), 3);
+        assert_eq!(reader.kept(), (Some(0), Some(1)));
+    }
+
+    #[test]
+    fn a_reader_reports_a_corrupt_block_as_the_plain_reader_does() {
+        let replay = fixture();
+        let first = &replay.index[0];
+        let mut bytes = replay.bytes().to_vec();
+        bytes[(first.offset + first.length - 1) as usize] ^= 0x40;
+        let replay = Arc::new(Replay::open(bytes).unwrap());
+        let mut playback = Playback::unloaded(Arc::clone(&replay))
+            .unwrap()
+            .with_reader(BlockReader::new(
+                Arc::clone(&replay),
+                Arc::new(crate::hours::Dropper::new().unwrap()),
+            ));
+        for hour in [100, 105, 820] {
+            assert_seek_matches_shared(&mut playback, 1, hour);
+        }
+        assert!(playback.frame().is_some());
+    }
+
+    #[test]
+    fn a_failed_baseline_is_not_walked_again() {
+        // Opening the branch decodes its first hour, 100.
+        let mut playback = Playback::new(fixture()).unwrap();
+        assert_eq!(playback.walk_start(1, 105), Some(100));
+        assert_eq!(
+            playback.walk_start(1, 100),
+            Some(99),
+            "a step back restarts"
+        );
+        playback.seek(1, 101).unwrap();
+        assert_eq!(playback.walk_start(1, 105), Some(101), "continues from 101");
+        // A baseline that failed at 104 makes every later hour of the block a
+        // gap with no walk, and leaves an earlier hour's walk from the keyframe.
+        let cache = playback.cache.as_mut().unwrap();
+        cache.failure = Some((104, "invalid frame baseline".into()));
+        assert_eq!(playback.walk_start(1, 104), None);
+        assert_eq!(playback.walk_start(1, 105), None);
+        // Before it, a seek restarts the block (Playback::seek resets on a
+        // failure after the hour), so the walk is from the keyframe.
+        assert_eq!(playback.walk_start(1, 101), Some(99));
+        assert_eq!(playback.walk_start(1, 102), Some(99));
+    }
+
+    #[test]
     fn corrupt_blocks_are_cached_and_do_not_hide_the_next_keyframe() {
         let replay = fixture();
         let first = &replay.index[0];
@@ -681,7 +813,7 @@ mod tests {
     fn a_bad_campaign_prefix_cannot_be_hidden_by_a_later_valid_snapshot() {
         let mut playback = Playback::new(fixture()).unwrap();
         let cache = playback.cache.as_mut().unwrap();
-        let frames = cache.frames.as_mut().unwrap();
+        let frames = Arc::get_mut(cache.frames.as_mut().unwrap()).unwrap();
         frames[1].tables[TableId::Campaign.index()] =
             TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
                 id: b"other".to_vec(),

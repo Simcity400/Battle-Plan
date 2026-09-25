@@ -612,7 +612,19 @@ impl Replay {
 
     /// Decode one block for sequential playback, inspection, or history recovery.
     pub fn read_block(&self, index: &BlockIndex) -> io::Result<Vec<Frame>> {
-        self.read_block_inner(index, None)
+        self.read_block_inner(index, None, None)
+    }
+
+    /// [`Replay::read_block`], decoding the frame payloads on `parallel`'s
+    /// worker threads once their boundaries are known. The same frames and the
+    /// same first error; only a caller that owns the machine's spare cores asks
+    /// for it (the viewer's playback read-ahead), never the collector.
+    pub fn read_block_parallel(
+        &self,
+        index: &BlockIndex,
+        parallel: &Parallel<'_>,
+    ) -> io::Result<Vec<Frame>> {
+        self.read_block_inner(index, None, Some(parallel))
     }
 
     /// Preserve full wire validation but do not retain unrelated table payloads.
@@ -621,13 +633,14 @@ impl Replay {
         index: &BlockIndex,
         tables: &[crate::rows::TableId],
     ) -> io::Result<Vec<Frame>> {
-        self.read_block_inner(index, Some(tables))
+        self.read_block_inner(index, Some(tables), None)
     }
 
     fn read_block_inner(
         &self,
         index: &BlockIndex,
         selected: Option<&[crate::rows::TableId]>,
+        parallel: Option<&Parallel<'_>>,
     ) -> io::Result<Vec<Frame>> {
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
@@ -667,14 +680,28 @@ impl Replay {
         if count == 0 {
             return Err(invalid("empty block"));
         }
+        // The payload boundaries first, then the payloads decoded (in parallel
+        // when asked), then every check in position order: the first error
+        // reported is the one a frame-by-frame reader would have met first.
+        let mut payloads = Vec::with_capacity(count);
+        let mut boundary_error = None;
+        for _ in 0..count {
+            let payload = decoder
+                .u32()
+                .and_then(|length| decoder.take(length as usize));
+            match payload {
+                Ok(payload) => payloads.push(payload),
+                Err(error) => {
+                    boundary_error = Some(error);
+                    break;
+                }
+            }
+        }
+        let decoded = decode_payloads(&payloads, selected, parallel);
         let mut frames = Vec::with_capacity(count);
         let mut last = None;
-        for position in 0..count {
-            let payload_length = decoder.u32()? as usize;
-            let payload = decoder.take(payload_length)?;
-            let mut frame_decoder = Decoder::new(payload);
-            let frame = Frame::decode_selected(&mut frame_decoder, selected)?;
-            frame_decoder.finish()?;
+        for (position, frame) in decoded.into_iter().enumerate() {
+            let frame = frame?;
             if frame.branch != index.branch
                 || frame.keyframe != (position == 0)
                 || last.is_some_and(|hour| frame.hour <= hour)
@@ -685,6 +712,9 @@ impl Replay {
             }
             last = Some(frame.hour);
             frames.push(frame);
+        }
+        if let Some(error) = boundary_error {
+            return Err(error);
         }
         decoder.finish()?;
         if frames[0].hour != index.first_hour || last != Some(index.last_hour) {
@@ -1243,6 +1273,78 @@ fn validate_metadata(
     Ok(())
 }
 
+/// How [`Replay::read_block_parallel`] spreads a block's payload decoding.
+pub struct Parallel<'a> {
+    /// Worker threads at most; one decodes on the calling thread.
+    pub workers: usize,
+    /// Runs first on each worker, for the caller's thread setup such as a
+    /// lower scheduling priority, which a spawned thread does not inherit.
+    pub on_worker: &'a (dyn Fn() + Sync),
+}
+
+/// Frames a worker takes at least, so a small block is not split at all.
+const PARALLEL_FRAMES: usize = 32;
+
+/// Each payload's frame, in payload order.
+fn decode_payloads(
+    payloads: &[&[u8]],
+    selected: Option<&[crate::rows::TableId]>,
+    parallel: Option<&Parallel<'_>>,
+) -> Vec<io::Result<Frame>> {
+    let decode = |payload: &&[u8]| -> io::Result<Frame> {
+        let mut frame_decoder = Decoder::new(payload);
+        let frame = Frame::decode_selected(&mut frame_decoder, selected)?;
+        frame_decoder.finish()?;
+        Ok(frame)
+    };
+    match parallel {
+        Some(parallel) => parallel_map(payloads, parallel, decode),
+        None => payloads.iter().map(decode).collect(),
+    }
+}
+
+/// `work` over `items` in order, on up to `parallel.workers` threads.
+fn parallel_map<T: Sync, R: Send>(
+    items: &[T],
+    parallel: &Parallel<'_>,
+    work: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let workers = parallel
+        .workers
+        .min(items.len().div_ceil(PARALLEL_FRAMES))
+        .max(1);
+    if workers <= 1 {
+        return items.iter().map(&work).collect();
+    }
+    let run = items.len().div_ceil(workers);
+    let work = &work;
+    let on_worker = parallel.on_worker;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(run)
+            .map(|chunk| {
+                let spawned = std::thread::Builder::new().spawn_scoped(scope, move || {
+                    on_worker();
+                    chunk.iter().map(work).collect::<Vec<R>>()
+                });
+                (chunk, spawned.ok())
+            })
+            .collect();
+        let mut out = Vec::with_capacity(items.len());
+        for (chunk, handle) in handles {
+            match handle {
+                Some(handle) => match handle.join() {
+                    Ok(results) => out.extend(results),
+                    Err(panic) => std::panic::resume_unwind(panic),
+                },
+                // A worker the OS refused leaves its run to this thread.
+                None => out.extend(chunk.iter().map(work)),
+            }
+        }
+        out
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1762,6 +1864,148 @@ mod tests {
             matches!(damaged.seek(1, 721).unwrap(), SeekResult::Frame(frame) if *frame == source(1, 721))
         );
         assert!(damaged.into_history().is_err());
+    }
+
+    #[test]
+    fn a_large_block_decodes_in_parallel_to_the_frames_it_holds() {
+        let hours: Vec<i32> = (1..=200).collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
+        assert_eq!(replay.index.len(), 1);
+        let started = std::sync::atomic::AtomicUsize::new(0);
+        let on_worker = || {
+            started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        };
+        let parallel = Parallel {
+            workers: 4,
+            on_worker: &on_worker,
+        };
+        let frames = replay
+            .read_block_parallel(&replay.index[0], &parallel)
+            .unwrap();
+        assert_eq!(frames, replay.read_block(&replay.index[0]).unwrap());
+        assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(
+            frames.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
+            hours
+        );
+        let mut decoder = FrameDecoder::new();
+        for (frame, hour) in frames.iter().zip(&hours) {
+            assert_eq!(*decoder.advance(frame).unwrap(), source(1, *hour));
+        }
+    }
+
+    #[test]
+    fn parallel_map_keeps_input_order() {
+        let parallel = Parallel {
+            workers: 8,
+            on_worker: &|| {},
+        };
+        let items: Vec<u32> = (0..5_000).collect();
+        let out = parallel_map(&items, &parallel, |item| u64::from(*item) * 7);
+        assert!(
+            out.iter()
+                .enumerate()
+                .all(|(at, value)| *value == at as u64 * 7)
+        );
+        assert!(parallel_map(&[] as &[u32], &parallel, |item| *item).is_empty());
+    }
+
+    #[test]
+    fn parallel_payloads_report_the_first_bad_frame_in_position_order() {
+        let hours: Vec<i32> = (1..=64).collect();
+        let mut encoder = FrameEncoder::new();
+        let mut payloads: Vec<Vec<u8>> = hours
+            .iter()
+            .map(|hour| {
+                let mut bytes = Vec::new();
+                encoder
+                    .encode(source(1, *hour), false)
+                    .unwrap()
+                    .encode(&mut bytes)
+                    .unwrap();
+                bytes
+            })
+            .collect();
+        // Two damaged frames, the later one first in any thread's run.
+        payloads[40].truncate(3);
+        payloads[9].push(0);
+        let slices: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
+        let sequential = decode_payloads(&slices, None, None);
+        let parallel = decode_payloads(
+            &slices,
+            None,
+            Some(&Parallel {
+                workers: 4,
+                on_worker: &|| {},
+            }),
+        );
+        let first_error = |results: &[io::Result<Frame>]| {
+            results
+                .iter()
+                .position(Result::is_err)
+                .map(|at| (at, results[at].as_ref().unwrap_err().to_string()))
+        };
+        assert_eq!(first_error(&parallel), first_error(&sequential));
+        assert_eq!(first_error(&parallel).map(|(at, _)| at), Some(9));
+    }
+
+    /// A block whose raw bytes are rewritten by `edit`, recompressed in place of
+    /// the original.
+    fn edited_block(replay: &Replay, edit: impl FnOnce(&mut Vec<u8>)) -> Replay {
+        let block = &replay.index[0];
+        let compressed =
+            &replay.bytes()[block.offset as usize..(block.offset + block.length) as usize];
+        let mut raw = zstd::decode_all(compressed).unwrap();
+        edit(&mut raw);
+        let recompressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
+        let mut prefix = replay.bytes()[..replay.header_end].to_vec();
+        let mut index = replay.index.clone();
+        index[0].offset = prefix.len() as u64;
+        index[0].length = recompressed.len() as u64;
+        index[0].raw_length = raw.len() as u64;
+        prefix.extend_from_slice(&recompressed);
+        Replay::open(rebuild(replay, prefix, &index)).unwrap()
+    }
+
+    #[test]
+    fn a_broken_payload_boundary_is_the_same_error_read_in_parallel() {
+        let hours: Vec<i32> = (1..=64).collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
+        let parallel = Parallel {
+            workers: 4,
+            on_worker: &|| {},
+        };
+        let both = |replay: &Replay| {
+            let sequential = replay.read_block(&replay.index[0]).map(|_| ());
+            let parallel = replay
+                .read_block_parallel(&replay.index[0], &parallel)
+                .map(|_| ());
+            (
+                sequential.map_err(|error| error.to_string()),
+                parallel.map_err(|error| error.to_string()),
+            )
+        };
+        // One more frame counted than the block holds: the boundary read runs
+        // off the end after 64 good frames.
+        let overcounted = edited_block(&replay, |raw| {
+            let count = u32::from_le_bytes(raw[..4].try_into().unwrap()) + 1;
+            raw[..4].copy_from_slice(&count.to_le_bytes());
+        });
+        let (sequential, parallel_read) = both(&overcounted);
+        assert!(sequential.is_err());
+        assert_eq!(sequential, parallel_read);
+        // A payload length past the end of the block, in the middle of it.
+        let overlong = edited_block(&replay, |raw| {
+            let mut at = 4;
+            for _ in 0..40 {
+                let length = u32::from_le_bytes(raw[at..at + 4].try_into().unwrap()) as usize;
+                at += 4 + length;
+            }
+            raw[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        });
+        let (sequential, parallel_read) = both(&overlong);
+        assert!(sequential.is_err());
+        assert_eq!(sequential, parallel_read);
     }
 
     #[test]

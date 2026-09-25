@@ -10,8 +10,11 @@
 //! the camera) and every frame takes whatever hours have
 //! finished ([`Built`]); the frame that shows an hour only uploads it.
 //!
-//! A coordinator uses its own [`Playback`] or a source-shared decoder. For
-//! each decoded hour, the coordinator hands the independent parts of that hour to a pool of
+//! A window's hours are decoded on a lane of their own ([`DecodeLane`]), a
+//! window of hours ahead of the builders, through the replay's shared
+//! [`BlockReader`], which reads the next block before playback reaches it; a
+//! dashboard view uses the source-shared decoder instead. For each decoded
+//! hour, the coordinator hands the independent parts of that hour to a pool of
 //! worker threads and assembles them as they come back. Hours are dispatched
 //! in the order the window will need them — the playhead, the hours ahead of
 //! it, then the hours just behind it — and at most one pool's worth at a
@@ -45,6 +48,7 @@ use std::{
 use replay::{BranchId, Hour, container::Replay};
 
 use crate::{
+    blocks::BlockReader,
     document::{Content, Hour as HourView, PreparedOverlay},
     map::{
         aircraft::AircraftPlan,
@@ -795,14 +799,17 @@ impl FrameCache {
         }
     }
 
-    /// Drops the least recently used hours past [`FRAME_CACHE`], and past
-    /// `budget` bytes while more than `keep` hours remain: the hours a want
-    /// reaches were just used, so they stay.
-    fn evict(&mut self, budget: u64, keep: usize) {
-        while self.order.len() > FRAME_CACHE
-            || (self.bytes > budget && self.order.len() > keep.max(1))
-        {
-            let Some(old) = self.order.pop_front() else {
+    /// Drops the least recently used hours past [`FRAME_CACHE`] and past
+    /// `budget` bytes, never an hour in `spare`: the hours the builders will
+    /// still ask for.
+    fn evict_except(&mut self, budget: u64, spare: &BTreeSet<(BranchId, Hour)>) {
+        let mut at = 0;
+        while at < self.order.len() && (self.order.len() > FRAME_CACHE || self.bytes > budget) {
+            if spare.contains(&self.order[at]) {
+                at += 1;
+                continue;
+            }
+            let Some(old) = self.order.remove(at) else {
                 break;
             };
             if let Some(current) = self.frames.remove(&old) {
@@ -812,12 +819,257 @@ impl FrameCache {
     }
 }
 
+/// The playback decode lane: a thread of its own that owns a [`Playback`] and
+/// decodes the wanted hours, in the order the builders will take them, ahead
+/// of the coordinator.
+///
+/// Decoding is serial (each hour applies its deltas to the one before), so it
+/// was the coordinator's own work between dispatches: 1–7 ms an hour, a
+/// keyframe 31–34 ms and a block boundary 0.5–1 s, during which no hour was
+/// dispatched. Here the coordinator only takes decoded hours from
+/// [`DecodeLane::frame`], and the lane's [`Playback`] reads the next block
+/// ahead through its [`BlockReader`].
+///
+/// The lane runs below normal priority, as the builders do, so it never
+/// competes with the window's own thread.
+struct DecodeLane {
+    shared: Arc<LaneShared>,
+}
+
+struct LaneShared {
+    state: Mutex<LaneState>,
+    changed: Condvar,
+}
+
+/// Wanted hours the lane decodes past the last one the coordinator took.
+///
+/// The builders take hours in want order, a pool's worth at a time, so a
+/// window of this many keeps every dispatch waiting on nothing but the build.
+/// A larger one only holds decoded hours in memory longer; a smaller one than
+/// the pool would make dispatches wait for the decode.
+const DECODE_AHEAD: usize = 32;
+
+/// Hours a long walk through a block applies between checks that its target
+/// is still wanted, so a seek away abandons it within a few milliseconds.
+const DECODE_STEP: i32 = 24;
+
+/// Why a lane that stopped answers with a gap rather than a wait.
+const LANE_STOPPED: &str = "the hour decoder stopped";
+
+#[derive(Default)]
+struct LaneState {
+    /// The hours to keep decoded, in the order the builders will ask for them.
+    wanted: Vec<(BranchId, Hour)>,
+    /// Earlier hours of a block to keep while passing them, for a step back.
+    behind: i32,
+    /// The last hour the coordinator took, which the window runs from.
+    served: Option<(BranchId, Hour)>,
+    /// The hour the coordinator is waiting for, decoded before anything else.
+    urgent: Option<(BranchId, Hour)>,
+    frames: FrameCache,
+    /// Set by the lane's owner to stop the thread.
+    stop: bool,
+    /// Set when the thread has ended, however it ended.
+    dead: bool,
+}
+
+impl LaneState {
+    /// The wanted hours the lane keeps decoded now: from the want's start up to
+    /// [`DECODE_AHEAD`] past the last one served.
+    fn window(&self) -> &[(BranchId, Hour)] {
+        let served = self
+            .served
+            .and_then(|served| self.wanted.iter().position(|key| *key == served))
+            .map_or(0, |at| at + 1);
+        &self.wanted[..(served + DECODE_AHEAD).min(self.wanted.len())]
+    }
+
+    /// The next hour to decode: an urgent one, else the first hour of the
+    /// window not decoded yet.
+    fn next(&self) -> Option<(BranchId, Hour)> {
+        self.urgent
+            .filter(|key| !self.frames.contains_key(key))
+            .or_else(|| {
+                self.window()
+                    .iter()
+                    .copied()
+                    .find(|key| !self.frames.contains_key(key))
+            })
+    }
+
+    /// Whether decoding `target` is still worth finishing.
+    fn still_wanted(&self, target: (BranchId, Hour)) -> bool {
+        !self.stop && (self.urgent == Some(target) || self.window().contains(&target))
+    }
+
+    /// Frees what the builders will not ask for again, keeping the window.
+    fn evict(&mut self) {
+        let spare: BTreeSet<_> = self.window().iter().copied().chain(self.urgent).collect();
+        self.frames.evict_except(FRAME_CACHE_BYTES, &spare);
+    }
+}
+
+/// Marks the lane dead when its thread ends, a panic included, so a waiting
+/// coordinator gets a gap instead of waiting for ever.
+struct LaneExit<'a>(&'a LaneShared);
+
+impl Drop for LaneExit<'_> {
+    fn drop(&mut self) {
+        DecodeLane::lock(self.0).dead = true;
+        self.0.changed.notify_all();
+    }
+}
+
+impl DecodeLane {
+    fn start(playback: Playback) -> io::Result<Self> {
+        let shared = Arc::new(LaneShared {
+            state: Mutex::new(LaneState::default()),
+            changed: Condvar::new(),
+        });
+        let lane = Arc::clone(&shared);
+        thread::Builder::new()
+            .name("hour decoder".into())
+            .spawn(move || {
+                let _exit = LaneExit(&lane);
+                background_priority();
+                Self::run(&lane, playback);
+            })?;
+        Ok(Self { shared })
+    }
+
+    fn lock(shared: &LaneShared) -> std::sync::MutexGuard<'_, LaneState> {
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn run(shared: &LaneShared, mut playback: Playback) {
+        'next: loop {
+            let (target, behind) = {
+                let mut state = Self::lock(shared);
+                loop {
+                    if state.stop {
+                        return;
+                    }
+                    if let Some(target) = state.next() {
+                        break (target, state.behind);
+                    }
+                    state = shared
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+            };
+            let (branch, hour) = target;
+            if !Self::walk(shared, &mut playback, target) {
+                continue 'next;
+            }
+            let mut passed = Vec::new();
+            let current = match playback.seek_with(branch, hour, |decoded| {
+                if hour - decoded.hour <= behind {
+                    passed.push((decoded.hour, Current::Frame(Arc::new(decoded.clone()))));
+                }
+            }) {
+                Ok(()) => playback.current().clone(),
+                Err(error) => Current::Gap {
+                    branch,
+                    hour,
+                    reason: error.to_string(),
+                },
+            };
+            let mut state = Self::lock(shared);
+            for (at, frame) in passed {
+                if !state.frames.contains_key(&(branch, at)) {
+                    state.frames.insert((branch, at), frame);
+                }
+            }
+            state.frames.insert(target, current);
+            state.evict();
+            drop(state);
+            shared.changed.notify_all();
+        }
+    }
+
+    /// Walks `playback` towards `target` in [`DECODE_STEP`]-hour steps, each
+    /// ending with a check that the target is still wanted. False when the
+    /// walk was abandoned; the last step is left to the caller.
+    fn walk(shared: &LaneShared, playback: &mut Playback, target: (BranchId, Hour)) -> bool {
+        let (branch, hour) = target;
+        let mut from = playback.walk_start(branch, hour);
+        while let Some(at) = from.filter(|at| hour - at > DECODE_STEP) {
+            let step = at + DECODE_STEP;
+            if playback.seek(branch, step).is_err() {
+                break;
+            }
+            from = Some(step);
+            if !Self::lock(shared).still_wanted(target) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Replaces the hours the lane keeps decoded.
+    fn want(&self, wanted: Vec<(BranchId, Hour)>, behind: i32) {
+        let mut state = Self::lock(&self.shared);
+        state.wanted = wanted;
+        state.behind = behind;
+        drop(state);
+        self.shared.changed.notify_all();
+    }
+
+    /// The decoded hour, waiting for the lane to reach it. The hour asked for
+    /// is decoded first, wanted or not, so the coordinator never waits on an
+    /// hour outside the lane's window; a stopped lane answers with a gap.
+    fn frame(&self, branch: BranchId, hour: Hour) -> Current {
+        let key = (branch, hour);
+        let mut state = Self::lock(&self.shared);
+        loop {
+            if let Some(current) = state.frames.get(&key) {
+                if state.urgent == Some(key) {
+                    state.urgent = None;
+                }
+                state.served = Some(key);
+                drop(state);
+                // The window moved on: decode further ahead.
+                self.shared.changed.notify_all();
+                return current;
+            }
+            if state.dead {
+                return Current::Gap {
+                    branch,
+                    hour,
+                    reason: LANE_STOPPED.to_owned(),
+                };
+            }
+            if state.urgent != Some(key) {
+                state.urgent = Some(key);
+                self.shared.changed.notify_all();
+            }
+            state = self
+                .shared
+                .changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
+impl Drop for DecodeLane {
+    fn drop(&mut self) {
+        Self::lock(&self.shared).stop = true;
+        self.shared.changed.notify_all();
+    }
+}
+
 struct Coordinator {
     content: Arc<Content>,
     playback: Playback,
     shared_decoder: Option<Arc<SharedDecoder>>,
+    /// The playback decode lane, unless a shared decoder serves this view.
+    lane: Option<DecodeLane>,
     requested: Arc<Mutex<Option<(u64, Want)>>>,
-    frames: FrameCache,
     strategic: Option<Arc<LayerPlane>>,
     want: Option<Want>,
     epoch: u64,
@@ -952,6 +1204,15 @@ impl Coordinator {
                 && (*order >= want.received || (key.0 == want.branch && want.have.contains(&key.1)))
         });
         self.slots.retain(|key, _| keep.contains(key));
+        if let Some(lane) = &self.lane {
+            lane.want(
+                want.hours(range)
+                    .into_iter()
+                    .map(|hour| (want.branch, hour))
+                    .collect(),
+                want.behind.max(2),
+            );
+        }
         self.want = Some(want);
     }
 
@@ -974,40 +1235,14 @@ impl Coordinator {
         })
     }
 
-    /// The decoded hour, from the cache or the replay. `behind` earlier hours
-    /// the decoder passes on its way are kept too, so the step back from a
-    /// seek does not decode the block a second time.
-    fn frame(&mut self, branch: BranchId, hour: Hour, behind: i32) -> io::Result<Current> {
+    /// The decoded hour: from the shared decoder of a dashboard view, or from
+    /// the decode lane, which keeps the hours the want reaches decoded ahead.
+    fn frame(&mut self, branch: BranchId, hour: Hour) -> io::Result<Current> {
         if let Some(decoder) = &self.shared_decoder {
             return decoder.frame(branch, hour);
         }
-        if let Some(current) = self.frames.get(&(branch, hour)) {
-            return Ok(current);
-        }
-        let mut passed = Vec::new();
-        let frames = &self.frames;
-        self.playback.seek_with(branch, hour, |decoded| {
-            if hour - decoded.hour <= behind && !frames.contains_key(&(branch, decoded.hour)) {
-                passed.push(Current::Frame(Arc::new(decoded.clone())));
-            }
-        })?;
-        let current = self.playback.current().clone();
-        for (at, current) in passed
-            .into_iter()
-            .filter_map(|passed| match &passed {
-                Current::Frame(frame) => Some((frame.hour, passed.clone())),
-                Current::Gap { .. } => None,
-            })
-            .chain([(hour, current.clone())])
-        {
-            self.frames.insert((branch, at), current);
-        }
-        // Every hour the want reaches, and the step back, stay decoded.
-        let keep = self.want.as_ref().map_or(1, |want| {
-            1 + want.ahead.max(0) as usize + want.behind.max(0) as usize + behind.max(0) as usize
-        });
-        self.frames.evict(FRAME_CACHE_BYTES, keep);
-        Ok(current)
+        let lane = self.lane.as_ref().ok_or_else(stopped)?;
+        Ok(lane.frame(branch, hour))
     }
 
     /// Decodes an hour and hands its parts to the pool. Returns false when the
@@ -1017,7 +1252,7 @@ impl Coordinator {
         let branch = want.branch;
         let epoch = self.epoch;
         let started = Instant::now();
-        let current = match self.frame(branch, hour, want.behind.max(2)) {
+        let current = match self.frame(branch, hour) {
             Ok(current) => current,
             Err(error) => Current::Gap {
                 branch,
@@ -1388,12 +1623,21 @@ impl Pipeline {
         let (events, inbox) = mpsc::channel();
         let (outbox, results) = mpsc::channel();
         let requested = Arc::new(Mutex::new(None));
+        let lane = match shared_decoder {
+            Some(_) => None,
+            None => {
+                let reader = BlockReader::new(Arc::clone(&replay), Arc::new(Dropper::new()?));
+                Some(DecodeLane::start(
+                    Playback::unloaded(Arc::clone(&replay))?.with_reader(reader),
+                )?)
+            }
+        };
         let coordinator = Coordinator {
             content: Arc::clone(&content),
             playback: Playback::unloaded(Arc::clone(&replay))?,
             shared_decoder,
+            lane,
             requested: Arc::clone(&requested),
-            frames: FrameCache::default(),
             strategic: None,
             want: None,
             epoch: 0,
@@ -1560,21 +1804,22 @@ mod tests {
         }
         assert_eq!(cache.bytes, 10 * each);
         // A budget of four hours keeps the newest four.
-        cache.evict(4 * each, 2);
+        cache.evict_except(4 * each, &BTreeSet::new());
         assert_eq!(cache.frames.len(), 4);
         assert!(cache.contains_key(&(1, 9)) && !cache.contains_key(&(1, 5)));
         assert_eq!(cache.bytes, 4 * each);
-        // The hours a want reaches stay even over budget.
-        cache.evict(0, 3);
-        assert_eq!(cache.frames.len(), 3);
-        // A hit makes an hour the most recently used: hour 7 outlives 8.
-        assert!(cache.get(&(1, 7)).is_some());
-        cache.evict(2 * each, 1);
-        assert!(cache.contains_key(&(1, 7)) && cache.contains_key(&(1, 9)));
-        assert!(!cache.contains_key(&(1, 8)));
+        // Spared hours stay even over budget; the oldest others go first.
+        cache.evict_except(0, &BTreeSet::from([(1, 6), (1, 8)]));
+        assert_eq!(cache.frames.len(), 2);
+        assert!(cache.contains_key(&(1, 6)) && cache.contains_key(&(1, 8)));
+        // A hit makes an hour the most recently used: hour 6 outlives 8.
+        assert!(cache.get(&(1, 6)).is_some());
+        cache.evict_except(each, &BTreeSet::new());
+        assert!(cache.contains_key(&(1, 6)) && !cache.contains_key(&(1, 8)));
+        cache.insert((1, 7), sized_frame(7, 1_000));
         cache.insert((1, 8), sized_frame(8, 1_000));
         // Replacing an hour does not count it twice.
-        cache.insert((1, 9), sized_frame(9, 500));
+        cache.insert((1, 8), sized_frame(8, 500));
         assert_eq!(cache.frames.len(), 3);
         assert_eq!(cache.bytes, 2 * each + 500 * ROW);
         // The count bound still applies to hours that cost nothing.
@@ -1589,7 +1834,7 @@ mod tests {
                 },
             );
         }
-        gaps.evict(FRAME_CACHE_BYTES, 1);
+        gaps.evict_except(FRAME_CACHE_BYTES, &BTreeSet::new());
         assert_eq!(gaps.frames.len(), FRAME_CACHE);
     }
 
@@ -1607,7 +1852,7 @@ mod tests {
         cache.insert((1, 0), Current::Frame(first));
         cache.insert((1, 1), Current::Frame(Arc::new(second)));
         assert_eq!(cache.bytes, each);
-        cache.evict(0, 1);
+        cache.evict_except(0, &BTreeSet::from([(1, 1)]));
         assert_eq!(cache.frames.len(), 1);
         assert_eq!(cache.bytes, each, "the kept hour still holds the table");
         let mut third = FrameCache::default();
@@ -1776,6 +2021,169 @@ mod tests {
             &intel(Some(BTreeMap::from([(1, 150), (2, 0)])))
         ));
         assert_eq!(built.get(), 3);
+    }
+
+    fn lane_over(replay: &Arc<Replay>) -> DecodeLane {
+        DecodeLane::start(Playback::unloaded(Arc::clone(replay)).unwrap().with_reader(
+            BlockReader::new(Arc::clone(replay), Arc::new(Dropper::new().unwrap())),
+        ))
+        .unwrap()
+    }
+
+    fn long_replay(hours: &[Hour]) -> Arc<Replay> {
+        Arc::new(
+            Replay::from_records(
+                b"campaign".to_vec(),
+                &[crate::playback::tests::records(1, hours)],
+            )
+            .unwrap(),
+        )
+    }
+
+    /// `lane.frame` on another thread, failing the test rather than hanging it.
+    fn frame_within(lane: &Arc<DecodeLane>, branch: BranchId, hour: Hour) -> Current {
+        let (done, result) = mpsc::channel();
+        let asker = Arc::clone(lane);
+        thread::spawn(move || {
+            let _ = done.send(asker.frame(branch, hour));
+        });
+        result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the lane answers")
+    }
+
+    #[test]
+    fn the_lane_serves_a_wanted_hour_past_its_window() {
+        let hours: Vec<Hour> = (10..=110).collect();
+        let replay = long_replay(&hours);
+        let lane = Arc::new(lane_over(&replay));
+        // A want of 101 hours, as playing at 720 h/s asks for.
+        lane.want(hours.iter().map(|hour| (1, *hour)).collect(), 2);
+        assert!(matches!(frame_within(&lane, 1, 10), Current::Frame(_)));
+        // The window already holds 11..=59 built, so the next hour asked for
+        // is 60: wanted, but past the lane's window.
+        match frame_within(&lane, 1, 60) {
+            Current::Frame(frame) => assert_eq!(frame.hour, 60),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_walk_whose_target_is_no_longer_wanted_stops_after_one_step() {
+        let hours: Vec<Hour> = (10..=700).collect();
+        let replay = long_replay(&hours);
+        let mut playback = Playback::unloaded(Arc::clone(&replay)).unwrap();
+        let shared = LaneShared {
+            state: Mutex::new(LaneState::default()),
+            changed: Condvar::new(),
+        };
+        // Nothing wants 690: the walk stops after its first step.
+        assert!(!DecodeLane::walk(&shared, &mut playback, (1, 690)));
+        assert_eq!(playback.walk_start(1, 690), Some(9 + DECODE_STEP));
+        // Wanted, the walk goes all the way to the last step before it.
+        Mutex::lock(&shared.state).unwrap().urgent = Some((1, 690));
+        assert!(DecodeLane::walk(&shared, &mut playback, (1, 690)));
+        assert!(
+            playback
+                .walk_start(1, 690)
+                .is_some_and(|at| 690 - at <= DECODE_STEP)
+        );
+    }
+
+    #[test]
+    fn a_new_want_mid_walk_is_served() {
+        let hours: Vec<Hour> = (10..=700).collect();
+        let replay = long_replay(&hours);
+        let lane = Arc::new(lane_over(&replay));
+        lane.want(vec![(1, 690)], 2);
+        // Seek away before or while the lane walks to 690.
+        lane.want(vec![(1, 12), (1, 13)], 2);
+        match frame_within(&lane, 1, 12) {
+            Current::Frame(frame) => assert_eq!(frame.hour, 12),
+            other => panic!("{other:?}"),
+        }
+        match frame_within(&lane, 1, 13) {
+            Current::Frame(frame) => assert_eq!(frame.hour, 13),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dropped_lane_ends_its_thread_and_a_dead_lane_answers_with_a_gap() {
+        let replay = long_replay(&[10, 11, 12]);
+        let lane = lane_over(&replay);
+        let shared = Arc::downgrade(&lane.shared);
+        drop(lane);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while shared.strong_count() > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lane thread ended"
+            );
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // A lane whose thread is gone answers at once.
+        let dead = DecodeLane {
+            shared: Arc::new(LaneShared {
+                state: Mutex::new(LaneState {
+                    dead: true,
+                    ..LaneState::default()
+                }),
+                changed: Condvar::new(),
+            }),
+        };
+        assert!(matches!(
+            dead.frame(1, 10),
+            Current::Gap { reason, .. } if reason == LANE_STOPPED
+        ));
+    }
+
+    #[test]
+    fn the_decode_lane_decodes_wanted_hours_ahead_and_serves_any_other() {
+        let replay = Arc::new(crate::playback::tests::fixture());
+        let lane = lane_over(&replay);
+        lane.want(vec![(1, 100), (1, 101), (1, 105)], 2);
+        let decoded = |current: Current| match current {
+            Current::Frame(frame) => Some(frame.hour),
+            Current::Gap { .. } => None,
+        };
+        assert_eq!(decoded(lane.frame(1, 105)), Some(105));
+        // Decoded ahead, in want order: already there.
+        assert_eq!(decoded(lane.frame(1, 100)), Some(100));
+        // An hour the want does not name is decoded on request; a hole is a gap.
+        assert_eq!(decoded(lane.frame(1, 820)), Some(820));
+        assert_eq!(decoded(lane.frame(1, 103)), None);
+        let expected = match replay.seek(1, 101).unwrap() {
+            replay::container::SeekResult::Frame(frame) => *frame,
+            other => panic!("{other:?}"),
+        };
+        match lane.frame(1, 101) {
+            Current::Frame(frame) => assert_eq!(*frame, expected),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_lane_window_runs_from_the_last_hour_served_and_is_never_evicted() {
+        let mut state = LaneState {
+            wanted: (0..100).map(|hour| (1, hour)).collect(),
+            ..LaneState::default()
+        };
+        assert_eq!(state.window().len(), DECODE_AHEAD);
+        state.served = Some((1, 10));
+        assert_eq!(state.window().last(), Some(&(1, 10 + DECODE_AHEAD as i32)));
+        state.served = Some((1, 99));
+        assert_eq!(state.window().len(), 100);
+        // A full cache frees hours outside the window first.
+        state.served = Some((1, 0));
+        for hour in 0..(FRAME_CACHE as i32 + 20) {
+            state.frames.insert((1, hour), sized_frame(hour, 1));
+        }
+        state.evict();
+        assert_eq!(state.frames.frames.len(), FRAME_CACHE);
+        for key in state.window().to_vec() {
+            assert!(state.frames.contains_key(&key), "{key:?}");
+        }
     }
 
     #[test]

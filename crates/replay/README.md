@@ -22,6 +22,8 @@ Value equality and sample freshness are separate:
 
 Keep those distinctions through encoding, decoding, inspection, analytics and oracle joins. Do not infer freshness from a sibling table or the current frame's hour. Startup, branch/load transitions and keyframes must retain the full-refresh and self-contained-baseline behavior required by the format.
 
+`Replay::read_block_parallel` decodes a block's frame payloads on the caller's worker threads once their boundaries are known. It returns the same frames and the same first error as `read_block`. Only a caller that owns spare cores uses it, such as the viewer's playback read-ahead; the collector and the recorder read sequentially.
+
 Consumers that need only a few tables can use `FrameDecoder::for_tables`. It applies the same baseline and recovery rules to those tables and reports omitted tables as unavailable. The selection is fixed for the decoder lifetime; ordinary `FrameDecoder::new` still reconstructs every table. `Replay::read_block_selected` complements this by retaining only selected updates during parsing. All updates still go through the same decoder and validation before unselected ones are discarded; frame ordering, bounds, keyframe and compression checks remain shared with the full reader. The decompression buffer reserves the bounded size from the block index once. Neither selection API changes the recording format.
 
 ## Compatibility and recovery

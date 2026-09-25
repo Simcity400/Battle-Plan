@@ -1,4 +1,5 @@
 mod app;
+mod blocks;
 mod combat;
 mod compare;
 mod dashboard_maps;
