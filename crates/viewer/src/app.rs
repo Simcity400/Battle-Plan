@@ -2431,12 +2431,13 @@ impl Viewer {
         scene.set_orders(&state.device, &state.queue, &document.orders, &orders)?;
         dropper.drop_later(orders);
         laps.lap("orders_upload");
-        scene.set_prepared_weather_effects(
+        let retired = scene.set_prepared_weather_effects(
             &state.device,
             &state.queue,
             document.weather_effects.clone(),
             effects,
         )?;
+        dropper.drop_later(retired);
         laps.lap("effects_upload");
         if uploaded.political != Some(political.id) {
             let textures = &political.layers.textures;
