@@ -7,24 +7,13 @@ Read the [project README](README.md) and the README for the component you are ch
 - Update affected format readers, writers and consumers together. Code owns version numbers, table IDs and cadence; do not duplicate those catalogs in prose.
 - Design for native mod compatibility. Resolve every content fact through the recorded content stack in [installed-content](crates/installed-content/README.md) (vanilla, DLC, then mods in recorded order). Never hard-code vanilla tags, IDs, counts, lists, defines, asset names, colours or localisation keys; collector tables size from live game data. Refuse unsupported content forms explicitly instead of assuming vanilla. Modded testing is not yet required.
 
-## Validate locally
+- Ask questions always using the question tool.
 
-```powershell
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
-```
+- Feel free to ask questions. It's better to just ask a question when making a decision where there isn't a clear answer than just making an assumption based on incomplete information. Especially when UX is in question.
 
-For frontend or analytics data-type changes:
+- Recorder/viewer integration also needs the relevant fresh-save oracle and existing smoke workflow in the [recorder guide](crates/recorder/README.md).
 
-```powershell
-npm.cmd run check:ui
-npm.cmd run build:ui
-cargo run -p dashboard --bin export-types -- --check
-```
-
-Unit tests use pure functions and synthetic memory, not the game or a capture corpus. Recorder/viewer integration also needs the relevant fresh-save oracle and existing smoke workflow in the [recorder guide](crates/recorder/README.md).
+- Builds: while iterating, check only the crates you changed. Run full workspace checks once, when the work is finished, and at most two at a time across agents (`tools\build-slot.ps1`).
 
 Coordinate game ownership. Keep builds outside timed intervals; reuse matched saves/baselines and batch expensive live checks. Never waive a save difference. Report what ran, failed or remains unverified. Documentation-only changes need link and diff checks, not game captures.
 
