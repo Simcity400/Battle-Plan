@@ -6,7 +6,7 @@ The recorder reads the game's state without controlling the game. The desktop ap
 
 ## Start here
 
-This is a Windows project for a specific, hash-verified HOI4 build. Unsupported game executables are refused. Rust is pinned in [rust-toolchain.toml](rust-toolchain.toml); build settings are in [.cargo/config.toml](.cargo/config.toml).
+This is a Windows project for a specific, hash-verified HOI4 build. Unsupported game executables are refused. Rust is pinned in [rust-toolchain.toml](rust-toolchain.toml); build settings are in [.cargo/config.toml](.cargo/config.toml). Don't set `CARGO_INCREMENTAL` or `build.incremental`; they override the profile.
 
 For desktop development, install the pinned Rust toolchain, Windows MSVC build tools, `lld-link`, `sccache`, Node.js 22.12 or newer, and the Microsoft Edge WebView2 Runtime. From the repository root:
 

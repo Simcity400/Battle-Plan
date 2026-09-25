@@ -1525,7 +1525,8 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
             }
         }
     }
-    for (branch, hour) in cold_targets {
+    let cold_targets: Vec<_> = cold_targets.into_iter().collect();
+    for_each_parallel(&cold_targets, |&(branch, hour)| {
         let expected = &campaign.expected[&(branch, hour)];
         match replay.seek(branch, hour).unwrap() {
             SeekResult::Frame(actual) => {
@@ -1536,9 +1537,11 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
             }
             other => panic!("readable branch {branch}, hour {hour}: {other:?}"),
         }
-    }
-    for (&(branch, hour), expected_reason) in &campaign.missing {
-        match replay.seek(branch, hour).unwrap() {
+    });
+    let missing: Vec<_> = campaign.missing.iter().collect();
+    for_each_parallel(&missing, |&(&(branch, hour), expected_reason)| {
+        let result = replay.seek(branch, hour).unwrap();
+        match result {
             SeekResult::Gap {
                 branch: actual_branch,
                 hour: actual_hour,
@@ -1552,5 +1555,37 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
             }
             other => panic!("lost branch {branch}, hour {hour} was invented: {other:?}"),
         }
-    }
+    });
+}
+
+/// Each cold seek decodes its block independently, so the checks share no state
+/// and can run in parallel; a failing check still panics the test.
+fn for_each_parallel<T: Sync>(items: &[T], check: impl Fn(&T) + Sync) {
+    let workers = parallel_budget().clamp(1, items.len().max(1));
+    std::thread::scope(|scope| {
+        for worker in 0..workers {
+            let check = &check;
+            scope.spawn(move || items.iter().skip(worker).step_by(workers).for_each(check));
+        }
+    });
+}
+
+/// Respect the caller's thread limits on a shared machine: `--test-threads`,
+/// then `RUST_TEST_THREADS`, then `CARGO_BUILD_JOBS`, otherwise the core count.
+fn parallel_budget() -> usize {
+    let parse = |value: &str| value.parse::<usize>().ok().filter(|&n| n > 0);
+    let arguments: Vec<String> = std::env::args().collect();
+    let flag = arguments.iter().enumerate().find_map(|(i, argument)| {
+        match argument.strip_prefix("--test-threads") {
+            Some("") => arguments.get(i + 1).and_then(|value| parse(value)),
+            Some(rest) => rest.strip_prefix('=').and_then(parse),
+            None => None,
+        }
+    });
+    flag.or_else(|| {
+        ["RUST_TEST_THREADS", "CARGO_BUILD_JOBS"]
+            .into_iter()
+            .find_map(|name| std::env::var(name).ok().as_deref().and_then(parse))
+    })
+    .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |cores| cores.get()))
 }

@@ -5,13 +5,18 @@ rustc-wrapper = "sccache"
 [env]
 SCCACHE_DIR = { value = "C:\\sccache_cache", force = true }
 
+# Cargo applies `incremental` only to workspace crates, so sccache still caches
+# every dependency. Enable it here, not through the environment or a user
+# config: `CARGO_INCREMENTAL=0` (or `build.incremental = false`) silently turns
+# it off again, and sccache exits with an error when `CARGO_INCREMENTAL` or
+# `CARGO_BUILD_INCREMENTAL` is `1`.
 [profile.dev]
 debug = 0
-incremental = false
+incremental = true
 
 [profile.test]
 debug = 0
-incremental = false
+incremental = true
 
 # The replay crate's 2,000-hour fault acceptance test takes about 121 s unoptimised and
 # about 16 s optimised; optimising replay keeps the full test suite short.
