@@ -453,6 +453,25 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(())
     }
 
+    /// Whether a relation sits at the overlord's `+0x288` slot toward its
+    /// subject. Any unreadable or unresolvable step answers no.
+    fn installed(&self, pointer: usize, overlord: u32, subject: u32, pass: &mut Pass<'_>) -> bool {
+        (|| {
+            let first = pass.resolver.resolve(&self.countries, overlord)?;
+            let second = pass.resolver.resolve(&self.countries, subject)?;
+            let diplomacy = pass.resolver.diplomacy(first, || self.diplomacy(first))?;
+            let matrix = self.array(diplomacy, cdiplomacy_status::RELATIONS)?;
+            let status = self.element(matrix, second.canonical_slot)?;
+            if status == 0 {
+                return Ok(false);
+            }
+            Ok::<_, &'static str>(
+                self.pointer(status, crelation_status::SUBJECT_RELATION)? == pointer,
+            )
+        })()
+        .unwrap_or(false)
+    }
+
     fn pair_status(
         &self,
         diplomacy: usize,
@@ -542,11 +561,17 @@ impl<'a, M: Memory> Reader<'a, M> {
         if self.field::<u32>(pointer, TYPE_ID)? != TYPE_VALUE {
             return Err("subject matrix contains another relation type");
         }
-        if self.field::<u8>(pointer, crelation::RETIRED)? != 0 {
-            return Ok(None);
-        }
+        let retired = self.field::<u8>(pointer, crelation::RETIRED)? != 0;
         let overlord = self.field::<u32>(pointer, OVERLORD)?;
         let subject = self.field::<u32>(pointer, SUBJECT)?;
+        // The shared-vision subject terms (140D11030, 140D11080) read only the
+        // status +0x288 pointer and its type, never the retired byte, and
+        // clear_link (vf22@140D12990) is what uninstalls a subject. So a
+        // retired relation counts exactly while it is still installed; one
+        // left only in an owned vector is skipped.
+        if retired && matrix_index.is_none() && !self.installed(pointer, overlord, subject, pass) {
+            return Ok(None);
+        }
         let first = pass.resolver.resolve(&self.countries, overlord)?;
         let second = pass.resolver.resolve(&self.countries, subject)?;
         if first.canonical_slot == second.canonical_slot {
@@ -783,6 +808,28 @@ mod tests {
                 }
             );
             assert_eq!(&names[..4], &[b'a', 255, 0, b'z']);
+        }
+    }
+
+    /// A retired relation still installed at `+0x288` is what the native
+    /// subject terms read, so it stays a row; the retired relation left only in
+    /// the owned vector (the fixture's second entry) is skipped.
+    #[test]
+    fn a_retired_subject_counts_while_it_is_installed() {
+        let mut bytes = fixture();
+        // The owned-only retired relation names the same pair but is not the
+        // one installed, so it resolves and is still skipped.
+        p32(&mut bytes, RETIRED_RELATION + OVERLORD, 3);
+        p32(&mut bytes, RETIRED_RELATION + SUBJECT, 2);
+        bytes[RELATION + crelation::RETIRED] = 1;
+        for matrix in [false, true] {
+            let mut rows = [Row::default(); 2];
+            let mut names = [0; 20];
+            assert_eq!(
+                capture(&bytes, matrix, &mut rows, &mut names).outcome,
+                Outcome::Rows { len: 1 }
+            );
+            assert_eq!((rows[0].overlord, rows[0].subject), (3, 2));
         }
     }
 

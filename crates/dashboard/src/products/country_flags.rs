@@ -353,7 +353,7 @@ fn shield(flag: &Rgba8Image, mask: &Rgba8Image, overlay: Option<&Rgba8Image>) ->
 
 /// The rows a table holds this hour; an unavailable table holds none.
 fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<&[T::Row]> {
-    match &frame.tables[T::ID.index()] {
+    match &*frame.tables[T::ID.index()] {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
             rows.rows::<T>().ok_or_else(|| {
                 invalid(format!(

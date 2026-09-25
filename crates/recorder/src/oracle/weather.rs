@@ -191,9 +191,10 @@ weather={
             metrics: Metrics::default(),
             tables: std::array::from_fn(|_| TableView::Unavailable {
                 reason: "outside weather comparison".into(),
-            }),
+            })
+            .map(Into::into),
         };
-        frame.tables[TableId::WeatherProvinces.index()] =
+        *frame.tables[TableId::WeatherProvinces.index()] =
             TableView::Complete(TableRows::WeatherProvinces(vec![WeatherProvinceRow {
                 id: 0,
                 snow: 9_007_199_254_740_993,
@@ -201,7 +202,7 @@ weather={
                 display_snow: 128,
                 display_mud: 255,
             }]));
-        frame.tables[TableId::WeatherRegions.index()] =
+        *frame.tables[TableId::WeatherRegions.index()] =
             TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow {
                 id: 0,
                 light_rain: 255,
@@ -218,7 +219,7 @@ weather={
             (TableId::WeatherRegions, "WeatherRegions", 1),
         ] {
             let original = frame.tables[table.index()].clone();
-            frame.tables[table.index()] = if table == TableId::WeatherProvinces {
+            *frame.tables[table.index()] = if table == TableId::WeatherProvinces {
                 TableView::Truncated {
                     rows: TableRows::WeatherProvinces(Vec::new()),
                     missing: 1,
@@ -240,7 +241,7 @@ weather={
         }
 
         let TableView::Complete(TableRows::WeatherProvinces(rows)) =
-            &mut frame.tables[TableId::WeatherProvinces.index()]
+            &mut *frame.tables[TableId::WeatherProvinces.index()]
         else {
             unreachable!();
         };
@@ -249,7 +250,7 @@ weather={
         compare(&frame, &saved, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
 
-        frame.tables[TableId::WeatherRegions.index()] = TableView::Unavailable {
+        *frame.tables[TableId::WeatherRegions.index()] = TableView::Unavailable {
             reason: "region read failed".into(),
         };
         assert!(compare(&frame, &saved, &mut Report::default()).is_err());

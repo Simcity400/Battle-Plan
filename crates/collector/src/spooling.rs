@@ -183,38 +183,26 @@ fn lexical_cache(
 }
 
 fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -> Value {
-    let mut totals = [IntelShadowStats::default(); 2];
+    let mut total = IntelShadowStats::default();
     let mut campaigns = 0usize;
     for shadow in shadows {
         campaigns += 1;
-        for (total, current) in totals.iter_mut().zip(shadow.statistics()) {
-            total.hits = total.hits.saturating_add(current.hits);
-            total.misses = total.misses.saturating_add(current.misses);
-            total.row_capacity_bytes += current.row_capacity_bytes;
-            total.replay_capacity_bytes += current.replay_capacity_bytes;
-        }
+        let current = shadow.statistics();
+        total.hits = total.hits.saturating_add(current.hits);
+        total.misses = total.misses.saturating_add(current.misses);
+        total.row_capacity_bytes += current.row_capacity_bytes;
+        total.replay_capacity_bytes += current.replay_capacity_bytes;
     }
-    let native_bytes: usize = totals.iter().map(|table| table.row_capacity_bytes).sum();
-    let replay_bytes: usize = totals.iter().map(|table| table.replay_capacity_bytes).sum();
-    let tables: Vec<_> = ["ScriptFlags", "CountryIntel"]
-        .into_iter()
-        .zip(totals)
-        .map(|(name, table)| {
-            json!({
-                "name": name, "hits": table.hits, "misses": table.misses,
-                "row_capacity_bytes": table.row_capacity_bytes,
-                "replay_capacity_bytes": table.replay_capacity_bytes,
-            })
-        })
-        .collect();
     json!({
         "campaigns": campaigns,
-        "retained_native_capacity_bytes": native_bytes,
-        "retained_replay_capacity_bytes": replay_bytes,
+        "table": "ScriptFlags",
+        "hits": total.hits,
+        "misses": total.misses,
+        "retained_native_capacity_bytes": total.row_capacity_bytes,
+        "retained_replay_capacity_bytes": total.replay_capacity_bytes,
         "allocation_scope": "current native row Vec capacities plus strongly retained immutable replay Vec capacities across retained campaigns; replay bytes may also be shared with encoder and are not additive to its storage; excludes Arc control blocks and allocator overhead; separate from raw/pool accounting",
         "counter_scope": "cumulative hourly conversion decisions including later rejected or failed writes; faults count as misses when conversion runs; enclosing clock failure clears shadows without conversion",
         "cost_scope": "native comparison, snapshot installation and fallback conversion included in spool_work.conversion_packs intel",
-        "tables": tables,
     })
 }
 
@@ -1943,13 +1931,16 @@ fn sampled_frame(source: FrameInput) -> replay::frame::DecodedFrame {
         branch: source.branch,
         hour: source.hour,
         metrics: source.metrics,
-        tables: source.tables.map(|input| match input {
-            TableInput::Sampled(view) => view,
-            TableInput::SharedComplete(rows) => TableView::Complete((*rows).clone()),
-            TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
-                panic!("fixture expected ordinary sampled rows")
-            }
-        }),
+        tables: source
+            .tables
+            .map(|input| match input {
+                TableInput::Sampled(view) => view,
+                TableInput::SharedComplete(rows) => TableView::Complete((*rows).clone()),
+                TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
+                    panic!("fixture expected ordinary sampled rows")
+                }
+            })
+            .map(Into::into),
     }
 }
 
@@ -2119,6 +2110,7 @@ fn decoded_with_costs(
                     hit_points: division.hit_points,
                     organisation: division.organisation,
                     orders_group: division.orders_group,
+                    reveal_skip: division.reveal_skip,
                 },
             ),
             scalar_table::<tables::WarRelations, _>(
@@ -3193,6 +3185,7 @@ mod tests {
             hit_points: i64::MIN,
             organisation: 9_007_199_254_740_993,
             orders_group: (57_u64 << 32) | 53,
+            reveal_skip: 0,
         };
         captured.divisions[1] = engine::carmy::Row {
             id: (u64::from(u32::MAX) << 32) | 51,
@@ -3213,7 +3206,7 @@ mod tests {
                 convoys_raw: Some(i64::MAX),
             }]))
         );
-        let TableView::Complete(divisions) = &frame.tables[TableId::Divisions.index()] else {
+        let TableView::Complete(divisions) = &*frame.tables[TableId::Divisions.index()] else {
             panic!("distinct full division handles must survive conversion");
         };
         assert_eq!(
@@ -3988,6 +3981,10 @@ mod tests {
             TableView::Complete(TableRows::MovementDefines(vec![
                 replay::rows::MovementDefinesRow::default(),
             ]));
+        tables[TableId::SimulationFeatures.index()] =
+            TableView::Complete(TableRows::SimulationFeatures(vec![
+                replay::rows::SimulationFeatureRow::default(),
+            ]));
         if skip {
             for table in TableId::ALL {
                 if replay::cadence::is_staggered(table) {
@@ -4000,7 +3997,7 @@ mod tests {
         DecodedFrame {
             branch,
             hour,
-            tables,
+            tables: tables.map(Into::into),
             metrics: Metrics::default(),
         }
     }
@@ -4218,9 +4215,7 @@ mod tests {
             )),
         );
         let mut frame: FrameInput = staggered_frame(branch, hour, false).into();
-        for (slot, table) in [(7, TableId::ScriptFlags), (15, TableId::CountryIntel)] {
-            frame.tables[table.index()] = inputs[slot].clone();
-        }
+        frame.tables[TableId::ScriptFlags.index()] = inputs[7].clone();
         frame
     }
 
@@ -4238,7 +4233,7 @@ mod tests {
             let (mut campaign, store) = campaign();
             let branch = campaign.observe(None, 0, Some(1)).unwrap();
             let first = intel_frame(&mut campaign, branch, 0, 10);
-            let original = Arc::clone(intel_allocation(&first, TableId::CountryIntel));
+            let original = Arc::clone(intel_allocation(&first, TableId::ScriptFlags));
             let mut reference = FrameEncoder::new();
             let expected_first = reference
                 .encode(sampled_frame(first.clone()), false)
@@ -4250,7 +4245,7 @@ mod tests {
             let second = intel_frame(&mut campaign, branch, 1, 10);
             assert!(Arc::ptr_eq(
                 &original,
-                intel_allocation(&second, TableId::CountryIntel)
+                intel_allocation(&second, TableId::ScriptFlags)
             ));
             let expected_second = reference
                 .encode(sampled_frame(second.clone()), false)
@@ -4271,7 +4266,7 @@ mod tests {
 
             campaign.observe(None, 2, Some(1)).unwrap();
             let mut failed = intel_frame(&mut campaign, branch, 2, 20);
-            let latest = Arc::clone(intel_allocation(&failed, TableId::CountryIntel));
+            let latest = Arc::clone(intel_allocation(&failed, TableId::ScriptFlags));
             assert!(!Arc::ptr_eq(&original, &latest));
             if fail_encoding {
                 failed.tables[TableId::CountryLinks.index()] =
@@ -4291,7 +4286,7 @@ mod tests {
             let restored = intel_frame(&mut campaign, branch, 3, 20);
             assert!(Arc::ptr_eq(
                 &latest,
-                intel_allocation(&restored, TableId::CountryIntel)
+                intel_allocation(&restored, TableId::ScriptFlags)
             ));
             campaign
                 .write(restored, 1003, Some(1), 0, &mut WorkSample::default())
@@ -4307,20 +4302,16 @@ mod tests {
                 .unwrap();
             assert!(frame.keyframe);
             assert_eq!(
-                frame.tables[TableId::CountryIntel.index()],
+                frame.tables[TableId::ScriptFlags.index()],
                 TableUpdate::Snapshot((*latest).clone())
             );
-            assert!(matches!(
-                frame.tables[TableId::ScriptFlags.index()],
-                TableUpdate::Snapshot(_)
-            ));
 
             let next_branch = campaign.observe(None, 4, Some(2)).unwrap();
             assert_ne!(branch, next_branch);
             let next = intel_frame(&mut campaign, next_branch, 4, 20);
             assert!(!Arc::ptr_eq(
                 &latest,
-                intel_allocation(&next, TableId::CountryIntel)
+                intel_allocation(&next, TableId::ScriptFlags)
             ));
             campaign
                 .write(next, 1004, Some(2), 0, &mut WorkSample::default())
@@ -4330,41 +4321,39 @@ mod tests {
 
     #[test]
     fn intel_shadow_missing_clock_skips_conversion_and_preserves_failure() {
-        for table in [TableId::ScriptFlags, TableId::CountryIntel] {
-            let (mut campaign, _) = campaign();
-            let mut source = captured(0);
-            source.extended.set_intel_shadow_fixture(10);
-            let first = intel_frame(&mut campaign, 1, 0, 10);
-            let old = Arc::clone(intel_allocation(&first, table));
-            let before = campaign.intel_shadow.statistics();
-            source.clock = None;
-            let mut reuse = IntelConversion::new(1, &mut campaign.intel_shadow);
-            let (current, costs) = decoded_with_costs(
-                &source,
-                clock(0),
-                1,
-                None,
-                &mut ScriptVariableComparison::default(),
-                None,
-                None,
-                None,
-                Some(&mut reuse),
-                None,
-            );
-            assert_eq!(
-                current.tables,
-                unavailable_tables("clock unreadable at hook entry")
-            );
-            let statistics = campaign.intel_shadow.statistics();
-            for (before, after) in before.into_iter().zip(statistics) {
-                assert_eq!(after.replay_capacity_bytes, before.replay_capacity_bytes);
-                assert_eq!(after.hits, before.hits);
-                assert_eq!(after.misses, before.misses);
-            }
-            assert!(costs.iter().all(Option::is_none));
-            let next = intel_frame(&mut campaign, 1, 1, 10);
-            assert!(Arc::ptr_eq(&old, intel_allocation(&next, table)));
-        }
+        let table = TableId::ScriptFlags;
+        let (mut campaign, _) = campaign();
+        let mut source = captured(0);
+        source.extended.set_intel_shadow_fixture(10);
+        let first = intel_frame(&mut campaign, 1, 0, 10);
+        let old = Arc::clone(intel_allocation(&first, table));
+        let before = campaign.intel_shadow.statistics();
+        source.clock = None;
+        let mut reuse = IntelConversion::new(1, &mut campaign.intel_shadow);
+        let (current, costs) = decoded_with_costs(
+            &source,
+            clock(0),
+            1,
+            None,
+            &mut ScriptVariableComparison::default(),
+            None,
+            None,
+            None,
+            Some(&mut reuse),
+            None,
+        );
+        assert_eq!(
+            current.tables,
+            unavailable_tables("clock unreadable at hook entry")
+        );
+        let after = campaign.intel_shadow.statistics();
+        assert_eq!(
+            (after.replay_capacity_bytes, after.hits, after.misses),
+            (before.replay_capacity_bytes, before.hits, before.misses)
+        );
+        assert!(costs.iter().all(Option::is_none));
+        let next = intel_frame(&mut campaign, 1, 1, 10);
+        assert!(Arc::ptr_eq(&old, intel_allocation(&next, table)));
     }
 
     #[test]
@@ -4376,20 +4365,20 @@ mod tests {
         intel_frame(&mut second, 1, 0, 20);
         let report = intel_shadow_status([&first.intel_shadow, &second.intel_shadow]);
         assert_eq!(report["campaigns"], 2);
-        let a = first.intel_shadow.statistics();
-        let b = second.intel_shadow.statistics();
-        let native_bytes: usize = a.iter().chain(&b).map(|stat| stat.row_capacity_bytes).sum();
-        let replay_bytes: usize = a
-            .iter()
-            .chain(&b)
-            .map(|stat| stat.replay_capacity_bytes)
-            .sum();
-        assert_eq!(report["retained_native_capacity_bytes"], native_bytes);
-        assert_eq!(report["retained_replay_capacity_bytes"], replay_bytes);
-        for table in report["tables"].as_array().unwrap() {
-            assert_eq!(table["hits"], 1);
-            assert_eq!(table["misses"], 2);
-        }
+        let (a, b) = (
+            first.intel_shadow.statistics(),
+            second.intel_shadow.statistics(),
+        );
+        assert_eq!(
+            report["retained_native_capacity_bytes"],
+            a.row_capacity_bytes + b.row_capacity_bytes
+        );
+        assert_eq!(
+            report["retained_replay_capacity_bytes"],
+            a.replay_capacity_bytes + b.replay_capacity_bytes
+        );
+        assert_eq!(report["hits"], 1);
+        assert_eq!(report["misses"], 2);
     }
 
     #[test]
@@ -4569,7 +4558,7 @@ mod tests {
             campaign.observe(None, 2, Some(1)).unwrap();
             let mut failed = research_frame(&mut campaign, branch, 2, 20);
             if fail_encoding {
-                failed.tables[TableId::CountryIntel.index()] =
+                failed.tables[TableId::UnitIntel.index()] =
                     TableView::Complete(TableRows::Clock(Vec::new())).into();
             } else {
                 store.borrow_mut().fail_frame_flush = true;
@@ -4763,7 +4752,7 @@ mod tests {
             if let Some(next_value) = refresh {
                 value = next_value;
             }
-            expected.tables[table.index()] = TableView::Complete(daily_rows(value));
+            *expected.tables[table.index()] = TableView::Complete(daily_rows(value));
             let mut input: FrameInput = if refresh.is_some() {
                 expected.clone().into()
             } else {
@@ -4851,7 +4840,7 @@ mod tests {
             let mut failed: FrameInput = staggered_frame(branch, 1, false).into();
             failed.tables[table.index()] = TableView::Complete(daily_rows(2)).into();
             if fail_encoding {
-                failed.tables[TableId::CountryIntel.index()] =
+                failed.tables[TableId::UnitIntel.index()] =
                     TableView::Complete(TableRows::Clock(Vec::new())).into();
             } else {
                 store.borrow_mut().fail_frame_flush = true;
@@ -4921,7 +4910,7 @@ mod tests {
         let mut second = staggered_frame(branch, 1, true);
         campaign.apply_staggered_cache(&mut second);
         assert!(
-            matches!(&second.tables[TableId::ScriptVariables.index()], TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
+            matches!(&*second.tables[TableId::ScriptVariables.index()], TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
         );
         let encoded = campaign.encoder.encode(second, false).unwrap();
         assert_eq!(
@@ -4975,7 +4964,7 @@ mod tests {
             let mut next = self.clone();
             next.hour = hour;
             if let TableView::Complete(TableRows::Clock(rows)) =
-                &mut next.tables[replay::rows::TableId::Clock.index()]
+                &mut *next.tables[replay::rows::TableId::Clock.index()]
             {
                 rows[0].hour = hour;
             }
@@ -4996,7 +4985,7 @@ mod tests {
         let mut expected_tables: [Option<TableView>; TABLE_COUNT] = std::array::from_fn(|_| None);
         for hour in 0..48 {
             let mut hourly = staggered_frame(branch, hour, false);
-            hourly.tables[TableId::ScriptVariables.index()] =
+            *hourly.tables[TableId::ScriptVariables.index()] =
                 TableView::Complete(daily_rows(hour as u8));
             let hourly_frame = hourly_encoder.encode(hourly.clone(), false).unwrap();
             let hourly_decoded = hourly_decoder.apply(&hourly_frame).unwrap().clone();
@@ -5004,9 +4993,9 @@ mod tests {
             for table in TableId::ALL {
                 let index = table.index();
                 if replay::cadence::should_walk(table, hour, hour == 0) {
-                    expected_tables[index] = Some(hourly_decoded.tables[index].clone());
+                    expected_tables[index] = Some((*hourly_decoded.tables[index]).clone());
                 } else {
-                    staggered.tables[index] = TableView::Unavailable {
+                    *staggered.tables[index] = TableView::Unavailable {
                         reason: replay::cadence::SKIPPED_REASON.into(),
                     };
                 }
@@ -5036,7 +5025,7 @@ mod tests {
         assert!(skipped[TableId::ScriptVariables.index()]);
         assert!(
             matches!(
-                &second.tables[TableId::ScriptVariables.index()],
+                &*second.tables[TableId::ScriptVariables.index()],
                 TableView::Unavailable { reason } if reason.contains("full refresh required")
             ),
             "new branch must not carry stale rows"
@@ -5066,7 +5055,7 @@ mod tests {
         let base_frame = encoder.encode(base.clone(), false).unwrap();
         decoder.apply(&base_frame).unwrap();
         let mut first = staggered_frame(branch, 11, false);
-        first.tables[TableId::WorldTension.index()] = TableView::Truncated {
+        *first.tables[TableId::WorldTension.index()] = TableView::Truncated {
             rows: TableRows::WorldTension(vec![replay::rows::WorldTensionRow::default()]),
             missing: 2,
         };

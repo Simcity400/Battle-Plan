@@ -484,7 +484,7 @@ mod owned_tests {
                 DecodedFrame {
                     branch: 1,
                     hour: 0,
-                    tables: baseline,
+                    tables: baseline.map(Into::into),
                     metrics: Metrics::default(),
                 },
                 false,

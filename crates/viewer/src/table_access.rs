@@ -41,7 +41,7 @@ impl<'a, T: TableSchema> Available<'a, T> {
 /// The only error is a decoded table holding another table's rows, which is a
 /// corrupt file rather than a recorded gap.
 pub fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Available<'_, T>> {
-    match &frame.tables[T::ID.index()] {
+    match &*frame.tables[T::ID.index()] {
         TableView::Complete(rows) => Ok(Available::Complete(typed::<T>(rows, frame.hour)?)),
         TableView::Truncated { rows, missing } => Ok(Available::Truncated {
             rows: typed::<T>(rows, frame.hour)?,

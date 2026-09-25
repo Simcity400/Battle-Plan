@@ -148,7 +148,7 @@ fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> Option<u32> {
 
 /// Identical campaign guard to Replay::seek, including intermediate frames.
 pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()> {
-    if let TableView::Complete(rows) = &frame.tables[TableId::Campaign.index()]
+    if let TableView::Complete(rows) = &*frame.tables[TableId::Campaign.index()]
         && rows
             .rows::<tables::Campaign>()
             .is_none_or(|rows| rows.len() != 1 || rows[0].id != replay.campaign_id)

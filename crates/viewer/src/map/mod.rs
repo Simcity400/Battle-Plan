@@ -67,6 +67,7 @@ pub mod textures;
 pub mod trees;
 // close zoom
 pub mod unit_models;
+pub mod visibility;
 pub mod water;
 // weather
 pub mod weather;

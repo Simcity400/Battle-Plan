@@ -42,11 +42,73 @@ pub enum TableView {
     Unavailable { reason: String },
 }
 
+/// One decoded table, shared between the hours it did not change in.
+///
+/// A decoder hands the same allocation to every hour whose update leaves the
+/// table unchanged, so copying a [`DecodedFrame`] copies no rows. Reading goes
+/// through `Deref`; a write (`DerefMut`) copies the table first when another
+/// hour still shares it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedView(Arc<TableView>);
+
+impl SharedView {
+    /// Whether two views are the same allocation, not just equal rows.
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        Arc::ptr_eq(&a.0, &b.0)
+    }
+
+    /// The view, moved out when this is its only holder and copied otherwise.
+    pub fn into_inner(self) -> TableView {
+        Arc::try_unwrap(self.0).unwrap_or_else(|shared| (*shared).clone())
+    }
+
+    /// The view when this is its only holder; the shared view otherwise.
+    pub fn try_unwrap(self) -> Result<TableView, Self> {
+        Arc::try_unwrap(self.0).map_err(Self)
+    }
+
+    /// The allocation's address, for counting distinct tables.
+    pub fn as_ptr(&self) -> *const TableView {
+        Arc::as_ptr(&self.0)
+    }
+}
+
+impl std::ops::Deref for SharedView {
+    type Target = TableView;
+    fn deref(&self) -> &TableView {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SharedView {
+    fn deref_mut(&mut self) -> &mut TableView {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl From<TableView> for SharedView {
+    fn from(view: TableView) -> Self {
+        Self(Arc::new(view))
+    }
+}
+
+impl PartialEq<TableView> for SharedView {
+    fn eq(&self, other: &TableView) -> bool {
+        *self.0 == *other
+    }
+}
+
+impl PartialEq<SharedView> for TableView {
+    fn eq(&self, other: &SharedView) -> bool {
+        *self == *other.0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedFrame {
     pub branch: BranchId,
     pub hour: Hour,
-    pub tables: [TableView; TABLE_COUNT],
+    pub tables: [SharedView; TABLE_COUNT],
     pub metrics: Metrics,
 }
 
@@ -113,7 +175,9 @@ impl From<DecodedFrame> for FrameInput {
         Self {
             branch: source.branch,
             hour: source.hour,
-            tables: source.tables.map(TableInput::Sampled),
+            tables: source
+                .tables
+                .map(|table| TableInput::Sampled(table.into_inner())),
             metrics: source.metrics,
         }
     }
@@ -182,7 +246,7 @@ fn put_count(out: &mut Vec<u8>, n: usize) -> io::Result<()> {
 impl DecodedFrame {
     pub fn complete<T: TableSchema>(&self) -> io::Result<&[T::Row]> {
         let table = T::ID;
-        match &self.tables[table.index()] {
+        match &*self.tables[table.index()] {
             TableView::Complete(rows) => rows.rows::<T>().ok_or_else(|| {
                 invalid(format!(
                     "hour {} {table:?} contains another table's rows",
@@ -861,7 +925,9 @@ impl FrameDecoder {
         }
     }
 
-    /// Decode an hour and return an owned copy for callers that retain it.
+    /// Decode an hour and return a frame callers can retain. It shares every
+    /// table with the decoder, so it copies no rows; a table is copied only
+    /// when either side writes to it.
     pub fn apply(&mut self, frame: &Frame) -> io::Result<DecodedFrame> {
         self.advance(frame).cloned()
     }
@@ -893,11 +959,10 @@ impl FrameDecoder {
             .take()
             .filter(|current| !frame.keyframe && current.branch == frame.branch)
             .map(|current| {
-                current.tables.map(|table| match table {
-                    // Every complete table advances its baseline to the enclosing
-                    // hour, including unchanged tables after a recorded gap.
-                    TableView::Complete(rows) => Some((current.hour, rows)),
-                    TableView::Truncated { .. } | TableView::Unavailable { .. } => None,
+                // Every complete table advances its baseline to the enclosing
+                // hour, including unchanged tables after a recorded gap.
+                current.tables.map(|table| {
+                    matches!(*table, TableView::Complete(_)).then_some((current.hour, table))
                 })
             })
             .unwrap_or_else(|| std::array::from_fn(|_| None));
@@ -910,7 +975,8 @@ impl FrameDecoder {
             {
                 return TableView::Unavailable {
                     reason: "Table not selected for reconstruction".into(),
-                };
+                }
+                .into();
             }
             match apply_table(
                 table,
@@ -921,7 +987,8 @@ impl FrameDecoder {
                 Ok(view) => view,
                 Err(error) => TableView::Unavailable {
                     reason: error.to_string(),
-                },
+                }
+                .into(),
             }
         });
         self.current = Some(DecodedFrame {
@@ -934,16 +1001,19 @@ impl FrameDecoder {
     }
 }
 
+/// An unchanged table is the previous hour's allocation, shared rather than
+/// copied; a delta takes the baseline by value, which copies it only when an
+/// earlier hour's frame still holds it.
 fn apply_table(
     table: TableId,
     update: &TableUpdate,
-    previous: Option<(Hour, TableRows)>,
+    previous: Option<(Hour, SharedView)>,
     hour: Hour,
-) -> io::Result<TableView> {
+) -> io::Result<SharedView> {
     match update {
         TableUpdate::Snapshot(values) => {
             validate_complete(table, values, hour)?;
-            Ok(TableView::Complete(values.clone()))
+            Ok(TableView::Complete(values.clone()).into())
         }
         TableUpdate::Truncated { rows, missing } => {
             validate_rows(table, rows)?;
@@ -953,7 +1023,8 @@ fn apply_table(
             Ok(TableView::Truncated {
                 rows: rows.clone(),
                 missing: *missing,
-            })
+            }
+            .into())
         }
         TableUpdate::Unavailable { reason } => {
             if reason.is_empty() {
@@ -961,10 +1032,11 @@ fn apply_table(
             }
             Ok(TableView::Unavailable {
                 reason: reason.clone(),
-            })
+            }
+            .into())
         }
         TableUpdate::Delta { baseline, .. } | TableUpdate::Unchanged { baseline } => {
-            let Some((_, previous_rows)) =
+            let Some((_, previous_view)) =
                 previous.filter(|(previous_hour, _)| previous_hour == baseline && *baseline < hour)
             else {
                 return Err(invalid(format!(
@@ -976,14 +1048,28 @@ fn apply_table(
             } = update
             {
                 validate_delta(table, changed, deleted)?;
-                let rows = previous_rows.apply_delta(changed, deleted)?;
+                let rows = match previous_view.try_unwrap() {
+                    Ok(TableView::Complete(previous_rows)) => {
+                        previous_rows.apply_delta(changed, deleted)?
+                    }
+                    Err(shared) => match &*shared {
+                        TableView::Complete(previous_rows) => {
+                            previous_rows.apply_delta_shared(changed, deleted)?
+                        }
+                        _ => unreachable!("only complete tables become baselines"),
+                    },
+                    Ok(_) => unreachable!("only complete tables become baselines"),
+                };
                 validate_complete(table, &rows, hour)?;
-                Ok(TableView::Complete(rows))
+                Ok(TableView::Complete(rows).into())
             } else {
                 // This private baseline already passed full row validation. Only
                 // the clock's relation to the new enclosing hour can have changed.
-                validate_singleton(table, &previous_rows, hour)?;
-                Ok(TableView::Complete(previous_rows))
+                let TableView::Complete(previous_rows) = &*previous_view else {
+                    unreachable!("only complete tables become baselines");
+                };
+                validate_singleton(table, previous_rows, hour)?;
+                Ok(previous_view)
             }
         }
     }
@@ -1045,7 +1131,7 @@ mod tests {
                 assert_eq!(actual.tables[table.index()], expected.tables[table.index()]);
             }
             assert!(matches!(
-                actual.tables[crate::rows::TableId::Clock.index()],
+                *actual.tables[crate::rows::TableId::Clock.index()],
                 super::TableView::Unavailable { .. }
             ));
         }
@@ -1065,6 +1151,40 @@ mod tests {
     };
 
     const FACTION_ID: u64 = 0xfedc_ba98_0000_004d;
+
+    /// An hour that leaves a table unchanged hands on the same allocation; a
+    /// delta copies the baseline first while an earlier hour still holds it,
+    /// so that hour keeps its own rows.
+    #[test]
+    fn unchanged_tables_are_shared_and_a_delta_copies_on_write() {
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let original = source(1, 0);
+        let first = decoder
+            .apply(&encoder.encode(original.clone(), true).unwrap())
+            .unwrap();
+        let mut next = source(1, 1);
+        change_country(&mut next, 5);
+        let frame = encoder.encode(next.clone(), false).unwrap();
+        let countries = TableId::Countries.index();
+        let campaign = TableId::Campaign.index();
+        assert!(matches!(
+            frame.tables[campaign],
+            TableUpdate::Unchanged { .. }
+        ));
+        assert!(matches!(frame.tables[countries], TableUpdate::Delta { .. }));
+        let second = decoder.apply(&frame).unwrap();
+        assert!(SharedView::ptr_eq(
+            &first.tables[campaign],
+            &second.tables[campaign]
+        ));
+        assert!(!SharedView::ptr_eq(
+            &first.tables[countries],
+            &second.tables[countries]
+        ));
+        assert_eq!(first.tables[countries], original.tables[countries]);
+        assert_eq!(second.tables[countries], next.tables[countries]);
+    }
 
     fn shared_input(source: DecodedFrame) -> FrameInput {
         let mut input: FrameInput = source.into();
@@ -1375,7 +1495,7 @@ mod tests {
 
     fn variable_source(branch: BranchId, hour: Hour, value: i64) -> DecodedFrame {
         let mut frame = source(branch, hour);
-        frame.tables[TableId::ScriptVariables.index()] =
+        *frame.tables[TableId::ScriptVariables.index()] =
             TableView::Complete(TableRows::ScriptVariables(vec![rows::ScriptVariablesRow {
                 scope_kind: 1,
                 scope_id: 7,
@@ -1483,7 +1603,7 @@ mod tests {
             let mut encoder = FrameEncoder::new();
             encoder.encode(variable_source(1, 0, 1), false).unwrap();
             let mut source = variable_source(1, 1, 1);
-            source.tables[TableId::ScriptVariables.index()] = if partial {
+            *source.tables[TableId::ScriptVariables.index()] = if partial {
                 TableView::Truncated {
                     rows: TableRows::ScriptVariables(Vec::new()),
                     missing: 1,
@@ -1569,7 +1689,7 @@ mod tests {
             .collect();
         let current = |hour, rows: &[rows::SupplyNodeRow]| {
             let mut frame = source(1, hour);
-            frame.tables[TableId::SupplyNodes.index()] =
+            *frame.tables[TableId::SupplyNodes.index()] =
                 TableView::Complete(TableRows::SupplyNodes(rows.to_vec()));
             frame
         };
@@ -1682,7 +1802,7 @@ mod tests {
         other.encode(source(1, 0), false).unwrap();
         assert!(other.encode_input(valid.clone(), false).is_err());
         let mut expected = source(1, 1);
-        expected.tables[TableId::Provinces.index()] =
+        *expected.tables[TableId::Provinces.index()] =
             TableView::Complete(TableRows::Provinces(vec![changed, original[1].clone()]));
         let actual = encoder.encode_input(valid.clone(), false).unwrap();
         let expected = other.encode(expected, false).unwrap();
@@ -1750,7 +1870,7 @@ mod tests {
                 for table in TableId::ALL {
                     if crate::cadence::is_staggered(table) {
                         assert!(carried.can_carry(table, 1, hour, false));
-                        compact.tables[table.index()] = TableView::Unavailable {
+                        *compact.tables[table.index()] = TableView::Unavailable {
                             reason: crate::cadence::SKIPPED_REASON.into(),
                         };
                     }
@@ -1775,13 +1895,13 @@ mod tests {
         }
         assert!(!encoder.can_carry(TableId::Clock, 1, 1, false));
         let mut missing = source(1, 1);
-        missing.tables[table.index()] = TableView::Unavailable {
+        *missing.tables[table.index()] = TableView::Unavailable {
             reason: "fault".into(),
         };
         encoder.encode(missing, false).unwrap();
         assert!(!encoder.can_carry(table, 1, 2, false));
         let mut marker = source(1, 2);
-        marker.tables[table.index()] = TableView::Unavailable {
+        *marker.tables[table.index()] = TableView::Unavailable {
             reason: crate::cadence::SKIPPED_REASON.into(),
         };
         assert!(matches!(
@@ -1789,10 +1909,10 @@ mod tests {
             TableUpdate::Unavailable { .. }
         ));
         let mut partial = source(1, 3);
-        let TableView::Complete(rows) = partial.tables[table.index()].clone() else {
+        let TableView::Complete(rows) = (*partial.tables[table.index()]).clone() else {
             unreachable!()
         };
-        partial.tables[table.index()] = TableView::Truncated { rows, missing: 1 };
+        *partial.tables[table.index()] = TableView::Truncated { rows, missing: 1 };
         encoder.encode(partial, false).unwrap();
         assert!(!encoder.can_carry(table, 1, 4, false));
     }
@@ -1805,7 +1925,7 @@ mod tests {
         for table in [TableId::Characters, TableId::Divisions, TableId::Countries] {
             assert!(!crate::cadence::is_staggered(table));
             assert!(!encoder.can_carry(table, 1, 1, false));
-            skipped.tables[table.index()] = TableView::Unavailable {
+            *skipped.tables[table.index()] = TableView::Unavailable {
                 reason: crate::cadence::SKIPPED_REASON.into(),
             };
         }
@@ -1918,7 +2038,7 @@ mod tests {
                 for (target, source) in tables.iter_mut().zip(initial) {
                     *target = source;
                 }
-                tables
+                tables.map(Into::into)
             },
         }
     }
@@ -1947,6 +2067,7 @@ mod tests {
             hit_points,
             organisation,
             orders_group: 0x0000_0039_0000_0035,
+            reveal_skip: 0,
         }
     }
 
@@ -1967,7 +2088,7 @@ mod tests {
 
     fn change_country(frame: &mut DecodedFrame, value: i64) {
         let TableView::Complete(TableRows::Countries(rows)) =
-            &mut frame.tables[TableId::Countries.index()]
+            &mut *frame.tables[TableId::Countries.index()]
         else {
             panic!()
         };
@@ -1998,7 +2119,7 @@ mod tests {
     #[test]
     fn padded_snapshot_counts_are_rejected_before_allocating_or_reading_rows() {
         let claimed = 16_384_u32;
-        assert_eq!(TableId::Divisions.minimum_row_bytes(), 49);
+        assert_eq!(TableId::Divisions.minimum_row_bytes(), 50);
         assert_eq!(TableId::Campaign.minimum_row_bytes(), 5);
         for table in TableId::ALL {
             let padding = claimed as usize * table.minimum_row_bytes() - 1;
@@ -2027,7 +2148,7 @@ mod tests {
         let mut bytes = claimed.to_le_bytes().to_vec();
         bytes.resize(bytes.len() + padding, 0);
         assert_eq!(Decoder::new(&bytes).count(2).unwrap(), claimed as usize);
-        assert_eq!(TableId::Divisions.minimum_delta_bytes(), 3);
+        assert_eq!(TableId::Divisions.minimum_delta_bytes(), 4);
         assert_eq!(TableId::Campaign.minimum_delta_bytes(), 6);
         let mut input = Decoder::new(&bytes);
         let error = decode_row_count(
@@ -2112,7 +2233,7 @@ mod tests {
         let mut owned = decoder.apply(&frame).unwrap();
         assert_eq!(owned, expected);
         for table in [TableId::Campaign, TableId::Countries, TableId::Factions] {
-            let TableView::Complete(rows) = &mut owned.tables[table.index()] else {
+            let TableView::Complete(rows) = &mut *owned.tables[table.index()] else {
                 panic!()
             };
             match rows {
@@ -2223,10 +2344,10 @@ mod tests {
             first
         );
         let mut failed = source(1, 1);
-        failed.tables[TableId::Countries.index()] = TableView::Unavailable {
+        *failed.tables[TableId::Countries.index()] = TableView::Unavailable {
             reason: "political status unreadable".into(),
         };
-        failed.tables[TableId::Provinces.index()] = TableView::Truncated {
+        *failed.tables[TableId::Provinces.index()] = TableView::Truncated {
             rows: TableRows::Provinces(vec![province(1, 2)]),
             missing: 42,
         };
@@ -2266,7 +2387,7 @@ mod tests {
         for hour in 0..=6 {
             let mut expected = source(1, hour);
             if hour > 0 {
-                expected.tables[state_index] =
+                *expected.tables[state_index] =
                     TableView::Complete(TableRows::States(vec![StateRow {
                         id: 8,
                         owner: 0,
@@ -2275,11 +2396,11 @@ mod tests {
                     }]));
             }
             if hour == 2 {
-                expected.tables[state_index] = TableView::Unavailable {
+                *expected.tables[state_index] = TableView::Unavailable {
                     reason: "state table unreadable".into(),
                 };
             } else if hour == 4 {
-                expected.tables[state_index] = TableView::Truncated {
+                *expected.tables[state_index] = TableView::Truncated {
                     rows: TableRows::States(vec![StateRow {
                         id: 8,
                         owner: 0,
@@ -2335,7 +2456,7 @@ mod tests {
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
         let mut first = source(1, 10);
-        first.tables[index] = TableView::Complete(TableRows::Divisions(vec![
+        *first.tables[index] = TableView::Complete(TableRows::Divisions(vec![
             division(first_id, 300_000, 100_001),
             division(second_id, 300_000, 100_001),
         ]));
@@ -2343,7 +2464,7 @@ mod tests {
         assert_eq!(decoder.apply(&wire(&frame)).unwrap(), first);
 
         let mut next = source(1, 11);
-        next.tables[index] = TableView::Complete(TableRows::Divisions(vec![
+        *next.tables[index] = TableView::Complete(TableRows::Divisions(vec![
             division(second_id, i64::MAX, i64::MIN),
             division(inserted_id, 9_007_199_254_740_993, -100_001),
         ]));
@@ -2384,7 +2505,7 @@ mod tests {
         // The spool's gap control record explains the missing hours; surviving
         // table deltas still refer to the last successfully recorded baseline.
         let mut after_gap = source(1, 19);
-        after_gap.tables[index] = TableView::Complete(TableRows::Divisions(vec![
+        *after_gap.tables[index] = TableView::Complete(TableRows::Divisions(vec![
             division(second_id, i64::MAX, i64::MIN + 1),
             division(inserted_id, 9_007_199_254_740_993, -100_001),
         ]));
@@ -2416,7 +2537,7 @@ mod tests {
         for hour in 0..=6 {
             let mut expected = source(1, hour);
             if matches!(hour, 0 | 4) {
-                expected.tables[index] = TableView::Truncated {
+                *expected.tables[index] = TableView::Truncated {
                     rows: TableRows::Divisions(vec![division(
                         0x1234_5678_0000_0035,
                         300_000,
@@ -2425,7 +2546,7 @@ mod tests {
                     missing: 17,
                 };
             } else if hour == 2 {
-                expected.tables[index] = TableView::Unavailable {
+                *expected.tables[index] = TableView::Unavailable {
                     reason: "division reference unreadable".into(),
                 };
             }
@@ -2483,7 +2604,7 @@ mod tests {
             let mut expected = source(1, hour);
             if (1..=3).contains(&hour) {
                 let table = tables[hour as usize - 1];
-                expected.tables[table.index()] = if table == TableId::Factions {
+                *expected.tables[table.index()] = if table == TableId::Factions {
                     TableView::Truncated {
                         rows: TableRows::Factions(vec![faction(
                             FACTION_ID,
@@ -2520,10 +2641,10 @@ mod tests {
         // related tables as a baseline, even when all three walks failed.
         let mut partial = source(1, 5);
         for table in tables {
-            let TableView::Complete(rows) = &partial.tables[table.index()] else {
+            let TableView::Complete(rows) = &*partial.tables[table.index()] else {
                 panic!()
             };
-            partial.tables[table.index()] = TableView::Truncated {
+            *partial.tables[table.index()] = TableView::Truncated {
                 rows: rows.clone(),
                 missing: 3,
             };
@@ -2563,7 +2684,7 @@ mod tests {
         assert_eq!(decoder.apply(&wire(&frame)).unwrap(), first);
 
         let mut reordered = source(1, 1);
-        reordered.tables[members] = TableView::Complete(TableRows::FactionMembers(vec![
+        *reordered.tables[members] = TableView::Complete(TableRows::FactionMembers(vec![
             faction_member(2, FACTION_ID, 0),
             faction_member(7, FACTION_ID, 1),
         ]));
@@ -2597,9 +2718,9 @@ mod tests {
         // identity. An empty engine name remains a valid faction row.
         let new_faction = u64::MAX;
         let mut replaced = source(1, 2);
-        replaced.tables[factions] =
+        *replaced.tables[factions] =
             TableView::Complete(TableRows::Factions(vec![faction(new_faction, b"")]));
-        replaced.tables[members] = TableView::Complete(TableRows::FactionMembers(vec![
+        *replaced.tables[members] = TableView::Complete(TableRows::FactionMembers(vec![
             faction_member(2, new_faction, 1),
             faction_member(9, new_faction, 0),
         ]));
@@ -2654,7 +2775,7 @@ mod tests {
             let mut expected = source(1, hour);
             if matches!(hour, 0 | 1 | 3 | 4) {
                 for table in tables {
-                    expected.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+                    *expected.tables[table.index()] = TableView::Complete(TableRows::empty(table));
                 }
             }
             let frame = encoder.encode(expected.clone(), false).unwrap();
@@ -2674,7 +2795,7 @@ mod tests {
                         };
                         assert_eq!(*baseline, hour - 1);
                         let populated = source(1, hour);
-                        let TableView::Complete(rows) = &populated.tables[table.index()] else {
+                        let TableView::Complete(rows) = &*populated.tables[table.index()] else {
                             panic!()
                         };
                         if hour == 3 {
@@ -2703,7 +2824,7 @@ mod tests {
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
         let mut first = source(1, 0);
-        first.tables[index] = TableView::Complete(TableRows::Divisions(
+        *first.tables[index] = TableView::Complete(TableRows::Divisions(
             [0, 1, u64::MAX - 1, u64::MAX]
                 .into_iter()
                 .map(|key| division(key, 300_000, 100_001))
@@ -2713,7 +2834,7 @@ mod tests {
         assert_eq!(decoder.apply(&wire(&frame)).unwrap(), first);
 
         let mut next = source(1, 1);
-        next.tables[index] = TableView::Complete(TableRows::Divisions(vec![
+        *next.tables[index] = TableView::Complete(TableRows::Divisions(vec![
             division(0, 300_001, 100_001),
             division(2, 300_000, 100_001),
             division(u64::MAX, 300_000, 100_002),
@@ -2743,11 +2864,11 @@ mod tests {
         assert_eq!(decoder.apply(&wire(&frame)).unwrap(), next);
 
         let mut empty = source(1, 2);
-        empty.tables[index] = TableView::Complete(TableRows::empty(table));
+        *empty.tables[index] = TableView::Complete(TableRows::empty(table));
         let frame = encoder.encode(empty.clone(), false).unwrap();
         assert_eq!(decoder.apply(&wire(&frame)).unwrap(), empty);
         let mut inserted = source(1, 3);
-        inserted.tables[index] =
+        *inserted.tables[index] =
             TableView::Complete(TableRows::Divisions(vec![division(0, i64::MIN, i64::MAX)]));
         let frame = encoder.encode(inserted.clone(), false).unwrap();
         assert_eq!(decoder.apply(&wire(&frame)).unwrap(), inserted);
@@ -2792,7 +2913,7 @@ mod tests {
         ] {
             for delete in [false, true] {
                 let mut bad = next.clone();
-                let TableView::Complete(values) = &expected.tables[table.index()] else {
+                let TableView::Complete(values) = &*expected.tables[table.index()] else {
                     panic!()
                 };
                 let mut change = match values {
@@ -2830,7 +2951,7 @@ mod tests {
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
         let mut expected = source(1, 0);
-        expected.tables[TableId::Provinces.index()] = TableView::Truncated {
+        *expected.tables[TableId::Provinces.index()] = TableView::Truncated {
             rows: TableRows::Provinces(vec![province(1, 7)]),
             missing: 12,
         };
@@ -2936,7 +3057,7 @@ mod tests {
             .apply(&encoder.encode(source(1, 0).clone(), false).unwrap())
             .unwrap();
         let mut expected = source(1, 1);
-        expected.tables[TableId::Provinces.index()] =
+        *expected.tables[TableId::Provinces.index()] =
             TableView::Complete(TableRows::Provinces(vec![province(2, 99), province(3, 0)]));
         let frame = encoder.encode(expected.clone(), false).unwrap();
         let TableUpdate::Delta {
@@ -2961,16 +3082,17 @@ mod tests {
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
         let mut first = source(1, 0);
-        first.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
-            province(2, 2),
-            province(4, 4),
-            province(6, 6),
-        ]));
+        *first.tables[TableId::Provinces.index()] =
+            TableView::Complete(TableRows::Provinces(vec![
+                province(2, 2),
+                province(4, 4),
+                province(6, 6),
+            ]));
         decoder
             .apply(&encoder.encode(first.clone(), false).unwrap())
             .unwrap();
         let mut expected = source(1, 1);
-        expected.tables[TableId::Provinces.index()] =
+        *expected.tables[TableId::Provinces.index()] =
             TableView::Complete(TableRows::Provinces(vec![
                 province(1, 1),
                 province(4, 99),
@@ -3078,14 +3200,14 @@ mod tests {
         assert!(decoder.apply(&initial).is_err());
         let mut invalid_source = source(1, 1);
         change_country(&mut invalid_source, i64::MAX);
-        invalid_source.tables[TableId::Provinces.index()] =
+        *invalid_source.tables[TableId::Provinces.index()] =
             TableView::Complete(TableRows::Provinces(vec![province(2, 2), province(1, 7)]));
         assert!(encoder.encode(invalid_source.clone(), false).is_err());
         let mut invalid_last_source = source(1, 1);
         change_country(&mut invalid_last_source, i64::MIN);
-        invalid_last_source.tables[TableId::Provinces.index()] =
+        *invalid_last_source.tables[TableId::Provinces.index()] =
             TableView::Complete(TableRows::Provinces(vec![province(1, 7)]));
-        invalid_last_source.tables[TableId::ArmyOrders.index()] =
+        *invalid_last_source.tables[TableId::ArmyOrders.index()] =
             TableView::Complete(TableRows::ArmyOrders(vec![
                 crate::rows::ArmyOrderRow::default(),
                 crate::rows::ArmyOrderRow::default(),
@@ -3142,7 +3264,7 @@ mod tests {
             ),
         ] {
             let mut bad_source = expected.clone();
-            bad_source.tables[table.index()] = TableView::Complete(rows.clone());
+            *bad_source.tables[table.index()] = TableView::Complete(rows.clone());
             assert!(
                 FrameEncoder::new()
                     .encode(bad_source.clone(), false)
@@ -3210,7 +3332,7 @@ mod tests {
     fn duplicate_canonical_country_slots_are_ambiguous_in_snapshots_and_deltas() {
         let first_source = source(1, 0);
         let TableView::Complete(TableRows::Countries(countries)) =
-            &first_source.tables[TableId::Countries.index()]
+            &*first_source.tables[TableId::Countries.index()]
         else {
             panic!()
         };
@@ -3226,7 +3348,7 @@ mod tests {
             },
         ] {
             let mut bad = first_source.clone();
-            bad.tables[TableId::Countries.index()] = view;
+            *bad.tables[TableId::Countries.index()] = view;
             assert!(FrameEncoder::new().encode(bad.clone(), false).is_err());
         }
         let mut encoder = FrameEncoder::new();

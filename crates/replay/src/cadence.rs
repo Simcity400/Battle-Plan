@@ -28,18 +28,24 @@ pub const fn cadence(table: TableId) -> Cadence {
     use Cadence::{Daily, FourHourly, Static};
     match table {
         // Cannot change after the save loads.
-        TableId::LexicalTokens => Static,
+        // The session's DLC set is fixed once the save loads.
+        TableId::LexicalTokens | TableId::SimulationFeatures => Static,
         // Relations feed the perspective; buildings feed the building layer.
         TableId::RelationOpinions | TableId::RelationTuples => FourHourly(1),
         // Province names are live overrides: set_province_name and
         // reset_province_name effects can change them after a save loads.
-        TableId::StateBuildings | TableId::ProvinceBuildings | TableId::ProvinceNames => {
-            FourHourly(3)
-        }
+        // Building detection gates the building layer and follows its cadence.
+        TableId::StateBuildings
+        | TableId::ProvinceBuildings
+        | TableId::BuildingDetection
+        | TableId::ProvinceNames => FourHourly(3),
         // Daily slots: whole shared-source families stay together. The
         // technology and resource definitions are static too, but their
         // daily consumers walk them as one census, so they share the slot.
         TableId::ResearchTechnologies | TableId::TechnologyDefinitions => Daily(0),
+        // Intel lanes change only in CGameState::DailyUpdate, which runs inside
+        // the hourly update entered at hour 23; slot 0 is the first sample after it.
+        TableId::CountryIntel => Daily(0),
         TableId::ProjectPrograms
         | TableId::Projects
         | TableId::ProjectHistory
@@ -108,8 +114,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         // Raids stay hourly: RaidTargets is the same walk's map-icon projection.
         TableId::SunkShips | TableId::Focus | TableId::CompletedFocuses => Daily(19),
         TableId::IntelligenceAgencies | TableId::OperationTokens => Daily(20),
-        TableId::RadarCoverage
-        | TableId::AirAces
+        TableId::AirAces
         | TableId::PeaceConferences
         | TableId::CountryLeaderRoles
         | TableId::AdvisorRoles
@@ -127,6 +132,10 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::Operations
         | TableId::OperationAssignments
         | TableId::SunkConvoys => Daily(23),
+        // RadarCoverage is hourly because a controller change edits radar
+        // groups at any hour (141093AC0). Cost at W1 (25 hours, vanilla map):
+        // 0.11 ms p50 / 0.16 ms p95 read on the game thread, a 0.12 ms/h raw
+        // copy on the decode worker, 104 B/h encoded.
         _ => Cadence::Hourly,
     }
 }
@@ -226,7 +235,10 @@ mod tests {
             TableId::DivisionStatus,
             TableId::DivisionEtaInputs,
             TableId::MovementDefines,
-            TableId::ProvinceVisibility,
+            TableId::RadarCoverage,
+            TableId::RelationLinks,
+            TableId::CountryVisibility,
+            TableId::StateVisibility,
             TableId::ShipModels,
             TableId::SupplyNodes,
             TableId::WeatherProvinces,
@@ -249,7 +261,11 @@ mod tests {
                 TableId::ProjectHistory,
             ][..],
             &[TableId::RelationOpinions, TableId::RelationTuples],
-            &[TableId::StateBuildings, TableId::ProvinceBuildings],
+            &[
+                TableId::StateBuildings,
+                TableId::ProvinceBuildings,
+                TableId::BuildingDetection,
+            ],
             &[
                 TableId::VariantDefinitions,
                 TableId::VariantModules,

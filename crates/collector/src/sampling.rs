@@ -562,6 +562,9 @@ pub struct Shared {
     pub country_cache_swap: Mutex<CountryCacheSwap>,
     /// Cells of the installed country cache, published by the game thread.
     pub country_cache_cells: AtomicUsize,
+    /// The one CountryIntel buffer every frame borrows; counted once in
+    /// `pool_bytes`.
+    pub country_intel: crate::extended::daily_intel::Home,
 }
 
 #[derive(Default)]
@@ -598,7 +601,15 @@ impl Shared {
         let roster = Box::new(Roster::with_counts(sizing.content));
         let country_cache = Arc::new(Cache::with_capacity(sizing.country_cells));
         let country_cells = country_cache.capacity();
-        let pool_bytes = roster.allocated_bytes() + country_cache.allocated_bytes();
+        // Frame 0 allocates the CountryIntel buffer; the others borrow it.
+        let first = Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended);
+        let country_intel = first
+            .extended
+            .country_intel_home()
+            .expect("a new frame holds its intel pack");
+        let pool_bytes = roster.allocated_bytes()
+            + country_cache.allocated_bytes()
+            + country_intel.allocated_bytes();
         let shared = Self {
             acquisition: OnceLock::new(),
             collect_wait_ns: AtomicU64::new(0),
@@ -644,10 +655,16 @@ impl Shared {
             lexical_max: AtomicI32::new(-1),
             country_cache_swap: Mutex::new(CountryCacheSwap::default()),
             country_cache_cells: AtomicUsize::new(country_cells),
+            country_intel,
         };
-        for index in 0..BUFFERS {
-            // No callback or spool thread can observe Shared during construction.
-            let frame = Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended);
+        let mut borrowed = sizing.extended;
+        borrowed.intel.rows[15] = 0;
+        borrowed.intel.intel_scratch = 0;
+        // No callback or spool thread can observe Shared during construction.
+        unsafe { shared.publish_frame(0, Box::new(first)) };
+        for index in 1..BUFFERS {
+            let mut frame = Captured::with_capacities(&sizing.core, &sizing.map, &borrowed);
+            frame.extended.share_country_intel(&shared.country_intel);
             unsafe { shared.publish_frame(index, Box::new(frame)) };
         }
         shared
@@ -2352,14 +2369,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             );
             segment!(12);
             shared.record_eta_inputs(frame.extended.eta_input_counters());
-            let visibility = replay::rows::TableId::ProvinceVisibility.index();
-            ticks[visibility] = frame.extended.capture_province_visibility(
-                &memory,
-                shared.base,
-                state,
-                &frame.provinces,
-                frame.provinces_result,
-            );
             if production_rest_report.plan_failed {
                 frame
                     .extended
@@ -4373,10 +4382,15 @@ mod tests {
         assert_eq!(shared.free.len(), BUFFERS);
         let mut bytes = unsafe { (&*shared.roster.get()).as_ref().unwrap() }.allocated_bytes();
         bytes += unsafe { &*shared.country_cache.get() }.allocated_bytes();
+        // One CountryIntel buffer for the whole pool.
+        bytes += shared.country_intel.allocated_bytes();
         for slot in &shared.frames {
             let frame = slot.load(Ordering::Acquire);
             assert!(!frame.is_null());
-            bytes += unsafe { &*frame }.allocated_bytes();
+            let frame = unsafe { &*frame };
+            let home = frame.extended.country_intel_home().unwrap();
+            assert!(home.shares(&shared.country_intel));
+            bytes += frame.allocated_bytes();
         }
         assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), bytes as u64);
     }

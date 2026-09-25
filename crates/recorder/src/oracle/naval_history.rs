@@ -1342,10 +1342,11 @@ mod tests {
             hour: 1,
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            }),
+            })
+            .map(Into::into),
             metrics: Metrics::default(),
         };
-        frame.tables[TableId::NavalSupremacy.index()] =
+        *frame.tables[TableId::NavalSupremacy.index()] =
             TableView::Complete(TableRows::NavalSupremacy(rows));
         frame
     }
@@ -1375,7 +1376,7 @@ mod tests {
 
     fn oob_frame() -> DecodedFrame {
         let mut frame = supremacy_frame(Vec::new());
-        frame.tables[TableId::OrdersGroups.index()] =
+        *frame.tables[TableId::OrdersGroups.index()] =
             TableView::Complete(TableRows::OrdersGroups(vec![
                 OrdersGroupRow {
                     handle: oob_handle(57, 53),
@@ -1400,7 +1401,7 @@ mod tests {
                     hq_provider: 0,
                 },
             ]));
-        frame.tables[TableId::OrdersGroupMembers.index()] =
+        *frame.tables[TableId::OrdersGroupMembers.index()] =
             TableView::Complete(TableRows::OrdersGroupMembers(vec![
                 OrdersGroupMemberRow {
                     group: oob_handle(57, 53),
@@ -1413,24 +1414,25 @@ mod tests {
                     unit: oob_handle(111, 51),
                 },
             ]));
-        frame.tables[TableId::ArmyGroupMembers.index()] =
+        *frame.tables[TableId::ArmyGroupMembers.index()] =
             TableView::Complete(TableRows::ArmyGroupMembers(vec![ArmyGroupMemberRow {
                 group: oob_handle(431, 53),
                 ordinal: 0,
                 child: oob_handle(57, 53),
             }]));
-        frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(vec![
-            DivisionRow {
-                id: oob_handle(111, 51),
-                orders_group: oob_handle(57, 53),
-                ..DivisionRow::default()
-            },
-            DivisionRow {
-                id: oob_handle(12456, 4713),
-                orders_group: oob_handle(57, 53),
-                ..DivisionRow::default()
-            },
-        ]));
+        *frame.tables[TableId::Divisions.index()] =
+            TableView::Complete(TableRows::Divisions(vec![
+                DivisionRow {
+                    id: oob_handle(111, 51),
+                    orders_group: oob_handle(57, 53),
+                    ..DivisionRow::default()
+                },
+                DivisionRow {
+                    id: oob_handle(12456, 4713),
+                    orders_group: oob_handle(57, 53),
+                    ..DivisionRow::default()
+                },
+            ]));
         frame
     }
 
@@ -1488,7 +1490,7 @@ mod tests {
     fn identity_membership_and_parent_disagreements_are_each_reported_once() {
         let mut frame = oob_frame();
         let TableView::Complete(TableRows::OrdersGroups(groups)) =
-            &mut frame.tables[TableId::OrdersGroups.index()]
+            &mut *frame.tables[TableId::OrdersGroups.index()]
         else {
             unreachable!()
         };
@@ -1497,7 +1499,7 @@ mod tests {
         groups[0].motorization_level = 4;
         groups[1].parent = oob_handle(57, 53);
         let TableView::Complete(TableRows::OrdersGroupMembers(members)) =
-            &mut frame.tables[TableId::OrdersGroupMembers.index()]
+            &mut *frame.tables[TableId::OrdersGroupMembers.index()]
         else {
             unreachable!()
         };
@@ -1524,7 +1526,7 @@ mod tests {
     fn a_division_parent_pointer_is_compared_only_where_the_save_has_that_division() {
         let mut frame = oob_frame();
         let TableView::Complete(TableRows::Divisions(divisions)) =
-            &mut frame.tables[TableId::Divisions.index()]
+            &mut *frame.tables[TableId::Divisions.index()]
         else {
             unreachable!()
         };
@@ -1556,23 +1558,23 @@ mod tests {
             }}
         "#).unwrap().items).unwrap();
         let mut frame = supremacy_frame(Vec::new());
-        frame.tables[TableId::SunkConvoys.index()] = TableView::Unavailable {
+        *frame.tables[TableId::SunkConvoys.index()] = TableView::Unavailable {
             reason: "convoy read failed".into(),
         };
-        frame.tables[TableId::SunkShips.index()] =
+        *frame.tables[TableId::SunkShips.index()] =
             TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
-        frame.tables[TableId::NavalResults.index()] = TableView::Unavailable {
+        *frame.tables[TableId::NavalResults.index()] = TableView::Unavailable {
             reason: "result read failed".into(),
         };
-        frame.tables[TableId::RailCooldowns.index()] =
+        *frame.tables[TableId::RailCooldowns.index()] =
             TableView::Complete(TableRows::RailCooldowns(vec![RailCooldownRow {
                 province: 1,
                 cooldown_ticks: 1,
             }]));
-        frame.tables[TableId::LandTheatres.index()] = TableView::Unavailable {
+        *frame.tables[TableId::LandTheatres.index()] = TableView::Unavailable {
             reason: "land theatre read failed".into(),
         };
-        frame.tables[TableId::LandTheatreGroups.index()] =
+        *frame.tables[TableId::LandTheatreGroups.index()] =
             TableView::Complete(TableRows::LandTheatreGroups(vec![LandTheatreGroupRow {
                 id: 68,
                 theatre: 67,
@@ -1580,24 +1582,24 @@ mod tests {
                 priority: 2,
                 name: b"land".to_vec(),
             }]));
-        frame.tables[TableId::LandTheatreMembers.index()] =
+        *frame.tables[TableId::LandTheatreMembers.index()] =
             TableView::Complete(TableRows::LandTheatreMembers(vec![LandTheatreMemberRow {
                 theater_group: 68,
                 orders_group: 53,
                 ordinal: 1,
             }]));
-        frame.tables[TableId::AirTheatres.index()] = TableView::Truncated {
+        *frame.tables[TableId::AirTheatres.index()] = TableView::Truncated {
             rows: TableRows::AirTheatres(Vec::new()),
             missing: 1,
         };
-        frame.tables[TableId::AirTheatreGroups.index()] =
+        *frame.tables[TableId::AirTheatreGroups.index()] =
             TableView::Complete(TableRows::AirTheatreGroups(vec![AirTheatreGroupRow {
                 id: 78,
                 theatre: 77,
                 ordinal: 0,
                 name: b"air".to_vec(),
             }]));
-        frame.tables[TableId::AirTheatreMembers.index()] =
+        *frame.tables[TableId::AirTheatreMembers.index()] =
             TableView::Complete(TableRows::AirTheatreMembers(vec![AirTheatreMemberRow {
                 group: 78,
                 wing: 69,
@@ -1675,7 +1677,7 @@ mod tests {
         )
         .unwrap();
         let mut frame = supremacy_frame(Vec::new());
-        frame.tables[TableId::RailCooldowns.index()] =
+        *frame.tables[TableId::RailCooldowns.index()] =
             TableView::Complete(TableRows::RailCooldowns(vec![
                 RailCooldownRow {
                     province: 1,
@@ -1686,7 +1688,7 @@ mod tests {
                     cooldown_ticks: i32::MIN,
                 },
             ]));
-        frame.tables[TableId::RailEdges.index()] =
+        *frame.tables[TableId::RailEdges.index()] =
             TableView::Complete(TableRows::RailEdges(vec![RailEdgeRow {
                 from: 1,
                 to: 2,
@@ -1703,7 +1705,7 @@ mod tests {
                 .keys()
                 .any(|reason| reason.contains("signed-nonpositive cooldown"))
         );
-        frame.tables[TableId::RailCooldowns.index()] =
+        *frame.tables[TableId::RailCooldowns.index()] =
             TableView::Complete(TableRows::RailCooldowns(vec![
                 RailCooldownRow {
                     province: 1,
@@ -1756,7 +1758,7 @@ mod tests {
         let adjacency = rail_adjacency();
         let saved = rail_save();
         let mut frame = supremacy_frame(Vec::new());
-        frame.tables[TableId::RailEdges.index()] =
+        *frame.tables[TableId::RailEdges.index()] =
             TableView::Complete(TableRows::RailEdges(rail_rows()));
         let mut report = Report::default();
         compare_rail_edges(&frame, &saved, &adjacency, &mut report).unwrap();
@@ -1782,7 +1784,7 @@ mod tests {
             to: 1,
             level: 99,
         });
-        frame.tables[TableId::RailEdges.index()] = TableView::Complete(TableRows::RailEdges(rows));
+        *frame.tables[TableId::RailEdges.index()] = TableView::Complete(TableRows::RailEdges(rows));
         let mut report = Report::default();
         compare_rail_edges(&frame, &saved, &adjacency, &mut report).unwrap();
         assert_eq!(report.differences.len(), 4);
@@ -1793,7 +1795,7 @@ mod tests {
         let adjacency = rail_adjacency();
         let mut saved = rail_save();
         let mut frame = supremacy_frame(Vec::new());
-        frame.tables[TableId::RailEdges.index()] =
+        *frame.tables[TableId::RailEdges.index()] =
             TableView::Complete(TableRows::RailEdges(rail_rows()));
         saved
             .railways
@@ -1811,7 +1813,7 @@ mod tests {
         );
         let mut rows = rail_rows();
         rows.push(rows[0].clone());
-        frame.tables[TableId::RailEdges.index()] = TableView::Complete(TableRows::RailEdges(rows));
+        *frame.tables[TableId::RailEdges.index()] = TableView::Complete(TableRows::RailEdges(rows));
         assert!(
             compare_rail_edges(&frame, &rail_save(), &adjacency, &mut Report::default())
                 .unwrap_err()
@@ -1837,14 +1839,14 @@ mod tests {
         };
         let links = BTreeMap::from([(123, &country)]);
         let mut frame = supremacy_frame(Vec::new());
-        frame.tables[TableId::LandTheatres.index()] =
+        *frame.tables[TableId::LandTheatres.index()] =
             TableView::Complete(TableRows::LandTheatres(vec![LandTheatreRow {
                 id: land,
                 owner: 123,
                 volunteers_theatre: 0,
                 ordinal: 0,
             }]));
-        frame.tables[TableId::LandTheatreGroups.index()] =
+        *frame.tables[TableId::LandTheatreGroups.index()] =
             TableView::Complete(TableRows::LandTheatreGroups(vec![LandTheatreGroupRow {
                 id: 68,
                 theatre: land,
@@ -1852,27 +1854,27 @@ mod tests {
                 priority: -1,
                 name: b"group".to_vec(),
             }]));
-        frame.tables[TableId::LandTheatreMembers.index()] =
+        *frame.tables[TableId::LandTheatreMembers.index()] =
             TableView::Complete(TableRows::LandTheatreMembers(vec![LandTheatreMemberRow {
                 orders_group: orders,
                 theater_group: 68,
                 ordinal: 0,
             }]));
-        frame.tables[TableId::AirTheatres.index()] =
+        *frame.tables[TableId::AirTheatres.index()] =
             TableView::Complete(TableRows::AirTheatres(vec![AirTheatreRow {
                 id: air,
                 owner: 123,
                 ordinal: 0,
                 name: b"theatre".to_vec(),
             }]));
-        frame.tables[TableId::AirTheatreGroups.index()] =
+        *frame.tables[TableId::AirTheatreGroups.index()] =
             TableView::Complete(TableRows::AirTheatreGroups(vec![AirTheatreGroupRow {
                 id: 78,
                 theatre: air,
                 ordinal: 0,
                 name: b"air".to_vec(),
             }]));
-        frame.tables[TableId::AirTheatreMembers.index()] =
+        *frame.tables[TableId::AirTheatreMembers.index()] =
             TableView::Complete(TableRows::AirTheatreMembers(vec![AirTheatreMemberRow {
                 wing,
                 group: 78,
@@ -1892,21 +1894,21 @@ mod tests {
             assert_eq!(report.compared_tables[table], 1);
         }
         let TableView::Complete(TableRows::LandTheatreGroups(groups)) =
-            &mut frame.tables[TableId::LandTheatreGroups.index()]
+            &mut *frame.tables[TableId::LandTheatreGroups.index()]
         else {
             unreachable!()
         };
         groups[0].priority = 0;
         groups[0].theatre ^= 1;
         let TableView::Complete(TableRows::AirTheatreMembers(members)) =
-            &mut frame.tables[TableId::AirTheatreMembers.index()]
+            &mut *frame.tables[TableId::AirTheatreMembers.index()]
         else {
             unreachable!()
         };
         members[0].ordinal = 1;
         compare_theatres(&frame, &saved, &links, &mut report).unwrap();
         assert_eq!(report.differences.len(), 3);
-        frame.tables[TableId::AirTheatreMembers.index()] = TableView::Unavailable {
+        *frame.tables[TableId::AirTheatreMembers.index()] = TableView::Unavailable {
             reason: "reverse registry incomplete".into(),
         };
         assert!(compare_theatres(&frame, &saved, &links, &mut report).is_err());
@@ -1983,7 +1985,7 @@ mod tests {
             .is_err()
         );
         let mut unavailable = supremacy_frame(Vec::new());
-        unavailable.tables[TableId::NavalSupremacy.index()] = TableView::Unavailable {
+        *unavailable.tables[TableId::NavalSupremacy.index()] = TableView::Unavailable {
             reason: "source read failed".into(),
         };
         assert!(compare_supremacy(&unavailable, &saved, &BTreeMap::new(), &mut report).is_err());
@@ -2083,10 +2085,11 @@ mod tests {
             hour: date.engine_hour().unwrap(),
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            }),
+            })
+            .map(Into::into),
             metrics: Metrics::default(),
         };
-        frame.tables[TableId::NavalResults.index()] =
+        *frame.tables[TableId::NavalResults.index()] =
             TableView::Complete(TableRows::NavalResults(vec![NavalResultRow {
                 id,
                 province: u32::MAX,
@@ -2096,14 +2099,14 @@ mod tests {
                 flag_a: 1,
                 ..Default::default()
             }]));
-        frame.tables[TableId::NavalResultMembers.index()] =
+        *frame.tables[TableId::NavalResultMembers.index()] =
             TableView::Complete(TableRows::NavalResultMembers(vec![NavalResultMemberRow {
                 result: id,
                 member,
                 presence_value: 2,
                 ..Default::default()
             }]));
-        frame.tables[TableId::NavalResultCountries.index()] =
+        *frame.tables[TableId::NavalResultCountries.index()] =
             TableView::Complete(TableRows::NavalResultCountries(vec![
                 NavalResultCountryRow {
                     result: id,
@@ -2116,7 +2119,7 @@ mod tests {
         compare_countries(&frame, &saved, &BTreeMap::new(), &mut report).unwrap();
         assert!(report.differences.is_empty());
         let TableView::Complete(TableRows::NavalResultMembers(rows)) =
-            &mut frame.tables[TableId::NavalResultMembers.index()]
+            &mut *frame.tables[TableId::NavalResultMembers.index()]
         else {
             unreachable!()
         };
@@ -2125,7 +2128,7 @@ mod tests {
         compare_members(&frame, &saved, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
         let TableView::Complete(TableRows::NavalResultMembers(rows)) =
-            &mut frame.tables[TableId::NavalResultMembers.index()]
+            &mut *frame.tables[TableId::NavalResultMembers.index()]
         else {
             unreachable!()
         };
@@ -2133,7 +2136,7 @@ mod tests {
         row.member ^= 1;
         compare_members(&frame, &saved, &mut report).unwrap();
         assert_eq!(report.differences.len(), 3);
-        frame.tables[TableId::NavalResultCountries.index()] = TableView::Unavailable {
+        *frame.tables[TableId::NavalResultCountries.index()] = TableView::Unavailable {
             reason: "native read failed".into(),
         };
         assert!(compare_countries(&frame, &saved, &BTreeMap::new(), &mut report).is_err());

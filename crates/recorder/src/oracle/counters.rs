@@ -219,7 +219,7 @@ mod tests {
         let (mut frame, mut saved, _, _) = super::super::tests::fixture();
         let doc=installed_content::parser::parse(br#"countries={GER={units={corps_commander={id={id=8 type=4713} portrait_path="x.dds" picture="p" gfx="GFX_z"}}}} character_manager={historical={character={id={id=7 type=73} token=x portraits={civilian={small="GFX_a"} civilian={large="GFX_b"}}}}}"#).unwrap();
         saved.characters = save::characters::parse(&doc.items).unwrap();
-        frame.tables[TableId::CharacterPortraits.index()] =
+        *frame.tables[TableId::CharacterPortraits.index()] =
             TableView::Complete(TableRows::CharacterPortraits(vec![CharacterPortraitRow {
                 character: 7,
                 portraits: vec![
@@ -239,7 +239,7 @@ mod tests {
                     },
                 ],
             }]));
-        frame.tables[TableId::LeaderPortraits.index()] =
+        *frame.tables[TableId::LeaderPortraits.index()] =
             TableView::Complete(TableRows::LeaderPortraits(vec![LeaderPortraitRow {
                 leader: (8 << 32) | 4713,
                 character: 0,
@@ -253,7 +253,7 @@ mod tests {
         assert!(report.differences.is_empty());
         assert_eq!(report.scalar_checks, 5);
         if let TableView::Complete(TableRows::CharacterPortraits(rows)) =
-            &mut frame.tables[TableId::CharacterPortraits.index()]
+            &mut *frame.tables[TableId::CharacterPortraits.index()]
         {
             rows[0].portraits.swap(0, 1);
         }

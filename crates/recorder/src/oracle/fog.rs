@@ -380,7 +380,7 @@ mod tests {
         DecodedFrame {
             branch: 1,
             hour: 7,
-            tables,
+            tables: tables.map(Into::into),
             metrics: Metrics::default(),
         }
     }
@@ -523,7 +523,7 @@ states={} provinces={}"#,
         for mutate in [
             |frame: &mut DecodedFrame| {
                 let TableView::Complete(TableRows::UnitIntel(rows)) =
-                    &mut frame.tables[TableId::UnitIntel.index()]
+                    &mut *frame.tables[TableId::UnitIntel.index()]
                 else {
                     unreachable!()
                 };
@@ -531,7 +531,7 @@ states={} provinces={}"#,
             },
             |frame: &mut DecodedFrame| {
                 let TableView::Complete(TableRows::VolunteerHosts(rows)) =
-                    &mut frame.tables[TableId::VolunteerHosts.index()]
+                    &mut *frame.tables[TableId::VolunteerHosts.index()]
                 else {
                     unreachable!()
                 };
@@ -539,7 +539,7 @@ states={} provinces={}"#,
             },
             |frame: &mut DecodedFrame| {
                 let TableView::Complete(TableRows::StationedUnits(rows)) =
-                    &mut frame.tables[TableId::StationedUnits.index()]
+                    &mut *frame.tables[TableId::StationedUnits.index()]
                 else {
                     unreachable!()
                 };
@@ -547,7 +547,7 @@ states={} provinces={}"#,
             },
             |frame: &mut DecodedFrame| {
                 let TableView::Complete(TableRows::TheatreAreas(rows)) =
-                    &mut frame.tables[TableId::TheatreAreas.index()]
+                    &mut *frame.tables[TableId::TheatreAreas.index()]
                 else {
                     unreachable!()
                 };
@@ -570,7 +570,7 @@ states={} provinces={}"#,
         let links = BTreeMap::from([(12, &germany), (34, &soviet)]);
         let save = saved();
         let mut frame = complete_frame();
-        frame.tables[TableId::UnitIntel.index()] =
+        *frame.tables[TableId::UnitIntel.index()] =
             TableView::Complete(TableRows::UnitIntel(vec![]));
         let mut report = Report::default();
         compare(&frame, &save, &links, &mut report).unwrap();
@@ -578,7 +578,7 @@ states={} provinces={}"#,
 
         let mut frame = complete_frame();
         let TableView::Complete(TableRows::StationedUnits(rows)) =
-            &mut frame.tables[TableId::StationedUnits.index()]
+            &mut *frame.tables[TableId::StationedUnits.index()]
         else {
             unreachable!()
         };
@@ -588,7 +588,7 @@ states={} provinces={}"#,
         assert_eq!(report.differences.len(), 2);
 
         let mut frame = complete_frame();
-        frame.tables[TableId::RadarCoverage.index()] = TableView::Unavailable {
+        *frame.tables[TableId::RadarCoverage.index()] = TableView::Unavailable {
             reason: "guarded copy failed".into(),
         };
         let mut report = Report::default();
@@ -602,7 +602,7 @@ states={} provinces={}"#,
         let links = BTreeMap::from([(12, &germany), (34, &soviet)]);
         let mut frame = complete_frame();
         let TableView::Complete(TableRows::UnitIntel(rows)) =
-            &mut frame.tables[TableId::UnitIntel.index()]
+            &mut *frame.tables[TableId::UnitIntel.index()]
         else {
             unreachable!()
         };

@@ -711,18 +711,19 @@ mod tests {
             metrics: Metrics::default(),
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            }),
+            })
+            .map(Into::into),
         };
         for table in [
             TableId::CountryFuel,
             TableId::ResourceDefinitions,
             TableId::ProvinceSupply,
         ] {
-            frame.tables[table.index()] = TableView::Unavailable {
+            *frame.tables[table.index()] = TableView::Unavailable {
                 reason: "read failed".into(),
             };
         }
-        frame.tables[TableId::HubMotorization.index()] = TableView::Truncated {
+        *frame.tables[TableId::HubMotorization.index()] = TableView::Truncated {
             rows: TableRows::HubMotorization(Vec::new()),
             missing: 1,
         };
@@ -784,9 +785,10 @@ mod tests {
             metrics: Metrics::default(),
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            }),
+            })
+            .map(Into::into),
         };
-        frame.tables[TableId::HubMotorization.index()] =
+        *frame.tables[TableId::HubMotorization.index()] =
             TableView::Complete(TableRows::HubMotorization(vec![HubMotorizationRow {
                 owner: 11,
                 actor: 11,
@@ -833,9 +835,10 @@ mod tests {
             metrics: Metrics::default(),
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            }),
+            })
+            .map(Into::into),
         };
-        frame.tables[TableId::ResourceDefinitions.index()] =
+        *frame.tables[TableId::ResourceDefinitions.index()] =
             TableView::Complete(TableRows::ResourceDefinitions(vec![
                 ResourceDefinitionRow {
                     id: 1,
@@ -844,7 +847,7 @@ mod tests {
                     factory_cost: 100_000,
                 },
             ]));
-        frame.tables[TableId::ResourceExchanges.index()] =
+        *frame.tables[TableId::ResourceExchanges.index()] =
             TableView::Complete(TableRows::ResourceExchanges(vec![ResourceExchangeRow {
                 id: (1_u64 << 32) | 4713,
                 exporter: 11,
@@ -856,7 +859,7 @@ mod tests {
                 assigned_factories: 1,
                 ..Default::default()
             }]));
-        frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
             reason: "lexer writer closure unproved".into(),
         };
         let mut report = Report::default();
@@ -877,7 +880,7 @@ mod tests {
             (b"steel\0hidden".as_slice(), 0, true),
             (b"".as_slice(), 1, false),
         ] {
-            frame.tables[TableId::LexicalTokens.index()] =
+            *frame.tables[TableId::LexicalTokens.index()] =
                 TableView::Complete(TableRows::LexicalTokens(vec![
                     LexicalTokenRow {
                         token: 1,
@@ -907,7 +910,7 @@ mod tests {
                     .any(|reason| reason.contains("lacks the captured lexical token spelling"))
             );
         }
-        frame.tables[TableId::LexicalTokens.index()] =
+        *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
                 token: 1,
                 literal: b"steel".to_vec(),
@@ -923,11 +926,11 @@ mod tests {
                 .flatten()
                 .any(|subject| subject.contains(".resource token=77"))
         );
-        frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
             reason: "lexer writer closure unproved".into(),
         };
         let TableView::Complete(TableRows::ResourceExchanges(rows)) =
-            &mut frame.tables[TableId::ResourceExchanges.index()]
+            &mut *frame.tables[TableId::ResourceExchanges.index()]
         else {
             unreachable!()
         };
@@ -936,7 +939,7 @@ mod tests {
         let tokens = super::super::lexical_tokens(&frame, &mut report).unwrap();
         compare_exchanges(&frame, &saved, &links, &tokens, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
-        frame.tables[TableId::LexicalTokens.index()] =
+        *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
                 token: 77,
                 literal: b"rubber".to_vec(),
@@ -960,15 +963,15 @@ mod tests {
         assert!(report.differences.iter().any(|difference| {
             difference.contains(".resource:") && difference.contains("save \"absent\"")
         }));
-        frame.tables[TableId::LexicalTokens.index()] = TableView::Truncated {
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Truncated {
             rows: TableRows::LexicalTokens(Vec::new()),
             missing: 1,
         };
         assert!(super::super::lexical_tokens(&frame, &mut Report::default()).is_err());
-        frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
             reason: "unproved".into(),
         };
-        frame.tables[TableId::ResourceDefinitions.index()] = TableView::Unavailable {
+        *frame.tables[TableId::ResourceDefinitions.index()] = TableView::Unavailable {
             reason: "read failed".into(),
         };
         let mut report = Report::default();
@@ -996,9 +999,10 @@ mod tests {
             metrics: Metrics::default(),
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            }),
+            })
+            .map(Into::into),
         };
-        frame.tables[TableId::CountryFuel.index()] =
+        *frame.tables[TableId::CountryFuel.index()] =
             TableView::Complete(TableRows::CountryFuel(vec![CountryFuelRow {
                 country: 12,
                 current_raw: 32_769,
@@ -1009,7 +1013,7 @@ mod tests {
         let mut report = Report::default();
         compare_fuel(&frame, &saved, &links, &mut report).unwrap();
         assert!(report.differences.is_empty());
-        let TableView::Complete(rows) = &mut frame.tables[TableId::CountryFuel.index()] else {
+        let TableView::Complete(rows) = &mut *frame.tables[TableId::CountryFuel.index()] else {
             unreachable!()
         };
         let TableRows::CountryFuel(rows) = rows else {
@@ -1020,7 +1024,7 @@ mod tests {
         let mut report = Report::default();
         compare_fuel(&frame, &saved, &links, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
-        frame.tables[TableId::CountryFuel.index()] = TableView::Unavailable {
+        *frame.tables[TableId::CountryFuel.index()] = TableView::Unavailable {
             reason: "read failed".into(),
         };
         assert!(compare_fuel(&frame, &saved, &links, &mut Report::default()).is_err());
@@ -1050,9 +1054,10 @@ mod tests {
             metrics: Metrics::default(),
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            }),
+            })
+            .map(Into::into),
         };
-        frame.tables[TableId::CountryExperience.index()] =
+        *frame.tables[TableId::CountryExperience.index()] =
             TableView::Complete(TableRows::CountryExperience(vec![CountryExperienceRow {
                 country: 12,
                 army_raw: 1,
@@ -1069,7 +1074,7 @@ mod tests {
         compare_experience(&frame, &saved, &links, &mut report).unwrap();
         assert!(report.differences.is_empty());
         let TableView::Complete(TableRows::CountryExperience(rows)) =
-            &mut frame.tables[TableId::CountryExperience.index()]
+            &mut *frame.tables[TableId::CountryExperience.index()]
         else {
             unreachable!()
         };
@@ -1106,7 +1111,7 @@ mod tests {
             air_daily_raw: None,
             armies_for_training_raw: 0,
         });
-        frame.tables[TableId::CountryExperience.index()] =
+        *frame.tables[TableId::CountryExperience.index()] =
             TableView::Complete(TableRows::CountryExperience(vec![CountryExperienceRow {
                 country: 12,
                 army_raw: 0,
@@ -1130,7 +1135,7 @@ mod tests {
         let mut report = Report::default();
         compare_experience(&frame, &saved, &links, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
-        frame.tables[TableId::CountryExperience.index()] = TableView::Truncated {
+        *frame.tables[TableId::CountryExperience.index()] = TableView::Truncated {
             rows: TableRows::CountryExperience(Vec::new()),
             missing: 1,
         };

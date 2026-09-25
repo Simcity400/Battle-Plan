@@ -2984,7 +2984,7 @@ mod tests {
                 replay::frame::DecodedFrame {
                     branch: 1,
                     hour: 0,
-                    tables: baseline,
+                    tables: baseline.map(Into::into),
                     metrics: replay::frame::Metrics::default(),
                 },
                 false,

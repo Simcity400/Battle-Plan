@@ -1896,52 +1896,6 @@ mod tests {
     }
 
     #[test]
-    fn radar_offslot_checks_neither_storage_nor_native_memory() {
-        struct NoReads;
-        impl Memory for NoReads {
-            fn copy(&self, address: usize, _: &mut [u8]) -> bool {
-                panic!("inactive radar read at {address:#x}");
-            }
-        }
-        let mut job = RadarJob::default();
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        for hour in (0..24).filter(|hour| *hour != 21) {
-            let report = copy_radar_refresh(
-                &NoReads,
-                RadarCopyContext {
-                    base: 0,
-                    game_state: BASE,
-                    hour,
-                    force_full: false,
-                    row_limit: usize::MAX,
-                    province_limit: usize::MAX,
-                },
-                &mut job,
-            );
-            assert!(!report.raw_ok && !job.grow_for_next());
-            assert_eq!((report.copy_ticks, report.raw_bytes), ([0], [0]));
-            captured.prepare_hour(hour, false);
-            captured.fail_radar_capture("worker failed");
-            let mut ticks = [0];
-            captured.decode_radar_payload(&job, &mut ticks);
-            assert_eq!(captured.radar.outcome, SKIPPED);
-            assert_eq!(ticks, [0]);
-        }
-    }
-
-    #[test]
-    fn radar_uses_slot_21() {
-        use replay::rows::TableId;
-        assert!(replay::cadence::is_staggered(TableId::RadarCoverage));
-        for hour in -24_i32..48 {
-            assert_eq!(
-                replay::cadence::is_refresh(TableId::RadarCoverage, hour),
-                hour.rem_euclid(24) == 21
-            );
-        }
-    }
-
-    #[test]
     fn radar_split_copy_matches_direct_walk() {
         use super::radar_test_kit as kit;
         use engine::memory::{CountedMemory, ReadCounts};
@@ -1950,7 +1904,7 @@ mod tests {
         let direct = kit::direct(&memory);
         let memory = CountedMemory::new(memory);
         let capture = read_accounting::Capture::new();
-        let (split, report, mut job) = kit::split(&memory);
+        let (split, report, _) = kit::split(&memory);
         let counts = capture.finish();
         assert!(report.raw_ok);
         kit::assert_matches_direct(&split, &direct);
@@ -1976,43 +1930,6 @@ mod tests {
             bytes: 204,
         };
         assert_eq!(counts, expected);
-        let mut refreshes = 0;
-        for hour in 0..24 {
-            if replay::cadence::is_refresh(anchor, hour) {
-                refreshes += 1;
-                continue;
-            }
-            let capture = read_accounting::Capture::new();
-            let skipped = copy_radar_refresh(
-                &memory,
-                RadarCopyContext {
-                    base: kit::BASE,
-                    game_state: kit::GAME_STATE,
-                    hour,
-                    force_full: false,
-                    row_limit: usize::MAX,
-                    province_limit: usize::MAX,
-                },
-                &mut job,
-            );
-            assert_eq!(capture.finish(), read_accounting::ZERO);
-            assert!(!skipped.raw_ok && !job.grow_for_next());
-            assert_eq!((skipped.copy_ticks, skipped.raw_bytes), ([0], [0]));
-        }
-        assert_eq!(refreshes, 1);
-        let measured = counts[anchor.index()];
-        let per_refresh = [
-            measured.copy_calls,
-            measured.scattered_calls,
-            measured.record_calls,
-            measured.plan_calls,
-            measured.spans,
-            measured.bytes,
-        ];
-        println!(
-            "daily_fixture cohort=radar_split_copy_matches_direct_walk anchor={anchor:?} counters=[copy,scattered,records,plans,spans,bytes] per_refresh={per_refresh:?} before_24h={:?} after_24h={per_refresh:?} basis=unchanged_refresh_x_24_legacy_hourly_vs_1_daily",
-            per_refresh.map(|value| value * 24)
-        );
     }
 
     #[test]

@@ -9,13 +9,15 @@ use crate::{
 };
 use engine::{
     Memory, cair_wing, carmy, cequipment_variant, cequipment_variant_pool::DivisionSource,
-    cprovince, walk::Outcome,
+    walk::Outcome,
 };
 use replay::{
     frame::{BaselineToken, TABLE_COUNT, TableInput},
     rows::{ScriptVariablesRow, TableId},
 };
 use std::{mem::size_of, sync::Arc};
+
+pub(crate) mod daily_intel;
 
 const MISSING: Outcome = Outcome::Unavailable {
     reason: "acquisition source not supplied",
@@ -264,8 +266,6 @@ macro_rules! packs {
                 vec![TableId::Ships, TableId::ShipModels]));
             groups.push(("states and hourly state flags", TableId::States,
                 vec![TableId::States, TableId::StateFlags]));
-            groups.push(("province identity and stored client visibility", TableId::Provinces,
-                vec![TableId::Provinces, TableId::ProvinceVisibility]));
             groups.push(("army order census, plan operands, colors and front sections", TableId::ArmyOrders,
                 vec![TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupColors, TableId::Fronts]));
             groups
@@ -308,10 +308,11 @@ packs!(
     naval_history,
     production,
     projects,
-    province_visibility,
     plans,
     session,
     state_flags,
+    visibility,
+    building_detection,
     weather
 );
 
@@ -328,6 +329,8 @@ impl Capacities {
         self.projects.raise_for_countries(slots);
         self.supply_trains.raise_for_countries(slots);
         self.construction.raise_for_countries(slots);
+        self.visibility.raise_for_countries(slots);
+        self.building_detection.raise_for_countries(slots);
     }
 
     /// Presize CountryIntel from the live dense record total.
@@ -337,24 +340,23 @@ impl Capacities {
 }
 
 impl Captured {
+    /// The CountryIntel buffer this frame uses; `None` only while the intel
+    /// pack is out on a residual job.
+    pub(crate) fn country_intel_home(&self) -> Option<daily_intel::Home> {
+        self.intel.country_intel_home().cloned()
+    }
+
+    /// Use the pool's CountryIntel buffer instead of this frame's own.
+    pub(crate) fn share_country_intel(&mut self, home: &daily_intel::Home) {
+        self.intel.share_country_intel(home);
+    }
+
     /// Freeze this callback's primary activity before any shared source visitor.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.air.prepare_hour(hour, force_full);
         self.fog.prepare_hour(hour, force_full);
         self.naval_history.prepare_hour(hour, force_full);
         self.session.prepare_hour(hour, force_full);
-    }
-
-    pub(crate) fn capture_province_visibility(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-        provinces: &[cprovince::Row],
-        source: Outcome,
-    ) -> u64 {
-        self.province_visibility
-            .capture(memory, base, state, provinces, source)
     }
 
     /// Leases the same immutable native input packet to movement, status and
@@ -829,6 +831,8 @@ impl Captured {
         std::mem::swap(&mut self.map_names, &mut packs.map_names);
         std::mem::swap(&mut self.division_templates, &mut packs.division_templates);
         std::mem::swap(&mut self.movement_defines, &mut packs.movement_defines);
+        std::mem::swap(&mut self.visibility, &mut packs.visibility);
+        std::mem::swap(&mut self.building_detection, &mut packs.building_detection);
     }
 
     /// Loan the order census and the plans to the Orders job.
@@ -1480,7 +1484,13 @@ impl Captured {
                 self.leader_portraits.sources(),
             );
             scatter(&leader_paths::TABLES, cost, &mut ticks);
-            staggered!(map_names, division_templates, movement_defines);
+            staggered!(
+                map_names,
+                division_templates,
+                movement_defines,
+                visibility,
+                building_detection
+            );
         }
         if let Some(done) = self.gated_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
@@ -1814,6 +1824,8 @@ pub(crate) struct SlowPacks {
     pub(crate) map_names: map_names::Captured,
     pub(crate) division_templates: division_templates::Captured,
     pub(crate) movement_defines: movement_defines::Captured,
+    pub(crate) visibility: visibility::Captured,
+    pub(crate) building_detection: building_detection::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -1825,6 +1837,9 @@ impl SlowPacks {
         self.division_templates
             .fail_capture(hour, force_full, reason);
         self.movement_defines.fail_capture(hour, force_full, reason);
+        self.visibility.fail_capture(hour, force_full, reason);
+        self.building_detection
+            .fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
@@ -1835,6 +1850,8 @@ impl SlowPacks {
             + self.map_names.allocated_bytes()
             + self.division_templates.allocated_bytes()
             + self.movement_defines.allocated_bytes()
+            + self.visibility.allocated_bytes()
+            + self.building_detection.allocated_bytes()
     }
 
     fn spare() -> Box<Self> {
@@ -1844,6 +1861,8 @@ impl SlowPacks {
             map_names: map_names::Captured::vacant(),
             division_templates: division_templates::Captured::vacant(),
             movement_defines: movement_defines::Captured::with_capacities(&Default::default()),
+            visibility: visibility::Captured::vacant(),
+            building_detection: building_detection::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         })
     }
@@ -1872,7 +1891,13 @@ impl SlowPacks {
             self.leader_paths
                 .capture(memory, base, game_state, self.leader_portraits.sources());
         scatter(&leader_paths::TABLES, cost, &mut ticks);
-        staggered!(map_names, division_templates, movement_defines);
+        staggered!(
+            map_names,
+            division_templates,
+            movement_defines,
+            visibility,
+            building_detection
+        );
         self.ticks = ticks;
     }
 }
@@ -3488,20 +3513,12 @@ mod tests {
                 assert_eq!(members, vec![TableId::Ships, TableId::ShipModels]);
             } else if anchor == TableId::States {
                 assert_eq!(members, vec![TableId::States, TableId::StateFlags]);
-            } else if anchor == TableId::Provinces {
-                assert_eq!(
-                    members,
-                    vec![TableId::Provinces, TableId::ProvinceVisibility]
-                );
             } else {
                 assert!(members.iter().all(|table| actual.contains(table)));
             }
         }
         let groups = read_groups();
-        for table in DIVISION_SOURCE_TABLES
-            .into_iter()
-            .chain([TableId::ProvinceVisibility])
-        {
+        for table in DIVISION_SOURCE_TABLES {
             assert_eq!(
                 groups
                     .iter()

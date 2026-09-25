@@ -48,9 +48,6 @@ pub struct Playback {
     current: Current,
     cache: Option<CachedBlock>,
     parent_support: BTreeMap<BranchId, Option<bool>>,
-    /// Seconds each table took to copy last time, which [`copy_frame`] shares
-    /// the tables out by.
-    copy_costs: Vec<f64>,
     #[cfg(test)]
     block_loads: usize,
 }
@@ -83,7 +80,6 @@ impl Playback {
             current: gap(branch, hour, "hour has not been decoded".into()),
             cache: None,
             parent_support: BTreeMap::new(),
-            copy_costs: Vec::new(),
             #[cfg(test)]
             block_loads: 0,
         })
@@ -250,7 +246,7 @@ impl Playback {
             };
             // read_block validates the wire representation. Like Replay::seek,
             // validate identity after every applied frame, including the prefix.
-            if let TableView::Complete(rows) = &decoded.tables[TableId::Campaign.index()]
+            if let TableView::Complete(rows) = &*decoded.tables[TableId::Campaign.index()]
                 && rows
                     .rows::<tables::Campaign>()
                     .is_none_or(|rows| rows.len() != 1 || rows[0].id != self.replay.campaign_id)
@@ -263,7 +259,9 @@ impl Playback {
             cache.next += 1;
             cache.applied_hour = Some(frame.hour);
             if frame.hour == hour {
-                self.current = Current::Frame(Arc::new(copy_frame(decoded, &mut self.copy_costs)));
+                // The decoder shares every table this hour left unchanged, so
+                // the copy is one reference per table, not the rows.
+                self.current = Current::Frame(Arc::new(decoded.clone()));
                 return Ok(());
             }
             passed(decoded);
@@ -332,74 +330,6 @@ fn gap(branch: BranchId, hour: Hour, reason: String) -> Current {
         branch,
         hour,
         reason,
-    }
-}
-
-/// Threads a decoded hour is copied on.
-const COPY_THREADS: usize = 4;
-
-/// An owned copy of a decoded hour, its tables copied on several threads.
-///
-/// The copy is most of what decoding an hour costs: 15 to 17 ms for the
-/// recorded campaign against 2 to 3 ms for the update itself, the largest
-/// table 3.5 ms and a long tail after it. The builders decode hours one after
-/// another, so the copy bounds how many hours a second they can build.
-/// `costs` is how long each table took last time; tables are dealt out
-/// largest first to whichever thread has the least so far.
-fn copy_frame(decoded: &DecodedFrame, costs: &mut Vec<f64>) -> DecodedFrame {
-    let count = decoded.tables.len();
-    costs.resize(count, 0.0);
-    let mut order: Vec<usize> = (0..count).collect();
-    order.sort_by(|a, b| costs[*b].total_cmp(&costs[*a]));
-    let mut shares: Vec<(f64, Vec<usize>)> = vec![(0.0, Vec::new()); COPY_THREADS];
-    for index in order {
-        let least = shares
-            .iter_mut()
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .expect("at least one thread");
-        // A table not yet timed counts as one, so they spread out too.
-        least.0 += costs[index].max(1e-6);
-        least.1.push(index);
-    }
-    let copied: Vec<Vec<(usize, TableView, f64)>> = std::thread::scope(|scope| {
-        let copy = |indices: &[usize]| {
-            indices
-                .iter()
-                .map(|&index| {
-                    let started = std::time::Instant::now();
-                    let table = decoded.tables[index].clone();
-                    (index, table, started.elapsed().as_secs_f64())
-                })
-                .collect::<Vec<_>>()
-        };
-        let (first, rest) = shares.split_first().expect("at least one thread");
-        let handles: Vec<_> = rest
-            .iter()
-            .map(|(_, indices)| {
-                scope.spawn(move || {
-                    crate::worker_priority::background_priority();
-                    copy(indices)
-                })
-            })
-            .collect();
-        let mut copied = vec![copy(&first.1)];
-        copied.extend(handles.into_iter().map(|handle| {
-            handle
-                .join()
-                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-        }));
-        copied
-    });
-    let mut tables: Vec<Option<TableView>> = (0..count).map(|_| None).collect();
-    for (index, table, seconds) in copied.into_iter().flatten() {
-        costs[index] = seconds;
-        tables[index] = Some(table);
-    }
-    DecodedFrame {
-        branch: decoded.branch,
-        hour: decoded.hour,
-        tables: std::array::from_fn(|index| tables[index].take().expect("every table copied")),
-        metrics: decoded.metrics.clone(),
     }
 }
 
@@ -501,6 +431,7 @@ mod tests {
                         hit_points: 26_429_000,
                         organisation: 6_000_001,
                         orders_group: (57_u64 << 32) | 53,
+                        reveal_skip: 0,
                     }])),
                     TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
                         first_country: 1,
@@ -608,7 +539,7 @@ mod tests {
                 for (table, rows) in tables.iter_mut().zip(map_tables) {
                     *table = rows;
                 }
-                tables
+                tables.map(Into::into)
             },
         }
     }
@@ -629,10 +560,10 @@ mod tests {
         for &hour in hours {
             let mut frame = source(id, hour);
             if hour == 101 {
-                frame.tables[TableId::Countries.index()] = TableView::Unavailable {
+                *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
                     reason: "country read failed".into(),
                 };
-                frame.tables[TableId::Provinces.index()] = TableView::Truncated {
+                *frame.tables[TableId::Provinces.index()] = TableView::Truncated {
                     rows: TableRows::Provinces(Vec::new()),
                     missing: 1,
                 };
@@ -705,11 +636,11 @@ mod tests {
         assert!(playback.step().unwrap());
         let frame = playback.frame().unwrap();
         assert!(matches!(
-            &frame.tables[TableId::Countries.index()],
+            &*frame.tables[TableId::Countries.index()],
             TableView::Unavailable { reason } if reason == "country read failed"
         ));
         assert!(matches!(
-            frame.tables[TableId::Provinces.index()],
+            *frame.tables[TableId::Provinces.index()],
             TableView::Truncated { missing: 1, .. }
         ));
         for hour in [102, 103] {

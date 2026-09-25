@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 181] = [
+const DOMAIN_TABLES: [TableId; 185] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -181,7 +181,6 @@ const DOMAIN_TABLES: [TableId; 181] = [
     TableId::DivisionMovement,
     TableId::DivisionStatus,
     TableId::StateFlags,
-    TableId::ProvinceVisibility,
     TableId::ArmyOrderPlans,
     TableId::OrdersGroupColors,
     TableId::Fronts,
@@ -206,6 +205,11 @@ const DOMAIN_TABLES: [TableId; 181] = [
     TableId::ResearchInputs,
     TableId::ResearchAppliedBonuses,
     TableId::ResearchModifiers,
+    TableId::SimulationFeatures,
+    TableId::CountryVisibility,
+    TableId::StateVisibility,
+    TableId::BuildingDetection,
+    TableId::RelationLinks,
     TableId::SupplyNodes,
     TableId::TrainInventory,
     TableId::LandCombatDetails,
@@ -616,6 +620,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             // the codec as a real value alongside full 64-bit group handles.
             orders_group: [0, (57_u64 << 32) | 53, (u32::MAX as u64) << 32 | 53]
                 [(index / 23 + ordinal) % 3],
+            reveal_skip: RAW_FLAG_CASES[(index / 37 + ordinal) % 3],
         }
     };
     let mut divisions = vec![division(DIVISION_A, 0), division(DIVISION_B, 1)];
@@ -761,7 +766,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
     DecodedFrame {
         branch,
         hour,
-        tables,
+        tables: tables.map(Into::into),
         metrics: Metrics {
             total_ns: 100_000 + index as u64,
             table_ns: std::array::from_fn(|table| table as u64 + 1),
@@ -952,7 +957,7 @@ fn synthesize() -> Campaign {
         for (table, update) in TableId::ALL.into_iter().zip(&frame.tables) {
             let domain_index = DOMAIN_TABLES.iter().position(|id| *id == table);
             if table == TableId::WarRelations
-                && let TableView::Complete(rows) = &source.tables[table.index()]
+                && let TableView::Complete(rows) = &*source.tables[table.index()]
             {
                 for row in rows {
                     let RowRef::WarRelation(row) = row else {
@@ -994,7 +999,7 @@ fn synthesize() -> Campaign {
                         .count();
                     if let Some(domain_index) = domain_index {
                         let previous: &DecodedFrame = &expected[&(observed.branch, *baseline)];
-                        let TableView::Complete(before) = &previous.tables[table.index()] else {
+                        let TableView::Complete(before) = &*previous.tables[table.index()] else {
                             panic!("relation delta must have a complete direct source baseline");
                         };
                         coverage.domains[domain_index].deletions += deleted.len();
@@ -1037,8 +1042,8 @@ fn synthesize() -> Campaign {
                     if table == TableId::Countries {
                         let previous: &DecodedFrame = &expected[&(observed.branch, *baseline)];
                         let (TableView::Complete(before), TableView::Complete(after)) = (
-                            &previous.tables[table.index()],
-                            &source.tables[table.index()],
+                            &*previous.tables[table.index()],
+                            &*source.tables[table.index()],
                         ) else {
                             panic!("country delta must have complete direct source baselines");
                         };
@@ -1142,7 +1147,7 @@ fn synthesize() -> Campaign {
         let mut direct = source;
         if keyframe {
             for (id, table) in TableId::ALL.into_iter().zip(&mut direct.tables) {
-                if let TableView::Truncated { missing, .. } = table {
+                if let TableView::Truncated { missing, .. } = &**table {
                     coverage.partial_keyframes += 1;
                     coverage.state_partial_keyframes += usize::from(id == TableId::States);
                     coverage.division_partial_keyframes += usize::from(id == TableId::Divisions);
@@ -1152,7 +1157,8 @@ fn synthesize() -> Campaign {
                     }
                     *table = TableView::Unavailable {
                         reason: format!("truncated at keyframe: {missing} rows not read"),
-                    };
+                    }
+                    .into();
                 }
             }
         }
@@ -1216,9 +1222,9 @@ fn assert_aliases(frame: &DecodedFrame) {
         TableView::Complete(links),
         TableView::Complete(provinces),
     ) = (
-        &frame.tables[TableId::Countries.index()],
-        &frame.tables[TableId::CountryLinks.index()],
-        &frame.tables[TableId::Provinces.index()],
+        &*frame.tables[TableId::Countries.index()],
+        &*frame.tables[TableId::CountryLinks.index()],
+        &*frame.tables[TableId::Provinces.index()],
     )
     else {
         return;
@@ -1246,7 +1252,7 @@ fn assert_aliases(frame: &DecodedFrame) {
 }
 
 fn assert_division_handles(frame: &DecodedFrame) {
-    let TableView::Complete(divisions) = &frame.tables[TableId::Divisions.index()] else {
+    let TableView::Complete(divisions) = &*frame.tables[TableId::Divisions.index()] else {
         return;
     };
     let handles: Vec<_> = divisions
@@ -1262,7 +1268,7 @@ fn assert_division_handles(frame: &DecodedFrame) {
 }
 
 fn assert_relations(frame: &DecodedFrame) {
-    if let TableView::Complete(relations) = &frame.tables[TableId::WarRelations.index()] {
+    if let TableView::Complete(relations) = &*frame.tables[TableId::WarRelations.index()] {
         let ordered_pairs: Vec<_> = relations
             .iter()
             .filter_map(|row| match row {
@@ -1276,7 +1282,7 @@ fn assert_relations(frame: &DecodedFrame) {
             .collect();
         assert_eq!(ordered_pairs, [(7, 19), (19, 7)]);
     }
-    let TableView::Complete(members) = &frame.tables[TableId::FactionMembers.index()] else {
+    let TableView::Complete(members) = &*frame.tables[TableId::FactionMembers.index()] else {
         return;
     };
     assert!(
@@ -1302,7 +1308,7 @@ fn assert_relations(frame: &DecodedFrame) {
     let mut ordinals: Vec<_> = first_faction.iter().map(|row| row.ordinal).collect();
     ordinals.sort_unstable();
     assert_eq!(ordinals, [0, 1]);
-    if let TableView::Complete(factions) = &frame.tables[TableId::Factions.index()] {
+    if let TableView::Complete(factions) = &*frame.tables[TableId::Factions.index()] {
         for member in members {
             let RowRef::FactionMember(member) = member else {
                 unreachable!()

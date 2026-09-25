@@ -193,7 +193,7 @@ mod tests {
                 DecodedFrame {
                     branch: 1,
                     hour: 0,
-                    tables,
+                    tables: tables.map(Into::into),
                     metrics: Metrics::default(),
                 },
                 false,

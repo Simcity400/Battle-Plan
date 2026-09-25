@@ -77,7 +77,7 @@ pub fn land_owners(
                     break;
                 }
             };
-            let states = match &decoded.tables[replay::rows::TableId::States.index()] {
+            let states = match &*decoded.tables[replay::rows::TableId::States.index()] {
                 TableView::Complete(rows) => rows.rows::<tables::States>(),
                 TableView::Truncated { rows, .. } => {
                     incomplete = true;

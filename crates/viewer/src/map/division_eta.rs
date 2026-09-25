@@ -273,13 +273,14 @@ mod tests {
             hour: 60_832_632,
             tables: std::array::from_fn(|_| TableView::Unavailable {
                 reason: "not needed for the ETA source".into(),
-            }),
+            })
+            .map(Into::into),
             metrics: Metrics::default(),
         }
     }
 
     fn put(frame: &mut DecodedFrame, id: TableId, rows: TableRows) {
-        frame.tables[id.index()] = TableView::Complete(rows);
+        *frame.tables[id.index()] = TableView::Complete(rows);
     }
 
     /// A busy hour: `provinces` land provinces, `divisions` movers each on a
@@ -581,7 +582,7 @@ mod tests {
         // either refuses.
         for table in [TableId::WeatherProvinces, TableId::WeatherRegions] {
             let mut frame = derivable(vec![350_000, 700_000]);
-            frame.tables[table.index()] = TableView::Unavailable {
+            *frame.tables[table.index()] = TableView::Unavailable {
                 reason: "dropped for the test".into(),
             };
             let etas = Etas::read(&frame).unwrap();
@@ -592,7 +593,7 @@ mod tests {
         // An incomplete adjacency walk is a diagnostic, not a refusal: the leg
         // distances hold the native fallback, so the pair derives as recorded.
         let mut frame = derivable(vec![350_000, 700_000]);
-        let row = match &frame.tables[TableId::DivisionEtaInputs.index()] {
+        let row = match &*frame.tables[TableId::DivisionEtaInputs.index()] {
             TableView::Complete(TableRows::DivisionEtaInputs(rows)) => rows[0].clone(),
             _ => unreachable!(),
         };

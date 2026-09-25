@@ -187,9 +187,10 @@ mod tests {
             metrics: Metrics::default(),
             tables: std::array::from_fn::<_, TABLE_COUNT, _>(|_| TableView::Unavailable {
                 reason: "fixture".into(),
-            }),
+            })
+            .map(Into::into),
         };
-        frame.tables[TableId::ArmyOrderPlans.index()] =
+        *frame.tables[TableId::ArmyOrderPlans.index()] =
             TableView::Complete(TableRows::ArmyOrderPlans(vec![ArmyOrderPlanRow {
                 owner_group: group,
                 instance: 1,
@@ -200,14 +201,14 @@ mod tests {
                 assigned_divisions: vec![11, 12],
                 ..Default::default()
             }]));
-        frame.tables[TableId::Fronts.index()] =
+        *frame.tables[TableId::Fronts.index()] =
             TableView::Complete(TableRows::Fronts(vec![FrontRow {
                 front,
                 section_ids: vec![3],
                 section_ends: vec![2],
                 province_pairs: vec![4, 5],
             }]));
-        frame.tables[TableId::OrdersGroupColors.index()] =
+        *frame.tables[TableId::OrdersGroupColors.index()] =
             TableView::Complete(TableRows::OrdersGroupColors(vec![OrdersGroupColorRow {
                 group,
                 ..Default::default()

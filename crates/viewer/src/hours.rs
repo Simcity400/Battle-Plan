@@ -30,7 +30,7 @@
 //! hour's value, which was dispatched first and so is already being built.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io,
     ops::Range,
     sync::{
@@ -664,42 +664,38 @@ impl Pending {
 /// frame and snapshot registries, which hold no frame data themselves.
 const FRAME_CACHE: usize = 96;
 
-/// Estimated decoded bytes the coordinator's own frame cache may hold.
+/// Decoded bytes the coordinator's own frame cache may hold.
 ///
 /// A decoded hour grows with the recording's countries and units, so a fixed
-/// count of hours is not a fixed amount of memory. The cache keeps at most
+/// count of hours is not a fixed amount of memory. Tables are counted at their
+/// own row sizes ([`replay::rows::TableRows::allocated_bytes`]), without the
+/// strings and lists a row owns on the heap. The cache keeps at most
 /// [`FRAME_CACHE`] hours and, past this budget, only the hours the current
 /// want still reaches ([`FrameCache::evict`]).
 const FRAME_CACHE_BYTES: u64 = 2 << 30;
 
-/// Bytes one decoded row is estimated at: the fixed part of the widest
-/// ordinary rows, not counting their variable-length strings.
-const ESTIMATED_ROW_BYTES: u64 = 96;
-
-/// A decoded hour's estimated size in memory, from its row counts.
-fn estimated_bytes(current: &Current) -> u64 {
-    match current {
-        Current::Frame(frame) => frame
-            .tables
-            .iter()
-            .map(|table| match table {
-                replay::frame::TableView::Complete(rows)
-                | replay::frame::TableView::Truncated { rows, .. } => rows.len() as u64,
-                replay::frame::TableView::Unavailable { .. } => 0,
-            })
-            .sum::<u64>()
-            .saturating_mul(ESTIMATED_ROW_BYTES),
-        Current::Gap { .. } => 0,
+/// A decoded table's row allocation in bytes.
+fn table_bytes(table: &replay::frame::TableView) -> u64 {
+    match table {
+        replay::frame::TableView::Complete(rows)
+        | replay::frame::TableView::Truncated { rows, .. } => rows.allocated_bytes() as u64,
+        replay::frame::TableView::Unavailable { .. } => 0,
     }
 }
 
 /// The coordinator's recently decoded hours, least recently used first,
-/// bounded by count and by estimated bytes.
+/// bounded by count and by row bytes.
+///
+/// Hours share every table that did not change between them
+/// ([`replay::frame::SharedView`]), so the byte count is of distinct tables:
+/// each allocation is counted once however many cached hours hold it.
 #[derive(Default)]
 struct FrameCache {
     frames: BTreeMap<(BranchId, Hour), Current>,
-    /// Every cached hour with its estimated bytes, least recently used first.
-    order: VecDeque<((BranchId, Hour), u64)>,
+    /// Every cached hour, least recently used first.
+    order: VecDeque<(BranchId, Hour)>,
+    /// Distinct cached tables by allocation: holders and row bytes.
+    tables: HashMap<usize, (usize, u64)>,
     bytes: u64,
 }
 
@@ -707,7 +703,7 @@ impl FrameCache {
     /// A cached hour; the hit makes it the most recently used.
     fn get(&mut self, key: &(BranchId, Hour)) -> Option<Current> {
         let current = self.frames.get(key)?.clone();
-        if let Some(at) = self.order.iter().position(|(cached, _)| cached == key)
+        if let Some(at) = self.order.iter().position(|cached| cached == key)
             && let Some(entry) = self.order.remove(at)
         {
             self.order.push_back(entry);
@@ -720,13 +716,44 @@ impl FrameCache {
     }
 
     fn insert(&mut self, key: (BranchId, Hour), current: Current) {
-        let bytes = estimated_bytes(&current);
+        self.hold(&current);
         if let Some(old) = self.frames.insert(key, current) {
-            self.bytes = self.bytes.saturating_sub(estimated_bytes(&old));
-            self.order.retain(|(at, _)| *at != key);
+            self.release(&old);
+            self.order.retain(|at| *at != key);
         }
-        self.bytes = self.bytes.saturating_add(bytes);
-        self.order.push_back((key, bytes));
+        self.order.push_back(key);
+    }
+
+    fn hold(&mut self, current: &Current) {
+        let Current::Frame(frame) = current else {
+            return;
+        };
+        for table in &frame.tables {
+            let entry = self
+                .tables
+                .entry(table.as_ptr() as usize)
+                .or_insert_with(|| (0, table_bytes(table)));
+            if entry.0 == 0 {
+                self.bytes = self.bytes.saturating_add(entry.1);
+            }
+            entry.0 += 1;
+        }
+    }
+
+    fn release(&mut self, current: &Current) {
+        let Current::Frame(frame) = current else {
+            return;
+        };
+        for table in &frame.tables {
+            let key = table.as_ptr() as usize;
+            if let Some(entry) = self.tables.get_mut(&key) {
+                entry.0 -= 1;
+                if entry.0 == 0 {
+                    self.bytes = self.bytes.saturating_sub(entry.1);
+                    self.tables.remove(&key);
+                }
+            }
+        }
     }
 
     /// Drops the least recently used hours past [`FRAME_CACHE`], and past
@@ -736,11 +763,12 @@ impl FrameCache {
         while self.order.len() > FRAME_CACHE
             || (self.bytes > budget && self.order.len() > keep.max(1))
         {
-            let Some((old, bytes)) = self.order.pop_front() else {
+            let Some(old) = self.order.pop_front() else {
                 break;
             };
-            self.frames.remove(&old);
-            self.bytes = self.bytes.saturating_sub(bytes);
+            if let Some(current) = self.frames.remove(&old) {
+                self.release(&current);
+            }
         }
     }
 }
@@ -1424,6 +1452,9 @@ impl Dropper {
 mod tests {
     use super::*;
 
+    /// The row size `sized_frame` fills its `Countries` table with.
+    const ROW: u64 = std::mem::size_of::<replay::rows::CountryRow>() as u64;
+
     /// A decoded hour whose `Countries` table holds `rows` rows.
     fn sized_frame(hour: Hour, rows: usize) -> Current {
         use replay::{
@@ -1444,7 +1475,7 @@ mod tests {
         Current::Frame(Arc::new(DecodedFrame {
             branch: 1,
             hour,
-            tables,
+            tables: tables.map(Into::into),
             metrics: Metrics::default(),
         }))
     }
@@ -1452,8 +1483,8 @@ mod tests {
     #[test]
     fn the_frame_cache_is_bounded_by_bytes_but_keeps_the_wanted_hours() {
         let mut cache = FrameCache::default();
-        // Each hour is estimated at 1,000 rows.
-        let each = 1_000 * ESTIMATED_ROW_BYTES;
+        // Each hour holds 1,000 rows.
+        let each = 1_000 * ROW;
         for hour in 0..10 {
             cache.insert((1, hour), sized_frame(hour, 1_000));
         }
@@ -1475,7 +1506,7 @@ mod tests {
         // Replacing an hour does not count it twice.
         cache.insert((1, 9), sized_frame(9, 500));
         assert_eq!(cache.frames.len(), 3);
-        assert_eq!(cache.bytes, 2 * each + 500 * ESTIMATED_ROW_BYTES);
+        assert_eq!(cache.bytes, 2 * each + 500 * ROW);
         // The count bound still applies to hours that cost nothing.
         let mut gaps = FrameCache::default();
         for hour in 0..(FRAME_CACHE as i32 + 10) {
@@ -1490,6 +1521,29 @@ mod tests {
         }
         gaps.evict(FRAME_CACHE_BYTES, 1);
         assert_eq!(gaps.frames.len(), FRAME_CACHE);
+    }
+
+    /// Hours share their unchanged tables, and the cache counts each shared
+    /// table once, releasing it only with the last hour that holds it.
+    #[test]
+    fn the_frame_cache_counts_a_shared_table_once() {
+        let each = 1_000 * ROW;
+        let Current::Frame(first) = sized_frame(0, 1_000) else {
+            unreachable!()
+        };
+        let mut second = (*first).clone();
+        second.hour = 1;
+        let mut cache = FrameCache::default();
+        cache.insert((1, 0), Current::Frame(first));
+        cache.insert((1, 1), Current::Frame(Arc::new(second)));
+        assert_eq!(cache.bytes, each);
+        cache.evict(0, 1);
+        assert_eq!(cache.frames.len(), 1);
+        assert_eq!(cache.bytes, each, "the kept hour still holds the table");
+        let mut third = FrameCache::default();
+        third.insert((1, 0), sized_frame(0, 1_000));
+        third.insert((1, 1), sized_frame(1, 1_000));
+        assert_eq!(third.bytes, 2 * each, "equal rows in two allocations");
     }
 
     fn test_view() -> View {

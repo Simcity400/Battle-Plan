@@ -1133,7 +1133,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "Map buildings: {} authored slots, {} built rows, {} entities placed, {} drawn; \
              {} rows with an unnamed type token, {} with no slot at their location; \
-             {} slots hidden by fog of war, {} hub slots the port or city graphics carry,              {} need_detection slots placed with detection unrecorded",
+             {} slots hidden by fog of war, {} hub slots the port or city graphics carry, \
+             {} undetected foreign need_detection slots hidden, {} kept with detection unrecorded",
             building_summary.slots,
             building_summary.built,
             building_summary.placed,
@@ -1142,7 +1143,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             building_summary.missing_slots,
             building_summary.fogged,
             building_summary.hubs_left_to_another_layer,
-            building_summary.undetected_candidates
+            building_summary.undetected,
+            building_summary.unknown_detection
         );
         for (name, count) in &building_summary.missing_by_type {
             println!("  no authored slot: {name} x{count}");
@@ -1283,14 +1285,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         // counters: the province term of the engine's land branch
         println!(
-            "Province visibility: {} provinces carry a recorded byte this perspective may use{}",
+            "Province visibility: {} provinces revealed to this perspective{}",
             counter_report.perspective.revealed_provinces(),
-            match counter_report.perspective.viewpoint_mismatch() {
-                Some(mismatch) => format!(
-                    "; the hour records them for {} rather than {}",
-                    mismatch.recorded.join(", "),
-                    mismatch.ours
-                ),
+            match counter_report.perspective.visibility_gap() {
+                Some(input) => format!("; fog not rebuilt: {input} unavailable"),
                 None => String::new(),
             }
         );

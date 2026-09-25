@@ -152,7 +152,7 @@
 // The fog of war is the one remaining difference this pass can see and it is a
 // recording gap, not a port one: the game's pre-pass buffer carries
 // `FogAlphaFactor` 0.1137 at (917, 246) and 0 at the other two, and the
-// reference recording is format 14, which has no `ProvinceVisibility` table, so
+// reference recording is format 14, which has no fog inputs, so
 // `map::scene` binds an empty intel map and every `ApplyFOW` here is the
 // identity. On the one pixel where the game fogs, that is 2 % of red and 5 % of
 // blue.

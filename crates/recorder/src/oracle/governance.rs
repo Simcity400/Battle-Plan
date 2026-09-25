@@ -1464,7 +1464,8 @@ mod tests {
             metrics: Metrics::default(),
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            }),
+            })
+            .map(Into::into),
         };
         let pack = saved::Pack {
             countries: BTreeMap::from([(b"AAA".to_vec(), saved::Country::default())]),
@@ -1485,25 +1486,25 @@ mod tests {
         )
         .unwrap();
         let pack = saved::parse(&document.items).unwrap();
-        frame.tables[TableId::ActiveIdeas.index()] =
+        *frame.tables[TableId::ActiveIdeas.index()] =
             TableView::Complete(TableRows::ActiveIdeas(vec![ActiveIdeaRow {
                 country: 11,
                 ordinal: 0,
                 token: b"different_idea".to_vec(),
             }]));
-        frame.tables[TableId::CompletedFocuses.index()] =
+        *frame.tables[TableId::CompletedFocuses.index()] =
             TableView::Complete(TableRows::CompletedFocuses(vec![CompletedFocusRow {
                 country: 11,
                 ordinal: 0,
                 token: b"focus".to_vec(),
             }]));
-        frame.tables[TableId::PreferredTactics.index()] =
+        *frame.tables[TableId::PreferredTactics.index()] =
             TableView::Complete(TableRows::PreferredTactics(vec![PreferredTacticRow {
                 country: 11,
                 tactic_id: 8,
                 token: Vec::new(),
             }]));
-        frame.tables[TableId::TechnologyDefinitions.index()] =
+        *frame.tables[TableId::TechnologyDefinitions.index()] =
             TableView::Complete(TableRows::TechnologyDefinitions(vec![
                 TechnologyDefinitionRow {
                     technology_handle: 5,
@@ -1511,7 +1512,7 @@ mod tests {
                     ..Default::default()
                 },
             ]));
-        frame.tables[TableId::ResearchTechnologies.index()] =
+        *frame.tables[TableId::ResearchTechnologies.index()] =
             TableView::Complete(TableRows::ResearchTechnologies(vec![
                 ResearchTechnologyRow {
                     country: 11,
@@ -1529,7 +1530,7 @@ mod tests {
             TableId::TechSharingMembers,
             TableId::PowerBalanceMembers,
         ] {
-            frame.tables[table.index()] = TableView::Unavailable {
+            *frame.tables[table.index()] = TableView::Unavailable {
                 reason: "injected sibling fault".into(),
             };
         }
@@ -1594,7 +1595,7 @@ mod tests {
         .unwrap();
         let pack = saved::parse(&document.items).unwrap();
         let dictionary = BTreeMap::from([(5, (b"selected_technology".as_slice(), 1))]);
-        frame.tables[TableId::ResearchSlots.index()] =
+        *frame.tables[TableId::ResearchSlots.index()] =
             TableView::Complete(TableRows::ResearchSlots(vec![ResearchSlotRow {
                 country: 11,
                 index: 0,
@@ -1622,7 +1623,7 @@ mod tests {
             assert!(report.differences[0].contains(field), "{field}");
         }
         let TableView::Complete(TableRows::ResearchSlots(rows)) =
-            &mut frame.tables[TableId::ResearchSlots.index()]
+            &mut *frame.tables[TableId::ResearchSlots.index()]
         else {
             unreachable!()
         };
@@ -1652,7 +1653,7 @@ mod tests {
                 ],
             })
             .collect();
-        frame.tables[TableId::TechSharingGroups.index()] =
+        *frame.tables[TableId::TechSharingGroups.index()] =
             TableView::Complete(TableRows::TechSharingGroups(vec![
                 TechSharingGroupRow {
                     id: 0x10001,
@@ -1665,7 +1666,7 @@ mod tests {
                     base_bonus: 8,
                 },
             ]));
-        frame.tables[TableId::TechSharingMembers.index()] =
+        *frame.tables[TableId::TechSharingMembers.index()] =
             TableView::Complete(TableRows::TechSharingMembers(vec![
                 TechSharingMemberRow {
                     group: 0x10001,
@@ -1701,7 +1702,7 @@ mod tests {
         )
         .unwrap();
         let pack = saved::parse(&document.items).unwrap();
-        frame.tables[TableId::TechSharingGroups.index()] =
+        *frame.tables[TableId::TechSharingGroups.index()] =
             TableView::Complete(TableRows::TechSharingGroups(vec![
                 TechSharingGroupRow {
                     id: 0x10001,
@@ -1714,7 +1715,7 @@ mod tests {
                     base_bonus: 456,
                 },
             ]));
-        frame.tables[TableId::TechSharingMembers.index()] =
+        *frame.tables[TableId::TechSharingMembers.index()] =
             TableView::Complete(TableRows::TechSharingMembers(vec![
                 TechSharingMemberRow {
                     group: 0x10001,
@@ -1729,7 +1730,7 @@ mod tests {
                     bonus: 0,
                 },
             ]));
-        frame.tables[TableId::LexicalTokens.index()] =
+        *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![
                 LexicalTokenRow {
                     token: 0x10001,
@@ -1753,7 +1754,7 @@ mod tests {
         );
 
         let TableView::Complete(TableRows::LexicalTokens(rows)) =
-            &mut frame.tables[TableId::LexicalTokens.index()]
+            &mut *frame.tables[TableId::LexicalTokens.index()]
         else {
             unreachable!()
         };
@@ -1777,7 +1778,7 @@ mod tests {
         );
 
         let TableView::Complete(TableRows::TechSharingMembers(rows)) =
-            &mut frame.tables[TableId::TechSharingMembers.index()]
+            &mut *frame.tables[TableId::TechSharingMembers.index()]
         else {
             unreachable!()
         };
@@ -1787,13 +1788,13 @@ mod tests {
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("country_bonus_multiset"));
         let TableView::Complete(TableRows::TechSharingMembers(rows)) =
-            &mut frame.tables[TableId::TechSharingMembers.index()]
+            &mut *frame.tables[TableId::TechSharingMembers.index()]
         else {
             unreachable!()
         };
         rows[0].bonus -= 1;
         let TableView::Complete(TableRows::LexicalTokens(rows)) =
-            &mut frame.tables[TableId::LexicalTokens.index()]
+            &mut *frame.tables[TableId::LexicalTokens.index()]
         else {
             unreachable!()
         };
@@ -1801,7 +1802,7 @@ mod tests {
 
         // The complete multiset is unchanged, but the saved pair order differs.
         let TableView::Complete(TableRows::TechSharingMembers(rows)) =
-            &mut frame.tables[TableId::TechSharingMembers.index()]
+            &mut *frame.tables[TableId::TechSharingMembers.index()]
         else {
             unreachable!()
         };
@@ -1834,7 +1835,7 @@ mod tests {
         );
 
         let TableView::Complete(TableRows::TechSharingMembers(rows)) =
-            &mut frame.tables[TableId::TechSharingMembers.index()]
+            &mut *frame.tables[TableId::TechSharingMembers.index()]
         else {
             unreachable!()
         };
@@ -1858,7 +1859,7 @@ mod tests {
     fn sharing_without_dictionary_checks_values_and_native_census() {
         let (mut frame, pack, country) = sharing_fixture();
         let links = BTreeMap::from([(11, &country)]);
-        frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
             reason: "LexicalTokensUnavailable: writer scheduling unproved".into(),
         };
         let mut report = Report::default();
@@ -1872,7 +1873,7 @@ mod tests {
         );
 
         let TableView::Complete(TableRows::TechSharingMembers(rows)) =
-            &mut frame.tables[TableId::TechSharingMembers.index()]
+            &mut *frame.tables[TableId::TechSharingMembers.index()]
         else {
             unreachable!()
         };
@@ -1883,7 +1884,7 @@ mod tests {
         assert!(report.differences[0].contains("country_bonus_multiset"));
 
         let TableView::Complete(TableRows::TechSharingGroups(rows)) =
-            &mut frame.tables[TableId::TechSharingGroups.index()]
+            &mut *frame.tables[TableId::TechSharingGroups.index()]
         else {
             unreachable!()
         };
@@ -1897,7 +1898,7 @@ mod tests {
                 .any(|difference| difference.contains("captured_member_count"))
         );
 
-        frame.tables[TableId::TechSharingMembers.index()] = TableView::Unavailable {
+        *frame.tables[TableId::TechSharingMembers.index()] = TableView::Unavailable {
             reason: "member read fault".into(),
         };
         assert!(compare_sharing_fixture(&frame, &pack, &links, &mut Report::default()).is_err());
@@ -1907,7 +1908,7 @@ mod tests {
     fn sharing_partial_names_do_not_fabricate_missing_groups_or_hide_known_group_differences() {
         let (mut frame, pack, country) = sharing_fixture();
         let links = BTreeMap::from([(11, &country)]);
-        frame.tables[TableId::LexicalTokens.index()] =
+        *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
                 token: 0x10001,
                 literal: b"first".to_vec(),
@@ -1920,7 +1921,7 @@ mod tests {
 
         // Preserve the aggregate pairs while moving them between native groups.
         let TableView::Complete(TableRows::TechSharingMembers(rows)) =
-            &mut frame.tables[TableId::TechSharingMembers.index()]
+            &mut *frame.tables[TableId::TechSharingMembers.index()]
         else {
             unreachable!()
         };
@@ -1937,14 +1938,14 @@ mod tests {
         let (mut frame, pack, country) = sharing_fixture();
         let links = BTreeMap::from([(11, &country)]);
         let TableView::Complete(TableRows::TechSharingMembers(rows)) =
-            &mut frame.tables[TableId::TechSharingMembers.index()]
+            &mut *frame.tables[TableId::TechSharingMembers.index()]
         else {
             unreachable!()
         };
         rows[0].ordinal = 1;
         assert!(compare_sharing_fixture(&frame, &pack, &links, &mut Report::default()).is_err());
         let TableView::Complete(TableRows::TechSharingMembers(rows)) =
-            &mut frame.tables[TableId::TechSharingMembers.index()]
+            &mut *frame.tables[TableId::TechSharingMembers.index()]
         else {
             unreachable!()
         };
@@ -1969,13 +1970,13 @@ mod tests {
             taken: Vec::new(),
             containers,
         });
-        frame.tables[TableId::DecisionCounts.index()] =
+        *frame.tables[TableId::DecisionCounts.index()] =
             TableView::Complete(TableRows::DecisionCounts(vec![DecisionCountsRow {
                 country: 11,
                 targeted: 1,
                 ..Default::default()
             }]));
-        frame.tables[TableId::Decisions.index()] =
+        *frame.tables[TableId::Decisions.index()] =
             TableView::Complete(TableRows::Decisions(vec![DecisionRow {
                 country: 12,
                 container: 3,
@@ -1992,7 +1993,7 @@ mod tests {
         compare_decisions(&frame, &pack, &links, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         let TableView::Complete(TableRows::Decisions(rows)) =
-            &mut frame.tables[TableId::Decisions.index()]
+            &mut *frame.tables[TableId::Decisions.index()]
         else {
             unreachable!()
         };
@@ -2000,12 +2001,12 @@ mod tests {
         let mut report = Report::default();
         compare_decisions(&frame, &pack, &links, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
-        frame.tables[TableId::Decisions.index()] =
+        *frame.tables[TableId::Decisions.index()] =
             TableView::Complete(TableRows::Decisions(Vec::new()));
         let mut report = Report::default();
         compare_decisions(&frame, &pack, &links, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
-        frame.tables[TableId::Decisions.index()] = TableView::Unavailable {
+        *frame.tables[TableId::Decisions.index()] = TableView::Unavailable {
             reason: "fault".into(),
         };
         assert!(compare_decisions(&frame, &pack, &links, &mut Report::default()).is_err());
@@ -2028,7 +2029,7 @@ mod tests {
             .unwrap()
             .dynamic_modifiers
             .push(saved);
-        frame.tables[TableId::DynamicModifiers.index()] =
+        *frame.tables[TableId::DynamicModifiers.index()] =
             TableView::Complete(TableRows::DynamicModifiers(vec![DynamicModifierRow {
                 country: 11,
                 ordinal: 0,
@@ -2044,7 +2045,7 @@ mod tests {
         assert!(report.differences.is_empty());
         assert!(!report.limitations.is_empty());
         let TableView::Complete(TableRows::DynamicModifiers(rows)) =
-            &mut frame.tables[TableId::DynamicModifiers.index()]
+            &mut *frame.tables[TableId::DynamicModifiers.index()]
         else {
             unreachable!()
         };

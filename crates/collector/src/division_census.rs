@@ -614,6 +614,7 @@ struct CoreIdentities {
     provinces: Array,
     locations: [CoreIdentity; CORE_IDENTITY_SLOTS],
     templates: [CoreIdentity; CORE_IDENTITY_SLOTS],
+    template_skips: [u8; CORE_IDENTITY_SLOTS],
     groups: [CoreIdentity; CORE_IDENTITY_SLOTS],
 }
 
@@ -624,6 +625,7 @@ impl CoreIdentities {
             provinces,
             locations: [CoreIdentity::default(); CORE_IDENTITY_SLOTS],
             templates: [CoreIdentity::default(); CORE_IDENTITY_SLOTS],
+            template_skips: [0; CORE_IDENTITY_SLOTS],
             groups: [CoreIdentity::default(); CORE_IDENTITY_SLOTS],
         }
     }
@@ -671,17 +673,19 @@ impl CoreIdentities {
         Ok(id)
     }
 
+    /// The template's handle and fog reveal-skip byte.
     fn template(
         &mut self,
         memory: &impl Memory,
         template_pointer: usize,
-    ) -> Result<u64, &'static str> {
+    ) -> Result<(u64, u8), &'static str> {
         if template_pointer == 0 {
-            return Ok(0);
+            return Ok((0, 0));
         }
         let slot = Self::slot(template_pointer);
         if self.templates[slot].pointer == template_pointer {
-            return Ok(self.templates[slot].value);
+            let value = self.templates[slot].value;
+            return Ok((value, self.template_skips[slot]));
         }
         if read::<u64>(memory, template_pointer)
             != self
@@ -691,10 +695,23 @@ impl CoreIdentities {
         {
             return Err("division template vtable mismatch");
         }
-        let handle = template_pointer
-            .checked_add(creferenced_division_template::TYPE)
-            .and_then(|p| read::<u64>(memory, p))
-            .ok_or("division template handle unreadable")?;
+        let field = |offset| {
+            template_pointer
+                .checked_add(offset)
+                .ok_or("division template address overflow")
+        };
+        let (mut handle, mut skip) = ([0_u8; 8], [0_u8; 1]);
+        if memory.copy_scattered(
+            [
+                field(creferenced_division_template::TYPE)?,
+                field(creferenced_division_template::REVEAL_SKIP)?,
+            ],
+            &mut [&mut handle, &mut skip],
+        ) != 2
+        {
+            return Err("division template handle unreadable");
+        }
+        let handle = u64::from_le_bytes(handle);
         if handle == 0 {
             return Err("non-null division template has null handle");
         }
@@ -702,7 +719,8 @@ impl CoreIdentities {
             pointer: template_pointer,
             value: handle,
         };
-        Ok(handle)
+        self.template_skips[slot] = skip[0];
+        Ok((handle, skip[0]))
     }
 
     fn group(&mut self, memory: &impl Memory, group: usize) -> Result<u64, &'static str> {
@@ -791,7 +809,7 @@ fn project(
     let template_pointer = scalar
         .standard_template
         .ok_or("division template pointer unreadable")?;
-    let template = identities.template(memory, template_pointer)?;
+    let (template, reveal_skip) = identities.template(memory, template_pointer)?;
     let hit_points = scalar.strength.ok_or("division hit points unreadable")?;
     let organisation = scalar
         .organisation
@@ -810,6 +828,7 @@ fn project(
         hit_points,
         organisation,
         orders_group,
+        reveal_skip,
     })
 }
 
@@ -1286,6 +1305,7 @@ mod tests {
                     kit::PTAB + 8,
                     0x40000,
                     0x40000 + creferenced_division_template::TYPE,
+                    0x40000 + creferenced_division_template::REVEAL_SKIP,
                     0x41000,
                 ]
                 .map(Some),
@@ -1336,8 +1356,8 @@ mod tests {
                     assert_eq!(actual_reads.last(), serial_reads.last());
                 } else if capacity > 0 {
                     // One root, one owner link per row, and exactly one complete
-                    // authentication of each shared child (3 + 2 + 1 calls).
-                    assert_eq!(actual_reads.len(), 1 + capacity + 6);
+                    // authentication of each shared child (3 + 3 + 1 calls).
+                    assert_eq!(actual_reads.len(), 1 + capacity + 7);
                 }
                 assert_eq!(census.rows, rows);
                 assert_eq!(census.sources.len(), rows.len());
@@ -1375,7 +1395,7 @@ mod tests {
         ) -> Result<[u64; 3], &'static str> {
             Ok([
                 identities.province(memory, pointers[0])? as u64,
-                identities.template(memory, pointers[1])?,
+                identities.template(memory, pointers[1])?.0,
                 identities.group(memory, pointers[2])?,
             ])
         }
@@ -1445,12 +1465,12 @@ mod tests {
                 Ok(expected)
             );
         }
-        assert_eq!(memory.reads.borrow().len(), 18);
+        assert_eq!(memory.reads.borrow().len(), 21);
         assert_eq!(
             read_children(&memory, &mut identities, original),
             Ok(expected_original)
         );
-        assert_eq!(memory.reads.borrow().len(), 18);
+        assert_eq!(memory.reads.borrow().len(), 21);
 
         for fault in [
             colliding[0],

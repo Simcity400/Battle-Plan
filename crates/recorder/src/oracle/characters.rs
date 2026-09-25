@@ -693,10 +693,11 @@ mod tests {
             hour: date.engine_hour().unwrap(),
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            }),
+            })
+            .map(Into::into),
             metrics: Metrics::default(),
         };
-        frame.tables[TableId::Characters.index()] =
+        *frame.tables[TableId::Characters.index()] =
             TableView::Complete(TableRows::Characters(vec![CharacterRow {
                 id: u32::MAX,
                 country: 102,
@@ -706,7 +707,7 @@ mod tests {
                 name: b"unsaved slot".to_vec(),
                 token: b"saved literal name".to_vec(),
             }]));
-        frame.tables[TableId::UnitLeaders.index()] =
+        *frame.tables[TableId::UnitLeaders.index()] =
             TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
                 reference_type: 4713,
                 id: u32::MAX,
@@ -721,7 +722,7 @@ mod tests {
                 components: [i32::MIN, 3, 2, 1],
                 ..Default::default()
             }]));
-        frame.tables[TableId::UnitLeaderTraits.index()] =
+        *frame.tables[TableId::UnitLeaderTraits.index()] =
             TableView::Complete(TableRows::UnitLeaderTraits(vec![UnitLeaderTraitRow {
                 leader_reference: leader,
                 ordinal: 0,
@@ -729,7 +730,7 @@ mod tests {
                 token: b"separate unsaved token bytes".to_vec(),
                 ..Default::default()
             }]));
-        frame.tables[TableId::UnitLeaderTraitExperience.index()] =
+        *frame.tables[TableId::UnitLeaderTraitExperience.index()] =
             TableView::Complete(TableRows::UnitLeaderTraitExperience(vec![
                 UnitLeaderTraitExperienceRow {
                     leader_reference: leader,
@@ -796,7 +797,7 @@ mod tests {
             (7, b"progress"),
         ]);
         let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-            &mut frame.tables[TableId::UnitLeaderTraitExperience.index()]
+            &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
         else {
             unreachable!()
         };
@@ -825,7 +826,7 @@ mod tests {
         compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         let TableView::Complete(TableRows::UnitLeaders(rows)) =
-            &mut frame.tables[TableId::UnitLeaders.index()]
+            &mut *frame.tables[TableId::UnitLeaders.index()]
         else {
             unreachable!()
         };
@@ -833,7 +834,7 @@ mod tests {
         leader.experience += 1;
         leader.character_type ^= 1;
         let TableView::Complete(TableRows::UnitLeaderTraits(rows)) =
-            &mut frame.tables[TableId::UnitLeaderTraits.index()]
+            &mut *frame.tables[TableId::UnitLeaderTraits.index()]
         else {
             unreachable!()
         };
@@ -842,7 +843,7 @@ mod tests {
         let mut report = Report::default();
         compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
         assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
-        frame.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Unavailable {
+        *frame.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Unavailable {
             reason: "read fault".into(),
         };
         assert!(compare(&frame, &pack, &links, &tokens, &mut Report::default()).is_err());
@@ -853,7 +854,7 @@ mod tests {
         let (mut frame, mut pack, country) = fixture();
         let date = GameDate::parse(b"1936.1.1.1").unwrap();
         let leader = handle(4713, u32::MAX);
-        frame.tables[TableId::ActiveAbilities.index()] =
+        *frame.tables[TableId::ActiveAbilities.index()] =
             TableView::Complete(TableRows::ActiveAbilities(vec![ActiveAbilityRow {
                 country: 102,
                 scope_country: u32::MAX,
@@ -884,7 +885,7 @@ mod tests {
         compare_abilities(&frame, &pack, &links, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         let TableView::Complete(TableRows::ActiveAbilities(rows)) =
-            &mut frame.tables[TableId::ActiveAbilities.index()]
+            &mut *frame.tables[TableId::ActiveAbilities.index()]
         else {
             unreachable!()
         };
@@ -945,7 +946,7 @@ mod tests {
         compare(&frame, &pack, &links, &wrong, &mut report).unwrap();
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
         let TableView::Complete(TableRows::Characters(rows)) =
-            &mut frame.tables[TableId::Characters.index()]
+            &mut *frame.tables[TableId::Characters.index()]
         else {
             unreachable!()
         };
@@ -967,7 +968,7 @@ mod tests {
     fn reserved_trait_formatter_fails_both_tables_after_independent_experience_comparison() {
         let (mut frame, pack, country) = fixture();
         let TableView::Complete(TableRows::Characters(rows)) =
-            &mut frame.tables[TableId::Characters.index()]
+            &mut *frame.tables[TableId::Characters.index()]
         else {
             unreachable!()
         };
@@ -975,13 +976,13 @@ mod tests {
         // native id still denotes the ordinary dictionary spelling there.
         rows[0].name_token_id = 0x167;
         let TableView::Complete(TableRows::UnitLeaderTraits(rows)) =
-            &mut frame.tables[TableId::UnitLeaderTraits.index()]
+            &mut *frame.tables[TableId::UnitLeaderTraits.index()]
         else {
             unreachable!()
         };
         rows[0].token_id = 0x167;
         let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-            &mut frame.tables[TableId::UnitLeaderTraitExperience.index()]
+            &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
         else {
             unreachable!()
         };
@@ -1022,13 +1023,13 @@ mod tests {
             .1;
         assert_eq!(missing_names.len(), 3);
         let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-            &mut frame.tables[TableId::UnitLeaderTraitExperience.index()]
+            &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
         else {
             unreachable!()
         };
         rows[0].experience += 1;
         let TableView::Complete(TableRows::UnitLeaders(rows)) =
-            &mut frame.tables[TableId::UnitLeaders.index()]
+            &mut *frame.tables[TableId::UnitLeaders.index()]
         else {
             unreachable!()
         };
@@ -1047,20 +1048,20 @@ mod tests {
     #[test]
     fn unavailable_advisors_and_traits_preserve_later_table_results_and_errors() {
         let (mut frame, mut pack, country) = fixture();
-        frame.tables[TableId::AdvisorRoles.index()] = TableView::Unavailable {
+        *frame.tables[TableId::AdvisorRoles.index()] = TableView::Unavailable {
             reason: "advisor role map key order invalid".into(),
         };
-        frame.tables[TableId::UnitLeaderTraits.index()] = TableView::Unavailable {
+        *frame.tables[TableId::UnitLeaderTraits.index()] = TableView::Unavailable {
             reason: "assigned trait read fault".into(),
         };
         let TableView::Complete(TableRows::UnitLeaders(rows)) =
-            &mut frame.tables[TableId::UnitLeaders.index()]
+            &mut *frame.tables[TableId::UnitLeaders.index()]
         else {
             unreachable!()
         };
         rows[0].experience += 1;
         let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-            &mut frame.tables[TableId::UnitLeaderTraitExperience.index()]
+            &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
         else {
             unreachable!()
         };
@@ -1110,11 +1111,11 @@ mod tests {
     #[test]
     fn unavailable_leader_categories_do_not_invent_extra_trait_owners() {
         let (mut frame, pack, country) = fixture();
-        frame.tables[TableId::UnitLeaders.index()] = TableView::Unavailable {
+        *frame.tables[TableId::UnitLeaders.index()] = TableView::Unavailable {
             reason: "unit leader read fault".into(),
         };
         let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-            &mut frame.tables[TableId::UnitLeaderTraitExperience.index()]
+            &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
         else {
             unreachable!()
         };

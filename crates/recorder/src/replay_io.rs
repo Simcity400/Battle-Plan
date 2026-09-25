@@ -647,7 +647,7 @@ impl Summary {
                 TableUpdate::Unavailable { .. } => 4,
             };
             self.states[i][state] += 1;
-            let reason = match &decoded.tables[i] {
+            let reason = match &*decoded.tables[i] {
                 TableView::Complete(_) => continue,
                 TableView::Truncated { missing, .. } => {
                     format!("truncated; {missing} rows not read")
@@ -911,6 +911,11 @@ mod tests {
                     }
                     TableId::MovementDefines => {
                         TableUpdate::Snapshot(TableRows::MovementDefines(vec![Default::default()]))
+                    }
+                    TableId::SimulationFeatures => {
+                        TableUpdate::Snapshot(TableRows::SimulationFeatures(vec![
+                            Default::default(),
+                        ]))
                     }
                     _ => TableUpdate::Snapshot(TableRows::empty(TableId::ALL[index])),
                 }),

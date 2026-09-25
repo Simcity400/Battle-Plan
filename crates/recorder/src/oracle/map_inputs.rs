@@ -247,30 +247,30 @@ mod tests {
                 equipment: Some(pool(b"equipment={id={id=3 type=70} amount=1}")),
             },
         );
-        frame.tables[TableId::Divisions.index()] =
+        *frame.tables[TableId::Divisions.index()] =
             TableView::Complete(TableRows::Divisions(vec![replay::rows::DivisionRow {
                 id: division,
                 ..Default::default()
             }]));
-        frame.tables[TableId::Ships.index()] =
+        *frame.tables[TableId::Ships.index()] =
             TableView::Complete(TableRows::Ships(vec![replay::rows::ShipRow {
                 id: ship,
                 ..Default::default()
             }]));
-        frame.tables[TableId::CountryAppearance.index()] =
+        *frame.tables[TableId::CountryAppearance.index()] =
             TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
                 country: 101,
                 cosmetic_tag: b"GER_cosmetic".to_vec(),
                 red: u32::MAX,
                 ..Default::default()
             }]));
-        frame.tables[TableId::ArmyIconInputs.index()] =
+        *frame.tables[TableId::ArmyIconInputs.index()] =
             TableView::Complete(TableRows::ArmyIconInputs(vec![ArmyIconInputRow {
                 division,
                 separate_counter: 255,
                 alternate_template: 123,
             }]));
-        frame.tables[TableId::ShipModels.index()] =
+        *frame.tables[TableId::ShipModels.index()] =
             TableView::Complete(TableRows::ShipModels(vec![ShipModelRow {
                 ship,
                 variant: (3_u64 << 32) | 70,
@@ -311,10 +311,10 @@ mod tests {
         let mut report = Report::default();
         compare(&frame, &saved, &mut report);
         assert!(report.failed_comparisons["ShipModels"].contains("unconditional equipment"));
-        frame.tables[TableId::ArmyIconInputs.index()] = TableView::Unavailable {
+        *frame.tables[TableId::ArmyIconInputs.index()] = TableView::Unavailable {
             reason: "injected read fault".into(),
         };
-        frame.tables[TableId::CountryAppearance.index()] = TableView::Truncated {
+        *frame.tables[TableId::CountryAppearance.index()] = TableView::Truncated {
             rows: TableRows::CountryAppearance(Vec::new()),
             missing: 1,
         };

@@ -168,7 +168,7 @@ struct Globals {
 @group(0) @binding(1) var shadow_map: texture_2d<f32>;
 @group(0) @binding(2) var shadow_map_sampler: sampler;
 /// `IntelMap`: the per-province fog input `map::textures::intel_map` builds from
-/// the hour's recorded `ProvinceVisibility`. One texel per six-by-six block of
+/// the viewing country's rebuilt province bytes. One texel per six-by-six block of
 /// the province image, first row at world `z = 0`, and one byte a texel.
 @group(0) @binding(3) var intel_map: texture_2d<f32>;
 /// `FOWNoise`, `map/terrain/fow_noise_0.dds`.
@@ -397,7 +397,7 @@ fn screen_coord(clip: vec4<f32>) -> vec4<f32> {
 //   fog alpha on land and takes 0.44 off it at sea) and its alpha is the water
 //   specular map the water pass already binds.
 // * `IntelMap` is the per-province texture `map::textures::intel_map` builds
-//   from the hour's recorded `ProvinceVisibility`; see there for the byte law.
+//   from the viewing country's rebuilt province bytes; see there for the law.
 //
 // The engine does not declare samplers for these in `pdxmap.shader` or
 // `tree.shader`. Both unlit pixel shaders pass three of the lit pass's own

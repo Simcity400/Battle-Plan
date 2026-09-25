@@ -1091,7 +1091,7 @@ impl Viewer {
                 }
                 crate::playback::Current::Frame(frame) => {
                     for table in TableId::ALL {
-                        messages.push(match &frame.tables[table.index()] {
+                        messages.push(match &*frame.tables[table.index()] {
                             TableView::Complete(rows) => format!("{table:?}: {} rows", rows.len()),
                             TableView::Truncated { missing, .. } => {
                                 format!("{table:?}: truncated, {missing} missing")
@@ -3013,7 +3013,7 @@ impl eframe::App for Viewer {
                                 .show(ui, |ui| {
                                     ui.horizontal_wrapped(|ui| {
                                         for table in TableId::ALL {
-                                            match &frame.tables[table.index()] {
+                                            match &*frame.tables[table.index()] {
                                                 TableView::Complete(rows) => {
                                                     ui.weak(format!("{table:?}: {}", rows.len()));
                                                 }

@@ -914,11 +914,11 @@ fn grow_idle_frames(
             break;
         };
         let idle = unsafe { &mut *shared.frames[idle_index].load(Ordering::Acquire) };
-        let old_bytes = idle.allocated_bytes();
+        let old_bytes = idle.allocated_bytes() + shared.country_intel.allocated_bytes();
         idle.grow(capacities);
         idle.map.grow(map_capacities);
         idle.extended.grow(extended_capacities);
-        let new_bytes = idle.allocated_bytes();
+        let new_bytes = idle.allocated_bytes() + shared.country_intel.allocated_bytes();
         if new_bytes >= old_bytes {
             shared
                 .pool_bytes
@@ -967,7 +967,9 @@ fn spool_loop(
             }
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
             frame.total_ns = shared.ns(elapsed.unwrap());
-            let before_bytes = frame.allocated_bytes();
+            // The shared CountryIntel buffer grows through whichever frame
+            // returns it, so its bytes are part of every growth delta.
+            let before_bytes = frame.allocated_bytes() + shared.country_intel.allocated_bytes();
             if !shared.roster_ready.load(Ordering::Acquire) {
                 // A readable entry clock publishes the roster before its
                 // buffer. These early callbacks have no attributable
@@ -1081,7 +1083,7 @@ fn spool_loop(
             frame.grow(&mut capacities);
             frame.map.grow(&mut map_capacities);
             frame.extended.grow(&mut extended_capacities);
-            let after_bytes = frame.allocated_bytes();
+            let after_bytes = frame.allocated_bytes() + shared.country_intel.allocated_bytes();
             if after_bytes >= before_bytes {
                 shared
                     .pool_bytes

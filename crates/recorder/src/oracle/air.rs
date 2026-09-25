@@ -627,7 +627,7 @@ mod tests {
         DecodedFrame {
             branch: 1,
             hour: 7,
-            tables,
+            tables: tables.map(Into::into),
             metrics: Metrics::default(),
         }
     }
@@ -684,7 +684,7 @@ mod tests {
         );
 
         let TableView::Complete(TableRows::WingEquipment(rows)) =
-            &mut frame.tables[TableId::WingEquipment.index()]
+            &mut *frame.tables[TableId::WingEquipment.index()]
         else {
             unreachable!()
         };
@@ -692,7 +692,7 @@ mod tests {
         let mut report = Report::default();
         compare_equipment(&frame, &save, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
-        frame.tables[TableId::WingEquipment.index()] = TableView::Unavailable {
+        *frame.tables[TableId::WingEquipment.index()] = TableView::Unavailable {
             reason: "guarded copy failed".into(),
         };
         assert!(compare_equipment(&frame, &save, &mut Report::default()).is_err());
@@ -781,7 +781,7 @@ mod tests {
                 .any(|reason| reason.contains("duplicate parents"))
         );
         let TableView::Complete(TableRows::AirRegionDamage(rows)) =
-            &mut frame.tables[TableId::AirRegionDamage.index()]
+            &mut *frame.tables[TableId::AirRegionDamage.index()]
         else {
             unreachable!()
         };
@@ -821,7 +821,7 @@ mod tests {
             channels,
         }])]);
         for table in [TableId::WingCumulative, TableId::AirRegionHistory] {
-            frame.tables[table.index()] = TableView::Unavailable {
+            *frame.tables[table.index()] = TableView::Unavailable {
                 reason: "guarded copy failed".into(),
             };
         }

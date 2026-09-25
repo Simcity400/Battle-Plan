@@ -427,7 +427,7 @@ impl Replay {
                     ));
                 }
                 history.hours.push(frame.hour);
-                load_signal = match &decoded.tables[TableId::Clock.index()] {
+                load_signal = match &*decoded.tables[TableId::Clock.index()] {
                     TableView::Complete(TableRows::Clock(rows)) => {
                         rows.first().map(|clock| clock.play_session_started_at)
                     }
@@ -962,7 +962,7 @@ fn finish_file(
 }
 
 fn validate_campaign(frame: &DecodedFrame, campaign_id: &[u8]) -> io::Result<()> {
-    if let TableView::Complete(rows) = &frame.tables[TableId::Campaign.index()]
+    if let TableView::Complete(rows) = &*frame.tables[TableId::Campaign.index()]
         && (rows.len() != 1
             || !matches!(rows, TableRows::Campaign(values) if values[0].id == campaign_id))
     {
@@ -1316,11 +1316,15 @@ mod tests {
             TableView::Complete(TableRows::MovementDefines(vec![
                 crate::rows::MovementDefinesRow::default(),
             ]));
+        tables[TableId::SimulationFeatures.index()] =
+            TableView::Complete(TableRows::SimulationFeatures(vec![
+                crate::rows::SimulationFeatureRow::default(),
+            ]));
         DecodedFrame {
             branch,
             hour,
             metrics: Metrics::default(),
-            tables,
+            tables: tables.map(Into::into),
         }
     }
 
@@ -1400,7 +1404,7 @@ mod tests {
         }));
         let mut reloaded = source(2, 2);
         if let TableView::Complete(TableRows::Clock(rows)) =
-            &mut reloaded.tables[TableId::Clock.index()]
+            &mut *reloaded.tables[TableId::Clock.index()]
         {
             rows[0].play_session_started_at = 42;
         }
@@ -1674,7 +1678,7 @@ mod tests {
             let mut frame = source(1, hour);
             for table in TableId::ALL {
                 if let Some(rows) = crate::rows::sample_extended_table(table, hour as usize) {
-                    frame.tables[table.index()] = TableView::Complete(rows);
+                    *frame.tables[table.index()] = TableView::Complete(rows);
                 }
                 frame.metrics.table_ns[table.index()] = hour as u64 + table.index() as u64;
             }
@@ -1938,10 +1942,10 @@ mod tests {
             [1, 2, 3, 4]
         );
         assert!(
-            matches!(&observed[1].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("999"))
+            matches!(&*observed[1].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("999"))
         );
         assert!(
-            matches!(&observed[2].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("2"))
+            matches!(&*observed[2].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("2"))
         );
         assert_eq!(
             observed[3].tables[TableId::Provinces.index()],

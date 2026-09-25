@@ -29,7 +29,7 @@ fn hourly_research_is_independent_of_staggered_catalogue_and_never_falls_back_af
         TableId::TechnologyDefinitions,
         TableId::ResearchAppliedBonuses,
     ] {
-        frame.tables[table.index()] = TableView::Unavailable {
+        *frame.tables[table.index()] = TableView::Unavailable {
             reason: "independent table failure".into(),
         };
     }
@@ -39,7 +39,7 @@ fn hourly_research_is_independent_of_staggered_catalogue_and_never_falls_back_af
     assert_eq!(slot.entries[0].token, "tech_1");
     assert!(slot.states[0].details.as_ref().unwrap().bonuses.is_none());
     let mut frame = research_frame(1, 100, &[Some(1)], &[]);
-    frame.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
+    *frame.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
         reason: "hourly inputs failed".into(),
     };
     assert!(
@@ -57,10 +57,10 @@ fn research_frame(
 ) -> DecodedFrame {
     use replay::rows::{ResearchSlotRow, ResearchTechnologyRow, TechnologyDefinitionRow};
     let mut frame = source(branch, hour, Some(1));
-    frame.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
+    *frame.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
         reason: "fixture hourly research".into(),
     };
-    frame.tables[TableId::ResearchSlots.index()] = TableView::Complete(TableRows::ResearchSlots(
+    *frame.tables[TableId::ResearchSlots.index()] = TableView::Complete(TableRows::ResearchSlots(
         assignments
             .iter()
             .enumerate()
@@ -73,7 +73,7 @@ fn research_frame(
             })
             .collect(),
     ));
-    frame.tables[TableId::ResearchTechnologies.index()] =
+    *frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(
             (1..=4)
                 .map(|handle| {
@@ -93,7 +93,7 @@ fn research_frame(
                 })
                 .collect(),
         ));
-    frame.tables[TableId::TechnologyDefinitions.index()] =
+    *frame.tables[TableId::TechnologyDefinitions.index()] =
         TableView::Complete(TableRows::TechnologyDefinitions(
             (1..=4)
                 .map(|technology_handle| TechnologyDefinitionRow {
@@ -154,7 +154,7 @@ fn research_slot_states_preserve_effects_idle_and_gaps_without_hourly_duplicates
     ];
     for frame in &mut frames {
         let TableView::Complete(TableRows::ResearchSlots(slots)) =
-            &mut frame.tables[TableId::ResearchSlots.index()]
+            &mut *frame.tables[TableId::ResearchSlots.index()]
         else {
             panic!()
         };
@@ -162,7 +162,7 @@ fn research_slot_states_preserve_effects_idle_and_gaps_without_hourly_duplicates
         slots[0].applied_days_raw = 3_000_000;
         slots[0].banked_days_raw = i64::MAX;
         let TableView::Complete(TableRows::ResearchTechnologies(technologies)) =
-            &mut frame.tables[TableId::ResearchTechnologies.index()]
+            &mut *frame.tables[TableId::ResearchTechnologies.index()]
         else {
             panic!()
         };
@@ -196,12 +196,12 @@ fn research_slot_states_preserve_effects_idle_and_gaps_without_hourly_duplicates
 #[test]
 fn research_never_dates_through_gaps_or_country_reuse_and_cache_is_branch_scoped() {
     let mut missing = research_frame(1, 101, &[Some(1)], &[]);
-    missing.tables[TableId::ResearchSlots.index()] = TableView::Unavailable {
+    *missing.tables[TableId::ResearchSlots.index()] = TableView::Unavailable {
         reason: "synthetic gap".into(),
     };
     let mut reused = research_frame(1, 104, &[Some(2)], &[1]);
     if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut reused.tables[TableId::Countries.index()]
+        &mut *reused.tables[TableId::Countries.index()]
     {
         rows[0].id = 11;
     }
@@ -252,7 +252,7 @@ fn research_cache_keeps_country_requests_independent() {
     let mut frame = research_frame(1, 100, &[Some(1)], &[]);
     fixture_research_inputs(&mut frame);
     if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut frame.tables[TableId::Countries.index()]
+        &mut *frame.tables[TableId::Countries.index()]
     {
         let mut second = rows[0].clone();
         second.id = 9002;
@@ -261,7 +261,7 @@ fn research_cache_keeps_country_requests_independent() {
         rows.push(second);
     }
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut frame.tables[TableId::CountryLinks.index()]
+        &mut *frame.tables[TableId::CountryLinks.index()]
     {
         rows.push(CountryLinkRow {
             id: 9002,
@@ -269,7 +269,7 @@ fn research_cache_keeps_country_requests_independent() {
         });
     }
     if let TableView::Complete(TableRows::ResearchInputs(rows)) =
-        &mut frame.tables[TableId::ResearchInputs.index()]
+        &mut *frame.tables[TableId::ResearchInputs.index()]
     {
         let mut second = rows[0].clone();
         second.country = 9002;
@@ -296,7 +296,7 @@ fn research_missing_definitions_or_truncated_technologies_are_not_empty_research
         TableId::TechnologyDefinitions,
     ] {
         let mut frame = research_frame(1, 100, &[Some(1)], &[]);
-        frame.tables[table.index()] = TableView::Unavailable {
+        *frame.tables[table.index()] = TableView::Unavailable {
             reason: "synthetic unavailable".into(),
         };
         assert!(
@@ -306,7 +306,7 @@ fn research_missing_definitions_or_truncated_technologies_are_not_empty_research
         );
     }
     let mut frame = research_frame(1, 100, &[Some(1)], &[]);
-    frame.tables[TableId::TechnologyDefinitions.index()] =
+    *frame.tables[TableId::TechnologyDefinitions.index()] =
         TableView::Complete(TableRows::TechnologyDefinitions(Vec::new()));
     assert!(
         crate::research_branch(&research_replay(vec![frame]), 1, &AtomicBool::new(false))
@@ -315,7 +315,7 @@ fn research_missing_definitions_or_truncated_technologies_are_not_empty_research
     );
     let mut frame = research_frame(1, 100, &[Some(1)], &[]);
     if let TableView::Complete(TableRows::CountryLinks(links)) =
-        &mut frame.tables[TableId::CountryLinks.index()]
+        &mut *frame.tables[TableId::CountryLinks.index()]
     {
         links.retain(|link| link.id != 11);
     }
@@ -325,7 +325,7 @@ fn research_missing_definitions_or_truncated_technologies_are_not_empty_research
             .is_empty()
     );
     let mut frame = research_frame(1, 100, &[Some(1)], &[]);
-    frame.tables[TableId::ResearchTechnologies.index()] = TableView::Truncated {
+    *frame.tables[TableId::ResearchTechnologies.index()] = TableView::Truncated {
         rows: TableRows::ResearchTechnologies(Vec::new()),
         missing: 1,
     };
@@ -340,21 +340,21 @@ fn research_missing_definitions_or_truncated_technologies_are_not_empty_research
 fn research_repeat_levels_and_removed_slots_preserve_distinct_assignments() {
     let mut first = research_frame(1, 100, &[Some(1), Some(2)], &[1]);
     if let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
-        &mut first.tables[TableId::ResearchTechnologies.index()]
+        &mut *first.tables[TableId::ResearchTechnologies.index()]
     {
         rows[0].classifier = engine::ctechnology::CLASSIFIER_ACTIVE;
     }
     let mut second = first.clone();
     second.hour = 101;
     if let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
-        &mut second.tables[TableId::ResearchTechnologies.index()]
+        &mut *second.tables[TableId::ResearchTechnologies.index()]
     {
         rows[0].level = 2;
     }
     let mut third = second.clone();
     third.hour = 102;
     if let TableView::Complete(TableRows::ResearchSlots(rows)) =
-        &mut third.tables[TableId::ResearchSlots.index()]
+        &mut *third.tables[TableId::ResearchSlots.index()]
     {
         rows.pop();
     }
@@ -385,7 +385,7 @@ fn focus_countries_frame(
     use replay::rows::{CompletedFocusRow, FocusRow};
     let mut frame = source(branch, hour, Some(1));
     let (german_id, german_slot, german_tokens) = germany;
-    frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
         CountryRow {
             id: german_id,
             canonical_slot: german_slot,
@@ -399,7 +399,7 @@ fn focus_countries_frame(
             ..CountryRow::default()
         },
     ]));
-    frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
         [
             (11, german_slot),
             (44, 9),
@@ -409,7 +409,7 @@ fn focus_countries_frame(
         .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
         .to_vec(),
     ));
-    frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
+    *frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
         [(11, german_tokens), (44, france)]
             .map(|(country, tokens)| FocusRow {
                 country,
@@ -418,7 +418,7 @@ fn focus_countries_frame(
             })
             .to_vec(),
     ));
-    frame.tables[TableId::CompletedFocuses.index()] =
+    *frame.tables[TableId::CompletedFocuses.index()] =
         TableView::Complete(TableRows::CompletedFocuses(
             [(11, german_tokens), (44, france)]
                 .into_iter()
@@ -442,7 +442,7 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
     let first = focus_countries_frame(1, 100, (9001, 7, &["a"]), &["f"]);
     let next = focus_countries_frame(1, 101, (9001, 7, &["a", "b"]), &["f"]);
     let mut unavailable = focus_countries_frame(1, 103, (9001, 7, &["a", "b"]), &["f"]);
-    unavailable.tables[TableId::CompletedFocuses.index()] = TableView::Unavailable {
+    *unavailable.tables[TableId::CompletedFocuses.index()] = TableView::Unavailable {
         reason: "synthetic missing focus sample".into(),
     };
     let last = focus_countries_frame(1, 104, (9001, 7, &["a", "b"]), &["f", "g"]);
@@ -541,13 +541,13 @@ fn focus_dates_preserve_unknown_start_repeats_gaps_and_as_of_history() {
     use replay::rows::{CompletedFocusRow, FocusRow};
     let snapshot = |hour, tokens: &[&str]| {
         let mut frame = source(1, hour, Some(1));
-        frame.tables[TableId::Focus.index()] =
+        *frame.tables[TableId::Focus.index()] =
             TableView::Complete(TableRows::Focus(vec![FocusRow {
                 country: 11,
                 completed_count: tokens.len() as i32,
                 ..FocusRow::default()
             }]));
-        frame.tables[TableId::CompletedFocuses.index()] =
+        *frame.tables[TableId::CompletedFocuses.index()] =
             TableView::Complete(TableRows::CompletedFocuses(
                 tokens
                     .iter()
@@ -605,13 +605,13 @@ fn focus_dates_preserve_unknown_start_repeats_gaps_and_as_of_history() {
 fn focus_order_uses_exact_branch_country_links_and_complete_tables() {
     use replay::rows::{CompletedFocusRow, FocusRow};
     let mut frame = source(1, 100, Some(1));
-    frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(vec![FocusRow {
+    *frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(vec![FocusRow {
         country: 11,
         current: Some(b"next".to_vec()),
         completed_count: 1,
         ..FocusRow::default()
     }]));
-    frame.tables[TableId::CompletedFocuses.index()] =
+    *frame.tables[TableId::CompletedFocuses.index()] =
         TableView::Complete(TableRows::CompletedFocuses(vec![CompletedFocusRow {
             country: 11,
             ordinal: 0,
@@ -627,7 +627,7 @@ fn focus_order_uses_exact_branch_country_links_and_complete_tables() {
     assert!(crate::focus_order(&replay, 1, 101, "GER", &cancel).is_err());
     assert!(crate::focus_order(&replay, 1, 100, "ABSENT", &cancel).is_err());
     assert!(crate::focus_order(&replay, 1, 100, "GER", &AtomicBool::new(true)).is_err());
-    frame.tables[TableId::CompletedFocuses.index()] = TableView::Unavailable {
+    *frame.tables[TableId::CompletedFocuses.index()] = TableView::Unavailable {
         reason: "not captured".into(),
     };
     assert!(crate::focus_order(&read(vec![frame]), 1, 100, "GER", &cancel).is_err());
@@ -636,7 +636,7 @@ fn focus_order_uses_exact_branch_country_links_and_complete_tables() {
 fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
     let mut frame = source(branch, hour, Some(1));
     if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut frame.tables[TableId::Countries.index()]
+        &mut *frame.tables[TableId::Countries.index()]
     {
         for (id, slot, tag) in [(44, 8, b"FRA"), (55, 9, b"CTL"), (66, 10, b"MOD")] {
             rows.push(CountryRow {
@@ -649,7 +649,7 @@ fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
         rows.sort_by_key(|row| row.id);
     }
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut frame.tables[TableId::CountryLinks.index()]
+        &mut *frame.tables[TableId::CountryLinks.index()]
     {
         rows.extend(
             [(44, 8), (55, 9), (66, 10)]
@@ -657,7 +657,7 @@ fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
         );
         rows.sort_by_key(|row| row.id);
     }
-    frame.tables[TableId::States.index()] =
+    *frame.tables[TableId::States.index()] =
         TableView::Complete(TableRows::States(vec![replay::rows::StateRow {
             id: 1,
             owner,
@@ -713,14 +713,14 @@ fn land_owners_include_transient_and_other_branch_owners_but_not_controllers() {
 #[test]
 fn land_owners_name_countries_in_the_given_language_and_fall_back_to_tags() {
     let mut frame = ownership_frame(1, 100, 44);
-    frame.tables[TableId::CountryAppearance.index()] =
+    *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
             replay::rows::CountryAppearanceRow {
                 country: 44,
                 ..Default::default()
             },
         ]));
-    frame.tables[TableId::Politics.index()] =
+    *frame.tables[TableId::Politics.index()] =
         TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
             country: 44,
             ..Default::default()
@@ -745,21 +745,21 @@ fn land_owners_report_dangling_owners_and_missing_country_identity() {
         match missing {
             "link" => {
                 if let TableView::Complete(TableRows::CountryLinks(rows)) =
-                    &mut frame.tables[TableId::CountryLinks.index()]
+                    &mut *frame.tables[TableId::CountryLinks.index()]
                 {
                     rows.retain(|row| row.id != 44);
                 }
             }
             "row" => {
                 if let TableView::Complete(TableRows::Countries(rows)) =
-                    &mut frame.tables[TableId::Countries.index()]
+                    &mut *frame.tables[TableId::Countries.index()]
                 {
                     rows.retain(|row| row.id != 44);
                 }
             }
             _ => {
                 if let TableView::Complete(TableRows::Countries(rows)) =
-                    &mut frame.tables[TableId::Countries.index()]
+                    &mut *frame.tables[TableId::Countries.index()]
                 {
                     rows.iter_mut()
                         .find(|row| row.id == 44)
@@ -799,7 +799,7 @@ fn land_owners_report_dangling_owners_and_missing_country_identity() {
 #[test]
 fn land_owners_keep_partial_positive_evidence_and_do_not_reuse_lost_baselines() {
     let mut partial = ownership_frame(1, 102, 66);
-    partial.tables[TableId::States.index()] = TableView::Truncated {
+    *partial.tables[TableId::States.index()] = TableView::Truncated {
         rows: TableRows::States(vec![replay::rows::StateRow {
             id: 1,
             owner: 66,
@@ -911,7 +911,7 @@ fn source(branch: u64, hour: i32, power: Option<i64>) -> DecodedFrame {
     DecodedFrame {
         branch,
         hour,
-        tables,
+        tables: tables.map(Into::into),
         metrics: Metrics::default(),
     }
 }
@@ -935,7 +935,7 @@ fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
             .map(|mut frame| {
                 // Existing research scenarios describe a logical observation.
                 // Populate the hourly companion from those same fixture values.
-                if matches!(&frame.tables[TableId::ResearchInputs.index()], TableView::Unavailable { reason } if reason == "fixture hourly research") {
+                if matches!(&*frame.tables[TableId::ResearchInputs.index()], TableView::Unavailable { reason } if reason == "fixture hourly research") {
                     fixture_research_inputs(&mut frame);
                 }
                 Record::Frame(encoder.encode(frame, false).unwrap())
@@ -981,27 +981,27 @@ fn fixture_research_inputs(frame: &mut DecodedFrame) {
             })
             .collect::<Option<Vec<_>>>()
     })();
-    frame.tables[TableId::ResearchInputs.index()] = input.map_or_else(
+    *frame.tables[TableId::ResearchInputs.index()] = input.map_or_else(
         || TableView::Unavailable {
             reason: "fixture research unavailable".into(),
         },
         |rows| TableView::Complete(TableRows::ResearchInputs(rows)),
     );
-    frame.tables[TableId::ResearchAppliedBonuses.index()] =
+    *frame.tables[TableId::ResearchAppliedBonuses.index()] =
         TableView::Complete(TableRows::ResearchAppliedBonuses(vec![]));
 }
 
 #[test]
 fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise() {
     let mut frame = source(1, 100, Some(1));
-    frame.tables[TableId::CountryAppearance.index()] =
+    *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
             replay::rows::CountryAppearanceRow {
                 country: 9001,
                 ..Default::default()
             },
         ]));
-    frame.tables[TableId::Politics.index()] =
+    *frame.tables[TableId::Politics.index()] =
         TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
             country: 9001,
             ..Default::default()
@@ -1038,7 +1038,7 @@ fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise(
 #[test]
 fn metadata_skips_an_unavailable_first_census_warns_on_bad_links_and_stops_when_cancelled() {
     let mut first = source(1, 100, Some(1));
-    first.tables[TableId::Countries.index()] = TableView::Unavailable {
+    *first.tables[TableId::Countries.index()] = TableView::Unavailable {
         reason: "census failed".into(),
     };
     let replay = Arc::new(
@@ -1064,7 +1064,7 @@ fn metadata_skips_an_unavailable_first_census_warns_on_bad_links_and_stops_when_
 
     let mut bad = source(1, 100, Some(1));
     if let TableView::Complete(TableRows::CountryLinks(links)) =
-        &mut bad.tables[TableId::CountryLinks.index()]
+        &mut *bad.tables[TableId::CountryLinks.index()]
     {
         links[1].canonical_slot = 8;
     }
@@ -1084,7 +1084,7 @@ fn focus_progress_runs_compress_equal_hours_and_never_bridge_gaps() {
     let with_progress = |hour, progress| {
         let mut frame = focus_countries_frame(1, hour, (9001, 7, &["a"]), &["f"]);
         if let TableView::Complete(TableRows::Focus(rows)) =
-            &mut frame.tables[TableId::Focus.index()]
+            &mut *frame.tables[TableId::Focus.index()]
         {
             for row in rows.iter_mut() {
                 row.progress = progress;
@@ -1155,7 +1155,7 @@ fn scale_tag(index: u32) -> Vec<u8> {
 /// each owning one state.
 fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
     let mut frame = source(branch, hour, Some(1));
-    frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (0..count)
             .map(|index| CountryRow {
                 id: 100_000 + index,
@@ -1165,7 +1165,7 @@ fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
             })
             .collect(),
     ));
-    frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
         (0..count)
             .map(|index| CountryLinkRow {
                 id: 100_000 + index,
@@ -1173,7 +1173,7 @@ fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
             })
             .collect(),
     ));
-    frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         (0..count)
             .map(|index| replay::rows::StateRow {
                 id: index + 1,
@@ -1270,7 +1270,7 @@ fn focus_budget_is_per_requested_country_not_per_recording() {
     let frames = (0..21)
         .map(|step| {
             let mut frame = scale_frame(1, 100 + step, COUNTRIES);
-            frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
+            *frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
                 (0..COUNTRIES)
                     .map(|index| FocusRow {
                         country: 100_000 + index,
@@ -1279,7 +1279,7 @@ fn focus_budget_is_per_requested_country_not_per_recording() {
                     })
                     .collect(),
             ));
-            frame.tables[TableId::CompletedFocuses.index()] =
+            *frame.tables[TableId::CompletedFocuses.index()] =
                 TableView::Complete(TableRows::CompletedFocuses(
                     (0..COUNTRIES)
                         .map(|index| CompletedFocusRow {

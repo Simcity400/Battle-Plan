@@ -6,6 +6,9 @@ pub const VTABLE_RVA: usize = 0x0293_8f70;
 pub const REFERENCE_TYPE: u32 = 52;
 /// CReferencedDivisionTemplate u32 type word; old offsets.rs:641 and template reader.
 pub const TYPE: usize = 0x08;
+/// Skips the fog reveal of this template's divisions: `GetDivisionRevealSkipFlag@140C79AA0`
+/// reads CArmy+0x3B8's byte here for `radar_group::fog_consumer@141606390`.
+pub const REVEAL_SKIP: usize = 0x234;
 /// CReferencedDivisionTemplate u32 id; old offsets.rs:642 and template reader.
 pub const ID: usize = 0x0c;
 /// CReferencedDivisionTemplate contained composition storage; old UZ func_140c6f080.decompile.c returns template+18, no RTTI base there.
