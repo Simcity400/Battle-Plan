@@ -29,6 +29,8 @@ export function applyAppearance(root: HTMLElement, settings: AppearanceSettings,
   root.dataset.theme = resolved.theme.id;
   root.dataset.motion = resolved.reducedMotion ? 'reduced' : 'full';
   root.dataset.backdrop = settings.backdrop.kind;
+  root.dataset.chartMotion = settings.charts.motion;
+  root.dataset.countryColours = settings.charts.countryColours;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', colors.chrome);
   // Canvas charts cannot see CSS changes; tell them to re-read their tokens.
   if (root === document.documentElement) window.dispatchEvent(new Event(APPEARANCE_EVENT));

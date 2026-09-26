@@ -8,7 +8,7 @@ import { BUILT_IN_THEMES, themeColors } from './themes';
 import type { ThemeDefinition, ThemeMode } from './themes';
 import { parseThemeText, serializeTheme, uniqueThemeName } from './themeFile';
 import { LIMITS, MAX_CUSTOM_THEMES } from './settings';
-import type { AppearanceSettings as Settings, BackdropKind, ColorScheme, MotionPreference } from './settings';
+import type { AppearanceSettings as Settings, BackdropKind, ChartMotion, ColorScheme, CountryColours, MotionPreference } from './settings';
 import { deleteBackdrop, importBackdrop, listBackdrops } from './backdrops';
 import type { BackdropImage } from './backdrops';
 import { FONT_PRESETS, fontAvailable, fontStack, installedFonts } from './fonts';
@@ -245,6 +245,15 @@ export default function AppearanceSettings({ appearance, onEdit }: { appearance:
       <div className="settings-row" id="appearance-motion"><span className="settings-row-text"><strong>Motion</strong><small>Animated transitions. System follows the Windows animation setting.</small></span>
         <Segmented<MotionPreference> label="Motion" value={settings.motion} onChange={motion => update(previous => ({ ...previous, motion }))}
           options={[{ value: 'system', label: 'System' }, { value: 'full', label: 'Full' }, { value: 'reduced', label: 'Reduced' }]} /></div>
+    </SettingsBlock>
+
+    <SettingsBlock id="appearance-charts" title="Charts">
+      <div className="settings-row" id="appearance-chart-motion"><span className="settings-row-text"><strong>Chart motion</strong><small>How bars, lines and slices glide between recorded values during playback. Numbers are always exact.</small></span>
+        <Segmented<ChartMotion> label="Chart motion" value={settings.charts.motion} onChange={motion => update(previous => ({ ...previous, charts: { ...previous.charts, motion } }))}
+          options={[{ value: 'snappy', label: 'Snappy' }, { value: 'smooth', label: 'Smooth' }, { value: 'cinematic', label: 'Cinematic' }]} /></div>
+      <div className="settings-row" id="appearance-country-colours"><span className="settings-row-text"><strong>Country colours</strong><small>Raw uses each country's recorded map colour. Adjusted lightens or darkens colours to read on the theme and keeps similar countries apart; hues are kept.</small></span>
+        <Segmented<CountryColours> label="Country colours" value={settings.charts.countryColours} onChange={countryColours => update(previous => ({ ...previous, charts: { ...previous.charts, countryColours } }))}
+          options={[{ value: 'raw', label: 'Raw' }, { value: 'fixed', label: 'Adjusted' }]} /></div>
     </SettingsBlock>
 
     <SettingsBlock id="appearance-typography" title="Typography">

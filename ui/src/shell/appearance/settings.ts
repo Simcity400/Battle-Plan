@@ -13,6 +13,10 @@ export const MAX_CUSTOM_THEMES = 48;
 export type ColorScheme = 'system' | ThemeMode;
 export type MotionPreference = 'system' | 'full' | 'reduced';
 export type BackdropKind = 'ambient' | 'solid' | 'image';
+/** How chart shapes glide between recorded samples. */
+export type ChartMotion = 'snappy' | 'smooth' | 'cinematic';
+/** Raw recorded map colours, or colours lightened or darkened to read on the theme and kept apart. */
+export type CountryColours = 'raw' | 'fixed';
 
 export interface AppearanceSettings {
   version: 2;
@@ -27,12 +31,14 @@ export interface AppearanceSettings {
   /** Font family names; empty uses the bundled default. */
   fonts: { interface: string; display: string };
   backdrop: { kind: BackdropKind; imageId: string | null; dim: number; blur: number };
+  charts: { motion: ChartMotion; countryColours: CountryColours };
 }
 
 export const DEFAULT_APPEARANCE: AppearanceSettings = {
   version: 2, scheme: 'dark', themes: { dark: DEFAULT_THEME_ID, light: DEFAULT_THEME_ID }, custom: [],
   glass: 78, radius: 8, motion: 'system', fonts: { interface: '', display: '' },
   backdrop: { kind: 'solid', imageId: null, dim: 55, blur: 0 },
+  charts: { motion: 'smooth', countryColours: 'raw' },
 };
 
 export const LIMITS = { glass: [40, 100], radius: [0, 18], dim: [0, 90], blur: [0, 40] } as const;
@@ -69,6 +75,7 @@ export function parseAppearance(input: unknown): AppearanceSettings {
   const choose = (mode: ThemeMode) => id(themes[mode]) && findTheme(themes[mode] as string, custom) ? themes[mode] as string : DEFAULT_THEME_ID;
   const fonts = object(input.fonts) ? input.fonts : {};
   const backdrop = object(input.backdrop) ? input.backdrop : {};
+  const charts = object(input.charts) ? input.charts : {};
   const defaults = DEFAULT_APPEARANCE;
   return {
     version: 2,
@@ -84,6 +91,10 @@ export function parseAppearance(input: unknown): AppearanceSettings {
       imageId: id(backdrop.imageId) ? backdrop.imageId : null,
       dim: number(backdrop.dim, LIMITS.dim, defaults.backdrop.dim),
       blur: number(backdrop.blur, LIMITS.blur, defaults.backdrop.blur),
+    },
+    charts: {
+      motion: charts.motion === 'snappy' || charts.motion === 'smooth' || charts.motion === 'cinematic' ? charts.motion : defaults.charts.motion,
+      countryColours: charts.countryColours === 'raw' || charts.countryColours === 'fixed' ? charts.countryColours : defaults.charts.countryColours,
     },
   };
 }

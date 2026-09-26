@@ -42,6 +42,8 @@ const searchItems: SettingsTarget[] = [
   { section: 'appearance', title: 'Glass', id: 'appearance-glass', keywords: 'blur opacity transparency frosted' },
   { section: 'appearance', title: 'Corner radius', id: 'appearance-radius', keywords: 'rounding rounded corners' },
   { section: 'appearance', title: 'Motion', id: 'appearance-motion', keywords: 'animation reduced transitions' },
+  { section: 'appearance', title: 'Chart motion', id: 'appearance-chart-motion', keywords: 'charts animation easing playback smooth cinematic snappy' },
+  { section: 'appearance', title: 'Country colours', id: 'appearance-country-colours', keywords: 'charts map colours colors contrast raw adjusted' },
   { section: 'appearance', title: 'Interface font', id: 'appearance-interface-font', keywords: 'typeface font inter typography' },
   { section: 'appearance', title: 'Display font', id: 'appearance-display-font', keywords: 'typeface headings typography' },
   ...[...MAP_OPTION_LABELS.slice(0, 2), ...VIDEO_OPTION_LABELS, ...MAP_OPTION_LABELS.slice(2)]

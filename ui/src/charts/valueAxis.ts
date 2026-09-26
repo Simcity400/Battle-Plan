@@ -37,6 +37,19 @@ export function logTicks(min: number, max: number): number[] {
   return ticks;
 }
 
+/** Log ticks at least `minGap` pixels apart: all of them when they fit, else only
+ * powers of ten, then every second, third… power of ten. */
+export function thinLogTicks(ticks: readonly number[], toPixel: (value: number) => number, minGap: number): number[] {
+  const spaced = (list: readonly number[]) => list.every((value, index) => index === 0 || Math.abs(toPixel(value) - toPixel(list[index - 1])) >= minGap);
+  if (spaced(ticks)) return [...ticks];
+  const decades = ticks.filter(value => value.toExponential(0).startsWith('1e'));
+  for (let every = 1; every < decades.length; every++) {
+    const kept = decades.filter((_, index) => index % every === 0);
+    if (spaced(kept)) return kept;
+  }
+  return decades.slice(0, 1);
+}
+
 /** Formats a recorded fixed-point integer exactly: `raw` is the stored integer and
  * `scale` its number of decimal places. Rounds half away from zero to `digits`. */
 export function formatFixed(raw: string | bigint, scale: number, digits: number): string {

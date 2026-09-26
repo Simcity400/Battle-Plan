@@ -5,9 +5,10 @@ import '@fontsource-variable/inter';
 import './styles.css';
 import App from './shell/App';
 import Tooltip from './components/Tooltip';
+import TooltipLayer from './charts/TooltipLayer';
 import { applySavedAppearance } from './shell/appearance/useAppearance';
 
 applySavedAppearance();
 const root = document.getElementById('root');
 if (!root) throw new Error('The desktop application root is missing.');
-createRoot(root).render(<StrictMode><App /><Tooltip /></StrictMode>);
+createRoot(root).render(<StrictMode><App /><Tooltip /><TooltipLayer /></StrictMode>);
