@@ -34,11 +34,17 @@ struct Harness {
 
 /// Several WARP devices used at once in one process fault inside `d3d10warp.dll` (probed
 /// 2026-09-26: 5 of 6 runs with three concurrent devices, 0 of 6 with one device shared by three
-/// threads). The viewer creates one device per process, so only tests need this.
+/// threads). The viewer creates one device per process, so only tests need this. Each harness
+/// takes it before requesting its adapter, so no second device exists while another test runs.
 static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner())
+}
 
 impl Harness {
     fn new(width: u32, height: u32) -> Self {
+        let serial = serial();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
@@ -47,10 +53,12 @@ impl Harness {
         let (device, queue) =
             pollster::block_on(adapter.request_device(&crate::render::device_descriptor(&adapter)))
                 .unwrap();
-        Self::with_device(width, height, device, queue)
+        Self::with_device(serial, width, height, device, queue)
     }
 
     fn fallback(width: u32, height: u32) -> Option<Self> {
+        // Taken first: a skip below drops its device before the guard.
+        let serial = serial();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -79,11 +87,18 @@ impl Harness {
             eprintln!("SKIP political fallback oracle: {error}");
             return None;
         }
-        Some(Self::with_device(width, height, device, queue))
+        Some(Self::with_device(serial, width, height, device, queue))
     }
 
-    fn with_device(width: u32, height: u32, device: wgpu::Device, queue: wgpu::Queue) -> Self {
-        let serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
+    /// `serial` comes first: parameters drop in reverse order, so a panic here drops the device
+    /// before the guard.
+    fn with_device(
+        serial: std::sync::MutexGuard<'static, ()>,
+        width: u32,
+        height: u32,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Self {
         let width = width / 2;
         let rows = height / 2;
         let stride = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
