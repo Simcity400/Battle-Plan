@@ -160,7 +160,8 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
     Ok(())
 }
 
-fn branch_metadata(replay: &Replay, branch: &BranchStart) -> BranchMetadata {
+/// A branch's first and last hour: its start, every block and every recorded gap.
+pub(crate) fn branch_bounds(replay: &Replay, branch: &BranchStart) -> (i32, i32) {
     let mut first = branch.first_hour;
     let mut last = first;
     for block in replay
@@ -175,6 +176,11 @@ fn branch_metadata(replay: &Replay, branch: &BranchStart) -> BranchMetadata {
         first = first.min(gap.first_hour);
         last = last.max(gap.last_hour);
     }
+    (first, last)
+}
+
+fn branch_metadata(replay: &Replay, branch: &BranchStart) -> BranchMetadata {
+    let (first, last) = branch_bounds(replay, branch);
     let (parent_id, parent_hour) = match branch.parent {
         Parentage::Unknown => (None, None),
         Parentage::Probable { branch, hour } => (Some(branch.to_string()), Some(hour)),

@@ -74,8 +74,9 @@ export interface WidgetMeta {
   history: boolean;
   minSize: { w: number; h: number };
   defaultSize: { w: number; h: number };
-  /** How many countries the widget shows at once; 1 when absent. */
-  countries?: { max: number };
+  /** How many countries the widget shows at once (1 when absent); whether it ranks
+   * countries by its value (offering a top-N group) and can sum a group into one series. */
+  countries?: { max: number; ranked?: boolean; aggregate?: boolean };
   /** The widget's own settings, grouped into the panel's sections. */
   options?: readonly OptionField[];
   /** Upgrades settings saved by an older `version`; null keeps them unchanged. */

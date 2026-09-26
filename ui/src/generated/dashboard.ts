@@ -160,3 +160,23 @@ name: string | null,
  */
 color: [number, number, number] | null, };
 export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
+export type CountryGroupParams = { branchId: string, };
+export type MembershipRun = { tag: string, firstHour: number, lastHour: number, };
+export type FactionGroup = {
+/**
+ * The recorded faction id, as a decimal string.
+ */
+id: string,
+/**
+ * The faction's name as the game showed it; null when it cannot be resolved.
+ */
+name: string | null, firstHour: number, lastHour: number, members: Array<MembershipRun>, };
+export type WarPairRun = { first: string, second: string, firstHour: number, lastHour: number, };
+export type HourSpan = { firstHour: number, lastHour: number, };
+export type UnobservedHours = { humans: Array<HourSpan>, factions: Array<HourSpan>, wars: Array<HourSpan>, };
+export type CountryGroupReply = { branchId: string, humans: Array<MembershipRun>, factions: Array<FactionGroup>, wars: Array<WarPairRun>,
+/**
+ * Hours inside the branch where each history was not observed: a run that
+ * ends or starts next to one of these is a gap, not a join or a leave.
+ */
+unobserved: UnobservedHours, warnings: Array<string>, };

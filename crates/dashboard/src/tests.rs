@@ -1600,3 +1600,242 @@ fn country_styles_report_an_incomplete_country_table_as_incomplete() {
         crate::products::country_styles::HourStyles::read(&source(1, 100, Some(1)), None).unwrap();
     assert_eq!(complete.missing_reason("XXX"), "not a country at this hour");
 }
+
+/// Countries GER (link 9001), FRA (44), CTL (55) and MOD (66), with the given
+/// human countries, factions (id, name, members) and wars at this hour.
+fn group_frame(
+    hour: i32,
+    humans: &[u32],
+    factions: &[(u64, &str, &[u32])],
+    wars: &[(u32, u32)],
+) -> DecodedFrame {
+    let mut frame = ownership_frame(1, hour, 44);
+    let mut humans: Vec<_> = humans
+        .iter()
+        .map(|&country| replay::rows::HumanControllerRow { country, count: 1 })
+        .collect();
+    humans.sort_by_key(|row| row.country);
+    *frame.tables[TableId::HumanControllers.index()] =
+        TableView::Complete(TableRows::HumanControllers(humans));
+    *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(
+        factions
+            .iter()
+            .map(|&(id, name, _)| replay::rows::FactionRow {
+                id,
+                name: name.as_bytes().to_vec(),
+            })
+            .collect(),
+    ));
+    let mut members: Vec<_> = factions
+        .iter()
+        .flat_map(|&(faction, _, members)| {
+            members.iter().enumerate().map(move |(ordinal, &country)| {
+                replay::rows::FactionMemberRow {
+                    country,
+                    faction,
+                    ordinal: ordinal as u32,
+                }
+            })
+        })
+        .collect();
+    members.sort_by_key(|member| member.country);
+    *frame.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(members));
+    let mut relations: Vec<_> = wars
+        .iter()
+        .map(
+            |&(first_country, second_country)| replay::rows::WarRelationRow {
+                first_country,
+                second_country,
+                ..Default::default()
+            },
+        )
+        .collect();
+    relations.sort_by_key(|row| (row.first_country, row.second_country));
+    *frame.tables[TableId::WarRelations.index()] =
+        TableView::Complete(TableRows::WarRelations(relations));
+    frame
+}
+
+#[test]
+fn country_groups_follow_joins_leaves_new_factions_and_break_at_gaps() {
+    use crate::products::country_groups::{
+        HourSpan, MembershipRun, UnobservedHours, WarPairRun, scan_branch,
+    };
+    let run = |tag: &str, first_hour: i32, last_hour: i32| MembershipRun {
+        tag: tag.into(),
+        first_hour,
+        last_hour,
+    };
+    let frames = vec![
+        group_frame(100, &[9001], &[(5, "AXIS_NAME", &[9001])], &[]),
+        group_frame(
+            101,
+            &[9001, 44],
+            &[(5, "AXIS_NAME", &[9001, 66])],
+            &[(44, 9001)],
+        ),
+        group_frame(
+            102,
+            &[9001, 44],
+            &[(5, "AXIS_NAME", &[9001, 66]), (6, "Custom Pact", &[44])],
+            // The same war listed from both sides in one hour is still one run.
+            &[(44, 9001), (9001, 44)],
+        ),
+        // Hour 103 is missing: every run ends at 102.
+        group_frame(
+            104,
+            &[9001],
+            &[(6, "Custom Pact", &[44, 55])],
+            &[(44, 9001)],
+        ),
+    ];
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        scan.humans(),
+        [
+            run("GER", 100, 102),
+            run("FRA", 101, 102),
+            run("GER", 104, 104)
+        ]
+    );
+    let (name, first, last, members) = scan.faction(5).unwrap();
+    assert_eq!((name, first, last), ("AXIS_NAME", 100, 102));
+    assert_eq!(members, [run("GER", 100, 102), run("MOD", 101, 102)]);
+    let (name, first, last, members) = scan.faction(6).unwrap();
+    assert_eq!((name, first, last), ("Custom Pact", 102, 104));
+    assert_eq!(
+        members,
+        [
+            run("FRA", 102, 102),
+            run("FRA", 104, 104),
+            run("CTL", 104, 104)
+        ]
+    );
+    let pair = |first_hour, last_hour| WarPairRun {
+        first: "FRA".into(),
+        second: "GER".into(),
+        first_hour,
+        last_hour,
+    };
+    assert_eq!(scan.wars(), [pair(101, 102), pair(104, 104)]);
+    // The missing hour is listed, so its breaks are not read as joins or leaves.
+    let missing = vec![HourSpan {
+        first_hour: 103,
+        last_hour: 103,
+    }];
+    assert_eq!(
+        scan.unobserved(),
+        &UnobservedHours {
+            humans: missing.clone(),
+            factions: missing.clone(),
+            wars: missing
+        }
+    );
+    assert!(scan.warnings().is_empty(), "{:?}", scan.warnings());
+}
+
+#[test]
+fn country_groups_drop_ended_wars_and_keep_each_history_s_gaps_its_own() {
+    use crate::products::country_groups::{HourSpan, MembershipRun, WarPairRun, scan_branch};
+    let mut ended = group_frame(101, &[9001, 44], &[], &[(44, 9001)]);
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *ended.tables[TableId::WarRelations.index()]
+    {
+        // Recorded as ending at hour 101: no longer at war from that hour.
+        rows[0].start_hour = 50;
+        rows[0].end_hour = 101;
+    }
+    *ended.tables[TableId::Factions.index()] = TableView::Unavailable {
+        reason: "fixture".into(),
+    };
+    let frames = vec![
+        group_frame(100, &[9001], &[], &[(44, 9001)]),
+        ended,
+        group_frame(102, &[9001, 44], &[], &[]),
+    ];
+    let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    // The branch ends in a recorded gap: those hours are unobserved, not leaves.
+    replay.gaps.push(replay::branches::Gap {
+        branch: 1,
+        first_hour: 103,
+        last_hour: 105,
+        reason: "fixture".into(),
+    });
+    let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        scan.wars(),
+        [WarPairRun {
+            first: "FRA".into(),
+            second: "GER".into(),
+            first_hour: 100,
+            last_hour: 100
+        }]
+    );
+    // FRA's human join at 101 is not hidden by the factions table missing that hour.
+    assert_eq!(
+        scan.humans(),
+        [
+            MembershipRun {
+                tag: "GER".into(),
+                first_hour: 100,
+                last_hour: 102
+            },
+            MembershipRun {
+                tag: "FRA".into(),
+                first_hour: 101,
+                last_hour: 102
+            }
+        ]
+    );
+    let span = |first_hour, last_hour| HourSpan {
+        first_hour,
+        last_hour,
+    };
+    assert_eq!(scan.unobserved().humans, [span(103, 105)]);
+    assert_eq!(scan.unobserved().wars, [span(103, 105)]);
+    assert_eq!(scan.unobserved().factions, [span(101, 101), span(103, 105)]);
+}
+
+#[test]
+fn country_groups_leave_out_unknown_countries_and_localise_faction_keys() {
+    use crate::products::country_groups::{faction_name, scan_branch};
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![group_frame(100, &[777], &[(5, "", &[9001, 888])], &[])],
+        )],
+    )
+    .unwrap();
+    let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert!(scan.humans().is_empty());
+    assert_eq!(scan.faction(5).unwrap().3.len(), 1);
+    assert!(
+        scan.warnings()
+            .iter()
+            .any(|w| w.starts_with("2 recorded country references"))
+    );
+    assert_eq!(faction_name("", None), None);
+    assert_eq!(faction_name("My Pact", None).as_deref(), Some("My Pact"));
+    let localisation: installed_content::localisation::Localisation = [
+        ("AXIS_NAME".to_owned(), "Axis".to_owned()),
+        (
+            "SCOPED_NAME".to_owned(),
+            "[ROOT.GetAdjective] Pact".to_owned(),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        faction_name("AXIS_NAME", Some(&localisation)).as_deref(),
+        Some("Axis")
+    );
+    // A key that needs runtime scope has no name rather than showing the key.
+    assert_eq!(faction_name("SCOPED_NAME", Some(&localisation)), None);
+    assert_eq!(
+        faction_name("My Pact", Some(&localisation)).as_deref(),
+        Some("My Pact")
+    );
+}

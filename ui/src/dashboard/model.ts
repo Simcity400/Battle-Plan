@@ -13,7 +13,12 @@ export type Alignment = 'calendar' | 'anchors';
 export type WidgetKind = string;
 export interface HourWindow { firstHour: number; lastHour: number }
 export interface OffsetWindow { firstOffset: number; lastOffset: number }
-export type CountrySelection = { kind: 'selected' } | { kind: 'all' } | { kind: 'tags'; tags: string[] };
+/** A smart group of countries, resolved from the recording's own history. */
+export type CountryGroup = { type: 'humans' } | { type: 'faction'; id: string } | { type: 'war'; tag: string } | { type: 'top'; count: number };
+/** Whose membership counts: at each hour (joins and leaves show), at the end, or anyone ever a member. */
+export type GroupMembership = 'hour' | 'end' | 'ever';
+export type CountrySelection = { kind: 'selected' } | { kind: 'all' } | { kind: 'tags'; tags: string[] }
+  | { kind: 'group'; group: CountryGroup; membership: GroupMembership; aggregate: boolean };
 export type WidgetTime = { mode: 'follow' } | { mode: 'campaign' }
   | ({ mode: 'range' } & OffsetWindow)
   | { mode: 'pin'; windows: Record<string, OffsetWindow> };

@@ -34,7 +34,7 @@ export function WidgetSettings({ widget, template, runtime, onChange, onReset }:
   const body = (section: SettingsSection) => {
     switch (section) {
       case 'campaign': return <CampaignPicker widget={widget} template={template} runtime={runtime} />;
-      case 'countries': return <CountriesSection widget={widget} reference={reference} runtime={runtime} max={definition?.countries?.max ?? 1}
+      case 'countries': return <CountriesSection widget={widget} reference={reference} runtime={runtime} limits={definition?.countries ?? { max: 1 }}
         onChange={countries => save({ ...widget, countries })} />;
       case 'time': return <>{definition?.history && <TimeSection widget={widget} effective={effective} reference={reference} runtime={runtime}
         modes={definition.timeModes} onChange={time => save({ ...widget, time })} />}{fields('time')}</>;

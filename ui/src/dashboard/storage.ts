@@ -1,6 +1,6 @@
 import { defaultTemplate, GRID_COLUMNS, MAX_WIDGETS, migrateWidget, WIDGET_CONTENT_SCALES } from './model.ts';
 import { parseStoredOptions } from './options.ts';
-import type { Breakpoint, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
+import type { Breakpoint, CountryGroup, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import { widgetDefinition } from './definitions.ts';
 import { MAX_ROLES, MAX_TRACKS } from './campaigns.ts';
 
@@ -35,9 +35,22 @@ function timeMode(value: unknown, tracks: Set<string>): WidgetTime | null {
   }
   return { mode: 'pin', windows };
 }
+function countryGroup(value: unknown): CountryGroup | null {
+  if (!object(value)) return null;
+  if (value.type === 'humans') return { type: 'humans' };
+  if (value.type === 'faction' && typeof value.id === 'string' && /^\d{1,20}$/.test(value.id)) return { type: 'faction', id: value.id };
+  if (value.type === 'war' && text(value.tag, 128)) return { type: 'war', tag: value.tag };
+  if (value.type === 'top' && integer(value.count, 1, 64)) return { type: 'top', count: value.count };
+  return null;
+}
 function selection(value: unknown): CountrySelection | null {
   if (!object(value)) return null;
   if (value.kind === 'selected' || value.kind === 'all') return { kind: value.kind };
+  if (value.kind === 'group') {
+    const group = countryGroup(value.group);
+    return group && (value.membership === 'hour' || value.membership === 'end' || value.membership === 'ever') && typeof value.aggregate === 'boolean'
+      ? { kind: 'group', group, membership: value.membership, aggregate: value.aggregate } : null;
+  }
   return value.kind === 'tags' && Array.isArray(value.tags) && value.tags.length <= 256 && value.tags.every((tag) => text(tag, 32))
     ? { kind: 'tags', tags: [...new Set(value.tags as string[])] } : null;
 }

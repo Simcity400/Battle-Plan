@@ -313,3 +313,4 @@
 .size-stepper .icon-button svg { width: 14px; height: 14px; }
 .size-stepper-value { min-width: 48px; height: 26px; padding: 0 4px; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--text); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .size-stepper-value:hover { background: var(--hover); }
+.dash-widget-country > svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
