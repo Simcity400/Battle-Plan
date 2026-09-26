@@ -47,6 +47,8 @@ export interface TimeChartProps {
   /** Drawn after the plot, unclipped: end labels and markers. */
   overlay?: (ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens) => void;
   onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
+  /** A click (not a drag) on the plot picks that hour, e.g. to open or move a breakdown. */
+  onPick?: (hour: number) => void;
   /** Off-screen charts stop drawing. */
   active: boolean;
   /** Changes whenever the data changes, so the chart redraws. */
@@ -57,6 +59,9 @@ const DEFAULT_PADDING: Padding = { left: 44, right: 14, top: 12, bottom: 24 };
 /** The narrowest time span a zoom may reach: two weeks. */
 const MIN_SPAN = 14 * 24;
 const BOX_THRESHOLD = 8;
+/** How long a click waits to see if it is the first of a double-click (which
+ * resets the zoom instead of picking): Windows' default double-click time. */
+const DOUBLE_CLICK_MS = 500;
 
 type Drag = { mode: 'axis-x'; grab: number } | { mode: 'axis-y'; grab: number } | { mode: 'pan'; lastX: number } | { mode: 'box'; x0: number; y0: number; x1: number; y1: number };
 
@@ -185,6 +190,8 @@ export default function TimeChart(props: TimeChartProps) {
       return { ...point, clientX: event.clientX, clientY: event.clientY };
     };
     const down = (event: PointerEvent) => {
+      // The second press of a double-click never picks, however slow the double-click.
+      if (event.detail >= 2 && pendingPick) { clearTimeout(pendingPick); pendingPick = null; }
       if (!frame || (event.button !== 0 && event.button !== 1)) return;
       const point = local(event);
       const zone = hitZone(point, frame);
@@ -212,15 +219,24 @@ export default function TimeChart(props: TimeChartProps) {
       }
       wake();
     };
+    let pendingPick: ReturnType<typeof setTimeout> | null = null;
     const up = () => {
       const finished = drag;
       drag = null;
       if (finished?.mode === 'box' && frame && Math.abs(finished.x1 - finished.x0) > BOX_THRESHOLD) {
         dispatch({ type: 'box', x: [frame.hourAt(finished.x0), frame.hourAt(finished.x1)],
           y: Math.abs(finished.y1 - finished.y0) > BOX_THRESHOLD ? [frame.valueAt(finished.y1), frame.valueAt(finished.y0)] : undefined });
+      } else if (finished?.mode === 'box' && frame && Math.abs(finished.y1 - finished.y0) <= BOX_THRESHOLD && latest.current.onPick) {
+        const hour = pointedHour(finished.x0, frame, latest.current);
+        // Wait out a possible second click: a double-click resets the zoom instead.
+        if (hour != null) {
+          if (pendingPick) clearTimeout(pendingPick);
+          pendingPick = setTimeout(() => { pendingPick = null; latest.current.onPick?.(Math.floor(hour)); }, DOUBLE_CLICK_MS);
+        }
       }
       wake();
     };
+    const cancel = () => { drag = null; wake(); };
     const leave = () => { pointer = null; hideTooltip(owner); wake(); };
     const wheel = (event: WheelEvent) => {
       if (!frame) return;
@@ -231,6 +247,7 @@ export default function TimeChart(props: TimeChartProps) {
       dispatch({ type: 'wheel', at: frame.hourAt(point.x), steps });
     };
     const doubleClick = (event: MouseEvent) => {
+      if (pendingPick) { clearTimeout(pendingPick); pendingPick = null; }
       if (!frame) return;
       const zone = hitZone(local(event), frame);
       dispatch({ type: zone === 'x-axis' ? 'reset-x' : zone === 'y-axis' ? 'reset-y' : 'reset' });
@@ -248,7 +265,7 @@ export default function TimeChart(props: TimeChartProps) {
     element.addEventListener('pointerdown', down);
     element.addEventListener('pointermove', move);
     element.addEventListener('pointerup', up);
-    element.addEventListener('pointercancel', up);
+    element.addEventListener('pointercancel', cancel);
     element.addEventListener('pointerleave', leave);
     element.addEventListener('wheel', wheel, { passive: false });
     element.addEventListener('dblclick', doubleClick);
@@ -258,7 +275,8 @@ export default function TimeChart(props: TimeChartProps) {
       element.removeEventListener('pointerdown', down);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerup', up);
-      element.removeEventListener('pointercancel', up);
+      element.removeEventListener('pointercancel', cancel);
+      if (pendingPick) clearTimeout(pendingPick);
       element.removeEventListener('pointerleave', leave);
       element.removeEventListener('wheel', wheel);
       element.removeEventListener('dblclick', doubleClick);

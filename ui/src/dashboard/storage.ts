@@ -1,4 +1,4 @@
-import { defaultTemplate, GRID_COLUMNS, migrateWidget, WIDGET_CONTENT_SCALES } from './model.ts';
+import { defaultTemplate, GRID_COLUMNS, MAX_WIDGETS, migrateWidget, WIDGET_CONTENT_SCALES } from './model.ts';
 import { parseStoredOptions } from './options.ts';
 import type { Breakpoint, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import { widgetDefinition } from './definitions.ts';
@@ -60,7 +60,7 @@ export function parseTemplate(input: unknown): DashboardTemplate | null {
   if (!object(input) || input.version !== 1 || !text(input.name) || !['calendar', 'anchors'].includes(String(input.alignment))) return null;
   if (!Array.isArray(input.roles) || !input.roles.length || input.roles.length > MAX_ROLES
     || !Array.isArray(input.tracks) || !input.tracks.length || input.tracks.length > MAX_TRACKS
-    || !Array.isArray(input.widgets) || input.widgets.length > 48 || !object(input.layouts)) return null;
+    || !Array.isArray(input.widgets) || input.widgets.length > MAX_WIDGETS || !object(input.layouts)) return null;
   const roles: SourceRole[] = [];
   for (const role of input.roles) {
     if (!object(role) || !id(role.id) || !text(role.label) || !(role.selectedTag === null || text(role.selectedTag, 32)) || roles.some((item) => item.id === role.id)) return null;

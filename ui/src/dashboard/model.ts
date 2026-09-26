@@ -4,6 +4,8 @@ import { widgetDefinition } from './definitions.ts';
 import type { WidgetOptions } from './options';
 
 export const TRAILING_HOURS = 168;
+/** Most widgets one layout holds. */
+export const MAX_WIDGETS = 48;
 export const WIDGET_CONTENT_SCALES = [50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200] as const;
 export const GRID_COLUMNS = { lg: 12, md: 12, sm: 6, xs: 2 } as const;
 export type Breakpoint = keyof typeof GRID_COLUMNS;
@@ -217,3 +219,30 @@ export function addGridItem(layouts: GridLayouts, widget: WidgetSpec): GridLayou
       minW: Math.min(cols, definition?.minSize.w ?? 1), minH: definition?.minSize.h ?? 4 }]];
   }));
 }
+
+/** A new widget directly below `sourceId`, as wide as it; the grid moves the rest down.
+ * Only breakpoints the layout already has get it: every saved breakpoint must hold
+ * every widget, and the grid fills in the rest from them. */
+export function addGridItemBelow(layouts: GridLayouts, widget: WidgetSpec, sourceId: string): GridLayouts {
+  const definition = widgetDefinition(widget.kind);
+  const present = Object.entries(GRID_COLUMNS).filter(([breakpoint]) => layouts[breakpoint as Breakpoint]);
+  return Object.fromEntries((present.length ? present : Object.entries(GRID_COLUMNS)).map(([breakpoint, cols]) => {
+    const current = layouts[breakpoint as Breakpoint] ?? [];
+    const source = current.find(item => item.i === sourceId);
+    const w = source ? source.w : Math.min(cols, definition?.defaultSize.w ?? cols);
+    const h = definition?.defaultSize.h ?? 8;
+    const y = source ? source.y + source.h : Math.max(0, ...current.map(item => item.y + item.h));
+    // Make room first, so the grid's compaction cannot move another widget into the spot.
+    const shifted = current.map(item => item.y >= y ? { ...item, y: item.y + h } : item);
+    return [breakpoint, [...shifted, { i: widget.id, x: source?.x ?? 0, y, w, h,
+      minW: Math.min(cols, definition?.minSize.w ?? 1), minH: definition?.minSize.h ?? 4 }]];
+  }));
+}
+
+/** The playback position that shows a track's recorded hour, or null when that hour
+ * is outside the track's branch. Widgets ask; only the clock moves time. */
+export function seekPositionFor(track: Pick<BoundTrack, 'axisOffset' | 'branch'>, rawHour: number): number | null {
+  if (!Number.isFinite(rawHour) || rawHour < track.branch.firstHour || rawHour > track.branch.lastHour) return null;
+  return Math.floor(rawHour) - track.axisOffset;
+}
+

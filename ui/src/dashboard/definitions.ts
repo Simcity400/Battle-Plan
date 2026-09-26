@@ -25,6 +25,11 @@ export interface WidgetRuntime {
   recordings: ReplayFile[];
   /** Points a widget at the default campaign (null), an open campaign's id or a recording path to open. */
   assignCampaign: (widgetId: string, chosen: string | null) => Promise<void>;
+  /** Asks the shared clock to show a track's recorded hour ("Jump to"). False when
+   * the hour is outside that track's branch; the clock still owns time. */
+  requestSeek: (trackId: string, rawHour: number) => boolean;
+  /** Adds a widget below another as a layout change, such as a pinned breakdown. */
+  addWidgetBelow: (sourceId: string, widget: WidgetSpec) => void;
 }
 
 export interface WidgetProps {

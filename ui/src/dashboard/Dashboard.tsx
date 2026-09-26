@@ -7,7 +7,7 @@ import type { MapOptions, ReplayMetadata } from '../shell/api';
 import MapControls from '../components/MapControls';
 import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
-import { addGridItem, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, mergeViewPreferences, stableJson } from './model';
+import { addGridItem, addGridItemBelow, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseTemplate, saveLayouts } from './storage';
 import { PlaybackController } from './playback';
@@ -335,9 +335,20 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   }, [tracks, clock]);
 
   const recordings = replayLibrary.files;
+  const requestSeek = useCallback((trackId: string, rawHour: number) => {
+    const track = tracks.find(item => item.id === trackId);
+    const position = track ? seekPositionFor(track, rawHour) : null;
+    if (position == null) return false;
+    clock.seek(position);
+    return true;
+  }, [tracks, clock]);
+  const addWidgetBelow = useCallback((sourceId: string, widget: WidgetSpec) => {
+    if (templateRef.current.widgets.length >= MAX_WIDGETS) { setWarning(`A layout holds up to ${MAX_WIDGETS} widgets. Remove one to pin another.`); return; }
+    update(previous => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItemBelow(previous.layouts, widget, sourceId) }));
+  }, [update]);
   const runtime = useMemo(() => ({ onMapBranch, tracks, clock, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden,
-    campaigns, recordings, assignCampaign }),
-    [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, assignCampaign]);
+    campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow }),
+    [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow]);
 
 
   return <div className="dashboard">
@@ -365,7 +376,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
           {library.layouts.map((entry) => <option key={entry.id} value={entry.id}>{entry.template.name}</option>)}
         </select></label>
       <div className="dash-toolbar" role="toolbar" aria-label="Layout changes">
-        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker disabled={!editing || template.widgets.length >= 48} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind) => {
+        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker disabled={!editing || template.widgets.length >= MAX_WIDGETS} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind) => {
           const widget = createWidget(kind, template.tracks[0].id);
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
         }} /></span>

@@ -1,0 +1,28 @@
+/* The drill-down: a slide inside the widget, or a panel beside it. */
+.drill-host { position: relative; flex: 1; min-height: 0; height: 100%; overflow: hidden; }
+.drill-face { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; transition: transform var(--t-slow) var(--ease), opacity var(--t-slow) var(--ease); }
+.drill-main { transform: translateX(0); }
+.drill-view { transform: translateX(100%); opacity: 0; background: var(--surface); }
+.drill-host[data-open] .drill-main { transform: translateX(-30%); opacity: 0; }
+.drill-host[data-open] .drill-view { transform: translateX(0); opacity: 1; }
+:root[data-motion='reduced'] .drill-face { transition: none; }
+
+.drill-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line-soft); font-size: var(--type-md); }
+.drill-header > strong { font-weight: 600; }
+.drill-day { color: var(--muted); font-variant-numeric: tabular-nums; }
+.drill-header > :is(.drill-following, .button:not(.quiet)) { margin-left: auto; }
+.drill-following { color: var(--accent); }
+.drill-body { display: flex; flex: 1; flex-direction: column; gap: var(--space-4); min-height: 0; padding: var(--space-3); overflow: auto; }
+.drill-popout { width: min(440px, calc(100vw - 24px)); max-height: min(560px, calc(100vh - 24px)); padding: 0; display: flex; flex-direction: column; }
+.drill-popout .drill-body { min-height: 200px; }
+
+.drill-parts { display: grid; grid-template-columns: minmax(0, max-content) minmax(60px, 1fr) auto auto; align-items: center; gap: var(--space-2) var(--space-3); margin: 0; padding: 0; list-style: none; font-size: var(--type-sm); }
+.drill-parts li { display: contents; }
+.drill-part-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drill-part-bar { height: 8px; border-radius: 4px; background: var(--hover); overflow: hidden; }
+.drill-part-bar i { display: block; height: 100%; border-radius: 4px; }
+.drill-parts b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.drill-parts b.is-negative { color: var(--error); }
+.drill-parts small { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.drill-parts .is-unattributed .drill-part-label { color: var(--muted); font-style: italic; }
+.drill-empty { margin: 0; color: var(--muted); font-size: var(--type-sm); }

@@ -48,6 +48,7 @@ const paths = {
   grip: <>{[6, 12, 18].map(y => [9, 15].map(x => <circle key={`${x}${y}`} cx={x} cy={y} r="1.35" fill="currentColor" stroke="none" />))}</>,
   more: <>{[6, 12, 18].map(x => <circle key={x} cx={x} cy="12" r="1.5" fill="currentColor" stroke="none" />)}</>,
   eject: <><path d="M12 5 5.5 12.5h13L12 5Z" /><path d="M5.5 17.5h13" /></>,
+  pin: <><path d="M9 3.5h6l-.8 5.6 3.3 3.2v1.7H6.5v-1.7l3.3-3.2L9 3.5Z" /><path d="M12 14v6.5" /></>,
   target: <><circle cx="12" cy="12" r="8.75" /><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="1" fill="currentColor" /></>,
   flask: <><path d="M9.5 3.5h5m-4 0v5.2L5 18.3a1.5 1.5 0 0 0 1.3 2.2h11.4a1.5 1.5 0 0 0 1.3-2.2l-5.5-9.6V3.5" /><path d="M7.4 14.5h9.2" /></>,
   sparkle: <path d="m12 3.5 1.9 5.6 5.6 1.9-5.6 1.9-1.9 5.6-1.9-5.6-5.6-1.9 5.6-1.9L12 3.5Z" />,
