@@ -1,12 +1,24 @@
 import { useSyncExternalStore } from 'react';
 import type { HourWindow } from './model';
 
-// UI limits retained until end-to-end playback throughput has been measured.
+// The cap is about a month per second, measured end to end on a recording: the map
+// follows only the latest hour and widgets look hours up locally, so a tick that
+// skips many hours costs no more.
 export const MIN_PLAYBACK_SPEED = 0.25;
-export const MAX_PLAYBACK_SPEED = 24;
-export const PLAYBACK_SPEEDS = [0.25, 1, 4, 12, 24] as const;
+export const MAX_PLAYBACK_SPEED = 720;
+export const PLAYBACK_SPEEDS = [0.25, 1, 4, 24, 168, 720] as const;
 export const validPlaybackSpeed = (speed: number) => Number.isFinite(speed)
   && speed >= MIN_PLAYBACK_SPEED && speed <= MAX_PLAYBACK_SPEED;
+
+/** A rate as a number and a unit: whole weeks or days per second where they fit,
+ * else hours rounded for display (the clock keeps the exact rate). */
+export function speedParts(hoursPerSecond: number): [string, string] {
+  const unit = (count: number, name: string): [string, string] => [String(count), `${name}${count === 1 ? '' : 's'}/s`];
+  if (hoursPerSecond >= 168 && hoursPerSecond % 168 === 0) return unit(hoursPerSecond / 168, 'week');
+  if (hoursPerSecond >= 24 && hoursPerSecond % 24 === 0) return unit(hoursPerSecond / 24, 'day');
+  return [String(Math.round(hoursPerSecond * 100) / 100), 'h/s'];
+}
+export const speedLabel = (hoursPerSecond: number) => speedParts(hoursPerSecond).join(' ');
 
 export interface PlaybackSnapshot {
   position: number;
@@ -27,6 +39,13 @@ export class PlaybackController {
   private lastTime = 0;
 
   getSnapshot = () => this.snapshot;
+  /** The position at `now`, carried forward from the last tick while playing so
+   * animations move smoothly between ticks. Never past the branch end. */
+  positionAt = (now: number = performance.now()) => {
+    const { playing, position, hoursPerSecond, bounds } = this.snapshot;
+    if (!playing || !bounds) return position;
+    return Math.min(bounds.lastHour, position + Math.max(0, now - this.lastTime) / 1000 * hoursPerSecond);
+  };
   getHour = () => this.snapshot.hour;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   subscribeHour = (listener: () => void) => { this.hourListeners.add(listener); return () => { this.hourListeners.delete(listener); }; };
@@ -49,20 +68,32 @@ export class PlaybackController {
 
   setPlaying(playing: boolean): void {
     if (!this.snapshot.bounds) return;
-    this.publish({ ...this.snapshot, playing: playing && this.snapshot.position < this.snapshot.bounds.lastHour });
+    // Keep the time played since the last tick, so pausing never steps back.
+    const position = this.bank();
+    this.publish({ ...this.snapshot, position, playing: playing && position < this.snapshot.bounds.lastHour });
     this.syncTimer();
   }
 
   setSpeed(hoursPerSecond: number): void {
     if (!validPlaybackSpeed(hoursPerSecond)) return;
-    this.publish({ ...this.snapshot, hoursPerSecond });
-    this.lastTime = performance.now();
+    // Bank the time played at the old speed before switching.
+    this.publish({ ...this.snapshot, position: this.bank(), hoursPerSecond });
   }
 
   stop(): void {
     if (this.timer != null) clearInterval(this.timer);
     this.timer = null;
-    this.publish({ ...this.snapshot, playing: false });
+    this.publish({ ...this.snapshot, position: this.bank(), playing: false });
+  }
+
+  /** The position now, with the clock's anchor moved to now. The anchor moves
+   * before anyone is told, so a subscriber that stops or pauses the clock in
+   * response never counts the same time twice. */
+  private bank(): number {
+    const now = performance.now();
+    const position = this.positionAt(now);
+    this.lastTime = now;
+    return position;
   }
 
   private publish(next: PlaybackSnapshot, discontinuity = false): void {
