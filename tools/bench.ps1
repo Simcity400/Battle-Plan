@@ -385,7 +385,13 @@ function Convert-Win32Path([string]$path) {
 }
 function Read-Status([string]$path) {
     for ($attempt = 0; $attempt -lt 8; $attempt++) {
-        try { return Get-Content -LiteralPath $path -Encoding UTF8 -Raw | ConvertFrom-Json } catch { Start-Sleep -Milliseconds 100 }
+        # Share delete: the collector replaces status.json atomically every second,
+        # and a reader without delete sharing makes that replacement fail.
+        try {
+            $stream = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            try { $text = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8).ReadToEnd() } finally { $stream.Dispose() }
+            return $text | ConvertFrom-Json
+        } catch { Start-Sleep -Milliseconds 100 }
     }
     return $null
 }

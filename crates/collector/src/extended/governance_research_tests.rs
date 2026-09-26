@@ -785,19 +785,17 @@ fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
         assert_eq!(selection.scanned, 2);
         assert_eq!(selection.contains(1), hour % 24 == 1);
         assert_eq!(selection.contains(3), hour % 24 == 3);
-        // Every emitted row carries this read's hour.
+        // Every emitted row belongs to a selected owner; the spool records
+        // their read hour in SliceReads.
         for view in research_tables(&captured) {
             let TableView::Complete(rows) = view else {
                 panic!("slice tables complete")
             };
-            match rows {
-                TableRows::ResearchInputs(rows) => assert!(rows.iter().all(|r| r.sample_hour == hour)),
-                TableRows::ResearchAppliedBonuses(rows) => {
-                    assert!(rows.iter().all(|r| r.sample_hour == hour))
-                }
-                TableRows::ResearchModifiers(rows) => assert!(rows.iter().all(|r| r.sample_hour == hour)),
-                other => panic!("unexpected {:?}", other.table()),
-            }
+            assert!(
+                replay::sliced::owners(&rows)
+                    .into_iter()
+                    .all(|owner| selection.contains(owner))
+            );
         }
     }
     // The slice rows equal that country's rows from a full read.

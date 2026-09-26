@@ -32,7 +32,11 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, HMODULE, WAIT_OBJECT_0},
-    Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW},
+    Storage::FileSystem::{
+        CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_RENAME_INFO, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfoEx, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING, SetFileInformationByHandle,
+    },
     System::{
         LibraryLoader::{FreeLibraryAndExitThread, GetModuleFileNameW, GetModuleHandleW},
         Performance::QueryPerformanceFrequency,
@@ -147,6 +151,84 @@ fn status_rename_retry_delay(error: &io::Error, elapsed: Duration) -> Option<Dur
         .map(|remaining| remaining.min(Duration::from_millis(1)))
 }
 
+/// `FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS`.
+const RENAME_REPLACE_POSIX: u32 = 0x1 | 0x2;
+
+/// Atomically replace `target` with `source` using POSIX rename semantics:
+/// the new name takes effect even while a reader holds the old file open with
+/// delete sharing, which a classic `MoveFileExW` replace refuses with
+/// ERROR_ACCESS_DENIED. `Ok(false)`: the volume does not support it.
+fn posix_replace(source: &[u16], target: &[u16]) -> io::Result<bool> {
+    let handle = unsafe {
+        CreateFileW(
+            source.as_ptr(),
+            DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // The name excludes its terminator; the struct keeps one u16 for it.
+    let name = &target[..target.len() - 1];
+    let header = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let size = header + std::mem::size_of_val(name) + 2;
+    let mut buffer = vec![0u64; size.div_ceil(8)];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let result = unsafe {
+        (*info).Anonymous.Flags = RENAME_REPLACE_POSIX;
+        (*info).RootDirectory = std::ptr::null_mut();
+        (*info).FileNameLength = std::mem::size_of_val(name) as u32;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
+            name.len(),
+        );
+        let ok = SetFileInformationByHandle(handle, FileRenameInfoEx, info.cast(), size as u32);
+        let error = io::Error::last_os_error();
+        CloseHandle(handle);
+        if ok != 0 { Ok(true) } else { Err(error) }
+    };
+    match result {
+        // Volumes without POSIX rename (FAT, older NTFS drivers) report these.
+        Err(error) if matches!(error.raw_os_error(), Some(1 | 50 | 87)) => Ok(false),
+        other => other,
+    }
+}
+
+/// Set once a status directory reports that POSIX rename is unsupported
+/// (network shares, FAT): later writes go straight to the classic replace.
+static POSIX_RENAME_UNSUPPORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// One replace attempt: POSIX rename while supported, else the classic
+/// `MoveFileExW` replace, which any open reader blocks.
+fn replace_once(source: &[u16], target: &[u16]) -> io::Result<()> {
+    if !POSIX_RENAME_UNSUPPORTED.load(Ordering::Relaxed) {
+        match posix_replace(source, target) {
+            Ok(true) => return Ok(()),
+            Ok(false) => POSIX_RENAME_UNSUPPORTED.store(true, Ordering::Relaxed),
+            Err(error) => return Err(error),
+        }
+    }
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } != 0
+    {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 fn replace_status(temp: &Path, path: &Path) -> io::Result<()> {
     let wide = |path: &Path| {
         path.as_os_str()
@@ -158,21 +240,16 @@ fn replace_status(temp: &Path, path: &Path) -> io::Result<()> {
     let target = wide(path);
     let started = Instant::now();
     let mut attempts = 0;
-    // Even a delete-sharing status reader can transiently prevent replacement.
-    // Bound retries off the game thread; OS I/O and scheduling are not time-bounded.
+    // With POSIX rename a delete-sharing reader (the recorder, bench and smoke)
+    // never blocks replacement. A reader without delete sharing still does, as
+    // does any reader after the classic fallback, so keep the bounded retry.
+    // It runs off the game thread; OS I/O and scheduling are not time-bounded.
     let error = loop {
         attempts += 1;
-        if unsafe {
-            MoveFileExW(
-                source.as_ptr(),
-                target.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        } != 0
-        {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
+        let error = match replace_once(&source, &target) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
         let Some(delay) = status_rename_retry_delay(&error, started.elapsed()) else {
             break error;
         };
@@ -727,6 +804,7 @@ fn add_decode_status(status: &mut Value) {
         let eta_hours = load(&eta.hours);
         let eta_mean = |value: u64| value.checked_div(eta_hours).unwrap_or(0);
         status["background_priority"] = background_priority_status();
+        status["refresh_requests_accepted"] = json!(REFRESH_ACCEPTED.load(Ordering::Relaxed));
         status["eta_inputs"] = json!({
             "hours": eta_hours,
             "walks": load(&eta.walks),
@@ -952,6 +1030,7 @@ fn spool_loop(
     let mut work = WorkerWork::new();
     let mut reported = Instant::now() - Duration::from_secs(1);
     let mut priority = OwnPriority::new();
+    let mut refresh_requests = RefreshRequests::default();
     loop {
         priority.follow(shared.buffers_backlogged());
         while let Some(index) = shared.ready.pop() {
@@ -1176,6 +1255,7 @@ fn spool_loop(
         work.idle_flush_max_ns = work.idle_flush_max_ns.max(flush_ns);
         if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
         {
+            refresh_requests.poll(&config.output_dir, shared);
             let status_started = sampling::qpc();
             let mut status = processor.status();
             status["state"] = json!(if shared.recording.load(Ordering::Acquire) {
@@ -1277,6 +1357,46 @@ fn spool_loop(
     drain_result.map(|()| last_warning)
 }
 
+/// `recorder refresh` asks for one full-refresh hour: every scheduled table,
+/// including daily, static and sliced ones, is read at the next hourly sample.
+/// The request is a file in the session directory; the spool thread turns it
+/// into the existing `force_next` and acknowledges it. Nothing is sent to the
+/// game. Oracles use this to compare every table at a chosen hour.
+#[derive(Default)]
+struct RefreshRequests {
+    /// The last accepted token. A request whose acknowledgement or removal
+    /// failed is still on disk; it must not force every later hour full.
+    last: Option<String>,
+}
+
+pub(crate) const REFRESH_REQUEST: &str = "refresh.request";
+pub(crate) const REFRESH_ACK: &str = "refresh.ack";
+
+impl RefreshRequests {
+    fn poll(&mut self, session: &Path, shared: &Shared) {
+        let request = session.join(REFRESH_REQUEST);
+        let Ok(token) = fs::read_to_string(&request) else {
+            return;
+        };
+        // The requester writes a temporary file and renames it, so a token is
+        // whole when present; an empty one is not a request.
+        let token = token.trim();
+        if token.is_empty() || self.last.as_deref() == Some(token) {
+            return;
+        }
+        shared.force_next.store(true, Ordering::Release);
+        REFRESH_ACCEPTED.fetch_add(1, Ordering::Relaxed);
+        self.last = Some(token.to_owned());
+        // Acknowledge before removing the request: the requester waits for
+        // its token here.
+        if fs::write(session.join(REFRESH_ACK), token).is_ok() {
+            let _ = fs::remove_file(&request);
+        }
+    }
+}
+
+static REFRESH_ACCEPTED: AtomicU64 = AtomicU64::new(0);
+
 static PRIORITY_LOWERED: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_RAISED: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_FAILURES: AtomicU64 = AtomicU64::new(0);
@@ -1339,6 +1459,42 @@ fn background_priority_status() -> serde_json::Value {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_refresh_request_sets_force_next_once_and_is_acknowledged() {
+        let session = std::env::temp_dir().join(format!("hoi4-refresh-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&session);
+        fs::create_dir_all(&session).unwrap();
+        let shared = sampling::Shared::new(0, 0, 1);
+        let mut requests = RefreshRequests::default();
+        // No request: nothing forced.
+        requests.poll(&session, &shared);
+        assert!(!shared.force_next.load(Ordering::Acquire));
+        fs::write(session.join(REFRESH_REQUEST), "token-7\n").unwrap();
+        requests.poll(&session, &shared);
+        assert!(shared.force_next.swap(false, Ordering::AcqRel));
+        assert_eq!(
+            fs::read_to_string(session.join(REFRESH_ACK)).unwrap(),
+            "token-7"
+        );
+        assert!(!session.join(REFRESH_REQUEST).exists());
+        // Consumed: a later poll forces nothing more.
+        requests.poll(&session, &shared);
+        assert!(!shared.force_next.load(Ordering::Acquire));
+        // A request that could not be removed is accepted once, not every hour.
+        fs::write(session.join(REFRESH_REQUEST), "token-7").unwrap();
+        requests.poll(&session, &shared);
+        assert!(!shared.force_next.load(Ordering::Acquire));
+        // An empty token is not a request; a new token is.
+        fs::write(session.join(REFRESH_REQUEST), " \n").unwrap();
+        requests.poll(&session, &shared);
+        assert!(!shared.force_next.load(Ordering::Acquire));
+        fs::write(session.join(REFRESH_REQUEST), "token-8").unwrap();
+        requests.poll(&session, &shared);
+        assert!(shared.force_next.swap(false, Ordering::AcqRel));
+        assert_eq!(requests.last.as_deref(), Some("token-8"));
+        let _ = fs::remove_dir_all(&session);
+    }
+
     /// A registry whose three headers report `count` elements.
     struct Registry(std::cell::Cell<u32>);
 
@@ -1394,6 +1550,52 @@ mod tests {
         memory.0.set(1 << 20);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), None);
+    }
+
+    #[test]
+    fn status_replaces_while_a_delete_sharing_reader_holds_it_open() {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// Removes the directory even when an assertion fails.
+        struct TempDir(PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let raw = std::env::temp_dir().join(format!("hoi4-status-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&raw);
+        fs::create_dir_all(&raw).unwrap();
+        // Production writes through canonical \\?\ paths.
+        let dir = TempDir(fs::canonicalize(&raw).unwrap());
+        assert!(dir.0.as_os_str().to_string_lossy().starts_with(r"\\?\"));
+        let path = dir.0.join("status.json");
+        write_status(&path, &json!({"hours": 1})).unwrap();
+        // A reader that shares delete, as the recorder, bench and smoke do.
+        let shared = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path)
+            .unwrap();
+        write_status(&path, &json!({"hours": 2})).unwrap();
+        let current: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(current["hours"], 2);
+        drop(shared);
+        // A reader without delete sharing still blocks it, within the bounded retry.
+        let exclusive = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .unwrap();
+        let error = write_status(&path, &json!({"hours": 3})).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot atomically replace status")
+        );
+        drop(exclusive);
+        write_status(&path, &json!({"hours": 4})).unwrap();
+        // This local NTFS directory supports POSIX rename.
+        assert!(!POSIX_RENAME_UNSUPPORTED.load(Ordering::Relaxed));
     }
 
     #[test]

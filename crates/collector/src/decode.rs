@@ -625,7 +625,8 @@ pub fn characters_refresh_hour(hour: i32, force_full: bool) -> bool {
 }
 
 /// Projects refresh together on their daily slot (`replay::cadence`); full
-/// hours force their complete acquisition.
+/// hours (branch start, load, gap or an explicit refresh request) force their
+/// complete acquisition.
 pub fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
     let walk = replay::cadence::should_walk(PROJECTS[0], hour, force_full);
     for table in PROJECTS.iter().skip(1) {

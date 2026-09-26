@@ -1,7 +1,7 @@
 //! Slot assignments from observed research tables, with explicit coverage and bounds.
 //!
 //! Research is read one country slice per hour (see the collector README), so
-//! a country's rows are observed at their `sample_hour`, usually a day apart,
+//! a country's rows are observed at their read hour (SliceReads), usually a day apart,
 //! and carried rows are ignored. Consecutive reads with no unobservable hour
 //! between them are continuous: a new assignment is bounded by the previous
 //! read, unless an hour between them was unobservable or a scheduled read
@@ -772,6 +772,7 @@ fn research_branch_selected(
         replay::rows::TableId::ResearchInputs,
         replay::rows::TableId::ResearchAppliedBonuses,
         replay::rows::TableId::ResearchModifiers,
+        replay::rows::TableId::SliceReads,
     ];
     let mut countries: BTreeMap<String, Country> = BTreeMap::new();
     // The latest recorded hour whose research inputs could not be observed,
@@ -809,6 +810,12 @@ fn research_branch_selected(
             let inventory = decoded.complete::<tables::ResearchTechnologies>().ok();
             let bonuses = decoded.complete::<tables::ResearchAppliedBonuses>().ok();
             let modifier_rows = decoded.complete::<tables::ResearchModifiers>().ok();
+            // Every sliced row's read hour; without it no read is observable.
+            let Ok(reads) = decoded.complete::<tables::SliceReads>() else {
+                last_bad = Some(frame.hour);
+                continue;
+            };
+            let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
             // Each country joins only the input rows of its own linked IDs, so
             // a row whose country has no link is ignored; it never hides the
             // reads of linked countries in the same frame.
@@ -837,10 +844,18 @@ fn research_branch_selected(
                     .collect();
                 // Rows keep the hour they were read at. Observe a read only in
                 // the frame of its own hour; carried rows add nothing.
-                let Some(read) = inputs.first().map(|input| input.sample_hour) else {
+                use replay::rows::TableId;
+                let Some(read) = inputs
+                    .first()
+                    .and_then(|input| read_hour(TableId::ResearchInputs, input.country))
+                else {
                     continue;
                 };
-                if read != frame.hour || inputs.iter().any(|input| input.sample_hour != read) {
+                if read != frame.hour
+                    || inputs.iter().any(|input| {
+                        read_hour(TableId::ResearchInputs, input.country) != Some(read)
+                    })
+                {
                     continue;
                 }
                 let state = countries.entry(tag.to_owned()).or_default();
@@ -859,12 +874,14 @@ fn research_branch_selected(
                 let bonuses = bonuses.filter(|rows| {
                     rows.iter()
                         .filter(|row| ids.contains(&row.country))
-                        .all(|row| row.sample_hour == read)
+                        .all(|row| {
+                            read_hour(TableId::ResearchAppliedBonuses, row.country) == Some(read)
+                        })
                 });
                 let modifier_rows = modifier_rows.filter(|rows| {
                     rows.iter()
                         .filter(|row| ids.contains(&row.country))
-                        .all(|row| row.sample_hour == read)
+                        .all(|row| read_hour(TableId::ResearchModifiers, row.country) == Some(read))
                 });
                 state.observe_inputs(
                     (country.id, canonical),
@@ -1205,7 +1222,6 @@ mod tests {
                 cost_reduction_raw: None,
                 speed_bonus_raw: 50_000,
                 ahead_reduction_raw: 200_000,
-                sample_hour: 0,
             },
             ResearchAppliedBonusRow {
                 country: 11,

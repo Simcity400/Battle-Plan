@@ -49,43 +49,43 @@ fn failed_capture(table: TableId, hour: i32, force_full: bool, reason: &'static 
 
 // Native conversion reuse stays within its pack's existing timing scope.
 macro_rules! spool_inputs {
-    (lexical, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (lexical, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($lexical)
     };
-    (characters, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (characters, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($characters)
     };
-    (character_portraits, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (character_portraits, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($projection.as_deref_mut())
     };
-    (leader_portraits, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (leader_portraits, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($projection.as_deref_mut())
     };
-    (ship_models, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (ship_models, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($projection.as_deref_mut())
     };
-    (intel, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (intel, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($baseline, $scratch, $intel)
     };
-    (governance, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($research)
+    (governance, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+        $captured.table_inputs()
     };
-    (division_presentation, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (division_presentation, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($projection.as_deref_mut())
     };
-    (production, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (production, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($projection.as_deref_mut())
     };
-    (economy, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (economy, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($projection.as_deref_mut())
     };
-    (fog, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (fog, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($projection.as_deref_mut())
     };
-    (supply_trains, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (supply_trains, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($projection.as_deref_mut())
     };
-    ($pack:ident, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    ($pack:ident, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.tables().map(TableInput::Sampled)
     };
 }
@@ -219,7 +219,6 @@ macro_rules! packs {
                 destination: &mut [TableInput; TABLE_COUNT],
                 variables_baseline: Option<(BaselineToken, &[ScriptVariablesRow])>,
                 variables_scratch: &mut intel::ScriptVariableComparison,
-                research: Option<&mut governance::ResearchConversion<'_>>,
                 characters: Option<&mut characters::CharacterConversion<'_>>,
                 lexical: Option<&mut lexical::LexicalConversion<'_>>,
                 intel: Option<&mut intel::IntelConversion<'_>>,
@@ -228,7 +227,7 @@ macro_rules! packs {
                 let mut costs = [0; PACK_NAMES.len()];
                 let mut slots = costs.iter_mut();
                 $(let started = qpc();
-                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, variables_baseline, variables_scratch, research, characters, lexical, intel, projection)) { destination[id.index()] = view; }
+                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, variables_baseline, variables_scratch, characters, lexical, intel, projection)) { destination[id.index()] = view; }
                 *slots.next().unwrap() = qpc() - started;)+
                 if let Some(reason) = self.ordinary_failure {
                     for &id in OrdinaryPacks::TABLES.iter().flat_map(|tables| tables.iter()) {
@@ -313,6 +312,7 @@ packs!(
     state_flags,
     visibility,
     building_detection,
+    slice_reads,
     weather
 );
 
@@ -354,7 +354,7 @@ impl Captured {
     /// Freeze this callback's primary activity before any shared source visitor.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         // A frame whose sliced job never runs must not report an older read.
-        self.governance.reset_research_selection(hour, force_full);
+        self.governance.reset_slice_selections(hour, force_full);
         self.air.prepare_hour(hour, force_full);
         self.fog.prepare_hour(hour, force_full);
         self.naval_history.prepare_hour(hour, force_full);
@@ -574,6 +574,7 @@ impl Captured {
     pub(crate) fn family_selection(&self, family: usize) -> &crate::slicing::SliceSelection {
         match family {
             crate::slicing::RESEARCH => self.governance.research_selection(),
+            crate::slicing::TECHNOLOGIES => self.governance.technology_selection(),
             _ => unreachable!("unregistered sliced family {family}"),
         }
     }
@@ -595,10 +596,12 @@ impl Captured {
         state: usize,
         hour: i32,
         force_full: bool,
+        technology_fingerprints: Box<crate::slicing::SliceFingerprints>,
     ) -> crate::acquisition_jobs::GovernanceRequest {
         self.governance_report = None;
         self.variants_ticks = None;
         crate::acquisition_jobs::GovernanceRequest {
+            technology_fingerprints,
             countries: Arc::clone(countries),
             context: governance::CaptureContext {
                 base,
@@ -613,20 +616,36 @@ impl Captured {
         }
     }
 
+    /// Returns the technology fingerprint store: forgotten if the job was
+    /// interrupted, and with this hour's selection invalidated if a technology
+    /// table was not read completely, so its owners are read at the next hour.
     pub(crate) fn restore_governance_request(
         &mut self,
         mut request: crate::acquisition_jobs::GovernanceRequest,
         report: Result<crate::acquisition_jobs::GovernanceReport, crate::acquisition::Failure>,
-    ) {
+    ) -> Box<crate::slicing::SliceFingerprints> {
         let report = match report {
             Ok(report) => report,
-            Err(failure) => request.fail(match failure {
-                crate::acquisition::Failure::Panicked => "governance acquisition panicked",
-                crate::acquisition::Failure::Stopped => {
-                    "governance acquisition stopped before reading"
-                }
-            }),
+            Err(failure) => {
+                request.technology_fingerprints.forget();
+                request.fail(match failure {
+                    crate::acquisition::Failure::Panicked => "governance acquisition panicked",
+                    crate::acquisition::Failure::Stopped => {
+                        "governance acquisition stopped before reading"
+                    }
+                })
+            }
         };
+        let outcomes = request.captured.outcomes();
+        if governance::TECHNOLOGIES.iter().any(|&index| {
+            !matches!(outcomes[index], Outcome::Rows { .. })
+                && !matches!(outcomes[index], Outcome::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
+        }) {
+            request
+                .captured
+                .technology_selection()
+                .invalidate(&mut request.technology_fingerprints);
+        }
         self.governance_report = Some(report.governance);
         self.variants_ticks = Some(report.variants);
         self.governance = request.captured;
@@ -634,6 +653,7 @@ impl Captured {
         self.production.restore_variants(request.variants);
         self.construction
             .restore_buildings(request.buildings, Ok(report.buildings));
+        request.technology_fingerprints
     }
 
     /// Loan existing hourly buffers before independent acquisition begins.
@@ -2836,7 +2856,6 @@ mod tests {
                     None,
                     None,
                     None,
-                    None,
                 );
                 for (ids, reason) in [
                     (&slow, "slow acquisition failed"),
@@ -3059,10 +3078,16 @@ mod tests {
                 captured.take_research_request(&countries, 11, 0x1000, hour, force_full, store);
             // The family keeps no research capacity while the part is loaned.
             assert!(captured.allocated_bytes() < bytes);
-            let governance =
-                captured.take_governance_request(&countries, 11, 0x1000, hour, force_full);
+            let governance = captured.take_governance_request(
+                &countries,
+                11,
+                0x1000,
+                hour,
+                force_full,
+                Box::new(crate::slicing::SliceFingerprints::new()),
+            );
             // Governance fails; its restore must not reach the loaned research rows.
-            captured
+            let _technologies = captured
                 .restore_governance_request(governance, Err(crate::acquisition::Failure::Panicked));
             let report = match failure {
                 None => Ok(crate::acquisition_jobs::ResearchReport { ticks: [5, 6, 7] }),
@@ -3142,8 +3167,14 @@ mod tests {
             let bytes = captured.allocated_bytes();
             let governance_bytes = captured.governance.allocated_bytes();
             let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
-            let request =
-                captured.take_governance_request(&countries, 11, 0x1000, 1, failure.is_none());
+            let request = captured.take_governance_request(
+                &countries,
+                11,
+                0x1000,
+                1,
+                failure.is_none(),
+                Box::new(crate::slicing::SliceFingerprints::new()),
+            );
             assert!(captured.governance_report.is_none());
             assert_eq!(captured.governance.allocated_bytes(), 0);
             assert_eq!(
@@ -3183,7 +3214,8 @@ mod tests {
             // before restoring the worker-only families.
             let gated = captured.take_gated_request(11, 0x1000, 1, context.force_full);
             captured.restore_gated_request(gated, false);
-            captured.restore_governance_request(request, failure.map_or(Ok(report), Err));
+            let _technologies =
+                captured.restore_governance_request(request, failure.map_or(Ok(report), Err));
             assert_eq!(Arc::strong_count(&countries), 1);
             assert_eq!(captured.allocated_bytes(), bytes);
             assert!(captured.governance.focus_raw_mode);
@@ -3210,13 +3242,21 @@ mod tests {
                         0
                     }
                 );
-                if failure.is_some() && (2..=4).contains(&slot) {
+                // ResearchSlots is off its slot; the sliced technology tables
+                // are read every hour, so the failure is theirs.
+                if failure.is_some() && slot == 3 {
                     assert_eq!(
                         expected_outcomes[slot],
                         Outcome::Unavailable {
                             reason: replay::cadence::SKIPPED_REASON
                         }
                     );
+                }
+                if failure.is_some() && governance::TECHNOLOGIES.contains(&slot) {
+                    assert!(matches!(
+                        expected_outcomes[slot],
+                        Outcome::Unavailable { reason } if reason != replay::cadence::SKIPPED_REASON
+                    ));
                 }
             }
             for (slot, table) in production::TABLES.into_iter().enumerate().skip(3).take(4) {
@@ -3255,6 +3295,7 @@ mod tests {
                     force_full: true,
                     ..context
                 },
+                &mut crate::slicing::SliceFingerprints::new(),
             );
             assert!(memory.governance.get() > 0);
             captured.reset();

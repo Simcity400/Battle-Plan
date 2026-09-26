@@ -1841,7 +1841,7 @@ impl AirBasesJob {
 }
 
 /// Context of one current worker invocation. Sampling already forces a full
-/// refresh on a campaign/load signal, clock discontinuity or keyframe; the
+/// refresh on a campaign/load signal, clock discontinuity or refresh request; the
 /// worker additionally requires adjacent sequence/hour and the same Shared.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AirBasesMemoContext {

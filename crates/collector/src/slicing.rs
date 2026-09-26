@@ -5,7 +5,7 @@
 //! owner whose change fingerprint differs from its last observation, including
 //! an owner seen for the first time. A fingerprint only adds reads: an equal
 //! value never skips a slice read, so every emitted row is a complete read
-//! labelled with its sample hour. The family computes its fingerprints; this
+//! whose hour the spool records in SliceReads. The family computes its fingerprints; this
 //! module keeps the bookkeeping.
 //!
 //! Owners are native country IDs or native state IDs, one kind per family
@@ -46,17 +46,31 @@ pub(crate) struct SliceFamily {
 }
 
 pub(crate) const RESEARCH: usize = 0;
+pub(crate) const TECHNOLOGIES: usize = 1;
 
 /// Every sliced family. Index with the family constants above.
-pub(crate) const FAMILIES: [SliceFamily; 1] = [SliceFamily {
-    name: "research",
-    owner: OwnerKind::Country,
-    tables: &[
-        TableId::ResearchInputs,
-        TableId::ResearchAppliedBonuses,
-        TableId::ResearchModifiers,
-    ],
-}];
+pub(crate) const FAMILIES: [SliceFamily; 2] = [
+    SliceFamily {
+        name: "research",
+        owner: OwnerKind::Country,
+        tables: &[
+            TableId::ResearchInputs,
+            TableId::ResearchAppliedBonuses,
+            TableId::ResearchModifiers,
+        ],
+    },
+    // Technology rosters change daily for every country, so the family has
+    // no change fingerprint: a constant one reads new owners and unpublished
+    // reads at the next hour. TechnologyDefinitions is its keyed table.
+    SliceFamily {
+        name: "technologies",
+        owner: OwnerKind::Country,
+        tables: &[
+            TableId::ResearchTechnologies,
+            TableId::TechnologyDefinitions,
+        ],
+    },
+];
 
 /// The family that reads `table`, if it is sliced.
 pub(crate) fn family_of(table: TableId) -> Option<usize> {
@@ -153,9 +167,11 @@ impl SliceSelection {
         }
     }
 
-    /// The scan visited every live owner: owners it did not see are gone.
-    pub(crate) fn finish_census(&mut self) {
+    /// The scan visited every live owner: owners it did not see are gone, and
+    /// the store forgets them, so a returning or reused ID is new at once.
+    pub(crate) fn finish_census(&mut self, fingerprints: &mut SliceFingerprints) {
         self.census = true;
+        fingerprints.keep_only(&self.seen);
     }
 
     /// Whether `owner` may still hold rows: seen by a complete census, above
@@ -240,6 +256,16 @@ impl SliceFingerprints {
         self.known.fill(0);
         self.stale.fill(0);
         self.stale_slices = 0;
+    }
+
+    /// Forget every owner a complete census did not see (`seen` bit set).
+    fn keep_only(&mut self, seen: &[u64]) {
+        for (words, seen) in [&mut self.known, &mut self.stale]
+            .into_iter()
+            .flat_map(|words| words.iter_mut().zip(seen))
+        {
+            *words &= *seen;
+        }
     }
 
     /// Make `owner` a change at its next scan.
@@ -358,13 +384,40 @@ mod tests {
         );
         // Without a complete census nothing is known to be gone.
         assert!(selection.live(1) && selection.live(2));
-        selection.finish_census();
+        selection.finish_census(&mut store);
         assert!(selection.live(1) && !selection.live(2));
         // Owners above the tracked range cannot be proven gone.
         assert!(selection.live(70_000) && selection.live(80_000));
         // The next hour starts without a census again.
         selection.reset(4, false);
         assert!(selection.live(2));
+    }
+
+    #[test]
+    fn an_owner_missing_from_a_complete_census_is_new_when_it_returns() {
+        let mut store = SliceFingerprints::new();
+        let mut selection = SliceSelection::new(true);
+        let census = |selection: &mut SliceSelection,
+                      store: &mut SliceFingerprints,
+                      hour,
+                      owners: &[(u32, Option<u64>)]| {
+            selection.reset(hour, false);
+            scan(selection, store, owners);
+            selection.finish_census(store);
+        };
+        census(&mut selection, &mut store, 0, &[(1, Some(1)), (2, Some(2))]);
+        census(&mut selection, &mut store, 3, &[(1, Some(1)), (2, Some(2))]);
+        assert_eq!(selection.early_count, 0);
+        // Owner 2 is gone for an hour, then its ID returns with the same value.
+        census(&mut selection, &mut store, 4, &[(1, Some(1))]);
+        census(&mut selection, &mut store, 5, &[(1, Some(1)), (2, Some(2))]);
+        assert!(selection.contains(2) && !selection.contains(1));
+        // An incomplete census forgets nobody.
+        selection.reset(6, false);
+        scan(&mut selection, &mut store, &[(1, Some(1))]);
+        selection.reset(7, false);
+        scan(&mut selection, &mut store, &[(1, Some(1)), (2, Some(2))]);
+        assert!(!selection.contains(2));
     }
 
     #[test]
@@ -432,5 +485,7 @@ mod tests {
         }
         assert_eq!(FAMILIES[RESEARCH].name, "research");
         assert_eq!(FAMILIES[RESEARCH].owner, OwnerKind::Country);
+        assert_eq!(FAMILIES[TECHNOLOGIES].name, "technologies");
+        assert_eq!(FAMILIES[TECHNOLOGIES].owner, OwnerKind::Country);
     }
 }

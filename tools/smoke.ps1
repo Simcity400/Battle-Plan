@@ -38,7 +38,8 @@ Missing binaries are not an error; the driver falls back to the brief foreground
 ShimStatus prints the per-hook call counters and their one-second deltas. ShimMask -Mask <n>
 sets hook_mask (bit per hook, 0x7f enables all) to bisect what the click path depends on.
 .PARAMETER RecordHours
-Minimum live advance, rounded up to a 720-hour full-refresh boundary where the run stops.
+Live advance in game hours. The smoke requests a full refresh (recorder refresh) for the last
+hour's sample before comparing it with the save.
 1440 reaches the reference hour 60835691 from the record23 save.
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1 -Action Smoke -ExpectedSave save.hoi4 -UiConfig C:\hoi4_scratch\ui.json -Out captures\smoke_new -WaitForUiReview
@@ -393,7 +394,13 @@ function Invoke-FullSmoke {
         }
         $path=$script:smokeStatusPath
         if (-not $path) { return $null }
-        try { [IO.File]::ReadAllText($path) | ConvertFrom-Json } catch { return $null }
+        # Share delete: the collector replaces status.json atomically every second,
+        # and a reader without delete sharing makes that replacement fail.
+        try {
+            $stream=[IO.FileStream]::new($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            try { $text=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8).ReadToEnd() } finally { $stream.Dispose() }
+            $text | ConvertFrom-Json
+        } catch { return $null }
     }
     function Changed-Pixels([string]$first,[string]$second,[int[]]$box) {
         # Pixels in box (x0,y0,x1,y1) whose channels differ by more than 8.
@@ -488,7 +495,7 @@ function Invoke-FullSmoke {
             Start-Sleep -Milliseconds 200; $game.Refresh()
         }
         $clock=Clock; $report.initial_clock=$clock; $report.game_pid=$game.Id
-        $first=[int]$clock.hour; $target=$first + 720*[int][Math]::Ceiling($RecordHours/720.0)
+        $first=[int]$clock.hour; $target=$first + $RecordHours
         $load=$clock.play_session_started_at; $seed=$clock.seed
         $live=[Diagnostics.Stopwatch]::StartNew(); $progressAt=0.0; $slow=$false
         Stage 'recording'
@@ -497,7 +504,13 @@ function Invoke-FullSmoke {
             $clock=Clock
             if ($clock.play_session_started_at -ne $load -or $clock.seed -ne $seed -or $clock.hour -lt $first) { throw 'Unexpected load or campaign change.' }
             if ($live.Elapsed.TotalSeconds -gt $TimeoutSeconds) { throw 'Live recording timed out.' }
-            $status=Status
+            if ($clock.hour -ge $target) {
+                Pause-Game $true; $clock=Clock
+                if ($clock.hour -ne $target) { throw "Missed exact full-refresh save hour: target=$target actual=$($clock.hour)" }
+                break
+            }
+            # Near the target the loop only watches the clock.
+            $status=if ($clock.hour -lt $target-5) { Status } else { $null }
             if ($status) {
                 if ($status.sample_boundary -ne 'end_of_hour') { throw 'Unexpected sample boundary.' }
                 if ($status.hours -gt 0 -and $status.last_hour-$status.hours+1 -ne $first) { throw 'Unexpected first recorded hour or discontinuity.' }
@@ -508,12 +521,11 @@ function Invoke-FullSmoke {
                     $report.live_progress=@{hour=$clock.hour;target=$target;samples=$status.hours}; Write-Report
                 }
             }
-            if (-not $slow -and $clock.hour -ge $target-40) { Speed-Game 0; $slow=$true }
-            if ($clock.hour -ge $target) {
-                Pause-Game $true; $clock=Clock
-                if ($clock.hour -ne $target) { throw "Missed exact full-refresh save hour: target=$target actual=$($clock.hour)" }
-                break
-            }
+            # Each speed click starts a driver process (about a second), and the
+            # game can advance 20+ hours a second at speed 4: stepping down four
+            # speeds takes several seconds. Start ten seconds of play early.
+            $rate=($clock.hour-$first)/[Math]::Max(1.0,$live.Elapsed.TotalSeconds)
+            if (-not $slow -and $clock.hour -ge $target-[Math]::Max(40,[int][Math]::Ceiling($rate*10))) { Speed-Game 0; $slow=$true }
             Start-Sleep -Milliseconds 20
         }
         $live.Stop(); $report.advance_seconds=$live.Elapsed.TotalSeconds; $report.save_hour=$target
@@ -579,6 +591,10 @@ function Invoke-FullSmoke {
         $statusBeforeStep=Status
         $report.paused_observation=@{hour_before=$before.hour;hour_after=(Clock).hour;samples_before=$status.hours;samples_after=$statusBeforeStep.hours;scope='Observed save/camera interval only; not a universal paused-command proof.'}
         Stage 'end-of-hour-boundary'
+        # Keyframes no longer re-read daily and static tables; ask the collector
+        # to read every scheduled table at this hour's sample so the oracle can
+        # compare them all. This touches only the recorder, never the game.
+        $null=Run-Tool $recorder @('refresh','--out',$recordRoot) 'refresh' 60
         Pause-Game $false
         $limit=[DateTime]::UtcNow.AddSeconds(30)
         while ((Clock).hour -lt $target+1) { if ([DateTime]::UtcNow -gt $limit) { throw 'The H+1 sampling step did not advance.' }; Start-Sleep -Milliseconds 5 }

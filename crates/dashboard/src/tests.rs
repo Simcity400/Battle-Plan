@@ -203,6 +203,7 @@ fn sliced_research_frame(hour: i32, read: i32, assignments: &[Option<u32>]) -> D
         frame.tables[TableId::ResearchInputs.index()].clone();
     carried.tables[TableId::ResearchAppliedBonuses.index()] =
         frame.tables[TableId::ResearchAppliedBonuses.index()].clone();
+    carried.tables[TableId::SliceReads.index()] = frame.tables[TableId::SliceReads.index()].clone();
     carried
 }
 
@@ -299,7 +300,6 @@ fn an_unlinked_input_row_does_not_hide_linked_reads_in_its_frame() {
             };
             rows.push(replay::rows::ResearchInputRow {
                 country: 999,
-                sample_hour: 124,
                 ..Default::default()
             });
         }
@@ -401,6 +401,16 @@ fn research_cache_keeps_country_requests_independent() {
         second.technology_handle = 2;
         second.token = b"tech_2".to_vec();
         rows.push(second);
+    }
+    if let TableView::Complete(TableRows::SliceReads(rows)) =
+        &mut *frame.tables[TableId::SliceReads.index()]
+    {
+        rows.push(replay::rows::SliceReadRow {
+            table: TableId::ResearchInputs.index() as u32,
+            owner: 9002,
+            sample_hour: 100,
+        });
+        rows.sort_by_key(|row| (row.table, row.owner));
     }
     let replay = research_replay(vec![frame]);
     let cancel = AtomicBool::new(false);
@@ -1086,8 +1096,6 @@ fn fixture_research_inputs(frame: &mut DecodedFrame) {
                     research_speed_raw: s.research_speed_raw,
                     banked_days_raw: s.banked_days_raw,
                     applied_days_raw: s.applied_days_raw,
-                    // Every fixture hour reads every country.
-                    sample_hour: frame.hour,
                     ..Default::default()
                 };
                 if s.technology_present != 0 {
@@ -1116,6 +1124,29 @@ fn fixture_research_inputs(frame: &mut DecodedFrame) {
     );
     *frame.tables[TableId::ResearchAppliedBonuses.index()] =
         TableView::Complete(TableRows::ResearchAppliedBonuses(vec![]));
+    // Every fixture hour reads every country.
+    let mut reads: Vec<_> = frame
+        .complete::<tables::ResearchSlots>()
+        .map(|slots| slots.iter().map(|slot| slot.country).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|country| {
+            [
+                TableId::ResearchInputs,
+                TableId::ResearchAppliedBonuses,
+                TableId::ResearchModifiers,
+                TableId::ResearchTechnologies,
+            ]
+            .map(|table| replay::rows::SliceReadRow {
+                table: table.index() as u32,
+                owner: country,
+                sample_hour: frame.hour,
+            })
+        })
+        .collect();
+    reads.sort_by_key(|row| (row.table, row.owner));
+    reads.dedup();
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
 }
 
 #[test]

@@ -108,7 +108,7 @@ fn compare_pack(
     if frame.complete::<tables::ResearchInputs>().is_ok()
         || frame.complete::<tables::ResearchAppliedBonuses>().is_ok()
     {
-        report.limitation("sliced research inputs and applied-bonus attribution have synthetic reader/codec coverage but no fresh-save oracle validation; rows keep their own sample hour, and the existing Research comparison covers only its own staggered tables", "ResearchInputs, ResearchAppliedBonuses");
+        report.limitation("sliced research inputs and applied-bonus attribution have synthetic reader/codec coverage but no fresh-save oracle validation; rows keep their read hour in SliceReads, and the existing Research comparison covers only its own staggered tables", "ResearchInputs, ResearchAppliedBonuses");
     }
     attempt!("DecisionCounts", compare_decision_counts);
     attempt!("Decisions", compare_decisions);
@@ -500,8 +500,25 @@ fn compare_research(
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
-    // Tier-4 slot2; cadence table is the single source of truth.
-    if !report.refresh_is_current(replay::rows::TableId::ResearchTechnologies, frame.hour) {
+    // Technology rows keep the hour their country's slice read them
+    // (SliceReads); the family is comparable only when every row was read at
+    // the oracle hour (a full refresh) and ResearchSlots was refreshed with it.
+    // An unreadable table is not stale: its comparison below reports the failure.
+    let technologies_current = match complete::<tables::ResearchTechnologies>(frame) {
+        Err(_) => true,
+        Ok(rows) => complete::<tables::SliceReads>(frame).is_ok_and(|reads| {
+            rows.iter().all(|row| {
+                replay::sliced::read_hour(
+                    reads,
+                    replay::rows::TableId::ResearchTechnologies,
+                    row.country,
+                ) == Some(frame.hour)
+            })
+        }),
+    };
+    if !technologies_current
+        || !report.refresh_is_current(replay::rows::TableId::ResearchSlots, frame.hour)
+    {
         for table in [
             replay::rows::TableId::ResearchTechnologies,
             replay::rows::TableId::ResearchSlots,
@@ -1427,6 +1444,15 @@ fn compare_balance_ranges(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A report whose frame refreshed ResearchSlots, as a full-refresh hour does.
+    fn refreshed_report() -> Report {
+        let mut report = Report::default();
+        report
+            .observed_refresh
+            .push(replay::cadence::cadence(TableId::ResearchSlots));
+        report
+    }
     use replay::{
         frame::{Metrics, TableView},
         rows::{
@@ -1521,6 +1547,12 @@ mod tests {
                     ..Default::default()
                 },
             ]));
+        *frame.tables[TableId::SliceReads.index()] =
+            TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
+                table: TableId::ResearchTechnologies.index() as u32,
+                owner: 11,
+                sample_hour: 0,
+            }]));
         for table in [
             TableId::PoliticalParties,
             TableId::Focus,
@@ -1534,7 +1566,7 @@ mod tests {
                 reason: "injected sibling fault".into(),
             };
         }
-        let mut report = Report::default();
+        let mut report = refreshed_report();
         assert!(compare_pack(&frame, &pack, &links, &BTreeMap::new(), &mut report).is_err());
         for table in [
             "ActiveIdeas",
@@ -2073,25 +2105,43 @@ mod tests {
     }
 
     #[test]
-    fn staggered_off_hours_skips_research_and_prints_refresh_hour() {
+    fn stale_or_unknown_research_reads_skip_the_research_family() {
         let (mut frame, pack, country) = fixture();
-        frame.hour = 1;
-        let mut report = Report::default();
-        compare_research(
-            &frame,
-            &pack,
-            &BTreeMap::from([(11, &country)]),
-            &mut report,
-        )
-        .unwrap();
-        assert!(report.differences.is_empty());
-        assert!(
+        *frame.tables[TableId::ResearchTechnologies.index()] =
+            TableView::Complete(TableRows::ResearchTechnologies(vec![
+                ResearchTechnologyRow {
+                    country: 11,
+                    technology_handle: 5,
+                    ..Default::default()
+                },
+            ]));
+        let read_at = |hour| {
+            TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
+                table: TableId::ResearchTechnologies.index() as u32,
+                owner: 11,
+                sample_hour: hour,
+            }]))
+        };
+        let skipped = |frame: &DecodedFrame, mut report: Report| {
+            let _ = compare_research(frame, &pack, &BTreeMap::from([(11, &country)]), &mut report);
             report
                 .limitations
                 .keys()
-                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
-            "{:?}",
-            report.limitations.keys()
-        );
+                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION))
+        };
+        // Country 11's roster was read at hour 0, the oracle hour.
+        *frame.tables[TableId::SliceReads.index()] = read_at(0);
+        assert!(!skipped(&frame, refreshed_report()));
+        // ResearchSlots was not refreshed at this hour.
+        assert!(skipped(&frame, Report::default()));
+        // The roster was read before the oracle hour.
+        frame.hour = 1;
+        assert!(skipped(&frame, refreshed_report()));
+        // The read hours are unknown.
+        frame.hour = 0;
+        *frame.tables[TableId::SliceReads.index()] = TableView::Unavailable {
+            reason: "fixture".into(),
+        };
+        assert!(skipped(&frame, refreshed_report()));
     }
 }

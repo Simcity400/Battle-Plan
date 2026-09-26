@@ -69,7 +69,6 @@ struct CadenceState {
     prev_hour: i32,
     prev_signal: i64,
     prev_campaign: Text<128>,
-    base_hour: i32,
 }
 
 impl CadenceState {
@@ -79,26 +78,22 @@ impl CadenceState {
             && self.prev_signal == clock.play_session_started_at
             && self.prev_campaign == clock.campaign_id
     }
-    // New branches never open on stale data: first, signal, campaign,
-    // discontinuity and 720-hour keyframes all force a full refresh.
+    // New branches never open on stale data: first, signal, campaign and
+    // discontinuity force a full refresh. A periodic encoding keyframe does
+    // not: the spool builds it from the rows it already holds for every
+    // staggered and sliced table, so it adds no native reads.
     fn force_full(&mut self, clock: &Clock) -> bool {
         if !self.initialized {
             self.initialized = true;
             self.prev_hour = clock.hour;
             self.prev_signal = clock.play_session_started_at;
             self.prev_campaign = clock.campaign_id;
-            self.base_hour = clock.hour;
             return true;
         }
         let signal = self.prev_signal != clock.play_session_started_at;
         let campaign = self.prev_campaign != clock.campaign_id;
         let gap = self.prev_hour.checked_add(1) != Some(clock.hour);
-        let keyframe = i64::from(clock.hour) - i64::from(self.base_hour)
-            >= i64::from(replay::KEYFRAME_INTERVAL);
-        let force = signal || campaign || gap || keyframe;
-        if force {
-            self.base_hour = clock.hour;
-        }
+        let force = signal || campaign || gap;
         self.prev_hour = clock.hour;
         self.prev_signal = clock.play_session_started_at;
         self.prev_campaign = clock.campaign_id;
@@ -841,6 +836,19 @@ pub(crate) fn completed_callback_ticks(base: &AtomicI64, tail: &AtomicI64) -> Op
     (base > 0 && tail > 0).then(|| base.saturating_add(tail))
 }
 
+/// Take a sliced family's fingerprint store for this hour's job.
+///
+/// # Safety
+/// Game thread only, and the previous callback returned the store.
+unsafe fn take_slice_store(
+    shared: &Shared,
+    family: usize,
+) -> Box<crate::slicing::SliceFingerprints> {
+    unsafe { &mut *shared.slice_fingerprints[family].get() }
+        .take()
+        .expect("sliced family store returned by the previous callback")
+}
+
 /// Restore an owned frame's absorbed witnesses, record its lost hour and return
 /// the buffer. Shared by every queue-full branch; no new loss reasons.
 fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
@@ -1344,6 +1352,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     state,
                     clock.hour,
                     force_full,
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe { take_slice_store(shared, crate::slicing::TECHNOLOGIES) },
                 );
                 let bytes = request.allocated_bytes();
                 (queue!(acquisition::Job::Governance(request)), bytes)
@@ -1871,6 +1881,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                         state,
                         clock.hour,
                         force_full,
+                        // SAFETY: only this callback takes and returns the store.
+                        unsafe { take_slice_store(shared, crate::slicing::TECHNOLOGIES) },
                     );
                     let bytes = request.allocated_bytes();
                     (queue!(acquisition::Job::Governance(request)), bytes)
@@ -2404,9 +2416,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 };
                 report
             });
-            frame
+            let technologies = frame
                 .extended
                 .restore_governance_request(governance_request, governance_report);
+            // SAFETY: only this callback takes and returns the store.
+            unsafe {
+                *shared.slice_fingerprints[crate::slicing::TECHNOLOGIES].get() = Some(technologies)
+            };
             // Research returns into the restored family and charges its costs there.
             let (research_request, research_report) = {
                 // SAFETY: this thread still owns the live acquisition boundary.
@@ -4842,15 +4858,16 @@ mod tests {
     }
 
     #[test]
-    fn branch_starts_keyframes_and_gaps_force_full_refresh() {
+    fn branch_starts_loads_and_gaps_force_full_refresh_but_keyframes_do_not() {
         let mut cadence = CadenceState::default();
         assert!(cadence.force_full(&cadence_clock(100, 1)));
         assert!(!cadence.force_full(&cadence_clock(101, 1)));
         assert!(!cadence.force_full(&cadence_clock(102, 1)));
         assert!(cadence.force_full(&cadence_clock(103, 2)));
         assert!(cadence.force_full(&cadence_clock(500, 2)));
-        assert!(!cadence.force_full(&cadence_clock(501, 2)));
-        assert!(cadence.force_full(&cadence_clock(500 + 720, 2)));
+        for hour in 501..=500 + 2 * 720 {
+            assert!(!cadence.force_full(&cadence_clock(hour, 2)), "hour {hour}");
+        }
         let mut fresh = CadenceState::default();
         assert!(fresh.force_full(&cadence_clock(10, 1)));
         let mut changed = cadence_clock(11, 1);
@@ -4866,7 +4883,7 @@ mod tests {
         for hour in 101..=820 {
             let clock = cadence_clock(hour, 1);
             assert!(cadence.continuous(&clock));
-            assert_eq!(cadence.force_full(&clock), hour == 820);
+            assert!(!cadence.force_full(&clock));
         }
         assert!(!cadence.continuous(&cadence_clock(822, 1)));
         assert!(!cadence.continuous(&cadence_clock(821, 2)));

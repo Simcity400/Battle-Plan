@@ -44,7 +44,7 @@ struct Options {
 
 fn usage() -> String {
     format!(
-        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once]\nrecorder detach [--out <directory>]\nrecorder finalize <session-directory> [--out <directory>]\nrecorder inspect <campaign.battleplan>\n{}",
+        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once]\nrecorder detach [--out <directory>]\nrecorder refresh [--out <directory>]\nrecorder finalize <session-directory> [--out <directory>]\nrecorder inspect <campaign.battleplan>\n{}",
         crate::oracle::USAGE
     )
 }
@@ -94,6 +94,7 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     match command.as_str() {
         "record" => record(options),
         "detach" => request_detach(&options.output),
+        "refresh" => request_refresh(&options.output),
         "finalize" => {
             let session = session.ok_or_else(usage)?;
             ensure_finalizable(&session)?;
@@ -591,6 +592,55 @@ fn completed_detach(value: &Value) -> Result<bool, String> {
     Ok(detached)
 }
 
+/// Ask the attached collector to read every scheduled table at the next
+/// hourly sample (a full-refresh hour), for example before an oracle save.
+/// The collector acknowledges within about a second; nothing touches the game.
+fn request_refresh(output: &Path) -> Result<(), String> {
+    let active: Value = serde_json::from_slice(
+        &fs::read(output.join("active.json"))
+            .map_err(|e| format!("no active recorder here: {e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let session_dir = PathBuf::from(
+        active["session_dir"]
+            .as_str()
+            .ok_or("active recorder has no session directory")?,
+    );
+    let token = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()
+    );
+    let ack = session_dir.join("refresh.ack");
+    let request = session_dir.join("refresh.request");
+    let _ = fs::remove_file(&ack);
+    // Write, then rename: the collector never sees a partial token.
+    let temporary = session_dir.join(format!("refresh.request.{token}.tmp"));
+    fs::write(&temporary, &token).map_err(|e| e.to_string())?;
+    if let Err(error) = fs::rename(&temporary, &request) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if fs::read_to_string(&ack).is_ok_and(|text| text.trim() == token) {
+            println!("Full refresh requested: the next hourly sample reads every scheduled table.");
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            // Withdraw our own request so a later attach does not act on it.
+            if fs::read_to_string(&request).is_ok_and(|text| text.trim() == token) {
+                let _ = fs::remove_file(&request);
+            }
+            return Err("the collector did not acknowledge the refresh request".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn request_detach(output: &Path) -> Result<(), String> {
     let active: Value = serde_json::from_slice(
         &fs::read(output.join("active.json"))
@@ -828,6 +878,47 @@ pub(crate) fn resolve_user_directory() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_request_is_renamed_whole_and_acknowledged() {
+        let root = std::env::temp_dir().join(format!("hoi4-refresh-cli-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let session = root.join("session");
+        fs::create_dir_all(&session).unwrap();
+        fs::write(
+            root.join("active.json"),
+            json!({"session_dir": session}).to_string(),
+        )
+        .unwrap();
+        // A collector stand-in acknowledges the whole token it finds.
+        let watcher = {
+            let session = session.clone();
+            std::thread::spawn(move || {
+                for _ in 0..200 {
+                    if let Ok(token) = fs::read_to_string(session.join("refresh.request")) {
+                        assert!(!token.trim().is_empty());
+                        fs::write(session.join("refresh.ack"), token.trim()).unwrap();
+                        fs::remove_file(session.join("refresh.request")).unwrap();
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                panic!("no refresh request appeared");
+            })
+        };
+        request_refresh(&root).unwrap();
+        watcher.join().unwrap();
+        // No temporary file is left behind.
+        let leftovers: Vec<_> = fs::read_dir(&session)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        // Without an active recorder the request is refused.
+        assert!(request_refresh(&session).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn late_terminal_drain_errors_cannot_be_reported_as_clean_detach() {

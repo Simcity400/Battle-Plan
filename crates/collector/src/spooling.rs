@@ -2,7 +2,6 @@
 
 use crate::decode;
 use crate::extended::characters::{CharacterConversion, CharacterShadow, CharacterShadowStats};
-use crate::extended::governance::{ResearchConversion, ResearchShadow, ResearchShadowStats};
 use crate::extended::intel::{
     IntelConversion, IntelShadow, IntelShadowStats, ScriptVariableComparison,
 };
@@ -249,71 +248,12 @@ fn character_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a CharacterSh
     })
 }
 
-fn research_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a ResearchShadow>) -> Value {
-    let mut totals = [ResearchShadowStats::default(); 2];
-    let mut campaigns = 0usize;
-    for shadow in shadows {
-        campaigns += 1;
-        for (total, current) in totals.iter_mut().zip(shadow.statistics()) {
-            total.hits = total.hits.saturating_add(current.hits);
-            total.misses = total.misses.saturating_add(current.misses);
-            total.row_capacity_bytes += current.row_capacity_bytes;
-            total.arena_capacity_bytes += current.arena_capacity_bytes;
-        }
-    }
-    let bytes: usize = totals
-        .iter()
-        .map(|table| table.row_capacity_bytes + table.arena_capacity_bytes)
-        .sum();
-    let tables: Vec<_> = ["ResearchTechnologies", "TechnologyDefinitions"]
-        .into_iter()
-        .zip(totals)
-        .map(|(name, table)| {
-            json!({
-                "name": name,
-                "hits": table.hits,
-                "misses": table.misses,
-                "row_capacity_bytes": table.row_capacity_bytes,
-                "arena_capacity_bytes": table.arena_capacity_bytes,
-            })
-        })
-        .collect();
-    json!({
-        "allocation_scope": "current native row/text Vec capacities across retained campaigns; excludes shared replay rows, Arc control blocks and allocator overhead; separate from raw/pool accounting",
-        "counter_scope": "cumulative conversion decisions across retained campaigns, including later rejected or failed writes; genuine skipped inputs excluded; non-skip fallback/fault inputs count as misses",
-        "campaigns": campaigns,
-        "retained_capacity_bytes": bytes,
-        "tables": tables,
-    })
-}
-
 fn character_cache(
     cache: &BTreeMap<replay::rows::TableId, CachedTable>,
     cached_branch: Option<BranchId>,
     branch: BranchId,
 ) -> [Option<&Arc<TableRows>>; 4] {
     crate::extended::characters::SHADOW_TABLES.map(|table| {
-        if cached_branch != Some(branch) {
-            return None;
-        }
-        match cache.get(&table) {
-            Some(CachedTable::Complete(rows)) => Some(rows),
-            _ => None,
-        }
-    })
-}
-
-fn research_cache(
-    cache: &BTreeMap<replay::rows::TableId, CachedTable>,
-    cached_branch: Option<BranchId>,
-    branch: BranchId,
-) -> [Option<&Arc<TableRows>>; 2] {
-    use replay::rows::TableId;
-    [
-        TableId::ResearchTechnologies,
-        TableId::TechnologyDefinitions,
-    ]
-    .map(|table| {
         if cached_branch != Some(branch) {
             return None;
         }
@@ -337,9 +277,10 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     staggered_branch: Option<BranchId>,
     /// The latest complete rows of each sliced table on `sliced_branch`.
     sliced_cache: BTreeMap<replay::rows::TableId, Arc<TableRows>>,
+    /// The read hour of each (sliced table, owner) in `sliced_cache`.
+    sliced_reads: BTreeMap<(u32, u32), i32>,
     sliced_branch: Option<BranchId>,
     variables_scratch: ScriptVariableComparison,
-    research_shadow: ResearchShadow,
     character_shadow: CharacterShadow,
     intel_shadow: IntelShadow,
     projection_scratch: ProjectionScratch,
@@ -380,9 +321,9 @@ impl Campaign {
             staggered_cache: BTreeMap::new(),
             staggered_branch: None,
             sliced_cache: BTreeMap::new(),
+            sliced_reads: BTreeMap::new(),
             sliced_branch: None,
             variables_scratch: ScriptVariableComparison::default(),
-            research_shadow: ResearchShadow::default(),
             character_shadow: CharacterShadow::default(),
             intel_shadow: IntelShadow::default(),
             projection_scratch: ProjectionScratch::default(),
@@ -450,7 +391,9 @@ impl<B: SegmentBackend> Campaign<B> {
     /// Without earlier complete rows a slice cannot stand alone: the table is
     /// unavailable and the next hour must read every slice (returns true).
     /// A failed slice publishes its failure and keeps the earlier rows, whose
-    /// own sample hours show their age once a later slice completes the table.
+    /// read hours show their age once a later slice completes the table.
+    /// SliceReads is assembled here: the read hour of every owner with rows
+    /// in each owned sliced table, replaced only for the owners read now.
     fn merge_sliced_inputs<'a>(
         &mut self,
         source: &mut FrameInput,
@@ -458,9 +401,14 @@ impl<B: SegmentBackend> Campaign<B> {
     ) -> bool {
         if self.sliced_branch != Some(source.branch) {
             self.sliced_cache.clear();
+            self.sliced_reads.clear();
             self.sliced_branch = Some(source.branch);
         }
         let mut retry = false;
+        // This frame's read hours: the cached ones, replaced below for every
+        // owner a published read replaced.
+        let mut frame_reads = self.sliced_reads.clone();
+        let hour = source.hour;
         for table in TableId::ALL {
             if !replay::cadence::is_sliced(table) {
                 continue;
@@ -475,7 +423,7 @@ impl<B: SegmentBackend> Campaign<B> {
             match input {
                 TableInput::Sampled(TableView::Complete(rows)) => {
                     let fresh = std::mem::replace(rows, TableRows::empty(table));
-                    let merged = if selection.force_full {
+                    let merged = if selection.force_full || replay::sliced::replaces_whole(&fresh) {
                         fresh
                     } else if let Some(previous) = self.sliced_cache.get(&table) {
                         match replay::sliced::merge_slice(previous, fresh, captured, live) {
@@ -493,13 +441,42 @@ impl<B: SegmentBackend> Campaign<B> {
                         retry = true;
                         continue;
                     };
+                    if !replay::sliced::is_keyed(table) {
+                        let id = table.index() as u32;
+                        let owners = replay::sliced::owners(&merged);
+                        frame_reads.retain(|&(read_table, _), _| read_table != id);
+                        for owner in owners {
+                            let read = if selection.force_full || captured(owner) {
+                                Some(hour)
+                            } else {
+                                self.sliced_reads.get(&(id, owner)).copied()
+                            };
+                            // A kept row always has a cached read hour; never
+                            // invent freshness for one that has none.
+                            debug_assert!(
+                                read.is_some(),
+                                "{table:?} owner {owner} has no read hour"
+                            );
+                            if let Some(read) = read {
+                                frame_reads.insert((id, owner), read);
+                            }
+                        }
+                        // The complete merge is the next hour's base.
+                        self.sliced_reads
+                            .retain(|&(read_table, _), _| read_table != id);
+                        self.sliced_reads.extend(
+                            frame_reads
+                                .range((id, 0)..=(id, u32::MAX))
+                                .map(|(&key, &read)| (key, read)),
+                        );
+                    }
                     let merged = Arc::new(merged);
                     self.sliced_cache.insert(table, Arc::clone(&merged));
                     *input = TableInput::SharedComplete(merged);
                 }
                 // A partial read replaces only the owners it returned rows for:
                 // selected owners it never reached keep their earlier rows (and
-                // sample hours) in this truncated view. The view is not cached,
+                // read hours) in this truncated view. The view is not cached,
                 // so the next hour merges into the last complete rows; the
                 // collector reads the unpublished owners again at that hour.
                 TableInput::Sampled(TableView::Truncated { rows, missing }) => {
@@ -508,6 +485,16 @@ impl<B: SegmentBackend> Campaign<B> {
                     let returned = replay::sliced::owners(&fresh);
                     let replaced =
                         |owner: u32| captured(owner) && returned.binary_search(&owner).is_ok();
+                    // Only this truncated view reads the returned owners at
+                    // this hour; the cached hours stay the next hour's base.
+                    if !replay::sliced::is_keyed(table) {
+                        let id = table.index() as u32;
+                        for &owner in &returned {
+                            if captured(owner) {
+                                frame_reads.insert((id, owner), hour);
+                            }
+                        }
+                    }
                     if let Some(previous) = self.sliced_cache.get(&table) {
                         *input = TableInput::Sampled(
                             match replay::sliced::merge_slice(previous, fresh, replaced, live) {
@@ -525,6 +512,17 @@ impl<B: SegmentBackend> Campaign<B> {
                 _ => {}
             }
         }
+        source.tables[TableId::SliceReads.index()] =
+            TableInput::SharedComplete(Arc::new(TableRows::SliceReads(
+                frame_reads
+                    .into_iter()
+                    .map(|((table, owner), sample_hour)| replay::rows::SliceReadRow {
+                        table,
+                        owner,
+                        sample_hour,
+                    })
+                    .collect(),
+            )));
         retry
     }
 
@@ -1102,7 +1100,7 @@ impl SliceWork {
 }
 
 /// A daily or four-hourly table that truncated waits for its slot otherwise; a
-/// static table that failed would wait for the next keyframe.
+/// static table that failed would wait for the next full hour.
 fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
     TableId::ALL.into_iter().any(|table| {
         let input = &tables[table.index()];
@@ -1524,11 +1522,6 @@ impl Processor {
                 clock.hour,
                 !campaign.spool.is_open(),
             );
-        let mut research = ResearchConversion::new(
-            branch,
-            &mut campaign.research_shadow,
-            research_cache(&campaign.staggered_cache, campaign.staggered_branch, branch),
-        );
         let mut characters = CharacterConversion::new(
             branch,
             &mut campaign.character_shadow,
@@ -1552,7 +1545,6 @@ impl Processor {
             branch,
             variables_baseline,
             &mut campaign.variables_scratch,
-            Some(&mut research),
             Some(&mut characters),
             Some(&mut lexical),
             Some(&mut intel),
@@ -1956,11 +1948,6 @@ impl Processor {
                 .values()
                 .map(|campaign| &campaign.character_shadow),
         );
-        value["spool_work"]["research_shadow"] = research_shadow_status(
-            self.campaigns
-                .values()
-                .map(|campaign| &campaign.research_shadow),
-        );
         value["research_walk_ns"] = json!(research_walk_ns.as_slice());
         value["relations_copy_ns"] = json!(relations_copy_ns.as_slice());
         value["characters_copy_ns"] = json!(characters_copy_ns.as_slice());
@@ -2123,7 +2110,6 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> replay::frame
             None,
             None,
             None,
-            None,
         )
         .0,
     )
@@ -2136,7 +2122,6 @@ fn decoded_with_costs(
     branch: BranchId,
     variables_baseline: Option<(BaselineToken, &[ScriptVariablesRow])>,
     variables_scratch: &mut ScriptVariableComparison,
-    research: Option<&mut ResearchConversion<'_>>,
     characters: Option<&mut CharacterConversion<'_>>,
     lexical: Option<&mut LexicalConversion<'_>>,
     intel: Option<&mut IntelConversion<'_>>,
@@ -2330,7 +2315,6 @@ fn decoded_with_costs(
                 &mut tables,
                 variables_baseline,
                 variables_scratch,
-                research,
                 characters,
                 lexical,
                 intel,
@@ -2530,7 +2514,6 @@ mod tests {
             1,
             Some(baseline),
             &mut ScriptVariableComparison::default(),
-            None,
             None,
             None,
             None,
@@ -2860,11 +2843,6 @@ mod tests {
         assert_eq!(status["spool_work"]["character_shadow"]["campaigns"], 0);
         assert_eq!(
             status["spool_work"]["character_shadow"]["retained_capacity_bytes"],
-            0
-        );
-        assert_eq!(status["spool_work"]["research_shadow"]["campaigns"], 0);
-        assert_eq!(
-            status["spool_work"]["research_shadow"]["retained_capacity_bytes"],
             0
         );
     }
@@ -3855,9 +3833,9 @@ mod tests {
                 staggered_cache: BTreeMap::new(),
                 staggered_branch: None,
                 sliced_cache: BTreeMap::new(),
+                sliced_reads: BTreeMap::new(),
                 sliced_branch: None,
                 variables_scratch: ScriptVariableComparison::default(),
-                research_shadow: ResearchShadow::default(),
                 character_shadow: CharacterShadow::default(),
                 intel_shadow: IntelShadow::default(),
                 projection_scratch: ProjectionScratch::default(),
@@ -4129,15 +4107,14 @@ mod tests {
     fn research_rows(rows: &[(u32, u32, i64, i32)]) -> TableRows {
         TableRows::ResearchInputs(
             rows.iter()
-                .map(|&(country, index, progress_raw, sample_hour)| {
-                    replay::rows::ResearchInputRow {
+                .map(
+                    |&(country, index, progress_raw, _read)| replay::rows::ResearchInputRow {
                         country,
                         index,
                         progress_raw,
-                        sample_hour,
                         ..Default::default()
-                    }
-                })
+                    },
+                )
                 .collect(),
         )
     }
@@ -4150,6 +4127,20 @@ mod tests {
 
     fn merged(input: &FrameInput) -> &TableInput {
         &input.tables[TableId::ResearchInputs.index()]
+    }
+
+    /// The (owner, read hour) pairs SliceReads holds for ResearchInputs.
+    fn reads(input: &FrameInput) -> Vec<(u32, i32)> {
+        let TableInput::SharedComplete(rows) = &input.tables[TableId::SliceReads.index()] else {
+            panic!("slice reads assembled")
+        };
+        let TableRows::SliceReads(rows) = &**rows else {
+            panic!("slice read rows")
+        };
+        rows.iter()
+            .filter(|row| row.table == TableId::ResearchInputs.index() as u32)
+            .map(|row| (row.owner, row.sample_hour))
+            .collect()
     }
 
     fn merge_with(
@@ -4204,7 +4195,8 @@ mod tests {
             panic!("slice merged")
         };
         assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
-        // Hour 2 reads nobody here; owners keep their own sample hours.
+        assert_eq!(reads(&slice), [(1, 1), (3, 1)]);
+        // Hour 2 reads nobody here; owners keep their own read hours.
         let mut quiet = sliced_input(1, 2, TableView::Complete(research_rows(&[])));
         assert!(!merge_with(
             &mut campaign,
@@ -4215,6 +4207,7 @@ mod tests {
             panic!("quiet merged")
         };
         assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
+        assert_eq!(reads(&quiet), [(1, 1), (3, 1)]);
         // A failed slice publishes its failure and keeps the earlier rows.
         let mut failed = sliced_input(1, 3, unavailable("research acquisition panicked"));
         assert!(!merge_with(
@@ -4247,6 +4240,8 @@ mod tests {
             panic!("truncated slice merged")
         };
         assert_eq!(*rows, research_rows(&[(1, 0, 12, 1), (3, 0, 33, 27)]));
+        // Only the returned owner is read at this hour in the truncated view.
+        assert_eq!(reads(&partial), [(1, 1), (3, 27)]);
         // The truncated read did not replace the base for later slices.
         let mut later = sliced_input(1, 28, TableView::Complete(research_rows(&[])));
         assert!(!merge_with(
@@ -4258,6 +4253,8 @@ mod tests {
             panic!("later merged")
         };
         assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
+        // The truncated read did not replace the base hours either.
+        assert_eq!(reads(&later), [(1, 1), (3, 1)]);
         // A new branch starts without earlier rows.
         // A complete census that no longer sees owner 3 drops its rows now,
         // not at its next slice; owner 1 was seen and keeps its row.
@@ -4278,6 +4275,143 @@ mod tests {
             &mut other,
             SliceSelection::for_test(29, false, &[])
         ));
+    }
+
+    #[test]
+    fn a_complete_definitions_read_drops_removed_handles_and_an_empty_one_keeps_all() {
+        use crate::slicing::SliceSelection;
+        let definitions = |handles: &[u32]| {
+            TableRows::TechnologyDefinitions(
+                handles
+                    .iter()
+                    .map(|&technology_handle| replay::rows::TechnologyDefinitionRow {
+                        technology_handle,
+                        ..Default::default()
+                    })
+                    .collect(),
+            )
+        };
+        let (mut campaign, _) = campaign();
+        let mut frame = |hour: i32, rows: TableRows, full: bool| {
+            let mut input: FrameInput = staggered_frame(1, hour, false).into();
+            input.tables[TableId::TechnologyDefinitions.index()] =
+                TableInput::Sampled(TableView::Complete(rows));
+            assert!(!merge_with(
+                &mut campaign,
+                &mut input,
+                SliceSelection::for_test(hour, full, &[])
+            ));
+            let TableInput::SharedComplete(rows) =
+                &input.tables[TableId::TechnologyDefinitions.index()]
+            else {
+                panic!("definitions merged")
+            };
+            (**rows).clone()
+        };
+        assert_eq!(frame(0, definitions(&[1, 3]), true), definitions(&[1, 3]));
+        // A reload removed template 3: the next complete read replaces the table.
+        assert_eq!(frame(1, definitions(&[1]), false), definitions(&[1]));
+        // An hour whose slice reached no roster keeps every definition.
+        assert_eq!(frame(2, definitions(&[]), false), definitions(&[1]));
+    }
+
+    #[test]
+    fn periodic_keyframes_re_encode_held_sliced_rows_and_merging_continues_across_them() {
+        use crate::slicing::SliceSelection;
+        use replay::frame::FrameDecoder;
+        let (mut campaign, store) = campaign();
+        let owners = 1..=48_u32;
+        let slice = |hour: i32, full: bool| {
+            research_rows(
+                &owners
+                    .clone()
+                    .filter(|&owner| {
+                        full || replay::cadence::slice_of(owner) == hour.rem_euclid(24) as u32
+                    })
+                    .map(|owner| (owner, 0, i64::from(hour), hour))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let mut expected = BTreeMap::new();
+        let mut held: BTreeMap<u32, (i64, i32)> = BTreeMap::new();
+        for hour in 0..=745 {
+            let branch = campaign.observe(None, hour, Some(1)).unwrap();
+            let full = hour == 0;
+            let fresh = slice(hour, full);
+            for owner in replay::sliced::owners(&fresh) {
+                held.insert(owner, (i64::from(hour), hour));
+            }
+            let mut input = sliced_input(branch, hour, TableView::Complete(fresh));
+            assert!(!merge_with(
+                &mut campaign,
+                &mut input,
+                SliceSelection::for_test(hour, full, &[])
+            ));
+            let want = research_rows(
+                &held
+                    .iter()
+                    .map(|(&owner, &(progress, read))| (owner, 0, progress, read))
+                    .collect::<Vec<_>>(),
+            );
+            expected.insert(hour, want);
+            campaign
+                .write(
+                    input,
+                    1000 + i64::from(hour),
+                    Some(1),
+                    0,
+                    &mut WorkSample::default(),
+                )
+                .unwrap();
+        }
+        campaign.spool.finish_segment().unwrap();
+        let frames: Vec<_> = store
+            .borrow()
+            .segments
+            .values()
+            .flat_map(|bytes| recover_prefix(bytes).records)
+            .filter_map(|record| match record {
+                Record::Frame(frame) => Some(frame),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames.len(), 746);
+        let mut decoder = FrameDecoder::new();
+        let mut keyframes = Vec::new();
+        for frame in &frames {
+            let decoded = decoder.advance(frame).unwrap();
+            let rows = &*decoded.tables[TableId::ResearchInputs.index()];
+            assert_eq!(
+                rows,
+                &TableView::Complete(expected[&decoded.hour].clone()),
+                "hour {}",
+                decoded.hour
+            );
+            let TableView::Complete(TableRows::SliceReads(reads)) =
+                &*decoded.tables[TableId::SliceReads.index()]
+            else {
+                panic!("slice reads decoded")
+            };
+            // Each owner was read at its own slot, or at the full hour 0.
+            for row in reads {
+                let slot = replay::cadence::slice_of(row.owner) as i32;
+                let expected_read = (0..=decoded.hour)
+                    .rev()
+                    .find(|hour| hour % 24 == slot)
+                    .unwrap_or(0);
+                assert_eq!(row.sample_hour, expected_read, "owner {}", row.owner);
+            }
+            assert_eq!(reads.len(), 48);
+            if frame.keyframe {
+                keyframes.push(decoded.hour);
+                // A keyframe alone decodes the whole held table.
+                let alone = FrameDecoder::new().advance(frame).unwrap().tables
+                    [TableId::ResearchInputs.index()]
+                .clone();
+                assert_eq!(*alone, TableView::Complete(expected[&decoded.hour].clone()));
+            }
+        }
+        assert_eq!(keyframes, [0, 720]);
     }
 
     fn staggered_frame(branch: BranchId, hour: i32, skip: bool) -> DecodedFrame {
@@ -4418,7 +4552,6 @@ mod tests {
             branch,
             None,
             &mut ScriptVariableComparison::default(),
-            None,
             None,
             Some(&mut reuse),
             None,
@@ -4663,7 +4796,6 @@ mod tests {
             &mut ScriptVariableComparison::default(),
             None,
             None,
-            None,
             Some(&mut reuse),
             None,
         );
@@ -4747,7 +4879,6 @@ mod tests {
                             branch,
                             None,
                             &mut ScriptVariableComparison::default(),
-                            None,
                             Some(&mut reuse),
                             None,
                             None,
@@ -4776,265 +4907,6 @@ mod tests {
                     TableInput::SharedComplete(_)
                 ));
             }
-        }
-    }
-
-    fn research_frame(
-        campaign: &mut Campaign<MemoryBackend>,
-        branch: BranchId,
-        hour: i32,
-        progress: i64,
-    ) -> FrameInput {
-        let native = crate::extended::governance::research_shadow_fixture(progress);
-        let mut reuse = ResearchConversion::new(
-            branch,
-            &mut campaign.research_shadow,
-            research_cache(&campaign.staggered_cache, campaign.staggered_branch, branch),
-        );
-        let mut frame: FrameInput = staggered_frame(branch, hour, false).into();
-        for (index, input) in native
-            .table_inputs(Some(&mut reuse))
-            .into_iter()
-            .enumerate()
-        {
-            if matches!(index, 2 | 4) {
-                frame.tables[crate::extended::governance::TABLES[index].index()] = input;
-            }
-        }
-        frame
-    }
-
-    #[test]
-    fn research_shadow_status_sums_current_capacity_and_decisions_across_campaigns() {
-        let (mut first, _) = campaign();
-        let branch = first.observe(None, 0, Some(1)).unwrap();
-        let mut source = research_frame(&mut first, branch, 0, 10);
-        first.apply_staggered_inputs(&mut source);
-        let _equal = research_frame(&mut first, branch, 1, 10);
-        let (mut second, _) = campaign();
-        let branch = second.observe(None, 0, Some(1)).unwrap();
-        let _source = research_frame(&mut second, branch, 0, 10);
-
-        let status = research_shadow_status([&first.research_shadow, &second.research_shadow]);
-        assert_eq!(status["campaigns"], 2);
-        let mut bytes = 0usize;
-        for (index, (first, second)) in first
-            .research_shadow
-            .statistics()
-            .into_iter()
-            .zip(second.research_shadow.statistics())
-            .enumerate()
-        {
-            let table = &status["tables"][index];
-            assert_eq!(table["hits"], 1);
-            assert_eq!(table["misses"], 2);
-            assert_eq!(
-                table["row_capacity_bytes"],
-                first.row_capacity_bytes + second.row_capacity_bytes
-            );
-            assert_eq!(
-                table["arena_capacity_bytes"],
-                first.arena_capacity_bytes + second.arena_capacity_bytes
-            );
-            bytes += first.row_capacity_bytes
-                + second.row_capacity_bytes
-                + first.arena_capacity_bytes
-                + second.arena_capacity_bytes;
-        }
-        assert_eq!(status["retained_capacity_bytes"], bytes);
-        assert!(
-            status["allocation_scope"]
-                .as_str()
-                .unwrap()
-                .contains("separate from raw/pool")
-        );
-        assert!(
-            status["counter_scope"]
-                .as_str()
-                .unwrap()
-                .contains("skipped inputs excluded")
-        );
-    }
-
-    #[test]
-    fn research_shadow_write_failures_recover_current_sample_and_keyframes_revalidate_it() {
-        use replay::frame::TableUpdate;
-        let table = TableId::ResearchTechnologies;
-        for fail_encoding in [false, true] {
-            let (mut campaign, store) = campaign();
-            let branch = campaign.observe(None, 0, Some(1)).unwrap();
-            let mut first = research_frame(&mut campaign, branch, 0, 10);
-            campaign.apply_staggered_inputs(&mut first);
-            campaign
-                .write(first, 1000, Some(1), 0, &mut WorkSample::default())
-                .unwrap();
-            let initial = Arc::downgrade(cached_complete(&campaign, table));
-            campaign.observe(None, 1, Some(1)).unwrap();
-            let mut equal = research_frame(&mut campaign, branch, 1, 10);
-            let TableInput::SharedComplete(rows) = &equal.tables[table.index()] else {
-                panic!()
-            };
-            assert!(Arc::ptr_eq(rows, &initial.upgrade().unwrap()));
-            campaign.apply_staggered_inputs(&mut equal);
-            campaign
-                .write(equal, 1001, Some(1), 0, &mut WorkSample::default())
-                .unwrap();
-
-            campaign.observe(None, 2, Some(1)).unwrap();
-            let mut failed = research_frame(&mut campaign, branch, 2, 20);
-            if fail_encoding {
-                failed.tables[TableId::UnitIntel.index()] =
-                    TableView::Complete(TableRows::Clock(Vec::new())).into();
-            } else {
-                store.borrow_mut().fail_frame_flush = true;
-            }
-            campaign.apply_staggered_inputs(&mut failed);
-            let latest = Arc::downgrade(cached_complete(&campaign, table));
-            assert!(
-                campaign
-                    .write(failed, 1002, Some(1), 0, &mut WorkSample::default())
-                    .is_err()
-            );
-            assert!(initial.upgrade().is_none());
-            assert_eq!(Arc::strong_count(cached_complete(&campaign, table)), 1);
-
-            campaign.observe(None, 3, Some(1)).unwrap();
-            let mut recovered = research_frame(&mut campaign, branch, 3, 20);
-            let TableInput::SharedComplete(rows) = &recovered.tables[table.index()] else {
-                panic!()
-            };
-            assert!(Arc::ptr_eq(rows, &latest.upgrade().unwrap()));
-            campaign.apply_staggered_inputs(&mut recovered);
-            campaign
-                .write(recovered, 1003, Some(1), 0, &mut WorkSample::default())
-                .unwrap();
-            let expected =
-                crate::extended::governance::research_shadow_fixture(20).tables()[2].clone();
-            let TableView::Complete(expected) = expected else {
-                panic!()
-            };
-            let records = recover_prefix(store.borrow().segments.get(&1).unwrap());
-            let frame = records
-                .records
-                .iter()
-                .find_map(|record| match record {
-                    Record::Frame(frame) => Some(frame),
-                    _ => None,
-                })
-                .unwrap();
-            assert!(frame.keyframe);
-            assert_eq!(
-                frame.tables[table.index()],
-                TableUpdate::Snapshot(expected.clone())
-            );
-
-            campaign.spool.finish_segment().unwrap();
-            campaign.observe(None, 4, Some(1)).unwrap();
-            let mut keyframe = research_frame(&mut campaign, branch, 4, 20);
-            let TableInput::SharedComplete(rows) = &keyframe.tables[table.index()] else {
-                panic!()
-            };
-            assert!(Arc::ptr_eq(rows, &latest.upgrade().unwrap()));
-            campaign.apply_staggered_inputs(&mut keyframe);
-            campaign
-                .write(keyframe, 1004, Some(1), 0, &mut WorkSample::default())
-                .unwrap();
-            let records = recover_prefix(store.borrow().segments.get(&2).unwrap());
-            let frame = records
-                .records
-                .iter()
-                .find_map(|record| match record {
-                    Record::Frame(frame) => Some(frame),
-                    _ => None,
-                })
-                .unwrap();
-            assert!(frame.keyframe);
-            assert_eq!(frame.tables[table.index()], TableUpdate::Snapshot(expected));
-
-            let next_branch = campaign.observe(None, 5, Some(2)).unwrap();
-            assert_ne!(branch, next_branch);
-            let mut next = research_frame(&mut campaign, next_branch, 5, 20);
-            let TableInput::SharedComplete(rows) = &next.tables[table.index()] else {
-                panic!()
-            };
-            assert!(!Arc::ptr_eq(rows, &latest.upgrade().unwrap()));
-            campaign.apply_staggered_inputs(&mut next);
-            campaign
-                .write(next, 1005, Some(2), 0, &mut WorkSample::default())
-                .unwrap();
-            assert!(latest.upgrade().is_none());
-        }
-    }
-
-    #[test]
-    fn research_shadow_reuse_never_overrides_primary_failure_or_missing_clock() {
-        let table = TableId::ResearchTechnologies;
-        for failure in 0..2 {
-            let (mut campaign, _) = campaign();
-            let branch = campaign.observe(None, 0, Some(1)).unwrap();
-            let mut first = research_frame(&mut campaign, branch, 0, 10);
-            campaign.apply_staggered_inputs(&mut first);
-            campaign
-                .write(first, 1000, Some(1), 0, &mut WorkSample::default())
-                .unwrap();
-            let previous = Arc::downgrade(cached_complete(&campaign, table));
-            campaign.observe(None, 1, Some(1)).unwrap();
-            let mut current = research_frame(&mut campaign, branch, 1, 10);
-            let TableInput::SharedComplete(rows) = &current.tables[table.index()] else {
-                panic!()
-            };
-            assert!(Arc::ptr_eq(rows, &previous.upgrade().unwrap()));
-            match failure {
-                0 => {
-                    current.tables[table.index()] =
-                        TableInput::Sampled(unavailable("native research unreadable"));
-                }
-                1 => {
-                    let mut source = captured(1);
-                    source.clock = None;
-                    let mut reuse = ResearchConversion::new(
-                        branch,
-                        &mut campaign.research_shadow,
-                        research_cache(
-                            &campaign.staggered_cache,
-                            campaign.staggered_branch,
-                            branch,
-                        ),
-                    );
-                    current = decoded_with_costs(
-                        &source,
-                        clock(1),
-                        branch,
-                        None,
-                        &mut ScriptVariableComparison::default(),
-                        Some(&mut reuse),
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                    .0;
-                    assert!(current.tables.iter().all(|input| matches!(
-                        input,
-                        TableInput::Sampled(TableView::Unavailable { .. })
-                    )));
-                }
-                _ => unreachable!(),
-            }
-            assert!(matches!(
-                current.tables[table.index()],
-                TableInput::Sampled(TableView::Unavailable { .. })
-            ));
-            campaign.apply_staggered_inputs(&mut current);
-            campaign
-                .write(current, 1001, Some(1), 0, &mut WorkSample::default())
-                .unwrap();
-            assert!(previous.upgrade().is_none());
-            let next = research_frame(&mut campaign, branch, 2, 10);
-            assert!(matches!(
-                next.tables[table.index()],
-                TableInput::SharedComplete(_)
-            ));
         }
     }
 

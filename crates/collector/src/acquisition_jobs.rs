@@ -63,6 +63,8 @@ pub(crate) struct GovernanceRequest {
     pub registry: crate::extended::Registry,
     pub variants: production::Variants,
     pub buildings: construction::Buildings,
+    /// The technologies family's only fingerprint store, loaned for this hour.
+    pub technology_fingerprints: Box<crate::slicing::SliceFingerprints>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct GovernanceReport {
@@ -925,7 +927,11 @@ fn run_with_memory(
         Job::Governance(request) => {
             let cached = request.countries.roster_view(memory);
             let context = request.context;
-            let governance = request.captured.capture_owned(&cached, context);
+            let governance = request.captured.capture_owned(
+                &cached,
+                context,
+                &mut request.technology_fingerprints,
+            );
             // The campaign registry includes variants absent from units,
             // production and stockpiles. Keep all entries and duplicates.
             let registry_ticks = if replay::cadence::should_walk(

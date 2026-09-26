@@ -15,136 +15,14 @@ use engine::{
     walk::Outcome,
 };
 use replay::{
-    BranchId,
     frame::{TableInput, TableView},
-    rows::{self, TableId, TableRows, TableSchema, tables},
+    rows::{self, TableId, TableSchema, tables},
 };
-use std::{
-    mem::size_of,
-    sync::{Arc, Weak},
-};
+use std::mem::size_of;
+#[cfg(test)]
+use replay::rows::TableRows;
 
 pub const N: usize = 22;
-
-#[derive(Default)]
-struct NativeShadow<R> {
-    rows: Vec<R>,
-    output: Weak<TableRows>,
-    hits: u64,
-    misses: u64,
-}
-
-impl<R: Clone + PartialEq> NativeShadow<R> {
-    fn clear(&mut self) {
-        self.rows.clear();
-        self.output = Weak::new();
-    }
-
-    fn equal(
-        &mut self,
-        table: TableId,
-        current: &[R],
-        cached: Option<&Arc<TableRows>>,
-    ) -> Option<Arc<TableRows>> {
-        let cached = cached?;
-        let previous = self.output.upgrade()?;
-        // Typed PartialEq examines fields, never uninitialized struct padding.
-        // Native order is deliberately significant: reordered equal rows miss.
-        if cached.table() != table || !Arc::ptr_eq(cached, &previous) || self.rows != current {
-            return None;
-        }
-        self.hits = self.hits.saturating_add(1);
-        Some(Arc::clone(cached))
-    }
-
-    fn record_miss(&mut self, outcome: Outcome) {
-        if !matches!(
-            outcome,
-            Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON
-            }
-        ) {
-            self.misses = self.misses.saturating_add(1);
-        }
-    }
-
-    fn install(&mut self, source: &[R], output: &Arc<TableRows>) {
-        self.rows.clear();
-        self.rows.extend_from_slice(source);
-        self.output = Arc::downgrade(output);
-    }
-}
-
-/// Spool-owned conversion memo only. No native pointer, Captured lease, read
-/// outcome is retained or substituted for a new read.
-#[derive(Default)]
-pub(crate) struct ResearchShadow {
-    branch: Option<BranchId>,
-    technologies: NativeShadow<ctechnology::Row>,
-    definitions: NativeShadow<ctechnology_template::Row>,
-    definition_text: Vec<u8>,
-    definition_required: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ResearchShadowStats {
-    pub hits: u64,
-    pub misses: u64,
-    pub row_capacity_bytes: usize,
-    pub arena_capacity_bytes: usize,
-}
-
-impl ResearchShadow {
-    /// Current retained Vec capacity, not used length or allocator overhead.
-    /// Counters survive branch invalidation and measure conversion decisions,
-    /// including inputs later rejected or failed at encoding/writing.
-    pub(crate) fn statistics(&self) -> [ResearchShadowStats; 2] {
-        [
-            ResearchShadowStats {
-                hits: self.technologies.hits,
-                misses: self.technologies.misses,
-                row_capacity_bytes: self.technologies.rows.capacity()
-                    * size_of::<ctechnology::Row>(),
-                arena_capacity_bytes: 0,
-            },
-            ResearchShadowStats {
-                hits: self.definitions.hits,
-                misses: self.definitions.misses,
-                row_capacity_bytes: self.definitions.rows.capacity()
-                    * size_of::<ctechnology_template::Row>(),
-                arena_capacity_bytes: self.definition_text.capacity(),
-            },
-        ]
-    }
-
-    fn clear_definitions(&mut self) {
-        self.definitions.clear();
-        self.definition_text.clear();
-        self.definition_required = 0;
-    }
-}
-
-/// The producer supplies only the current branch's complete staggered cache.
-/// Weak identities bind each native shadow to that exact replay allocation.
-pub(crate) struct ResearchConversion<'a> {
-    shadow: &'a mut ResearchShadow,
-    cached: [Option<&'a Arc<TableRows>>; 2],
-}
-
-impl<'a> ResearchConversion<'a> {
-    pub(crate) fn new(
-        branch: BranchId,
-        shadow: &'a mut ResearchShadow,
-        cached: [Option<&'a Arc<TableRows>>; 2],
-    ) -> Self {
-        if shadow.branch != Some(branch) {
-            shadow.technologies.clear();
-            shadow.clear_definitions();
-            shadow.branch = Some(branch);
-        }
-        Self { shadow, cached }
-    }
-}
 
 pub const TABLES: [TableId; N] = [
     TableId::Focus,
@@ -325,6 +203,9 @@ pub struct Captured {
     research_loaned: bool,
     /// Which countries the research rows cover (see `ResearchPart`).
     research_selection: SliceSelection,
+    /// Which countries the technology rows cover: the `technologies` sliced
+    /// family, read in this family's country walk.
+    technology_selection: SliceSelection,
 }
 
 /// Research inputs, applied bonuses and modifiers: the governance family's
@@ -342,6 +223,9 @@ pub(crate) struct ResearchPart {
 
 /// Indices of the research tables in `TABLES`.
 pub(crate) const RESEARCH: [usize; 3] = [19, 20, 21];
+
+/// Indices of the technologies family's tables in `TABLES`.
+pub(crate) const TECHNOLOGIES: [usize; 2] = [2, 4];
 
 impl ResearchPart {
     /// Read this hour's research rows: every country on a full hour, else
@@ -409,7 +293,7 @@ impl ResearchPart {
                     }
                     fingerprints.finish_scan();
                     if census {
-                        self.selection.finish_census();
+                        self.selection.finish_census(fingerprints);
                     }
                     self.selection.scan_ticks = elapsed(scan);
                     for slot in 1..countries.count() {
@@ -512,11 +396,17 @@ impl Captured {
         self.research_selection = part.selection;
     }
 
-    /// Start a frame's research selection at its hour; the job resets it again.
-    pub(crate) fn reset_research_selection(&mut self, hour: i32, force_full: bool) {
+    /// Start a frame's sliced selections at its hour; the jobs reset them again.
+    pub(crate) fn reset_slice_selections(&mut self, hour: i32, force_full: bool) {
         if !self.research_loaned {
             self.research_selection.reset(hour, force_full);
         }
+        self.technology_selection.reset(hour, force_full);
+    }
+
+    /// The countries whose technology rows this frame's read replaced.
+    pub(crate) fn technology_selection(&self) -> &SliceSelection {
+        &self.technology_selection
     }
 
     /// The countries whose research rows this frame's read replaced.
@@ -590,6 +480,7 @@ impl Captured {
             focus_raw_mode: false,
             research_loaned: false,
             research_selection: SliceSelection::new(capacity.rows[19] != 0),
+            technology_selection: SliceSelection::new(capacity.rows[2] != 0),
         }
     }
 
@@ -599,13 +490,15 @@ impl Captured {
         &mut self,
         memory: &impl Memory,
         context: CaptureContext,
+        technology_fingerprints: &mut SliceFingerprints,
     ) -> CaptureReport {
-        let ticks = self.capture(
+        let ticks = self.capture_sliced(
             memory,
             context.base,
             context.game_state,
             context.hour,
             context.force_full,
+            technology_fingerprints,
         );
         CaptureReport { ticks }
     }
@@ -620,6 +513,8 @@ impl Captured {
         reason: &'static str,
     ) -> CaptureReport {
         self.reset();
+        self.technology_selection
+            .reset(context.hour, context.force_full);
         macro_rules! reject {
             ($($field:ident = $index:literal),+ $(,)?) => {
                 $({
@@ -842,8 +737,12 @@ impl Captured {
             idea_countries: &mut self.idea_countries.first,
             decision_countries: &mut self.decision_countries.first,
             dictionary: &mut self.dictionary,
+            technology_selection: &mut self.technology_selection,
         }
     }
+
+    /// A capture whose technology store is new: every country is first seen.
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -852,7 +751,25 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
+        let mut fingerprints = SliceFingerprints::new();
+        self.capture_sliced(memory, base, game_state, hour, force_full, &mut fingerprints)
+    }
+
+    /// Read the family. ResearchTechnologies reads this hour's country slice,
+    /// every country on a full hour, and every country `technology_fingerprints`
+    /// reports as new or unpublished; TechnologyDefinitions holds the templates
+    /// those rosters reach.
+    pub(crate) fn capture_sliced(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        technology_fingerprints: &mut SliceFingerprints,
+    ) -> [u64; N] {
         self.reset();
+        self.technology_selection.reset(hour, force_full);
         let mut walk: [bool; N] =
             std::array::from_fn(|i| replay::cadence::should_walk(TABLES[i], hour, force_full));
         // The World acquisition job stages scheduled Focus via `copy_focus_refresh`;
@@ -866,7 +783,14 @@ impl Captured {
         for index in RESEARCH {
             walk[index] = false;
         }
-        let first = acquire(memory, base, game_state, self.buffers(), &walk);
+        let first = acquire(
+            memory,
+            base,
+            game_state,
+            self.buffers(),
+            &walk,
+            technology_fingerprints,
+        );
         self.focus.outcome = first.outcomes[0];
         self.completed.outcome = first.outcomes[1];
         self.technologies.outcome = first.outcomes[2];
@@ -1002,6 +926,7 @@ struct Buffers<'a> {
     idea_countries: &'a mut [u32],
     decision_countries: &'a mut [u32],
     dictionary: &'a mut Vec<ctechnology_template::Entry>,
+    technology_selection: &'a mut SliceSelection,
 }
 struct Observation {
     outcomes: [Outcome; N],
@@ -1032,6 +957,7 @@ fn acquire(
     game_state: usize,
     b: Buffers<'_>,
     enabled: &[bool; N],
+    technology_fingerprints: &mut SliceFingerprints,
 ) -> Observation {
     let mut o = Observation::new();
     for (outcome, &active) in o.outcomes.iter_mut().zip(enabled) {
@@ -1069,6 +995,8 @@ fn acquire(
     if enabled[11] {
         o.ticks[11] += elapsed(started);
     }
+    // Every live country was visited without a census error.
+    let mut census = true;
     if enabled[..13].iter().any(|&value| value) {
         let started = qpc();
         let countries = read_accounting::with_table(TABLES[5], || {
@@ -1077,6 +1005,7 @@ fn acquire(
         o.ticks[5] += elapsed(started);
         match countries {
             Err(reason) => {
+                census = false;
                 for (outcome, _) in o.outcomes[..13].iter_mut().zip(&enabled[..13]).filter(|(_, active)| **active) {
                     *outcome = Outcome::Unavailable { reason };
                 }
@@ -1090,6 +1019,7 @@ fn acquire(
                         Ok(Some(country)) => country,
                         Ok(None) => continue,
                         Err(reason) => {
+                            census = false;
                             for (outcome, _) in o.outcomes[..13].iter_mut().zip(&enabled[..13]).filter(|(_, active)| **active) {
                                 *outcome = Outcome::Unavailable { reason };
                             }
@@ -1129,7 +1059,13 @@ fn acquire(
                         o.arena(0, result.bytes_len, result.required_bytes);
                         o.ticks[0] += elapsed(started);
                     }
+                    // A constant fingerprint: only new owners and unpublished
+                    // reads join the hour's slice.
                     if enabled[2] {
+                        b.technology_selection
+                            .scan(technology_fingerprints, country.id, Some(0));
+                    }
+                    if enabled[2] && b.technology_selection.contains(country.id) {
                         let _reads = read_accounting::table(TABLES[2]);
                         let started = qpc();
                         let first = o.outcomes[2].len();
@@ -1333,6 +1269,10 @@ fn acquire(
         }
     }
     if enabled[2] {
+        if census {
+            technology_fingerprints.finish_scan();
+            b.technology_selection.finish_census(technology_fingerprints);
+        }
         let started = qpc();
         o.lens[1] = definitions.bytes_len;
         o.required[1] = definitions.required_bytes;
@@ -1776,16 +1716,8 @@ impl Captured {
         )
     }
 
-    pub(crate) fn table_inputs(
-        &self,
-        reuse: Option<&mut ResearchConversion<'_>>,
-    ) -> [TableInput; N] {
-        let Some(reuse) = reuse else {
-            return self.tables().map(TableInput::Sampled);
-        };
-        let technologies = self.technologies_input(reuse);
-        let definitions = self.definitions_input(reuse);
-        self.convert_tables(TableInput::Sampled, technologies, definitions)
+    pub(crate) fn table_inputs(&self) -> [TableInput; N] {
+        self.tables().map(TableInput::Sampled)
     }
 
     fn technologies_table(&self) -> TableView {
@@ -1820,90 +1752,6 @@ impl Captured {
                 id: copy_span(definitions, r.id_start, r.id_len),
             },
         )
-    }
-
-    fn technologies_input(&self, reuse: &mut ResearchConversion<'_>) -> TableInput {
-        let source = match self.technologies.outcome {
-            Outcome::Rows { len } => self.technologies.rows.get(..len),
-            _ => None,
-        };
-        if let Some(source) = source
-            && let Some(rows) = reuse.shadow.technologies.equal(
-                TableId::ResearchTechnologies,
-                source,
-                reuse.cached[0],
-            )
-        {
-            return TableInput::SharedComplete(rows);
-        }
-        reuse
-            .shadow
-            .technologies
-            .record_miss(self.technologies.outcome);
-        match (source, self.technologies_table()) {
-            (Some(source), TableView::Complete(rows)) => {
-                let rows = Arc::new(rows);
-                reuse.shadow.technologies.install(source, &rows);
-                TableInput::SharedComplete(rows)
-            }
-            (_, view) => {
-                if !matches!(
-                    self.technologies.outcome,
-                    Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON
-                    }
-                ) {
-                    reuse.shadow.technologies.clear();
-                }
-                TableInput::Sampled(view)
-            }
-        }
-    }
-
-    fn definitions_input(&self, reuse: &mut ResearchConversion<'_>) -> TableInput {
-        let source = match self.definitions.outcome {
-            Outcome::Rows { len } => self.definitions.rows.get(..len),
-            _ => None,
-        };
-        let source = source
-            .zip(self.definition_text.first.get(..self.definition_text.len))
-            .filter(|(rows, text)| rows.iter().all(|row| valid(text, row.id_start, row.id_len)));
-        if let Some((source, text)) = source
-            && reuse.shadow.definition_required == self.definition_text.required
-            && reuse.shadow.definition_text == text
-            && let Some(rows) = reuse.shadow.definitions.equal(
-                TableId::TechnologyDefinitions,
-                source,
-                reuse.cached[1],
-            )
-        {
-            return TableInput::SharedComplete(rows);
-        }
-        reuse
-            .shadow
-            .definitions
-            .record_miss(self.definitions.outcome);
-        match (source, self.definitions_table()) {
-            (Some((source, text)), TableView::Complete(rows)) => {
-                let rows = Arc::new(rows);
-                reuse.shadow.definitions.install(source, &rows);
-                reuse.shadow.definition_text.clear();
-                reuse.shadow.definition_text.extend_from_slice(text);
-                reuse.shadow.definition_required = self.definition_text.required;
-                TableInput::SharedComplete(rows)
-            }
-            (_, view) => {
-                if !matches!(
-                    self.definitions.outcome,
-                    Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON
-                    }
-                ) {
-                    reuse.shadow.clear_definitions();
-                }
-                TableInput::Sampled(view)
-            }
-        }
     }
 
     fn convert_tables<T>(
@@ -2161,7 +2009,6 @@ impl Captured {
                 ahead_reduction_raw: r.ahead_reduction_raw,
                 speed_bonus_raw: r.speed_bonus_raw,
                 bonus_count: r.bonus_count,
-                sample_hour: self.research_selection.hour,
             })),
 
             wrap(view::<tables::ResearchAppliedBonuses, _>(&self.research_bonuses, |_| true, |r| rows::ResearchAppliedBonusRow {
@@ -2175,66 +2022,14 @@ impl Captured {
                 ahead_reduction_raw: r.value.ahead_reduction_raw,
                 speed_bonus_raw: r.value.speed_bonus_raw,
                 cost_reduction_raw: r.cost_reduction_raw,
-                sample_hour: self.research_selection.hour,
             })),
             wrap(view::<tables::ResearchModifiers, _>(&self.research_modifiers, |_| true, |r| rows::ResearchModifierRow {
                 country: r.country, index: r.index, ordinal: r.ordinal, technology_handle: r.technology_handle,
                 kind: match r.kind { engine::research_modifiers::Kind::Technology => rows::ResearchModifierRow::TECHNOLOGY, engine::research_modifiers::Kind::CountrySpeed => rows::ResearchModifierRow::COUNTRY_SPEED, engine::research_modifiers::Kind::CategorySpeed => rows::ResearchModifierRow::CATEGORY_SPEED, engine::research_modifiers::Kind::DesignTeam => rows::ResearchModifierRow::DESIGN_TEAM, engine::research_modifiers::Kind::Experience => rows::ResearchModifierRow::EXPERIENCE, engine::research_modifiers::Kind::Sharing => rows::ResearchModifierRow::SHARING, engine::research_modifiers::Kind::License => rows::ResearchModifierRow::LICENSE, engine::research_modifiers::Kind::Scientist => rows::ResearchModifierRow::SCIENTIST, engine::research_modifiers::Kind::Year => rows::ResearchModifierRow::YEAR, engine::research_modifiers::Kind::AheadFactor => rows::ResearchModifierRow::AHEAD_FACTOR, engine::research_modifiers::Kind::MinimumSpeed => rows::ResearchModifierRow::MINIMUM_SPEED, engine::research_modifiers::Kind::CountrySource => rows::ResearchModifierRow::COUNTRY_SOURCE, engine::research_modifiers::Kind::IdeaSource => rows::ResearchModifierRow::IDEA_SOURCE, engine::research_modifiers::Kind::ScriptSource => rows::ResearchModifierRow::SCRIPT_SOURCE, engine::research_modifiers::Kind::ScientistSource => rows::ResearchModifierRow::SCIENTIST_SOURCE, engine::research_modifiers::Kind::SharingMultiplier => rows::ResearchModifierRow::SHARING_MULTIPLIER, engine::research_modifiers::Kind::SharingMaximum => rows::ResearchModifierRow::SHARING_MAXIMUM, engine::research_modifiers::Kind::ModifierMetadata => rows::ResearchModifierRow::MODIFIER_METADATA, engine::research_modifiers::Kind::ScientistCategory => rows::ResearchModifierRow::SCIENTIST_CATEGORY, engine::research_modifiers::Kind::SharingMember => rows::ResearchModifierRow::SHARING_MEMBER, engine::research_modifiers::Kind::SharingPredecessor => rows::ResearchModifierRow::SHARING_PREDECESSOR, engine::research_modifiers::Kind::SharingFilter => rows::ResearchModifierRow::SHARING_FILTER, engine::research_modifiers::Kind::SharingCategory => rows::ResearchModifierRow::SHARING_CATEGORY, engine::research_modifiers::Kind::SharingDoctrine => rows::ResearchModifierRow::SHARING_DOCTRINE, engine::research_modifiers::Kind::SharingMissingMember => rows::ResearchModifierRow::SHARING_MISSING_MEMBER }, raw: r.raw, auxiliary: r.auxiliary, count: r.count, source_id: r.source_id, name: r.name.as_bytes().to_vec(),
-                sample_hour: self.research_selection.hour,
             })),
 
         ]
     }
-}
-
-#[cfg(test)]
-pub(crate) fn research_shadow_fixture(progress: i64) -> Captured {
-    let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; N],
-        ..Default::default()
-    });
-    captured.technologies.rows = vec![
-        ctechnology::Row {
-            country: 2,
-            technology_handle: 7,
-            classifier: 5,
-            level: -1,
-            researched: 0xfe,
-            progress_raw: progress,
-            ahead_reduction_years_raw: i64::MIN,
-        },
-        ctechnology::Row {
-            country: 1,
-            technology_handle: 8,
-            ..Default::default()
-        },
-    ];
-    captured.technologies.outcome = Outcome::Rows { len: 2 };
-    captured.definitions.rows = vec![
-        ctechnology_template::Row {
-            technology_handle: 8,
-            database_index: 4,
-            year: 1936,
-            max_level: 3,
-            research_cost_raw: i64::MAX,
-            id_start: 0,
-            id_len: 3,
-        },
-        ctechnology_template::Row {
-            technology_handle: 7,
-            database_index: 5,
-            year: 1938,
-            max_level: 2,
-            research_cost_raw: 1000,
-            id_start: 3,
-            id_len: 3,
-        },
-    ];
-    captured.definitions.outcome = Outcome::Rows { len: 2 };
-    captured.definition_text.first[..6].copy_from_slice(&[0xff, 0, 1, b'a', 0, b'z']);
-    captured.definition_text.len = 6;
-    captured.definition_text.required = 6;
-    captured
 }
 
 #[cfg(test)]
@@ -2363,296 +2158,6 @@ mod tests {
         assert_eq!(captured.completed.outcome, Outcome::Unavailable { reason });
         assert!(!captured.focus_raw_mode);
         assert_eq!(captured.technologies.outcome, Outcome::Rows { len: 1 });
-    }
-
-    fn shadow_inputs(
-        captured: &Captured,
-        shadow: &mut ResearchShadow,
-        cached: Option<&[Arc<TableRows>; 2]>,
-        branch: BranchId,
-    ) -> [TableInput; N] {
-        let previous = cached.map_or([None, None], |rows| [Some(&rows[0]), Some(&rows[1])]);
-        captured.table_inputs(Some(&mut ResearchConversion::new(branch, shadow, previous)))
-    }
-
-    fn shared_research(inputs: &[TableInput; N]) -> [Arc<TableRows>; 2] {
-        [2, 4].map(|index| match &inputs[index] {
-            TableInput::SharedComplete(rows) => Arc::clone(rows),
-            _ => panic!("fixture expected shared complete Research rows"),
-        })
-    }
-
-    fn assert_views(captured: &Captured, inputs: &[TableInput; N]) {
-        for (actual, expected) in inputs.iter().zip(captured.tables()) {
-            match actual {
-                TableInput::SharedComplete(rows) => {
-                    assert_eq!(TableView::Complete((**rows).clone()), expected)
-                }
-                TableInput::Sampled(view) => assert_eq!(*view, expected),
-                TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
-                    panic!("Research does not use comparison tokens")
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn research_shadow_statistics_count_decisions_and_retained_capacity_across_invalidation() {
-        let first = research_shadow_fixture(10);
-        let mut shadow = ResearchShadow::default();
-        assert_eq!(shadow.statistics(), [ResearchShadowStats::default(); 2]);
-        let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
-        shadow.technologies.rows.reserve(32);
-        shadow.definitions.rows.reserve(16);
-        shadow.definition_text.reserve(31);
-        let capacity = shadow.statistics();
-        assert_eq!(
-            capacity[0].row_capacity_bytes,
-            shadow.technologies.rows.capacity() * size_of::<ctechnology::Row>()
-        );
-        assert_eq!(
-            capacity[1].row_capacity_bytes,
-            shadow.definitions.rows.capacity() * size_of::<ctechnology_template::Row>()
-        );
-        assert_eq!(
-            capacity[1].arena_capacity_bytes,
-            shadow.definition_text.capacity()
-        );
-        assert!(
-            capacity[0].row_capacity_bytes
-                > first.technologies.rows.len() * size_of::<ctechnology::Row>()
-        );
-        assert!(
-            capacity
-                .iter()
-                .all(|table| table.hits == 0 && table.misses == 1)
-        );
-
-        let _hit = shadow_inputs(&first, &mut shadow, Some(&cached), 1);
-        let after_hit = shadow.statistics();
-        assert!(
-            after_hit
-                .iter()
-                .all(|table| table.hits == 1 && table.misses == 1)
-        );
-        let mut skipped = research_shadow_fixture(10);
-        skipped.technologies.outcome = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
-        };
-        skipped.definitions.outcome = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
-        };
-        let _skipped = shadow_inputs(&skipped, &mut shadow, Some(&cached), 1);
-        assert_eq!(shadow.statistics(), after_hit);
-
-        let mut failed = research_shadow_fixture(10);
-        failed.technologies.outcome = Outcome::Truncated {
-            len: 1,
-            unread_rows: 1,
-        };
-        failed.definitions.outcome = Outcome::Unavailable {
-            reason: "read failed",
-        };
-        let _failed = shadow_inputs(&failed, &mut shadow, Some(&cached), 1);
-        assert!(shadow.technologies.rows.is_empty());
-        assert!(shadow.definitions.rows.is_empty());
-        assert!(shadow.definition_text.is_empty());
-        assert!(
-            shadow
-                .statistics()
-                .iter()
-                .all(|table| table.hits == 1 && table.misses == 2)
-        );
-
-        let _branch = shadow_inputs(&first, &mut shadow, Some(&cached), 2);
-        for (current, capacity) in shadow.statistics().into_iter().zip(capacity) {
-            assert_eq!((current.hits, current.misses), (1, 3));
-            assert_eq!(current.row_capacity_bytes, capacity.row_capacity_bytes);
-            assert_eq!(current.arena_capacity_bytes, capacity.arena_capacity_bytes);
-        }
-    }
-
-    #[test]
-    fn research_shadow_hits_reuse_exact_arcs_and_do_not_copy_unused_capacity() {
-        let first = research_shadow_fixture(10);
-        let mut shadow = ResearchShadow::default();
-        let inputs = shadow_inputs(&first, &mut shadow, None, 1);
-        assert_views(&first, &inputs);
-        let cached = shared_research(&inputs);
-        assert_eq!(shadow.technologies.rows, first.technologies.rows);
-        assert_eq!(shadow.definition_text, [0xff, 0, 1, b'a', 0, b'z']);
-        let pointers = (
-            shadow.technologies.rows.as_ptr(),
-            shadow.definition_text.as_ptr(),
-        );
-        let mut current = research_shadow_fixture(10);
-        current.technologies.rows.push(ctechnology::Row::default());
-        current.definition_text.first[7] = 0x42;
-        let reused = shadow_inputs(&current, &mut shadow, Some(&cached), 1);
-        assert_views(&current, &reused);
-        for (previous, current) in cached.iter().zip(shared_research(&reused)) {
-            assert!(Arc::ptr_eq(previous, &current));
-        }
-        assert_eq!(
-            pointers,
-            (
-                shadow.technologies.rows.as_ptr(),
-                shadow.definition_text.as_ptr()
-            )
-        );
-    }
-
-    #[test]
-    fn research_shadow_every_technology_field_order_and_length_change_misses_exactly() {
-        for field in 0..10 {
-            let first = research_shadow_fixture(10);
-            let mut shadow = ResearchShadow::default();
-            let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
-            let mut current = research_shadow_fixture(10);
-            let row = &mut current.technologies.rows[0];
-            match field {
-                0 => row.country = 3,
-                1 => row.technology_handle = 9,
-                2 => row.classifier ^= 1,
-                3 => row.level += 1,
-                4 => row.researched ^= 1,
-                5 => row.progress_raw += 1,
-                6 => row.ahead_reduction_years_raw += 1,
-                7 => current.technologies.rows.swap(0, 1),
-                8 => current.technologies.outcome = Outcome::Rows { len: 1 },
-                9 => current.technologies.outcome = Outcome::Rows { len: 0 },
-                _ => unreachable!(),
-            }
-            let inputs = shadow_inputs(&current, &mut shadow, Some(&cached), 1);
-            assert_views(&current, &inputs);
-            let next = shared_research(&inputs);
-            assert!(!Arc::ptr_eq(&cached[0], &next[0]), "field {field}");
-            assert!(Arc::ptr_eq(&cached[1], &next[1]));
-            let hit = shared_research(&shadow_inputs(&current, &mut shadow, Some(&next), 1));
-            assert!(Arc::ptr_eq(&next[0], &hit[0]));
-        }
-    }
-
-    #[test]
-    fn research_shadow_definition_fields_exact_text_and_arena_metadata_gate_reuse() {
-        for field in 0..13 {
-            let first = research_shadow_fixture(10);
-            let mut shadow = ResearchShadow::default();
-            let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
-            let mut current = research_shadow_fixture(10);
-            let row = &mut current.definitions.rows[0];
-            match field {
-                0 => row.technology_handle = 9,
-                1 => row.database_index += 1,
-                2 => row.year += 1,
-                3 => row.max_level += 1,
-                4 => row.research_cost_raw -= 1,
-                5 => row.id_start += 1,
-                6 => row.id_len -= 1,
-                7 => current.definition_text.first[1] = 0xfe,
-                8 => current.definition_text.len += 1,
-                9 => current.definition_text.required += 1,
-                10 => current.definitions.rows.swap(0, 1),
-                11 => current.definitions.outcome = Outcome::Rows { len: 0 },
-                12 => {
-                    current.definition_text.len = 0;
-                    current.definition_text.required = 0;
-                    current.definitions.outcome = Outcome::Rows { len: 0 };
-                }
-                _ => unreachable!(),
-            }
-            let inputs = shadow_inputs(&current, &mut shadow, Some(&cached), 1);
-            assert_views(&current, &inputs);
-            let next = shared_research(&inputs);
-            assert!(Arc::ptr_eq(&cached[0], &next[0]));
-            assert!(!Arc::ptr_eq(&cached[1], &next[1]), "field {field}");
-        }
-    }
-
-    #[test]
-    fn research_shadow_failures_never_reuse_complete_rows_and_recover_through_conversion() {
-        for fault in [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12] {
-            let first = research_shadow_fixture(10);
-            let mut shadow = ResearchShadow::default();
-            let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
-            let mut current = research_shadow_fixture(10);
-            match fault {
-                0 => current.technologies.outcome = Outcome::Rows { len: 3 },
-                1 => {
-                    current.technologies.outcome = Outcome::Truncated {
-                        len: 1,
-                        unread_rows: 5,
-                    }
-                }
-                2 => {
-                    current.technologies.outcome = Outcome::Truncated {
-                        len: 1,
-                        unread_rows: 0,
-                    }
-                }
-                3 => {
-                    current.technologies.outcome = Outcome::Unavailable {
-                        reason: "native read failed",
-                    }
-                }
-                4 => current.technologies.rows[1] = current.technologies.rows[0],
-                6 => current.definitions.rows[0].id_start = usize::MAX,
-                7 => current.definition_text.len = current.definition_text.first.len() + 1,
-                8 => current.definitions.outcome = Outcome::Rows { len: 3 },
-                9 => {
-                    current.definitions.outcome = Outcome::Truncated {
-                        len: 1,
-                        unread_rows: 5,
-                    }
-                }
-                10 => {
-                    current.definitions.outcome = Outcome::Truncated {
-                        len: 1,
-                        unread_rows: 0,
-                    }
-                }
-                11 => {
-                    current.definitions.outcome = Outcome::Unavailable {
-                        reason: "native read failed",
-                    }
-                }
-                12 => current.definitions.rows[1] = current.definitions.rows[0],
-                _ => unreachable!(),
-            }
-            let inputs = shadow_inputs(&current, &mut shadow, Some(&cached), 1);
-            assert_views(&current, &inputs);
-            let failed = if fault < 6 { 0 } else { 1 };
-            assert!(matches!(inputs[[2, 4][failed]], TableInput::Sampled(_)));
-            let restored = shared_research(&shadow_inputs(&first, &mut shadow, Some(&cached), 1));
-            assert!(!Arc::ptr_eq(&cached[failed], &restored[failed]));
-        }
-    }
-
-    #[test]
-    fn research_shadow_rejects_wrong_cache_identity_and_new_branches_but_keeps_off_hours() {
-        let first = research_shadow_fixture(10);
-        let mut shadow = ResearchShadow::default();
-        let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
-        let mut skipped = research_shadow_fixture(99);
-        skipped.technologies.outcome = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
-        };
-        skipped.definitions.outcome = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
-        };
-        assert_views(
-            &skipped,
-            &shadow_inputs(&skipped, &mut shadow, Some(&cached), 1),
-        );
-        let hit = shared_research(&shadow_inputs(&first, &mut shadow, Some(&cached), 1));
-        assert!(Arc::ptr_eq(&cached[0], &hit[0]));
-        let replacement = cached.each_ref().map(|rows| Arc::new((**rows).clone()));
-        let miss = shared_research(&shadow_inputs(&first, &mut shadow, Some(&replacement), 1));
-        assert!(!Arc::ptr_eq(&replacement[0], &miss[0]));
-        let branch = shared_research(&shadow_inputs(&first, &mut shadow, Some(&miss), 2));
-        assert!(!Arc::ptr_eq(&miss[0], &branch[0]));
-        let missing = shared_research(&shadow_inputs(&first, &mut shadow, None, 2));
-        assert!(!Arc::ptr_eq(&branch[0], &missing[0]));
     }
 
     #[test]
@@ -3249,7 +2754,7 @@ mod tests {
                 assert_eq!(captured.politics.outcome, Outcome::Rows { len: 2 });
                 assert_eq!(captured.parties.outcome, Outcome::Rows { len: 0 });
                 assert_eq!(memory.0.ideas.get() > 0, hour == 15);
-                for (index, slot) in [(0, 19), (2, 0), (3, 11)] {
+                for (index, slot) in [(0, 19), (3, 11)] {
                     assert_eq!(
                         counts[TABLES[index].index()].spans > 0,
                         hour == slot,
@@ -3257,6 +2762,8 @@ mod tests {
                         TABLES[index]
                     );
                 }
+                // Technologies are sliced; a new store reads every country at once.
+                assert!(counts[TABLES[2].index()].spans > 0, "hour={hour}");
                 for (index, outcome) in captured.outcomes().into_iter().enumerate() {
                     if !replay::cadence::should_walk(TABLES[index], hour, false) {
                         assert_eq!(
@@ -3394,7 +2901,17 @@ mod tests {
         let mut enabled = [false; N];
         enabled[2] = true;
         enabled[4] = true;
-        let result = acquire(&memory, BASE, 0x1_0000, captured.buffers(), &enabled);
+        captured.technology_selection = SliceSelection::new(true);
+        captured.technology_selection.reset(0, true);
+        let mut store = SliceFingerprints::new();
+        let result = acquire(
+            &memory,
+            BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            &mut store,
+        );
         assert_eq!(result.outcomes[2], Outcome::Rows { len: 4 });
         assert_eq!(result.outcomes[4], Outcome::Rows { len: 2 });
         assert_eq!(result.lens[1], 8);
@@ -3445,6 +2962,43 @@ mod tests {
                 1
             );
         }
+        drop(spans);
+        // Later hours read only their slice, new owners and unpublished reads;
+        // every roster read reaches both templates.
+        fn read(
+            captured: &mut Captured,
+            memory: &impl Memory,
+            enabled: &[bool; N],
+            (hour, force_full): (i32, bool),
+            store: &mut SliceFingerprints,
+        ) -> (Vec<u32>, usize) {
+            captured.technology_selection.reset(hour, force_full);
+            let result = acquire(memory, BASE, 0x1_0000, captured.buffers(), enabled, store);
+            let owners = captured.technologies.rows[..result.outcomes[2].len()]
+                .iter()
+                .map(|row| row.country)
+                .collect();
+            (owners, result.outcomes[4].len())
+        }
+        let mut at = |hour, force_full, store: &mut SliceFingerprints| {
+            read(&mut captured, &memory, &enabled, (hour, force_full), store)
+        };
+        assert_eq!(at(1, false, &mut store), (vec![1, 1], 2));
+        assert_eq!(at(3, false, &mut store), (vec![], 0));
+        // An unpublished full hour is read again at the next hour.
+        assert_eq!(at(4, true, &mut store), (vec![1, 1, 2, 2], 2));
+        // The complete census saw only countries 1 and 2.
+        let selection = &captured.technology_selection;
+        assert!(selection.live(1) && selection.live(2) && !selection.live(3));
+        selection.invalidate(&mut store);
+        let mut at = |hour, force_full, store: &mut SliceFingerprints| {
+            read(&mut captured, &memory, &enabled, (hour, force_full), store).0
+        };
+        assert_eq!(at(5, false, &mut store), [1, 1, 2, 2]);
+        assert!(at(6, false, &mut store).is_empty());
+        // A forgotten store makes every country new: read at once.
+        store.forget();
+        assert_eq!(at(7, false, &mut store), [1, 1, 2, 2]);
     }
 
     #[test]

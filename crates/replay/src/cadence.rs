@@ -3,11 +3,12 @@
 //! Hourly: map inputs, character identities and unit leaders. Daily: panel
 //! data, including persistent character roles and traits, walked once per 24
 //! game-hours in a fixed slot so every hour costs about the same. Sliced: large
-//! per-country tables refreshed one owner slice per hour, so each owner is
-//! read once per day and no hour reads the whole table; every row carries the
-//! hour it was read at. Static: data that cannot change after a save loads,
-//! walked only on a full hour (branch start, keyframe, load, gap). Off-slot
-//! hours record [`SKIPPED_REASON`] and the replay carries the last walk forward.
+//! per-owner tables refreshed one owner slice per hour, so each owner is
+//! read once per day and no hour reads the whole table; SliceReads holds the
+//! hour each owner's rows were read at (see [`crate::sliced`]). Static: data that cannot change after a save loads,
+//! walked only on a full hour (branch start, load, gap or an explicit refresh
+//! request). Off-slot hours record [`SKIPPED_REASON`] and the replay carries
+//! the last walk forward; keyframes re-encode the rows already held.
 
 use crate::rows::TableId;
 
@@ -24,8 +25,8 @@ pub enum Cadence {
     FourHourly(u32),
     Daily(u32),
     /// One owner slice per hour ([`slice_of`]); a full hour reads every slice.
-    /// Rows keep their own sample hour; the recorder merges each slice into
-    /// the previous complete table.
+    /// Each owner's read hour is in SliceReads; the recorder merges each slice
+    /// into the previous complete table.
     Sliced,
     Static,
 }
@@ -49,6 +50,10 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::ResearchInputs | TableId::ResearchAppliedBonuses | TableId::ResearchModifiers => {
             Sliced
         }
+        // Technology rosters: daily progress for every country. Definitions
+        // are the templates the hour's rosters reach, merged by handle; the
+        // console command reloadtechnologies can rewrite them after a load.
+        TableId::ResearchTechnologies | TableId::TechnologyDefinitions => Sliced,
         // Cannot change after the save loads (the DLC set included).
         TableId::LexicalTokens | TableId::SimulationFeatures => Static,
         // Relations feed the perspective.
@@ -56,10 +61,8 @@ pub const fn cadence(table: TableId) -> Cadence {
         // Province names are live overrides: set_province_name and
         // reset_province_name effects can change them after a save loads.
         TableId::ProvinceNames => FourHourly(3),
-        // Daily slots: whole shared-source families stay together. The
-        // technology and resource definitions are static too, but their
-        // daily consumers walk them as one census, so they share the slot.
-        TableId::ResearchTechnologies | TableId::TechnologyDefinitions => Daily(0),
+        // Daily slots: whole shared-source families stay together; a
+        // definition table shares the slot of the census that reaches it.
         // Intel lanes change only in CGameState::DailyUpdate, which runs inside
         // the hourly update entered at hour 23; slot 0 is the first sample after it.
         TableId::CountryIntel => Daily(0),
@@ -199,10 +202,6 @@ pub fn should_walk(table: TableId, hour: crate::Hour, force_full: bool) -> bool 
     force_full || is_refresh(table, hour)
 }
 
-pub fn is_full_hour(hour: crate::Hour, branch_first: crate::Hour) -> bool {
-    (i64::from(hour) - i64::from(branch_first)).rem_euclid(i64::from(crate::KEYFRAME_INTERVAL)) == 0
-}
-
 pub fn refresh_text(table: TableId) -> &'static str {
     cadence(table).refresh_text()
 }
@@ -218,7 +217,7 @@ impl Cadence {
         const FOUR: [&str; 4] = ["H%4==0", "H%4==1", "H%4==2", "H%4==3"];
         match self {
             Cadence::Hourly => "hourly",
-            Cadence::Sliced => "one country slice per hour",
+            Cadence::Sliced => "one owner slice per hour, merged into the held table",
             Cadence::FourHourly(slot) => FOUR[slot as usize],
             Cadence::Daily(slot) => DAILY[slot as usize],
             Cadence::Static => "static",
@@ -329,14 +328,6 @@ mod tests {
                 assert!(slice_active(owner, base, true));
             }
         }
-    }
-
-    #[test]
-    fn full_hours_follow_the_keyframe_interval() {
-        assert!(is_full_hour(100, 100));
-        assert!(!is_full_hour(101, 100));
-        assert!(is_full_hour(100 + crate::KEYFRAME_INTERVAL as i32, 100));
-        assert!(is_full_hour(i32::MIN + 720, i32::MIN));
     }
 
     #[test]
