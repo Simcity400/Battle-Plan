@@ -63,10 +63,11 @@ pub const fn cadence(table: TableId) -> Cadence {
         // Intel lanes change only in CGameState::DailyUpdate, which runs inside
         // the hourly update entered at hour 23; slot 0 is the first sample after it.
         TableId::CountryIntel => Daily(0),
+        // Slot 4: the relation tuples' four-hourly slot 1 is busy already.
         TableId::ProjectPrograms
         | TableId::Projects
         | TableId::ProjectHistory
-        | TableId::ProjectBreakthroughs => Daily(1),
+        | TableId::ProjectBreakthroughs => Daily(4),
         TableId::DivisionEquipment
         | TableId::ArmyUpgradeGroups
         | TableId::ArmyUpgradeRequests
@@ -287,6 +288,7 @@ mod tests {
                 TableId::ProjectPrograms,
                 TableId::Projects,
                 TableId::ProjectHistory,
+                TableId::ProjectBreakthroughs,
             ][..],
             &[TableId::RelationOpinions, TableId::RelationTuples],
             &[
@@ -302,7 +304,11 @@ mod tests {
         assert_eq!(cadence(TableId::RelationTuples), Cadence::FourHourly(1));
         assert_eq!(refresh_text(TableId::RelationTuples), "H%4==1");
         assert_eq!(refresh_slot(TableId::RelationTuples), None);
-        assert_eq!(refresh_slot(TableId::Projects), Some(1));
+        assert_eq!(refresh_slot(TableId::Projects), Some(4));
+        // The daily project walk never lands on a relation hour.
+        let project_hour = refresh_slot(TableId::Projects).unwrap() as i32;
+        assert!(!is_refresh(TableId::RelationTuples, project_hour));
+        assert!(!is_refresh(TableId::RelationOpinions, project_hour));
         assert_eq!(cadence(TableId::LexicalTokens), Cadence::Static);
         assert_eq!(refresh_text(TableId::LexicalTokens), "static");
         assert!(is_staggered(TableId::LexicalTokens));

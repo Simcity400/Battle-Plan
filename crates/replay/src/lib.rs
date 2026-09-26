@@ -17,7 +17,7 @@ pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
 /// The only recording version this build reads and writes.
-pub const FORMAT_VERSION: u16 = 41;
+pub const FORMAT_VERSION: u16 = 42;
 pub const KEYFRAME_INTERVAL: u32 = 720;
 
 #[cfg(test)]

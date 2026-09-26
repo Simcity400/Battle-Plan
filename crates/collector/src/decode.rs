@@ -624,8 +624,8 @@ pub fn characters_refresh_hour(hour: i32, force_full: bool) -> bool {
         .any(|table| replay::cadence::should_walk(*table, hour, force_full))
 }
 
-/// Projects refresh together on daily slot 1; branch starts and keyframes
-/// force their complete acquisition.
+/// Projects refresh together on their daily slot (`replay::cadence`); full
+/// hours force their complete acquisition.
 pub fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
     let walk = replay::cadence::should_walk(PROJECTS[0], hour, force_full);
     for table in PROJECTS.iter().skip(1) {
@@ -3605,9 +3605,10 @@ mod tests {
     }
 
     #[test]
-    fn projects_gate_matches_daily_slot_one_and_force_full() {
+    fn projects_gate_matches_their_daily_slot_and_force_full() {
+        let slot = replay::cadence::refresh_slot(PROJECTS[0]).unwrap() as i32;
         for hour in -48..48i32 {
-            let refresh = hour.rem_euclid(24) == 1;
+            let refresh = hour.rem_euclid(24) == slot;
             assert_eq!(projects_refresh_hour(hour, false), refresh, "hour {hour}");
             assert!(projects_refresh_hour(hour, true), "forced hour {hour}");
         }

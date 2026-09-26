@@ -2412,7 +2412,10 @@ mod tests {
         let (capacities, _) = small();
         for hour in 0..24 {
             let active = replay::cadence::should_walk(TableId::Projects, hour, false);
-            assert_eq!(active, hour == 1);
+            assert_eq!(
+                active,
+                Some(hour as u32) == replay::cadence::refresh_slot(TableId::Projects)
+            );
             let memory = ProgramSource::new(&bytes);
             let mut job = if active {
                 ProjectsJob::new()
