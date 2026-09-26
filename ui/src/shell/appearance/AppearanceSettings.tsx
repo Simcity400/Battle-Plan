@@ -13,6 +13,7 @@ import { deleteBackdrop, importBackdrop, listBackdrops } from './backdrops';
 import type { BackdropImage } from './backdrops';
 import { FONT_PRESETS, fontAvailable, fontStack, installedFonts } from './fonts';
 import { ThemeSwatch, ThemeWireframe } from './ThemePreview';
+import { Segmented } from '../../components/Segmented';
 import type { Appearance } from './useAppearance';
 import type { ThemeDraft } from './ThemeEditor';
 
@@ -31,11 +32,6 @@ function SliderRow({ id, label, hint, value, min, max, unit, onChange }: { id?: 
       style={{ '--fill': `${(100 * (value - min)) / (max - min)}%` } as CSSProperties} onChange={event => onChange(Number(event.currentTarget.value))} />
       <output>{value}{unit}</output></span>
   </label>;
-}
-
-function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: readonly { value: T; label: string; icon?: IconName }[]; onChange: (value: T) => void; label: string }) {
-  return <div className="segmented" role="group" aria-label={label}>{options.map(option => <button key={option.value} type="button" aria-pressed={value === option.value} onClick={() => onChange(option.value)}>
-    {option.icon && <Icon name={option.icon} />}{option.label}</button>)}</div>;
 }
 
 export const newThemeId = () => `theme-${newId().replaceAll('-', '').slice(0, 20)}`;

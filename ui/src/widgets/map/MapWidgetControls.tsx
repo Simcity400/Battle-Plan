@@ -1,7 +1,7 @@
 import MapControls from '../../components/MapControls';
 import { Icon } from '../../components/Icons';
 import { resolveWidgetCampaign } from '../../dashboard/campaigns';
-import { WidgetSettings } from '../../dashboard/controls';
+import { WidgetSettings } from '../../dashboard/settings/WidgetSettings';
 import type { HeaderControlsProps } from '../../dashboard/definitions';
 
 /** The map's header pop-down: appearance, branch, export and the shared widget settings. */

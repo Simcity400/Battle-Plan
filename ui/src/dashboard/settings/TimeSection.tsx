@@ -1,0 +1,57 @@
+import { Segmented } from '../../components/Segmented';
+import DateTimePicker from '../../components/DateTimePicker';
+import { formatDateTime } from '../calendar';
+import { pinTime } from '../model';
+import type { BoundTrack, WidgetSpec, WidgetTime } from '../model';
+import type { WidgetRuntime } from '../definitions';
+
+const MODES: Record<WidgetTime['mode'], { label: string; tooltip: string }> = {
+  follow: { label: 'Live', tooltip: 'Follow the playback clock' },
+  campaign: { label: 'Whole campaign', tooltip: 'Show the whole campaign as it stood at the end' },
+  pin: { label: 'Pinned', tooltip: 'Hold one moment while playback moves on' },
+  range: { label: 'Date range', tooltip: 'Show a fixed stretch of the campaign' },
+};
+const ORDER: readonly WidgetTime['mode'][] = ['follow', 'campaign', 'pin', 'range'];
+
+/** Live, whole campaign, a pinned moment or a date range, as the widget allows.
+ * Dates come from the widget's own recording, never a fixed calendar. */
+export function TimeSection({ widget, effective, reference, runtime, modes, onChange }: {
+  widget: WidgetSpec; effective: WidgetSpec; reference: BoundTrack | undefined; runtime: WidgetRuntime;
+  modes: readonly WidgetTime['mode'][]; onChange: (time: WidgetTime) => void;
+}) {
+  // A pinned moment or range needs a loaded campaign to take its dates from.
+  const offered = ORDER.filter(mode => modes.includes(mode) && (mode === 'follow' || mode === 'campaign' || reference));
+  const choose = (mode: WidgetTime['mode']) => {
+    if (mode === 'follow' || mode === 'campaign') onChange({ mode });
+    // Pin the playback moment, not whatever the widget shows now (a pin or the whole campaign).
+    else if (mode === 'pin') {
+      const pin = pinTime({ ...effective, time: { mode: 'follow' } }, runtime.tracks, runtime.clock.getSnapshot().position);
+      // Without a loaded campaign there is no moment to hold; keep any existing pin.
+      if (pin.mode === 'pin' && Object.keys(pin.windows).length) onChange(pin);
+    }
+    else if (reference) onChange({ mode: 'range', firstOffset: 0, lastOffset: reference.branch.lastHour - reference.branch.firstHour });
+  };
+  const time = widget.time;
+  const pinned = time.mode === 'pin' && reference ? time.windows[reference.id] : undefined;
+  return <>
+    {offered.length > 1 && <Segmented label="Time" value={time.mode} onChange={choose}
+      options={offered.map(mode => ({ value: mode, ...MODES[mode] }))} />}
+    {time.mode === 'pin' && <div className="setting-row"><span>{pinned && reference
+      ? <>Holding {formatDateTime(reference.branch.firstHour + pinned.lastOffset)}</> : 'The pinned moment is not in this campaign'}
+      <small>Playback moves on without this widget</small></span>
+      <button type="button" className="button small" disabled={!reference} onClick={() => choose('pin')}
+        data-tooltip={reference ? undefined : 'Load this campaign to pin a new moment'}>Pin to now</button></div>}
+    {time.mode === 'range' && reference && <RangeFields time={time} reference={reference} onChange={onChange} />}
+  </>;
+}
+
+function RangeFields({ time, reference, onChange }: { time: Extract<WidgetTime, { mode: 'range' }>; reference: BoundTrack; onChange: (time: WidgetTime) => void }) {
+  const { firstHour, lastHour } = reference.branch;
+  const from = firstHour + time.firstOffset;
+  const to = firstHour + time.lastOffset;
+  const set = (first: number, last: number) => onChange({ mode: 'range', firstOffset: first - firstHour, lastOffset: last - firstHour });
+  return <div className="settings-range">
+    <DateTimePicker label="From" value={from} min={firstHour} max={lastHour} otherValue={to} describedBy="" onChange={hour => set(hour, Math.max(hour, to))} />
+    <DateTimePicker label="To" value={to} min={firstHour} max={lastHour} otherValue={from} describedBy="" onChange={hour => set(Math.min(hour, from), hour)} />
+  </div>;
+}

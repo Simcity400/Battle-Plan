@@ -1,6 +1,7 @@
 import { newId } from '../shell/ids.ts';
 import type { DashboardSource } from './client';
 import { widgetDefinition } from './definitions.ts';
+import type { WidgetOptions } from './options';
 
 export const TRAILING_HOURS = 168;
 export const WIDGET_CONTENT_SCALES = [50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200] as const;
@@ -32,6 +33,8 @@ export interface WidgetSpec {
   trackIds: string[];
   countries: CountrySelection;
   time: WidgetTime;
+  /** Values for the definition's option fields; absent keys use the defaults. */
+  options?: WidgetOptions;
 }
 export interface GridItem { i: string; x: number; y: number; w: number; h: number; minW?: number; minH?: number }
 export type GridLayouts = Partial<Record<Breakpoint, GridItem[]>>;
@@ -152,6 +155,57 @@ export function pinTime(widget: WidgetSpec, tracks: BoundTrack[], position: numb
     if (window) windows[track.id] = { firstOffset: window.firstHour - track.branch.firstHour, lastOffset: window.lastHour - track.branch.firstHour };
   }
   return { mode: 'pin', windows };
+}
+
+/** Runs the definition's migration when a stored widget is older than its type.
+ * Without one, or when it declines, the widget keeps its settings unchanged and
+ * reports the unsupported version. */
+export function migrateWidget(widget: WidgetSpec): WidgetSpec {
+  const definition = widgetDefinition(widget.kind);
+  if (!definition?.migrate || widget.configVersion >= definition.version) return widget;
+  const migrated = definition.migrate(widget.configVersion, widget);
+  return migrated && migrated.id === widget.id && migrated.kind === widget.kind ? { ...migrated, configVersion: definition.version } : widget;
+}
+
+/** The settings-panel choices that save at once, without waiting for Save. Only
+ * what this change altered (`previous` to `next`, both drafts) is saved, so other
+ * unsaved edits to the widget, such as a Reset layout, stay drafts. A campaign or
+ * pinned moment is taken only when the saved layout already has its tracks;
+ * otherwise it stays a draft change like any other layout edit. */
+export function mergeViewPreferences(saved: WidgetSpec, previous: WidgetSpec, next: WidgetSpec, savedTracks: ReadonlySet<string>): WidgetSpec {
+  const changed = (key: keyof WidgetSpec) => stableJson(previous[key]) !== stableJson(next[key]);
+  const merged: WidgetSpec = { ...saved };
+  if (changed('title')) merged.title = next.title;
+  if (changed('contentScale')) merged.contentScale = next.contentScale;
+  if (changed('configVersion')) merged.configVersion = next.configVersion;
+  if (changed('options')) {
+    const options = { ...saved.options };
+    for (const key of new Set([...Object.keys(previous.options ?? {}), ...Object.keys(next.options ?? {})])) {
+      if (stableJson(previous.options?.[key]) === stableJson(next.options?.[key])) continue;
+      if (next.options && Object.hasOwn(next.options, key)) options[key] = next.options[key]; else delete options[key];
+    }
+    merged.options = options;
+  }
+  // Countries and time belong to the campaign they were chosen for, so a new campaign
+  // saves all three together; a campaign the saved layout cannot hold yet keeps them as drafts.
+  const time = next.time;
+  const tracksKnown = next.trackIds.every(id => savedTracks.has(id))
+    && (time.mode !== 'pin' || Object.keys(time.windows).every(id => savedTracks.has(id)));
+  if (tracksKnown) {
+    const campaign = changed('campaign') || changed('trackIds');
+    if (campaign) Object.assign(merged, { campaign: next.campaign, trackIds: next.trackIds });
+    if (campaign || changed('countries')) merged.countries = next.countries;
+    if (campaign || changed('time')) merged.time = time;
+  }
+  if (!merged.options || !Object.keys(merged.options).length) delete merged.options;
+  return merged;
+}
+
+/** JSON with object keys sorted, so equal layouts compare equal whatever order their
+ * fields were written in. */
+export function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : item);
 }
 
 export function addGridItem(layouts: GridLayouts, widget: WidgetSpec): GridLayouts {

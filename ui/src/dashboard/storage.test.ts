@@ -103,3 +103,22 @@ test('failed storage preserves the saved library and unsaved draft', () => {
   storage.setItem('hoi4-replay.workspace-layouts.v1', '{damaged');
   assert.ok(loadLayouts(storage).warning);
 });
+
+test('widget options round-trip, survive an uninstalled widget type and refuse unsafe values', () => {
+  const storage = memoryStorage();
+  const { library } = loadLayouts(storage);
+  const widgets = library.layouts[0].template.widgets;
+  widgets[0].options = { order: 'size', ticks: false, window: 90, yMax: null };
+  widgets[1].kind = 'not-installed';
+  widgets[1].options = { future: 'kept' };
+  assert.equal(saveLayouts(library, storage), null);
+  const restored = loadLayouts(storage).library.layouts[0].template.widgets;
+  assert.deepEqual(restored[0].options, { order: 'size', ticks: false, window: 90, yMax: null });
+  assert.equal(restored[1].kind, 'not-installed');
+  assert.deepEqual(restored[1].options, { future: 'kept' });
+  for (const invalid of [[], 'x', { a: {} }, { 'two words': 1 }, Object.fromEntries(Array.from({ length: 49 }, (_, i) => [`k${i}`, i]))]) {
+    const raw = structuredClone(library);
+    Object.assign(raw.layouts[0].template.widgets[0], { options: invalid });
+    assert.equal(parseLayoutLibrary(raw), null);
+  }
+});

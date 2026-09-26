@@ -7,9 +7,9 @@ import type { MapOptions, ReplayMetadata } from '../shell/api';
 import MapControls from '../components/MapControls';
 import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
-import { addGridItem, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate } from './model';
+import { addGridItem, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, mergeViewPreferences, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
-import { loadLayouts, MAX_LAYOUTS, parseTemplate, saveLayouts } from './storage';
+import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseTemplate, saveLayouts } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
@@ -35,6 +35,8 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   libraryRef.current = library;
   const selectedLayout = library.layouts.find((entry) => entry.id === library.activeId)!;
   const [draftTemplate, setTemplate] = useState<DashboardTemplate>(selectedLayout.template);
+  const templateRef = useRef(draftTemplate);
+  templateRef.current = draftTemplate;
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const campaignsRef = useRef(campaigns);
   campaignsRef.current = campaigns;
@@ -66,7 +68,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   const [saveError, setSaveError] = useState<string | null>(null);
   const saveButton = saveMenu.trigger;
   const editButton = useRef<HTMLButtonElement>(null);
-  const dirty = useMemo(() => JSON.stringify(includeCampaigns(draftTemplate, campaigns)) !== JSON.stringify(includeCampaigns(selectedLayout.template, campaigns)), [draftTemplate, selectedLayout.template, campaigns]);
+  const dirty = useMemo(() => stableJson(includeCampaigns(draftTemplate, campaigns)) !== stableJson(includeCampaigns(selectedLayout.template, campaigns)), [draftTemplate, selectedLayout.template, campaigns]);
   const [actionError, setActionError] = useState<string | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const mounted = useRef(false);
@@ -136,18 +138,27 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   const update = useCallback((change: (previous: DashboardTemplate) => DashboardTemplate) => {
     setTemplate((previous) => change(includeCampaigns(previous, campaignsRef.current)));
   }, []);
-  const applyWidget = useCallback((widget: WidgetSpec, view = false) => {
-    update((previous) => ({ ...previous, widgets: previous.widgets.map((item) => item.id === widget.id ? widget : item) }));
-    if (!view) return;
-    // View preferences (Live, size) save at once and never leave the layout unsaved.
+  /** Saves a widget's settings-panel choices to the active layout at once. A choice the
+   * saved layout cannot hold yet (a newly opened campaign) stays a draft until Save. */
+  const persistView = useCallback((previous: WidgetSpec, widget: WidgetSpec) => {
     const current = libraryRef.current;
-    const next = { ...current, layouts: current.layouts.map(entry => entry.id !== current.activeId ? entry : { ...entry, template: { ...entry.template,
-      widgets: entry.template.widgets.map(item => item.id === widget.id ? { ...item, time: widget.time, contentScale: widget.contentScale } : item) } }) };
+    const next = { ...current, layouts: current.layouts.map(entry => {
+      if (entry.id !== current.activeId) return entry;
+      const tracks = new Set(entry.template.tracks.map(track => track.id));
+      return { ...entry, template: { ...entry.template,
+        widgets: entry.template.widgets.map(item => item.id === widget.id ? mergeViewPreferences(item, previous, widget, tracks) : item) } };
+    }) };
+    if (!parseLayoutLibrary(next)) { setWarning('This setting applies now and is saved with the layout when you press Save.'); return; }
     const error = saveLayouts(next);
     if (error) { setWarning(error); return; }
     libraryRef.current = next;
     setLibrary(next);
-  }, [update]);
+  }, []);
+  const applyWidget = useCallback((widget: WidgetSpec, view = false) => {
+    const before = templateRef.current.widgets.find(item => item.id === widget.id);
+    update((previous) => ({ ...previous, widgets: previous.widgets.map((item) => item.id === widget.id ? widget : item) }));
+    if (view && before) persistView(before, widget);
+  }, [update, persistView]);
   const removeWidget = useCallback((id: string) => update((previous) => ({ ...previous,
     widgets: previous.widgets.filter((widget) => widget.id !== id),
     layouts: Object.fromEntries(Object.entries(previous.layouts).map(([key, layout]) => [key, layout.filter((item) => item.i !== id)])),
@@ -244,8 +255,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   /** Points a widget at the default campaign (null) or a recording. A recording that is not
    * loaded yet is opened once and shared, exactly as from the sidebar. */
   const assignCampaign = useCallback(async (widgetId: string, chosen: string | null) => {
-    const pick = (roleId: string | null) => update(previous => ({ ...previous, widgets: previous.widgets.map(widget => {
-      if (widget.id !== widgetId) return widget;
+    const assign = (previous: DashboardTemplate, widget: WidgetSpec, roleId: string | null): WidgetSpec => {
       const track = roleId === null ? null : previous.tracks.find(item => item.roleId === roleId);
       if (roleId !== null && !track) return widget;
       // Choosing the campaign it already follows changes nothing, not even a pinned moment.
@@ -253,7 +263,18 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
       // A pinned moment belongs to one recording's branch; a new campaign starts from the widget's default time.
       const time = widget.time.mode === 'pin' ? { mode: widgetDefinition(widget.kind)?.defaultTime ?? 'campaign' } as const : widget.time;
       return roleId === null ? { ...widget, campaign: 'default' as const, time } : { ...widget, campaign: 'tracks' as const, trackIds: [track!.id], time };
-    }) }));
+    };
+    // The campaign is a settings-panel choice too, so it saves at once like the rest. The
+    // new widget is worked out from the current layout first, so the save needs no
+    // state updater to have run.
+    const pick = (roleId: string | null) => {
+      const current = includeCampaigns(templateRef.current, campaignsRef.current);
+      const widget = current.widgets.find(item => item.id === widgetId);
+      const changed = widget && assign(current, widget, roleId);
+      if (!changed || changed === widget) return;
+      update(previous => ({ ...previous, widgets: previous.widgets.map(item => item.id === widgetId ? changed : item) }));
+      persistView(widget, changed);
+    };
     if (chosen === null) { pick(null); return; }
     const roleId = campaignsRef.current.find(item => item.id === chosen && !item.loading)?.id ?? await openCampaign(chosen);
     if (!mounted.current) return;
@@ -262,7 +283,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     throw new Error(campaignsRef.current.some(item => item.loading && sameCampaignPath(item.path, chosen))
       ? 'That recording is still opening. Choose it again once it has loaded.'
       : 'That recording could not be opened. The notice above the dashboard or the sidebar shows why.');
-  }, [update, openCampaign]);
+  }, [update, openCampaign, persistView]);
 
   const unloadCampaign = async (id: string) => {
     const campaign = campaignsRef.current.find(campaign => campaign.id === id);

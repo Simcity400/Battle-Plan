@@ -6,6 +6,7 @@ import type { Campaign } from './campaigns';
 import type { MapViewsStore } from './geometry';
 import type { Alignment, BoundTrack, DashboardTemplate, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import type { PlaybackController } from './playback';
+import type { OptionField } from './options';
 
 /** What every widget receives from the dashboard. Widgets never open files or
  * start their own clock; they read products and follow the shared playback. */
@@ -68,6 +69,12 @@ export interface WidgetMeta {
   history: boolean;
   minSize: { w: number; h: number };
   defaultSize: { w: number; h: number };
+  /** How many countries the widget shows at once; 1 when absent. */
+  countries?: { max: number };
+  /** The widget's own settings, grouped into the panel's sections. */
+  options?: readonly OptionField[];
+  /** Upgrades settings saved by an older `version`; null keeps them unchanged. */
+  migrate?: (from: number, widget: WidgetSpec) => WidgetSpec | null;
 }
 
 export interface WidgetDefinition extends WidgetMeta {

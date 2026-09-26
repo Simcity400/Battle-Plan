@@ -12,6 +12,7 @@ import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './m
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime } from './definitions';
 import WidgetSettingsMenu from './WidgetSettingsMenu';
+import CountryChip from './CountryChip';
 import { WidgetBody } from './widgets';
 
 interface Props {
@@ -64,7 +65,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
   const definition = widgetDefinition(widget.kind);
   const reset = definition ? () => {
-    onApply(createWidget(widget.kind, template.tracks[0].id, widget.id));
+    onApply(createWidget(widget.kind, template.tracks[0].id, widget.id), true);
     setMapOptions({ country: null, fog: true });
   } : undefined;
   const missing = widget.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));
@@ -80,6 +81,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
       <span className="dash-widget-icon" aria-hidden="true"><Icon name={definition?.icon ?? 'grid'} /></span>
       <div className="dash-widget-title"><h2>{widget.title}<span className="dash-widget-summary" ref={setHeaderSlot} /></h2>
         {source && <span className="dash-widget-subtitle">{recordingName(source.path).replace(/\.(?:battleplan|hoi4replay)$/i, '')}</span>}</div>
+      {definition?.data !== false && <CountryChip widget={widget} runtime={runtime} />}
       <div className="dash-widget-actions">
       {canFollow && <button type="button" role="switch" aria-checked={live} className="live-toggle" aria-label={`${widget.title}: follow playback`}
         data-tooltip={live ? 'Following the timeline. Switch off to see the whole campaign.' : 'Showing the whole campaign. Switch on to follow the timeline.'}

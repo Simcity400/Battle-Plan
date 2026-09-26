@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { formatDate, gameDate } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
@@ -20,8 +21,8 @@ function FocusArt({ art, size }: { art: Artwork | undefined; size: 'large' | 'sm
   return <span className={`focus-art is-${size}`}>{art?.icon ? <img src={art.icon} alt="" /> : <span className="focus-missing-art" data-tooltip="Game artwork unavailable in the recorded content"><Icon name="target" /></span>}</span>;
 }
 
-/** Live only: the focus being worked on at the playback hour, with the game's progress line along its lower edge. */
-function CurrentFocus({ order, art, state }: { order: FocusOrder; art: Artwork | undefined; state: FocusProgressState | null }) {
+/** Live or pinned: the focus being worked on at that hour, with the game's progress line along its lower edge. */
+function CurrentFocus({ order, art, state, live }: { order: FocusOrder; art: Artwork | undefined; state: FocusProgressState | null; live: boolean }) {
   const token = order.current ?? order.continuous;
   const continuous = !order.current && !!order.continuous;
   const completion = order.current && state && art?.baseDurationDays != null ? focusCompletion(state, art.baseDurationDays) : null;
@@ -37,7 +38,7 @@ function CurrentFocus({ order, art, state }: { order: FocusOrder; art: Artwork |
   return <div className={`focus-now${order.paused ? ' is-paused' : ''}`} aria-live="polite">
     <FocusArt art={art} size="large" />
     <span className="focus-now-text"><strong>{art?.name ?? token}</strong>
-      <span className="focus-now-status">{!continuous && !order.paused && <span className="live-dot" />}{status}
+      <span className="focus-now-status">{live && !continuous && !order.paused && <span className="live-dot" />}{status}
         {completion && <span className="focus-now-days" data-tooltip="Recorded work toward this focus's base duration">· Day {Math.min(completion.elapsedDays + 1, Math.ceil(completion.totalDays))} of {completion.totalDays.toLocaleString('en', { maximumFractionDigits: 2 })}</span>}</span></span>
     {completion && <span className="focus-now-left" data-tooltip={completion.daysLeft == null ? 'The daily rate is not known yet: it needs one recorded day of progress on this focus.' : 'At the last recorded daily rate. Focus speed changes can shift it.'}>
       {completion.daysLeft == null ? <><strong>{Math.round(completion.fraction * 100)}%</strong><small>complete</small></>
@@ -51,11 +52,12 @@ function CurrentFocus({ order, art, state }: { order: FocusOrder; art: Artwork |
 export default function NationalFocusWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : track?.selectedTag
-    ?? track?.source.metadata.countries.find(country => country.id === track.source.metadata.playerCountryId)?.tag;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
   const live = widget.time.mode === 'follow';
+  // A pinned moment shows the focus in progress then, like Live but held still.
+  const moment = live || widget.time.mode === 'pin';
   const inRange = track && hour != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   const request = track && tag ? focusRequest(track.source.id, track.source.revision, { branchId: track.branch.id, tag }) : null;
   const { data, error, retry } = useProduct<FocusReply>(runtime.client, request, active, validateFocusReply);
@@ -65,7 +67,7 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
   }, [data, onDiagnostics]);
   const artwork = useMemo(() => new Map(data?.artwork.map(art => [art.token, art])), [data]);
   const order = data && hour != null ? focusAt(data.history, hour) : null;
-  const state = data && hour != null && live ? focusProgressAt(data.history, hour) : null;
+  const state = data && hour != null && moment ? focusProgressAt(data.history, hour) : null;
   const list = useRef<HTMLDivElement>(null);
   const count = order?.completed.length ?? 0;
   const seen = useRef(count);
@@ -81,10 +83,10 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
   if (!order) return <div className="dash-empty" role="status">No complete focus data recorded at this date.</div>;
   const newest = live ? order.completed.at(-1)?.ordinal : undefined;
   // The whole-campaign view lists the focus left unfinished at the end instead of a live card.
-  const unfinished = live ? null : order.current;
+  const unfinished = moment ? null : order.current;
   return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="national-focus" aria-label="National focus">
     {headerSlot && createPortal(<span className="pill focus-header-count">{order.completed.length} completed</span>, headerSlot)}
-    {live && <CurrentFocus order={order} art={artwork.get(order.current ?? order.continuous ?? '')} state={state} />}
+    {moment && <CurrentFocus order={order} art={artwork.get(order.current ?? order.continuous ?? '')} state={state} live={live} />}
     <div className="focus-scroll" ref={list}>
       {order.completed.length || unfinished ? <ol className="focus-list" aria-label="Completed focuses in order">{order.completed.map(entry => {
         const art = artwork.get(entry.token);

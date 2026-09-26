@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
@@ -34,11 +35,11 @@ function ResearchCard({ history, slots, slot, entry, art }: {
   </details></li>;
 }
 
-/** Live only: the slot's assignment at the playback hour, with the game's
+/** Live or pinned: the slot's assignment at that hour, with the game's
  * progress line along its lower edge. Clicking it opens the explanation. */
-function CurrentResearch({ history, slots, slot, entry, current, art, hour }: {
+function CurrentResearch({ history, slots, slot, entry, current, art, hour, live }: {
   history: ResearchReply['history']; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry;
-  current: ResearchSlotState; art: Art; hour: number;
+  current: ResearchSlotState; art: Art; hour: number; live: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const progress = researchProgressAt(slot, entry.firstObservedHour, hour);
@@ -48,7 +49,7 @@ function CurrentResearch({ history, slots, slot, entry, current, art, hour }: {
     <summary className="focus-now research-now" aria-label={`${name}, researching in slot ${slot.index + 1}, show details`}>
       <ResearchArt art={art} />
       <span className="focus-now-text"><strong title={name}>{name}</strong>
-        <span className="focus-now-status" data-tooltip={left !== null ? 'The game’s estimate at this hour’s research speed' : undefined}><span className="live-dot" />
+        <span className="focus-now-status" data-tooltip={left !== null ? 'The game’s estimate at this hour’s research speed' : undefined}>{live && <span className="live-dot" />}
           {left !== null ? `${left} ${left === 1 ? 'day' : 'days'} left` : progress !== null ? `${Math.round(progress * 100)}% complete` : 'Researching'}</span></span>
       <Icon name="chevron-down" className="focus-chevron" aria-hidden="true" />
       {progress !== null && <span className="focus-progress" role="progressbar" aria-label={`${name} progress`} aria-valuemin={0} aria-valuemax={100}
@@ -70,11 +71,12 @@ function IdleSlot({ current }: { current: ResearchSlotState | null }) {
 export default function ResearchWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : track?.selectedTag
-    ?? track?.source.metadata.countries.find(c => c.id === track.source.metadata.playerCountryId)?.tag;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
   const live = widget.time.mode === 'follow';
+  // A pinned moment shows each slot's assignment then, like Live but held still.
+  const moment = live || widget.time.mode === 'pin';
   const request = track && tag ? researchRequest(track.source.id, track.source.revision, { branchId: track.branch.id, tag }) : null;
   const { data, error, retry } = useProduct<ResearchReply>(runtime.client, request, active, validateResearchReply);
   useEffect(() => { onDiagnostics(data?.warnings ?? NO_WARNINGS); return () => onDiagnostics(NO_WARNINGS); }, [data, onDiagnostics]);
@@ -91,21 +93,21 @@ export default function ResearchWidget({ widget, runtime, active, onDiagnostics 
     <div className="research-scroll">
       <div className="research-columns" style={{ minWidth: columns.length * 190 }}>
         {columns.map(({ slot, offset }) => {
-          const current = live ? researchStateAt(slot, hour) : null;
+          const current = moment ? researchStateAt(slot, hour) : null;
           const currentEntry = current && slots.find(owner => owner.index === slot.index)?.entries.find(entry => entry.outcome === 'active'
             && entry.firstObservedHour === current.entryFirstObservedHour && entry.token === current.token);
           const earlier = slot.entries;
           return <section className="research-column" key={slot.index} aria-label={`Slot ${slot.index + 1}`}>
           <h3 className="research-column-heading">Slot {slot.index + 1}</h3>
-          {live && (currentEntry && current
-            ? <CurrentResearch history={data.history} slots={slots} slot={slot} entry={currentEntry} current={current} art={artwork.get(currentEntry.token)} hour={hour} />
+          {moment && (currentEntry && current
+            ? <CurrentResearch history={data.history} slots={slots} slot={slot} entry={currentEntry} current={current} art={artwork.get(currentEntry.token)} hour={hour} live={live} />
             : <IdleSlot current={current} />)}
-          {live && earlier.length > 0 && <div className="research-earlier-label">Completed</div>}
+          {moment && earlier.length > 0 && <div className="research-earlier-label">Completed</div>}
           <ol className="research-entries" style={{ paddingTop: `calc(${offset} * var(--research-row-height))` }}>
           {earlier.map(entry => <ResearchCard key={`${entry.firstObservedHour}:${entry.token}`} history={data.history} slots={slots} slot={slot} entry={entry}
             art={artwork.get(entry.token)} />)}
           </ol>
-          {!live && earlier.length === 0 && <div className="research-empty-slot">No completed research</div>}
+          {!moment && earlier.length === 0 && <div className="research-empty-slot">No completed research</div>}
         </section>; })}
       </div>
     </div>

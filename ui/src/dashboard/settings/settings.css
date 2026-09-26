@@ -1,0 +1,18 @@
+/* One layout for every widget's settings panel. */
+.widget-settings-content .settings-section { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; box-shadow: 0 -1px 0 var(--line-soft); }
+.settings-section > h3 { margin: 0; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+/* The section heading names the control, so a picker's own caption is for screen readers only. */
+.settings-section > .field > span:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Doubled class: the base .setting-row in dashboard.css loads later and centres its items. */
+.setting-row.setting-row-stacked { flex-direction: column; align-items: stretch; gap: 6px; }
+.settings-section .segmented { align-self: flex-start; flex-wrap: wrap; }
+.option-number { display: inline-flex; align-items: center; gap: 6px; }
+.option-number input { width: 84px; height: 28px; }
+.option-number small { color: var(--muted); font-size: 12px; }
+.settings-range { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.settings-countries { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.settings-country { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 2px 0 6px; border-radius: var(--r-sm); font-size: 13px; }
+.settings-country:hover { background: var(--hover); }
+.settings-country > span { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.settings-country small { color: var(--muted); font-size: 11px; }
+.settings-country .country-flag { width: 24px; height: 15px; flex: none; }

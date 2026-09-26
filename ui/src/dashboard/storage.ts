@@ -1,4 +1,5 @@
-import { defaultTemplate, GRID_COLUMNS, WIDGET_CONTENT_SCALES } from './model.ts';
+import { defaultTemplate, GRID_COLUMNS, migrateWidget, WIDGET_CONTENT_SCALES } from './model.ts';
+import { parseStoredOptions } from './options.ts';
 import type { Breakpoint, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import { widgetDefinition } from './definitions.ts';
 import { MAX_ROLES, MAX_TRACKS } from './campaigns.ts';
@@ -41,6 +42,19 @@ function selection(value: unknown): CountrySelection | null {
     ? { kind: 'tags', tags: [...new Set(value.tags as string[])] } : null;
 }
 
+/** Runs a widget's migration, keeping the stored widget unchanged if the migration
+ * throws or returns settings that would not pass these same checks. */
+function safeMigrate(widget: WidgetSpec, trackIds: Set<string>): WidgetSpec {
+  let migrated: WidgetSpec;
+  try { migrated = migrateWidget(widget); } catch { return widget; }
+  if (migrated === widget) return widget;
+  const valid = text(migrated.title) && migrated.trackIds.length > 0 && migrated.trackIds.every(value => trackIds.has(value))
+    && selection(migrated.countries) && timeMode(migrated.time, trackIds)
+    && (migrated.options === undefined || parseStoredOptions(migrated.options))
+    && (migrated.contentScale === undefined || WIDGET_CONTENT_SCALES.some(scale => scale === migrated.contentScale));
+  return valid ? migrated : widget;
+}
+
 /** Parse an allowlist; unknown fields can never smuggle runtime data into storage. */
 export function parseTemplate(input: unknown): DashboardTemplate | null {
   if (!object(input) || input.version !== 1 || !text(input.name) || !['calendar', 'anchors'].includes(String(input.alignment))) return null;
@@ -70,10 +84,14 @@ export function parseTemplate(input: unknown): DashboardTemplate | null {
       || widgets.some((item) => item.id === widget.id)) return null;
     const countries = selection(widget.countries);
     const time = timeMode(widget.time, trackIds);
-    if (!countries || !time) return null;
+    // Options are kept even for a widget type that is not installed.
+    const options = widget.options === undefined ? undefined : parseStoredOptions(widget.options);
+    if (!countries || !time || options === null) return null;
     const campaign = widget.campaign === 'default' || (widget.campaign === undefined && widget.trackIds.length === 1 && widget.trackIds[0] === 'main' && time.mode !== 'pin') ? 'default' : 'tracks';
-    widgets.push({ campaign, id: widget.id, kind: widget.kind, configVersion: widget.configVersion ?? 1, title: widget.title,
-      trackIds: [...new Set(widget.trackIds as string[])], countries, time, contentScale: (widget.contentScale as number | undefined) ?? 100 });
+    const stored: WidgetSpec = { campaign, id: widget.id, kind: widget.kind, configVersion: widget.configVersion ?? 1, title: widget.title,
+      trackIds: [...new Set(widget.trackIds as string[])], countries, time, contentScale: (widget.contentScale as number | undefined) ?? 100,
+      ...(options && Object.keys(options).length ? { options } : {}) };
+    widgets.push(safeMigrate(stored, trackIds));
   }
   const layouts: GridLayouts = {};
   for (const breakpoint of Object.keys(GRID_COLUMNS) as Breakpoint[]) {

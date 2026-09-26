@@ -21,11 +21,13 @@ function flagsRequest(context: { sourceId: string; revision: string; branchId: s
  * playback day; lists use the game's medium flags at each country's observed hour.
  * The list renders only the rows in view and loads only their flags, so it costs
  * the same at any country count. */
-export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, flagAt = null }: {
+export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, flagAt = null, addLabel, chosen }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
   onChange: (tag: string | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
   onCountries?: (sourceId: string, revision: string, countries: CountryMetadata[]) => void;
   onReconnect?: () => void; field?: boolean; flagAt?: { branchId: string; hour: number } | null;
+  /** A multi-country field: the trigger reads this label and every `chosen` tag is ticked. */
+  addLabel?: string; chosen?: readonly string[];
 }) {
   const id = useId();
   const listId = `${id}-countries`;
@@ -50,7 +52,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const visible = open ? filtered.slice(range.start, range.end) : [];
   const [flagState, setFlagState] = useState<{ key: string; loads: number; error: string | null }>({ key: '', loads: 0, error: null });
   const [headerFlag, setHeaderFlag] = useState<{ identity: string; key: string; image?: CountryFlagImage; error: string | null }>({ identity: '', key: '', error: null });
-  const headerTag = selected?.tag ?? selectedTag;
+  const headerTag = addLabel ? null : selected?.tag ?? selectedTag;
   const headerSize: CountryFlagSize = field ? 'medium' : 'shield';
   const flags = flagStore(client);
   const flagOf = (country: CountryMetadata) => source
@@ -136,9 +138,9 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   return <div className={field ? 'field widget-country-field' : 'header-control header-country'}>
     <span className={field ? undefined : 'sr-only'}>Country</span>
     <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={!source} popoverTarget={id}
-      aria-label={field ? 'Widget country' : 'Choose country'} aria-haspopup="dialog" aria-expanded={open}>
-      <CountryFlag image={headerImage} />
-      {field ? <span>{selected?.name || selected?.tag || selectedTag || 'Choose country'}</span>
+      aria-label={addLabel ?? (field ? 'Widget country' : 'Choose country')} aria-haspopup="dialog" aria-expanded={open}>
+      {addLabel ? <Icon name="plus" /> : <CountryFlag image={headerImage} />}
+      {addLabel ? <span>{addLabel}</span> : field ? <span>{selected?.name || selected?.tag || selectedTag || 'Choose country'}</span>
         : <span className="header-country-text"><strong>{selected?.name || selected?.tag || selectedTag || (source ? 'Choose country' : 'No campaign')}</strong></span>}
       <Icon name="chevron-down" />
     </button>
@@ -171,11 +173,11 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
             }}>
             {visible.map(({ country }, offset) => {
               const index = range.start + offset;
-              const chosen = selected?.tag === country.tag;
-              return <div key={country.tag} id={optionId(index)} role="option" aria-selected={chosen} aria-setsize={filtered.length} aria-posinset={index + 1}
+              const ticked = chosen ? chosen.includes(country.tag) : selected?.tag === country.tag;
+              return <div key={country.tag} id={optionId(index)} role="option" aria-selected={ticked} aria-setsize={filtered.length} aria-posinset={index + 1}
                 className="country-picker-option" data-active={index === active || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
                 onClick={() => choose(country.tag)}>
-                <CountryFlag image={flagOf(country)} /><span>{country.name || country.tag}</span><small>{country.tag}</small>{chosen && <Icon name="check" className="country-selected-mark" />}
+                <CountryFlag image={flagOf(country)} /><span>{country.name || country.tag}</span><small>{country.tag}</small>{ticked && <Icon name="check" className="country-selected-mark" />}
               </div>;
             })}
           </div>

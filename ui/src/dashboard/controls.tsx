@@ -4,17 +4,11 @@ import DateTimePicker from '../components/DateTimePicker';
 import PlaybackSpeed from '../components/PlaybackSpeed';
 import { formatDate, formatDateTime, gameDate } from './calendar';
 import { Icon } from '../components/Icons';
-import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
-import { WIDGET_CONTENT_SCALES } from './model';
+import type { BoundTrack, DashboardTemplate } from './model';
 import { usePlaybackHour } from './playback';
 import type { PlaybackController } from './playback';
-import { widgetDefinition } from './definitions';
-import { resolveWidgetCampaign } from './campaigns';
 import { timelineGaps } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
-import type { WidgetRuntime } from './definitions';
-import CampaignPicker from './CampaignPicker';
-
 
 /** The header's country picker, showing the flag the game drew at the playback hour.
  * Only this component follows the clock; while playing it asks at most every 250 ms. */
@@ -97,42 +91,4 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
     </div>
     <p className="sr-only" id={helpId}>Date browsing is a draft until Go. {alignment === 'anchors' ? 'The date uses the selected reference track; playback aligns by track anchors.' : 'Tracks share the game-calendar date.'} Only views following playback move with these controls.</p>
   </>;
-}
-
-export function WidgetSettings({ widget, template, runtime, onChange }: {
-  widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
-  onChange: (widget: WidgetSpec, view?: boolean) => void;
-}) {
-  const { tracks, client, defaultRoleId } = runtime;
-  // Keep incomplete title edits local; other controls always use current settings.
-  const [title, setTitle] = useState(widget.title);
-  useEffect(() => setTitle(widget.title), [widget.title]);
-  const effective = resolveWidgetCampaign(widget, template, defaultRoleId);
-  const reference = tracks.find(track => track.id === effective.trackIds[0]);
-  const defaultCountryTag = reference?.selectedTag ?? reference?.source.metadata.countries.find(country => country.id === reference.source.metadata.playerCountryId)?.tag ?? null;
-  const definition = widgetDefinition(widget.kind);
-  const scale = widget.contentScale ?? 100;
-  const step = (direction: 1 | -1) => {
-    const index = WIDGET_CONTENT_SCALES.findIndex(value => value >= scale);
-    const next = WIDGET_CONTENT_SCALES[Math.min(WIDGET_CONTENT_SCALES.length - 1, Math.max(0, (index < 0 ? WIDGET_CONTENT_SCALES.length - 1 : index) + direction))];
-    if (next !== scale) onChange({ ...widget, contentScale: next }, true);
-  };
-  return <div className="widget-settings-content">
-    <div className="setting-row"><span>Size<small>Make this widget's contents more compact or larger</small></span>
-      <div className="size-stepper" role="group" aria-label="Widget size">
-        <button type="button" className="icon-button small" aria-label="Smaller" disabled={scale <= WIDGET_CONTENT_SCALES[0]} onClick={() => step(-1)}><Icon name="minus" /></button>
-        <button type="button" className="size-stepper-value" aria-label={`Size ${scale}%, reset to 100%`} data-tooltip="Reset to 100%" onClick={() => onChange({ ...widget, contentScale: 100 }, true)}>{scale}%</button>
-        <button type="button" className="icon-button small" aria-label="Larger" disabled={scale >= WIDGET_CONTENT_SCALES.at(-1)!} onClick={() => step(1)}><Icon name="plus" /></button>
-      </div></div>
-    <label className="field"><span>Title</span><input value={title} maxLength={160} onBlur={() => setTitle(widget.title)} onChange={event => {
-      const value = event.currentTarget.value;
-      setTitle(value);
-      if (value.trim()) onChange({ ...widget, title: value.trim() });
-    }} /></label>
-    {definition?.data !== false && <CampaignPicker widget={widget} template={template} runtime={runtime} />}
-    {definition?.data !== false && <CountryPicker field key={reference?.source.id ?? 'unbound'} source={reference?.source} client={client}
-      countries={reference?.source.metadata.countries ?? []} playerCountryId={reference?.source.metadata.playerCountryId ?? null}
-      selectedTag={widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultCountryTag}
-      onChange={tag => onChange({ ...widget, countries: tag && tag !== defaultCountryTag ? { kind: 'tags', tags: [tag] } : { kind: 'selected' } })} />}
-  </div>;
 }
