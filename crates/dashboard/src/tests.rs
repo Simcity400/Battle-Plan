@@ -1032,6 +1032,7 @@ fn source(branch: u64, hour: i32, power: Option<i64>) -> DecodedFrame {
             stability_raw: i64::MIN,
             war_support_raw: 70_001,
             convoys_raw: Some(99_001),
+            peace_conference_participant: 0,
         }]));
     tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
         CountryLinkRow {

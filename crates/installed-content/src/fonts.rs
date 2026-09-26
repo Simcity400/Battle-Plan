@@ -454,6 +454,33 @@ pub fn read_definitions(layers: &ResolvedLayers) -> io::Result<BTreeMap<String, 
     Ok(definitions)
 }
 
+/// `HashStringMultiply61@1424B7180`: over the name's bytes as signed chars,
+/// `h = (c + h) * 61` in wrapping 32-bit arithmetic.
+fn registry_hash(name: &str) -> u32 {
+    name.bytes().fold(0_i32, |hash, byte| {
+        i32::from(byte as i8).wrapping_add(hash).wrapping_mul(61)
+    }) as u32
+}
+
+/// The font `CGraphics::GetFontOrFallback@142223AE0` returns for a name it
+/// does not hold: the head of the lowest non-empty bucket of its 511-bucket
+/// registry (`CGraphics+0xd4 = 0x1ff`). The `.gfx` reader
+/// (`SGfxFileReader::ReadToken@1422264C0`) pushes every `bitmapfont` onto its
+/// bucket's front in declaration order, so the head is the last one declared
+/// in that bucket. `None` when no font is declared.
+pub fn fallback_name(layers: &ResolvedLayers) -> io::Result<Option<String>> {
+    let mut best: Option<(u32, String)> = None;
+    for path in gfx_paths(layers) {
+        for definition in parse_definitions(&layers.read(&path)?, &path)?.definitions {
+            let bucket = registry_hash(&definition.name) % 0x1ff;
+            if best.as_ref().is_none_or(|(lowest, _)| bucket <= *lowest) {
+                best = Some((bucket, definition.name));
+            }
+        }
+    }
+    Ok(best.map(|(_, name)| name))
+}
+
 /// Reads every `textcolors` block in `interface/*.gfx` across the layers.
 pub fn read_text_colors(layers: &ResolvedLayers) -> io::Result<TextColors> {
     let mut colors = TextColors::new();
@@ -570,6 +597,15 @@ pub fn load_font(layers: &ResolvedLayers, definition: &FontDefinition) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_registry_hash_is_the_engines_multiply_61() {
+        assert_eq!(registry_hash(""), 0);
+        assert_eq!(registry_hash("a"), 97 * 61);
+        assert_eq!(registry_hash("ab"), (97 * 61 + 98) * 61);
+        // Bytes above 0x7f are signed chars: "\u{e9}" is 0xC3 0xA9.
+        assert_eq!(registry_hash("\u{e9}"), ((-61 * 61 - 87) * 61_i32) as u32);
+    }
 
     const FNT: &str = "info face=\"Tahoma\" size=84 bold=1 charset=\"\" unicode=1 padding=2,2,2,2\n\
         common lineHeight=84 base=70 scaleW=2048 scaleH=1024 pages=1 packed=0\n\

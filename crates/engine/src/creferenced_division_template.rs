@@ -81,15 +81,20 @@ pub struct Row {
     pub template: u64,
     pub owner: u32,
     pub name: Span,
-    pub priority_unit: u32,
-    pub priority_unit_name: Span,
     /// Engine category, NOT a verified frame in the legacy twelve-frame strip.
     pub unit_type: i32,
+    pub composition: [Span; 3],
+}
+
+/// What a unit counter draws from its template, which the player can change at
+/// any hour: [`walk_icons`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct IconRow {
+    pub template: u64,
+    pub priority_unit: u32,
+    pub priority_unit_name: Span,
     pub custom_icon: i32,
     pub custom_icon_nato: u8,
-    /// Packed columns-low16/rows-high16, for each of the three native grids.
-    pub dimensions: [u32; 3],
-    pub composition: [Span; 3],
 }
 
 pub struct Walk {
@@ -139,6 +144,61 @@ fn definition(memory: &impl Memory, base: usize, at: usize) -> Result<Option<u32
         }
         Ok(Some(token))
     }
+}
+
+/// The sub-unit `140B90370` draws a template's counter from: the stored
+/// priority unit, else the first regiment cell. The fallback uses
+/// `140FAA3F0`'s low-16-bit real-unit count: nonzero selects [0,0], zero the
+/// null singleton. The native wrap is kept instead of assuming a smaller
+/// grid. `regiments` is the regiment grid when the caller has already read it.
+fn selected_unit(
+    memory: &impl Memory,
+    base: usize,
+    at: usize,
+    regiments: Option<Array>,
+) -> Result<usize, &'static str> {
+    let selected = field::<u64>(memory, at, PRIORITY_UNIT)? as usize;
+    if selected != 0 {
+        return Ok(selected);
+    }
+    let regiments = match regiments {
+        Some(regiments) => regiments,
+        None => Array::read(
+            memory,
+            at.checked_add(REGIMENT_DATA)
+                .ok_or("template grid address overflow")?,
+            8,
+        )
+        .ok_or("template grid invalid")?,
+    };
+    let mut real_count = 0_u16;
+    for cell in 0..regiments.count {
+        let p = pointer(
+            memory,
+            regiments
+                .element(cell, 8)
+                .ok_or("template grid cell invalid")?,
+        )?;
+        real_count = real_count.wrapping_add(u16::from(definition(memory, base, p)?.is_some()));
+    }
+    let selected = if real_count != 0 {
+        pointer(
+            memory,
+            regiments
+                .element(0, 8)
+                .ok_or("template first cell missing")?,
+        )?
+    } else {
+        pointer(
+            memory,
+            base.checked_add(subunit::NULL_OBJECT_RVA)
+                .ok_or("template null singleton overflow")?,
+        )?
+    };
+    if selected == 0 {
+        return Err("template selected subunit is null");
+    }
+    Ok(selected)
 }
 
 /// Complete country template rosters, including unused templates. Names and
@@ -199,7 +259,6 @@ pub fn walk(
                         .ok_or("template grid address overflow")?;
                     arrays[which] =
                         Array::read(memory, header, 8).ok_or("template grid invalid")?;
-                    row.dimensions[which] = field(memory, at, offset - 8)?;
                     required_units = required_units
                         .checked_add(arrays[which].count as usize)
                         .ok_or("template grid length overflow")?;
@@ -209,65 +268,18 @@ pub fn walk(
                     at.checked_add(NAME)
                         .ok_or("template name address overflow")?,
                 )?;
-                let mut selected = field::<u64>(memory, at, PRIORITY_UNIT)? as usize;
-                if selected == 0 {
-                    // 140B90370 uses 140FAA3F0's low-16-bit real-unit count:
-                    // nonzero selects [0,0], zero the null singleton. Retain
-                    // the native wrap instead of assuming a smaller grid.
-                    let mut real_count = 0_u16;
-                    for cell in 0..arrays[0].count {
-                        let p = pointer(
-                            memory,
-                            arrays[0]
-                                .element(cell, 8)
-                                .ok_or("template grid cell invalid")?,
-                        )?;
-                        real_count = real_count
-                            .wrapping_add(u16::from(definition(memory, base, p)?.is_some()));
-                    }
-                    selected = if real_count != 0 {
-                        pointer(
-                            memory,
-                            arrays[0]
-                                .element(0, 8)
-                                .ok_or("template first cell missing")?,
-                        )?
-                    } else {
-                        pointer(
-                            memory,
-                            base.checked_add(subunit::NULL_OBJECT_RVA)
-                                .ok_or("template null singleton overflow")?,
-                        )?
-                    };
-                }
-                if selected == 0 {
-                    return Err("template selected subunit is null");
-                }
-                let selected_token = definition(memory, base, selected)?;
-                row.priority_unit = selected_token.unwrap_or(0);
-                let selected_name = if selected_token.is_some() {
-                    Some(Descriptor::read(
-                        memory,
-                        selected
-                            .checked_add(subunit::NAME)
-                            .ok_or("subunit name overflow")?,
-                    )?)
-                } else {
-                    None
-                };
-                row.custom_icon = field(memory, at, CUSTOM_ICON)?;
-                row.custom_icon_nato = field(memory, at, CUSTOM_ICON_NATO)?;
                 row.unit_type = field(memory, at, UNIT_TYPE_OVERRIDE)?;
                 if row.unit_type == 0 {
                     let category = field::<u64>(memory, at, CATEGORY_UNIT)? as usize;
-                    let category = if category == 0 { selected } else { category };
+                    let category = if category == 0 {
+                        selected_unit(memory, base, at, Some(arrays[0]))?
+                    } else {
+                        category
+                    };
                     definition(memory, base, category)?;
                     row.unit_type = subunit::template_category(memory, category)?;
                 }
-                let needed_bytes = name
-                    .len
-                    .checked_add(selected_name.as_ref().map_or(0, |n| n.len))
-                    .ok_or("template name length overflow")?;
+                let needed_bytes = name.len;
                 result.required_bytes = result
                     .required_bytes
                     .checked_add(needed_bytes)
@@ -291,14 +303,6 @@ pub fn walk(
                 };
                 name.copy(memory, &mut bytes[result.bytes_len..])?;
                 result.bytes_len += name.len;
-                row.priority_unit_name = Span {
-                    start: result.bytes_len,
-                    len: selected_name.as_ref().map_or(0, |n| n.len),
-                };
-                if let Some(name) = selected_name {
-                    name.copy(memory, &mut bytes[result.bytes_len..])?;
-                    result.bytes_len += name.len;
-                }
                 for (which, array) in arrays.into_iter().enumerate() {
                     row.composition[which] = Span {
                         start: result.units_len,
@@ -314,6 +318,104 @@ pub fn walk(
                         units[result.units_len] = definition(memory, base, p)?.unwrap_or(0);
                         result.units_len += 1;
                     }
+                }
+                rows[len] = row;
+                len += 1;
+            }
+        }
+        if !found_country {
+            return Err("template census contains no countries");
+        }
+        Ok(if missing == 0 {
+            Outcome::Rows { len }
+        } else {
+            Outcome::Truncated {
+                len,
+                unread_rows: missing,
+            }
+        })
+    })();
+    result.outcome = captured.unwrap_or_else(|reason| Outcome::Unavailable { reason });
+    result
+}
+
+/// Every country template's counter inputs ([`IconRow`]), roster by roster in
+/// the order [`walk`] visits them, without the names and grids. The priority
+/// unit's name goes into `bytes`; the unit counts stay zero. Capacity omits a
+/// WHOLE row, as in [`walk`].
+pub fn walk_icons(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    rows: &mut [IconRow],
+    bytes: &mut [u8],
+) -> Walk {
+    let mut result = Walk {
+        outcome: Outcome::Rows { len: 0 },
+        bytes_len: 0,
+        required_bytes: 0,
+        units_len: 0,
+        required_units: 0,
+    };
+    let captured = (|| {
+        let countries = ccountry::Reader::new(memory, base, state)?;
+        let mut found_country = false;
+        let mut len = 0;
+        let mut missing = 0_u32;
+        for slot in 1..countries.count() {
+            let Some(country) = countries.at(slot)? else {
+                continue;
+            };
+            found_country = true;
+            let root = country
+                .pointer
+                .checked_add(ccountry::DIVISION_TEMPLATES)
+                .ok_or("template roster overflow")?;
+            let roster = Array::read(memory, root, 8).ok_or("template roster invalid")?;
+            for index in 0..roster.count {
+                let at = pointer(
+                    memory,
+                    roster
+                        .element(index, 8)
+                        .ok_or("template roster index invalid")?,
+                )?;
+                let mut row = IconRow {
+                    template: identity(memory, base, at)?,
+                    ..IconRow::default()
+                };
+                let selected = selected_unit(memory, base, at, None)?;
+                let selected_token = definition(memory, base, selected)?;
+                row.priority_unit = selected_token.unwrap_or(0);
+                let selected_name = if selected_token.is_some() {
+                    Some(Descriptor::read(
+                        memory,
+                        selected
+                            .checked_add(subunit::NAME)
+                            .ok_or("subunit name overflow")?,
+                    )?)
+                } else {
+                    None
+                };
+                row.custom_icon = field(memory, at, CUSTOM_ICON)?;
+                row.custom_icon_nato = field(memory, at, CUSTOM_ICON_NATO)?;
+                let needed_bytes = selected_name.as_ref().map_or(0, |name| name.len);
+                result.required_bytes = result
+                    .required_bytes
+                    .checked_add(needed_bytes)
+                    .ok_or("template byte arena overflow")?;
+                if len == rows.len() || needed_bytes > bytes.len() - result.bytes_len {
+                    missing = missing
+                        .checked_add(1)
+                        .ok_or("template row count overflow")?;
+                    continue;
+                }
+                row.priority_unit_name = Span {
+                    start: result.bytes_len,
+                    len: needed_bytes,
+                };
+                if let Some(name) = selected_name {
+                    name.copy(memory, &mut bytes[result.bytes_len..])?;
+                    result.bytes_len += name.len;
                 }
                 rows[len] = row;
                 len += 1;
@@ -408,7 +510,6 @@ mod tests {
         memory.word(0x5008, 0xffff_ffff_0000_0034);
         memory.text(0x5000 + NAME, &[b'A', 0, 255]);
         memory.array(0x5000 + REGIMENT_DATA, 0x6000, 2);
-        memory.put(0x5000 + GRID_DIMENSIONS, &0x0002_0001_u32.to_le_bytes());
         memory.word(0x6000, 0x7000);
         memory.word(0x6008, 0);
         memory.put(0x5000 + CUSTOM_ICON, &(-1_i32).to_le_bytes());
@@ -430,14 +531,9 @@ mod tests {
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(rows[0].template, 0xffff_ffff_0000_0034);
         assert_eq!(rows[0].owner, 1);
-        assert_eq!(rows[0].priority_unit, 777);
-        assert_eq!(
-            &bytes[..result.bytes_len],
-            &[b'A', 0, 255, b'i', b'n', b'f', b'a', b'n', b't', b'r', b'y']
-        );
+        assert_eq!(&bytes[..result.bytes_len], &[b'A', 0, 255]);
         assert_eq!(&units[..result.units_len], &[777, 0]);
         assert_eq!(rows[0].unit_type, 1);
-        assert_eq!(rows[0].custom_icon, -1);
         assert_eq!(rows[0].composition[0], Span { start: 0, len: 2 });
         for address in [
             0x3000 + ccountry::DIVISION_TEMPLATES,
@@ -476,7 +572,7 @@ mod tests {
                 }
             );
             assert_eq!((result.bytes_len, result.units_len), (0, 0));
-            assert_eq!((result.required_bytes, result.required_units), (11, 2));
+            assert_eq!((result.required_bytes, result.required_units), (3, 2));
         }
         memory.word(0x5000, 0);
         assert!(matches!(
@@ -511,15 +607,8 @@ mod tests {
             for index in 0..count as usize {
                 memory.word(0x10000 + index * 8, 0x7000);
             }
-            let mut rows = [Row::default(); 1];
-            let result = walk(
-                &memory,
-                0,
-                0x1000,
-                &mut rows,
-                &mut [0; 64],
-                &mut vec![0; count as usize],
-            );
+            let mut rows = [IconRow::default(); 1];
+            let result = walk_icons(&memory, 0, 0x1000, &mut rows, &mut [0; 64]);
             assert_eq!(result.outcome, Outcome::Rows { len: 1 });
             assert_eq!(rows[0].priority_unit, if count == 65_536 { 0 } else { 777 });
         }
@@ -539,6 +628,38 @@ mod tests {
                 reason: "real template subunit has unsupported zero token"
             }
         );
+    }
+
+    #[test]
+    fn icon_rows_keep_the_selected_unit_name_and_custom_icon_without_the_grids() {
+        let memory = fixture();
+        let mut rows = [IconRow::default(); 2];
+        let mut bytes = [0; 16];
+        let result = walk_icons(&memory, 0, 0x1000, &mut rows, &mut bytes);
+        assert_eq!(result.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(rows[0].template, 0xffff_ffff_0000_0034);
+        assert_eq!(rows[0].priority_unit, 777);
+        assert_eq!(rows[0].custom_icon, -1);
+        assert_eq!(&bytes[..result.bytes_len], b"infantry");
+        // Neither the template name nor the support grids are read.
+        let reads = memory.1.borrow().clone();
+        for address in [
+            0x5000 + NAME,
+            0x5000 + SUPPORT_DATA,
+            0x5000 + REGIMENTAL_SUPPORT_DATA,
+        ] {
+            assert!(!reads.iter().any(|(at, _)| *at == address));
+        }
+        // A short arena omits the whole row and reports what it needed.
+        let result = walk_icons(&memory, 0, 0x1000, &mut rows, &mut [0; 4]);
+        assert_eq!(
+            result.outcome,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(result.required_bytes, 8);
     }
 
     #[test]

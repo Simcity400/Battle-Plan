@@ -1369,13 +1369,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.land_combats,
         );
         // counters
-        if let Some(pass) = counter_report.grouping {
+        if let Some(level) = counter_report.grouping {
             println!(
-                "Counter grouping: {:?} level, {} groups, budget {}{}",
-                pass.level,
+                "Counter grouping: {level:?} level, {} groups",
                 counter_report.groups,
-                pass.budget,
-                if pass.split { ", split" } else { "" }
             );
         }
         println!(

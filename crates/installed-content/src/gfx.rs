@@ -29,20 +29,15 @@ pub(crate) fn content_path(raw: &str) -> String {
     path
 }
 
-/// `interface/*.gfx` paths in layer order, then path order.
+/// Every `interface/**/*.gfx` in the engine's recursive VFS order: each
+/// directory's files by byte order before its subdirectories, depth first.
+/// Mods declare counter and map icons in subdirectories too.
 pub(crate) fn gfx_paths(layers: &ResolvedLayers) -> Vec<String> {
-    let mut paths = layers
-        .paths()
-        .filter(|path| {
-            let lower = path.to_ascii_lowercase();
-            lower.starts_with("interface/")
-                && lower.ends_with(".gfx")
-                && !lower["interface/".len()..].contains('/')
-        })
-        .map(|path| (layers.layer_index(path).unwrap_or(0), path.to_owned()))
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.into_iter().map(|(_, path)| path).collect()
+    crate::defines::load_order(
+        "interface/",
+        ".gfx",
+        layers.listed_paths("interface/").iter().map(String::as_str),
+    )
 }
 
 /// Parses an interface file, closing blocks the file leaves open at its end.
@@ -144,10 +139,10 @@ pub struct SpriteSet {
     pub recovered: Vec<String>,
 }
 
-/// Reads every sprite declared under `interface/*.gfx` across the layers.
+/// Reads every sprite declared under `interface/**/*.gfx` across the layers.
 ///
-/// A name declared twice keeps the later declaration: the layer order first,
-/// then the path in byte order, then the order inside the file.
+/// A name declared twice keeps the later declaration in [`gfx_paths`] order,
+/// then the order inside the file.
 pub fn read(layers: &ResolvedLayers) -> io::Result<SpriteSet> {
     let mut set = SpriteSet::default();
     for path in gfx_paths(layers) {
@@ -164,17 +159,12 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<SpriteSet> {
     Ok(set)
 }
 
-/// Reads every sprite declared under `interface/*.gfx` across the layers.
+/// Reads every sprite declared under `interface/**/*.gfx` across the layers.
 pub fn sprites(layers: &ResolvedLayers) -> io::Result<BTreeMap<String, SpriteType>> {
     Ok(read(layers)?.sprites)
 }
 
 /// Reads the sprites of named `.gfx` files, in the order given.
-///
-/// [`read`] covers `interface/*.gfx` only; the engine also loads the
-/// subdirectories, and the raid map icon's sprites live in one of them. A pass
-/// that needs a subdirectory names its file rather than widening the sweep,
-/// which would change which declaration wins for every other pass.
 pub fn sprites_of_files(
     layers: &ResolvedLayers,
     paths: &[&str],

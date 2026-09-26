@@ -30,6 +30,9 @@ pub struct Tables {
     pub orders: BTreeMap<(u64, u32), Order>,
     pub fronts: BTreeMap<u64, Front>,
     pub colors: BTreeMap<u64, Option<Vec<u32>>>,
+    /// Each group's saved `order_instance` then `fallback` instance ids, in
+    /// serializer order.
+    pub group_orders: BTreeMap<u64, [Vec<u32>; 2]>,
 }
 fn flag(items: &[Item], key: &[u8]) -> io::Result<bool> {
     Ok(field(items, key)?
@@ -107,6 +110,14 @@ impl Tables {
                         }) {
                             let items = block(&item.value)?;
                             let instance = integer(&required_bytes(items, b"instance_id")?)?;
+                            let list = match item.key.as_deref() {
+                                Some(b"order_instance") => Some(0),
+                                Some(b"fallback") => Some(1),
+                                _ => None,
+                            };
+                            if let Some(list) = list {
+                                self.group_orders.entry(handle).or_default()[list].push(instance);
+                            }
                             let assigned = items
                                 .iter()
                                 .filter(|i| i.key.as_deref() == Some(b"scheduled_member"))

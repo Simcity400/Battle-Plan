@@ -8,7 +8,6 @@ fn eq<T: PartialEq + std::fmt::Debug>(r: &mut Report, label: &str, a: T, b: T) {
 }
 pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::ProvinceUnitOrder, |r| provinces(frame, save, r));
-    report.attempt_table(TableId::CounterLayers, |r| layers(frame, r));
     report.attempt_table(TableId::CharacterPortraits, |r| characters(frame, save, r));
     report.attempt_table(TableId::LeaderPortraits, |r| leaders(frame, save, r));
 }
@@ -91,27 +90,6 @@ fn provinces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
     );
     r.compared("ProvinceUnitOrder", rows.len());
     r.limitation("CProvince E6CA90 omits occupant arrays; CUnit BF7010 saves location but no province insertion ordinal. Country unit serialization order is not an independent witness of the current province order. Membership/location are checked; mixed/naval ordinals remain unverified", "ProvinceUnitOrder order");
-    Ok(())
-}
-fn layers(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
-    let rows = frame.complete::<tables::CounterLayers>()?;
-    let provinces: BTreeSet<_> = frame
-        .complete::<tables::Provinces>()?
-        .iter()
-        .map(|p| p.id)
-        .collect();
-    for row in rows {
-        if row.bucket != 1 {
-            return Err(invalid("counter collection has unsupported bucket"));
-        }
-        for source in &row.sources {
-            if !provinces.contains(&source.province) {
-                return Err(invalid("counter source province missing"));
-            }
-        }
-    }
-    r.compared("CounterLayers", rows.len());
-    r.limitation("retained collection, source and group order is camera-dependent runtime state and absent from the save. Hourly snapshots carry retained lists, not an event log or proof that a render rebuild ran at the sampled hour", "CounterLayers");
     Ok(())
 }
 fn characters(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {

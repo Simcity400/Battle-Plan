@@ -1,4 +1,5 @@
-//! Scheduled template dictionary, with exact native text and grid-slot arenas.
+//! Template dictionary: the daily names and grids, and the hourly counter
+//! inputs a template edit changes at any hour, each with exact native text.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -7,19 +8,23 @@ use crate::{
 use engine::{Memory, creferenced_division_template as native, walk::Outcome};
 use replay::{
     frame::TableView,
-    rows::{DivisionTemplateRow, TableId, tables},
+    rows::{DivisionTemplateIconRow, DivisionTemplateRow, TableId, tables},
 };
 
-pub const N: usize = 1;
-pub const TABLES: [TableId; N] = [TableId::DivisionTemplates];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("division template dictionary and country census", 0, &[0])];
+pub const N: usize = 2;
+pub const TABLES: [TableId; N] = [TableId::DivisionTemplates, TableId::DivisionTemplateIcons];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
+    ("division template dictionary and country census", 0, &[0]),
+    ("division template counter inputs", 1, &[1]),
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     bytes: usize,
     units: usize,
+    icon_rows: usize,
+    icon_bytes: usize,
 }
 
 impl Default for Capacities {
@@ -28,6 +33,8 @@ impl Default for Capacities {
             rows: 2048,
             bytes: 128 * 1024,
             units: 128 * 1024,
+            icon_rows: 2048,
+            icon_bytes: 32 * 1024,
         }
     }
 }
@@ -36,10 +43,14 @@ pub struct Captured {
     rows: CaptureRows<native::Row>,
     bytes: Arena<u8>,
     units: Arena<u32>,
+    icon_rows: CaptureRows<native::IconRow>,
+    icon_bytes: Arena<u8>,
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.rows.fail(super::failed_capture(TABLES[0], hour, force_full, reason));
+        self.icon_rows
+            .fail(super::failed_capture(TABLES[1], hour, force_full, reason));
     }
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -48,6 +59,8 @@ impl Captured {
             rows: 0,
             bytes: 0,
             units: 0,
+            icon_rows: 0,
+            icon_bytes: 0,
         })
     }
 
@@ -56,20 +69,30 @@ impl Captured {
             rows: CaptureRows::new(capacity.rows),
             bytes: Arena::new(capacity.bytes),
             units: Arena::new(capacity.units),
+            icon_rows: CaptureRows::new(capacity.icon_rows),
+            icon_bytes: Arena::new(capacity.icon_bytes),
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
         self.bytes.reset();
         self.units.reset();
+        self.icon_rows.reset();
+        self.icon_bytes.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes() + self.bytes.allocated_bytes() + self.units.allocated_bytes()
+        self.rows.allocated_bytes()
+            + self.bytes.allocated_bytes()
+            + self.units.allocated_bytes()
+            + self.icon_rows.allocated_bytes()
+            + self.icon_bytes.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
         self.bytes.grow(&mut capacity.bytes);
         self.units.grow(&mut capacity.units);
+        self.icon_rows.grow(&mut capacity.icon_rows);
+        self.icon_bytes.grow(&mut capacity.icon_bytes);
     }
     pub fn capture(
         &mut self,
@@ -79,13 +102,31 @@ impl Captured {
         hour: i32,
         force: bool,
     ) -> [u64; N] {
-        let _reads = crate::read_accounting::table(TABLES[0]);
         self.reset();
+        // The counter inputs every hour: a short walk that reads no names or
+        // grids beyond the regiment grid of a template without a stored
+        // priority unit.
+        let icons = {
+            let _reads = crate::read_accounting::table(TABLES[1]);
+            let start = qpc();
+            let walk = native::walk_icons(
+                memory,
+                base,
+                state,
+                &mut self.icon_rows.rows,
+                &mut self.icon_bytes.first,
+            );
+            self.icon_rows.outcome = walk.outcome;
+            self.icon_bytes.len = walk.bytes_len;
+            self.icon_bytes.required = walk.required_bytes;
+            qpc().saturating_sub(start).max(0) as u64
+        };
+        let _reads = crate::read_accounting::table(TABLES[0]);
         if !replay::cadence::should_walk(TABLES[0], hour, force) {
             self.rows.outcome = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
             };
-            return [0];
+            return [0, icons];
         }
         let start = qpc();
         let first = native::walk(
@@ -101,51 +142,71 @@ impl Captured {
         self.bytes.required = first.required_bytes;
         self.units.len = first.units_len;
         self.units.required = first.required_units;
-        [qpc().saturating_sub(start).max(0) as u64]
+        [qpc().saturating_sub(start).max(0) as u64, icons]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.rows.outcome]
+        [self.rows.outcome, self.icon_rows.outcome]
     }
     pub fn tables(&self) -> [TableView; N] {
-        fn span<T>(arena: &[T], range: native::Span) -> Option<&[T]> {
-            arena.get(range.start..range.start.checked_add(range.len)?)
-        }
-        let outcome = self.outcomes()[0];
+        [self.templates(), self.icons()]
+    }
+
+    fn templates(&self) -> TableView {
+        let outcome = self.rows.outcome;
         let Some(bytes) = self.bytes.first.get(..self.bytes.len) else {
-            return [unavailable("template byte arena invalid")];
+            return unavailable("template byte arena invalid");
         };
         let Some(units) = self.units.first.get(..self.units.len) else {
-            return [unavailable("template unit arena invalid")];
+            return unavailable("template unit arena invalid");
         };
         let Some(rows) = self.rows.rows.get(..outcome.len()) else {
-            return [unavailable("template row length invalid")];
+            return unavailable("template row length invalid");
         };
         if rows.iter().any(|r| {
             span(bytes, r.name).is_none()
-                || span(bytes, r.priority_unit_name).is_none()
                 || r.composition.iter().any(|&r| span(units, r).is_none())
         }) {
-            return [unavailable("template row spans outside captured arenas")];
+            return unavailable("template row spans outside captured arenas");
         }
-        [table::<tables::DivisionTemplates, _>(
-            outcome,
-            &self.rows.rows,
-            |r| DivisionTemplateRow {
+        table::<tables::DivisionTemplates, _>(outcome, &self.rows.rows, |r| DivisionTemplateRow {
+            template: r.template,
+            owner: r.owner,
+            name: span(bytes, r.name).unwrap().to_vec(),
+            unit_type: r.unit_type,
+            regiments: span(units, r.composition[0]).unwrap().to_vec(),
+            support: span(units, r.composition[1]).unwrap().to_vec(),
+            regimental_support: span(units, r.composition[2]).unwrap().to_vec(),
+        })
+    }
+
+    fn icons(&self) -> TableView {
+        let outcome = self.icon_rows.outcome;
+        let Some(bytes) = self.icon_bytes.first.get(..self.icon_bytes.len) else {
+            return unavailable("template icon byte arena invalid");
+        };
+        let Some(rows) = self.icon_rows.rows.get(..outcome.len()) else {
+            return unavailable("template icon row length invalid");
+        };
+        if rows
+            .iter()
+            .any(|r| span(bytes, r.priority_unit_name).is_none())
+        {
+            return unavailable("template icon row spans outside captured arena");
+        }
+        table::<tables::DivisionTemplateIcons, _>(outcome, &self.icon_rows.rows, |r| {
+            DivisionTemplateIconRow {
                 template: r.template,
-                owner: r.owner,
-                name: span(bytes, r.name).unwrap().to_vec(),
                 priority_unit: r.priority_unit,
                 priority_unit_name: span(bytes, r.priority_unit_name).unwrap().to_vec(),
-                unit_type: r.unit_type,
                 custom_icon: r.custom_icon,
                 custom_icon_nato: r.custom_icon_nato,
-                dimensions: r.dimensions.to_vec(),
-                regiments: span(units, r.composition[0]).unwrap().to_vec(),
-                support: span(units, r.composition[1]).unwrap().to_vec(),
-                regimental_support: span(units, r.composition[2]).unwrap().to_vec(),
-            },
-        )]
+            }
+        })
     }
+}
+
+fn span<T>(arena: &[T], range: native::Span) -> Option<&[T]> {
+    arena.get(range.start..range.start.checked_add(range.len)?)
 }
 
 #[cfg(test)]
@@ -193,7 +254,6 @@ mod tests {
         word(&mut bytes, 0x5000, native::VTABLE_RVA as u64);
         word(&mut bytes, 0x5008, 0xffff_ffff_0000_0034);
         text(&mut bytes, 0x5000 + native::NAME, &[b'A', 0, 255]);
-        word(&mut bytes, 0x5000 + native::GRID_DIMENSIONS, 0x0001_0001);
         array(&mut bytes, 0x5000 + native::REGIMENT_DATA, 0x6000, 1);
         word(&mut bytes, 0x6000, 0x7000);
         word(&mut bytes, 0x5000 + native::PRIORITY_UNIT, 0x7000);
@@ -208,6 +268,8 @@ mod tests {
             rows: 2,
             bytes: 32,
             units: 4,
+            icon_rows: 2,
+            icon_bytes: 16,
         }
     }
 
@@ -222,27 +284,39 @@ mod tests {
         for (hour, force) in (-24..24).map(|hour| (hour, false)).chain([(0, true)]) {
             let reads = crate::read_accounting::Capture::new();
             capture.capture(&present, 0, 0x1000, hour, force);
+            let read = reads.finish();
+            // The counter inputs are walked every hour.
+            assert!(read[TABLES[1].index()].spans > 0);
             if !replay::cadence::should_walk(TABLES[0], hour, force) {
-                assert_eq!(reads.finish(), crate::read_accounting::ZERO);
+                assert_eq!(read[TABLES[0].index()], crate::read_accounting::ZERO[TABLES[0].index()]);
                 assert_eq!(
                     capture.outcomes(),
-                    [Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON
-                    }]
+                    [
+                        Outcome::Unavailable {
+                            reason: replay::cadence::SKIPPED_REASON
+                        },
+                        Outcome::Rows { len: 1 }
+                    ]
                 );
                 continue;
             }
-            assert!(reads.finish()[TABLES[0].index()].spans > 0);
-            assert_eq!(capture.outcomes(), [Outcome::Rows { len: 1 }]);
+            assert!(read[TABLES[0].index()].spans > 0);
+            assert_eq!(
+                capture.outcomes(),
+                [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
+            );
 
             let reads = crate::read_accounting::Capture::new();
             capture.capture(&missing, 0, 0x1000, hour, force);
             assert!(reads.finish()[TABLES[0].index()].spans > 0);
-            let [Outcome::Unavailable { reason }] = capture.outcomes() else {
+            let [Outcome::Unavailable { reason }, Outcome::Unavailable { .. }] =
+                capture.outcomes()
+            else {
                 panic!("unreadable templates must fail at hour {hour}");
             };
             assert_ne!(reason, replay::cadence::SKIPPED_REASON);
             assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
+            assert!(matches!(capture.tables()[1], TableView::Unavailable { .. }));
         }
     }
 
@@ -250,23 +324,26 @@ mod tests {
     fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
         let mut capture = Captured::with_capacities(&capacity());
         capture.capture(&fixture(), 0, 0x1000, 3, true);
-        let [TableView::Complete(replay::rows::TableRows::DivisionTemplates(rows))] =
-            capture.tables()
+        let [
+            TableView::Complete(replay::rows::TableRows::DivisionTemplates(rows)),
+            TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(icons)),
+        ] = capture.tables()
         else {
             panic!("complete templates");
         };
         assert_eq!(rows[0].template, 0xffff_ffff_0000_0034);
         assert_eq!(rows[0].name, &[b'A', 0, 255]);
-        assert_eq!(rows[0].priority_unit_name, b"infantry");
         assert_eq!(rows[0].regiments, [777]);
+        assert_eq!(icons[0].template, 0xffff_ffff_0000_0034);
+        assert_eq!(icons[0].priority_unit, 777);
+        assert_eq!(icons[0].priority_unit_name, b"infantry");
         let original = capture.rows.rows[0];
-        for which in 0..5 {
+        for which in 0..4 {
             capture.rows.rows[0] = original;
             let row = &mut capture.rows.rows[0];
             let span = match which {
                 0 => &mut row.name,
-                1 => &mut row.priority_unit_name,
-                _ => &mut row.composition[which - 2],
+                _ => &mut row.composition[which - 1],
             };
             *span = native::Span {
                 start: usize::MAX,
@@ -274,5 +351,11 @@ mod tests {
             };
             assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         }
+        capture.rows.rows[0] = original;
+        capture.icon_rows.rows[0].priority_unit_name = native::Span {
+            start: usize::MAX,
+            len: 1,
+        };
+        assert!(matches!(capture.tables()[1], TableView::Unavailable { .. }));
     }
 }

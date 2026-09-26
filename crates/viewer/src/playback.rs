@@ -465,6 +465,7 @@ pub(crate) mod tests {
                         stability_raw: 70_000,
                         war_support_raw: 30_000,
                         convoys_raw: None,
+                        peace_conference_participant: 0,
                     }])),
                     TableView::Complete(TableRows::CountryLinks(Vec::new())),
                     TableView::Complete(TableRows::Provinces(vec![ProvinceRow {

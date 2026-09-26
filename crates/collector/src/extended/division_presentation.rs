@@ -279,10 +279,8 @@ impl Captured {
                 attrition_value: r.attrition_value,
                 attrition_threshold: r.attrition_threshold,
                 attrition: r.attrition,
-                training_requested: r.training_requested,
                 exercising: r.exercising,
                 has_order: r.has_order,
-                no_orders: r.no_orders,
                 invalid_orders: r.invalid_orders,
                 strength_factor: r.strength_factor,
             },
@@ -589,7 +587,6 @@ mod tests {
             entrenchment: i64::MIN,
             maximum_hit_points: i64::MAX,
             has_order: 0,
-            no_orders: 0,
             strength_factor: 57_038,
             ..Default::default()
         };
@@ -617,7 +614,7 @@ mod tests {
             (
                 s[0].entrenchment,
                 s[0].maximum_hit_points,
-                s[0].no_orders,
+                s[0].has_order,
                 s[0].strength_factor
             ),
             (i64::MIN, i64::MAX, 0, 57_038)
@@ -657,7 +654,7 @@ mod tests {
         assert_eq!(TableView::Complete(rows), capture.tables()[0]);
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.paths.first[3] ^= 1;
-        capture.status.rows[0].no_orders = 1;
+        capture.status.rows[0].has_order = 1;
         let [movement, status] = capture.table_inputs(Some(&mut projection));
         assert!(matches!(movement, TableInput::ComparedEqual(_)));
         let TableInput::ComparedChanges { indices, rows, .. } = status else {
@@ -665,7 +662,7 @@ mod tests {
         };
         assert_eq!(indices, [0]);
         assert_eq!(TableView::Complete(rows), capture.tables()[1]);
-        capture.status.rows[0].no_orders = 0;
+        capture.status.rows[0].has_order = 0;
         capture.movement.rows[0].alternate_start = usize::MAX;
         let [movement, status] = capture.table_inputs(Some(&mut projection));
         assert!(matches!(

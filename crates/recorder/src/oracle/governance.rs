@@ -1483,6 +1483,7 @@ mod tests {
             stability_raw: 0,
             war_support_raw: 0,
             convoys_raw: None,
+            peace_conference_participant: 0,
         };
         let frame = DecodedFrame {
             branch: 1,

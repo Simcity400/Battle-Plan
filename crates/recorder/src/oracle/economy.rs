@@ -991,6 +991,7 @@ mod tests {
             stability_raw: 0,
             war_support_raw: 0,
             convoys_raw: None,
+            peace_conference_participant: 0,
         };
         let links = BTreeMap::from([(11, &country), (12, &country)]);
         let mut frame = DecodedFrame {
@@ -1046,6 +1047,7 @@ mod tests {
             stability_raw: 0,
             war_support_raw: 0,
             convoys_raw: None,
+            peace_conference_participant: 0,
         };
         let links = BTreeMap::from([(11, &country), (12, &country)]);
         let mut frame = DecodedFrame {

@@ -107,7 +107,16 @@ impl MapIcons {
         let mut images = Vec::new();
         // The label sprite and font are the ones `mapicons.gui` names.
         let labels = super::labels::LabelLayout::read(layers)?;
-        let fonts = text::Fonts::load(layers, language, &labels.font, &mut images)?;
+        let layouts = super::counters::Layouts::read(layers)?;
+        let mut font_warnings = Vec::new();
+        let fonts = text::Fonts::load(
+            layers,
+            language,
+            &labels.font,
+            layouts.land.count.font.as_deref(),
+            &mut images,
+            &mut font_warnings,
+        )?;
         let sprites = gfx::sprites(layers)?;
         let victory_points = load_sheet(layers, &sprites, &labels.sprite, &mut images)?;
         // Flag and portrait reads happen after this load returns, so the lazy
@@ -115,7 +124,9 @@ impl MapIcons {
         let shared = Arc::new(layers.clone());
         let lazy = LazyTextures::new();
         // counters
-        let counters = CounterAssets::load(&shared, defines, &sprites, &mut images, &lazy)?;
+        let mut counters =
+            CounterAssets::load(&shared, layouts, defines, &sprites, &mut images, &lazy)?;
+        counters.warnings.extend(font_warnings);
         let combat = crate::combat::Assets::load(
             &shared,
             defines,
@@ -218,34 +229,59 @@ pub struct Quad {
 /// the order `mapicons.gui` declares them, so **only quads that are the same
 /// child of the same icon may be reordered** — which is what batches a run of
 /// glyphs onto one page without ever letting one counter's flag overtake
-/// another counter's plate. `icon` wraps at 16 children per window, which is
-/// more than any window this pass draws.
+/// another counter's plate. Each icon has [`CHILD_SLOTS`] child slots, more
+/// than the land counter's 19 child kinds; a caller that would need more
+/// refuses rather than share a slot.
 ///
 /// The key is 64-bit so every `u32` icon ordinal keeps its own range under its
 /// priority: the icon count grows with the countries and units a recording
 /// holds, and a narrower key let icon 62,500 of one priority collide with the
-/// next priority's first icon.
-pub const fn layer(priority: u32, icon: u32, child: u32) -> u64 {
-    priority as u64 * PRIORITY_STRIDE + icon as u64 * 16 + child as u64
+/// next priority's first icon. The signed priority maps onto bands 0 to 255 in order.
+pub const fn layer(priority: i8, icon: u32, child: u32) -> u64 {
+    band_layer((priority as u8 ^ 0x80) as u64, icon, child)
 }
 
-/// Keys one priority spans: room for every `u32` icon of 16 children.
+/// A key in the band above every map-icon priority, where the combat window
+/// draws over the map icons as the GUI does.
+pub const fn gui_layer(icon: u32, child: u32) -> u64 {
+    band_layer(GUI_BAND, icon, child)
+}
+
+const fn band_layer(band: u64, icon: u32, child: u32) -> u64 {
+    band * PRIORITY_STRIDE + icon as u64 * CHILD_SLOTS as u64 + child as u64
+}
+
+/// `NMapIcons.<name>` as an icon's sort priority: `SetMapIconPrioritiesForMapMode`
+/// (`140e02410`) stores the integer define's low byte, and every icon reads it back
+/// sign-extended into `CMapIcon + 0x70` (`MOVSX`, e.g. `1418bbed9`), so 300 sorts as 44.
+pub fn priority(defines: &installed_content::defines::Defines, name: &str) -> io::Result<i8> {
+    Ok(defines.int32("NMapIcons", name)? as i8)
+}
+
+/// Child slots per icon in a [`layer`] key.
+pub const CHILD_SLOTS: u32 = 32;
+
+/// Keys one priority spans: room for every `u32` icon of [`CHILD_SLOTS`] children.
 const PRIORITY_STRIDE: u64 = 1 << 40;
+const _: () = assert!((u32::MAX as u64 + 1) * CHILD_SLOTS as u64 <= PRIORITY_STRIDE);
+/// The band [`gui_layer`] keys, above the 256 map-icon priorities.
+const GUI_BAND: u64 = 256;
 
 /// The priority a [`layer`] key was built with.
-pub const fn layer_priority(layer: u64) -> u64 {
-    layer / PRIORITY_STRIDE
+#[cfg(test)]
+pub const fn layer_priority(layer: u64) -> i64 {
+    (layer / PRIORITY_STRIDE) as i64 - 128
 }
 
 /// The icon ordinal of a [`layer`] key, within its priority.
 #[cfg(test)]
 pub const fn layer_icon(layer: u64) -> u64 {
-    layer % PRIORITY_STRIDE / 16
+    layer % PRIORITY_STRIDE / CHILD_SLOTS as u64
 }
 
 /// What moves a [`layer`] key by `icons` whole icons.
 pub const fn icon_offset(icons: u32) -> u64 {
-    icons as u64 * 16
+    icons as u64 * CHILD_SLOTS as u64
 }
 
 /// A frame's worth of screen-space quads, in the order the caller pushed them.
@@ -1063,9 +1099,9 @@ mod tests {
         // 62,500 of priority 5 equal to priority 6's first key.
         assert_ne!(layer(5, 62_500, 0), layer(6, 0, 0));
         assert!(layer(5, 62_500, 0) < layer(6, 0, 0));
-        assert!(layer(5, u32::MAX, 15) < layer(6, 0, 0));
+        assert!(layer(5, u32::MAX, CHILD_SLOTS - 1) < layer(6, 0, 0));
         let mut keys: Vec<u64> = (0..200_000u32)
-            .flat_map(|icon| [layer(10, icon, 0), layer(10, icon, 15)])
+            .flat_map(|icon| [layer(10, icon, 0), layer(10, icon, CHILD_SLOTS - 1)])
             .collect();
         let count = keys.len();
         assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
@@ -1075,6 +1111,26 @@ mod tests {
         assert_eq!(layer_priority(key), 20);
         assert_eq!(layer_icon(key), 150_000);
         assert_eq!(layer(10, 7, 2) + icon_offset(70_000), layer(10, 70_007, 2));
+    }
+
+    #[test]
+    fn priorities_are_the_defines_signed_low_byte_in_order_under_the_gui() {
+        let defines = installed_content::defines::Defines::new().unwrap();
+        defines
+            .load(
+                "mod.lua",
+                b"NDefines = { NMapIcons = { A = 20.9, B = 300, C = 200, D = -1.5 } }",
+            )
+            .unwrap();
+        let read = |name| priority(&defines, name).unwrap();
+        assert_eq!(
+            [read("A"), read("B"), read("C"), read("D")],
+            [20, 44, -56, -1]
+        );
+        assert!(layer(-128, u32::MAX, CHILD_SLOTS - 1) < layer(-127, 0, 0));
+        assert!(layer(-1, u32::MAX, CHILD_SLOTS - 1) < layer(0, 0, 0));
+        assert!(layer(i8::MAX, u32::MAX, CHILD_SLOTS - 1) < gui_layer(0, 0));
+        assert_eq!(layer_priority(layer(-56, 3, 0)), -56);
     }
 
     #[test]

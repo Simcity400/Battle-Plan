@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 186] = [
+const DOMAIN_TABLES: [TableId; 183] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -182,22 +182,18 @@ const DOMAIN_TABLES: [TableId; 186] = [
     TableId::DivisionStatus,
     TableId::StateFlags,
     TableId::ArmyOrderPlans,
-    TableId::OrdersGroupColors,
+    TableId::OrdersGroupPlans,
     TableId::Fronts,
     TableId::CountryAppearance,
     TableId::ArmyIconInputs,
     TableId::ShipModels,
     TableId::ProvinceUnitOrder,
-    TableId::CounterLayers,
     TableId::CharacterPortraits,
     TableId::LeaderPortraits,
-    TableId::CounterSettings,
-    TableId::SelectedUnits,
     TableId::TaskForceCounterInputs,
     TableId::FleetCounterInputs,
     TableId::CountryCounterInputs,
     TableId::OrdersGroupCounterInputs,
-    TableId::DivisionOrderCaches,
     TableId::LeaderPortraitPaths,
     TableId::RaidTargets,
     TableId::RaidProvinces,
@@ -211,6 +207,7 @@ const DOMAIN_TABLES: [TableId; 186] = [
     TableId::BuildingDetection,
     TableId::RelationLinks,
     TableId::SliceReads,
+    TableId::DivisionTemplateIcons,
     TableId::SupplyNodes,
     TableId::TrainInventory,
     TableId::LandCombatDetails,
@@ -534,6 +531,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         stability_raw: 78_901,
         war_support_raw: 54_321,
         convoys_raw: optional_scalar(5),
+        peace_conference_participant: u8::from(index.is_multiple_of(11) && id == 7),
     };
     let mut countries = vec![country(7, 1), country(19, 3)];
     let mut links = vec![

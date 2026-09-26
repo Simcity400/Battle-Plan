@@ -7,14 +7,14 @@ use crate::{
 use engine::{Memory, cfront, cfront_section, corder_instance, corders_group, walk::Outcome};
 use replay::{
     frame::TableView,
-    rows::{ArmyOrderPlanRow, FrontRow, OrdersGroupColorRow, TableId, tables},
+    rows::{ArmyOrderPlanRow, FrontRow, OrdersGroupPlanRow, TableId, tables},
 };
 use std::mem::size_of;
 
 pub const N: usize = 3;
 pub const TABLES: [TableId; N] = [
     TableId::ArmyOrderPlans,
-    TableId::OrdersGroupColors,
+    TableId::OrdersGroupPlans,
     TableId::Fronts,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
@@ -25,6 +25,7 @@ pub struct Capacities {
     groups: usize,
     fronts: usize,
     assigned: usize,
+    root_orders: usize,
     sections: usize,
     pairs: usize,
     handles: usize,
@@ -36,6 +37,7 @@ impl Default for Capacities {
             groups: 2048,
             fronts: 1024,
             assigned: 16384,
+            root_orders: 4096,
             sections: 4096,
             pairs: 65536,
             handles: 2048,
@@ -44,9 +46,10 @@ impl Default for Capacities {
 }
 pub struct Captured {
     plans: CaptureRows<corder_instance::PlanRow>,
-    colors: CaptureRows<corders_group::ColorRow>,
+    colors: CaptureRows<corders_group::PlanRow>,
     fronts: CaptureRows<cfront::Row>,
     assigned: Arena<u64>,
+    root_orders: Arena<u32>,
     sections: Arena<cfront_section::Row>,
     pairs: Arena<u32>,
     handles: Vec<u64>,
@@ -62,6 +65,7 @@ impl Captured {
             groups: 0,
             fronts: 0,
             assigned: 0,
+            root_orders: 0,
             sections: 0,
             pairs: 0,
             handles: 0,
@@ -73,6 +77,7 @@ impl Captured {
             colors: CaptureRows::new(c.groups),
             fronts: CaptureRows::new(c.fronts),
             assigned: Arena::new(c.assigned),
+            root_orders: Arena::new(c.root_orders),
             sections: Arena::new(c.sections),
             pairs: Arena::new(c.pairs),
             handles: vec![0; c.handles],
@@ -86,6 +91,7 @@ impl Captured {
         self.colors.reset();
         self.fronts.reset();
         self.assigned.reset();
+        self.root_orders.reset();
         self.sections.reset();
         self.pairs.reset();
         self.required_handles = 0;
@@ -97,6 +103,7 @@ impl Captured {
             + self.colors.allocated_bytes()
             + self.fronts.allocated_bytes()
             + self.assigned.allocated_bytes()
+            + self.root_orders.allocated_bytes()
             + self.sections.allocated_bytes()
             + self.pairs.allocated_bytes()
             + self.handles.capacity() * size_of::<u64>()
@@ -106,6 +113,7 @@ impl Captured {
         self.colors.grow(&mut c.groups);
         self.fronts.grow(&mut c.fronts);
         self.assigned.grow(&mut c.assigned);
+        self.root_orders.grow(&mut c.root_orders);
         self.sections.grow(&mut c.sections);
         self.pairs.grow(&mut c.pairs);
         grow_capacity(&mut c.handles, self.required_handles);
@@ -140,7 +148,19 @@ impl Captured {
         };
         self.colors.outcome = match color_capacity {
             Ok(()) => {
-                corders_group::walk_colors(memory, base, roots, root_source, &mut self.colors.rows)
+                let walk = corders_group::walk_plans(
+                    memory,
+                    base,
+                    roots,
+                    root_source,
+                    visits,
+                    order_source,
+                    &mut self.colors.rows,
+                    &mut self.root_orders.first,
+                );
+                self.root_orders.len = walk.orders;
+                self.root_orders.required = walk.orders;
+                walk.outcome
             }
             Err(_) => Outcome::Unavailable {
                 reason: "order color allocation failed",
@@ -192,6 +212,7 @@ impl Captured {
         self.colors.outcome = outcome;
         self.fronts.outcome = outcome;
         self.assigned.len = 0;
+        self.root_orders.len = 0;
         self.sections.len = 0;
         self.pairs.len = 0;
         self.ticks = [0; N];
@@ -234,13 +255,19 @@ impl Captured {
                         .to_vec(),
                 }
             }),
-            table::<tables::OrdersGroupColors, _>(outcomes[1], &self.colors.rows, |r| {
-                OrdersGroupColorRow {
+            table::<tables::OrdersGroupPlans, _>(outcomes[1], &self.colors.rows, |r| {
+                OrdersGroupPlanRow {
                     group: r.group,
                     red: r.red,
                     green: r.green,
                     blue: r.blue,
                     alpha: r.alpha,
+                    primary_orders: self.root_orders.first
+                        [r.primary_start..r.primary_start + r.primary_len]
+                        .to_vec(),
+                    fallback_orders: self.root_orders.first
+                        [r.fallback_start..r.fallback_start + r.fallback_len]
+                        .to_vec(),
                 }
             }),
             table::<tables::Fronts, _>(outcomes[2], &self.fronts.rows, |r| {
@@ -358,7 +385,7 @@ mod tests {
             matches!(&c.tables()[0], TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(rows)) if rows[0].blitz == 255)
         );
         assert!(
-            matches!(&c.tables()[1], TableView::Complete(replay::rows::TableRows::OrdersGroupColors(rows)) if rows[0].red == 0x7fc01234)
+            matches!(&c.tables()[1], TableView::Complete(replay::rows::TableRows::OrdersGroupPlans(rows)) if rows[0].red == 0x7fc01234)
         );
         assert_eq!(c.outcomes()[2], Outcome::Rows { len: 0 });
     }

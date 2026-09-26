@@ -261,6 +261,8 @@ mod tests {
             TableId::MovementDefines,
             TableId::RadarCoverage,
             TableId::RelationLinks,
+            // A template edit changes its counters' icons at any hour.
+            TableId::DivisionTemplateIcons,
             TableId::CountryVisibility,
             TableId::StateVisibility,
             TableId::ShipModels,

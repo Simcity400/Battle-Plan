@@ -22,7 +22,7 @@ pub(crate) mod daily_intel;
 const MISSING: Outcome = Outcome::Unavailable {
     reason: "acquisition source not supplied",
 };
-const DIVISION_SOURCE_TABLES: [TableId; 10] = [
+const DIVISION_SOURCE_TABLES: [TableId; 9] = [
     TableId::DivisionEquipment,
     TableId::ArmyUpgradeGroups,
     TableId::ArmyUpgradeRequests,
@@ -32,7 +32,6 @@ const DIVISION_SOURCE_TABLES: [TableId; 10] = [
     TableId::DivisionStatus,
     TableId::DivisionEtaInputs,
     TableId::ArmyIconInputs,
-    TableId::DivisionOrderCaches,
 ];
 pub type ReadGroup = (&'static str, TableId, Vec<TableId>);
 
@@ -265,8 +264,8 @@ macro_rules! packs {
                 vec![TableId::Ships, TableId::ShipModels]));
             groups.push(("states and hourly state flags", TableId::States,
                 vec![TableId::States, TableId::StateFlags]));
-            groups.push(("army order census, plan operands, colors and front sections", TableId::ArmyOrders,
-                vec![TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupColors, TableId::Fronts]));
+            groups.push(("army order census, plan operands, group plans and front sections", TableId::ArmyOrders,
+                vec![TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupPlans, TableId::Fronts]));
             groups
         }
     };
@@ -274,8 +273,6 @@ macro_rules! packs {
 packs!(
     air,
     army_icon_inputs,
-    division_order_caches,
-    counter_state,
     naval_counters,
     country_counters,
     group_counters,
@@ -283,7 +280,6 @@ packs!(
     country_appearance,
     ship_models,
     province_unit_order,
-    counter_layers,
     naval_bases,
     character_portraits,
     leader_portraits,
@@ -888,9 +884,7 @@ impl Captured {
             &mut packs.naval_result_details,
         );
         std::mem::swap(&mut self.country_appearance, &mut packs.country_appearance);
-        std::mem::swap(&mut self.counter_layers, &mut packs.counter_layers);
         std::mem::swap(&mut self.naval_bases, &mut packs.naval_bases);
-        std::mem::swap(&mut self.counter_state, &mut packs.counter_state);
         std::mem::swap(&mut self.naval_counters, &mut packs.naval_counters);
         std::mem::swap(&mut self.country_counters, &mut packs.country_counters);
         std::mem::swap(&mut self.group_counters, &mut packs.group_counters);
@@ -1055,10 +1049,6 @@ impl Captured {
         std::mem::swap(&mut self.air, &mut packs.air);
         std::mem::swap(&mut self.naval_history, &mut packs.naval_history);
         std::mem::swap(&mut self.army_icon_inputs, &mut packs.army_icon_inputs);
-        std::mem::swap(
-            &mut self.division_order_caches,
-            &mut packs.division_order_caches,
-        );
         std::mem::swap(&mut self.divisions, &mut packs.divisions);
         std::mem::swap(&mut self.air_root, &mut packs.air_root);
         std::mem::swap(orders, &mut packs.orders);
@@ -1891,9 +1881,7 @@ pub(crate) struct OrdinaryPacks {
     pub(crate) naval_details: naval_details::Captured,
     pub(crate) naval_result_details: naval_result_details::Captured,
     pub(crate) country_appearance: country_appearance::Captured,
-    pub(crate) counter_layers: counter_layers::Captured,
     pub(crate) naval_bases: naval_bases::Captured,
-    pub(crate) counter_state: counter_state::Captured,
     pub(crate) naval_counters: naval_counters::Captured,
     pub(crate) country_counters: country_counters::Captured,
     pub(crate) group_counters: group_counters::Captured,
@@ -1907,9 +1895,7 @@ impl OrdinaryPacks {
         &naval_details::TABLES,
         &naval_result_details::TABLES,
         &country_appearance::TABLES,
-        &counter_layers::TABLES,
         &naval_bases::TABLES,
-        &counter_state::TABLES,
         &naval_counters::TABLES,
         &country_counters::TABLES,
         &group_counters::TABLES,
@@ -1921,9 +1907,7 @@ impl OrdinaryPacks {
             + self.naval_details.allocated_bytes()
             + self.naval_result_details.allocated_bytes()
             + self.country_appearance.allocated_bytes()
-            + self.counter_layers.allocated_bytes()
             + self.naval_bases.allocated_bytes()
-            + self.counter_state.allocated_bytes()
             + self.naval_counters.allocated_bytes()
             + self.country_counters.allocated_bytes()
             + self.group_counters.allocated_bytes()
@@ -1934,9 +1918,7 @@ impl OrdinaryPacks {
         self.naval_details.reset();
         self.naval_result_details.reset();
         self.country_appearance.reset();
-        self.counter_layers.reset();
         self.naval_bases.reset();
-        self.counter_state.reset();
         self.naval_counters.reset();
         self.country_counters.reset();
         self.group_counters.reset();
@@ -1951,9 +1933,7 @@ impl OrdinaryPacks {
             naval_details: naval_details::Captured::vacant(),
             naval_result_details: naval_result_details::Captured::vacant(),
             country_appearance: country_appearance::Captured::vacant(),
-            counter_layers: counter_layers::Captured::vacant(),
             naval_bases: naval_bases::Captured::vacant(),
-            counter_state: counter_state::Captured::vacant(),
             naval_counters: naval_counters::Captured::vacant(),
             country_counters: country_counters::Captured::vacant(),
             group_counters: group_counters::Captured::vacant(),
@@ -1974,9 +1954,7 @@ impl OrdinaryPacks {
             naval_details,
             naval_result_details,
             country_appearance,
-            counter_layers,
             naval_bases,
-            counter_state,
             naval_counters,
             country_counters,
             group_counters
@@ -1985,8 +1963,10 @@ impl OrdinaryPacks {
     }
 }
 
-/// The slow-changing live-memory packs (leader sprites, names, templates,
-/// static defines): a second pool job from the first burst.
+/// The live-memory packs run as a second pool job from the first burst
+/// (leader sprites, map names, templates, static defines, visibility and
+/// building detection). Each table keeps its own [`replay::cadence`]: the
+/// template dictionary is daily, its counter inputs hourly.
 pub(crate) struct SlowPacks {
     pub(crate) leader_portraits: leader_portraits::Captured,
     pub(crate) leader_paths: leader_paths::Captured,
@@ -2078,7 +2058,6 @@ pub(crate) struct LatePacks {
     pub(crate) air: air::Captured,
     pub(crate) naval_history: naval_history::Captured,
     pub(crate) army_icon_inputs: army_icon_inputs::Captured,
-    pub(crate) division_order_caches: division_order_caches::Captured,
     pub(crate) divisions: Divisions,
     pub(crate) air_root: Option<Outcome>,
     /// The walked order census; the naval order sources read its roots.
@@ -2094,7 +2073,6 @@ impl LatePacks {
         self.naval_history
             .fail_late_capture(hour, force_full, reason);
         self.army_icon_inputs.fail_capture(reason);
-        self.division_order_caches.fail_capture(reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
@@ -2103,7 +2081,6 @@ impl LatePacks {
             + self.air.allocated_bytes()
             + self.naval_history.allocated_bytes()
             + self.army_icon_inputs.allocated_bytes()
-            + self.division_order_caches.allocated_bytes()
             + self.divisions.allocated_bytes()
             + self.orders.allocated_bytes()
     }
@@ -2113,7 +2090,6 @@ impl LatePacks {
             air: air::Captured::vacant(),
             naval_history: naval_history::Captured::vacant(),
             army_icon_inputs: army_icon_inputs::Captured::vacant(),
-            division_order_caches: division_order_caches::Captured::vacant(),
             divisions: Divisions::new(0),
             air_root: None,
             orders: Orders::vacant(),
@@ -2152,10 +2128,6 @@ impl LatePacks {
             .army_icon_inputs
             .capture(memory, base, self.divisions.sources(), seeds);
         scatter(&army_icon_inputs::TABLES, cost, &mut ticks);
-        let cost =
-            self.division_order_caches
-                .capture(memory, base, self.divisions.sources(), seeds);
-        scatter(&division_order_caches::TABLES, cost, &mut ticks);
         self.ticks = ticks;
     }
 }
@@ -2803,7 +2775,6 @@ mod tests {
             air::TABLES.as_slice(),
             naval_history::TABLES.as_slice(),
             army_icon_inputs::TABLES.as_slice(),
-            division_order_caches::TABLES.as_slice(),
         ]
         .concat();
         let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
@@ -3847,7 +3818,7 @@ mod tests {
                     vec![
                         TableId::ArmyOrders,
                         TableId::ArmyOrderPlans,
-                        TableId::OrdersGroupColors,
+                        TableId::OrdersGroupPlans,
                         TableId::Fronts
                     ]
                 );

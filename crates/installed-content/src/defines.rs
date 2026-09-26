@@ -45,9 +45,7 @@ pub struct Defines {
 pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
     let defines = Defines::new()?;
     for path in script_paths(layers) {
-        defines
-            .run(&path, &layers.read(&path)?)
-            .map_err(|error| invalid(format!("defines unavailable in {path}: {error}")))?;
+        defines.load(&path, &layers.read(&path)?)?;
     }
     Ok(defines)
 }
@@ -59,6 +57,8 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
 /// case are separate entries, as the tree keys them.
 pub(crate) fn script_paths(layers: &ResolvedLayers) -> Vec<String> {
     load_order(
+        "common/defines/",
+        "lua",
         layers
             .listed_paths("common/defines/")
             .iter()
@@ -66,17 +66,23 @@ pub(crate) fn script_paths(layers: &ResolvedLayers) -> Vec<String> {
     )
 }
 
-fn load_order<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
-    const ROOT: &str = "common/defines/";
+/// `Vfs_EnumerateRecursive@1424C7630` under `root`: the names ending in
+/// `filter`, files before the subdirectories of each directory, each level in
+/// byte order, depth first.
+pub(crate) fn load_order<'a>(
+    root: &str,
+    filter: &str,
+    paths: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
     let mut paths: Vec<String> = paths
         .filter(|path| {
-            path.len() > ROOT.len()
+            path.len() > root.len()
                 && path
-                    .get(..ROOT.len())
-                    .is_some_and(|root| root.eq_ignore_ascii_case(ROOT))
-                && path.ends_with("lua")
+                    .get(..root.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(root))
+                && path.ends_with(filter)
         })
-        .map(|path| path[ROOT.len()..].to_owned())
+        .map(|path| path[root.len()..].to_owned())
         .collect();
     // Files sort before the subdirectories of the same directory, and each
     // level compares names bytewise.
@@ -97,12 +103,14 @@ fn load_order<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
     });
     paths
         .into_iter()
-        .map(|path| format!("{ROOT}{path}"))
+        .map(|path| format!("{root}{path}"))
         .collect()
 }
 
 impl Defines {
-    fn new() -> io::Result<Self> {
+    /// The sandboxed define state before any script has run; [`read`] then
+    /// [`Defines::load`]s the stack's scripts into it.
+    pub fn new() -> io::Result<Self> {
         let lua = Lua::new_with(
             StdLib::STRING | StdLib::TABLE | StdLib::MATH,
             LuaOptions::default(),
@@ -128,6 +136,12 @@ impl Defines {
         )
         .map_err(lua_error)?;
         Ok(Self { lua })
+    }
+
+    /// Runs `source` as the next script of the load order; an error refuses the reader.
+    pub fn load(&self, path: &str, source: &[u8]) -> io::Result<()> {
+        self.run(path, source)
+            .map_err(|error| invalid(format!("defines unavailable in {path}: {error}")))
     }
 
     fn run(&self, name: &str, source: &[u8]) -> io::Result<()> {
@@ -310,6 +324,8 @@ mod tests {
     #[test]
     fn scripts_load_by_byte_name_with_files_before_subdirectories() {
         let order = load_order(
+            "common/defines/",
+            "lua",
             [
                 "common/defines/zz_mod.lua",
                 "common/defines/sub/a.lua",

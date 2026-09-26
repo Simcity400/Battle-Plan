@@ -8,7 +8,7 @@ mod layout;
 mod naval_details;
 mod naval_environment;
 mod presentation;
-mod texture;
+pub(crate) mod texture;
 
 use crate::{
     document::Document,
@@ -538,16 +538,11 @@ enum Chunk {
     Icon(String),
     Flag(String),
 }
-/// The sprite-batch priority of the combat window: above every map-icon
-/// priority (`DEFAULT_PRIORITY_*`, the highest being combat icons at
-/// [`crate::map::counters::COMBAT_PRIORITY`]), so the open window covers the
-/// bases, labels, counters and combat icons behind it.
-const WINDOW_PRIORITY: u32 = 100;
-
 /// The layer of a window quad pushed after `quads` others: the window draws
-/// in push order, one icon ordinal per quad.
+/// in push order, one icon ordinal per quad, in the GUI band above every
+/// map-icon priority, so the open window covers the icons behind it.
 fn window_layer(quads: usize) -> u64 {
-    crate::map::sprites::layer(WINDOW_PRIORITY, u32::try_from(quads).unwrap_or(u32::MAX), 0)
+    crate::map::sprites::gui_layer(u32::try_from(quads).unwrap_or(u32::MAX), 0)
 }
 
 struct Painter<'a> {
@@ -1307,25 +1302,15 @@ fn clip_quads(batch: &mut Batch, first: usize, clip: [f32; 4]) {
 mod tests {
     #[test]
     fn the_combat_window_sorts_above_every_map_icon() {
-        use crate::map::{counters, labels, raids, sprites::layer};
-        let top_icon = [
-            counters::BASE_PRIORITY,
-            counters::COUNTER_PRIORITY,
-            counters::COMBAT_PRIORITY,
-            labels::LabelDefines::test().priority[0],
-            labels::LabelDefines::test().priority[1],
-            raids::PRIORITY,
-        ]
-        .into_iter()
-        .map(|priority| layer(priority, u32::MAX, 15))
-        .max()
-        .unwrap();
+        use crate::map::{counters, sprites::layer};
+        // The highest priority a define can give a map icon.
+        let top_icon = layer(i8::MAX, u32::MAX, crate::map::sprites::CHILD_SLOTS - 1);
         assert!(window_layer(0) > top_icon);
         // Window quads keep their push order among themselves.
         assert!(window_layer(1) > window_layer(0));
         assert!(window_layer(usize::MAX) >= window_layer(70_000));
         // Sorted as the sprite pass sorts, the window's quads come last.
-        let icon = layer(counters::COMBAT_PRIORITY, 9, 3);
+        let icon = layer(counters::CounterDefines::VANILLA.land_combat_priority, 9, 3);
         let mut keys = vec![window_layer(3), icon, window_layer(0)];
         keys.sort();
         assert_eq!(keys, [icon, window_layer(0), window_layer(3)]);

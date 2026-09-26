@@ -64,23 +64,33 @@ fn block_pixels(block: &[u8], format: dds::TextureFormat) -> [[u8; 4]; 16] {
 }
 
 pub(super) fn uploadable(texture: dds::Texture) -> io::Result<dds::Texture> {
-    let Some(block_size) = texture.format.block_bytes() else {
-        return Ok(texture);
-    };
-    if texture.width.is_multiple_of(4) && texture.height.is_multiple_of(4) {
+    if texture.format.block_bytes().is_none()
+        || (texture.width.is_multiple_of(4) && texture.height.is_multiple_of(4))
+    {
         return Ok(texture);
     }
+    rgba8(&texture)
+}
+
+/// Decodes a BC1/BC2/BC3 texture's base level to RGBA8 at its exact extent;
+/// an uncompressed one is returned as it is.
+pub(crate) fn rgba8(texture: &dds::Texture) -> io::Result<dds::Texture> {
+    let Some(block_size) = texture.format.block_bytes() else {
+        return Ok(texture.clone());
+    };
     if texture.faces != 1 {
-        return Err(super::invalid("combat sprite cannot be a cube texture"));
+        return Err(super::invalid(
+            "a cube texture cannot be decoded to one image",
+        ));
     }
     let length = (texture.width as usize)
         .checked_mul(texture.height as usize)
         .and_then(|n| n.checked_mul(4))
-        .ok_or_else(|| super::invalid("combat texture size overflows"))?;
+        .ok_or_else(|| super::invalid("texture size overflows"))?;
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(length)
-        .map_err(|_| super::invalid("combat texture exceeds available memory"))?;
+        .map_err(|_| super::invalid("texture exceeds available memory"))?;
     pixels.resize(length, 0);
     let columns = texture.width.div_ceil(4);
     for (index, block) in texture.base().data.chunks_exact(block_size).enumerate() {

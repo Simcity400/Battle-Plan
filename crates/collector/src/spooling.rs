@@ -2196,6 +2196,8 @@ fn decoded_with_costs(
                         && country.stability_raw == previous.stability_raw
                         && country.war_support_raw == previous.war_support_raw
                         && country.convoys_raw == previous.convoys_raw
+                        && country.peace_conference_participant
+                            == previous.peace_conference_participant
                 },
                 |country| CountryRow {
                     id: country.id,
@@ -2206,6 +2208,7 @@ fn decoded_with_costs(
                     stability_raw: country.stability_raw,
                     war_support_raw: country.war_support_raw,
                     convoys_raw: country.convoys_raw,
+                    peace_conference_participant: country.peace_conference_participant,
                 },
             ),
             scalar_table::<tables::CountryLinks, _>(
@@ -3297,6 +3300,7 @@ mod tests {
             stability_raw: 100_001,
             war_support_raw: -9_007_199_254_740_993,
             convoys_raw: Some(i64::MAX),
+            peace_conference_participant: 1,
         };
         captured.countries_result = Outcome::Rows { len: 1 };
         captured.links[0] = engine::ccountry::LinkRow {
@@ -3351,6 +3355,7 @@ mod tests {
                 stability_raw: 100_001,
                 war_support_raw: -9_007_199_254_740_993,
                 convoys_raw: Some(i64::MAX),
+                peace_conference_participant: 1,
             }]))
         );
         let TableView::Complete(divisions) = &*frame.tables[TableId::Divisions.index()] else {
@@ -4432,10 +4437,6 @@ mod tests {
             TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
         tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
-        tables[TableId::CounterSettings.index()] =
-            TableView::Complete(TableRows::CounterSettings(vec![
-                replay::rows::CounterSettingsRow::default(),
-            ]));
         tables[TableId::MovementDefines.index()] =
             TableView::Complete(TableRows::MovementDefines(vec![
                 replay::rows::MovementDefinesRow::default(),

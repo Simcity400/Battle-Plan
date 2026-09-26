@@ -10,7 +10,7 @@ fn eq<T: PartialEq + std::fmt::Debug>(report: &mut Report, label: &str, actual: 
 
 pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::ArmyOrderPlans, |r| orders(frame, save, r));
-    report.attempt_table(TableId::OrdersGroupColors, |r| colors(frame, save, r));
+    report.attempt_table(TableId::OrdersGroupPlans, |r| group_plans(frame, save, r));
     report.attempt_table(TableId::Fronts, |r| fronts(frame, save, r));
 }
 fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
@@ -98,13 +98,68 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
     report.limitation("save yes/no fields distinguish zero from nonzero, not distinct nonzero raw bytes; absent bindings do not preserve the invalid sentinel bits or unused section word; segment endpoints are compared only when serialized; same-hour post-sample commands may change plans", "ArmyOrderPlans");
     Ok(())
 }
-fn colors(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
-    let rows = frame.complete::<tables::OrdersGroupColors>()?;
+fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::OrdersGroupPlans>()?;
     let actual: BTreeSet<_> = rows.iter().map(|r| r.group).collect();
     let expected: BTreeSet<_> = save.plans.colors.keys().copied().collect();
-    eq(report, "OrdersGroupColors.group census", actual, expected);
-    report.compared("OrdersGroupColors (group census)", rows.len());
-    report.limitation("save color is quantized RGB and omits alpha; the four raw 32-bit CColor components are not independently compared by this oracle", "OrdersGroupColors raw RGBA");
+    eq(report, "OrdersGroupPlans.group census", actual, expected);
+    // Every recorded root is an instance of the group's own order census.
+    let census: Option<BTreeSet<(u64, u32)>> = frame
+        .complete::<tables::ArmyOrders>()
+        .ok()
+        .map(|orders| orders.iter().map(|r| (r.owner_group, r.instance)).collect());
+    let empty = [Vec::new(), Vec::new()];
+    for row in rows {
+        let [saved_primary, saved_fallback] =
+            save.plans.group_orders.get(&row.group).unwrap_or(&empty);
+        let label = format!("OrdersGroupPlans {}", row.group);
+        eq(
+            report,
+            &format!("{label}.fallback_orders"),
+            &row.fallback_orders,
+            saved_fallback,
+        );
+        // The serializer writes each primary root followed by its successor
+        // graph, so the roots are an ordered subsequence of the saved list and
+        // the first saved instance is the first root.
+        if let Some(first) = saved_primary.first() {
+            eq(
+                report,
+                &format!("{label}.primary_orders[0]"),
+                row.primary_orders.first(),
+                Some(first),
+            );
+        }
+        let mut saved = saved_primary.iter();
+        let ordered = row
+            .primary_orders
+            .iter()
+            .all(|root| saved.any(|instance| instance == root));
+        eq(
+            report,
+            &format!("{label}.primary_orders order"),
+            ordered,
+            true,
+        );
+        if let Some(census) = &census {
+            for instance in row.primary_orders.iter().chain(&row.fallback_orders) {
+                eq(
+                    report,
+                    &format!("{label} root {instance} in ArmyOrders"),
+                    census.contains(&(row.group, *instance)),
+                    true,
+                );
+            }
+        }
+    }
+    if census.is_none() {
+        report.limitation(
+            "ArmyOrders is not complete this hour, so the root ids were not checked against the order census",
+            "OrdersGroupPlans",
+        );
+    }
+    report.compared("OrdersGroupPlans", rows.len());
+    report.limitation("save color is quantized RGB and omits alpha; the four raw 32-bit CColor components are not independently compared by this oracle. Primary roots are checked as an ordered subsequence of the serialized order graphs led by the first saved instance. The saved virtual_fallback orders are not compared with any recorded list (UNVERIFIED until W2)", "OrdersGroupPlans");
     Ok(())
 }
 fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
@@ -155,7 +210,7 @@ mod tests {
     use super::*;
     use replay::{
         frame::{Metrics, TABLE_COUNT},
-        rows::{ArmyOrderPlanRow, FrontRow, OrdersGroupColorRow},
+        rows::{ArmyOrderPlanRow, ArmyOrderRow, FrontRow, OrdersGroupPlanRow},
     };
     #[test]
     fn every_saved_plan_operand_and_pair_order_can_fail_the_oracle() {
@@ -208,8 +263,8 @@ mod tests {
                 section_ends: vec![2],
                 province_pairs: vec![4, 5],
             }]));
-        *frame.tables[TableId::OrdersGroupColors.index()] =
-            TableView::Complete(TableRows::OrdersGroupColors(vec![OrdersGroupColorRow {
+        *frame.tables[TableId::OrdersGroupPlans.index()] =
+            TableView::Complete(TableRows::OrdersGroupPlans(vec![OrdersGroupPlanRow {
                 group,
                 ..Default::default()
             }]));
@@ -242,5 +297,64 @@ mod tests {
         fronts(&frame, &saved, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
         saved.plans.orders.remove(&(group, 2));
+    }
+
+    #[test]
+    fn group_roots_lead_the_saved_list_and_belong_to_the_order_census() {
+        let (_, mut saved, _, _) = super::super::tests::fixture();
+        let group = (8_u64 << 32) | 53;
+        saved.plans.colors.insert(group, None);
+        // Root 1 is saved with its successor 5 before root 2; 3 is a fallback.
+        saved
+            .plans
+            .group_orders
+            .insert(group, [vec![1, 5, 2], vec![3]]);
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 0,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn::<_, TABLE_COUNT, _>(|_| TableView::Unavailable {
+                reason: "fixture".into(),
+            })
+            .map(Into::into),
+        };
+        *frame.tables[TableId::ArmyOrders.index()] = TableView::Complete(TableRows::ArmyOrders(
+            [1, 2, 3, 5]
+                .into_iter()
+                .map(|instance| ArmyOrderRow {
+                    owner_group: group,
+                    instance,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        fn run(
+            frame: &mut DecodedFrame,
+            saved: &Save,
+            group: u64,
+            primary: Vec<u32>,
+            fallback: Vec<u32>,
+        ) -> usize {
+            *frame.tables[TableId::OrdersGroupPlans.index()] =
+                TableView::Complete(TableRows::OrdersGroupPlans(vec![OrdersGroupPlanRow {
+                    group,
+                    primary_orders: primary,
+                    fallback_orders: fallback,
+                    ..Default::default()
+                }]));
+            let mut report = Report::default();
+            group_plans(frame, saved, &mut report).unwrap();
+            report.differences.len()
+        }
+        assert_eq!(run(&mut frame, &saved, group, vec![1, 2], vec![3]), 0);
+        // A recording without the saved first root fails, empty or not.
+        assert_eq!(run(&mut frame, &saved, group, vec![], vec![3]), 1);
+        assert_eq!(run(&mut frame, &saved, group, vec![2], vec![3]), 1);
+        // A root outside the census fails, even where the save lists it.
+        saved
+            .plans
+            .group_orders
+            .insert(group, [vec![1, 5, 2, 9], vec![3]]);
+        assert_eq!(run(&mut frame, &saved, group, vec![1, 9], vec![3]), 1);
     }
 }

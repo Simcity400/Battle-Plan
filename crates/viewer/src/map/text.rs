@@ -38,8 +38,6 @@ use super::names::{GlyphBox, GlyphMetrics};
 
 /// `interface/core.gfx:1678-1688`: the map-name font, `gfx/fonts/hoi_mapfont4`.
 pub const MAP_FONT: &str = "tahoma_60";
-/// `core.gfx:870-875`: `gfx/fonts/garamond_14`, the unit-counter count font.
-pub const COUNTER_FONT: &str = "Main_14";
 /// `core.gfx:1093-1111`: the base and wing count font.
 pub const BASE_FONT: &str = "hoi_16mbs";
 
@@ -235,35 +233,68 @@ pub struct Fonts {
     pub map: Font,
     /// `hoi_20bs`, the victory-point and capital label font.
     pub label: Font,
-    /// `Main_14`, the unit-counter count font.
-    pub counter: Font,
+    /// The unit counter's `count_txt` font from `mapicons.gui` (`Main_14`),
+    /// resolved as the engine does; `None` when that font does not load, and
+    /// counters then draw no count.
+    pub counter: Option<Font>,
     /// `hoi_16mbs`, the air and naval base count font.
     pub base: Font,
 }
 
 impl Fonts {
     /// Loads all four for `language`, appending their pages to `images`.
+    ///
+    /// `counter` is the counter count box's declared font. A name the
+    /// registry does not hold, or none at all, takes
+    /// `CGraphics::GetFontOrFallback@142223AE0`'s fallback
+    /// ([`fonts::fallback_name`]); a font that then fails to load leaves the
+    /// count undrawn with a warning rather than failing every map icon.
     pub fn load(
         layers: &ResolvedLayers,
         language: &str,
         label_font: &str,
+        counter: Option<&str>,
         images: &mut Vec<dds::Texture>,
+        warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let definitions = fonts::read_definitions(layers)?;
+        let counter = match counter.filter(|name| definitions.contains_key(*name)) {
+            Some(name) => Some(name.to_owned()),
+            None => fonts::fallback_name(layers)?,
+        };
+        let counter = match counter.map(|name| load(layers, &definitions, &name, language, images))
+        {
+            Some(Ok(font)) => Some(font),
+            Some(Err(error)) => {
+                warnings.push(format!("Unit counter counts are not drawn: {error}."));
+                None
+            }
+            None => {
+                warnings
+                    .push("Unit counter counts are not drawn: no bitmapfont is declared.".into());
+                None
+            }
+        };
         Ok(Self {
             map: load(layers, &definitions, MAP_FONT, language, images)?,
             label: load(layers, &definitions, label_font, language, images)?,
-            counter: load(layers, &definitions, COUNTER_FONT, language, images)?,
+            counter,
             base: load(layers, &definitions, BASE_FONT, language, images)?,
         })
     }
 
     /// One summary line per font, in load order.
     pub fn summary(&self) -> Vec<String> {
-        [&self.map, &self.label, &self.counter, &self.base]
-            .into_iter()
-            .map(Font::summary)
-            .collect()
+        [
+            Some(&self.map),
+            Some(&self.label),
+            self.counter.as_ref(),
+            Some(&self.base),
+        ]
+        .into_iter()
+        .flatten()
+        .map(Font::summary)
+        .collect()
     }
 }
 

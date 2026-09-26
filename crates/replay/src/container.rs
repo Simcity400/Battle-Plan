@@ -1410,10 +1410,6 @@ mod tests {
             TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
         tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
-        tables[TableId::CounterSettings.index()] =
-            TableView::Complete(TableRows::CounterSettings(vec![
-                crate::rows::CounterSettingsRow::default(),
-            ]));
         tables[TableId::MovementDefines.index()] =
             TableView::Complete(TableRows::MovementDefines(vec![
                 crate::rows::MovementDefinesRow::default(),
