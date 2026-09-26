@@ -18,31 +18,49 @@ pub fn content_key(content: Option<&ContentOptions>) -> Option<ContentKey> {
     })
 }
 
-/// The recording's localisation in the user's game language, read once per
-/// source and folders, or the warning that says why names show tags.
+/// Everything a source's localisation depends on besides the recording: the
+/// folders, the cache folder and the user's game language.
+pub type LocalisationKey = (ContentKey, PathBuf, String);
+
+/// The key for these folders, reading the game language from the user folder.
+pub fn localisation_key(content: &ContentOptions) -> io::Result<LocalisationKey> {
+    Ok((
+        content_key(Some(content)).expect("content options given"),
+        content.options.cache_dir.clone(),
+        language(&content.options)?,
+    ))
+}
+
+/// The recording's localisation in the user's game language, read once per source
+/// and key and shared by every product that names anything.
+pub fn localisation(source: &Source, content: &ContentOptions) -> io::Result<Arc<Localisation>> {
+    type Cached = Option<(LocalisationKey, Arc<Localisation>)>;
+    let key = localisation_key(content)?;
+    let state = source.state::<Cached>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some((cached, localisation)) = state.as_ref()
+        && *cached == key
+    {
+        return Ok(Arc::clone(localisation));
+    }
+    let mut warnings = Vec::new();
+    check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
+    let layers = source.content(&content.options)?;
+    let localisation = Arc::new(installed_content::localisation::read(&layers.layers, &key.2)?);
+    *state = Some((key, Arc::clone(&localisation)));
+    Ok(localisation)
+}
+
+/// [`localisation`] for naming countries, or the warning that says why names show tags.
 pub fn name_localisation(
     source: &Source,
     content: Option<&ContentOptions>,
 ) -> Result<Arc<Localisation>, String> {
-    type Cached = Option<(Option<ContentKey>, Result<Arc<Localisation>, String>)>;
-    let key = content_key(content);
-    let state = source.state::<Cached>();
-    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    if state.as_ref().is_none_or(|(cached, _)| *cached != key) {
-        let result = match content {
-            None => Err("Country names show tags until the game folders are chosen.".to_owned()),
-            Some(content) => (|| {
-                let mut warnings = Vec::new();
-                check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
-                let layers = source.content(&content.options)?;
-                installed_content::localisation::read(&layers.layers, &language(&content.options)?)
-            })()
-            .map(Arc::new)
+    match content {
+        None => Err("Country names show tags until the game folders are chosen.".to_owned()),
+        Some(content) => localisation(source, content)
             .map_err(|error| format!("Country names show tags: {error}")),
-        };
-        *state = Some((key, result));
     }
-    state.as_ref().expect("cached above").1.clone()
 }
 
 /// The user's game language from the configured user folder's `settings.txt`.

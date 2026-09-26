@@ -7,6 +7,7 @@
 
 pub mod artwork;
 pub mod country_flags;
+pub mod country_styles;
 pub mod land_owners;
 pub mod national_focus;
 pub mod research;
@@ -94,6 +95,26 @@ pub fn validate_tag(tag: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The rows a table holds this hour, complete or truncated; an unavailable table
+/// holds none. For products that use whatever rows were recorded.
+pub(crate) fn recorded_rows<T: replay::rows::TableSchema>(
+    frame: &replay::frame::DecodedFrame,
+) -> io::Result<&[T::Row]> {
+    use replay::frame::TableView;
+    match &*frame.tables[T::ID.index()] {
+        TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
+            rows.rows::<T>().ok_or_else(|| {
+                crate::invalid(format!(
+                    "hour {} {:?} contains another table's rows",
+                    frame.hour,
+                    T::ID
+                ))
+            })
+        }
+        TableView::Unavailable { .. } => Ok(&[]),
+    }
+}
+
 /// Serialised with the lease identity the frontend used, so a reply can never
 /// be attributed to another recording.
 #[derive(Serialize)]
@@ -154,6 +175,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<research::Research>(),
     register::<country_flags::CountryFlags>(),
     register::<land_owners::LandOwnersProduct>(),
+    register::<country_styles::CountryStyles>(),
 ];
 
 pub fn find(key: &str) -> Option<&'static Registered> {
@@ -183,6 +205,7 @@ mod tests {
             "LandOwners",
             "FocusReply",
             "ResearchReply",
+            "CountryStyleReply",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == name).count(),

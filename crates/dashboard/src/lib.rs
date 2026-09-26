@@ -2,6 +2,7 @@
 //! the host/viewer protocol and the native data service. No map assets are
 //! rendered here and no live game memory is read.
 
+pub mod catalogue;
 pub mod config;
 pub mod content;
 mod dto;

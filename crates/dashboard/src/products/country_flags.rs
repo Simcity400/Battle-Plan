@@ -6,13 +6,13 @@
 //! the cell sizes the content's defines give. `Shield` also applies the sprite
 //! the recorded top bar's `player_flag` button names.
 
-use super::{LoadContext, Product, validate_tag};
+use super::{LoadContext, Product, recorded_rows, validate_tag};
 use crate::{Source, content, invalid};
 use installed_content::{ResolveOptions, content::ResolvedContent, flags::FlagSet, image::Rgba8Image};
 use replay::{
     container::{Replay, SeekResult},
-    frame::{DecodedFrame, TableView},
-    rows::{TableSchema, tables},
+    frame::DecodedFrame,
+    rows::tables,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -256,34 +256,8 @@ fn asset_path(raw: &str) -> String {
 }
 
 fn interface_texture(layers: &installed_content::ResolvedLayers, path: &str) -> io::Result<Rgba8Image> {
-    let bytes = layers.read_uncovered(path)?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err(invalid("Flag interface texture exceeds its input budget"));
-    }
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".dds") {
-        if bytes.len() < 128
-            || u32::from_le_bytes(bytes[12..16].try_into().unwrap()) > 1024
-            || u32::from_le_bytes(bytes[16..20].try_into().unwrap()) > 1024
-        {
-            return Err(invalid(
-                "Flag interface texture dimensions exceed their budget",
-            ));
-        }
-        installed_content::image::rgba::dds_base(&installed_content::image::dds::decode(&bytes)?)
-    } else if lower.ends_with(".tga") {
-        if bytes.len() < 18
-            || u16::from_le_bytes([bytes[12], bytes[13]]) > 1024
-            || u16::from_le_bytes([bytes[14], bytes[15]]) > 1024
-        {
-            return Err(invalid(
-                "Flag interface texture dimensions exceed their budget",
-            ));
-        }
-        installed_content::image::tga::decode(&bytes)
-    } else {
-        Err(invalid("Unsupported flag interface texture format"))
-    }
+    // Interface textures are small; a larger file or image is not the one the engine draws.
+    crate::catalogue::read_texture_within(layers, path, 4 * 1024 * 1024, 1024)
 }
 
 /// The extent `width` x `height` scaled so its longer side is at most `edge`.
@@ -351,22 +325,6 @@ fn shield(flag: &Rgba8Image, mask: &Rgba8Image, overlay: Option<&Rgba8Image>) ->
     }
 }
 
-/// The rows a table holds this hour; an unavailable table holds none.
-fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<&[T::Row]> {
-    match &*frame.tables[T::ID.index()] {
-        TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-            rows.rows::<T>().ok_or_else(|| {
-                invalid(format!(
-                    "hour {} {:?} contains another table's rows",
-                    frame.hour,
-                    T::ID
-                ))
-            })
-        }
-        TableView::Unavailable { .. } => Ok(&[]),
-    }
-}
-
 pub struct FlagChoice {
     pub raw: u32,
     pub tag: String,
@@ -375,11 +333,11 @@ pub struct FlagChoice {
 
 /// Flag asset candidates per country at one hour, shared with the combat UI.
 pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
-    let links: BTreeMap<_, _> = rows::<tables::CountryLinks>(frame)?
+    let links: BTreeMap<_, _> = recorded_rows::<tables::CountryLinks>(frame)?
         .iter()
         .map(|r| (r.id, r.canonical_slot))
         .collect();
-    let countries: BTreeMap<_, _> = rows::<tables::Countries>(frame)?
+    let countries: BTreeMap<_, _> = recorded_rows::<tables::Countries>(frame)?
         .iter()
         .map(|r| {
             (
@@ -388,7 +346,7 @@ pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
             )
         })
         .collect();
-    let parties: BTreeMap<_, _> = rows::<tables::PoliticalParties>(frame)?
+    let parties: BTreeMap<_, _> = recorded_rows::<tables::PoliticalParties>(frame)?
         .iter()
         .map(|r| {
             (
@@ -397,11 +355,11 @@ pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
             )
         })
         .collect();
-    let politics: BTreeMap<_, _> = rows::<tables::Politics>(frame)?
+    let politics: BTreeMap<_, _> = recorded_rows::<tables::Politics>(frame)?
         .iter()
         .filter_map(|r| Some((r.country, parties.get(&(r.country, r.ruling_party?))?)))
         .collect();
-    let appearances: BTreeMap<_, _> = rows::<tables::CountryAppearance>(frame)?
+    let appearances: BTreeMap<_, _> = recorded_rows::<tables::CountryAppearance>(frame)?
         .iter()
         .map(|r| {
             (

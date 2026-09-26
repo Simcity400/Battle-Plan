@@ -149,3 +149,14 @@ pixels: Array<number>, };
 export type CountryFlagParams = { branchId: string, hour: number, tags: Array<string>, size: CountryFlagSize, };
 export type CountryFlagReply = { branchId: string, hour: number, size: CountryFlagSize, flags: Array<CountryFlagImage>, warnings: Array<string>, };
 export type LandOwnersParams = Record<string, never>;
+export type CountryStyleParams = { branchId: string, hour: number, tags: Array<string>, };
+export type CountryStyle = { tag: string,
+/**
+ * The name the game showed; null when it could not be resolved.
+ */
+name: string | null,
+/**
+ * The recorded map colour as sRGB bytes; null when not recorded this hour.
+ */
+color: [number, number, number] | null, };
+export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };

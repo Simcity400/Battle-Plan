@@ -7,6 +7,7 @@ Everything a widget needs natively: opened recordings, data products, the host/v
 | Module | What it does |
 |---|---|
 | `source.rs` | One opened recording: replay bytes, metadata, resolved game content and each product's per-source cache. |
+| `catalogue.rs` | Content facts every product shares, read once per source, folders and game language: the localisation (the same parse country naming uses, from `content::localisation`; text needing runtime scope is kept apart from a missing key) and interface sprites, plus the texture decoding, within a budget, and PNG encoding every image reply uses. |
 | `metadata.rs` | Branch ranges, gaps and the first readable country catalogue; shared frame checks. |
 | `products/` | One module per data product, registered once in `products/mod.rs`. |
 | `service.rs` | The native data service: source leases, a loader pool and the bounded response pump. |
@@ -20,13 +21,13 @@ Everything a widget needs natively: opened recordings, data products, the host/v
 
 A product turns a source plus typed parameters into one compact reply covering a whole branch, so frontend playback is a local lookup and never a per-hour request. To add one:
 
-1. Add `products/<name>.rs` implementing `Product` (a key, `Params`, `Reply`, optional `validate`, and `load`). Keep per-source caches in `source.state::<YourState>()`.
+1. Add `products/<name>.rs` implementing `Product` (a key, `Params`, `Reply`, optional `validate`, and `load`). Keep per-source caches in `source.state::<YourState>()`. Read localisation and sprites through `catalogue::catalogue`, never by parsing them again.
 2. Register it in the `PRODUCTS` list in `products/mod.rs`.
 3. Regenerate the contract and add the widget folder under `ui/src/widgets/`.
 
 The service, transport, host and frontend route by key and never name a product. Replies are serialized with the frontend's lease identity so they cannot be attributed to another recording. Products read verified recorded content only; missing localisation or artwork stays null.
 
-Current products: national focus order, research slot history, country flags and land ownership. Their rules live beside their code and in the matching widget README.
+Current products: national focus order, research slot history, country flags, country styles (each country's engine-built name and recorded map colour at an hour) and land ownership. Their rules live beside their code and in the matching widget README.
 
 ## Service
 
