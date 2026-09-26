@@ -1007,6 +1007,15 @@ pub(super) fn compare_order_of_battle(
                     *country,
                 );
                 equal(report, format!("{label}.theatre"), actual.theatre, *theatre);
+                // EED430 emits each theatre roster in its own native order.
+                // An unrostered recorded group has None, distinct from the
+                // first saved position; every saved definition is rostered.
+                equal(
+                    report,
+                    format!("{label}.theatre_ordinal"),
+                    actual.theatre_ordinal,
+                    Some(expected.theatre_ordinal),
+                );
                 equal(
                     report,
                     format!("{label}.field_marshal_group"),
@@ -1384,6 +1393,7 @@ mod tests {
                     is_army_group: 0,
                     motorization_level: 0,
                     theatre: oob_handle(2, 67),
+                    theatre_ordinal: Some(0),
                     theater_group: oob_handle(45, 68),
                     parent: oob_handle(431, 53),
                     leader: oob_handle(279, 4713),
@@ -1395,6 +1405,7 @@ mod tests {
                     is_army_group: 1,
                     motorization_level: 0,
                     theatre: oob_handle(2, 67),
+                    theatre_ordinal: Some(0),
                     theater_group: oob_handle(45, 68),
                     parent: 0,
                     leader: 0,

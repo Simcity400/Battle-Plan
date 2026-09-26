@@ -217,7 +217,7 @@ const DOMAIN_TABLES: [TableId; 183] = [
     TableId::NavalCombatShips,
     TableId::NavalCombatResultDetails,
     TableId::DivisionEtaInputs,
-    TableId::MovementDefines,
+    TableId::FactionTheatres,
 ];
 /// The fault campaign drives every table except the six the clock, campaign,
 /// country, province and state fixtures build directly, so a new table cannot
@@ -566,8 +566,6 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
                 [0, 2, 19][(index / 9 + id as usize) % 3]
             },
             victory_points: [i32::MIN, -1, 0, i32::MAX][(index + id as usize) % 4],
-            terrain_flags: [0, 1, 3, u8::MAX][id as usize % 4],
-            terrain_index: (id % 13) as u8 + 1,
             fort_positive: u8::from((index + id as usize).is_multiple_of(3)),
         })
         .collect();
@@ -578,8 +576,6 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             owner: 0,
             controller: 0,
             victory_points: i32::MAX,
-            terrain_flags: 0,
-            terrain_index: 0,
             fort_positive: 0,
         });
     }

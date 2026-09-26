@@ -308,12 +308,7 @@ impl Captured {
                     r.division == previous.division
                         && r.source == previous.source
                         && r.target == previous.target
-                        && r.next == previous.next
-                        && r.destination == previous.destination
                         && r.numerator == previous.numerator
-                        && r.denominator == previous.denominator
-                        && r.progress == previous.progress
-                        && r.priority == previous.priority
                         && r.retreat == previous.retreat
                         && r.strategic_redeployment == previous.strategic_redeployment
                         && r.naval_transfer == previous.naval_transfer
@@ -321,7 +316,7 @@ impl Captured {
                         && r.path_total == previous.path_total
                         && span(r.path_start, r.path_len).unwrap() == previous.path.as_slice()
                         && r.combat_role == previous.combat_role
-                        && r.stack_kind == previous.stack_kind
+                        && r.combat_province == previous.combat_province
                         && r.alternate_total == previous.alternate_total
                         && span(r.alternate_start, r.alternate_len).unwrap()
                             == previous.alternate_path.as_slice()
@@ -330,12 +325,7 @@ impl Captured {
                     division: r.division,
                     source: r.source,
                     target: r.target,
-                    next: r.next,
-                    destination: r.destination,
                     numerator: r.numerator,
-                    denominator: r.denominator,
-                    progress: r.progress,
-                    priority: r.priority,
                     retreat: r.retreat,
                     strategic_redeployment: r.strategic_redeployment,
                     naval_transfer: r.naval_transfer,
@@ -343,7 +333,7 @@ impl Captured {
                     path_total: r.path_total,
                     path: span(r.path_start, r.path_len).unwrap().to_vec(),
                     combat_role: r.combat_role,
-                    stack_kind: r.stack_kind,
+                    combat_province: r.combat_province,
                     alternate_total: r.alternate_total,
                     alternate_path: span(r.alternate_start, r.alternate_len).unwrap().to_vec(),
                 },
@@ -380,8 +370,6 @@ mod tests {
             movement_target: Some(0),
             movement_source: Some(0),
             naval_transfer_membership: Some(0),
-            map_entity: Some(0),
-            movement_priority: Some(0),
             retreat: Some(0),
             strategic_redeployment: Some(0),
             ..DivisionSeed::default()
@@ -570,14 +558,13 @@ mod tests {
         capture.movement.rows[0] = carmy::MovementRow {
             division: u64::MAX,
             numerator: i64::MIN,
-            denominator: i64::MAX,
+            combat_province: u32::MAX,
             path_start: 0,
             path_len: 3,
             path_total: 300,
             alternate_start: 3,
             alternate_len: 1,
             alternate_total: 1,
-            stack_kind: -1,
             ..Default::default()
         };
         capture.movement.outcome = Outcome::Rows { len: 1 };
@@ -598,13 +585,8 @@ mod tests {
             panic!("complete companions");
         };
         assert_eq!(
-            (
-                m[0].division,
-                m[0].numerator,
-                m[0].denominator,
-                m[0].stack_kind
-            ),
-            (u64::MAX, i64::MIN, i64::MAX, -1)
+            (m[0].division, m[0].numerator, m[0].combat_province),
+            (u64::MAX, i64::MIN, u32::MAX)
         );
         assert_eq!(
             (&m[0].path[..], m[0].path_total, &m[0].alternate_path[..]),

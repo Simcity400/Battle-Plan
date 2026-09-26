@@ -1,8 +1,8 @@
 //! Pooled naval/history acquisition; conversion and membership joins run off-thread.
 //!
-//! Source-fed split (copy/decode): the theatre block (LandTheatres,
-//! LandTheatreGroups, LandTheatreMembers, AirTheatres, AirTheatreGroups,
-//! AirTheatreMembers) and the order-of-battle block (OrdersGroups,
+//! Source-fed split (copy/decode): hourly LandTheatres headers, daily
+//! LandTheatreGroups/LandTheatreMembers/AirTheatres/AirTheatreGroups/
+//! AirTheatreMembers details, and the order-of-battle block (OrdersGroups,
 //! OrdersGroupMembers, ArmyGroupMembers) move to the single FIFO decode
 //! worker in their own source-fed payload. The four
 //! non-source-fed theatres move with the five source-fed tables because
@@ -71,6 +71,7 @@ pub struct Capacities {
     pub sunk_names: usize,
     pub orders_sources: usize,
     pub wing_sources: usize,
+    pub roster_scratch: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -83,6 +84,7 @@ impl Default for Capacities {
             sunk_names: 256 * 1024,
             orders_sources: 4096,
             wing_sources: 8192,
+            roster_scratch: 4096,
         }
     }
 }
@@ -105,6 +107,7 @@ pub struct Captured {
     groups: CaptureRows<corders_group::GroupRow>,
     group_members: CaptureRows<corders_group::MemberRow>,
     group_children: CaptureRows<corders_group::ChildRow>,
+    roster_scratch: Arena<corders_group::RosterEntry>,
     oob_finished: bool,
     theatre_names: Arena<u8>,
     sunk_names: Arena<u8>,
@@ -183,6 +186,7 @@ impl Captured {
             sunk_names: 0,
             orders_sources: 0,
             wing_sources: 0,
+            roster_scratch: 0,
         })
     }
 
@@ -205,6 +209,7 @@ impl Captured {
             groups: CaptureRows::new(capacity.rows[14]),
             group_members: CaptureRows::new(capacity.rows[15]),
             group_children: CaptureRows::new(capacity.rows[16]),
+            roster_scratch: Arena::new(capacity.roster_scratch),
             oob_finished: false,
             theatre_names: Arena::new(capacity.theatre_names),
             sunk_names: Arena::new(capacity.sunk_names),
@@ -225,12 +230,12 @@ impl Captured {
         self.active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
     }
 
+    /// The daily theatre details; LandTheatres headers are walked every hour.
     pub(crate) fn theatres_active(&self) -> bool {
-        self.active[4]
+        self.active[5]
     }
 
-    fn skip_theatres(&mut self) {
-        self.land.outcome = SKIPPED;
+    fn skip_theatre_details(&mut self) {
         self.land_groups.outcome = SKIPPED;
         self.land_members.outcome = SKIPPED;
         self.air.outcome = SKIPPED;
@@ -247,6 +252,7 @@ impl Captured {
         self.groups.reset();
         self.group_members.reset();
         self.group_children.reset();
+        self.roster_scratch.reset();
         self.oob_finished = false;
         self.orders_sources.outcome = Outcome::Rows { len: 0 };
         self.wing_sources.outcome = Outcome::Rows { len: 0 };
@@ -293,6 +299,7 @@ impl Captured {
             + self.groups.allocated_bytes()
             + self.group_members.allocated_bytes()
             + self.group_children.allocated_bytes()
+            + self.roster_scratch.allocated_bytes()
             + self.theatre_names.allocated_bytes()
             + self.sunk_names.allocated_bytes()
             + self.orders_sources.allocated_bytes()
@@ -317,6 +324,7 @@ impl Captured {
         self.groups.grow(&mut capacity.rows[14]);
         self.group_members.grow(&mut capacity.rows[15]);
         self.group_children.grow(&mut capacity.rows[16]);
+        self.roster_scratch.grow(&mut capacity.roster_scratch);
         self.theatre_names.grow(&mut capacity.theatre_names);
         self.sunk_names.grow(&mut capacity.sunk_names);
         self.orders_sources.grow(&mut capacity.orders_sources);
@@ -388,6 +396,7 @@ impl Captured {
         let begin = qpc();
         let outcomes = match source {
             Outcome::Rows { len } if len <= roots.len() => {
+                self.roster_scratch.required = self.roster_scratch.required.max(len);
                 let (groups, members, children) = (
                     &mut self.groups.rows,
                     &mut self.group_members.rows,
@@ -402,6 +411,7 @@ impl Captured {
                         groups,
                         members,
                         children,
+                        roster_scratch: &mut self.roster_scratch.first,
                     },
                 );
                 [
@@ -567,10 +577,10 @@ impl Captured {
         // staged raw bytes and the decode worker replays theatres/OOB before
         // the ready handoff. Skip those walks here.
         if !self.theatres_active() {
-            self.skip_theatres();
+            self.skip_theatre_details();
         }
         if !self.raw_mode {
-            if self.theatres_active() {
+            if self.active[4] {
                 let _reads = read_accounting::table(TableId::LandTheatres);
                 let begin = qpc();
                 self.capture_theatres(memory, base, game_state);
@@ -622,6 +632,7 @@ impl Captured {
             memory,
             base,
             game_state,
+            self.theatres_active(),
             ctheatre::Buffers {
                 land: &mut self.land.rows,
                 land_groups: &mut self.land_groups.rows,
@@ -633,11 +644,13 @@ impl Captured {
             },
         );
         self.land.outcome = bounded(first.land, self.land.rows.len());
-        self.land_groups.outcome = bounded(first.land_groups, self.land_groups.rows.len());
-        self.land_members.outcome = bounded(first.land_members, self.land_members.rows.len());
-        self.air.outcome = bounded(first.air, self.air.rows.len());
-        self.air_groups.outcome = bounded(first.air_groups, self.air_groups.rows.len());
-        self.air_members.outcome = bounded(first.air_members, self.air_members.rows.len());
+        if self.theatres_active() {
+            self.land_groups.outcome = bounded(first.land_groups, self.land_groups.rows.len());
+            self.land_members.outcome = bounded(first.land_members, self.land_members.rows.len());
+            self.air.outcome = bounded(first.air, self.air.rows.len());
+            self.air_groups.outcome = bounded(first.air_groups, self.air_groups.rows.len());
+            self.air_members.outcome = bounded(first.air_members, self.air_members.rows.len());
+        }
         self.theatre_names.len = first.names_len;
         self.theatre_names.required = first.names_required;
         let first_names = self
@@ -652,10 +665,10 @@ impl Captured {
         validate_named(&mut self.air_groups, first_names, |r| {
             (r.name_start, r.name_len)
         });
-        if !complete_source(&self.orders_sources, self.orders_finished) {
+        if self.theatres_active() && !complete_source(&self.orders_sources, self.orders_finished) {
             self.land_members.outcome = source_unavailable();
         }
-        if !complete_source(&self.wing_sources, self.wings_finished) {
+        if self.theatres_active() && !complete_source(&self.wing_sources, self.wings_finished) {
             self.air_members.outcome = source_unavailable();
         }
     }
@@ -850,6 +863,7 @@ impl Captured {
                     is_army_group: r.is_army_group,
                     motorization_level: r.motorization_level,
                     theatre: r.theatre,
+                    theatre_ordinal: r.theatre_ordinal,
                     theater_group: r.theater_group,
                     parent: r.parent,
                     leader: r.leader,
@@ -1162,12 +1176,14 @@ pub(crate) const NAVAL_PACK_N: usize = 9;
 /// Fault-attribution masks in closure order: [LandTheatres,
 /// LandTheatreGroups, LandTheatreMembers, AirTheatres, AirTheatreGroups,
 /// AirTheatreMembers, OrdersGroups, OrdersGroupMembers, ArmyGroupMembers].
-/// Shared theatre roots block all six theatre tables; shared OOB roots block
-/// all three OOB tables, matching the typed walks' error scope (root
-/// failures fail the whole block; body failures are still attributed to the
-/// whole block conservatively, so checks block together while rows,
-/// outcomes and reasons stay byte-identical via replay).
+/// Shared country roots block the active theatre tables. Land headers, land
+/// details and air details have separate fault masks, matching the typed
+/// walk's independent outcomes. Shared OOB roots block all three OOB tables.
 const THEATRE_MASK: u32 = 0x3F;
+const LAND_THEATRE_MASK: u32 = 0x01;
+const LAND_DETAILS_MASK: u32 = 0x06;
+const LAND_MEMBERS_MASK: u32 = 0x04;
+const AIR_DETAILS_MASK: u32 = 0x38;
 const OOB_MASK: u32 = 0x1C0;
 
 #[derive(Debug, Default)]
@@ -1178,7 +1194,41 @@ pub(crate) struct NavalJob {
     wing_sources: Vec<ctheatre::WingMembership>,
     wing_outcome: Option<Outcome>,
     wing_required: usize,
+    /// OOB-only memo of freshly authenticated theatre pointers, in root order.
+    /// It never shares observations with theatre/member source families. The
+    /// root walk pushes every root's theatre; [`dedup_first_seen`] then keeps
+    /// each theatre's first occurrence, so demand counts theatre references.
+    oob_theatres: Vec<usize>,
+    /// Scratch positions for that dedup, with the same capacity as
+    /// `oob_theatres`; filling it within that capacity never allocates on the
+    /// callback.
+    oob_theatre_positions: Vec<usize>,
+    oob_theatres_required: usize,
+    /// The callback's authenticated country roster as the theatre copy used
+    /// it, for this pass's decode only; see [`copy_naval_theatres`].
+    roster: engine::ccountry::RosterSnapshot,
+    /// The callback's orders-group registry census of this pass, when it was
+    /// complete and fitted: `roots[..len]` for `roots_len == Some(len)`. The
+    /// order-of-battle copy walks these roots instead of the registry, and
+    /// this pass's decode takes them as its census; see [`copy_naval_oob`].
+    /// Filled by [`Self::capture_roots`] and dropped by [`Self::clear`].
+    roots: Vec<corders_group::Root>,
+    roots_len: Option<usize>,
+    roots_required: usize,
     capacity_charge: crate::raw_memory::Charge,
+}
+
+/// Orders-group theatre references per country slot the order-of-battle
+/// walk is sized for up front. A sizing hint only: a larger roster overflows
+/// once and grows, as every capture does.
+const OOB_THEATRE_REFERENCES_PER_COUNTRY: usize = 4;
+
+/// The order-of-battle theatre scratch for the largest observed country
+/// registry ([`crate::country_scale`]), never below the vanilla-sized floor.
+fn oob_theatre_rows() -> usize {
+    crate::country_scale::census_rows(0)
+        .saturating_mul(OOB_THEATRE_REFERENCES_PER_COUNTRY)
+        .max(2048)
 }
 
 impl NavalJob {
@@ -1245,6 +1295,15 @@ impl NavalJob {
             wing_sources: Vec::with_capacity(4096),
             wing_outcome: None,
             wing_required: 0,
+            oob_theatres: Vec::with_capacity(oob_theatre_rows()),
+            oob_theatre_positions: Vec::with_capacity(oob_theatre_rows()),
+            oob_theatres_required: 0,
+            roster: engine::ccountry::RosterSnapshot::with_capacity(
+                crate::country_scale::census_rows(1024),
+            ),
+            roots: Vec::with_capacity(oob_theatre_rows()),
+            roots_len: None,
+            roots_required: 0,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();
@@ -1258,11 +1317,47 @@ impl NavalJob {
         self.wing_sources.clear();
         self.wing_outcome = None;
         self.wing_required = 0;
+        self.oob_theatres.clear();
+        self.oob_theatre_positions.clear();
+        self.oob_theatres_required = 0;
+        self.roster.clear();
+        self.roots.clear();
+        self.roots_len = None;
+        self.roots_required = 0;
+    }
+
+    /// On the callback, after its orders-group registry census and before
+    /// this job is queued: keeps a complete census for this pass's
+    /// order-of-battle copy and decode. Any other outcome, or a census larger
+    /// than the snapshot, keeps none, and the copy reads the registry as
+    /// before; the demand grows the snapshot off the game thread. Never
+    /// allocates.
+    pub(crate) fn capture_roots(&mut self, roots: &[corders_group::Root], outcome: Outcome) -> u64 {
+        let begin = qpc();
+        self.roots.clear();
+        self.roots_len = None;
+        let required = match outcome {
+            Outcome::Rows { len } => len,
+            Outcome::Truncated { len, unread_rows } => len.saturating_add(unread_rows as usize),
+            Outcome::Unavailable { .. } => 0,
+        };
+        self.roots_required = self.roots_required.max(required);
+        if let Outcome::Rows { len } = outcome
+            && let Some(roots) = roots.get(..len)
+            && len <= self.roots.capacity()
+        {
+            self.roots.extend_from_slice(roots);
+            self.roots_len = Some(len);
+        }
+        elapsed(begin)
     }
 
     pub fn grow_for_next(&self) -> bool {
         self.log.grow_for_next()
             || self.wing_required > self.wing_sources.capacity()
+            || self.oob_theatres_required > self.oob_theatres.capacity()
+            || self.roster.required() > self.roster.capacity()
+            || self.roots_required > self.roots.capacity()
             || matches!(self.wing_outcome, Some(Outcome::Truncated { .. }))
     }
 
@@ -1279,13 +1374,57 @@ impl NavalJob {
             self.wing_sources
                 .reserve_exact(target.saturating_sub(self.wing_sources.len()));
         }
+        if self.oob_theatres_required > self.oob_theatres.capacity() {
+            let target = self
+                .oob_theatres_required
+                .max(self.oob_theatres.capacity().saturating_mul(2));
+            self.oob_theatres
+                .reserve_exact(target.saturating_sub(self.oob_theatres.len()));
+            self.oob_theatre_positions
+                .reserve_exact(target.saturating_sub(self.oob_theatre_positions.len()));
+        }
+        self.roster.reserve(self.roster.required());
+        if self.roots_required > self.roots.capacity() {
+            let target = self
+                .roots_required
+                .max(self.roots.capacity().saturating_mul(2));
+            self.roots
+                .reserve_exact(target.saturating_sub(self.roots.len()));
+        }
+        self.update_capacity_charge();
+    }
+
+    /// Off the game thread: size the order-of-battle theatre references for
+    /// the largest observed country registry, so a large save's first hour does
+    /// not overflow. Only grows.
+    pub fn presize_countries(&mut self) {
+        let target = oob_theatre_rows();
+        let roster = crate::country_scale::census_rows(1024);
+        if self.oob_theatres.capacity() >= target
+            && self.oob_theatre_positions.capacity() >= target
+            && self.roots.capacity() >= target
+            && self.roster.capacity() >= roster
+        {
+            return;
+        }
+        self.roster.reserve(roster);
+        self.roots
+            .reserve_exact(target.saturating_sub(self.roots.len()));
+        self.oob_theatres
+            .reserve_exact(target.saturating_sub(self.oob_theatres.len()));
+        self.oob_theatre_positions
+            .reserve_exact(target.saturating_sub(self.oob_theatre_positions.len()));
         self.update_capacity_charge();
     }
 
     fn update_capacity_charge(&mut self) {
         use crate::raw_memory::{Capacity, vector_bytes};
         self.capacity_charge.set(Capacity {
-            auxiliary_vectors: vector_bytes(&self.wing_sources),
+            auxiliary_vectors: vector_bytes(&self.wing_sources)
+                + vector_bytes(&self.oob_theatres)
+                + vector_bytes(&self.oob_theatre_positions)
+                + vector_bytes(&self.roots)
+                + self.roster.allocated_bytes() as u64,
             ..Default::default()
         });
     }
@@ -1334,12 +1473,13 @@ fn theatre_link(
     links: &Array,
     countries: u32,
     raw: u32,
+    mask: u32,
 ) -> Option<u32> {
     if raw == 0 || raw >= links.count {
         return None;
     }
     let offset = (raw as usize).checked_mul(4)?;
-    let start = nspan(log, memory, links.data.checked_add(offset), 4, THEATRE_MASK)?;
+    let start = nspan(log, memory, links.data.checked_add(offset), 4, mask)?;
     let slot = npool_u32(log, start);
     if slot == 0 || slot >= countries {
         return None;
@@ -1347,20 +1487,177 @@ fn theatre_link(
     Some(slot)
 }
 
+fn copy_naval_air_theatres(
+    log: &mut RawLog<NAVAL_PACK_N>,
+    memory: &impl engine::Memory,
+    theatres: Array,
+    links: &Array,
+) {
+    for ordinal in 0..theatres.count {
+        let entry_address = theatres
+            .data
+            .checked_add((ordinal as usize).saturating_mul(8));
+        let theatre =
+            match nspan(log, memory, entry_address, 8, AIR_DETAILS_MASK).and_then(|start| {
+                usize::try_from(npool_u64(log, start))
+                    .ok()
+                    .filter(|&p| p != 0)
+            }) {
+                Some(theatre) => theatre,
+                None => continue,
+            };
+        let _ = nspan(log, memory, Some(theatre), 16, AIR_DETAILS_MASK);
+        let owner = nspan(
+            log,
+            memory,
+            theatre.checked_add(cair_theatre::COUNTRY),
+            4,
+            AIR_DETAILS_MASK,
+        );
+        if let Some(owner) = owner {
+            let owner = npool_u32(log, owner);
+            if owner != 0 && owner < links.count {
+                let address = (owner as usize)
+                    .checked_mul(4)
+                    .and_then(|offset| links.data.checked_add(offset));
+                let _ = nspan(log, memory, address, 4, AIR_DETAILS_MASK);
+            }
+        }
+        copy_theatre_name(
+            log,
+            memory,
+            theatre.checked_add(cair_theatre::NAME),
+            AIR_DETAILS_MASK,
+        );
+        let groups_header = match nspan(
+            log,
+            memory,
+            theatre.checked_add(cair_theatre::GROUPS),
+            16,
+            AIR_DETAILS_MASK,
+        ) {
+            Some(start) => start,
+            None => continue,
+        };
+        let mut header = [0; 16];
+        header.copy_from_slice(&log.bytes[groups_header..groups_header + 16]);
+        let groups = match Array::from_header(header, 8) {
+            Some(groups) => groups,
+            None => continue,
+        };
+        for group_ordinal in 0..groups.count {
+            let entry_address = groups
+                .data
+                .checked_add((group_ordinal as usize).saturating_mul(8));
+            let group =
+                match nspan(log, memory, entry_address, 8, AIR_DETAILS_MASK).and_then(|start| {
+                    usize::try_from(npool_u64(log, start))
+                        .ok()
+                        .filter(|&p| p != 0)
+                }) {
+                    Some(group) => group,
+                    None => continue,
+                };
+            let _ = nspan(log, memory, Some(group), 16, AIR_DETAILS_MASK);
+            let _ = nspan(
+                log,
+                memory,
+                group.checked_add(cair_group::THEATRE_HANDLE),
+                8,
+                AIR_DETAILS_MASK,
+            );
+            copy_theatre_name(
+                log,
+                memory,
+                group.checked_add(cair_group::NAME),
+                AIR_DETAILS_MASK,
+            );
+            let wings_header = match nspan(
+                log,
+                memory,
+                group.checked_add(cair_group::WINGS),
+                16,
+                AIR_DETAILS_MASK,
+            ) {
+                Some(start) => start,
+                None => continue,
+            };
+            let mut header = [0; 16];
+            header.copy_from_slice(&log.bytes[wings_header..wings_header + 16]);
+            let wings = match Array::from_header(header, 8) {
+                Some(wings) => wings,
+                None => continue,
+            };
+            for wing_ordinal in 0..wings.count {
+                let entry_address = wings
+                    .data
+                    .checked_add((wing_ordinal as usize).saturating_mul(8));
+                let _ = nspan(log, memory, entry_address, 8, AIR_DETAILS_MASK);
+                if log.overflowed {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 fn copy_naval_theatres(
     log: &mut RawLog<NAVAL_PACK_N>,
+    roster_snapshot: &mut engine::ccountry::RosterSnapshot,
     memory: &impl engine::Memory,
     base: usize,
     game_state: usize,
+    details_active: bool,
 ) {
-    use engine::{carmy_group, ccountry, ctheater_group};
+    use engine::{carmy_group, ccountry};
+    let mask = if details_active {
+        THEATRE_MASK
+    } else {
+        LAND_THEATRE_MASK
+    };
+    roster_snapshot.clear();
+    // Reuse within the pass: the callback authenticated the complete country
+    // census this hour before any job ran, and holds the game thread until
+    // every job has finished, so authenticating each country again here would
+    // read the same values. The copy then takes no census span, and the
+    // snapshot hands the same roster to this pass's decode, whose country
+    // reader resolves through it exactly as the typed walk does over the
+    // callback's memory. Each pass clears the snapshot first; without a
+    // roster, or room for it, the census is taken as before.
+    if let Some(roster) = memory.authenticated_countries(base, game_state)
+        && roster.slots().len() == roster.arrays()[0].count as usize
+        && roster_snapshot.capture(roster, base, game_state)
+    {
+        let [countries, links] = roster.arrays();
+        let slots = roster.slots();
+        if links.count == 0 {
+            return;
+        }
+        for slot in 1..countries.count {
+            let Some(country) = slots[slot as usize].filter(|c| c.canonical_slot == slot) else {
+                continue;
+            };
+            if !copy_country_theatres(
+                log,
+                memory,
+                country.pointer,
+                &links,
+                Some(slots),
+                details_active,
+                mask,
+            ) {
+                return;
+            }
+        }
+        return;
+    }
     // Country census exactly like the fleet/wing censuses.
     let countries = match nspan(
         log,
         memory,
         game_state.checked_add(engine::cgame_state::COUNTRIES),
         16,
-        THEATRE_MASK,
+        mask,
     ) {
         Some(start) => start,
         None => return,
@@ -1370,7 +1667,7 @@ fn copy_naval_theatres(
         memory,
         game_state.checked_add(engine::cgame_state::COUNTRY_LINKS),
         16,
-        THEATRE_MASK,
+        mask,
     ) {
         Some(start) => start,
         None => return,
@@ -1397,220 +1694,288 @@ fn copy_naval_theatres(
         let pointer_addr = (slot as usize)
             .checked_mul(8)
             .and_then(|o| countries_array.data.checked_add(o));
-        let pointer = match nspan(log, memory, pointer_addr, 8, THEATRE_MASK)
+        let pointer = match nspan(log, memory, pointer_addr, 8, mask)
             .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
         {
             Some(pointer) => pointer,
             None => continue,
         };
-        let vtable = match nspan(log, memory, Some(pointer), 8, THEATRE_MASK) {
+        let vtable = match nspan(log, memory, Some(pointer), 8, mask) {
             Some(start) => start,
             None => continue,
         };
         if npool_u64(log, vtable) != country_vtable {
             return;
         }
-        let id_start = match nspan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::ID),
-            4,
-            THEATRE_MASK,
-        ) {
+        let id_start = match nspan(log, memory, pointer.checked_add(ccountry::ID), 4, mask) {
             Some(start) => start,
             None => continue,
         };
         let id = npool_u32(log, id_start);
-        let canonical = match theatre_link(log, memory, &links_array, countries_array.count, id) {
-            Some(canonical) => canonical,
-            None => return,
-        };
-        if theatre_link(log, memory, &links_array, countries_array.count, slot) != Some(canonical) {
+        let canonical =
+            match theatre_link(log, memory, &links_array, countries_array.count, id, mask) {
+                Some(canonical) => canonical,
+                None => return,
+            };
+        if theatre_link(log, memory, &links_array, countries_array.count, slot, mask)
+            != Some(canonical)
+        {
             return;
         }
-        if theatre_link(log, memory, &links_array, countries_array.count, canonical)
-            != Some(canonical)
+        if theatre_link(
+            log,
+            memory,
+            &links_array,
+            countries_array.count,
+            canonical,
+            mask,
+        ) != Some(canonical)
         {
             return;
         }
         let canonical_addr = (canonical as usize)
             .checked_mul(8)
             .and_then(|o| countries_array.data.checked_add(o));
-        let canonical_pointer = match nspan(log, memory, canonical_addr, 8, THEATRE_MASK) {
+        let canonical_pointer = match nspan(log, memory, canonical_addr, 8, mask) {
             Some(start) => start,
             None => return,
         };
         if npool_u64(log, canonical_pointer) != pointer as u64 {
             return;
         }
-        // Land theatres array + per-theatre/group/member/name spans.
-        for theatres_off in [ccountry::THEATRES, ccountry::AIR_THEATRES] {
-            let theatres_header = match nspan(
-                log,
-                memory,
-                pointer.checked_add(theatres_off),
-                16,
-                THEATRE_MASK,
-            ) {
-                Some(start) => start,
-                None => continue,
-            };
-            let mut header = [0u8; 16];
-            header.copy_from_slice(&log.bytes[theatres_header..theatres_header + 16]);
-            let theatres = match Array::from_header(header, 8) {
-                Some(array) => array,
-                None => continue,
-            };
-            for ordinal in 0..theatres.count {
-                let entry_addr = theatres
-                    .data
-                    .checked_add((ordinal as usize).saturating_mul(8));
-                let theatre = match nspan(log, memory, entry_addr, 8, THEATRE_MASK)
-                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
-                {
-                    Some(theatre) => theatre,
-                    None => continue,
-                };
-                // Theatre identity (vtable + handle 16), owner, volunteers,
-                // owner link resolve, group vector.
-                let _ = nspan(log, memory, Some(theatre), 16, THEATRE_MASK);
-                let owner_start = nspan(
-                    log,
-                    memory,
-                    theatre.checked_add(ctheatre::OWNER),
-                    4,
-                    THEATRE_MASK,
-                );
-                let _ = nspan(
-                    log,
-                    memory,
-                    theatre.checked_add(ctheatre::VOLUNTEERS_THEATRE),
-                    4,
-                    THEATRE_MASK,
-                );
-                if let Some(owner_start) = owner_start {
-                    let owner = npool_u32(log, owner_start);
-                    if owner != 0 && owner < links_array.count {
-                        let offset = (owner as usize).checked_mul(4);
-                        let _ = nspan(
-                            log,
-                            memory,
-                            offset.and_then(|o| links_array.data.checked_add(o)),
-                            4,
-                            THEATRE_MASK,
-                        );
-                    }
-                }
-                let groups_header = match nspan(
-                    log,
-                    memory,
-                    theatre.checked_add(ctheatre::THEATER_GROUP_DATA),
-                    16,
-                    THEATRE_MASK,
-                ) {
-                    Some(start) => start,
-                    None => continue,
-                };
-                let mut groups_raw = [0u8; 16];
-                groups_raw.copy_from_slice(&log.bytes[groups_header..groups_header + 16]);
-                let groups = match Array::from_header(groups_raw, 8) {
-                    Some(array) => array,
-                    None => continue,
-                };
-                for group_ordinal in 0..groups.count {
-                    let group_addr = groups
-                        .data
-                        .checked_add((group_ordinal as usize).saturating_mul(8));
-                    let group = match nspan(log, memory, group_addr, 8, THEATRE_MASK)
-                        .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
-                    {
-                        Some(group) => group,
-                        None => continue,
-                    };
-                    // Group identity (vtable + handle 16), theatre backlink,
-                    // name string, priority.
-                    let _ = nspan(log, memory, Some(group), 16, THEATRE_MASK);
-                    let _ = nspan(
-                        log,
-                        memory,
-                        group.checked_add(ctheater_group::THEATRE),
-                        8,
-                        THEATRE_MASK,
-                    );
-                    // Name string header + payload + terminator (theatre arena).
-                    copy_theatre_name(log, memory, group);
-                    let _ = nspan(
-                        log,
-                        memory,
-                        group.checked_add(ctheater_group::PRIORITY),
-                        4,
-                        THEATRE_MASK,
-                    );
-                    let members_header = match nspan(
-                        log,
-                        memory,
-                        group.checked_add(ctheater_group::ORDERS_GROUP_DATA),
-                        16,
-                        THEATRE_MASK,
-                    ) {
-                        Some(start) => start,
-                        None => continue,
-                    };
-                    let mut members_raw = [0u8; 16];
-                    members_raw.copy_from_slice(&log.bytes[members_header..members_header + 16]);
-                    let members = match Array::from_header(members_raw, 8) {
-                        Some(array) => array,
-                        None => continue,
-                    };
-                    for member_ordinal in 0..members.count {
-                        let member_addr = members
-                            .data
-                            .checked_add((member_ordinal as usize).saturating_mul(8));
-                        let member = match nspan(log, memory, member_addr, 8, THEATRE_MASK)
-                            .and_then(|s| {
-                                usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)
-                            }) {
-                            Some(member) => member,
-                            None => continue,
-                        };
-                        // Member vtable (8) for the normal/army-group check plus
-                        // identity (vtable + handle 16) plus parents. Both
-                        // lengths are recorded because the walk requests both
-                        // exact spans (exact-match serving, no sub-ranges).
-                        let _ = nspan(log, memory, Some(member), 8, THEATRE_MASK);
-                        let _ = nspan(log, memory, Some(member), 16, THEATRE_MASK);
-                        let _ = nspan(
-                            log,
-                            memory,
-                            member.checked_add(corders_group::THEATER_GROUP),
-                            8,
-                            THEATRE_MASK,
-                        );
-                        let _ = nspan(
-                            log,
-                            memory,
-                            member.checked_add(corders_group::THEATRE),
-                            8,
-                            THEATRE_MASK,
-                        );
-                        if log.overflowed {
-                            return;
-                        }
-                    }
-                }
-            }
+        if !copy_country_theatres(log, memory, pointer, &links_array, None, details_active, mask) {
+            return;
         }
     }
     let _ = carmy_group::VTABLE_RVA;
 }
 
-fn copy_theatre_name(log: &mut RawLog<NAVAL_PACK_N>, memory: &impl engine::Memory, group: usize) {
+/// One authenticated country's theatre takes: the land theatre headers every
+/// hour, and on the daily slot the land details and air theatres. False when
+/// the log overflowed and the pass must stop.
+///
+/// `roster` is the callback's authenticated country roster when the pass
+/// resolves countries through it; a theatre owner's link entry is then taken
+/// only where the replay's country reader reads it: for an id whose roster
+/// slot is null.
+#[allow(clippy::too_many_arguments)]
+fn copy_country_theatres(
+    log: &mut RawLog<NAVAL_PACK_N>,
+    memory: &impl engine::Memory,
+    pointer: usize,
+    links_array: &Array,
+    roster: Option<&[Option<engine::ccountry::Country>]>,
+    details_active: bool,
+    mask: u32,
+) -> bool {
+    use engine::{ccountry, ctheater_group};
+    // Land theatre headers refresh hourly; the five nested/detail tables
+    // refresh only on their shared daily slot.
+    for theatres_off in [ccountry::THEATRES, ccountry::AIR_THEATRES] {
+        if !details_active && theatres_off == ccountry::AIR_THEATRES {
+            break;
+        }
+        let header_mask = if theatres_off == ccountry::THEATRES {
+            mask
+        } else {
+            AIR_DETAILS_MASK
+        };
+        let theatres_header = match nspan(
+            log,
+            memory,
+            pointer.checked_add(theatres_off),
+            16,
+            header_mask,
+        ) {
+            Some(start) => start,
+            None => continue,
+        };
+        let mut header = [0u8; 16];
+        header.copy_from_slice(&log.bytes[theatres_header..theatres_header + 16]);
+        let theatres = match Array::from_header(header, 8) {
+            Some(array) => array,
+            None => continue,
+        };
+        if theatres_off == ccountry::AIR_THEATRES {
+            copy_naval_air_theatres(log, memory, theatres, links_array);
+            continue;
+        }
+        for ordinal in 0..theatres.count {
+            let entry_addr = theatres
+                .data
+                .checked_add((ordinal as usize).saturating_mul(8));
+            let theatre = match nspan(log, memory, entry_addr, 8, header_mask)
+                .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
+            {
+                Some(theatre) => theatre,
+                None => continue,
+            };
+            // Theatre identity (vtable + handle 16), owner and volunteers in
+            // one guarded copy, each field its own exact span as the typed
+            // walk's gathered record reads them, stopping at the first
+            // failure as its per-field reads do; then the owner link resolve
+            // and the group vector.
+            let [(_, identity), (owner, owner_len), (volunteers, volunteers_len)] =
+                ctheatre::HEADER_SPANS;
+            let owner_start = match (
+                theatre.checked_add(owner),
+                theatre.checked_add(volunteers),
+            ) {
+                (Some(owner), Some(volunteers)) => log
+                    .take_scattered(
+                        memory,
+                        [theatre, owner, volunteers],
+                        [identity, owner_len, volunteers_len],
+                        [header_mask; 3],
+                    )
+                    .filter(|&(_, completed)| completed >= 2)
+                    .map(|(starts, _)| starts[1]),
+                _ => {
+                    let _ = nspan(log, memory, Some(theatre), identity, header_mask);
+                    nspan(
+                        log,
+                        memory,
+                        theatre.checked_add(owner),
+                        owner_len,
+                        header_mask,
+                    )
+                }
+            };
+            if let Some(owner_start) = owner_start {
+                let owner = npool_u32(log, owner_start);
+                // The roster resolves an id whose slot it authenticated
+                // without reading its link.
+                let resolved = roster
+                    .and_then(|slots| slots.get(owner as usize))
+                    .is_some_and(Option::is_some);
+                if owner != 0 && owner < links_array.count && !resolved {
+                    let offset = (owner as usize).checked_mul(4);
+                    let _ = nspan(
+                        log,
+                        memory,
+                        offset.and_then(|o| links_array.data.checked_add(o)),
+                        4,
+                        header_mask,
+                    );
+                }
+            }
+            if !details_active {
+                continue;
+            }
+            let mask = LAND_DETAILS_MASK;
+            let groups_header = match nspan(
+                log,
+                memory,
+                theatre.checked_add(ctheatre::THEATER_GROUP_DATA),
+                16,
+                mask,
+            ) {
+                Some(start) => start,
+                None => continue,
+            };
+            let mut groups_raw = [0u8; 16];
+            groups_raw.copy_from_slice(&log.bytes[groups_header..groups_header + 16]);
+            let groups = match Array::from_header(groups_raw, 8) {
+                Some(array) => array,
+                None => continue,
+            };
+            for group_ordinal in 0..groups.count {
+                let group_addr = groups
+                    .data
+                    .checked_add((group_ordinal as usize).saturating_mul(8));
+                let group = match nspan(log, memory, group_addr, 8, mask)
+                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
+                {
+                    Some(group) => group,
+                    None => continue,
+                };
+                // Group identity (vtable + handle 16), theatre backlink,
+                // name string, priority.
+                let _ = nspan(log, memory, Some(group), 16, mask);
+                let _ = nspan(
+                    log,
+                    memory,
+                    group.checked_add(ctheater_group::THEATRE),
+                    8,
+                    mask,
+                );
+                // Name string header + payload + terminator (theatre arena).
+                copy_theatre_name(log, memory, group.checked_add(ctheater_group::NAME), mask);
+                let _ = nspan(
+                    log,
+                    memory,
+                    group.checked_add(ctheater_group::PRIORITY),
+                    4,
+                    mask,
+                );
+                let members_header = match nspan(
+                    log,
+                    memory,
+                    group.checked_add(ctheater_group::ORDERS_GROUP_DATA),
+                    16,
+                    mask,
+                ) {
+                    Some(start) => start,
+                    None => continue,
+                };
+                let mut members_raw = [0u8; 16];
+                members_raw.copy_from_slice(&log.bytes[members_header..members_header + 16]);
+                let members = match Array::from_header(members_raw, 8) {
+                    Some(array) => array,
+                    None => continue,
+                };
+                for member_ordinal in 0..members.count {
+                    let member_addr = members
+                        .data
+                        .checked_add((member_ordinal as usize).saturating_mul(8));
+                    let member = match nspan(log, memory, member_addr, 8, mask).and_then(|s| {
+                        usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)
+                    }) {
+                        Some(member) => member,
+                        None => continue,
+                    };
+                    // Member vtable (8) for the normal/army-group check plus
+                    // identity (vtable + handle 16) plus parents. Both
+                    // lengths are recorded because the walk requests both
+                    // exact spans (exact-match serving, no sub-ranges).
+                    let _ = nspan(log, memory, Some(member), 8, mask);
+                    let _ = nspan(log, memory, Some(member), 16, mask);
+                    let _ = nspan(
+                        log,
+                        memory,
+                        member.checked_add(corders_group::THEATER_GROUP),
+                        8,
+                        mask,
+                    );
+                    let _ = nspan(
+                        log,
+                        memory,
+                        member.checked_add(corders_group::THEATRE),
+                        8,
+                        mask,
+                    );
+                    if log.overflowed {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+fn copy_theatre_name(
+    log: &mut RawLog<NAVAL_PACK_N>,
+    memory: &impl engine::Memory,
+    name_address: Option<usize>,
+    mask: u32,
+) {
     use engine::msvc_string;
-    let header_addr = match group.checked_add(engine::ctheater_group::NAME) {
+    let header_addr = match name_address {
         Some(addr) => addr,
         None => return,
     };
-    let header_start = match nspan(log, memory, Some(header_addr), 32, THEATRE_MASK) {
+    let header_start = match nspan(log, memory, Some(header_addr), 32, mask) {
         Some(start) => start,
         None => return,
     };
@@ -1638,15 +2003,251 @@ fn copy_theatre_name(log: &mut RawLog<NAVAL_PACK_N>, memory: &impl engine::Memor
     let Some(end) = source.checked_add(len) else {
         return;
     };
-    if nspan(log, memory, Some(end), 1, THEATRE_MASK).is_none() {
+    if nspan(log, memory, Some(end), 1, mask).is_none() {
         return;
     }
     if len != 0 {
-        let _ = nspan(log, memory, Some(source), len, THEATRE_MASK);
+        let _ = nspan(log, memory, Some(source), len, mask);
     }
 }
 
-fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize) {
+/// A root's own one-entry order-of-battle spans, as `(offset, len)`, in the
+/// order the typed walk reads them: army-group flag, motorization, the five
+/// references (theatre, theater group, parent, leader, HQ provider) and the
+/// member vector header.
+const OOB_ROOT_SPANS: [(usize, usize); 8] = [
+    (corders_group::IS_ARMY_GROUP, 1),
+    (corders_group::MOTORIZATION_LEVEL, 1),
+    (corders_group::THEATRE, 8),
+    (corders_group::THEATER_GROUP, 8),
+    (corders_group::PARENT, 8),
+    (corders_group::LEADER, 8),
+    (corders_group::HQ_PROVIDER, 8),
+    (corders_group::MEMBER_DATA, 16),
+];
+
+/// Logs `pointer`'s [`OOB_ROOT_SPANS`] with one guarded copy, each field its
+/// own exact span with its own success or failure, as the per-field takes
+/// log them. Those takes are independent, so after a failed field each later
+/// one is taken on its own, as before. Returns each field's log start.
+fn copy_oob_root_spans(
+    log: &mut RawLog<NAVAL_PACK_N>,
+    memory: &impl engine::Memory,
+    pointer: usize,
+) -> [Option<usize>; OOB_ROOT_SPANS.len()] {
+    let mut starts = [None; OOB_ROOT_SPANS.len()];
+    let mut next = 0;
+    let addresses = OOB_ROOT_SPANS.map(|(offset, _)| pointer.checked_add(offset));
+    #[cfg(test)]
+    let gather = !naval_test_kit::OOB_PER_FIELD.get();
+    #[cfg(not(test))]
+    let gather = true;
+    if gather
+        && addresses.iter().all(Option::is_some)
+        && let Some((taken, completed)) = log.take_scattered(
+            memory,
+            addresses.map(|address| address.unwrap_or(0)),
+            OOB_ROOT_SPANS.map(|(_, len)| len),
+            [OOB_MASK; OOB_ROOT_SPANS.len()],
+        )
+    {
+        for (start, taken) in starts.iter_mut().zip(&taken[..completed]) {
+            *start = Some(*taken);
+        }
+        // The failed field is logged as the failure its own take logs.
+        next = (completed + 1).min(OOB_ROOT_SPANS.len());
+    }
+    for (index, (offset, len)) in OOB_ROOT_SPANS.into_iter().enumerate().skip(next) {
+        starts[index] = nspan(log, memory, pointer.checked_add(offset), len, OOB_MASK);
+    }
+    starts
+}
+
+/// One authenticated root's order-of-battle spans, from its army-group flag
+/// on; the registry census has read and authenticated its identity and
+/// country. Returns whether the copy goes on: false when the log overflowed.
+///
+/// The root's own one-entry spans are logged first, in one guarded copy
+/// ([`copy_oob_root_spans`]), then what they reference. The log holds the
+/// same exact spans, bytes and failures as when each field was taken just
+/// before its targets: the replay serves each read from its exact key, and
+/// every key's occurrences keep their order, because within one pass the
+/// game thread is held and two occurrences of a key hold the same bytes.
+/// Only a log overflow can come at a different field; the copy then stops,
+/// as before.
+fn copy_oob_root(
+    job: &mut NavalJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    pointer: usize,
+) -> bool {
+    let log = &mut job.log;
+    // OOB identity fields: army-group flag, motorization, country
+    // (already above), theatre/theater-group/parent/leader/provider
+    // references with target authentication for non-null pointers.
+    let own = copy_oob_root_spans(log, memory, pointer);
+    let is_army_group = own[0].map(|start| log.bytes[start]);
+    for (index, offset) in [
+        corders_group::THEATRE,
+        corders_group::THEATER_GROUP,
+        corders_group::PARENT,
+        corders_group::LEADER,
+        corders_group::HQ_PROVIDER,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let target = own[index + 2].and_then(|s| usize::try_from(npool_u64(log, s)).ok());
+        if let Some(target) = target.filter(|&p| p != 0) {
+            // References use a vtable + handle identity, except the
+            // HQ provider: it is an embedded member whose host is
+            // authenticated below, not a referenced object itself.
+            if offset != corders_group::HQ_PROVIDER {
+                let identity = nspan(log, memory, Some(target), 16, OOB_MASK);
+                if offset == corders_group::THEATRE
+                    && identity.is_some_and(|start| {
+                        base.checked_add(ctheatre::VTABLE_RVA)
+                            .is_some_and(|expected| {
+                                npool_u64(log, start) == expected as u64
+                            })
+                            && npool_u64(log, start + 8) as u32 == ctheatre::REFERENCE_TYPE
+                    })
+                {
+                    job.oob_theatres_required = job.oob_theatres.len().saturating_add(1);
+                    if job.oob_theatres.len() == job.oob_theatres.capacity()
+                        || job.oob_theatres.len() == job.oob_theatre_positions.capacity()
+                    {
+                        log.overflowed = true;
+                        return false;
+                    }
+                    job.oob_theatres.push(target);
+                }
+            }
+            if offset == corders_group::PARENT {
+                let _ = nspan(
+                    log,
+                    memory,
+                    target.checked_add(corders_group::IS_ARMY_GROUP),
+                    1,
+                    OOB_MASK,
+                );
+            }
+            if offset == corders_group::HQ_PROVIDER {
+                // Provider is a member pointer: host identity span
+                // plus group backlink, like member_unit.
+                if let Some(unit) =
+                    target.checked_sub(engine::corders_group_member::HOST_OFFSET)
+                {
+                    let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
+                }
+                let _ = nspan(
+                    log,
+                    memory,
+                    target.checked_add(engine::corders_group_member::GROUP),
+                    8,
+                    OOB_MASK,
+                );
+            }
+        }
+    }
+    // Member vector with per-member host identity (32-byte header)
+    // and group backlink, exactly like `member_unit`.
+    let Some(members_header) = own[7] else {
+        return true;
+    };
+    let mut members_raw = [0u8; 16];
+    members_raw.copy_from_slice(&log.bytes[members_header..members_header + 16]);
+    let members = match Array::from_header(members_raw, 8) {
+        Some(array) => array,
+        None => return true,
+    };
+    for index in 0..members.count {
+        let entry_addr = members.data.checked_add((index as usize).saturating_mul(8));
+        let member = match nspan(log, memory, entry_addr, 8, OOB_MASK)
+            .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
+        {
+            Some(member) => member,
+            None => continue,
+        };
+        // Host identity span (vtable/class/secondary/handle 32 bytes)
+        // at the embedded base, plus group backlink at the member.
+        let unit = match member.checked_sub(engine::corders_group_member::HOST_OFFSET) {
+            Some(unit) => unit,
+            None => continue,
+        };
+        let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
+        let _ = nspan(
+            log,
+            memory,
+            member.checked_add(engine::corders_group_member::GROUP),
+            8,
+            OOB_MASK,
+        );
+        if log.overflowed {
+            return false;
+        }
+    }
+    // The typed walk accepts any nonzero discriminator. The child
+    // header starts beyond an ordinary COrdersGroup's allocation,
+    // so neither it nor its entries may be read for a zero/failed flag.
+    if is_army_group.is_some_and(|flag| flag != 0) {
+        let children_header = match nspan(
+            log,
+            memory,
+            pointer.checked_add(engine::carmy_group::MEMBER_DATA),
+            16,
+            OOB_MASK,
+        ) {
+            Some(start) => start,
+            None => return true,
+        };
+        let mut children_raw = [0u8; 16];
+        children_raw.copy_from_slice(&log.bytes[children_header..children_header + 16]);
+        if let Some(children) = Array::from_header(children_raw, 8) {
+            for index in 0..children.count {
+                let entry_addr = children
+                    .data
+                    .checked_add((index as usize).saturating_mul(8));
+                let child =
+                    match nspan(log, memory, entry_addr, 8, OOB_MASK).and_then(|s| {
+                        usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)
+                    }) {
+                        Some(child) => child,
+                        None => continue,
+                    };
+                let _ = nspan(log, memory, Some(child), 16, OOB_MASK);
+                if log.overflowed {
+                    return false;
+                }
+            }
+        }
+    }
+    // Order-membership reverse census for this root: theatre-group
+    // pointer plus target identity when non-zero.
+    if job.theatres_active {
+        let _reads = read_accounting::table(TableId::LandTheatreMembers);
+        let theater_group = nspan(
+            log,
+            memory,
+            pointer.checked_add(corders_group::THEATER_GROUP),
+            8,
+            LAND_MEMBERS_MASK,
+        )
+        .and_then(|s| usize::try_from(npool_u64(log, s)).ok());
+        if let Some(theater_group) = theater_group.filter(|&p| p != 0) {
+            let _ = nspan(log, memory, Some(theater_group), 16, LAND_MEMBERS_MASK);
+        }
+    }
+    if log.overflowed {
+        return false;
+    }
+    true
+}
+
+/// The order-of-battle roots from the orders-group registry itself: its
+/// header, buckets and each root's identity and country, then the root's own
+/// spans. Returns whether the copy goes on to stage the rosters.
+fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine::Memory, base: usize) -> bool {
     use engine::{creference_registry as registry, reference_bucket as bucket};
     let log = &mut job.log;
     let table = match nspan(
@@ -1663,7 +2264,7 @@ fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize)
             .filter(|&p| p != 0)
     }) {
         Some(table) => table,
-        None => return,
+        None => return false,
     };
     let header = match nspan(
         log,
@@ -1673,7 +2274,7 @@ fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize)
         OOB_MASK,
     ) {
         Some(start) => start,
-        None => return,
+        None => return false,
     };
     let mut header_bytes = [0u8; 17];
     header_bytes.copy_from_slice(&log.bytes[header..header + 17]);
@@ -1682,17 +2283,17 @@ fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize)
         .filter(|&e| e != 0)
     {
         Some(entries) => entries,
-        None => return,
+        None => return false,
     };
     let mask = u32::from_le_bytes(header_bytes[12..16].try_into().unwrap());
     let distance = header_bytes[16];
     let capacity = match mask.checked_add(1) {
         Some(capacity) => capacity,
-        None => return,
+        None => return false,
     };
     let terminal = match (capacity as usize).checked_add(distance as usize) {
         Some(terminal) => terminal,
-        None => return,
+        None => return false,
     };
     let terminal_addr = entries
         .checked_add(terminal * bucket::STRIDE)
@@ -1700,15 +2301,16 @@ fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize)
     let _ = nspan(log, memory, terminal_addr, 1, OOB_MASK);
     let group_vtable = match base.checked_add(corders_group::VTABLE_RVA) {
         Some(v) => v as u64,
-        None => return,
+        None => return false,
     };
     let army_group_vtable = match base.checked_add(engine::carmy_group::VTABLE_RVA) {
         Some(v) => v as u64,
-        None => return,
+        None => return false,
     };
     let mut first: u32 = 0;
     let terminal_u32 = terminal.min(1 << 20) as u32;
     while first < terminal_u32 {
+        let log = &mut job.log;
         let slots = (terminal_u32 - first).min(64) as usize;
         let address = match entries.checked_add(first as usize * bucket::STRIDE) {
             Some(address) => address,
@@ -1720,6 +2322,7 @@ fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize)
             None => break,
         };
         for slot_in_batch in 0..slots {
+            let log = &mut job.log;
             let bucket_start = batch_start + slot_in_batch * bucket::STRIDE;
             let distance = log.bytes[bucket_start + bucket::DISTANCE];
             if distance == 0 {
@@ -1767,168 +2370,96 @@ fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize)
                 None => continue,
             };
             let _country = npool_u32(log, country_start);
-            // OOB identity fields: army-group flag, motorization, country
-            // (already above), theatre/theater-group/parent/leader/provider
-            // references with target authentication for non-null pointers.
-            let is_army_group = nspan(
-                log,
-                memory,
-                pointer.checked_add(corders_group::IS_ARMY_GROUP),
-                1,
-                OOB_MASK,
-            )
-            .map(|start| log.bytes[start]);
-            let _ = nspan(
-                log,
-                memory,
-                pointer.checked_add(corders_group::MOTORIZATION_LEVEL),
-                1,
-                OOB_MASK,
-            );
-            for offset in [
-                corders_group::THEATRE,
-                corders_group::THEATER_GROUP,
-                corders_group::PARENT,
-                corders_group::LEADER,
-                corders_group::HQ_PROVIDER,
-            ] {
-                let target = nspan(log, memory, pointer.checked_add(offset), 8, OOB_MASK)
-                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok());
-                if let Some(target) = target.filter(|&p| p != 0) {
-                    // References use a vtable + handle identity, except the
-                    // HQ provider: it is an embedded member whose host is
-                    // authenticated below, not a referenced object itself.
-                    if offset != corders_group::HQ_PROVIDER {
-                        let _ = nspan(log, memory, Some(target), 16, OOB_MASK);
-                    }
-                    if offset == corders_group::PARENT {
-                        let _ = nspan(
-                            log,
-                            memory,
-                            target.checked_add(corders_group::IS_ARMY_GROUP),
-                            1,
-                            OOB_MASK,
-                        );
-                    }
-                    if offset == corders_group::HQ_PROVIDER {
-                        // Provider is a member pointer: host identity span
-                        // plus group backlink, like member_unit.
-                        if let Some(unit) =
-                            target.checked_sub(engine::corders_group_member::HOST_OFFSET)
-                        {
-                            let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
-                        }
-                        let _ = nspan(
-                            log,
-                            memory,
-                            target.checked_add(engine::corders_group_member::GROUP),
-                            8,
-                            OOB_MASK,
-                        );
-                    }
-                }
+            if !copy_oob_root(job, memory, base, pointer) {
+                return false;
             }
-            // Member vector with per-member host identity (32-byte header)
-            // and group backlink, exactly like `member_unit`.
-            let members_header = match nspan(
-                log,
-                memory,
-                pointer.checked_add(corders_group::MEMBER_DATA),
-                16,
-                OOB_MASK,
-            ) {
-                Some(start) => start,
-                None => continue,
-            };
-            let mut members_raw = [0u8; 16];
-            members_raw.copy_from_slice(&log.bytes[members_header..members_header + 16]);
-            let members = match Array::from_header(members_raw, 8) {
-                Some(array) => array,
-                None => continue,
-            };
-            for index in 0..members.count {
-                let entry_addr = members.data.checked_add((index as usize).saturating_mul(8));
-                let member = match nspan(log, memory, entry_addr, 8, OOB_MASK)
-                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
-                {
-                    Some(member) => member,
-                    None => continue,
-                };
-                // Host identity span (vtable/class/secondary/handle 32 bytes)
-                // at the embedded base, plus group backlink at the member.
-                let unit = match member.checked_sub(engine::corders_group_member::HOST_OFFSET) {
-                    Some(unit) => unit,
-                    None => continue,
-                };
-                let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
-                let _ = nspan(
-                    log,
-                    memory,
-                    member.checked_add(engine::corders_group_member::GROUP),
-                    8,
-                    OOB_MASK,
-                );
-                if log.overflowed {
+        }
+        first += slots as u32;
+    }
+    true
+}
+
+fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize) {
+    job.oob_theatres.clear();
+    job.oob_theatre_positions.clear();
+    job.oob_theatres_required = 0;
+    match job.roots_len {
+        // Reuse within the pass: the callback took this registry census from
+        // this memory before queueing this job and holds the game thread
+        // until every job has finished, so the registry, each root's
+        // identity and its country read again would give the same roots.
+        // `capture_roots` keeps only a complete census, and `clear` drops it
+        // with the pass; this pass's decode takes the same roots as its
+        // census instead of replaying the registry, which is not recorded.
+        Some(len) => {
+            for index in 0..len {
+                let pointer = job.roots[index].pointer();
+                if !copy_oob_root(job, memory, base, pointer) {
                     return;
                 }
             }
-            // The typed walk accepts any nonzero discriminator. The child
-            // header starts beyond an ordinary COrdersGroup's allocation,
-            // so neither it nor its entries may be read for a zero/failed flag.
-            if is_army_group.is_some_and(|flag| flag != 0) {
-                let children_header = match nspan(
-                    log,
-                    memory,
-                    pointer.checked_add(engine::carmy_group::MEMBER_DATA),
-                    16,
-                    OOB_MASK,
-                ) {
-                    Some(start) => start,
-                    None => continue,
-                };
-                let mut children_raw = [0u8; 16];
-                children_raw.copy_from_slice(&log.bytes[children_header..children_header + 16]);
-                if let Some(children) = Array::from_header(children_raw, 8) {
-                    for index in 0..children.count {
-                        let entry_addr = children
-                            .data
-                            .checked_add((index as usize).saturating_mul(8));
-                        let child =
-                            match nspan(log, memory, entry_addr, 8, OOB_MASK).and_then(|s| {
-                                usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)
-                            }) {
-                                Some(child) => child,
-                                None => continue,
-                            };
-                        let _ = nspan(log, memory, Some(child), 16, OOB_MASK);
-                        if log.overflowed {
-                            return;
-                        }
-                    }
-                }
+        }
+        None => {
+            if !copy_oob_registry(job, memory, base) {
+                return;
             }
-            // Order-membership reverse census for this root: theatre-group
-            // pointer plus target identity when non-zero.
-            if job.theatres_active {
-                let _reads = read_accounting::table(TableId::LandTheatreMembers);
-                let theater_group = nspan(
-                    log,
-                    memory,
-                    pointer.checked_add(corders_group::THEATER_GROUP),
-                    8,
-                    THEATRE_MASK,
-                )
-                .and_then(|s| usize::try_from(npool_u64(log, s)).ok());
-                if let Some(theater_group) = theater_group.filter(|&p| p != 0) {
-                    let _ = nspan(log, memory, Some(theater_group), 16, THEATRE_MASK);
+        }
+    }
+    let log = &mut job.log;
+    dedup_first_seen(&mut job.oob_theatres, &mut job.oob_theatre_positions);
+    // The engine matches these pointers against the complete authenticated
+    // root census. Stage each native roster once, including an unused subtype,
+    // and retain failures as observations rather than retrying for later roots.
+    // This memo belongs only to this OOB pass: identical addresses in another
+    // source family never stand in for this roster's own acquisition.
+    for &theatre in &job.oob_theatres {
+        for offset in [ctheatre::ORDERS_GROUP_DATA, ctheatre::ARMY_GROUP_DATA] {
+            let Some(start) = nspan(log, memory, theatre.checked_add(offset), 16, OOB_MASK) else {
+                return;
+            };
+            let mut header = [0; 16];
+            header.copy_from_slice(&log.bytes[start..start + 16]);
+            let Some(roster) = Array::from_header(header, 8) else {
+                return;
+            };
+            // Up to 64 entries per guarded copy, each recorded as the exact
+            // span its per-entry read would record, failure included: the
+            // replay walks the theatres in this same first-seen root order
+            // and reads each roster entry by entry, so every read is served
+            // from the next recorded span.
+            for first in (0..roster.count).step_by(64) {
+                let count = (roster.count - first).min(64) as usize;
+                let Some(address) = roster.element(first, 8) else {
+                    return;
+                };
+                match log.take_array_entries(memory, address, 8, count, OOB_MASK) {
+                    Some((_, completed)) if completed == count => {}
+                    _ => return,
                 }
             }
             if log.overflowed {
                 return;
             }
         }
-        first += slots as u32;
     }
+}
+
+/// Keeps the first occurrence of each value in its original order, in
+/// O(n log n): positions sorted by `(value, position)` keep their first
+/// position per value, then return to position order. A sorted insert per
+/// value would move O(n) entries each. `positions` needs `values.len()`
+/// capacity to stay allocation-free.
+fn dedup_first_seen(values: &mut Vec<usize>, positions: &mut Vec<usize>) {
+    positions.clear();
+    positions.extend(0..values.len());
+    positions.sort_unstable_by_key(|&position| (values[position], position));
+    positions.dedup_by_key(|position| values[*position]);
+    positions.sort_unstable();
+    // Kept positions ascend, so each is at or after its destination.
+    for (kept, &position) in positions.iter().enumerate() {
+        values[kept] = values[position];
+    }
+    values.truncate(positions.len());
 }
 
 fn copy_naval_pass(
@@ -1941,15 +2472,21 @@ fn copy_naval_pass(
     // Shared wing values were installed before this independent raw phase.
     job.log.clear();
     job.game_state = game_state;
-    if job.theatres_active {
-        let started = qpc();
-        read_accounting::with_table(TableId::LandTheatres, || {
-            copy_naval_theatres(&mut job.log, memory, base, game_state)
-        });
-        ticks[0] += qpc().saturating_sub(started).max(0) as u64;
-        if job.log.overflowed {
-            return;
-        }
+    let details_active = job.theatres_active;
+    let started = qpc();
+    read_accounting::with_table(TableId::LandTheatres, || {
+        copy_naval_theatres(
+            &mut job.log,
+            &mut job.roster,
+            memory,
+            base,
+            game_state,
+            details_active,
+        )
+    });
+    ticks[0] += qpc().saturating_sub(started).max(0) as u64;
+    if job.log.overflowed {
+        return;
     }
     let started = qpc();
     read_accounting::with_table(TableId::OrdersGroups, || copy_naval_oob(job, memory, base));
@@ -1962,7 +2499,7 @@ pub(crate) fn copy_naval_refresh(
     job: &mut NavalJob,
 ) -> NavalCopyReport {
     job.theatres_active =
-        replay::cadence::should_walk(TableId::LandTheatres, ctx.hour, ctx.force_full);
+        replay::cadence::should_walk(TableId::LandTheatreGroups, ctx.hour, ctx.force_full);
     if job.theatres_active && job.wing_outcome.is_none() {
         return NavalCopyReport::default();
     }
@@ -1983,7 +2520,10 @@ impl Captured {
         macro_rules! reject {
             ($($field:ident = $slot:literal),+ $(,)?) => {
                 $({
-                    self.$field.outcome = failed($slot >= 6 || self.theatres_active(), reason);
+                    self.$field.outcome = failed(
+                        $slot >= 6 || ($slot == 0 && self.active[4]) || self.theatres_active(),
+                        reason,
+                    );
                 })+
             };
         }
@@ -2003,45 +2543,100 @@ impl Captured {
     }
 }
 
+/// A recorded log replayed with the authenticated country roster its copy
+/// resolved countries through; every read still goes to the log.
+struct RosterReplay<'a, M> {
+    inner: &'a M,
+    roster: Option<(usize, usize, engine::ccountry::AuthenticatedRoster<'a>)>,
+}
+
+impl<M: Memory> Memory for RosterReplay<'_, M> {
+    #[inline(always)]
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.inner.copy(address, destination)
+    }
+
+    fn immutable_view(
+        &self,
+        address: usize,
+        len: usize,
+    ) -> Option<engine::memory::SliceMemory<'_>> {
+        self.inner.immutable_view(address, len)
+    }
+
+    fn authenticated_countries(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<engine::ccountry::AuthenticatedRoster<'_>> {
+        self.roster
+            .filter(|(module, state, _)| (*module, *state) == (base, game_state))
+            .map(|(_, _, roster)| roster)
+    }
+}
+
 pub(crate) fn decode_naval_payload(
     captured: &mut Captured,
     base: usize,
     job: &NavalJob,
     decode_ticks: &mut [u64; NAVAL_PACK_N],
 ) {
-    captured.active[4..10].fill(job.theatres_active);
+    captured.active[4] = true;
+    captured.active[5..10].fill(job.theatres_active);
     let recorded = crate::raw::Recorded::build(&job.log);
     let started = qpc();
     // Order roots replay (worker-side, grows until the registry fits so the
     // census never truncates here; OOB row truncation is handled by the
     // pooled buffers through set_order_sources below).
-    let mut roots: Vec<corders_group::Root> = Vec::new();
-    let roots_outcome = loop {
-        let outcome = corders_group::walk_roots(&recorded, base, &mut roots);
-        match outcome {
-            Outcome::Truncated { .. } => {
-                roots.resize(roots.len() * 2 + 16, corders_group::Root::default());
-                continue;
-            }
-            _ => break outcome,
+    let mut walked: Vec<corders_group::Root> = Vec::new();
+    let (roots, roots_outcome) = match job.roots_len {
+        // The copy walked the callback's complete registry census of this
+        // pass instead of recording the registry; that census is what this
+        // replay of the registry would give. Never another pass's: the job
+        // clears it before it is reused.
+        Some(len) => (&job.roots[..len], Outcome::Rows { len }),
+        None => {
+            let outcome = loop {
+                let outcome = corders_group::walk_roots(&recorded, base, &mut walked);
+                match outcome {
+                    Outcome::Truncated { .. } => {
+                        walked.resize(walked.len() * 2 + 16, corders_group::Root::default());
+                        continue;
+                    }
+                    _ => break outcome,
+                }
+            };
+            (&walked[..], outcome)
         }
     };
+    // Decoding runs off the game thread. Keep the scratch census complete even
+    // when the independent group-row output intentionally truncates.
+    if let Outcome::Rows { len } = roots_outcome {
+        captured.roster_scratch.required = captured.roster_scratch.required.max(len);
+        crate::table_capture::grow_vec(&mut captured.roster_scratch.first, len);
+    }
     // Order sources + OOB through the existing setters (identical rows,
     // outcomes and ticks to the game thread's source callbacks).
-    captured.set_order_sources(&recorded, base, &roots, roots_outcome);
+    captured.set_order_sources(&recorded, base, roots, roots_outcome);
+    // The hourly header walk uses the same country and owner checks as the
+    // daily detail walk, but never requires wing membership or nested arenas.
     if !job.theatres_active {
-        captured.skip_theatres();
-        captured.wing_sources.outcome = SKIPPED;
-        captured.wings_finished = true;
-        decode_ticks[6] += qpc().saturating_sub(started).max(0) as u64;
-        captured.raw_mode = false;
-        return;
+        captured.skip_theatre_details();
     }
-    // Theatre walk replay into pooled buffers with names.
+    // The copy resolved countries through the callback's roster when it had
+    // one, so the replay does too: this pass's snapshot, never another's.
+    let theatre_source = RosterReplay {
+        inner: &recorded,
+        roster: job
+            .roster
+            .roster(base, job.game_state)
+            .map(|roster| (base, job.game_state, roster)),
+    };
     let first = ctheatre::walk(
-        &recorded,
+        &theatre_source,
         base,
         job.game_state,
+        job.theatres_active,
         ctheatre::Buffers {
             land: &mut captured.land.rows,
             land_groups: &mut captured.land_groups.rows,
@@ -2053,13 +2648,23 @@ pub(crate) fn decode_naval_payload(
         },
     );
     captured.land.outcome = bounded(first.land, captured.land.rows.len());
-    captured.land_groups.outcome = bounded(first.land_groups, captured.land_groups.rows.len());
-    captured.land_members.outcome = bounded(first.land_members, captured.land_members.rows.len());
-    captured.air.outcome = bounded(first.air, captured.air.rows.len());
-    captured.air_groups.outcome = bounded(first.air_groups, captured.air_groups.rows.len());
-    captured.air_members.outcome = bounded(first.air_members, captured.air_members.rows.len());
+    if job.theatres_active {
+        captured.land_groups.outcome = bounded(first.land_groups, captured.land_groups.rows.len());
+        captured.land_members.outcome =
+            bounded(first.land_members, captured.land_members.rows.len());
+        captured.air.outcome = bounded(first.air, captured.air.rows.len());
+        captured.air_groups.outcome = bounded(first.air_groups, captured.air_groups.rows.len());
+        captured.air_members.outcome = bounded(first.air_members, captured.air_members.rows.len());
+    }
     captured.theatre_names.len = first.names_len;
     captured.theatre_names.required = first.names_required;
+    if !job.theatres_active {
+        captured.wing_sources.outcome = SKIPPED;
+        captured.wings_finished = true;
+        decode_ticks[0] += qpc().saturating_sub(started).max(0) as u64;
+        captured.raw_mode = false;
+        return;
+    }
     // Preserve the complete authoritative reverse census without attempting
     // an unrelated full wing decode from an incomplete mirror.
     let source_len = job.wing_sources.len();
@@ -2892,7 +3497,80 @@ mod tests {
             sunk_names: 8,
             orders_sources: 1,
             wing_sources: 1,
+            roster_scratch: 8,
         })
+    }
+
+    /// The OOB theatre memo keeps first-seen root order, whatever the
+    /// addresses' order, exactly as the former sorted-insert memo did.
+    #[test]
+    fn a_large_registry_presizes_the_order_of_battle_theatres() {
+        crate::country_scale::note_slots(5_000);
+        let mut job = NavalJob::new();
+        job.presize_countries();
+        let want = crate::country_scale::rows(5_000, 1) * OOB_THEATRE_REFERENCES_PER_COUNTRY;
+        assert!(job.oob_theatres.capacity() >= want);
+        assert!(job.oob_theatre_positions.capacity() >= want);
+    }
+
+    /// The registry census snapshot holds only a complete census that fits,
+    /// grows off the callback from its demand, and is dropped with the pass.
+    #[test]
+    fn census_roots_snapshot_fits_grows_and_never_outlives_its_pass() {
+        let roots = [corders_group::Root::default(); 5];
+        let mut job = NavalJob::default();
+        job.capture_roots(&roots, Outcome::Rows { len: 3 });
+        assert_eq!((job.roots_len, job.roots.capacity()), (None, 0));
+        assert!(job.grow_for_next());
+        job.grow();
+        job.capture_roots(&roots, Outcome::Rows { len: 3 });
+        assert_eq!(job.roots_len, Some(3));
+        assert_eq!(job.roots, roots[..3]);
+        job.capture_roots(
+            &roots,
+            Outcome::Truncated {
+                len: 3,
+                unread_rows: 4,
+            },
+        );
+        assert_eq!(job.roots_len, None);
+        assert_eq!(job.roots_required, 7);
+        job.capture_roots(&roots, Outcome::Unavailable { reason: "torn" });
+        assert_eq!(job.roots_len, None);
+        job.capture_roots(&roots, Outcome::Rows { len: 3 });
+        job.clear();
+        assert_eq!((job.roots_len, job.roots.len()), (None, 0));
+        // A census longer than the roots it names is not kept.
+        job.capture_roots(&roots[..2], Outcome::Rows { len: 3 });
+        assert_eq!(job.roots_len, None);
+    }
+
+    #[test]
+    fn oob_theatre_dedup_keeps_first_occurrences_in_root_order() {
+        let first_seen = |values: &[usize]| {
+            let mut seen = Vec::new();
+            for &value in values {
+                if !seen.contains(&value) {
+                    seen.push(value);
+                }
+            }
+            seen
+        };
+        for values in [
+            vec![],
+            vec![7],
+            vec![7, 7, 7],
+            vec![0x30, 0x10, 0x30, 0x20, 0x10, 0x40, 0x20],
+            vec![5, 4, 3, 2, 1, 1, 2, 3, 4, 5],
+            (0..500).map(|i| (i * 7919) % 97 * 0x40).collect(),
+        ] {
+            let mut deduped = values.clone();
+            let mut positions = Vec::with_capacity(values.len());
+            let capacity = positions.capacity();
+            dedup_first_seen(&mut deduped, &mut positions);
+            assert_eq!(deduped, first_seen(&values));
+            assert_eq!(positions.capacity(), capacity);
+        }
     }
 
     #[test]
@@ -3112,6 +3790,7 @@ mod tests {
             sunk_names: 32,
             orders_sources: 2,
             wing_sources: 2,
+            roster_scratch: 8,
         })
     }
 
@@ -3258,18 +3937,19 @@ mod tests {
     }
 
     #[test]
-    fn hourly_order_of_battle_needs_no_theatre_census_or_wing_storage() {
+    fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
         use super::naval_test_kit as kit;
-        struct NoTheatreCensus<'a>(engine::memory::SliceMemory<'a>);
-        impl Memory for NoTheatreCensus<'_> {
+        struct NoTheatreDetails<'a>(engine::memory::SliceMemory<'a>);
+        impl Memory for NoTheatreDetails<'_> {
             fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
-                assert_ne!(address, kit::GAME_STATE + cgame_state::COUNTRIES);
+                assert_ne!(address, kit::THEATRE + ctheatre::THEATER_GROUP_DATA);
+                assert_ne!(address, kit::C0 + engine::ccountry::AIR_THEATRES);
                 self.0.copy(address, bytes)
             }
         }
         let bytes = kit::fixture();
         let expected = kit::direct(&kit::memory(&bytes));
-        let memory = NoTheatreCensus(kit::memory(&bytes));
+        let memory = NoTheatreDetails(kit::memory(&bytes));
         let mut job = NavalJob::new();
         job.wing_sources = Vec::new();
         let mut captured = Captured::with_capacities(&Capacities {
@@ -3278,6 +3958,7 @@ mod tests {
             sunk_names: 0,
             orders_sources: 0,
             wing_sources: 0,
+            roster_scratch: 0,
         });
         for hour in (0..24).filter(|hour| *hour != 13) {
             job.clear();
@@ -3293,12 +3974,17 @@ mod tests {
                 &mut job,
             );
             assert!(copy.raw_ok && !job.grow_for_next());
-            assert_eq!(&copy.copy_ticks[..6], &[0; 6]);
-            assert_eq!(&copy.raw_bytes[..6], &[0; 6]);
+            assert!(copy.raw_bytes[0] > 0);
+            assert_eq!(&copy.raw_bytes[1..6], &[0; 5]);
             let mut ticks = [0; NAVAL_PACK_N];
             decode_naval_payload(&mut captured, kit::BASE, &job, &mut ticks);
-            assert_eq!(&captured.outcomes()[4..10], &[SKIPPED; 6]);
-            assert_eq!(&ticks[..6], &[0; 6]);
+            assert_eq!(captured.land.outcome, expected.land_outcome);
+            assert_eq!(
+                &captured.land.rows[..captured.land.outcome.len()],
+                &expected.land[..expected.land_outcome.len()]
+            );
+            assert_eq!(&captured.outcomes()[5..10], &[SKIPPED; 5]);
+            assert_eq!(captured.wing_sources.outcome, SKIPPED);
             assert_eq!(captured.groups.outcome, expected.oob_groups_outcome);
             assert_eq!(captured.group_members.outcome, expected.oob_members_outcome);
             assert_eq!(
@@ -3308,13 +3994,213 @@ mod tests {
             let len = captured.groups.outcome.len();
             assert_eq!(&captured.groups.rows[..len], &expected.oob_groups[..len]);
             captured.fail_naval_capture("worker failed");
-            assert_eq!(&captured.outcomes()[4..10], &[SKIPPED; 6]);
+            assert_eq!(
+                captured.land.outcome,
+                Outcome::Unavailable {
+                    reason: "worker failed"
+                }
+            );
+            assert_eq!(&captured.outcomes()[5..10], &[SKIPPED; 5]);
             assert_eq!(
                 captured.groups.outcome,
                 Outcome::Unavailable {
                     reason: "worker failed"
                 }
             );
+        }
+    }
+    /// The land theatre copy through the callback's authenticated roster
+    /// takes no country census span, and its decode gives the rows, ordinals
+    /// and outcomes of the census copy and of the typed walk with or without
+    /// the roster: clean, with an alias or a null-slot owner (whose link the
+    /// replay reads), bad owners, a torn census, and a fault in every header
+    /// span, on the daily slot and hourly. A snapshot without room falls back
+    /// to the census copy and asks to grow.
+    #[test]
+    fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
+        use super::naval_test_kit as kit;
+        use engine::{ccountry, cgame_state, country_memory::Cache, memory::SliceMemory};
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            fault: Option<usize>,
+        }
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if self
+                    .fault
+                    .is_some_and(|fault| (address..address + output.len()).contains(&fault))
+                {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+            bytes[at..at + value.len()].copy_from_slice(value);
+        }
+        const CTAB: usize = 0x11000;
+        const LTAB: usize = 0x12000;
+        let owner = kit::THEATRE + ctheatre::OWNER;
+        // A fourth, null country slot whose id links to the first country.
+        let mut base = kit::fixture();
+        put(&mut base, kit::GAME_STATE + cgame_state::COUNTRIES + 8, &[4, 0, 0, 0, 4, 0, 0, 0]);
+        put(&mut base, kit::GAME_STATE + cgame_state::COUNTRY_LINKS + 8, &[4, 0, 0, 0, 4, 0, 0, 0]);
+        put(&mut base, LTAB + 12, &1_u32.to_le_bytes());
+        put(
+            &mut base,
+            0x40000 + engine::cstrategic_air_manager::COUNTRY_AIR + 8,
+            &[4, 0, 0, 0, 4, 0, 0, 0],
+        );
+        let mut variants: Vec<(&str, Vec<u8>, Option<usize>)> = vec![("clean", base.clone(), None)];
+        for (name, value) in [("alias owner", 2_u32), ("null-slot owner", 3), ("zero owner", 0), ("owner past links", 9)] {
+            let mut bytes = base.clone();
+            put(&mut bytes, owner, &value.to_le_bytes());
+            variants.push((name, bytes, None));
+        }
+        let mut torn = base.clone();
+        put(&mut torn, LTAB + 8, &0_u32.to_le_bytes());
+        variants.push(("torn census", torn, None));
+        let mut vtable = base.clone();
+        vtable[kit::THEATRE] ^= 0x10;
+        variants.push(("theatre vtable", vtable, None));
+        for (offset, len) in ctheatre::HEADER_SPANS {
+            for at in [kit::THEATRE + offset, kit::THEATRE + offset + len - 1] {
+                variants.push(("header fault", base.clone(), Some(at)));
+            }
+        }
+        for at in [kit::C0 + ccountry::THEATRES, 0x36000, CTAB + 8, kit::C0 + ccountry::ID] {
+            variants.push(("country fault", base.clone(), Some(at)));
+        }
+        let hourly = |memory: &dyn Fn(&mut NavalJob) -> NavalCopyReport, job: &mut NavalJob| {
+            let copy = memory(job);
+            assert!(copy.raw_ok);
+            let mut captured = Captured::with_capacities(&Capacities::default());
+            captured.prepare_hour(1, false);
+            decode_naval_payload(&mut captured, kit::BASE, job, &mut [0; NAVAL_PACK_N]);
+            let len = captured.land.outcome.len();
+            (captured.land.outcome, captured.land.rows[..len].to_vec())
+        };
+        let context = NavalCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            hour: 1,
+            force_full: false,
+        };
+        let mut roster_used = 0;
+        for (name, bytes, fault) in &variants {
+            let memory = Fault {
+                memory: kit::memory(bytes),
+                fault: *fault,
+            };
+            let mut cache = Cache::with_capacity(Cache::cells_for_countries(4, 64));
+            let _ = cache.prepare(&memory, kit::BASE, kit::GAME_STATE);
+            let roster = cache.roster_view(&memory);
+            let has_roster = roster
+                .authenticated_countries(kit::BASE, kit::GAME_STATE)
+                .is_some();
+            roster_used += usize::from(has_roster);
+            let case = format!("{name} {fault:x?} roster={has_roster}");
+
+            // Daily: every theatre table and the order of battle.
+            let direct = kit::direct(&memory);
+            kit::assert_matches_direct(&kit::direct(&roster), &direct);
+            let (census, ..) = kit::split(&memory);
+            kit::assert_matches_direct(&census, &direct);
+            let (split, _, job) = kit::split(&roster);
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(job.roster.roster(kit::BASE, kit::GAME_STATE).is_some(), has_roster, "{case}");
+
+            // Hourly: the land theatre headers alone.
+            let mut plain = NavalJob::new();
+            let expected = hourly(&|job| copy_naval_refresh(&memory, context, job), &mut plain);
+            assert_eq!((expected.0, &expected.1[..]), (direct.land_outcome, &direct.land[..direct.land_outcome.len()]), "{case}");
+            let mut job = NavalJob::new();
+            let actual = hourly(&|job| copy_naval_refresh(&roster, context, job), &mut job);
+            assert_eq!(actual, expected, "{case}");
+            if has_roster {
+                // No census span: neither header, the country table, a
+                // country's identity, nor a link the roster resolves.
+                let spans: Vec<_> = job.log.spans.iter().map(|span| span.addr).collect();
+                for address in [
+                    kit::GAME_STATE + cgame_state::COUNTRIES,
+                    kit::GAME_STATE + cgame_state::COUNTRY_LINKS,
+                    CTAB + 8,
+                    CTAB + 16,
+                    kit::C0,
+                    kit::C0 + ccountry::ID,
+                    LTAB + 4,
+                    LTAB + 8,
+                ] {
+                    assert!(!spans.contains(&address), "{case}: {address:#x}");
+                }
+                assert!(spans.len() < plain.log.spans.len(), "{case}");
+                // The replay reads the null slot's link, so the copy took it.
+                if *name == "null-slot owner" {
+                    assert!(spans.contains(&(LTAB + 12)), "{case}");
+                }
+                // Without room for the roster the census copy is taken.
+                let mut tight = NavalJob::new();
+                tight.roster = ccountry::RosterSnapshot::with_capacity(0);
+                let short = hourly(&|job| copy_naval_refresh(&roster, context, job), &mut tight);
+                assert_eq!(short, expected, "{case}");
+                assert!(tight.roster.roster(kit::BASE, kit::GAME_STATE).is_none());
+                assert!(tight.grow_for_next());
+                assert_eq!(tight.log.spans.len(), plain.log.spans.len(), "{case}");
+            }
+        }
+        assert!(roster_used >= variants.len() - 3, "{roster_used}");
+    }
+
+    #[test]
+    fn hourly_land_theatre_owner_fault_does_not_publish_a_header() {
+        use super::naval_test_kit as kit;
+        let mut bytes = kit::fixture();
+        bytes[kit::THEATRE + ctheatre::OWNER..kit::THEATRE + ctheatre::OWNER + 4].fill(0);
+        let memory = kit::memory(&bytes);
+        let mut job = NavalJob::new();
+        let copy = copy_naval_refresh(
+            &memory,
+            NavalCopyContext {
+                base: kit::BASE,
+                game_state: kit::GAME_STATE,
+                hour: 1,
+                force_full: false,
+            },
+            &mut job,
+        );
+        assert!(copy.raw_ok);
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        captured.prepare_hour(1, false);
+        decode_naval_payload(&mut captured, kit::BASE, &job, &mut [0; NAVAL_PACK_N]);
+        assert!(matches!(captured.land.outcome, Outcome::Unavailable { .. }));
+        assert_eq!(&captured.outcomes()[5..10], &[SKIPPED; 5]);
+    }
+    #[test]
+    fn land_theatre_headers_and_order_of_battle_are_hourly() {
+        use replay::rows::TableId;
+        for (slot, table) in [
+            TableId::LandTheatres,
+            TableId::LandTheatreGroups,
+            TableId::LandTheatreMembers,
+            TableId::AirTheatres,
+            TableId::AirTheatreGroups,
+            TableId::AirTheatreMembers,
+            TableId::OrdersGroups,
+            TableId::OrdersGroupMembers,
+            TableId::ArmyGroupMembers,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let daily = (1..6).contains(&slot);
+            assert_eq!(replay::cadence::is_staggered(table), daily, "{table:?}");
+            for hour in -24_i32..48 {
+                assert_eq!(
+                    replay::cadence::is_refresh(table, hour),
+                    !daily || hour.rem_euclid(24) == 13,
+                    "{table:?} at {hour}"
+                );
+            }
         }
     }
 
@@ -3370,33 +4256,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn theatres_use_slot_13_and_order_of_battle_remains_hourly() {
-        use replay::rows::TableId;
-        for (slot, table) in [
-            TableId::LandTheatres,
-            TableId::LandTheatreGroups,
-            TableId::LandTheatreMembers,
-            TableId::AirTheatres,
-            TableId::AirTheatreGroups,
-            TableId::AirTheatreMembers,
-            TableId::OrdersGroups,
-            TableId::OrdersGroupMembers,
-            TableId::ArmyGroupMembers,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            assert_eq!(replay::cadence::is_staggered(table), slot < 6, "{table:?}");
-            for hour in -24_i32..48 {
-                assert_eq!(
-                    replay::cadence::is_refresh(table, hour),
-                    slot >= 6 || hour.rem_euclid(24) == 13,
-                    "{table:?} at {hour}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn naval_split_copy_matches_direct_walk() {
@@ -3478,6 +4337,7 @@ mod tests {
                 sunk_names: 1024,
                 orders_sources: 64,
                 wing_sources: 64,
+                roster_scratch: 64,
             };
             let direct = kit::direct_with(&memory, &capacity);
             let (split, report, _) = kit::split_with(&memory, &capacity);
@@ -3491,6 +4351,7 @@ mod tests {
             sunk_names: 1024,
             orders_sources: 64,
             wing_sources: 64,
+            roster_scratch: 64,
         };
         let (split, _, _) = kit::split_with(&memory, &capacity);
         assert_eq!(split.land_outcome, Outcome::Rows { len: 1 });
@@ -4047,7 +4908,7 @@ pub(crate) mod naval_test_kit {
     pub(crate) const GAME_STATE: usize = 0x10000;
     const CTAB: usize = 0x11000;
     const LTAB: usize = 0x12000;
-    const C0: usize = 0x20000;
+    pub(super) const C0: usize = 0x20000;
     pub(crate) const THEATRE: usize = 0x30000;
     pub(crate) const GROUP: usize = 0x31000;
     const MEMBERS: usize = 0x32000;
@@ -4244,6 +5105,7 @@ pub(crate) mod naval_test_kit {
         SliceMemory { base: 0, bytes }
     }
 
+    #[derive(Debug, PartialEq)]
     pub(crate) struct Split {
         pub land_outcome: Outcome,
         pub land: Vec<engine::ctheatre::Row>,
@@ -4267,6 +5129,7 @@ pub(crate) mod naval_test_kit {
             memory,
             BASE,
             GAME_STATE,
+            true,
             engine::ctheatre::Buffers {
                 land: &mut captured.land.rows,
                 land_groups: &mut captured.land_groups.rows,
@@ -4293,6 +5156,7 @@ pub(crate) mod naval_test_kit {
                     groups: &mut captured.groups.rows,
                     members: &mut captured.group_members.rows,
                     children: &mut captured.group_children.rows,
+                    roster_scratch: &mut vec![Default::default(); roots_len],
                 },
             );
             captured.groups.outcome = walk.groups;
@@ -4319,7 +5183,71 @@ pub(crate) mod naval_test_kit {
         collect(memory, &Capacities::default())
     }
 
+    fn decoded(captured: &Captured) -> Split {
+        Split {
+            land_outcome: captured.land.outcome,
+            land: captured.land.rows.clone(),
+            groups_outcome: captured.land_groups.outcome,
+            groups: captured.land_groups.rows.clone(),
+            members_outcome: captured.land_members.outcome,
+            members: captured.land_members.rows.clone(),
+            oob_groups_outcome: captured.groups.outcome,
+            oob_groups: captured.groups.rows.clone(),
+            oob_members_outcome: captured.group_members.outcome,
+            oob_members: captured.group_members.rows.clone(),
+            oob_children_outcome: captured.group_children.outcome,
+            oob_children: captured.group_children.rows.clone(),
+        }
+    }
+
+    /// The same pass given the callback's registry census, as the Naval job
+    /// is: the copy walks the census roots, the decode takes them, and the
+    /// decoded tables are the registry copy's. A complete census records no
+    /// registry, identity or country span; any other census is not kept, and
+    /// the copy records the registry exactly as without it.
+    fn assert_census_roots_decode_the_same(
+        memory: &impl Memory,
+        capacity: &Capacities,
+        expected: &Split,
+        registry: &NavalJob,
+    ) {
+        let ctx = NavalCopyContext {
+            hour: 0,
+            force_full: true,
+            base: BASE,
+            game_state: GAME_STATE,
+        };
+        let mut roots = vec![engine::corders_group::Root::default(); 64];
+        let outcome = engine::corders_group::walk_roots(memory, BASE, &mut roots);
+        let mut job = NavalJob::new();
+        stage_wings(memory, &mut job);
+        job.capture_roots(&roots[..outcome.len().min(roots.len())], outcome);
+        assert!(super::copy_naval_refresh(memory, ctx, &mut job).raw_ok);
+        let mut captured = Captured::with_capacities(capacity);
+        super::decode_naval_payload(&mut captured, BASE, &job, &mut [0u64; 9]);
+        assert_eq!(&decoded(&captured), expected, "census {outcome:?}");
+        let spans = |job: &NavalJob| job.log.spans.len();
+        match outcome {
+            Outcome::Rows { len } => {
+                assert_eq!(job.roots_len, Some(len));
+                assert!(spans(&job) < spans(registry), "census {outcome:?}");
+            }
+            _ => {
+                assert_eq!(job.roots_len, None);
+                assert_eq!(spans(&job), spans(registry), "census {outcome:?}");
+            }
+        }
+    }
+
     pub(crate) fn split(memory: &impl Memory) -> (Split, NavalCopyReport, NavalJob) {
+        let split = split_registry(memory);
+        assert_census_roots_decode_the_same(memory, &Capacities::default(), &split.0, &split.2);
+        split
+    }
+
+    /// [`split`] without the census-roots pass, for tests that count the
+    /// copy's reads.
+    pub(crate) fn split_registry(memory: &impl Memory) -> (Split, NavalCopyReport, NavalJob) {
         let ctx = NavalCopyContext {
             hour: 0,
             force_full: true,
@@ -4374,6 +5302,7 @@ pub(crate) mod naval_test_kit {
         let mut captured = Captured::with_capacities(capacity);
         let mut ticks = [0u64; 9];
         super::decode_naval_payload(&mut captured, BASE, &first, &mut ticks);
+        assert_census_roots_decode_the_same(memory, capacity, &decoded(&captured), &first);
         (
             Split {
                 land_outcome: captured.land.outcome,
@@ -4401,6 +5330,7 @@ pub(crate) mod naval_test_kit {
             sunk_names: 8,
             orders_sources: 1,
             wing_sources: 1,
+            roster_scratch: 8,
         };
         collect(memory, &capacity)
     }
@@ -4422,10 +5352,12 @@ pub(crate) mod naval_test_kit {
             sunk_names: 8,
             orders_sources: 1,
             wing_sources: 1,
+            roster_scratch: 8,
         };
         let mut captured = Captured::with_capacities(&capacity);
         let mut ticks = [0u64; 9];
         super::decode_naval_payload(&mut captured, BASE, &first, &mut ticks);
+        assert_census_roots_decode_the_same(memory, &capacity, &decoded(&captured), &first);
         (
             Split {
                 land_outcome: captured.land.outcome,
@@ -4662,7 +5594,7 @@ pub(crate) mod naval_test_kit {
             };
             let direct = direct(&memory);
             memory.reads.borrow_mut().clear();
-            let (replayed, report, _) = split(&memory);
+            let (replayed, report, _) = split_registry(&memory);
             assert_matches_direct(&replayed, &direct);
             assert!(report.raw_ok, "{name}");
             if required_fault {
@@ -4696,13 +5628,16 @@ pub(crate) mod naval_test_kit {
             }
             assert!(!reads.contains(&(OOB_MEMBER, 16)), "{name}");
             if provider {
+                // The provider field is taken with the root's other own
+                // fields, then its host identity and backlink.
+                let field = reads
+                    .iter()
+                    .position(|&read| read == (OOB_GROUP + corders_group::HQ_PROVIDER, 8));
+                let host = reads
+                    .windows(2)
+                    .position(|window| window == [(OOB_UNIT, 32), (backlink, 8)]);
                 assert!(
-                    reads.windows(3).any(|window| window
-                        == [
-                            (OOB_GROUP + corders_group::HQ_PROVIDER, 8),
-                            (OOB_UNIT, 32),
-                            (backlink, 8),
-                        ]),
+                    field.is_some() && host.is_some() && field < host,
                     "{name}"
                 );
             }
@@ -4727,7 +5662,131 @@ pub(crate) mod naval_test_kit {
             }
         }
     }
+    thread_local! {
+        /// Test builds only: take each order-of-battle root's own fields one
+        /// by one, as before the gathered copy, for the reference log.
+        pub(crate) static OOB_PER_FIELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Each order-of-battle root's own one-entry spans are taken in one
+    /// guarded copy. With every reference in use, and a fault at every byte
+    /// of the root's fields and of what they reference, the log holds exactly
+    /// the spans, bytes and failures of taking each field on its own, and it
+    /// decodes, with the registry and with the census roots, to the typed
+    /// walk's tables.
+    #[test]
+    fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
+        use engine::{corders_group, corders_group_member};
+        use std::cell::RefCell;
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            address: Option<usize>,
+            copies: RefCell<usize>,
+        }
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                *self.copies.borrow_mut() += 1;
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if self
+                    .address
+                    .is_some_and(|fault| address <= fault && fault < end)
+                {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        const LEADER: usize = 0x68000;
+        let mut bytes = fixture();
+        // An army group that is its own parent, with no children.
+        p64(
+            &mut bytes,
+            OOB_GROUP,
+            (BASE + engine::carmy_group::VTABLE_RVA) as u64,
+        );
+        bytes[OOB_GROUP + corders_group::IS_ARMY_GROUP] = 1;
+        header(&mut bytes, OOB_GROUP + engine::carmy_group::MEMBER_DATA, 0x66000, 0);
+        bytes[OOB_GROUP + corders_group::MOTORIZATION_LEVEL] = 3;
+        p64(&mut bytes, OOB_GROUP + corders_group::THEATRE, THEATRE as u64);
+        p64(&mut bytes, OOB_GROUP + corders_group::THEATER_GROUP, GROUP as u64);
+        p64(&mut bytes, OOB_GROUP + corders_group::PARENT, OOB_GROUP as u64);
+        p64(&mut bytes, OOB_GROUP + corders_group::LEADER, LEADER as u64);
+        p64(&mut bytes, OOB_GROUP + corders_group::HQ_PROVIDER, OOB_MEMBER as u64);
+        p64(&mut bytes, LEADER, (BASE + engine::carmy_leader::VTABLE_RVA) as u64);
+        p64(&mut bytes, LEADER + 8, (9u64 << 32) | 4713);
+        let spans = |job: &NavalJob| {
+            let mut spans: Vec<_> = job
+                .log
+                .spans
+                .iter()
+                .map(|span| {
+                    let bytes = if span.ok {
+                        job.log.bytes[span.start as usize..][..span.len as usize].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    (span.addr, span.len, span.ok, span.mask, bytes)
+                })
+                .collect();
+            spans.sort();
+            spans
+        };
+        let backlink = OOB_MEMBER + corders_group_member::GROUP;
+        let objects = [
+            (OOB_GROUP, corders_group::SIZE),
+            (THEATRE, 0x20),
+            (GROUP, 0x20),
+            (LEADER, 0x20),
+            (OOB_UNIT, 0x20),
+            (backlink, 8),
+        ];
+        let faults = std::iter::once(None).chain(
+            objects
+                .iter()
+                .flat_map(|&(object, size)| (object..object + size).map(Some)),
+        );
+        let mut copies = [0; 2];
+        for fault in faults {
+            let memory = Fault {
+                memory: memory(&bytes),
+                address: fault,
+                copies: RefCell::new(0),
+            };
+            let direct = direct(&memory);
+            let (gathered, report, _) = split(&memory);
+            assert!(report.raw_ok, "fault {fault:x?}");
+            // The typed reference walks the order of battle only over a
+            // complete registry census; where that fails, the decode reports
+            // the failure instead, with or without the gathered copy.
+            let mut roots = [corders_group::Root::default(); 8];
+            if matches!(
+                corders_group::walk_roots(&memory, BASE, &mut roots),
+                Outcome::Rows { .. }
+            ) {
+                assert_matches_direct(&gathered, &direct);
+            }
+            OOB_PER_FIELD.set(true);
+            *memory.copies.borrow_mut() = 0;
+            let (per_field, _, reference) = split_registry(&memory);
+            copies[1] += *memory.copies.borrow();
+            OOB_PER_FIELD.set(false);
+            *memory.copies.borrow_mut() = 0;
+            let (_, _, registry) = split_registry(&memory);
+            copies[0] += *memory.copies.borrow();
+            assert_eq!(gathered, per_field, "fault {fault:x?}");
+            assert_eq!(spans(&registry), spans(&reference), "fault {fault:x?}");
+            if fault.is_none() {
+                assert_eq!(gathered.oob_groups_outcome, Outcome::Rows { len: 1 });
+            }
+        }
+        // Through the plain slice every span is still one copy; the gathered
+        // copy's saving is in guarded calls, which the bench counts.
+        assert_eq!(copies[0], copies[1]);
+    }
 }
+
 
 /// Shared synthetic address space for the supremacy copy/decode harness:
 /// two region slots (one null) with dominance containers and value entries.
@@ -5211,5 +6270,180 @@ pub(crate) mod sunk_test_kit {
         assert_eq!(split.rows, direct.rows, "sunk rows");
         assert_eq!(split.bytes_len, direct.bytes_len, "sunk bytes len");
         assert_eq!(split.required, direct.required, "sunk required");
+    }
+}
+
+/// Ignored capture-cost bench; see `bench_world` for the assumed scale. Run
+/// with `cargo test -p collector --release -- --ignored l3b_bench --nocapture`.
+/// Each case times the copies through the plain slice and through the
+/// production guarded source, counts one copy's source requests, and times
+/// the decode of the recorded log.
+#[cfg(test)]
+mod l3b_bench {
+    use super::*;
+    use crate::extended::bench_world::{self, Shape, World};
+
+    /// The median and p95 of the LandTheatres header copy, of the order of
+    /// battle copy and of the callback's registry census it walks, in µs.
+    fn time_copies(
+        memory: &impl engine::Memory,
+        world: &World,
+        job: &mut NavalJob,
+    ) -> [(f64, f64); 3] {
+        let theatres = bench_world::time(50, || {
+            job.log.clear();
+            copy_naval_theatres(
+                &mut job.log,
+                &mut job.roster,
+                memory,
+                world.base,
+                world.game_state,
+                false,
+            );
+        });
+        // The pass clears the log first; so does each timed copy.
+        let oob = bench_world::time(50, || {
+            job.log.clear();
+            copy_naval_oob(job, memory, world.base);
+            assert!(!job.log.overflowed);
+        });
+        let mut roots = vec![corders_group::Root::default(); world.groups as usize];
+        let census = bench_world::time(50, || {
+            let outcome = corders_group::walk_roots(memory, world.base, &mut roots);
+            job.capture_roots(&roots, outcome);
+        });
+        assert!(job.roots_len.is_some());
+        [theatres, oob, census]
+    }
+
+    /// The callback's registry census of the pass into the job's snapshot.
+    fn census_roots(memory: &impl engine::Memory, world: &World, job: &mut NavalJob) {
+        let mut roots = vec![corders_group::Root::default(); world.groups as usize];
+        let outcome = corders_group::walk_roots(memory, world.base, &mut roots);
+        job.capture_roots(&roots, outcome);
+    }
+
+    #[test]
+    #[ignore = "timing bench"]
+    fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
+        for countries in [1_500, 5_000] {
+            for theatre_links in [true, false] {
+                let world = bench_world::build(
+                    countries,
+                    Shape {
+                        named: true,
+                        theatre_links,
+                    },
+                );
+                let slice = world.slice();
+                // The callback's country census of the hour, as the Naval job
+                // sees it: every copy reads through its roster view.
+                let mut countries_cache = engine::country_memory::Cache::with_capacity(
+                    engine::country_memory::Cache::cells_for_countries(
+                        countries as usize + 1,
+                        crate::country_scale::MIN_COUNTRY_CELLS,
+                    ),
+                );
+                let _ = countries_cache.prepare(&slice, world.base, world.game_state);
+                let live = world.live();
+                let slice_roster = countries_cache.roster_view(&slice);
+                let live_roster = countries_cache.roster_view(&live);
+                let mut job = NavalJob::new();
+                // An off-slot hour: the land theatre headers and the order of
+                // battle are the hourly work; theatre details stay daily.
+                let ctx = NavalCopyContext {
+                    hour: 1,
+                    force_full: false,
+                    base: world.base,
+                    game_state: world.game_state,
+                };
+                // Grow the raw log and the roster snapshot off the clock, as
+                // the spool thread does, so every case times the steady path.
+                while {
+                    census_roots(&slice, &world, &mut job);
+                    !copy_naval_refresh(&slice_roster, ctx, &mut job).raw_ok
+                        || job.grow_for_next()
+                } {
+                    job.grow();
+                }
+                assert!(job.roots_len.is_some());
+                let ((), census_work) = world.counted(|memory| {
+                    census_roots(memory, &world, &mut job);
+                });
+                let ((), theatres_work) = world.counted(|memory| {
+                    job.log.clear();
+                    copy_naval_theatres(
+                        &mut job.log,
+                        &mut job.roster,
+                        &countries_cache.roster_view(memory),
+                        world.base,
+                        world.game_state,
+                        false,
+                    );
+                });
+                let ((), oob_work) = world.counted(|memory| {
+                    job.log.clear();
+                    copy_naval_oob(&mut job, &countries_cache.roster_view(memory), world.base);
+                });
+                let all = |counts| {
+                    bench_world::work(bench_world::total(&counts, &replay::rows::TableId::ALL))
+                };
+                println!(
+                    "naval-work countries={countries} theatre_links={theatre_links}: LandTheatres copy {}; order-of-battle copy {}; roots census {}",
+                    all(theatres_work),
+                    all(oob_work),
+                    all(census_work)
+                );
+                for source in ["slice", "live"] {
+                    let [(theatres, theatres_p95), (oob, oob_p95), (census, census_p95)] =
+                        if source == "slice" {
+                            time_copies(&slice_roster, &world, &mut job)
+                        } else {
+                            time_copies(&live_roster, &world, &mut job)
+                        };
+                    println!(
+                        "naval countries={countries} theatres={countries} groups={} theatre_links={theatre_links} source={source}: LandTheatres copy {theatres:.1} us (p95 {theatres_p95:.1}), order-of-battle copy {oob:.1} us (p95 {oob_p95:.1}), roots census {census:.1} us (p95 {census_p95:.1})",
+                        world.groups,
+                    );
+                }
+                assert!(copy_naval_refresh(&slice_roster, ctx, &mut job).raw_ok);
+                let rows = 4 * world.groups as usize;
+                let capacity = Capacities {
+                    rows: [rows; N],
+                    ..Capacities::default()
+                };
+                let mut captured = Captured::with_capacities(&capacity);
+                let mut ticks = [0; NAVAL_PACK_N];
+                // The raw replay's decode of every hourly naval table: the
+                // registry census, the order of battle and the theatre headers.
+                let (decode, decode_p95) = bench_world::time(20, || {
+                    decode_naval_payload(&mut captured, world.base, &job, &mut ticks);
+                });
+                assert_eq!(
+                    captured.land.outcome,
+                    Outcome::Rows {
+                        len: countries as usize
+                    }
+                );
+                assert_eq!(
+                    captured.groups.outcome,
+                    Outcome::Rows {
+                        len: world.groups as usize
+                    }
+                );
+                assert_eq!(
+                    captured.groups.rows[..world.groups as usize]
+                        .iter()
+                        .all(|row| row.theatre_ordinal.is_some()),
+                    theatre_links
+                );
+                println!(
+                    "naval-decode countries={countries} theatre_links={theatre_links}: hourly naval decode {decode:.1} us (p95 {decode_p95:.1}), raw bytes {}, spans {}, bulk {}",
+                    job.log.raw_bytes.iter().sum::<u64>(),
+                    job.log.spans.len(),
+                    job.log.has_bulk
+                );
+            }
+        }
     }
 }

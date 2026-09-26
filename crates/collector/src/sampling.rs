@@ -1358,13 +1358,20 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 let bytes = request.allocated_bytes();
                 (queue!(acquisition::Job::Governance(request)), bytes)
             });
+            // Naval uses this callback's independently bounded wing-membership census.
+            let mut naval_job = decode::acquire_naval_job();
+            // The orders-group registry census, once for the pass: the Orders
+            // job's army-order census and the Naval job's order-of-battle copy
+            // both walk these roots. This callback holds the game thread
+            // until both have finished; neither keeps them past the pass.
+            frame.map.orders.walk_roots(&memory, shared.base);
+            let naval_roots_ticks =
+                naval_job.capture_roots(frame.map.orders.roots(), frame.map.orders.root_outcome);
             let orders_request = frame
                 .extended
                 .take_orders_request(&mut frame.map.orders, shared.base);
             let orders_bytes = orders_request.allocated_bytes();
             let orders_pending = queue!(acquisition::Job::Orders(orders_request));
-            // Naval uses this callback's independently bounded wing-membership census.
-            let mut naval_job = decode::acquire_naval_job();
             let wing_limits = frame.extended.air_wing_pilot().wing_limits();
             let air_ctx = extended::air::AirWingCopyContext {
                 base: shared.base,
@@ -1927,7 +1934,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 hour: clock.hour,
                 force_full,
             };
-            let mut naval_install_ticks = 0;
+            let mut naval_install_ticks = naval_roots_ticks;
             if let Some(wings) = air_wing_payload.as_ref() {
                 naval_install_ticks += naval_job.install_wings(wings);
             }

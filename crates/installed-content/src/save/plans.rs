@@ -1,7 +1,7 @@
 //! Battle-plan save fields; spelling is pinned by token registration and serializers.
 use super::{
-    BTreeMap, BTreeSet, Item, block, boolean, field, integer, integer_list, invalid, object_id,
-    required_bytes, scalar, typed_handle,
+    BTreeMap, BTreeSet, Item, block, boolean, bytes, field, integer, integer_list, invalid,
+    object_id, required_bytes, scalar, typed_handle,
 };
 use std::io;
 
@@ -18,6 +18,14 @@ pub struct Order {
     pub has_child: Option<bool>,
     pub owner_override: u64,
     pub assigned: Vec<u64>,
+    /// `type`: the order kind.
+    pub order_type: i32,
+    /// Ordinary successors in native order (`order_children`, token 0x30B3,
+    /// repeated scalars from `COrderInstance::serialize@1410362C0`).
+    pub successors: Vec<u32>,
+    /// The order-name strings in `ArmyOrderPlanRow` order: prefix, name,
+    /// first, second, unique, postfix. An absent key is an empty string.
+    pub names: [Vec<u8>; 6],
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Front {
@@ -30,6 +38,8 @@ pub struct Tables {
     pub orders: BTreeMap<(u64, u32), Order>,
     pub fronts: BTreeMap<u64, Front>,
     pub colors: BTreeMap<u64, Option<Vec<u32>>>,
+    /// Each plan group's saved `name`.
+    pub group_names: BTreeMap<u64, Vec<u8>>,
     /// Each group's saved `order_instance` then `fallback` instance ids, in
     /// serializer order.
     pub group_orders: BTreeMap<u64, [Vec<u32>; 2]>,
@@ -43,6 +53,25 @@ fn flag(items: &[Item], key: &[u8]) -> io::Result<bool> {
 fn optional_int(items: &[Item], key: &[u8]) -> io::Result<Option<i32>> {
     field(items, key)?.map(|v| integer(scalar(v)?)).transpose()
 }
+fn repeated_ids(items: &[Item], key: &[u8]) -> io::Result<Vec<u32>> {
+    items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(key))
+        .map(|item| integer(scalar(&item.value)?))
+        .collect()
+}
+/// writes each only when its string is nonempty: `COrderInstance+0x1A0` as
+/// `prefix` (token 0x30F8), `+0x120` as `operation` (0x2F1B), `+0x140` as
+/// `first` (0x28DE), `+0x160` as `second` (0x28DF), `+0x180` as `unique`
+/// (0x30FA, not in checksum mode) and `+0x1C0` as `postfix` (0x4A69).
+const NAME_KEYS: [&[u8]; 6] = [
+    b"prefix",
+    b"operation",
+    b"first",
+    b"second",
+    b"unique",
+    b"postfix",
+];
 
 impl Tables {
     pub(super) fn country(&mut self, country: &[Item]) -> io::Result<()> {
@@ -102,6 +131,8 @@ impl Tables {
                         if self.colors.insert(handle, color).is_some() {
                             return Err(invalid("duplicate saved plan group"));
                         }
+                        self.group_names
+                            .insert(handle, bytes(group, b"name")?.unwrap_or_default());
                         for item in group.iter().filter(|i| {
                             matches!(
                                 i.key.as_deref(),
@@ -142,6 +173,15 @@ impl Tables {
                                     .transpose()?
                                     .unwrap_or(0),
                                 assigned,
+                                order_type: optional_int(items, b"type")?.unwrap_or(0),
+                                successors: repeated_ids(items, b"order_children")?,
+                                names: {
+                                    let mut names: [Vec<u8>; 6] = Default::default();
+                                    for (name, key) in names.iter_mut().zip(NAME_KEYS) {
+                                        *name = bytes(items, key)?.unwrap_or_default();
+                                    }
+                                    names
+                                },
                             };
                             if self.orders.insert((handle, instance), order).is_some() {
                                 return Err(invalid("duplicate saved plan order"));
@@ -179,6 +219,26 @@ mod tests {
         assert_eq!(front.section_ids, vec![4, 2]);
         assert_eq!(front.section_ends, vec![4, 4]);
         assert_eq!(front.pairs, vec![1, 2, 1, 3]);
+    }
+    #[test]
+    fn order_names_read_the_tokens_the_serializer_writes() {
+        // W2: `+0x120` is saved as `operation`, not `name`.
+        let tables = parse("theatres={theatre={orders_group={id={id=8 type=53} order_instance={instance_id=3 operation=\"o_phalanx\" prefix=\"o_operation\"} order_instance={instance_id=4 first=\"o_red\" second=\"o_go\" unique=\"Riga\" postfix=\"o_offensive\"}}}}").unwrap();
+        let named = &tables.orders[&((8 << 32) | 53, 3)];
+        assert_eq!(named.names[0], b"o_operation");
+        assert_eq!(named.names[1], b"o_phalanx");
+        assert!(named.names[2..].iter().all(Vec::is_empty));
+        let paired = &tables.orders[&((8 << 32) | 53, 4)];
+        assert!(paired.names[0].is_empty() && paired.names[1].is_empty());
+        assert_eq!(
+            paired.names[2..],
+            [
+                b"o_red".to_vec(),
+                b"o_go".to_vec(),
+                b"Riga".to_vec(),
+                b"o_offensive".to_vec()
+            ]
+        );
     }
     #[test]
     fn malformed_pairs_duplicate_sections_and_invalid_flags_are_refused() {

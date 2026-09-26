@@ -1,0 +1,191 @@
+//! The paradrop arrow's geometry and lift, as
+//! `BuildParadropArrowGeometry@14123EB20` makes them.
+//!
+//! The source is `COrderInstance+0xB8` (`ArmyOrders.paradrop_target`, the
+//! save's `invasion_source`) and the target the first path province. A
+//! paradrop is one straight source-to-target segment, densified by
+//! `rail_arrow_geometry_builder@141251430` and lifted into a sine arc by
+//! `paradrop_height_callback@14123FD20`; nothing smooths it.
+//!
+//! Invasions are refused (see [`super::build`]). Their builder
+//! (`BuildInvasionArrowGeometry@14123DDC0`) draws `[source, sea route...,
+//! path[0]]`, each province centroid wrapped against the previous control,
+//! then that hop's raw adjacency crossing, then the move smoothing; the sea
+//! route is `CheckNavalInvasionRoute@1410277D0`'s mode-0 path search, which the
+//! follow-up ports on the recorded move world.
+
+use super::fixed::{Point, SCALE};
+
+/// `140A50740`: brings `x` within half the map width of `reference`, both
+/// fixed5, `width` in whole pixels (`CMap+0x40`). Integer `W / 2`, strict `>`.
+fn wrap_x(reference: i64, x: &mut i64, width: i64) {
+    if width <= 0 {
+        return;
+    }
+    let half = (width / 2) * SCALE;
+    while (reference - *x).abs() > half {
+        *x += if reference - *x < 0 { -width } else { width } * SCALE;
+    }
+}
+
+/// `rail_arrow_geometry_builder@141251430`'s point cap: past `0x1FFF` controls
+/// it adds nothing.
+const POINT_CAP: usize = 0x1FFF;
+
+/// `14123EB20`: the paradrop's stored controls from the source and target
+/// centroids (fixed5). The first builder call pushes the source twice; the
+/// second splits the segment into steps of the builder's threshold length,
+/// or replaces the last control with the target when the segment is shorter.
+pub fn paradrop_controls(source: Point, mut target: Point, width: i64) -> Vec<Point> {
+    wrap_x(source[0], &mut target[0], width);
+    let mut controls = vec![source, source];
+    // The second call, at `c = 2`: `min(c * 1e10 / 4e6, 100000) * 0x490C0 /
+    // 100000 + 800`, squared fixed5 pixels.
+    let count = controls.len() as i64;
+    let threshold = (count * 10_000_000_000 / 4_000_000).min(SCALE) * 0x490C0 / SCALE + 800;
+    let squared = |from: Point| {
+        let (dx, dz) = (target[0] - from[0], target[1] - from[1]);
+        dx.wrapping_mul(dx) / SCALE + dz.wrapping_mul(dz) / SCALE
+    };
+    let last = controls[controls.len() - 1];
+    if squared(controls[controls.len() - 2]) > threshold {
+        let steps = ((squared(last) as f32 / SCALE as f32).sqrt()
+            / (threshold as f32 / SCALE as f32).sqrt()) as i64;
+        let steps = steps.max(1);
+        let step = [
+            (target[0] - last[0]).wrapping_mul(SCALE) / (steps * SCALE),
+            (target[1] - last[1]).wrapping_mul(SCALE) / (steps * SCALE),
+        ];
+        for k in 1..steps {
+            if controls.len() > POINT_CAP - 1 {
+                break;
+            }
+            controls.push([last[0] + k * step[0], last[1] + k * step[1]]);
+        }
+        controls.push(target);
+    } else {
+        let end = controls.len() - 1;
+        controls[end] = target;
+    }
+    controls
+}
+
+/// `paradrop_height_callback@14123FD20`'s inputs, fixed once per arrow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lift {
+    /// Terrain height under the first and the last control.
+    pub from: f32,
+    pub to: f32,
+    /// `min(length * ARROW_PARADROP_HEIGHT_TO_LEN, ARROW_PARADROP_HEIGHT_MAX)`.
+    pub amplitude: f32,
+}
+
+impl Lift {
+    /// `14123FD20`'s per-arrow terms: the chord length from the integer square
+    /// root of the raw fixed5 squares, and the terrain height
+    /// (`CMap::sample_height_base_clamp@140A51F30(x, z, true)`) at each end,
+    /// x wrapped once into the map.
+    pub fn new(
+        controls: &[Point],
+        width: f32,
+        to_length: f32,
+        maximum: f32,
+        height: &dyn Fn(f32, f32) -> f32,
+    ) -> Option<Self> {
+        if controls.len() <= 1 {
+            return None;
+        }
+        let (first, last) = (controls[0], controls[controls.len() - 1]);
+        let (dx, dz) = (first[0] - last[0], first[1] - last[1]);
+        let squared = dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz));
+        let length = (squared.max(0).isqrt() as i32) as f32 / SCALE as f32;
+        let wrap = |x: f32| {
+            if x >= width {
+                x - width
+            } else if x < 0.0 {
+                x + width
+            } else {
+                x
+            }
+        };
+        let at = |point: Point| {
+            height(
+                wrap(point[0] as f32 / SCALE as f32),
+                point[1] as f32 / SCALE as f32,
+            )
+        };
+        Some(Self {
+            from: at(first),
+            to: at(last),
+            amplitude: (length * to_length).min(maximum),
+        })
+    }
+
+    /// The height at `t`, the strip sample's fraction along the arrow:
+    /// `h0 + (h1 - h0) * t + sin(t * pi) * amplitude`.
+    pub fn at(&self, t: f32) -> f32 {
+        self.from
+            + (self.to - self.from) * t
+            + (t * f32::from_bits(0x4049_0FDB)).sin() * self.amplitude
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: i64 = 5632;
+
+    #[test]
+    fn the_wrap_brings_a_point_within_half_the_map() {
+        let mut x = (W - 4) * SCALE;
+        wrap_x(4 * SCALE, &mut x, W);
+        assert_eq!(x, -4 * SCALE);
+        let mut x = 100 * SCALE;
+        wrap_x(4 * SCALE, &mut x, W);
+        assert_eq!(x, 100 * SCALE);
+        // Exactly half a map is not past it.
+        let mut x = (4 + W / 2) * SCALE;
+        wrap_x(4 * SCALE, &mut x, W);
+        assert_eq!(x, (4 + W / 2) * SCALE);
+    }
+
+    #[test]
+    fn a_short_paradrop_is_its_two_ends_and_a_long_one_is_densified() {
+        let source = [10 * SCALE, 10 * SCALE];
+        // 0.3 px: 9000 squared fixed5, under the 15760 threshold.
+        let near = [10 * SCALE + 30_000, 10 * SCALE];
+        assert_eq!(paradrop_controls(source, near, W), vec![source, near]);
+        // 10 px: sqrt(100) / sqrt(0.1576) = 25.19 -> 25 steps of 0.4 px.
+        let far = [20 * SCALE, 10 * SCALE];
+        let controls = paradrop_controls(source, far, W);
+        assert_eq!(controls.len(), 2 + 24 + 1);
+        assert_eq!(controls[0], source);
+        assert_eq!(controls[1], source);
+        assert_eq!(controls[2], [10 * SCALE + 40_000, 10 * SCALE]);
+        assert_eq!(controls[controls.len() - 1], far);
+    }
+
+    #[test]
+    fn a_paradrop_across_the_seam_takes_the_short_way() {
+        let source = [2 * SCALE, 0];
+        let target = [(W - 2) * SCALE, 0];
+        let controls = paradrop_controls(source, target, W);
+        assert_eq!(controls[controls.len() - 1], [-2 * SCALE, 0]);
+    }
+
+    #[test]
+    fn the_lift_is_a_sine_arc_over_the_terrain_line() {
+        let controls = [[0, 0], [0, 0], [100 * SCALE, 0]];
+        let height = |x: f32, _z: f32| x / 100.0;
+        let lift = Lift::new(&controls, W as f32, 0.1, 5.0, &height).unwrap();
+        assert_eq!(lift.amplitude, 5.0);
+        assert_eq!((lift.from, lift.to), (0.0, 1.0));
+        assert_eq!(lift.at(0.0), 0.0);
+        assert!((lift.at(0.5) - 5.5).abs() < 1e-5);
+        assert!((lift.at(1.0) - 1.0).abs() < 1e-5);
+        let short = Lift::new(&[[0, 0], [10 * SCALE, 0]], W as f32, 0.1, 5.0, &height).unwrap();
+        assert!((short.amplitude - 1.0).abs() < 1e-6);
+        assert_eq!(Lift::new(&[[0, 0]], W as f32, 0.1, 5.0, &height), None);
+    }
+}

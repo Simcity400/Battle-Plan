@@ -103,8 +103,11 @@ pub const fn cadence(table: TableId) -> Cadence {
         }
         TableId::ResearchSlots => Daily(11),
         TableId::ScriptFlags => Daily(12),
-        TableId::LandTheatres
-        | TableId::LandTheatreGroups
+        // Theatre details share one daily slot. LandTheatres itself (id,
+        // owner, roster ordinal) falls to the hourly arm below: hourly
+        // OrdersGroups rows name their theatre and battle plans draw in its
+        // roster order, so the roster must come from the same hour.
+        TableId::LandTheatreGroups
         | TableId::LandTheatreMembers
         | TableId::AirTheatres
         | TableId::AirTheatreGroups
@@ -258,7 +261,8 @@ mod tests {
             TableId::DivisionMovement,
             TableId::DivisionStatus,
             TableId::DivisionEtaInputs,
-            TableId::MovementDefines,
+            TableId::LandTheatres,
+            TableId::FactionTheatres,
             TableId::RadarCoverage,
             TableId::RelationLinks,
             // A template edit changes its counters' icons at any hour.

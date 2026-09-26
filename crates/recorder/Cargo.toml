@@ -11,3 +11,7 @@ replay = { path = "../replay" }
 installed-content = { path = "../installed-content" }
 serde_json = "1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Console", "Win32_System_Registry", "Win32_System_Environment", "Win32_System_Performance", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+# Hand-built movement maps for the movement oracle tests.
+installed-content = { path = "../installed-content", features = ["test-support"] }

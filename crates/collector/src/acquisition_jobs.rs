@@ -861,11 +861,16 @@ fn run_with_memory(
                 &mut request.payload,
             ))
         }
-        Job::Naval(request) => Report::Naval(naval_history::copy_naval_refresh(
-            memory,
-            request.context,
-            &mut request.payload,
-        )),
+        Job::Naval(request) => {
+            // The land theatre copy resolves countries through this
+            // callback's authenticated roster; ordinary reads stay native.
+            let cached = request.countries.roster_view(memory);
+            Report::Naval(naval_history::copy_naval_refresh(
+                &cached,
+                request.context,
+                &mut request.payload,
+            ))
+        }
         Job::Supremacy(request) => Report::Supremacy(naval_history::copy_supremacy_refresh(
             memory,
             request.context,
@@ -1041,6 +1046,7 @@ fn run_with_memory(
                 request.base,
                 request.orders.roots(),
                 request.orders.visits(),
+                request.orders.successor_lists(),
                 request.orders.root_outcome,
                 request.orders.rows.outcome,
             );

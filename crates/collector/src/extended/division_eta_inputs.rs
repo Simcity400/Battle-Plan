@@ -469,7 +469,12 @@ impl RangeCaptured {
     /// True when every row's terrain and leg span lies inside this range's arenas.
     fn spans_valid(&self) -> bool {
         let terrain = self.packet.terrain().len();
-        let legs = self.packet.legs().distance.len();
+        let legs = self.packet.leg_count();
+        let arrays = self.packet.legs();
+        if arrays.river.len() != legs || arrays.transport.len() != legs || arrays.rail.len() != legs
+        {
+            return false;
+        }
         let span = |start: usize, len: usize, total: usize| {
             start.checked_add(len).is_some_and(|end| end <= total)
         };
@@ -539,7 +544,7 @@ impl Captured {
             seed.ordinary_route
                 .and_then(|header| engine::cpdx_array::Array::from_header(header, 4))
                 .map_or(1, |route| {
-                    (route.count as usize).min(engine::cunit::ETA_PATH_CAP) + 1
+                    route.count as usize + 1
                 })
         };
         let mut remaining: usize = seeds.iter().map(weight).sum();
@@ -694,20 +699,16 @@ impl Captured {
                     speed_base: r.speed_base,
                     speed_org: r.speed_org,
                     speed_fuel: r.speed_fuel,
-                    speed_outer_scale: r.speed_outer_scale,
                     current_speed: r.current_speed,
                     terrain_speed,
                     fort_penalty: r.fort_penalty,
                     snow_penalty: r.snow_penalty,
                     river_adjustment: r.river_adjustment,
                     river_leader: r.river_leader,
-                    has_leader: r.has_leader,
                     class: r.class,
-                    invasion: r.invasion,
-                    rail_blocked: r.rail_blocked,
-                    adjacency_complete: r.adjacency_complete,
-                    leg_distance: legs.distance[span.clone()].to_vec(),
-                    leg_crossing: legs.crossing[span.clone()].to_vec(),
+                    rail_country_modifier: r.rail_country_modifier,
+                    rail_state_modifier: r.rail_state_modifier,
+                    rail_friendly_state_modifier: r.rail_friendly_state_modifier,
                     leg_river_combined: optional(legs.river, r.any_river),
                     leg_transport_speed: optional(legs.transport, r.any_transport),
                     leg_rail_speed: optional(legs.rail, r.any_rail),

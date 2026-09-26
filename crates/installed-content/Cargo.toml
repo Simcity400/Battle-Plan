@@ -14,6 +14,11 @@ serde_json = "1"
 sha2 = "0.10"
 zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
 
+[features]
+# Hand-built fixtures for other crates' unit tests, such as
+# `movement::MovementMap::from_parts`; enabled only from dev-dependencies.
+test-support = []
+
 [target.'cfg(windows)'.dependencies]
 # The monitors the game's SDL display indices name; see settings::desktops.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }

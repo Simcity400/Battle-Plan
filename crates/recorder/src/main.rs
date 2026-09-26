@@ -1,3 +1,4 @@
+mod movement_oracle;
 mod oracle;
 mod recording;
 mod replay_io;

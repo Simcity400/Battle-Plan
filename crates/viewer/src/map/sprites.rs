@@ -109,11 +109,21 @@ impl MapIcons {
         let labels = super::labels::LabelLayout::read(layers)?;
         let layouts = super::counters::Layouts::read(layers)?;
         let mut font_warnings = Vec::new();
+        // The battle-plan label font is named by `maparrows.txt`'s `arrowText`.
+        let arrow_font = super::orders::arrow_text_font(layers)?;
         let fonts = text::Fonts::load(
             layers,
             language,
-            &labels.font,
-            layouts.land.count.font.as_deref(),
+            &text::DeclaredFonts {
+                label: &labels.font,
+                counter: layouts.land.count.font.as_deref(),
+                ping: layouts
+                    .faction_ping
+                    .as_ref()
+                    .ok()
+                    .and_then(|ping| ping.count.font.as_deref()),
+                arrow: arrow_font.as_deref(),
+            },
             &mut images,
             &mut font_warnings,
         )?;
@@ -296,6 +306,12 @@ pub struct Batch {
 impl Batch {
     pub fn is_empty(&self) -> bool {
         self.quads.is_empty()
+    }
+
+    /// Empties the batch as [`Batch::default`] does, keeping its storage.
+    pub fn clear(&mut self) {
+        self.quads.clear();
+        self.layer = 0;
     }
 
     // counters

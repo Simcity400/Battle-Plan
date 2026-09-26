@@ -917,6 +917,7 @@ fn release_naval_job(mut job: NavalJob) {
     if job.grow_for_next() {
         job.grow();
     }
+    job.presize_countries();
     job.clear();
     if let Ok(mut pool) = NAVAL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
@@ -1503,6 +1504,9 @@ pub fn presize_country_pools() {
     }
     if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock() {
         pool.iter_mut().for_each(AirBasesJob::presize_countries);
+    }
+    if let Ok(mut pool) = NAVAL_JOB_POOL.lock() {
+        pool.iter_mut().for_each(NavalJob::presize_countries);
     }
 }
 
@@ -3569,7 +3573,9 @@ mod tests {
         );
         assert_eq!(frame.extended.radar_pilot().outcomes()[5], missing);
         let naval = frame.extended.naval_pilot().outcomes();
-        assert_eq!(naval[4..10], [skipped; 6]);
+        // LandTheatres headers are hourly; the theatre details are daily.
+        assert_eq!(naval[4], missing);
+        assert_eq!(naval[5..10], [skipped; 5]);
         assert_eq!(naval[14..17], [missing; 3]);
         assert_eq!(frame.extended.focus_pilot().outcomes()[..2], [missing; 2]);
         assert_eq!(calibration().refresh_jobs, 0);

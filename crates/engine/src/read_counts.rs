@@ -137,6 +137,21 @@ impl<M: Memory> Memory for CountedMemory<M> {
     }
 
     #[inline]
+    fn copy_uninit<'a>(
+        &self,
+        address: usize,
+        destination: &'a mut [std::mem::MaybeUninit<u8>],
+    ) -> Option<&'a mut [u8]> {
+        self.add_counts(ReadCounts {
+            copy_calls: 1,
+            spans: u64::from(!destination.is_empty()),
+            bytes: destination.len() as u64,
+            ..ReadCounts::ZERO
+        });
+        self.0.copy_uninit(address, destination)
+    }
+
+    #[inline]
     fn copy_scattered<const N: usize>(
         &self,
         addresses: [usize; N],

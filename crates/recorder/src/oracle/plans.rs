@@ -14,6 +14,17 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::Fronts, |r| fronts(frame, save, r));
 }
 fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    // Only successors are serialized (COrderInstance::serialize@1410362c0);
+    // reciprocal predecessor membership is exact, its order is not saved.
+    let mut predecessors: BTreeMap<(u64, u32), Vec<u32>> = BTreeMap::new();
+    for (&(group, instance), order) in &save.plans.orders {
+        for &successor in &order.successors {
+            predecessors
+                .entry((group, successor))
+                .or_default()
+                .push(instance);
+        }
+    }
     let mut rows: BTreeMap<_, _> = frame
         .complete::<tables::ArmyOrderPlans>()?
         .iter()
@@ -86,6 +97,53 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
             row.owner_override,
             saved.owner_override,
         );
+        eq(
+            report,
+            &format!("{label}.successors"),
+            &row.successors,
+            &saved.successors,
+        );
+        let mut actual = row.predecessors.clone();
+        actual.sort_unstable();
+        let mut expected = predecessors.remove(key).unwrap_or_default();
+        expected.sort_unstable();
+        eq(
+            report,
+            &format!("{label}.predecessor membership"),
+            actual,
+            expected,
+        );
+        // Names are recorded only for the arrows GfxCommonArrowUpdateCallback
+        // names; every other order records none.
+        let named = matches!(saved.order_type, 1 | 3 | 4);
+        let recorded = [
+            &row.name_prefix,
+            &row.name,
+            &row.name_first,
+            &row.name_second,
+            &row.name_unique,
+            &row.name_postfix,
+        ];
+        for ((field, actual), saved_name) in [
+            "name_prefix",
+            "name",
+            "name_first",
+            "name_second",
+            "name_unique",
+            "name_postfix",
+        ]
+        .into_iter()
+        .zip(recorded)
+        .zip(&saved.names)
+        {
+            let expected: &[u8] = if named { saved_name } else { &[] };
+            eq(
+                report,
+                &format!("{label}.{field}"),
+                actual.as_slice(),
+                expected,
+            );
+        }
         report.compared("ArmyOrderPlans", 1);
     }
     for (key, _) in rows {
@@ -96,6 +154,7 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
         );
     }
     report.limitation("save yes/no fields distinguish zero from nonzero, not distinct nonzero raw bytes; absent bindings do not preserve the invalid sentinel bits or unused section word; segment endpoints are compared only when serialized; same-hour post-sample commands may change plans", "ArmyOrderPlans");
+    report.limitation("the save stores ordinary successors in native order but not predecessor order; reciprocal predecessor membership and multiplicity are compared, native predecessor order is not", "ArmyOrderPlans.predecessors");
     Ok(())
 }
 fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
@@ -113,6 +172,12 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
         let [saved_primary, saved_fallback] =
             save.plans.group_orders.get(&row.group).unwrap_or(&empty);
         let label = format!("OrdersGroupPlans {}", row.group);
+        eq(
+            report,
+            &format!("{label}.name"),
+            Some(&row.name),
+            save.plans.group_names.get(&row.group),
+        );
         eq(
             report,
             &format!("{label}.fallback_orders"),
@@ -224,6 +289,16 @@ mod tests {
                 section: 3,
                 has_child: Some(true),
                 assigned: vec![11, 12],
+                order_type: 1,
+                successors: vec![],
+                names: [
+                    b"o_operation".to_vec(),
+                    Vec::new(),
+                    b"o_x".to_vec(),
+                    b"o_y".to_vec(),
+                    Vec::new(),
+                    Vec::new(),
+                ],
                 ..Default::default()
             },
         );
@@ -236,6 +311,7 @@ mod tests {
             },
         );
         saved.plans.colors.insert(group, Some(vec![127, 0, 0]));
+        saved.plans.group_names.insert(group, b"Army 1".to_vec());
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 0,
@@ -254,6 +330,9 @@ mod tests {
                 section: 3,
                 has_child: 255,
                 assigned_divisions: vec![11, 12],
+                name_prefix: b"o_operation".to_vec(),
+                name_first: b"o_x".to_vec(),
+                name_second: b"o_y".to_vec(),
                 ..Default::default()
             }]));
         *frame.tables[TableId::Fronts.index()] =
@@ -266,6 +345,7 @@ mod tests {
         *frame.tables[TableId::OrdersGroupPlans.index()] =
             TableView::Complete(TableRows::OrdersGroupPlans(vec![OrdersGroupPlanRow {
                 group,
+                name: b"Army 1".to_vec(),
                 ..Default::default()
             }]));
         let mut report = Report::default();
@@ -281,9 +361,19 @@ mod tests {
             .reverse();
         saved.plans.orders.get_mut(&(group, 1)).unwrap().blitz = true;
         saved.plans.fronts.get_mut(&front).unwrap().pairs.reverse();
+        // A reordered name, a successor and a renamed group each differ too.
+        saved
+            .plans
+            .orders
+            .get_mut(&(group, 1))
+            .unwrap()
+            .names
+            .swap(2, 3);
+        saved.plans.orders.get_mut(&(group, 1)).unwrap().successors = vec![7];
+        saved.plans.group_names.insert(group, b"Army 2".to_vec());
         let mut report = Report::default();
         compare(&frame, &saved, &mut report);
-        assert_eq!(report.differences.len(), 3);
+        assert_eq!(report.differences.len(), 7, "{:?}", report.differences);
         // A saved binding to a front absent from the theatres requires no row.
         let stale = (10_u64 << 32) | 66;
         saved.plans.orders.insert(
@@ -304,6 +394,8 @@ mod tests {
         let (_, mut saved, _, _) = super::super::tests::fixture();
         let group = (8_u64 << 32) | 53;
         saved.plans.colors.insert(group, None);
+        // The group's name matches, so only the roots can differ.
+        saved.plans.group_names.insert(group, Vec::new());
         // Root 1 is saved with its successor 5 before root 2; 3 is a fallback.
         saved
             .plans

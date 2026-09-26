@@ -2,7 +2,7 @@
 
 use engine::{
     Memory,
-    cdlc_manager::{self, Descriptor},
+    cdlc_manager::{self, Descriptor, mounts_match},
     walk::Outcome,
 };
 use replay::identity::{Identity, Roster as IdentityRoster, Verification};
@@ -327,43 +327,6 @@ fn same_membership(a: &[String], b: &[String]) -> bool {
     a.len() == b.len() && a.iter().collect::<BTreeSet<_>>() == b.iter().collect::<BTreeSet<_>>()
 }
 
-fn mounts_match(observed: &[Descriptor], expected: &[String]) -> bool {
-    // Empty lists cannot establish even the vanilla content root. Normalize only
-    // equivalent Windows path notation, without case folding, component
-    // resolution, or replacement of invalid UTF-8.
-    !expected.is_empty()
-        && observed.len() == expected.len()
-        && observed.iter().zip(expected).all(|(actual, wanted)| {
-            let actual = actual.as_str().and_then(mount_path);
-            let wanted = mount_path(wanted);
-            actual.is_some() && actual == wanted
-        })
-}
-
-fn mount_path(path: &str) -> Option<String> {
-    if path.is_empty() || path.chars().any(char::is_control) {
-        return None;
-    }
-    let slashes = path.replace('\\', "/");
-    let mut normalized = if let Some(unc) = slashes.strip_prefix("//?/UNC/") {
-        format!("//{unc}")
-    } else {
-        slashes.strip_prefix("//?/").unwrap_or(&slashes).to_owned()
-    };
-    let bytes = normalized.as_bytes();
-    let root_len = if bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && bytes[2] == b'/'
-    {
-        3 // C:/ must never become the drive-relative path C:.
-    } else {
-        usize::from(normalized.starts_with('/'))
-    };
-    normalized.truncate(normalized.trim_end_matches('/').len().max(root_len));
-    (!normalized.is_empty()).then_some(normalized)
-}
-
 fn observed_ids(
     rows: &[cdlc_manager::Entry],
     outcome: Outcome,
@@ -644,8 +607,6 @@ mod tests {
                 .unwrap_err()
                 .contains("mount root unreadable")
         );
-        assert!(mounts_match(&[text(b"F:/game")], &["F:\\game".to_owned()]));
-        assert!(!mounts_match(&[text(b"F:/game")], &["F:/GAME".to_owned()]));
     }
 
     /// A synthetic DLC manager and search path with `dlcs` DLC map entries,
@@ -817,35 +778,5 @@ mod tests {
                 .capacities(),
             [MINIMUM_CAPACITY; 5]
         );
-    }
-
-    #[test]
-    fn equivalent_mount_notation_preserves_root_membership_and_priority() {
-        let actual = [text(b"F:/game/dlc/a/"), text(b"F:/game/")];
-        let expected = [r"\\?\F:\game\dlc\a".to_owned(), r"\\?\F:\game".to_owned()];
-        assert!(mounts_match(&actual, &expected));
-        assert!(mounts_match(&[text(b"F:/")], &[r"\\?\F:\".to_owned()]));
-        assert_eq!(mount_path("/"), Some("/".to_owned()));
-        assert!(!mounts_match(&[text(b"F:/")], &["F:".to_owned()]));
-        assert!(!mounts_match(
-            &[text(b"F:/game/")],
-            &[r"\\?\C:\game".to_owned()]
-        ));
-        assert!(!mounts_match(
-            &actual,
-            &[expected[1].clone(), expected[0].clone()]
-        ));
-        assert!(mounts_match(
-            &[text(b"//server/share/game/")],
-            &[r"\\?\UNC\server\share\game".to_owned()]
-        ));
-        assert!(!mounts_match(
-            &[text(b"F:/game\xff")],
-            &["F:/game".to_owned()]
-        ));
-        assert!(!mounts_match(
-            &[text(b"F:/game")],
-            &["F:/game\0".to_owned()]
-        ));
     }
 }

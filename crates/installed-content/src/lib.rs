@@ -17,6 +17,7 @@ pub mod image;
 pub mod localisation;
 pub mod map;
 pub mod mesh;
+pub mod movement;
 pub mod parser;
 pub mod particles;
 pub mod positions;
@@ -28,6 +29,7 @@ pub mod settings;
 pub mod states;
 pub mod technology;
 pub mod terrain;
+pub mod train_gfx;
 pub mod weather;
 
 pub use content::{

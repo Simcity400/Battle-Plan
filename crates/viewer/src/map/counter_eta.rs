@@ -43,20 +43,59 @@ pub fn arrival(recorded_hour: i32, remaining: i64) -> Option<Arrival> {
     })
 }
 
-/// The game's own sentence. `ours` picks the destination wording over the next-province one, and
-/// `at` is [`Arrival::hour`] already written as a date.
-pub fn sentence(arrival: &Arrival, ours: bool, at: &str) -> String {
-    let place = if ours {
-        "its destination"
-    } else {
-        "the next province"
+/// The game's own sentence in the viewer's language: `UNIT_MOVING_HOURS` or
+/// `UNIT_MOVING_DAYS_HOURS`, with the `_NONPLAYER` pair for a stack the viewing
+/// country does not own, `$DAYS$`/`$HOURS$` filled and the colour codes
+/// stripped. `at` is [`Arrival::hour`] already written as a date, appended as
+/// the viewer's projected arrival. `None` when the content lacks the key.
+pub fn sentence(
+    localisation: &installed_content::localisation::Localisation,
+    arrival: &Arrival,
+    ours: bool,
+    at: &str,
+) -> Option<String> {
+    let key = match (arrival.days == 0, ours) {
+        (true, true) => "UNIT_MOVING_HOURS",
+        (false, true) => "UNIT_MOVING_DAYS_HOURS",
+        (true, false) => "UNIT_MOVING_HOURS_NONPLAYER",
+        (false, false) => "UNIT_MOVING_DAYS_HOURS_NONPLAYER",
     };
-    let when = if arrival.days == 0 {
-        format!("{} hour(s)", arrival.hours)
-    } else {
-        format!("{} day(s) and {} hour(s)", arrival.days, arrival.hours)
-    };
-    format!("The Unit will arrive in {place} in {when}. ({at})")
+    let text = substitute(
+        localisation.get(key)?,
+        &[
+            ("DAYS", arrival.days.to_string()),
+            ("HOURS", arrival.hours.to_string()),
+        ],
+    );
+    Some(format!("{} ({at})", super::text::strip_color_codes(&text)))
+}
+
+/// Replaces each `$NAME$` or `$NAME|format$` placeholder with its value; any
+/// other placeholder is kept as written.
+fn substitute(text: &str, values: &[(&str, String)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('$') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('$') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let token = &after[..end];
+        let name = token.split('|').next().unwrap_or(token);
+        match values.iter().find(|(key, _)| *key == name) {
+            Some((_, value)) => out.push_str(value),
+            None => {
+                out.push('$');
+                out.push_str(token);
+                out.push('$');
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -99,15 +138,28 @@ mod tests {
     }
 
     #[test]
-    fn the_wording_follows_the_viewing_country() {
+    fn the_wording_follows_the_viewing_country_and_the_content_text() {
+        let localisation: installed_content::localisation::Localisation = [
+            (
+                "UNIT_MOVING_HOURS",
+                "Arrives at its destination in $HOURS|Y$ §Yhour(s)§!.",
+            ),
+            (
+                "UNIT_MOVING_DAYS_HOURS_NONPLAYER",
+                "Next province in $DAYS|Y$ §Yday(s)§! and $HOURS$ h, $OTHER$.",
+            ),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
         let one = Arrival {
             days: 0,
             hours: 5,
             hour: 7,
         };
         assert_eq!(
-            sentence(&one, true, "1936-09-30  01:00"),
-            "The Unit will arrive in its destination in 5 hour(s). (1936-09-30  01:00)"
+            sentence(&localisation, &one, true, "1936-09-30  01:00").as_deref(),
+            Some("Arrives at its destination in 5 hour(s). (1936-09-30  01:00)")
         );
         let two = Arrival {
             days: 1,
@@ -115,8 +167,10 @@ mod tests {
             hour: 7,
         };
         assert_eq!(
-            sentence(&two, false, "1936-09-30  01:00"),
-            "The Unit will arrive in the next province in 1 day(s) and 5 hour(s). (1936-09-30  01:00)"
+            sentence(&localisation, &two, false, "d").as_deref(),
+            Some("Next province in 1 day(s) and 5 h, $OTHER$. (d)")
         );
+        // A key the content lacks draws no line rather than a vanilla one.
+        assert_eq!(sentence(&localisation, &one, false, "d"), None);
     }
 }

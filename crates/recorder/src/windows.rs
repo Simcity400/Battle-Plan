@@ -10,7 +10,10 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     System::{
-        Diagnostics::{Debug::WriteProcessMemory, ToolHelp::*},
+        Diagnostics::{
+            Debug::{ReadProcessMemory, WriteProcessMemory},
+            ToolHelp::*,
+        },
         LibraryLoader::*,
         Memory::*,
         Threading::*,
@@ -275,6 +278,29 @@ impl Process {
         }
         result
     }
+}
+
+/// Read-only access to another process's memory for one-shot oracles. Each
+/// copy is one `ReadProcessMemory`; a partial or failed read is a failure.
+pub struct ProcessMemory<'a>(pub &'a Handle);
+
+impl engine::Memory for ProcessMemory<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        let mut read = 0;
+        (unsafe {
+            ReadProcessMemory(
+                self.0.0,
+                address as *const c_void,
+                destination.as_mut_ptr().cast(),
+                destination.len(),
+                &mut read,
+            )
+        }) != 0
+            && read == destination.len()
+    }
+
+    /// The addresses belong to another process; a local cache hint is useless.
+    fn prefetch(&self, _address: usize, _len: usize) {}
 }
 
 pub struct Event {

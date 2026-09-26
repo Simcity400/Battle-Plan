@@ -1,4 +1,4 @@
-use std::mem::size_of;
+use std::mem::{MaybeUninit, size_of};
 
 pub use crate::read_counts::{CountedMemory, ReadCounts};
 
@@ -124,6 +124,150 @@ impl<'a> RecordLayout<'a> {
             return None;
         }
         Some(count)
+    }
+}
+
+/// Packs `(source_offset, len)` spans back to back into record fields.
+pub(crate) const fn packed_fields<const N: usize>(spans: [(usize, usize); N]) -> [RecordField; N] {
+    let mut fields = [RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 0,
+    }; N];
+    let mut index = 0;
+    let mut at = 0;
+    while index < N {
+        fields[index] = RecordField {
+            source_offset: spans[index].0,
+            destination_offset: at,
+            len: spans[index].1,
+        };
+        at += spans[index].1;
+        index += 1;
+    }
+    fields
+}
+
+/// The record stride of [`packed_fields`].
+pub(crate) const fn packed_stride<const N: usize>(spans: [(usize, usize); N]) -> usize {
+    let mut index = 0;
+    let mut at = 0;
+    while index < N {
+        at += spans[index].1;
+        index += 1;
+    }
+    at
+}
+
+/// The record position of each source byte of [`packed_fields`], or
+/// `u16::MAX` for a byte no span covers; `M` is the end of the last span.
+/// Spans must ascend without overlapping, so a source range whose two ends map
+/// `len - 1` positions apart lies in the record exactly as in the object.
+pub(crate) const fn packed_map<const N: usize, const M: usize>(
+    spans: [(usize, usize); N],
+) -> [u16; M] {
+    let mut map = [u16::MAX; M];
+    let mut index = 0;
+    let mut at = 0;
+    let mut end = 0;
+    while index < N {
+        let (source, len) = spans[index];
+        assert!(source >= end && len != 0, "packed spans must ascend");
+        assert!(at + len < u16::MAX as usize, "packed record too long");
+        let mut byte = 0;
+        while byte < len {
+            map[source + byte] = (at + byte) as u16;
+            byte += 1;
+        }
+        at += len;
+        end = source + len;
+        index += 1;
+    }
+    assert!(end == M, "map must end with the last span");
+    map
+}
+
+/// Gathers one record per pointer. `complete[row]` is set only when every
+/// field of that row copied. A failed row does not stop later rows: the copy
+/// resumes after it, so each object is read by one guarded record request
+/// and a failed object by at most one.
+pub(crate) fn gather_records(
+    memory: &impl Memory,
+    pointers: &[usize],
+    layout: &RecordLayout<'_>,
+    bytes: &mut [u8],
+    complete: &mut [bool],
+) {
+    let fields = layout.field_count().max(1);
+    let stride = layout.stride();
+    let rows = pointers.len();
+    let mut row = 0;
+    while row < rows {
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&pointers[row..]),
+            layout,
+            &mut bytes[row * stride..rows * stride],
+        );
+        let done = (copied / fields).min(rows - row);
+        complete[row..row + done].fill(true);
+        row += done;
+        if row < rows {
+            complete[row] = false;
+            row += 1;
+        }
+    }
+}
+
+/// One object's fields from [`gather_records`], or nothing when its record
+/// did not complete. Readers take a value from here first and otherwise make
+/// their original per-field read, so rows and failures are those of the
+/// per-field walk: every gathered byte is the byte that read would copy.
+#[derive(Clone, Copy)]
+pub(crate) struct Gathered<'a> {
+    /// The layout's [`packed_map`].
+    map: &'a [u16],
+    bytes: Option<&'a [u8]>,
+}
+
+impl<'a> Gathered<'a> {
+    pub(crate) const NONE: Gathered<'static> = Gathered {
+        map: &[],
+        bytes: None,
+    };
+
+    #[inline(always)]
+    pub(crate) fn row(
+        layout: &RecordLayout<'a>,
+        map: &'a [u16],
+        bytes: &'a [u8],
+        complete: &[bool],
+        row: usize,
+    ) -> Self {
+        let stride = layout.stride();
+        Self {
+            map,
+            bytes: complete
+                .get(row)
+                .copied()
+                .unwrap_or(false)
+                .then(|| &bytes[row * stride..(row + 1) * stride]),
+        }
+    }
+
+    /// The gathered value at `offset`, if the record completed and its spans
+    /// cover every byte of it. The map is constant, so a constant offset
+    /// resolves at compile time.
+    #[inline(always)]
+    pub(crate) fn get<T: Raw>(self, offset: usize) -> Option<T> {
+        let bytes = self.bytes?;
+        let last = size_of::<T>().checked_sub(1)?;
+        let first = *self.map.get(offset)?;
+        let end = *self.map.get(offset.checked_add(last)?)?;
+        if first == u16::MAX || end == u16::MAX || usize::from(end.wrapping_sub(first)) != last {
+            return None;
+        }
+        let at = usize::from(first);
+        scalar_from_bytes(bytes.get(at..=at + last)?)
     }
 }
 
@@ -253,6 +397,23 @@ fn record_source_prefix(sources: RecordSources<'_>, layout: &RecordLayout<'_>) -
 /// Implementations fill the destination or return false; a failed copy may be partial.
 pub trait Memory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool;
+
+    /// [`copy`](Self::copy) into scratch bytes that need not be initialized
+    /// first. On success every byte of `destination` holds its source byte and
+    /// is returned initialized; on failure nothing is returned, because a
+    /// failed copy may be partial and no byte of it may be read. The same
+    /// observation as `copy`: the default initializes the destination and
+    /// calls `copy`, so every adapter keeps its own caching, recording and
+    /// accounting. Leaf sources that can write uninitialized bytes override it.
+    #[inline]
+    fn copy_uninit<'a>(
+        &self,
+        address: usize,
+        destination: &'a mut [MaybeUninit<u8>],
+    ) -> Option<&'a mut [u8]> {
+        let destination = initialized(destination);
+        self.copy(address, destination).then_some(destination)
+    }
 
     /// Advisory hint for an already selected source. No value is acquired;
     /// recording adapters may retain the hint with its selecting dependencies.
@@ -541,6 +702,34 @@ pub fn read_slice(memory: &impl Memory, address: usize, destination: &mut [u8]) 
         && memory.copy(address, destination)
 }
 
+/// [`read_slice`] into uninitialized scratch: the same checks and the same
+/// single copy, returning the bytes only when every one of them was copied.
+#[inline]
+pub(crate) fn read_slice_uninit<'a>(
+    memory: &impl Memory,
+    address: usize,
+    destination: &'a mut [MaybeUninit<u8>],
+) -> Option<&'a mut [u8]> {
+    if destination.is_empty() {
+        return Some(initialized(destination));
+    }
+    if address == 0 || address.checked_add(destination.len()).is_none() {
+        return None;
+    }
+    memory.copy_uninit(address, destination)
+}
+
+/// Zeroes `bytes` and returns them initialized.
+#[inline]
+fn initialized(bytes: &mut [MaybeUninit<u8>]) -> &mut [u8] {
+    for byte in bytes.iter_mut() {
+        byte.write(0);
+    }
+    // SAFETY: every byte was written just above, and `u8` has the layout of
+    // `MaybeUninit<u8>`; the borrow is the caller's unique borrow.
+    unsafe { &mut *(std::ptr::from_mut(bytes) as *mut [u8]) }
+}
+
 /// An immutable address space backed by borrowed, already-owned bytes.
 pub struct SliceMemory<'a> {
     pub base: usize,
@@ -560,6 +749,40 @@ impl Memory for SliceMemory<'_> {
         };
         destination.copy_from_slice(source);
         true
+    }
+
+    fn copy_uninit<'a>(
+        &self,
+        address: usize,
+        destination: &'a mut [MaybeUninit<u8>],
+    ) -> Option<&'a mut [u8]> {
+        let start = address.checked_sub(self.base)?;
+        let source = self
+            .bytes
+            .get(start..start.checked_add(destination.len())?)?;
+        // SAFETY: `source` and `destination` have the same length and cannot
+        // overlap (one is borrowed shared, the other unique). The copy writes
+        // every destination byte, so all of them are initialized after it.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                source.as_ptr(),
+                destination.as_mut_ptr().cast::<u8>(),
+                source.len(),
+            );
+            Some(&mut *(std::ptr::from_mut(destination) as *mut [u8]))
+        }
+    }
+
+    /// Hints the slice bytes that back `address`, not `address` itself: the
+    /// default would hint an unrelated host address. Bytes outside the slice
+    /// are not hinted.
+    #[inline]
+    fn prefetch(&self, address: usize, len: usize) {
+        if let Some(start) = address.checked_sub(self.base)
+            && let Some(rest) = self.bytes.get(start..)
+        {
+            crate::prefetch::span(rest.as_ptr() as usize, len.min(rest.len()));
+        }
     }
 }
 
@@ -647,6 +870,32 @@ impl LiveMemory {
     }
 }
 
+/// One guarded copy of `len` foreign bytes from `address` to `destination`,
+/// true only when all of them were copied; a fault may leave a written prefix.
+///
+/// # Safety
+/// `destination` must be valid for `len` byte writes, and `address..+len`
+/// must have passed the null, overflow and canonical gates.
+#[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn guarded_copy(destination: *mut u8, address: usize, len: usize) -> bool {
+    unsafe extern "C" {
+        fn seh_guarded_copy(dst: *mut u8, src: *const u8, len: usize) -> i32;
+        fn seh_guarded_copy4(dst: *mut u8, src: *const u8) -> i32;
+        fn seh_guarded_copy8(dst: *mut u8, src: *const u8) -> i32;
+    }
+    // SAFETY: the caller's contract; C catches faults in the source range.
+    // Inlined scalar readers fold this selection to a fixed-width call.
+    let copied = unsafe {
+        match len {
+            8 => seh_guarded_copy8(destination, address as *const u8),
+            4 => seh_guarded_copy4(destination, address as *const u8),
+            len => seh_guarded_copy(destination, address as *const u8, len),
+        }
+    };
+    copied != 0
+}
+
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 impl Memory for LiveMemory {
     #[inline(always)]
@@ -728,11 +977,6 @@ impl Memory for LiveMemory {
 
     #[inline(always)]
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        unsafe extern "C" {
-            fn seh_guarded_copy(dst: *mut u8, src: *const u8, len: usize) -> i32;
-            fn seh_guarded_copy4(dst: *mut u8, src: *const u8) -> i32;
-            fn seh_guarded_copy8(dst: *mut u8, src: *const u8) -> i32;
-        }
         if destination.is_empty() {
             return true;
         }
@@ -747,14 +991,37 @@ impl Memory for LiveMemory {
             return false;
         }
         // SAFETY: destination is writable; C catches faults in the foreign source range.
+        unsafe { guarded_copy(destination.as_mut_ptr(), address, destination.len()) }
+    }
+
+    #[inline(always)]
+    fn copy_uninit<'a>(
+        &self,
+        address: usize,
+        destination: &'a mut [MaybeUninit<u8>],
+    ) -> Option<&'a mut [u8]> {
+        if destination.is_empty() {
+            return Some(initialized(destination));
+        }
+        // The same gates as `copy`, before any guarded instruction.
+        if address == 0
+            || address.checked_add(destination.len()).is_none()
+            || !is_canonical_range(address, destination.len())
+        {
+            return None;
+        }
+        // SAFETY: the destination pointer covers `len` writable bytes the
+        // caller borrows uniquely; C only stores to them and never reads them.
+        // C returns nonzero only when it copied the whole source range, so
+        // then every destination byte is initialized. On a fault it returns
+        // zero, possibly after storing a prefix, and no byte is exposed.
         unsafe {
-            // Inlined scalar readers fold this selection to a fixed-width call.
-            let copied = match destination.len() {
-                8 => seh_guarded_copy8(destination.as_mut_ptr(), address as *const u8),
-                4 => seh_guarded_copy4(destination.as_mut_ptr(), address as *const u8),
-                len => seh_guarded_copy(destination.as_mut_ptr(), address as *const u8, len),
-            };
-            copied != 0
+            guarded_copy(
+                destination.as_mut_ptr().cast::<u8>(),
+                address,
+                destination.len(),
+            )
+            .then(|| &mut *(std::ptr::from_mut(destination) as *mut [u8]))
         }
     }
 
@@ -1477,6 +1744,48 @@ mod tests {
         }
     }
 
+    /// A gathered value is served only when every byte of it was gathered:
+    /// inside one span, never across a gap, a span edge or the map's end, and
+    /// never from an incomplete record.
+    #[test]
+    fn gathered_values_come_only_from_covered_bytes_of_complete_records() {
+        const SPANS: [(usize, usize); 3] = [(0, 8), (0x10, 4), (0x20, 16)];
+        const FIELDS: [RecordField; 3] = packed_fields(SPANS);
+        const LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&FIELDS, packed_stride(SPANS)).unwrap();
+        const MAP: [u16; 0x30] = packed_map(SPANS);
+        let object: Vec<u8> = (0..0x30).collect();
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &object,
+        };
+        let mut bytes = [0; 2 * 28];
+        let mut complete = [false; 2];
+        gather_records(&memory, &[0x1000, 0], &LAYOUT, &mut bytes, &mut complete);
+        assert_eq!(complete, [true, false]);
+        let record = Gathered::row(&LAYOUT, &MAP, &bytes, &complete, 0);
+        let expect =
+            |offset: usize| u32::from_le_bytes(object[offset..offset + 4].try_into().unwrap());
+        for offset in [0, 4, 0x10, 0x20, 0x2c] {
+            assert_eq!(
+                record.get::<u32>(offset),
+                Some(expect(offset)),
+                "{offset:#x}"
+            );
+        }
+        assert_eq!(record.get::<[u8; 16]>(0x20).unwrap(), object[0x20..0x30]);
+        // Across the end of a span, a gap, an uncovered byte or the map.
+        for offset in [5, 8, 0xe, 0x11, 0x1e, 0x2d, 0x30, usize::MAX] {
+            assert_eq!(record.get::<u32>(offset), None, "{offset:#x}");
+        }
+        assert_eq!(record.get::<u64>(0x10), None);
+        assert_eq!(
+            Gathered::row(&LAYOUT, &MAP, &bytes, &complete, 1).get::<u32>(0),
+            None
+        );
+        assert_eq!(Gathered::NONE.get::<u32>(0), None);
+    }
+
     #[test]
     fn unaligned_raw_values_preserve_all_bits_and_refuse_missing_bytes() {
         let memory = SliceMemory {
@@ -1491,6 +1800,25 @@ mod tests {
         assert_eq!(read::<[u8; 0]>(&memory, 0), Some([]));
         assert_eq!(scalar_from_bytes::<i32>(&[255; 4]), Some(-1));
         assert_eq!(scalar_from_bytes::<u32>(&[255; 3]), None);
+    }
+
+    #[test]
+    fn slice_hints_accept_every_address_and_length_without_changing_reads() {
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[1, 2, 3, 4],
+        };
+        for (address, len) in [
+            (0, 4),
+            (0xfff, 2),
+            (0x1000, 0),
+            (0x1002, usize::MAX),
+            (0x1004, 1),
+            (usize::MAX, usize::MAX),
+        ] {
+            memory.prefetch(address, len);
+        }
+        assert_eq!(read::<[u8; 4]>(&memory, 0x1000), Some([1, 2, 3, 4]));
     }
 
     #[test]
@@ -1766,6 +2094,116 @@ mod tests {
             assert_eq!(first[width..], [0xa5; 64][width..]);
             assert_eq!(later, [0xa5; 8]);
         }
+    }
+
+    /// `copy_uninit` returns exactly the bytes `copy` writes, and nothing
+    /// when the copy fails, in every source: the guarded live copy across a
+    /// page it cannot read (where a failed copy may already have written a
+    /// prefix), the owned slice, the counting adapter, and the default that
+    /// initializes first. `read_slice_uninit` keeps `read_slice`'s gates.
+    #[test]
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    fn uninitialized_copies_expose_only_complete_copies() {
+        use std::{ffi::c_void, mem::MaybeUninit};
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn VirtualAlloc(
+                address: *mut c_void,
+                size: usize,
+                kind: u32,
+                protect: u32,
+            ) -> *mut c_void;
+            fn VirtualProtect(
+                address: *mut c_void,
+                size: usize,
+                protect: u32,
+                old: *mut u32,
+            ) -> i32;
+            fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32;
+        }
+        struct Pages(*mut c_void);
+        impl Drop for Pages {
+            fn drop(&mut self) {
+                // SAFETY: this test owns the complete allocation until here.
+                unsafe { VirtualFree(self.0, 0, 0x8000) };
+            }
+        }
+        // SAFETY: allocation has no requested address and no executable pages.
+        let pages = Pages(unsafe { VirtualAlloc(std::ptr::null_mut(), 8192, 0x3000, 4) });
+        assert!(!pages.0.is_null());
+        let boundary = pages.0 as usize + 4096;
+        let mut old = 0;
+        // SAFETY: both pages belong to this allocation; only page two is protected.
+        assert_ne!(
+            unsafe { VirtualProtect(boundary as *mut c_void, 4096, 1, &mut old) },
+            0
+        );
+        // SAFETY: the first page remains owned and writable.
+        let first = unsafe { std::slice::from_raw_parts_mut(pages.0.cast::<u8>(), 4096) };
+        for (index, byte) in first.iter_mut().enumerate() {
+            *byte = index as u8 ^ 0x5a;
+        }
+        // SAFETY: all sources are this test's pages; faults are contained.
+        let live = unsafe { LiveMemory::new() };
+
+        /// Default adapter: only `copy`, so `copy_uninit` initializes first.
+        struct Plain<'a>(&'a LiveMemory);
+        impl Memory for Plain<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.0.copy(address, destination)
+            }
+        }
+        let counted = CountedMemory::new(unsafe { LiveMemory::new() });
+        let slice = SliceMemory {
+            base: pages.0 as usize,
+            bytes: &first[..],
+        };
+        fn check(memory: &impl Memory, boundary: usize) {
+            for width in [1, 4, 8, 13, 64, 256, 512] {
+                for (address, whole) in [
+                    (boundary - width, true),
+                    (boundary - width + 1, false),
+                    (0, false),
+                    (usize::MAX - 2, false),
+                ] {
+                    let mut expected = vec![0xa5; width];
+                    let copied = memory.copy(address, &mut expected);
+                    assert_eq!(copied, whole, "{address:#x}+{width}");
+                    let mut scratch = [MaybeUninit::<u8>::uninit(); 512];
+                    match memory.copy_uninit(address, &mut scratch[..width]) {
+                        Some(bytes) => {
+                            assert!(whole);
+                            assert_eq!(&bytes[..], &expected[..]);
+                        }
+                        None => assert!(!whole),
+                    }
+                    let mut scratch = [MaybeUninit::<u8>::uninit(); 512];
+                    let mut plain = vec![0; width];
+                    assert_eq!(
+                        read_slice_uninit(memory, address, &mut scratch[..width])
+                            .map(|bytes| bytes.to_vec()),
+                        read_slice(memory, address, &mut plain).then_some(plain)
+                    );
+                }
+            }
+            let mut empty: [MaybeUninit<u8>; 0] = [];
+            assert_eq!(
+                read_slice_uninit(memory, 0, &mut empty).map(|b| b.len()),
+                Some(0)
+            );
+        }
+        check(&live, boundary);
+        check(&Plain(&live), boundary);
+        check(&counted, boundary);
+        check(&slice, boundary);
+        // The counting adapter counts an uninitialized copy as the copy it is.
+        ReadCounts::take_current();
+        let mut scratch = [MaybeUninit::<u8>::uninit(); 16];
+        assert!(counted.copy_uninit(boundary - 16, &mut scratch).is_some());
+        let uninit = ReadCounts::take_current();
+        assert!(counted.copy(boundary - 16, &mut [0; 16]));
+        assert_eq!(uninit, ReadCounts::take_current());
+        assert_eq!((uninit.copy_calls, uninit.spans, uninit.bytes), (1, 1, 16));
     }
 
     #[test]

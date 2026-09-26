@@ -906,9 +906,6 @@ mod tests {
                     TableId::WorldTension => TableUpdate::Snapshot(TableRows::WorldTension(vec![
                         WorldTensionRow::default(),
                     ])),
-                    TableId::MovementDefines => {
-                        TableUpdate::Snapshot(TableRows::MovementDefines(vec![Default::default()]))
-                    }
                     TableId::SimulationFeatures => {
                         TableUpdate::Snapshot(TableRows::SimulationFeatures(vec![
                             Default::default(),

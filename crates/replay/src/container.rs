@@ -1410,10 +1410,6 @@ mod tests {
             TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
         tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
-        tables[TableId::MovementDefines.index()] =
-            TableView::Complete(TableRows::MovementDefines(vec![
-                crate::rows::MovementDefinesRow::default(),
-            ]));
         tables[TableId::SimulationFeatures.index()] =
             TableView::Complete(TableRows::SimulationFeatures(vec![
                 crate::rows::SimulationFeatureRow::default(),
@@ -1789,7 +1785,7 @@ mod tests {
             TableId::RaidTargets,
             TableId::RaidProvinces,
             TableId::NavalBases,
-            TableId::MovementDefines,
+            TableId::FactionTheatres,
         ];
         for block in &replay.index {
             let full = replay.read_block(block).unwrap();

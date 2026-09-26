@@ -1950,7 +1950,12 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
 fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
     let items = value.items()?;
     let name = unquote(text(items, b"name")?);
-    let file = unquote(text(items, b"file")?);
+    // PhysFS drops a path's leading slashes (`sanitizePlatformIndependentPath`),
+    // so `/gfx/models/...`, as the shipped supply-train meshes spell it, is
+    // the content-root path.
+    let file = unquote(text(items, b"file")?)
+        .trim_start_matches('/')
+        .to_owned();
     if name.is_empty() || file.is_empty() {
         return None;
     }

@@ -32,7 +32,7 @@ use std::{
 };
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
-         division is extrapolated along its recorded route by its recorded ETA
+         division's counter stands at its settled route point all hour, as the game draws it
          --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --diagnostics shows technical stats and data limitations for this run; F3 or the\n        header's Diagnostics checkbox toggles and saves them (off by default)\n        --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise and the entity animation\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --settle <seconds>, play that many seconds before the frame so entity events\n             (damaged fire and smoke) and particles are under way; renders at the clock plus it\n           --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with interface rectangles\n             (device pixels at --ui-scale 1), sprite frames and text\n           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel\n             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
@@ -821,7 +821,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             train_plan.route_count(),
             train_plan.field(&document.trains, 0.0).instances.len()
         );
-        for line in train_plan.diagnostics() {
+        for line in train_plan.diagnostics(&document.trains) {
             println!("{line}");
         }
         // orders: the recorded player's battle plan
@@ -1143,7 +1143,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // orders: the recorded player's battle plan
         println!(
-            "Battle plan: {} recorded army orders over every country ({}), {} for this perspective, {} drawn ({}), {} garrison areas with no arrow, {} with fewer than two placeable provinces; province centroids and crossings for {} provinces and {} adjacencies in {:.0} ms",
+            "Battle plan: {} recorded army orders over every country ({}), {} for this perspective, {} drawn ({}), {} with no arrow (garrison areas, invasions without a route, fronts with an empty or destroyed span), {} with fewer than two placeable controls; province centroids and border chains for {} provinces in {:.0} ms",
             order_field.report.recorded,
             order_field
                 .report
@@ -1168,8 +1168,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             order_field.report.no_arrow,
             order_field.report.too_short,
             document.province_geometry.provinces(),
-            document.province_geometry.adjacencies(),
             document.province_geometry_build.as_secs_f64() * 1000.0
+        );
+        let plan = &order_field.report;
+        println!(
+            "  {} snapped offensive lines, {} offset fronts, {} labels placed, {} labels fitting no variant, {} labels without their transport count{}{}",
+            plan.snapped,
+            plan.offset_fronts,
+            plan.labels,
+            plan.labels_unfitted,
+            plan.transports_omitted,
+            plan.refused
+                .iter()
+                .map(|(what, count)| format!("; refused {count} {what}"))
+                .collect::<String>(),
+            plan.unavailable
+                .as_ref()
+                .map(|why| format!("; not drawn: {why}"))
+                .unwrap_or_default()
         );
         if order_field.report.drawn > 0 {
             println!(
@@ -1228,7 +1244,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             rail_mesh.unanchored,
             rail_mesh.samples,
             rail_mesh.vertices.len(),
-            map::railways::railway_alpha(&camera),
+            map::railways::RailFade::default().update(&camera, 0.0),
             camera.height,
             document.rail_build.as_secs_f64() * 1000.0
         );
@@ -1333,6 +1349,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.land_combats,
             counter_report.naval_combats,
             counter_report.unanchored
+        );
+        // counters: faction-theatre pins
+        let pings = &counter_report.faction_ping_limits;
+        println!(
+            "Faction-theatre pins: {} drawn ({} without a resolved emblem); {} theatres refused for a shared first region, {} without a region position, {} unresolved hidden-for links{}",
+            counter_report.faction_pings,
+            counter_report.unresolved_ping_emblems,
+            pings.ambiguous,
+            pings.unplaced,
+            pings.unresolved_hidden,
+            pings
+                .undecided
+                .as_deref()
+                .map(|reason| format!("; undecided: {reason}"))
+                .unwrap_or_default()
         );
         // counters: ETA derivation coverage for this hour
         if let Some(line) = counter_report.eta.line() {

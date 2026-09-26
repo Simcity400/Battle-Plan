@@ -204,7 +204,9 @@ pub struct Layers {
     pub trains: TrainPlan,
     pub aircraft: AircraftPlan,
     pub units: PreparedModels,
-    pub orders: OrderField,
+    /// Shared by the hours whose plan tables are the same
+    /// ([`crate::map::orders::TABLES`]), so the window uploads it once.
+    pub orders: Arc<OrderField>,
     pub effects: weather_effects::Prepared,
     /// Shared by the hours whose fog is the same, so the window writes it once.
     pub intel: Arc<IntelMap>,
@@ -249,7 +251,7 @@ struct Movers {
     trains: TrainPlan,
     aircraft: AircraftPlan,
     units: PreparedModels,
-    orders: OrderField,
+    orders: Arc<OrderField>,
     effects: weather_effects::Prepared,
 }
 

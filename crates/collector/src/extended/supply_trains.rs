@@ -371,7 +371,6 @@ impl Captured {
                     && r.consumed == previous.consumed && r.parent == previous.parent
                     && r.route.from == previous.route_from && r.route.to == previous.route_to
                     && r.route.break_after == previous.break_after
-                    && r.route.fallback_emit == previous.fallback_emit
                     && *path == previous.path
             },
             |(r, path)| SupplyNodeRow {
@@ -386,7 +385,6 @@ impl Captured {
                 route_from: r.route.from,
                 route_to: r.route.to,
                 break_after: r.route.break_after,
-                fallback_emit: r.route.fallback_emit,
                 path: path.to_vec(),
             },
         )
@@ -503,7 +501,7 @@ mod tests {
                 country, index: 0, province: country + 10, kind: u32::MAX,
                 flag: 255, available: i64::MIN, consumed: i64::MAX, parent: -1,
                 route: engine::supply_route::Row {
-                    from: 1, to: u16::MAX, break_after: 255, fallback_emit: 128,
+                    from: 1, to: u16::MAX, break_after: 255,
                     start: 0, len: 3,
                 },
             };
@@ -569,7 +567,7 @@ mod tests {
                 11 => current.parts[0].nodes.rows[0].route.from ^= 1,
                 12 => current.parts[0].nodes.rows[0].route.to ^= 1,
                 13 => current.parts[0].nodes.rows[0].route.break_after ^= 128,
-                14 => current.parts[0].nodes.rows[0].route.fallback_emit ^= 128,
+                14 => current.parts[0].nodes.rows[0].route.break_after ^= 1,
                 15 => current.parts[0].nodes.rows[0].route.len -= 1,
                 16 => current.parts[0].paths.first.swap(0, 1),
                 17 => current.parts[0].paths.first[2] ^= 1,

@@ -204,6 +204,24 @@ pub fn normalize_relative(path: &str) -> io::Result<String> {
     Ok(path)
 }
 
+/// The files of `listed` directly in `directory` whose name ends in `suffix`
+/// (case-sensitive, as the engine's `ends_with`), in the byte order of their
+/// names. See [`ResolvedLayers::directory_files`].
+fn directory_order(directory: &str, suffix: &str, listed: Vec<String>) -> Vec<String> {
+    let directory = directory.trim_end_matches('/').to_ascii_lowercase();
+    let mut files: Vec<(String, String)> = listed
+        .into_iter()
+        .filter_map(|path| {
+            let (parent, name) = path.rsplit_once('/')?;
+            let name = name.to_owned();
+            (parent.eq_ignore_ascii_case(&directory) && name.ends_with(suffix))
+                .then_some((name, path))
+        })
+        .collect();
+    files.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    files.into_iter().map(|(_, path)| path).collect()
+}
+
 fn below(path: &str, directory: &str) -> bool {
     path == directory
         || path
@@ -638,6 +656,21 @@ impl ResolvedLayers {
             }
         }
         Ok(files.into_iter().map(|file| file.path).collect())
+    }
+
+    /// One directory's files as a database loader lists them:
+    /// `enumerate_directory_wrapper` (`1424C73B0`) with its recursion flag
+    /// clear. `enumerate_directory` (`1424C5170`) keys the merged PhysFS
+    /// entries of the directory by name in a `std::map` (bytewise, so
+    /// case-sensitive) and emits the names that end in the filter, once each,
+    /// in that order; subdirectories are not entered. `suffix` must start with
+    /// a dot (see [`Self::descriptor_paths`]); the engine's filter has none, so
+    /// a name such as `footxt` is not listed here. Covered or not: read each
+    /// with [`Self::read_uncovered`].
+    pub fn directory_files(&self, directory: &str, suffix: &str) -> io::Result<Vec<String>> {
+        let directory = normalize_relative(directory)?;
+        let listed = self.descriptor_paths(&directory, &[suffix])?;
+        Ok(directory_order(&directory, suffix, listed))
     }
 
     /// The engine's `gfx/models` texture index.
@@ -1653,6 +1686,28 @@ fn gather_selected(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_database_directory_lists_its_own_files_by_byte_name_without_recursion() {
+        let listed = [
+            "gfx/train_gfx_database/zz_mod.txt",
+            "gfx/train_gfx_database/sub/a.txt",
+            "gfx/train_gfx_database/B.txt",
+            "gfx/train_gfx_database/a.txt",
+            "gfx/train_gfx_database/upper.TXT",
+            "gfx/train_gfx_database_other/a.txt",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(
+            directory_order("gfx/train_gfx_database", ".txt", listed),
+            [
+                "gfx/train_gfx_database/B.txt",
+                "gfx/train_gfx_database/a.txt",
+                "gfx/train_gfx_database/zz_mod.txt",
+            ]
+        );
+    }
 
     #[test]
     fn coverage_is_closed_and_paths_cannot_escape_the_layer() {

@@ -2232,8 +2232,6 @@ fn decoded_with_costs(
                     owner: province.owner,
                     controller: province.controller,
                     victory_points: province.victory_points,
-                    terrain_flags: province.terrain_flags,
-                    terrain_index: province.terrain_index,
                     fort_positive: province.fort_positive,
                 },
             ),
@@ -3395,8 +3393,6 @@ mod tests {
                 owner: 7,
                 controller: 2,
                 victory_points: i32::MIN,
-                terrain_flags: 0,
-                terrain_index: 0,
                 fort_positive: 0,
             }]))
         );
@@ -4437,10 +4433,6 @@ mod tests {
             TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
         tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
-        tables[TableId::MovementDefines.index()] =
-            TableView::Complete(TableRows::MovementDefines(vec![
-                replay::rows::MovementDefinesRow::default(),
-            ]));
         tables[TableId::SimulationFeatures.index()] =
             TableView::Complete(TableRows::SimulationFeatures(vec![
                 replay::rows::SimulationFeatureRow::default(),

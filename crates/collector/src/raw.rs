@@ -968,6 +968,36 @@ impl<const N: usize> RawLog<N> {
         count: usize,
         mask: u32,
     ) -> Option<(usize, usize)> {
+        self.take_array_inner::<true>(memory, address, width, count, mask)
+    }
+
+    /// [`take_array_chunk`](Self::take_array_chunk) retaining each copied
+    /// element as its own exact span, so the log is the one per-element
+    /// [`take`](Self::take)s would record: the same spans, bytes and first
+    /// failure, and no bulk span. Use it where the replay reads the elements
+    /// one by one; it then serves each from its exact key in record order
+    /// instead of searching the bulk ranges.
+    #[inline(always)]
+    pub fn take_array_entries(
+        &mut self,
+        memory: &impl Memory,
+        address: usize,
+        width: usize,
+        count: usize,
+        mask: u32,
+    ) -> Option<(usize, usize)> {
+        self.take_array_inner::<false>(memory, address, width, count, mask)
+    }
+
+    #[inline(always)]
+    fn take_array_inner<const BULK: bool>(
+        &mut self,
+        memory: &impl Memory,
+        address: usize,
+        width: usize,
+        count: usize,
+        mask: u32,
+    ) -> Option<(usize, usize)> {
         if !self.allow_unplanned_operation() {
             return None;
         }
@@ -980,11 +1010,13 @@ impl<const N: usize> RawLog<N> {
         }
         let size = count.checked_mul(width)?;
         let end = start.checked_add(size)?;
-        if self.spans.capacity() - self.spans.len() < 2
+        // The copied prefix and one failed element.
+        let spans = if BULK { 2 } else { count + 1 };
+        if self.spans.capacity() - self.spans.len() < spans
             || end > self.bytes.capacity()
             || end > u32::MAX as usize
         {
-            self.span_exhausted = self.spans.capacity() - self.spans.len() < 2;
+            self.span_exhausted = self.spans.capacity() - self.spans.len() < spans;
             self.required_bytes = end;
             self.overflowed = true;
             return None;
@@ -1025,7 +1057,7 @@ impl<const N: usize> RawLog<N> {
         );
         debug_assert!(completed <= count);
         self.bytes.used = start + completed * width;
-        if completed != 0 {
+        if completed != 0 && BULK {
             self.spans.push(Span {
                 addr: address,
                 len: (completed * width) as u32,
@@ -1035,6 +1067,20 @@ impl<const N: usize> RawLog<N> {
                 bulk: true,
             });
             self.has_bulk = true;
+        }
+        if !BULK {
+            for index in 0..completed {
+                self.spans.push(Span {
+                    addr: address + index * width,
+                    len: width as u32,
+                    ok: true,
+                    mask,
+                    start: (start + index * width) as u32,
+                    bulk: false,
+                });
+            }
+        }
+        if completed != 0 {
             self.raw_bytes[lowest_table(mask)] += (completed * width) as u64;
         }
         if completed != count {
@@ -2831,6 +2877,75 @@ mod tests {
                 assert!(expected_source.calls.borrow().is_empty());
             }
         }
+    }
+
+    /// One guarded copy per chunk records the log per-entry takes record:
+    /// the same exact spans, bytes, partial failed bytes, first failure and
+    /// source requests, with no bulk span. Admission failures (null,
+    /// noncanonical, overflowing) and read faults at every position alike.
+    #[test]
+    fn array_entries_record_the_per_entry_takes_log() {
+        for count in [0, 1, 2, 63, 64] {
+            for address in [
+                0x1000,
+                0,
+                0x0000_7fff_ffff_fff0,
+                0x0000_8000_0000_0000,
+                usize::MAX - 15,
+                usize::MAX - 3,
+            ] {
+                for fail in 0..=count {
+                    let fail_call = (fail < count).then_some(fail);
+                    let actual_source = RawSpecializationSource {
+                        fail_call,
+                        ..Default::default()
+                    };
+                    let expected_source = RawSpecializationSource {
+                        fail_call,
+                        ..Default::default()
+                    };
+                    let mut actual = raw_specialization_log(80, 1024);
+                    let mut expected = raw_specialization_log(80, 1024);
+                    let start = expected.bytes.len();
+                    let completed = (0..count)
+                        .take_while(|&index| {
+                            expected
+                                .take(&expected_source, address.wrapping_add(index * 8), 8, 6)
+                                .is_some()
+                        })
+                        .count();
+                    assert_eq!(
+                        actual.take_array_entries(&actual_source, address, 8, count, 6),
+                        Some((start, completed)),
+                        "count={count}, address={address:#x}, fail={fail}"
+                    );
+                    assert_raw_specialization_equal(&actual, &expected);
+                    assert!(!actual.has_bulk);
+                    assert_eq!(
+                        *actual_source.calls.borrow(),
+                        *expected_source.calls.borrow()
+                    );
+                }
+            }
+        }
+    }
+
+    /// Too few spans for every entry and one failure overflow before any
+    /// source request, and growth then admits the chunk.
+    #[test]
+    fn array_entries_preflight_every_span_before_copying() {
+        let mut log = raw_specialization_log(64, 1024);
+        let source = RawSpecializationSource::default();
+        assert_eq!(log.take_array_entries(&source, 0x1000, 8, 64, 1), None);
+        assert!(log.overflowed && log.span_exhausted && log.grow_for_next());
+        assert!(log.spans.is_empty() && source.calls.borrow().is_empty());
+        log.grow();
+        log.clear();
+        assert_eq!(
+            log.take_array_entries(&source, 0x1000, 8, 64, 1),
+            Some((0, 64))
+        );
+        assert_eq!(log.spans.len(), 64);
     }
 
     #[test]

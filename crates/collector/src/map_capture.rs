@@ -177,7 +177,12 @@ pub struct Orders {
     groups_required: usize,
     visits: Vec<corder_instance::Visit>,
     visits_required: usize,
+    /// The successor ids this census resolved, for the plans of the same job.
+    successors: corder_instance::SuccessorLists,
     pub root_outcome: Outcome,
+    /// [`Self::walk_roots`] filled `groups` and `root_outcome` in this pass,
+    /// for this pass's [`Self::walk`] only.
+    roots_walked: bool,
     pub ticks: u64,
 }
 
@@ -192,7 +197,9 @@ impl Orders {
             groups_required: 0,
             visits: vec![corder_instance::Visit::default(); capacity.order_visits],
             visits_required: 0,
+            successors: corder_instance::SuccessorLists::default(),
             root_outcome: NOT_WALKED,
+            roots_walked: false,
             ticks: 0,
         }
     }
@@ -215,6 +222,7 @@ impl Orders {
         self.groups_required = 0;
         self.visits_required = 0;
         self.root_outcome = NOT_WALKED;
+        self.roots_walked = false;
         self.ticks = 0;
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -222,6 +230,7 @@ impl Orders {
             + self.geometry.capacity() * size_of::<u32>()
             + self.groups.capacity() * size_of::<corders_group::Root>()
             + self.visits.capacity() * size_of::<corder_instance::Visit>()
+            + self.successors.allocated_bytes()
     }
     fn grow(&mut self, capacities: &mut MapCapacities) {
         capacities.rows[9] = capacities.rows[9].max(self.rows.rows.capacity());
@@ -235,31 +244,69 @@ impl Orders {
         grow_vec(&mut self.groups, capacities.order_groups);
         grow_vec(&mut self.visits, capacities.order_visits);
     }
-    pub fn walk(&mut self, memory: &impl Memory, base: usize) {
+    /// The orders-group registry census of this pass, taken once by the
+    /// callback before the jobs that read it are queued: the Orders job's
+    /// [`Self::walk`] and the Naval job's order-of-battle copy.
+    pub fn walk_roots(&mut self, memory: &impl Memory, base: usize) {
         let _reads = crate::read_accounting::table(TableId::ArmyOrders);
+        let begin = qpc();
+        self.root_outcome = corders_group::walk_roots(memory, base, &mut self.groups);
+        self.roots_walked = true;
+        self.ticks = elapsed(begin);
+    }
+    pub fn walk(&mut self, memory: &impl Memory, base: usize) {
+        let mut reads = crate::read_accounting::table(TableId::ArmyOrders);
         self.rows.outcome = NOT_WALKED;
         let begin = qpc();
-        let walk = corder_instance::walk(
-            memory,
-            base,
-            &mut self.rows.rows,
-            &mut self.geometry,
-            &mut self.groups,
-            &mut self.visits,
-        );
+        // Reuse within the pass: `walk_roots` filled the groups from this
+        // memory in this same callback, which holds the game thread until
+        // every job has finished, so walking the registry again gives the
+        // same roots and outcome. The flag is cleared here and by `reset`,
+        // so a census from another pass is never reused.
+        let walk = if std::mem::take(&mut self.roots_walked) {
+            corder_instance::walk_listing_successors_of(
+                memory,
+                base,
+                &mut self.rows.rows,
+                &mut self.geometry,
+                &self.groups,
+                self.root_outcome,
+                &mut self.visits,
+                &mut self.successors,
+            )
+        } else {
+            self.ticks = 0;
+            corder_instance::walk_listing_successors(
+                memory,
+                base,
+                &mut self.rows.rows,
+                &mut self.geometry,
+                &mut self.groups,
+                &mut self.visits,
+                &mut self.successors,
+            )
+        };
         self.rows.outcome = walk.outcome;
         self.root_outcome = walk.root_outcome;
         self.geometry_len = walk.geometry_len;
         self.geometry_required = walk.required_geometry;
         self.groups_required = walk.required_groups;
         self.visits_required = walk.minimum_visits.max(walk.visited.saturating_mul(2));
-        self.ticks = elapsed(begin);
+        self.ticks += elapsed(begin);
+        // The census gathered the plans' order records while it held each
+        // order: that is ArmyOrderPlans work, charged there, not here. The
+        // plans add these ticks when they visit this census.
+        let (plan_reads, plan_ticks) = self.successors.plan_gathers();
+        self.ticks = self.ticks.saturating_sub(plan_ticks);
+        reads.select(TableId::ArmyOrderPlans);
+        plan_reads.add_current();
     }
     /// Terminal worker/admission failure; retain allocations and growth demand.
     pub(crate) fn fail(&mut self, reason: &'static str) {
         let outcome = Outcome::Unavailable { reason };
         self.rows.outcome = outcome;
         self.root_outcome = outcome;
+        self.roots_walked = false;
         self.geometry_len = 0;
         self.ticks = 0;
     }
@@ -269,6 +316,10 @@ impl Orders {
     }
     pub fn visits(&self) -> &[corder_instance::Visit] {
         &self.visits
+    }
+    /// The successor lists of the last walk; valid only within its job.
+    pub fn successor_lists(&self) -> &corder_instance::SuccessorLists {
+        &self.successors
     }
 }
 
@@ -1446,6 +1497,104 @@ mod tests {
             assert_eq!(table.rows[count - 1], count as u32);
         }
         assert!(capacity <= 129 * 3);
+    }
+
+    /// The census over the callback's registry census of the pass is the
+    /// census that walks the registry itself, complete and with too little
+    /// root scratch, and the walked roots serve one census only.
+    #[test]
+    fn orders_census_over_walked_roots_matches_its_own_registry_walk() {
+        use crate::extended::bench_world::{self, Shape};
+        let world = bench_world::build(
+            40,
+            Shape {
+                named: true,
+                theatre_links: true,
+            },
+        );
+        let memory = world.slice();
+        for capacity in [
+            MapCapacities::default(),
+            MapCapacities {
+                order_groups: 3,
+                ..MapCapacities::default()
+            },
+        ] {
+            let mut own = Orders::new(&capacity);
+            own.walk(&memory, world.base);
+            let mut reused = Orders::new(&capacity);
+            reused.walk_roots(&memory, world.base);
+            assert!(reused.roots_walked);
+            reused.walk(&memory, world.base);
+            assert!(!reused.roots_walked);
+            let observed = |orders: &Orders| {
+                format!(
+                    "{:?}",
+                    (
+                        orders.rows.outcome,
+                        orders.root_outcome,
+                        &orders.rows.rows[..orders.rows.outcome.len()],
+                        &orders.geometry[..orders.geometry_len],
+                        orders.roots(),
+                        &orders.visits,
+                        &orders.successors,
+                        (
+                            orders.geometry_required,
+                            orders.groups_required,
+                            orders.visits_required
+                        ),
+                    )
+                )
+            };
+            assert_eq!(observed(&reused), observed(&own));
+        }
+        let mut orders = Orders::new(&MapCapacities::default());
+        orders.walk_roots(&memory, world.base);
+        orders.reset();
+        assert!(!orders.roots_walked);
+    }
+
+    /// The census gathers the plans' order records, and those requests are
+    /// ArmyOrderPlans work: ArmyOrders is charged exactly the requests of a
+    /// census that gathers nothing, and ArmyOrderPlans the gathers' own.
+    #[test]
+    fn census_plan_gathers_are_charged_to_the_plans() {
+        use crate::extended::bench_world::{self, Shape};
+        let world = bench_world::build(
+            40,
+            Shape {
+                named: true,
+                theatre_links: true,
+            },
+        );
+        let mut orders = Orders::new(&MapCapacities::default());
+        let ((), counts) = world.counted(|memory| {
+            orders.walk_roots(memory, world.base);
+            orders.walk(memory, world.base);
+        });
+        assert_eq!(
+            orders.rows.outcome,
+            Outcome::Rows {
+                len: world.orders as usize
+            }
+        );
+        let ((), plain) = world.counted(|memory| {
+            let _reads = crate::read_accounting::table(TableId::ArmyOrders);
+            corder_instance::walk(
+                memory,
+                world.base,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut vec![corders_group::Root::default(); world.groups as usize],
+                &mut Vec::new(),
+            );
+        });
+        let orders_index = TableId::ArmyOrders.index();
+        let plans_index = TableId::ArmyOrderPlans.index();
+        assert_eq!(counts[orders_index], plain[orders_index]);
+        let (gathers, _) = orders.successor_lists().plan_gathers();
+        assert_eq!(counts[plans_index], gathers);
+        assert!(gathers.record_calls != 0 && gathers.spans >= u64::from(world.orders) * 7);
     }
 
     #[test]

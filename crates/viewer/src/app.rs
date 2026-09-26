@@ -159,6 +159,8 @@ struct ShownHour {
     /// Why the hour draws nothing: a recorded gap or a failed builder part.
     error: Option<String>,
     political_warnings: Vec<String>,
+    /// The battle plan's refusals and missing inputs ([`map::orders::OrderReport::warnings`]).
+    plan_warnings: Vec<String>,
     political_summary: (usize, usize),
     political_build: Duration,
     limitations: map::tables::Limitations,
@@ -269,6 +271,9 @@ struct Uploaded {
     snow_mud: Option<Arc<map::weather::SnowMud>>,
     /// The intel map on the GPU; hours with the same fog share one.
     intel: Option<Arc<map::textures::IntelMap>>,
+    /// The battle plan on the GPU; hours with the same plan tables share one
+    /// (`map::orders::TABLES`).
+    orders: Option<Arc<map::orders::OrderField>>,
 }
 
 /// The largest share of the central panel the warning area may take before it
@@ -947,11 +952,10 @@ impl Viewer {
         let Some(shown) = &self.shown else {
             return Vec::new();
         };
-        let mut limitations = shown.limitations.clone();
-        limitations.set_fraction(document.hour_fraction);
-        let mut warnings = limitations.lines();
+        let mut warnings = shown.limitations.lines();
         warnings.extend(document.warnings.iter().cloned());
         warnings.extend(shown.political_warnings.iter().cloned());
+        warnings.extend(shown.plan_warnings.iter().cloned());
         if let Some(placements) = &self.placements {
             warnings.extend(placements.warnings.iter().cloned());
         }
@@ -2283,8 +2287,8 @@ impl Viewer {
         {
             dropper.drop_later(passed);
         }
-        // The divisions glide past the playhead's hour only when it is the
-        // hour on screen.
+        // The frame sits past the playhead's hour only when it is the hour on
+        // screen.
         document.hour_fraction = if (document.playback.branch(), document.playback.hour()) == target
         {
             playhead.fraction
@@ -2357,6 +2361,7 @@ impl Viewer {
                     hour,
                     error: Some(error),
                     political_warnings: Vec::new(),
+                    plan_warnings: Vec::new(),
                     political_summary: (0, 0),
                     political_build: Duration::ZERO,
                     limitations: Default::default(),
@@ -2429,7 +2434,15 @@ impl Viewer {
         laps.lap("aircraft_upload");
         dropper.drop_later(self.unit_models.replace(units));
         self.unit_fraction = None;
-        scene.set_orders(&state.device, &state.queue, &document.orders, &orders)?;
+        if uploaded
+            .orders
+            .as_ref()
+            .is_none_or(|had| !Arc::ptr_eq(had, &orders))
+        {
+            scene.set_orders(&state.device, &state.queue, &document.orders, &orders)?;
+            dropper.drop_later(uploaded.orders.replace(Arc::clone(&orders)));
+        }
+        let plan_warnings = orders.report.warnings();
         dropper.drop_later(orders);
         laps.lap("orders_upload");
         let retired = scene.set_prepared_weather_effects(
@@ -2499,6 +2512,7 @@ impl Viewer {
             hour,
             error: None,
             political_warnings: political.layers.warnings().to_vec(),
+            plan_warnings,
             political_summary: political.layers.summary(),
             political_build: political.layers.build,
             limitations,
@@ -2879,11 +2893,11 @@ impl Viewer {
                 ))
         {
             let timer = Instant::now();
-            let units = self.unit_models.as_ref().expect("prepared above").field(
-                &document.unit_models,
-                document.hour_fraction,
-                camera.height,
-            );
+            let units = self
+                .unit_models
+                .as_ref()
+                .expect("prepared above")
+                .field(&document.unit_models, camera.height);
             // Size the buffer for every height band: height 0 draws all land
             // units and ships, so zooming between bands rewrites the same
             // buffer instead of reallocating mid-gesture. The count is read
@@ -3008,15 +3022,22 @@ impl Viewer {
         }
         laps.lap("overlay_prepare");
         if self.overlay_fraction != Some(document.hour_fraction) {
-            let (batch, label_report, counter_report, _raids) = self
-                .prepared_overlay
-                .as_mut()
-                .expect("prepared above")
-                .draw(&now, camera, pixels, ui_scale, Default::default())
+            // Redrawn into the last fraction's batch and report, so playback allocates nothing.
+            let prepared = self.prepared_overlay.as_mut().expect("prepared above");
+            prepared
+                .draw_into(
+                    &now,
+                    camera,
+                    pixels,
+                    ui_scale,
+                    Default::default(),
+                    self.overlay.get_or_insert_with(Batch::default),
+                    &mut self.counter_report,
+                )
                 .map_err(|error| error.to_string())?;
-            self.label_report = label_report;
-            self.counter_report = counter_report;
-            self.overlay = Some(batch);
+            if self.label_report != *prepared.label_report() {
+                self.label_report.clone_from(prepared.label_report());
+            }
             self.overlay_fraction = Some(document.hour_fraction);
         }
         // Resolve clicks against this hour and camera's newly rebuilt hit regions.
@@ -3208,11 +3229,12 @@ impl Viewer {
                     .rev()
                     .find(|hit| hit.contains(point))?;
                 let arrival = map::counter_eta::arrival(document.playback.hour(), hit.remaining)?;
-                Some(map::counter_eta::sentence(
+                map::counter_eta::sentence(
+                    &document.names.localisation,
                     &arrival,
                     hit.ours,
                     &date(arrival.hour),
-                ))
+                )
             });
             let text = arrival.unwrap_or_else(|| "Drag to pan · Scroll to zoom".into());
             ui.set_max_width(points(style.spacing.tooltip_width));

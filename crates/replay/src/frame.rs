@@ -2051,8 +2051,6 @@ mod tests {
             owner: 7,
             controller,
             victory_points: 50,
-            terrain_flags: 1,
-            terrain_index: 2,
             fort_positive: 0,
         }
     }

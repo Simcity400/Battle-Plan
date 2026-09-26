@@ -17,6 +17,8 @@ use replay::{
 };
 use std::{mem::size_of, sync::Arc};
 
+#[cfg(test)]
+pub(crate) mod bench_world;
 pub(crate) mod daily_intel;
 
 const MISSING: Outcome = Outcome::Unavailable {
@@ -299,7 +301,6 @@ packs!(
     intel,
     lexical,
     map_names,
-    movement_defines,
     naval_history,
     production,
     projects,
@@ -309,6 +310,7 @@ packs!(
     visibility,
     building_detection,
     slice_reads,
+    faction_theatres,
     weather
 );
 
@@ -931,9 +933,9 @@ impl Captured {
         std::mem::swap(&mut self.leader_paths, &mut packs.leader_paths);
         std::mem::swap(&mut self.map_names, &mut packs.map_names);
         std::mem::swap(&mut self.division_templates, &mut packs.division_templates);
-        std::mem::swap(&mut self.movement_defines, &mut packs.movement_defines);
         std::mem::swap(&mut self.visibility, &mut packs.visibility);
         std::mem::swap(&mut self.building_detection, &mut packs.building_detection);
+        std::mem::swap(&mut self.faction_theatres, &mut packs.faction_theatres);
     }
 
     /// Loan the order census and the plans to the Orders job.
@@ -1646,9 +1648,9 @@ impl Captured {
             staggered!(
                 map_names,
                 division_templates,
-                movement_defines,
                 visibility,
-                building_detection
+                building_detection,
+                faction_theatres
             );
         }
         if let Some(done) = self.gated_ticks.replace([0; TABLE_COUNT]) {
@@ -1964,17 +1966,18 @@ impl OrdinaryPacks {
 }
 
 /// The live-memory packs run as a second pool job from the first burst
-/// (leader sprites, map names, templates, static defines, visibility and
-/// building detection). Each table keeps its own [`replay::cadence`]: the
+/// (leader sprites, map names, templates, visibility, building detection and
+/// faction theatres). No defines are recorded: the viewer reads the movement
+/// defines from the content's `NDefines`. Each table keeps its own [`replay::cadence`]: the
 /// template dictionary is daily, its counter inputs hourly.
 pub(crate) struct SlowPacks {
     pub(crate) leader_portraits: leader_portraits::Captured,
     pub(crate) leader_paths: leader_paths::Captured,
     pub(crate) map_names: map_names::Captured,
     pub(crate) division_templates: division_templates::Captured,
-    pub(crate) movement_defines: movement_defines::Captured,
     pub(crate) visibility: visibility::Captured,
     pub(crate) building_detection: building_detection::Captured,
+    pub(crate) faction_theatres: faction_theatres::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -1985,10 +1988,10 @@ impl SlowPacks {
         self.map_names.fail_capture(hour, force_full, reason);
         self.division_templates
             .fail_capture(hour, force_full, reason);
-        self.movement_defines.fail_capture(hour, force_full, reason);
         self.visibility.fail_capture(hour, force_full, reason);
         self.building_detection
             .fail_capture(hour, force_full, reason);
+        self.faction_theatres.fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
@@ -1998,9 +2001,9 @@ impl SlowPacks {
             + self.leader_paths.allocated_bytes()
             + self.map_names.allocated_bytes()
             + self.division_templates.allocated_bytes()
-            + self.movement_defines.allocated_bytes()
             + self.visibility.allocated_bytes()
             + self.building_detection.allocated_bytes()
+            + self.faction_theatres.allocated_bytes()
     }
 
     fn spare() -> Box<Self> {
@@ -2009,9 +2012,9 @@ impl SlowPacks {
             leader_paths: leader_paths::Captured::vacant(),
             map_names: map_names::Captured::vacant(),
             division_templates: division_templates::Captured::vacant(),
-            movement_defines: movement_defines::Captured::with_capacities(&Default::default()),
             visibility: visibility::Captured::vacant(),
             building_detection: building_detection::Captured::vacant(),
+            faction_theatres: faction_theatres::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         })
     }
@@ -2043,9 +2046,9 @@ impl SlowPacks {
         staggered!(
             map_names,
             division_templates,
-            movement_defines,
             visibility,
-            building_detection
+            building_detection,
+            faction_theatres
         );
         self.ticks = ticks;
     }
@@ -2762,7 +2765,9 @@ mod tests {
             leader_paths::TABLES.as_slice(),
             map_names::TABLES.as_slice(),
             division_templates::TABLES.as_slice(),
-            movement_defines::TABLES.as_slice(),
+            visibility::TABLES.as_slice(),
+            building_detection::TABLES.as_slice(),
+            faction_theatres::TABLES.as_slice(),
         ]
         .concat();
         let gated = [

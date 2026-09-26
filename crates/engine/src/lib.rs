@@ -160,6 +160,7 @@ pub mod cfacilities_tab_view;
 pub mod cfaction;
 pub mod cfaction_system;
 pub mod cfaction_template;
+pub mod cfaction_theater_manager;
 pub mod cfex_air;
 pub mod cfex_damage_entry;
 pub mod cfex_group;

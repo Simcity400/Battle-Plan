@@ -44,8 +44,15 @@ struct Options {
 
 fn usage() -> String {
     format!(
-        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once]\nrecorder detach [--out <directory>]\nrecorder refresh [--out <directory>]\nrecorder finalize <session-directory> [--out <directory>]\nrecorder inspect <campaign.battleplan>\n{}",
-        crate::oracle::USAGE
+        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once]
+recorder detach [--out <directory>]
+recorder refresh [--out <directory>]
+recorder finalize <session-directory> [--out <directory>]
+recorder inspect <campaign.battleplan>
+{}
+{}",
+        crate::oracle::USAGE,
+        crate::movement_oracle::USAGE
     )
 }
 
@@ -63,6 +70,9 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "oracle" {
         return crate::oracle::command(args).map_err(|error| error.to_string());
+    }
+    if command == "movement-oracle" {
+        return crate::movement_oracle::command(args);
     }
     if command == "--help" || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{}", usage());
