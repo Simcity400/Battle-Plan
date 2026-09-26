@@ -1063,27 +1063,89 @@ impl Captured {
         }
     }
 
-    /// Returns the ship census; a failed job leaves it unavailable.
+    /// Returns the ship census; a failed job leaves it unavailable and the
+    /// details terminal. A walked census waits for its detail parts
+    /// (`take_ship_model_parts`).
     pub(crate) fn restore_ship_models_request(
         &mut self,
         mut request: crate::acquisition_jobs::ShipModelsRequest,
-        report: Result<ship_models::CaptureReport, crate::acquisition::Failure>,
+        report: Result<(), crate::acquisition::Failure>,
     ) -> ShipCensus {
-        self.ship_models_report = Some(match report {
-            Ok(report) => report,
-            Err(failure) => {
-                let reason = match failure {
-                    crate::acquisition::Failure::Panicked => "ship models acquisition panicked",
-                    crate::acquisition::Failure::Stopped => {
-                        "ship models acquisition stopped before reading"
-                    }
-                };
-                request.census.fail(reason);
-                request.captured.fail_owned_capture(reason)
-            }
-        });
+        if let Err(failure) = report {
+            let reason = match failure {
+                crate::acquisition::Failure::Panicked => "ship models acquisition panicked",
+                crate::acquisition::Failure::Stopped => {
+                    "ship models acquisition stopped before reading"
+                }
+            };
+            request.census.fail(reason);
+            self.ship_models_report = Some(request.captured.fail_owned_capture(reason));
+        }
         self.ship_models = request.captured;
         request.census
+    }
+
+    /// Split the walked census into detail parts sized from its ship count
+    /// and lend them to their jobs; part 0 is the family's own capture. A
+    /// failed census lends nothing. Allocation-free.
+    pub(crate) fn take_ship_model_parts(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+    ) -> [Option<crate::acquisition_jobs::ShipModelDetailsRequest>; ship_models::MAX_PARTS] {
+        let mut requests = [const { None }; ship_models::MAX_PARTS];
+        if self.ship_models_report.is_some() || self.ship_models.has_terminal_failure() {
+            return requests;
+        }
+        let parts = self
+            .ship_models
+            .split_details(ship_models::parts_for(self.ship_models.census_len()));
+        let context = ship_models::CaptureContext { base };
+        for (part, request) in requests.iter_mut().enumerate().take(parts).skip(1) {
+            *request = Some(crate::acquisition_jobs::ShipModelDetailsRequest {
+                countries: Arc::clone(countries),
+                context,
+                part,
+                captured: self.ship_models.take_part(part - 1),
+            });
+        }
+        requests[0] = Some(crate::acquisition_jobs::ShipModelDetailsRequest {
+            countries: Arc::clone(countries),
+            context,
+            part: 0,
+            captured: std::mem::replace(&mut self.ship_models, ship_models::Captured::vacant()),
+        });
+        requests
+    }
+
+    /// Return one detail part; part 0 first. Ticks add up to the family's
+    /// worker time. An interrupted part is terminal for the family.
+    pub(crate) fn restore_ship_model_part(
+        &mut self,
+        mut request: crate::acquisition_jobs::ShipModelDetailsRequest,
+        report: Result<ship_models::CaptureReport, crate::acquisition::Failure>,
+    ) {
+        let report = report.unwrap_or_else(|failure| {
+            request.captured.fail_owned_capture(match failure {
+                crate::acquisition::Failure::Panicked => "ship models acquisition panicked",
+                crate::acquisition::Failure::Stopped => {
+                    "ship models acquisition stopped before reading"
+                }
+            })
+        });
+        let total = self.ship_models_report.get_or_insert_default();
+        total.ticks[0] = total.ticks[0].saturating_add(report.ticks[0]);
+        if request.part == 0 {
+            self.ship_models = request.captured;
+        } else {
+            self.ship_models
+                .restore_part(request.part - 1, request.captured);
+        }
+    }
+
+    /// Join the returned parts' outcomes in census order.
+    pub(crate) fn finish_ship_model_parts(&mut self) {
+        self.ship_models.finish_split();
     }
 
     fn acquire_ship_models(
@@ -3256,6 +3318,90 @@ mod tests {
             captured.reset();
             assert!(captured.intel_residual_report.is_none());
         }
+    }
+
+    #[test]
+    fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk() {
+        struct Faulty;
+        impl Memory for Faulty {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                false
+            }
+        }
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let walked = |ships: u64| {
+            let mut captured = Captured::with_capacities(&Capacities::default());
+            captured.ship_models.begin_sources();
+            for id in 1..=ships {
+                captured.ship_models.visit_source(
+                    0x1000 * id as usize,
+                    &engine::cship::Row {
+                        id,
+                        ..Default::default()
+                    },
+                );
+            }
+            captured.ship_models.finish_sources(Outcome::Rows {
+                len: ships as usize,
+            });
+            let request =
+                captured.take_ship_models_request(&countries, 11, 0x1000, ShipCensus::vacant());
+            let _census = captured.restore_ship_models_request(request, Ok(()));
+            captured
+        };
+        // The unsplit walk's verdict, straight from the family capture.
+        let mut reference = walked(3);
+        reference
+            .ship_models
+            .capture_owned(&Faulty, ship_models::CaptureContext { base: 11 });
+        let expected = reference.ship_models.outcomes();
+        assert!(matches!(expected[0], Outcome::Unavailable { .. }));
+        for (ships, parts, stop) in [
+            (3, 1, None),
+            (1200, 3, None),
+            (2049, 4, None),
+            (1200, 3, Some(2)),
+        ] {
+            let mut captured = walked(ships);
+            let requests = captured.take_ship_model_parts(&countries, 11);
+            assert_eq!(requests.iter().flatten().count(), parts, "{ships} ships");
+            // The family lends its own capture as part 0.
+            assert_eq!(captured.ship_models.allocated_bytes(), 0);
+            for (index, request) in requests.into_iter().flatten().enumerate() {
+                assert_eq!(request.part, index);
+                let mut request = request;
+                let report = if stop == Some(index) {
+                    Err(crate::acquisition::Failure::Stopped)
+                } else {
+                    request.captured.capture_owned(&Faulty, request.context);
+                    Ok(ship_models::CaptureReport {
+                        ticks: [index as u64 + 1],
+                    })
+                };
+                captured.restore_ship_model_part(request, report);
+            }
+            captured.finish_ship_model_parts();
+            if stop.is_some() {
+                assert!(captured.ship_models.has_terminal_failure());
+                continue;
+            }
+            // Every part's cost adds up; the verdict is the unsplit walk's.
+            let ticks = (1..=parts as u64).sum::<u64>();
+            assert_eq!(captured.ship_models_report.unwrap().ticks, [ticks]);
+            assert_eq!(captured.ship_models.outcomes(), expected, "{ships} ships");
+        }
+        // A failed census lends no part.
+        let mut captured = walked(3);
+        let request =
+            captured.take_ship_models_request(&countries, 11, 0x1000, ShipCensus::vacant());
+        let _census = captured
+            .restore_ship_models_request(request, Err(crate::acquisition::Failure::Panicked));
+        assert!(
+            captured
+                .take_ship_model_parts(&countries, 11)
+                .iter()
+                .all(Option::is_none)
+        );
     }
 
     #[test]

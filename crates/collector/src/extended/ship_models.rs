@@ -1,4 +1,11 @@
 //! Hourly ship model operands, sharing the authenticated Ships census.
+//!
+//! The census runs in its own job. The details, mostly the recomputed maximum
+//! organisation (the game never stores it: hoi4re note on 140c28730), then run
+//! in up to [`MAX_PARTS`] parts on separate workers, each over a contiguous
+//! range of the census in native order. The family's capture keeps the first
+//! range and lends one part capture per further range; outcomes and rows join
+//! in census order, so the first failure keeps its position.
 use crate::{
     projection::{Projection, project_table},
     sampling::qpc,
@@ -18,6 +25,26 @@ use std::cell::{Cell, RefCell};
 const COPY_LIMIT: usize = 128 * 1024 * 1024;
 const READ_LIMIT: usize = 4_000_000;
 const BUDGET_EXCEEDED: &str = "ShipModels aggregate read budget exceeded";
+
+/// Detail parts at most; each runs on its own worker.
+pub(crate) const MAX_PARTS: usize = 4;
+/// Ships per detail part before another part is worth its dispatch.
+const SHIPS_PER_PART: usize = 512;
+
+/// Detail parts for a census of `ships`, sized from the live count. Not
+/// capped by the pool: a part no worker takes runs inline when the callback
+/// joins it (last-dispatched first), and part sizing stays exact.
+pub(crate) fn parts_for(ships: usize) -> usize {
+    ships.div_ceil(SHIPS_PER_PART).clamp(1, MAX_PARTS)
+}
+
+/// Rows of a part capture for a family of `rows`: at least one part's worth,
+/// and at least the widest range a census the family can hold is split into.
+/// Parts of up to `SHIPS_PER_PART` ships come from censuses of fewer than
+/// `MAX_PARTS` parts; wider ranges come from `MAX_PARTS` equal ranges.
+fn part_rows(rows: usize) -> usize {
+    SHIPS_PER_PART.max(rows.div_ceil(MAX_PARTS))
+}
 // Keep snapshot storage bounded; capacity pressure falls back to the direct reader.
 const SNAPSHOT_LIMITS: SnapshotCapacity = SnapshotCapacity {
     nodes: READ_LIMIT / 4,
@@ -345,17 +372,42 @@ pub struct Captured {
     terminal_failure: Option<&'static str>,
     doctrine: cship::OrganisationMemo,
     model: cship::ModelMemo,
+    /// Seeds this capture details: its census range when split, else all.
+    detail_len: usize,
+    /// Parts this hour's details were split into (1: unsplit).
+    split: usize,
+    /// Rows of this capture's own range when split.
+    part_len: usize,
+    /// A split range this part capture could not hold (a broken sizing
+    /// invariant); the range is published unavailable, never partial.
+    oversized: bool,
+    /// Part captures for the further ranges; empty in a part itself.
+    extra: Vec<Captured>,
 }
 
 impl Captured {
     /// Allocation-free placeholder while acquisition owns the original buffers.
     pub(crate) fn vacant() -> Self {
-        Self::with_capacities(&Capacities {
+        Self::part(&Capacities {
             rows: 0,
             modifiers: SnapshotCapacity::default(),
         })
     }
+    /// The family's capture with its part captures, each sized for its share.
     pub fn with_capacities(capacity: &Capacities) -> Self {
+        let share = Capacities {
+            rows: part_rows(capacity.rows),
+            modifiers: SnapshotCapacity {
+                nodes: capacity.modifiers.nodes.div_ceil(2),
+                entries: capacity.modifiers.entries.div_ceil(2),
+            },
+        };
+        Self {
+            extra: (1..MAX_PARTS).map(|_| Self::part(&share)).collect(),
+            ..Self::part(capacity)
+        }
+    }
+    fn part(capacity: &Capacities) -> Self {
         Self {
             copied: Cell::new((0, 0)),
             modifiers: RefCell::new(SnapshotArena::new(bounded_snapshot_capacity(
@@ -373,9 +425,21 @@ impl Captured {
             terminal_failure: None,
             doctrine: cship::OrganisationMemo::default(),
             model: cship::ModelMemo::default(),
+            detail_len: 0,
+            split: 1,
+            part_len: 0,
+            oversized: false,
+            extra: Vec::new(),
         }
     }
     pub fn reset(&mut self) {
+        for part in &mut self.extra {
+            part.reset();
+        }
+        self.detail_len = 0;
+        self.split = 1;
+        self.part_len = 0;
+        self.oversized = false;
         self.release_seed_pointers();
         self.terminal_failure = None;
         self.rows.reset();
@@ -392,6 +456,11 @@ impl Captured {
         self.rows.allocated_bytes()
             + self.seeds.capacity() * std::mem::size_of::<Seed>()
             + self.modifiers.borrow().allocated_bytes()
+            + self
+                .extra
+                .iter()
+                .map(Captured::allocated_bytes)
+                .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(&mut capacity.rows, self.required_rows);
@@ -399,12 +468,26 @@ impl Captured {
         grow_vec(&mut self.seeds, capacity.rows);
         grow_snapshot_capacity(&mut capacity.modifiers, self.required_modifiers);
         self.modifiers.get_mut().grow(capacity.modifiers);
+        // Parts follow the family's rows and their own snapshot demand, so
+        // every range of the next split fits (`part_rows`).
+        let rows = part_rows(capacity.rows);
+        for part in &mut self.extra {
+            let mut own = Capacities {
+                rows: rows.max(part.rows.rows.len()),
+                modifiers: part.modifiers.get_mut().capacity(),
+            };
+            part.grow(&mut own);
+        }
     }
     /// Start the current map-owned ship census without reading model state.
     pub fn begin_sources(&mut self) {
         self.terminal_failure = None;
         self.release_seed_pointers();
         self.seed_len = 0;
+        self.detail_len = 0;
+        self.split = 1;
+        self.part_len = 0;
+        self.oversized = false;
         self.missing = 0;
         self.parent = super::MISSING;
     }
@@ -431,10 +514,82 @@ impl Captured {
                 .saturating_add(self.missing as usize)
                 .saturating_add(unread),
         );
+        self.detail_len = self.seed_len;
     }
+
+    /// Ships in this hour's census.
+    pub(crate) fn census_len(&self) -> usize {
+        self.seed_len
+    }
+
+    /// Split this hour's details into `parts` contiguous census ranges. This
+    /// capture keeps the first; each further range is copied into its part
+    /// capture. Parts are sized so every range fits (`part_rows`); a range
+    /// that does not is a broken invariant and publishes the family
+    /// unavailable, never a partial census. Allocation-free. Returns the parts.
+    pub(crate) fn split_details(&mut self, parts: usize) -> usize {
+        let parts = parts.clamp(1, 1 + self.extra.len());
+        let ships = self.seed_len;
+        let bound = |part: usize| ships * part / parts;
+        self.split = parts;
+        self.detail_len = bound(1);
+        for part in 1..parts {
+            let (first, end) = (bound(part), bound(part + 1));
+            let capture = &mut self.extra[part - 1];
+            capture.begin_sources();
+            capture.split = parts;
+            capture.required_rows = capture.required_rows.max(end - first);
+            if end - first > capture.seeds.len().min(capture.rows.rows.len()) {
+                capture.oversized = true;
+                continue;
+            }
+            capture.seeds[..end - first].copy_from_slice(&self.seeds[first..end]);
+            capture.seed_len = end - first;
+            capture.detail_len = end - first;
+            capture.parent = Outcome::Rows { len: end - first };
+        }
+        parts
+    }
+
+    /// Lend part capture `index` (range `index + 1`) to its detail job.
+    pub(crate) fn take_part(&mut self, index: usize) -> Captured {
+        std::mem::replace(&mut self.extra[index], Captured::vacant())
+    }
+
+    /// Return a part capture after its job.
+    pub(crate) fn restore_part(&mut self, index: usize, part: Captured) {
+        self.extra[index] = part;
+    }
+
+    /// Join the parts' outcomes in census order after every part returned.
+    /// The first failure keeps its census position; an interrupted part is
+    /// terminal for the family, as an interrupted unsplit job is.
+    pub(crate) fn finish_split(&mut self) {
+        if self.split <= 1 || self.terminal_failure.is_some() {
+            return;
+        }
+        let parts = &self.extra[..self.split - 1];
+        if let Some(reason) = parts.iter().find_map(|part| part.terminal_failure) {
+            self.terminal_failure = Some(reason);
+            return;
+        }
+        // Each range publishes Rows or Unavailable; the census's own overflow
+        // and truncation are the family's, applied once below.
+        let failure = std::iter::once(self.rows.outcome)
+            .chain(parts.iter().map(|part| part.rows.outcome))
+            .find_map(|outcome| match outcome {
+                Outcome::Unavailable { reason } => Some(reason),
+                _ => None,
+            });
+        self.len = self.part_len + parts.iter().map(|part| part.part_len).sum::<usize>();
+        self.failure = failure;
+        self.finish_details(self.parent);
+    }
+
     fn begin_details(&mut self) {
         self.len = 0;
         self.failure = None;
+        // Every part is bounded by the whole ceiling, as the unsplit walk was.
         self.copied.set((0, 0));
         self.modifiers.get_mut().clear();
         self.doctrine = cship::OrganisationMemo::default();
@@ -447,6 +602,25 @@ impl Captured {
         pointer: usize,
         source: &cship::Row,
     ) {
+        self.record(|this| {
+            let bounded = BoundedMemory {
+                inner: memory,
+                used: &this.copied,
+            };
+            let memory = ModifierMemory {
+                inner: &bounded,
+                arena: &this.modifiers,
+            };
+            let doctrine = &mut this.doctrine;
+            cship::read_model(&memory, base, pointer, source, &mut this.model).and_then(|mut row| {
+                row.maximum_organisation =
+                    cship::read_maximum_organisation_memo(&memory, base, pointer, doctrine)?;
+                Ok(row)
+            })
+        });
+    }
+    /// Record one detail read in census order; the first failure stops the range.
+    fn record(&mut self, read: impl FnOnce(&mut Self) -> Result<cship::ModelRow, &'static str>) {
         if self.failure.is_some() {
             return;
         }
@@ -454,22 +628,7 @@ impl Captured {
             self.failure = Some("ship model seed/output capacity mismatch");
             return;
         }
-        let bounded = BoundedMemory {
-            inner: memory,
-            used: &self.copied,
-        };
-        let memory = ModifierMemory {
-            inner: &bounded,
-            arena: &self.modifiers,
-        };
-        let doctrine = &mut self.doctrine;
-        match cship::read_model(&memory, base, pointer, source, &mut self.model).and_then(
-            |mut row| {
-                row.maximum_organisation =
-                    cship::read_maximum_organisation_memo(&memory, base, pointer, doctrine)?;
-                Ok(row)
-            },
-        ) {
+        match read(self) {
             Ok(row) => {
                 self.rows.rows[self.len] = row;
                 self.len += 1;
@@ -520,6 +679,14 @@ impl Captured {
         memory: &impl Memory,
         context: CaptureContext,
     ) -> CaptureReport {
+        self.capture_with(|this, seed| {
+            this.visit_detail(memory, context.base, seed.pointer, &seed.row)
+        })
+    }
+    /// Capture this range's details in census order, reading each ship with
+    /// `visit`, and publish its outcome (the unsplit table, or one range of a
+    /// split for `finish_split`).
+    fn capture_with(&mut self, mut visit: impl FnMut(&mut Self, Seed)) -> CaptureReport {
         if self.terminal_failure.is_some() {
             self.release_sources();
             return CaptureReport::default();
@@ -527,11 +694,22 @@ impl Captured {
         let _reads = crate::read_accounting::table(TableId::ShipModels);
         let started = qpc();
         self.begin_details();
-        for index in 0..self.seed_len {
-            let seed = self.seeds[index];
-            self.visit_detail(memory, context.base, seed.pointer, &seed.row);
+        for index in 0..self.detail_len.min(self.seed_len) {
+            visit(self, self.seeds[index]);
         }
-        self.finish_details(self.parent);
+        if self.split <= 1 {
+            self.finish_details(self.parent);
+        } else {
+            // One range of a split census; `finish_split` joins the parts.
+            self.part_len = self.len;
+            self.rows.outcome = match self.failure {
+                Some(reason) => Outcome::Unavailable { reason },
+                None if self.oversized => Outcome::Unavailable {
+                    reason: "ship model part capacity below its census range",
+                },
+                None => Outcome::Rows { len: self.len },
+            };
+        }
         self.release_sources();
         CaptureReport {
             ticks: [qpc().saturating_sub(started).max(0) as u64],
@@ -559,10 +737,25 @@ impl Captured {
         })
     }
     pub(crate) fn table_inputs(&self, projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
+        // A split census's rows live in its parts; join them in census order
+        // here, on the spool thread.
+        let joined;
+        let rows = if self.split > 1 && self.terminal_failure.is_none() {
+            let parts = &self.extra[..self.split - 1];
+            let mut rows = Vec::with_capacity(self.len);
+            rows.extend_from_slice(&self.rows.rows[..self.part_len.min(self.rows.rows.len())]);
+            for part in parts {
+                rows.extend_from_slice(&part.rows.rows[..part.part_len.min(part.rows.rows.len())]);
+            }
+            joined = rows;
+            &joined[..]
+        } else {
+            &self.rows.rows[..]
+        };
         [project_table::<tables::ShipModels, _>(
             projection,
             self.outcomes()[0],
-            &self.rows.rows,
+            rows,
             |row| u128::from(row.ship),
             |row, previous| {
                 row.ship == previous.ship
@@ -852,6 +1045,242 @@ mod tests {
         capture.reset();
         assert_eq!(capture.seeds[0].pointer, 0);
     }
+    /// A family capture whose census saw `ships` ships, ids 1..=ships.
+    fn census(ships: u64, rows: usize) -> Captured {
+        let mut capture = Captured::with_capacities(&Capacities {
+            rows,
+            modifiers: SnapshotCapacity::default(),
+        });
+        capture.begin_sources();
+        for id in 1..=ships {
+            capture.visit_source(
+                0x1000 * id as usize,
+                &cship::Row {
+                    id,
+                    roster_ordinal: id as u32 * 3,
+                    ..Default::default()
+                },
+            );
+        }
+        capture.finish_sources(Outcome::Rows {
+            len: ships as usize,
+        });
+        capture
+    }
+
+    /// A successful, fully populated model row derived from its census seed.
+    fn model(seed: &Seed) -> cship::ModelRow {
+        let id = seed.row.id;
+        let mut row = cship::ModelRow {
+            ship: id,
+            variant: id.rotate_left(17) | 1,
+            model_number: -(id as i32),
+            formation_flags: id << 7,
+            roster_ordinal: seed.row.roster_ordinal,
+            definition_valid: (id % 2) as u8,
+            carrier_air_base: id.wrapping_mul(0x9e37_79b9),
+            maximum_strength: id as i64 * 1_000,
+            maximum_organisation: -(id as i64) * 7,
+            positive_equipment_flags: !id,
+            ..Default::default()
+        };
+        let hull = format!("hull_{id}");
+        row.hull_sprite.bytes[..hull.len()].copy_from_slice(hull.as_bytes());
+        row.hull_sprite.len = hull.len();
+        row.fallback_sprite.bytes[..2].copy_from_slice(&[0xff, id as u8]);
+        row.fallback_sprite.len = 2;
+        row
+    }
+
+    /// Run the real capture of one range; ship `fail` (if any) fails to read.
+    fn run(capture: &mut Captured, fail: Option<u64>) -> CaptureReport {
+        capture.capture_with(|this, seed| {
+            this.record(|_| match fail {
+                Some(id) if id == seed.row.id => Err("synthetic ship read failure"),
+                _ => Ok(model(&seed)),
+            })
+        })
+    }
+
+    /// The table of `ships` ships captured unsplit or in `parts`.
+    fn captured(ships: u64, parts: usize, fail: Option<u64>) -> (Outcome, [TableView; N]) {
+        let mut capture = census(ships, (ships as usize).max(1));
+        assert_eq!(capture.split_details(parts), parts);
+        let mut lent: Vec<_> = (0..parts - 1).map(|index| capture.take_part(index)).collect();
+        run(&mut capture, fail);
+        for part in &mut lent {
+            run(part, fail);
+        }
+        for (index, part) in lent.into_iter().enumerate() {
+            capture.restore_part(index, part);
+        }
+        capture.finish_split();
+        (capture.outcomes()[0], capture.tables())
+    }
+
+    #[test]
+    fn parts_follow_the_live_ship_count_and_every_range_fits() {
+        assert_eq!(parts_for(0), 1);
+        assert_eq!(parts_for(512), 1);
+        assert_eq!(parts_for(513), 2);
+        assert_eq!(parts_for(2_000), 4);
+        assert_eq!(parts_for(100_000), MAX_PARTS);
+        // Every range of every census the family holds fits a part, on any
+        // pool: the part count does not depend on the workers.
+        for rows in [1_usize, 511, 512, 513, 2_048, 2_049, 3_072, 3_073, 4_096, 10_000, 16_384] {
+            for ships in [1, rows / 2, rows.saturating_sub(1), rows] {
+                let parts = parts_for(ships);
+                assert!(ships.div_ceil(parts) <= part_rows(rows), "{ships} of {rows}");
+            }
+        }
+    }
+
+    #[test]
+    fn split_outcomes_and_rows_equal_the_unsplit_walk_at_every_boundary() {
+        for ships in [511_u64, 512, 513, 1024, 1025, 1536, 1537, 2048, 2049] {
+            let parts = parts_for(ships as usize);
+            let unsplit = captured(ships, 1, None);
+            assert_eq!(unsplit.0, Outcome::Rows { len: ships as usize });
+            assert_eq!(captured(ships, parts, None), unsplit, "{ships} ships");
+            // A failure in any range is the failure the unsplit walk reports.
+            for fail in [1, ships / 2 + 1, ships] {
+                assert_eq!(
+                    captured(ships, parts, Some(fail)),
+                    captured(ships, 1, Some(fail)),
+                    "{ships} ships, failing {fail}"
+                );
+            }
+        }
+        // Rows are byte-identical, in census order.
+        let [TableView::Complete(replay::rows::TableRows::ShipModels(rows))] =
+            captured(2049, 4, None).1
+        else {
+            panic!("complete")
+        };
+        assert_eq!(rows.len(), 2049);
+        assert!(rows.iter().zip(1..).all(|(row, id)| row.ship == id));
+        assert_eq!(rows[1500].hull_sprite, b"hull_1501");
+    }
+
+    #[test]
+    fn families_of_ten_thousand_ships_grow_their_parts_and_never_truncate() {
+        let mut capacity = Capacities {
+            rows: 4096,
+            modifiers: SnapshotCapacity::default(),
+        };
+        let mut capture = Captured::with_capacities(&capacity);
+        // The first census overflows the family, which grows.
+        capture.begin_sources();
+        for id in 1..=10_000_u64 {
+            capture.visit_source(
+                id as usize,
+                &cship::Row {
+                    id,
+                    ..Default::default()
+                },
+            );
+        }
+        capture.finish_sources(Outcome::Rows { len: 10_000 });
+        run(&mut capture, None);
+        capture.grow(&mut capacity);
+        assert!(capacity.rows >= 10_000);
+        assert!(capture.extra.iter().all(|part| part.rows.rows.len() >= 2_500));
+        // The next hour's census splits into four complete ranges.
+        let mut next = census(10_000, capacity.rows);
+        std::mem::swap(&mut next.extra, &mut capture.extra);
+        assert_eq!(next.split_details(parts_for(10_000)), 4);
+        let mut lent: Vec<_> = (0..3).map(|index| next.take_part(index)).collect();
+        run(&mut next, None);
+        for part in &mut lent {
+            run(part, None);
+        }
+        for (index, part) in lent.into_iter().enumerate() {
+            next.restore_part(index, part);
+        }
+        next.finish_split();
+        assert_eq!(next.outcomes(), [Outcome::Rows { len: 10_000 }]);
+    }
+
+    #[test]
+    fn a_range_a_part_cannot_hold_is_unavailable_not_partial() {
+        let mut capture = census(8, 8);
+        capture.extra[0] = Captured::part(&Capacities {
+            rows: 2,
+            modifiers: SnapshotCapacity::default(),
+        });
+        capture.split_details(2);
+        let mut part = capture.take_part(0);
+        run(&mut capture, None);
+        run(&mut part, None);
+        capture.restore_part(0, part);
+        capture.finish_split();
+        assert_eq!(
+            capture.outcomes(),
+            [Outcome::Unavailable {
+                reason: "ship model part capacity below its census range"
+            }]
+        );
+    }
+
+    #[test]
+    fn an_interrupted_later_part_is_terminal_for_the_family() {
+        let mut capture = census(7, 8);
+        capture.split_details(3);
+        let mut parts: Vec<_> = (0..2).map(|index| capture.take_part(index)).collect();
+        run(&mut capture, None);
+        run(&mut parts[0], None);
+        parts[1].fail_owned_capture("ship models acquisition stopped before reading");
+        for (index, part) in parts.into_iter().enumerate() {
+            capture.restore_part(index, part);
+        }
+        capture.finish_split();
+        assert!(capture.has_terminal_failure());
+        assert_eq!(
+            capture.outcomes(),
+            [Outcome::Unavailable {
+                reason: "ship models acquisition stopped before reading"
+            }]
+        );
+    }
+
+    #[test]
+    fn every_part_is_bounded_by_the_whole_read_ceiling() {
+        // One expensive ship in the last range would exceed a quarter of the
+        // copy ceiling but fits the whole one, as it did unsplit.
+        struct Free;
+        impl Memory for Free {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                true
+            }
+        }
+        let mut large = vec![0_u8; COPY_LIMIT / MAX_PARTS + 1];
+        let mut capture = census(2049, 2049);
+        assert_eq!(capture.split_details(4), 4);
+        let mut parts: Vec<_> = (0..3).map(|index| capture.take_part(index)).collect();
+        run(&mut capture, None);
+        for part in &mut parts {
+            part.capture_with(|this, seed| {
+                this.record(|this| {
+                    if seed.row.id == 2049 {
+                        let bounded = BoundedMemory {
+                            inner: &Free,
+                            used: &this.copied,
+                        };
+                        if !bounded.copy(0, &mut large) {
+                            return Err(BUDGET_EXCEEDED);
+                        }
+                    }
+                    Ok(model(&seed))
+                })
+            });
+        }
+        for (index, part) in parts.into_iter().enumerate() {
+            capture.restore_part(index, part);
+        }
+        capture.finish_split();
+        assert_eq!(capture.outcomes(), [Outcome::Rows { len: 2049 }]);
+    }
+
     #[test]
     fn model_conversion_preserves_primary_handles_text_and_counter_operands() {
         let mut capture = Captured::with_capacities(&Capacities {
@@ -1162,6 +1591,11 @@ mod acquisition_tests {
             capture.rows.allocated_bytes()
                 + capture.seeds.capacity() * std::mem::size_of::<Seed>()
                 + capture.modifiers.borrow().allocated_bytes()
+                + capture
+                    .extra
+                    .iter()
+                    .map(Captured::allocated_bytes)
+                    .sum::<usize>()
         );
     }
 

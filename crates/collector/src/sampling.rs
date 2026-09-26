@@ -41,7 +41,7 @@ const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
 const CHARACTER_PARTS: usize = extended::characters::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
-pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels, World, Research, off-slot Governance first); 1 division inputs copy + divisions/intel dispatch + character parts, relations, ordinary, slow and supply parts; 2 World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels join";
+pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first); 1 division inputs copy + divisions/intel dispatch + character parts, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
 pub const INITIAL_CAPACITIES: [usize; 9] = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
 
 /// Countries has one row per canonical slot and CountryLinks one per raw
@@ -1774,6 +1774,31 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             }
             // Focus delegation must be settled before the complete Governance job moves.
             segment!(1);
+            // The ship census is short and left first: join it here and send
+            // its detail parts, which claim first, so the details (mostly the
+            // recomputed maximum organisation) overlap the rest of the hour.
+            let ship_models_completed =
+                unsafe { finish_acquisition(shared, &mut batch, ship_models_pending) };
+            let acquisition::Job::ShipModels(ship_models_request) = ship_models_completed.request
+            else {
+                unreachable!("ShipModels ticket type")
+            };
+            let ship_models_report = ship_models_completed.report.map(|report| {
+                let acquisition::Report::ShipModels = report else {
+                    unreachable!("ShipModels report type")
+                };
+            });
+            frame.map.naval = frame
+                .extended
+                .restore_ship_models_request(ship_models_request, ship_models_report);
+            // Written after the map-tick copy below, which covers these indices.
+            let naval_ns = frame.map.naval.ticks.map(|cost| shared.ns(cost as i64));
+            let ship_detail_pending = frame
+                .extended
+                .take_ship_model_parts(&country_snapshot, shared.base)
+                .map(|request| {
+                    request.map(|request| queue!(acquisition::Job::ShipModelDetails(request)))
+                });
             let (world, world_report, world_failure) = completed!(world_pending, World);
             let production_active = world.production.is_some();
             let construction_active = world.construction.is_some();
@@ -2204,8 +2229,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 orders_failure.is_none(),
                 &mut frame.map.orders,
             );
-            let orders = TableId::ArmyOrders.index();
-            frame.table_ns[orders] = shared.ns(frame.map.orders.ticks as i64);
+            // Written after the map-tick copy below, which covers this index.
+            let orders_ns = shared.ns(frame.map.orders.ticks as i64);
             let late_pending = queue!(acquisition::Job::Late(frame.extended.take_late_request(
                 &mut frame.map.orders,
                 naval_report.raw_ok || naval_failure.is_some(),
@@ -2258,6 +2283,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             for (total, ticks) in frame.table_ns[10..].iter_mut().zip(map_ticks) {
                 *total = shared.ns(ticks as i64);
             }
+            // Pool-walked map tables keep their own measured costs.
+            for (table, ns) in [TableId::Fleets, TableId::TaskForces, TableId::Ships]
+                .into_iter()
+                .zip(naval_ns)
+            {
+                frame.table_ns[table.index()] = ns;
+            }
+            frame.table_ns[TableId::ArmyOrders.index()] = orders_ns;
             decode_hour = clock.hour;
             decode_force_full = force_full;
             if let Some(reason) = players_failure {
@@ -2618,27 +2651,35 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             }
             // Restore the final independent request before releasing the lease.
             segment!(13);
-            let ship_models_completed =
-                unsafe { finish_acquisition(shared, &mut batch, ship_models_pending) };
-            let acquisition::Job::ShipModels(ship_models_request) = ship_models_completed.request
-            else {
-                unreachable!("ShipModels ticket type")
-            };
-            let ship_models_report = ship_models_completed.report.map(|report| {
-                let acquisition::Report::ShipModels(report) = report else {
-                    unreachable!("ShipModels report type")
-                };
-                report
-            });
-            frame.map.naval = frame
-                .extended
-                .restore_ship_models_request(ship_models_request, ship_models_report);
-            for (table, cost) in [TableId::Fleets, TableId::TaskForces, TableId::Ships]
+            // Join the last-dispatched parts first: any still queued then run
+            // inline here instead of parking. Part 0, the family's own capture,
+            // is restored first.
+            let mut ship_detail_completed: [Option<
+                acquisition::Completion<acquisition::Job, acquisition::Report>,
+            >; extended::ship_models::MAX_PARTS] =
+                [const { None }; extended::ship_models::MAX_PARTS];
+            for (pending, completed) in ship_detail_pending
                 .into_iter()
-                .zip(frame.map.naval.ticks)
+                .zip(ship_detail_completed.iter_mut())
+                .rev()
             {
-                frame.table_ns[table.index()] = shared.ns(cost as i64);
+                if let Some(pending) = pending {
+                    *completed = Some(unsafe { finish_acquisition(shared, &mut batch, pending) });
+                }
             }
+            for completed in ship_detail_completed.into_iter().flatten() {
+                let acquisition::Job::ShipModelDetails(request) = completed.request else {
+                    unreachable!("ShipModelDetails ticket type")
+                };
+                let report = completed.report.map(|report| {
+                    let acquisition::Report::ShipModelDetails(report) = report else {
+                        unreachable!("ShipModelDetails report type")
+                    };
+                    report
+                });
+                frame.extended.restore_ship_model_part(request, report);
+            }
+            frame.extended.finish_ship_model_parts();
             let ships = replay::rows::TableId::ShipModels.index();
             ticks[ships] = frame.extended.capture_ship_models(&cached, shared.base);
             segment!(14);

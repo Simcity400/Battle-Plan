@@ -202,8 +202,17 @@ pub(crate) struct ShipModelsRequest {
     pub context: ship_models::CaptureContext,
     pub game_state: usize,
     pub captured: ship_models::Captured,
-    /// Walked first; its ships seed the model details.
+    /// The job walks only this census; its ships seed the detail parts,
+    /// which the callback dispatches once it joins the census.
     pub census: crate::map_capture::ShipCensus,
+}
+/// One contiguous census range of the ShipModels details (part 0 is the
+/// family's own capture).
+pub(crate) struct ShipModelDetailsRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub context: ship_models::CaptureContext,
+    pub part: usize,
+    pub captured: ship_models::Captured,
 }
 pub(crate) struct PresentationRequest {
     pub countries: Arc<engine::country_memory::Cache>,
@@ -298,6 +307,7 @@ pub(crate) enum Job {
     Orders(OrdersRequest),
     Gated(GatedRequest),
     ShipModels(ShipModelsRequest),
+    ShipModelDetails(ShipModelDetailsRequest),
     Provinces(ProvincesRequest),
     Factions(acquisition_factions::Request),
     Countries(CountriesRequest),
@@ -339,7 +349,9 @@ pub(crate) enum Report {
     Late(LateReport),
     Orders(OrdersReport),
     Gated(GatedReport),
-    ShipModels(ship_models::CaptureReport),
+    /// The census is in the request; the details report per part.
+    ShipModels,
+    ShipModelDetails(ship_models::CaptureReport),
     Provinces(ProvincesReport),
     Factions(acquisition_factions::Report),
     Countries(CountriesReport),
@@ -386,6 +398,7 @@ pub(crate) enum Role {
     Orders,
     Gated,
     ShipModels,
+    ShipModelDetails,
     Provinces,
     Factions,
     Countries,
@@ -440,7 +453,8 @@ impl Role {
             Self::Late => T::WingEquipment,
             Self::Orders => T::ArmyOrders,
             Self::Gated => T::VolunteerHosts,
-            Self::ShipModels => T::ShipModels,
+            Self::ShipModels => T::Ships,
+            Self::ShipModelDetails => T::ShipModels,
             Self::Provinces => T::Provinces,
             Self::Factions => T::Factions,
             Self::Countries => T::Countries,
@@ -453,14 +467,16 @@ impl Role {
 impl Role {
     /// Claim order when workers are scarce, lower first and FIFO among equals.
     /// World, Governance and Research come first because the block ends when
-    /// they do; the rest follow the block segment that joins them. ShipModels
-    /// is submitted before everything, so it starts at once while workers are
-    /// idle, despite its late claim priority.
+    /// they do; the rest follow the block segment that joins them. The
+    /// ShipModels census is short and joined before the World join, so it
+    /// claims first too. Its detail parts come right after the jobs that
+    /// wait for no join, so on a small pool a worker-only family (Governance)
+    /// never queues behind them.
     pub(crate) fn priority(self) -> u8 {
         match self {
             // The longest hourly jobs start first: the block ends when they do.
-            Self::World | Self::Governance | Self::Research => 0,
-            Self::AirWing => 1,
+            Self::World | Self::Governance | Self::Research | Self::ShipModels => 0,
+            Self::AirWing | Self::ShipModelDetails => 1,
             Self::Divisions
             | Self::Intel
             | Self::IntelResidual
@@ -498,12 +514,11 @@ impl Role {
             | Self::Gated => 5,
             Self::Presentation | Self::EtaInputs => 6,
             Self::Late => 7,
-            Self::ShipModels => 8,
         }
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 41;
+pub(crate) const ROLE_COUNT: usize = 42;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -541,6 +556,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Orders,
     Role::Gated,
     Role::ShipModels,
+    Role::ShipModelDetails,
     Role::Provinces,
     Role::Factions,
     Role::Countries,
@@ -588,6 +604,7 @@ impl Job {
             Self::Orders(..) => Role::Orders,
             Self::Gated(..) => Role::Gated,
             Self::ShipModels(..) => Role::ShipModels,
+            Self::ShipModelDetails(..) => Role::ShipModelDetails,
             Self::Provinces(..) => Role::Provinces,
             Self::Factions(..) => Role::Factions,
             Self::Countries(..) => Role::Countries,
@@ -1041,7 +1058,11 @@ fn run_with_memory(
                 request.game_state,
                 &mut request.captured,
             );
-            Report::ShipModels(request.captured.capture_owned(&cached, request.context))
+            Report::ShipModels
+        }
+        Job::ShipModelDetails(request) => {
+            let cached = request.countries.roster_view(memory);
+            Report::ShipModelDetails(request.captured.capture_owned(&cached, request.context))
         }
         Job::Provinces(request) => {
             let (base, game_state) = (request.base, request.game_state);
