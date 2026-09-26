@@ -5,6 +5,7 @@ import type { AppearanceSettings, ResolvedAppearance } from './settings';
 import { cssVariable, themeRoles } from './themes';
 import type { ThemeColors, ThemeMode } from './themes';
 import { getBackdrop } from './backdrops';
+import { APPEARANCE_EVENT } from './events';
 
 const darkQuery = () => window.matchMedia('(prefers-color-scheme: dark)');
 const motionQuery = () => window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -29,6 +30,8 @@ export function applyAppearance(root: HTMLElement, settings: AppearanceSettings,
   root.dataset.motion = resolved.reducedMotion ? 'reduced' : 'full';
   root.dataset.backdrop = settings.backdrop.kind;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', colors.chrome);
+  // Canvas charts cannot see CSS changes; tell them to re-read their tokens.
+  if (root === document.documentElement) window.dispatchEvent(new Event(APPEARANCE_EVENT));
 }
 
 /** Apply the saved appearance before React renders, so the first frame is already themed. */

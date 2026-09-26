@@ -9,6 +9,7 @@ The React/TypeScript interface hosted by the desktop app. It owns navigation, ap
 | [src/shell](src/shell/) | Sidebar, top bar and views, Settings and its sidebar navigation, native viewer glue and the Tauri API wrappers. [appearance](src/shell/appearance/) holds themes, backdrops and fonts. |
 | [src/components](src/components/) | Reusable tiles: popover, tooltip, icons, country picker and flag, date picker, playback speed, map controls and appearance. |
 | [src/dashboard](src/dashboard/) | The widget framework: layout model and storage, playback clock, sources and campaigns, map geometry, the data client with its two transports, and the product cache. |
+| [src/charts](src/charts/) | The Canvas 2D chart kit: one animation scheduler, sharp sizing under zoom, theme tokens and palette, time and value axes, zoom and pan, series and labels. See its [README](src/charts/README.md). |
 | [src/widgets](src/widgets/) | One folder per widget. Start with its [README](src/widgets/README.md). |
 | [src/generated](src/generated/) | The TypeScript contract generated from Rust. Regenerate; never edit. |
 

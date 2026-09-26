@@ -44,6 +44,11 @@
   --control-h: 32px; --control-h-sm: 28px;
   --ease: cubic-bezier(.2, .8, .2, 1); --ease-spring: cubic-bezier(.3, 1.4, .5, 1);
   --t-fast: 120ms; --t: 180ms; --t-slow: 300ms;
+  /* Shared widget scales and chart ink: widgets and charts use these, never raw values. */
+  --space-1: 2px; --space-2: 4px; --space-3: 8px; --space-4: 12px; --space-5: 16px; --space-6: 24px;
+  --type-xs: 11px; --type-sm: 12px; --type-md: 13px; --type-lg: 14px;
+  --chart-grid: color-mix(in srgb, var(--border) 55%, var(--surface));
+  --chart-axis: color-mix(in srgb, var(--border) 88%, var(--text));
 
   font-family: var(--font-ui); font-size: 14px; line-height: 1.45;
   color: var(--text); background: var(--canvas); color-scheme: dark;

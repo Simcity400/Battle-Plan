@@ -1,0 +1,25 @@
+# Charts
+
+The in-house chart kit every widget draws with. It has no chart dependency: charts draw on Canvas 2D so dozens of animated widgets stay cheap, and one shared scheduler drives them all. Everything here except the DOM readers is pure and tested with `node --test`.
+
+| Module | What it does |
+|---|---|
+| [scheduler.ts](scheduler.ts) | One `requestAnimationFrame` loop. A task draws when woken and keeps frames coming only while it is still moving; hidden tasks never draw; the loop sleeps when nothing moves. |
+| [surface.ts](surface.ts) | Backing-store size from the canvas's real on-screen size (which includes the widget's Size zoom and display scaling), and pointer positions in layout pixels. |
+| [tokens.ts](tokens.ts) | Theme values a chart draws with, read from CSS variables through a probe element, and `APPEARANCE_EVENT` for re-reading them. |
+| [palette.ts](palette.ts) | The categorical palette for categories (not countries), solved per theme for 3:1 contrast, and `nudgeApart` for the fixed-colour setting and faction colours. |
+| [timeAxis.ts](timeAxis.ts) | Ticks from the recording's own hours: decade, year, quarter, month or day, with labels centred on each period's visible part. |
+| [valueAxis.ts](valueAxis.ts) | Nice linear and log ticks, and exact formatting of recorded fixed-point integers. |
+| [view.ts](view.ts) | Zoom state and its reducer (wheel, box, pan, dragging either axis, resets), playback domains (draw-in, cursor, window) and axis settings. |
+| [series.ts](series.ts) | Runs of recorded values, gap-aware segments, sampling, a monotone curve and stacking. |
+| [easing.ts](easing.ts) | Shape easing for the app's motion setting and playback speed. |
+| [labels.ts](labels.ts) | Non-overlapping end labels and label columns measured over the whole campaign. |
+| [tooltipPlacement.ts](tooltipPlacement.ts) | Tooltips beside the pointer, flipped and clamped so they are never cut off. |
+
+## Rules
+
+- **Shapes ease; numbers stay exact.** Labels and tooltips show the recorded value at the resolved hour; only positions glide. Nothing eases across a gap, and a gap is never drawn as zero.
+- **No fixed dates.** Axes, ticks and ranges come from the recording's start and end; settings store offsets from the branch start.
+- **No fixed colours or sizes.** Draw with `ChartTokens`. Countries use their recorded map colours; categories use the palette in its fixed order, and a ninth category folds into "Other".
+- **Sharp at any Size.** Size the backing store with `backingSize` and draw in layout pixels; never stretch a canvas.
+- **Zoom holds during playback.** A zoomed axis keeps its range until the user resets it.
