@@ -2884,12 +2884,13 @@ impl Viewer {
             None => *camera,
         };
         let scene = self.scene.as_mut().expect("created above");
-        if map::unit_models::draws_any(camera.height)
+        let gates = document.unit_models.gates;
+        if gates.any(camera.height)
             && self.unit_fraction
                 != Some((
                     document.hour_fraction,
-                    map::unit_models::draws(camera.height),
-                    camera.height < map::unit_models::SHIPS_DISTANCE_CUTOFF,
+                    gates.units(camera.height),
+                    gates.ships(camera.height),
                 ))
         {
             let timer = Instant::now();
@@ -2932,8 +2933,8 @@ impl Viewer {
             laps.lap("units_upload");
             self.unit_fraction = Some((
                 document.hour_fraction,
-                map::unit_models::draws(camera.height),
-                camera.height < map::unit_models::SHIPS_DISTANCE_CUTOFF,
+                gates.units(camera.height),
+                gates.ships(camera.height),
             ));
             if map::counter_move::profiling() {
                 map::counter_move::profile_print(format!(

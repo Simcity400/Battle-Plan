@@ -1248,36 +1248,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             camera.height,
             document.rail_build.as_secs_f64() * 1000.0
         );
+        let levels = unit_report
+            .by_level
+            .iter()
+            .map(|(level, count)| format!("{level:?} {count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let gates = document.unit_models.gates;
         println!(
-            "Unit models: {} stacks, {} on their tag's entity, {} on their graphical culture's, {} on the bare name, {} on the engine's placeholder box; {} took the sub-unit's sprite key, {} ride a transport, {} stand along a route, {} have no recorded template, {} have no anchor, {} are hidden from this perspective, {} carry attached entities and {} of those are an attachment rig with no geometry of their own; {} drawn at height {:.3} (land cutoff {}, ship cutoff {}); {} at-sea hulls prepared",
+            "Unit models: {} stacks by ladder level ({levels}); {} took the sub-unit's sprite key, {} ride a transport, {} stand along a route, {} have no recorded template, {} have no known country operands, {} have no anchor, {} are hidden from this perspective, {} carry attached entities and {} of those are an attachment rig with no geometry of their own; {} drawn at height {:.3} (land cutoff {}, ship cutoff {}); {} at-sea hulls prepared",
             unit_report.stacks,
-            unit_report.level(map::unit_models::Level::Tag),
-            unit_report.level(map::unit_models::Level::Culture),
-            unit_report.level(map::unit_models::Level::Bare),
-            unit_report.level(map::unit_models::Level::Placeholder),
             unit_report.sprite_key,
             unit_report.transports,
             unit_report.moving,
             unit_report.untemplated,
+            unit_report.unknown_identity,
             unit_report.unanchored,
             unit_report.unseen,
             unit_report.attached,
             unit_report.rigs,
             report.unit_models_drawn,
             camera.height,
-            map::unit_models::UNIT_CUTOFF,
-            map::unit_models::SHIPS_DISTANCE_CUTOFF,
+            gates.units,
+            gates.ships,
             unit_report.ship_hulls,
         );
+        if let Some(reason) = &unit_report.disabled {
+            println!("  the unit-model layer is off: {reason}");
+        }
+        if unit_report.label_ordering > 0 {
+            println!(
+                "  no model for {}: the no-pair fallback's order needs unrecorded variant labels",
+                unit_report.label_ordering
+            );
+        }
+        for (reason, count) in &unit_report.selection_errors {
+            println!("  no model for {count}: {reason}");
+        }
         println!(
             "Aircraft: {} models submitted in this camera",
             report.aircraft_drawn
         );
         println!(
-            " ladder inputs: {} land sub-unit keys from common/units, {} tags with a graphical culture, {} entities loaded",
+            " ladder inputs: {} sub-units from common/units, {} entities baked as hours placed them",
             document.unit_models.sub_units.len(),
-            document.unit_models.cultures.len(),
-            document.unit_models.library.meshes.len(),
+            document.unit_models.library().meshes.len(),
         );
         for (entity, count) in unit_report.by_entity.iter().rev().take(12) {
             println!("  {entity} x{count}");

@@ -72,7 +72,12 @@ pub mod textures;
 pub mod trees;
 // the screen-space interface's scale
 pub mod ui_scale;
-// close zoom
+// close zoom: the 3D land-model selectors and their inputs
+pub mod camouflage;
+pub mod equipment_graphics;
+pub mod model_countries;
+pub mod model_multi_fallback;
+pub mod model_selection;
 pub mod unit_models;
 pub mod visibility;
 pub mod water;

@@ -588,6 +588,31 @@ impl ResolvedLayers {
         self.effective.values().map(|file| file.path.as_str())
     }
 
+    /// The `name` of every recorded DLC layer, which `has_dlc` tests: its
+    /// descriptor is reread and must still hash as it did when verified.
+    pub fn dlc_names(&self) -> io::Result<BTreeSet<String>> {
+        let mut names = BTreeSet::new();
+        for layer in &self.layers {
+            let Some(descriptor) = layer.descriptor.as_ref().filter(|path| {
+                path.extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("dlc"))
+            }) else {
+                continue;
+            };
+            let bytes = fs::read(descriptor)?;
+            let actual: [u8; 32] = Sha256::digest(&bytes).into();
+            if layer.descriptor_hash != Some(actual) {
+                return Err(invalid(format!(
+                    "DLC descriptor {} changed after content verification",
+                    descriptor.display()
+                )));
+            }
+            names.insert(required(&parser::parse(&bytes)?, b"name")?);
+        }
+        Ok(names)
+    }
+
     /// Every distinct covered path under `prefix` that a visible layer lists,
     /// with its own case, as a PhysFS enumeration of the merged tree lists it:
     /// names that differ only in case stay separate entries, and each reads
