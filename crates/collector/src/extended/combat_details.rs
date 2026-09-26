@@ -8,8 +8,8 @@ use crate::{
 };
 use engine::land_tactic_inputs;
 use engine::{
-    Memory, carmy_combat_inputs, cland_combat, land_reinforcement_inputs as reinforcement,
-    walk::Outcome,
+    Memory, carmy_combat_inputs, cland_combat, combat_sources::Sources,
+    land_reinforcement_inputs as reinforcement, walk::Outcome,
 };
 use replay::rows::LandDivisionManpowerTerm;
 use replay::rows::{LandCombatCommanderPortraitModifier, LandCombatCommanderPortraitTooltip};
@@ -168,8 +168,124 @@ impl Progress {
         }
     }
 }
+
+/// Per-division and per-combat reader storage the walk reuses, sized once at
+/// each reader's bound, instead of zeroing about 15 KB for every division.
+/// Readers write only the prefix they return.
+#[derive(Default)]
+struct Scratch {
+    widths: Vec<carmy_combat_inputs::WidthTerm>,
+    manpower: Vec<carmy_combat_inputs::ManpowerTerm>,
+    reinforcement_modifiers: Vec<reinforcement::ModifierTerm>,
+    supply: Vec<reinforcement::SupplyTerm>,
+    acclimatization: Vec<reinforcement::AcclimatizationTerm>,
+    /// The division's army and stat block images.
+    army: Vec<u8>,
+    stat: Vec<u8>,
+    /// Both committed/reserve lists on each side have independent bounds.
+    rosters: Vec<u64>,
+    modifiers: Vec<carmy_combat_inputs::Modifier>,
+}
+impl Scratch {
+    /// Sizes each buffer at its reader's bound; a no-op once sized.
+    fn ensure(&mut self) {
+        use engine::combat_sources::{ARMY_IMAGE, STAT_IMAGE};
+        grow_vec(&mut self.widths, carmy_combat_inputs::WIDTH_TERM_LIMIT);
+        grow_vec(&mut self.manpower, carmy_combat_inputs::MANPOWER_TERM_LIMIT);
+        grow_vec(
+            &mut self.reinforcement_modifiers,
+            reinforcement::MODIFIER_LIMIT,
+        );
+        grow_vec(&mut self.supply, reinforcement::SUPPLY_TERM_LIMIT);
+        grow_vec(
+            &mut self.acclimatization,
+            reinforcement::ACCLIMATIZATION_LIMIT,
+        );
+        grow_vec(&mut self.army, ARMY_IMAGE);
+        grow_vec(&mut self.stat, STAT_IMAGE);
+        grow_vec(
+            &mut self.rosters,
+            cland_combat::DETAIL_UNIT_LIMIT as usize * 4,
+        );
+        grow_vec(&mut self.modifiers, carmy_combat_inputs::MODIFIER_LIMIT);
+    }
+    fn allocated_bytes(&self) -> usize {
+        self.widths.capacity() * size_of::<carmy_combat_inputs::WidthTerm>()
+            + self.manpower.capacity() * size_of::<carmy_combat_inputs::ManpowerTerm>()
+            + self.reinforcement_modifiers.capacity() * size_of::<reinforcement::ModifierTerm>()
+            + self.supply.capacity() * size_of::<reinforcement::SupplyTerm>()
+            + self.acclimatization.capacity() * size_of::<reinforcement::AcclimatizationTerm>()
+            + self.army.capacity()
+            + self.stat.capacity()
+            + self.rosters.capacity() * size_of::<u64>()
+            + self.modifiers.capacity() * size_of::<carmy_combat_inputs::Modifier>()
+    }
+}
+
+/// One division's stats, context and reinforcement rows and manpower count.
+type DivisionRead = (
+    carmy_combat_inputs::Row,
+    carmy_combat_inputs::ContextRow,
+    reinforcement::ContextRow,
+    usize,
+);
+
+/// One division's four readers in the walk's order, through the division's
+/// army and stat block image (engine::combat_sources), into `scratch`.
+#[allow(clippy::too_many_arguments)]
+fn read_division(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    sources: &mut Sources,
+    scratch: &mut Scratch,
+    transport_terms: &mut Vec<reinforcement::TransportTerm>,
+    transport_start: usize,
+    pointer: usize,
+    handle: u64,
+) -> Result<DivisionRead, &'static str> {
+    use engine::combat_sources::{ARMY_IMAGE, DivisionImage, STAT_IMAGE};
+    let Scratch {
+        widths,
+        manpower,
+        reinforcement_modifiers,
+        supply,
+        acclimatization,
+        army,
+        stat,
+        ..
+    } = scratch;
+    // `ensure` sized both at the start of the pass.
+    let unsized_image = "land combat division image storage unsized";
+    let army = <&mut [u8; ARMY_IMAGE]>::try_from(&mut army[..]).map_err(|_| unsized_image)?;
+    let stat = <&mut [u8; STAT_IMAGE]>::try_from(&mut stat[..]).map_err(|_| unsized_image)?;
+    let image = DivisionImage::new(memory, pointer, army, stat);
+    let memory = &image;
+    let stats = carmy_combat_inputs::capture_stats(memory, base, sources, pointer, handle)?;
+    let context = carmy_combat_inputs::capture_context(
+        memory, base, state, sources, pointer, handle, widths,
+    )?;
+    let row = reinforcement::capture_context(
+        memory,
+        base,
+        state,
+        sources,
+        pointer,
+        handle,
+        reinforcement_modifiers,
+        supply,
+        acclimatization,
+        transport_terms,
+        transport_start,
+    )?;
+    let manpower =
+        carmy_combat_inputs::capture_manpower(memory, base, sources, pointer, handle, manpower)?;
+    Ok((stats, context, row, manpower))
+}
+
 struct Destination<'a> {
-    context_modifiers: carmy_combat_inputs::ContextModifiers,
+    sources: &'a mut Sources,
+    scratch: &'a mut Scratch,
     division_commanders: &'a mut Vec<engine::naval_commander_inputs::DivisionCommanderRow>,
     commander_progress: Progress,
     commander_keys: &'a mut [CommanderKey],
@@ -358,63 +474,21 @@ impl Destination<'_> {
                         if self.progress[1].failure.is_none()
                             && let Some(operand) = operand
                         {
-                            let mut terms = [carmy_combat_inputs::WidthTerm::default();
-                                carmy_combat_inputs::WIDTH_TERM_LIMIT];
-                            let mut manpower = [carmy_combat_inputs::ManpowerTerm::default();
-                                carmy_combat_inputs::MANPOWER_TERM_LIMIT];
-                            let mut reinforcement_modifiers =
-                                [reinforcement::ModifierTerm::default();
-                                    reinforcement::MODIFIER_LIMIT];
-                            let mut supply_terms = [reinforcement::SupplyTerm::default();
-                                reinforcement::SUPPLY_TERM_LIMIT];
-                            let mut acclimatization =
-                                [reinforcement::AcclimatizationTerm::default();
-                                    reinforcement::ACCLIMATIZATION_LIMIT];
                             // Enemy transport terms go straight into the arena
                             // past its admitted length; the reader grows it on
                             // this worker, one successfully read term at a time.
                             let transport_start = self.reinforcement_progress[3].len;
-                            let result =
-                                carmy_combat_inputs::capture_stats(memory, base, pointer, handle)
-                                    .and_then(|stats| {
-                                        carmy_combat_inputs::capture_context(
-                                            memory,
-                                            base,
-                                            state,
-                                            pointer,
-                                            handle,
-                                            &mut terms,
-                                            &mut self.context_modifiers,
-                                        )
-                                        .and_then(
-                                            |context| {
-                                                reinforcement::capture_context(
-                                                    memory,
-                                                    base,
-                                                    state,
-                                                    pointer,
-                                                    handle,
-                                                    &mut reinforcement_modifiers,
-                                                    &mut supply_terms,
-                                                    &mut acclimatization,
-                                                    self.transport_terms,
-                                                    transport_start,
-                                                )
-                                                .and_then(|reinforcement| {
-                                                    carmy_combat_inputs::capture_manpower(
-                                                        memory,
-                                                        base,
-                                                        pointer,
-                                                        handle,
-                                                        &mut manpower,
-                                                    )
-                                                    .map(|count| {
-                                                        (stats, context, reinforcement, count)
-                                                    })
-                                                })
-                                            },
-                                        )
-                                    });
+                            let result = read_division(
+                                memory,
+                                base,
+                                state,
+                                self.sources,
+                                self.scratch,
+                                self.transport_terms,
+                                transport_start,
+                                pointer,
+                                handle,
+                            );
                             match result {
                                 Ok((stats, context, reinforcement, manpower_len)) => {
                                     let commander_input =
@@ -448,13 +522,16 @@ impl Destination<'_> {
                                         );
                                         grow_vec(self.supply_terms, starts[1] + counts[1]);
                                         grow_vec(self.acclimatization, starts[2] + counts[2]);
+                                        let scratch = &*self.scratch;
                                         self.reinforcement_modifiers
                                             [starts[0]..starts[0] + counts[0]]
-                                            .copy_from_slice(&reinforcement_modifiers[..counts[0]]);
+                                            .copy_from_slice(
+                                                &scratch.reinforcement_modifiers[..counts[0]],
+                                            );
                                         self.supply_terms[starts[1]..starts[1] + counts[1]]
-                                            .copy_from_slice(&supply_terms[..counts[1]]);
+                                            .copy_from_slice(&scratch.supply[..counts[1]]);
                                         self.acclimatization[starts[2]..starts[2] + counts[2]]
-                                            .copy_from_slice(&acclimatization[..counts[2]]);
+                                            .copy_from_slice(&scratch.acclimatization[..counts[2]]);
                                         // Transport terms were written in place at
                                         // starts[3]; admission only advances the length.
                                         for (p, count) in
@@ -463,11 +540,11 @@ impl Destination<'_> {
                                             p.len += count;
                                         }
                                         self.width_terms[start..start + count]
-                                            .copy_from_slice(&terms[..count]);
+                                            .copy_from_slice(&scratch.widths[..count]);
                                         self.width_progress.len += count;
                                         self.manpower
                                             [manpower_start..manpower_start + manpower_len]
-                                            .copy_from_slice(&manpower[..manpower_len]);
+                                            .copy_from_slice(&scratch.manpower[..manpower_len]);
                                         self.manpower_progress.len += manpower_len;
                                         self.divisions[self.progress[1].len] = Division {
                                             combat: source.id,
@@ -548,9 +625,7 @@ impl Destination<'_> {
             Outcome::Truncated { .. } => return,
             Outcome::Rows { .. } => {}
         }
-        // Both committed/reserve lists on each side have independent 1024 bounds.
-        let mut scratch = [0_u64; cland_combat::DETAIL_UNIT_LIMIT as usize * 4];
-        match cland_combat::read_details(memory, base, source, &mut scratch) {
+        match cland_combat::read_details(memory, base, source, &mut self.scratch.rosters) {
             Ok((mut row, count)) => {
                 self.arenas[0].required += count;
                 let mut context = land_tactic_inputs::capture_context(
@@ -586,7 +661,7 @@ impl Destination<'_> {
                     return;
                 }
                 let start = self.arenas[0].len;
-                self.rosters[start..start + count].copy_from_slice(&scratch[..count]);
+                self.rosters[start..start + count].copy_from_slice(&self.scratch.rosters[..count]);
                 for side in &mut row.sides {
                     side.committed_start += start;
                     side.reserve_start += start;
@@ -622,9 +697,8 @@ impl Destination<'_> {
         if self.progress[2].failure.is_some() {
             return;
         }
-        let mut scratch =
-            [carmy_combat_inputs::Modifier::default(); carmy_combat_inputs::MODIFIER_LIMIT];
-        match carmy_combat_inputs::capture_modifiers(memory, base, pointer, handle, &mut scratch) {
+        let scratch = &mut self.scratch.modifiers;
+        match carmy_combat_inputs::capture_modifiers(memory, base, pointer, handle, scratch) {
             Ok(count) => {
                 self.arenas[2].required += count;
                 let Some(side) = side else {
@@ -644,7 +718,8 @@ impl Destination<'_> {
                     self.sides[side].start = self.arenas[1].len;
                 }
                 let start = self.arenas[2].len;
-                self.modifiers[start..start + count].copy_from_slice(&scratch[..count]);
+                self.modifiers[start..start + count]
+                    .copy_from_slice(&self.scratch.modifiers[..count]);
                 self.members[self.arenas[1].len] = ModifierMember {
                     division: handle,
                     ordinal,
@@ -694,6 +769,10 @@ pub struct Captured {
     census_participants: Vec<u64>,
     required_census: usize,
     required_census_participants: usize,
+    /// Per-pass shared division sources; cleared before each pass.
+    sources: Sources,
+    /// Reader storage reused across divisions and passes.
+    scratch: Scratch,
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -750,6 +829,16 @@ impl Captured {
             census_participants: vec![0; c.census_participants],
             required_census: 0,
             required_census_participants: 0,
+            sources: Sources::new(),
+            // Sized with the capture, off the game thread; a vacant
+            // placeholder stays allocation-free and is sized if it is walked.
+            scratch: if c.combats == 0 {
+                Scratch::default()
+            } else {
+                let mut scratch = Scratch::default();
+                scratch.ensure();
+                scratch
+            },
         }
     }
     pub fn reset(&mut self) {
@@ -802,6 +891,7 @@ impl Captured {
             + self.window.allocated_bytes()
             + self.census.capacity() * size_of::<cland_combat::Row>()
             + self.census_participants.capacity() * size_of::<u64>()
+            + self.scratch.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
         c.division_commanders = c
@@ -854,6 +944,8 @@ impl Captured {
         base: usize,
         state: usize,
     ) -> ([Outcome; N], [u64; N]) {
+        self.sources.clear();
+        self.scratch.ensure();
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
         let commander_started = qpc();
@@ -864,7 +956,8 @@ impl Captured {
         self.commander_keys.fill(CommanderKey::default());
         let commander_ticks = elapsed(commander_started);
         let mut destination = Destination {
-            context_modifiers: carmy_combat_inputs::ContextModifiers::default(),
+            sources: &mut self.sources,
+            scratch: &mut self.scratch,
             division_commanders: &mut self.division_commanders.first,
             commander_progress: Progress::default(),
             commander_keys: &mut self.commander_keys,
@@ -1396,8 +1489,12 @@ mod tests {
         ];
         let mut members = [ModifierMember::default(); 2];
         let mut values = [carmy_combat_inputs::Modifier::default(); 1];
+        let mut test_sources = Sources::new();
+        let mut scratch = Scratch::default();
+        scratch.ensure();
         let mut destination = Destination {
-            context_modifiers: carmy_combat_inputs::ContextModifiers::default(),
+            sources: &mut test_sources,
+            scratch: &mut scratch,
             details: &mut [],
             division_commanders: &mut Vec::new(),
             commander_keys: &mut [],

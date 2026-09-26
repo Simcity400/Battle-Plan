@@ -4,6 +4,7 @@
 //! and its organisation/fuel factors are NOT this getter. No displayed speed,
 //! chance, modifier sum, acclimatization fraction or supply ratio is composed.
 
+use crate::combat_sources::{Run, Sources, share};
 use crate::{Memory, carmy, ccountry, cgame_state, cpdx_array::Array, cprovince, cunit, read};
 
 pub const MODIFIER_LIMIT: usize = 96;
@@ -183,10 +184,16 @@ fn auth(memory: &impl Memory, base: usize, p: usize, rva: usize) -> Result<(), &
     Ok(())
 }
 
+const UNREADABLE: &str = "reinforcement input unreadable";
+
+/// The raw values of `keys` in one accumulator, with each present key's
+/// definition flags. The accumulator's census and each key's flags are read
+/// once per pass (`sources`), by main's reads and with main's failures.
 #[allow(clippy::too_many_arguments)]
 fn append_modifiers(
     memory: &impl Memory,
     base: usize,
+    sources: &mut Sources,
     accumulator: usize,
     scope: u8,
     keys: &[u32],
@@ -226,11 +233,56 @@ fn append_modifiers(
         }
     }
     if !shared {
-        let entries = array(memory, accumulator, 0, 16)?;
         for term in &mut output[start..*len] {
             term.raw = 0;
             term.present = 0;
         }
+        let run = *share(&mut sources.censuses, accumulator, || {
+            census(memory, accumulator, &mut sources.census_entries)
+        })?;
+        let entries = run.of(&sources.census_entries);
+        for term in &mut output[start..*len] {
+            // Keys strictly increase, so each key is present at most once.
+            if let Ok(index) = entries.binary_search_by_key(&term.key, |entry| entry.0) {
+                term.present = 1;
+                term.raw = entries[index].1;
+            }
+        }
+    }
+    use crate::modifier_definition as metadata;
+    let table = sources.field::<u64>(memory, base, metadata::TABLE_RVA, UNREADABLE)? as usize;
+    for term in &mut output[start..*len] {
+        if term.present != 0 {
+            let key = term.key;
+            let (flags, feature) = *share(&mut sources.metadata, key, || {
+                let row = table
+                    .checked_add(key as usize * metadata::STRIDE)
+                    .filter(|_| table != 0)
+                    .ok_or("reinforcement modifier metadata null")?;
+                let bytes = field::<[u8; 12]>(memory, row, metadata::FLAGS)?;
+                Ok((
+                    u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                    u32::from_le_bytes(bytes[8..].try_into().unwrap()),
+                ))
+            })?;
+            term.metadata_flags = flags;
+            term.feature_selector = feature;
+        }
+    }
+    Ok(())
+}
+
+/// One accumulator's complete census into the pass's arena, by main's direct
+/// reads (the header, then 64-entry copies) and with main's failures. Keys
+/// strictly increase.
+fn census(
+    memory: &impl Memory,
+    accumulator: usize,
+    arena: &mut Vec<(u32, i64)>,
+) -> Result<Run, &'static str> {
+    let entries = array(memory, accumulator, 0, 16)?;
+    let start = arena.len();
+    let read = (|| {
         let mut batch = [0_u8; 64 * 16];
         let mut previous = 0;
         for first in (0..entries.count as usize).step_by(64) {
@@ -248,29 +300,22 @@ fn append_modifiers(
                     return Err("reinforcement modifier order invalid");
                 }
                 previous = key;
-                for term in &mut output[start..*len] {
-                    if term.key == key {
-                        term.present = 1;
-                        term.raw = i64::from_le_bytes(entry[8..16].try_into().unwrap());
-                    }
-                }
+                arena.push((key, i64::from_le_bytes(entry[8..16].try_into().unwrap())));
             }
         }
-    }
-    use crate::modifier_definition as metadata;
-    let table = pointer(memory, base, metadata::TABLE_RVA)?;
-    for term in &mut output[start..*len] {
-        if term.present != 0 {
-            let row = table
-                .checked_add(term.key as usize * metadata::STRIDE)
-                .filter(|_| table != 0)
-                .ok_or("reinforcement modifier metadata null")?;
-            let bytes = field::<[u8; 12]>(memory, row, metadata::FLAGS)?;
-            term.metadata_flags = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-            term.feature_selector = u32::from_le_bytes(bytes[8..].try_into().unwrap());
+        Ok(())
+    })();
+    match read {
+        Ok(()) => Ok(Run {
+            start,
+            len: arena.len() - start,
+        }),
+        Err(reason) => {
+            // A census that fails partway leaves nothing behind in the arena.
+            arena.truncate(start);
+            Err(reason)
         }
     }
-    Ok(())
 }
 
 /// Raw accumulator selection for1409CC140; its hash selects a source rather
@@ -364,35 +409,6 @@ fn acclimatization(
     Ok(())
 }
 
-fn supply_terms(
-    memory: &impl Memory,
-    base: usize,
-    template: usize,
-    row: &mut ContextRow,
-    output: &mut [SupplyTerm],
-) -> Result<(), &'static str> {
-    let entries = array(memory, template, 0xc0, 16)?;
-    let count = entries.count as usize;
-    if count > SUPPLY_TERM_LIMIT {
-        return Err("reinforcement supply term bound exceeded");
-    }
-    if count > output.len() {
-        return Err("reinforcement supply term arena full");
-    }
-    for (index, term) in output[..count].iter_mut().enumerate() {
-        let entry = element(entries, index as u32, 16)?;
-        let unit = pointer(memory, entry, 0)?;
-        auth(memory, base, unit, crate::csub_unit_definition::VTABLE_RVA)?;
-        *term = SupplyTerm {
-            subunit: field(memory, unit, 8)?,
-            count: field(memory, entry, 8)?,
-            special: field(memory, unit, 0x5b7)?,
-        };
-    }
-    row.supply_term_count = count;
-    Ok(())
-}
-
 fn infrastructure(
     memory: &impl Memory,
     base: usize,
@@ -457,55 +473,339 @@ fn infrastructure(
     Ok(())
 }
 
+/// One infrastructure state's operands, shared by every division it serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Infrastructure {
+    id: u32,
+    lookup: u8,
+    scalars: [i64; 5],
+}
+
+/// One template's supply entries: the header's count, then the entries in
+/// order up to the first failure. Each division checks its arena between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SupplyEntries {
+    count: usize,
+    entries: Result<Run, &'static str>,
+}
+
+/// One template's priority sub-unit: its lexer id and token, then its category
+/// tokens. Main reads the category header after the token's modifier and each
+/// category after the previous category's modifier, so the header's outcome
+/// and each token's failure are kept for the division to meet in that order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Priority {
+    id: u32,
+    token: u32,
+    categories: Result<Categories, &'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Categories {
+    count: u32,
+    /// The tokens read, in order, in the pass's `category_tokens`.
+    tokens: Run,
+    /// The read that stopped them, when fewer than `count` were read.
+    failure: Option<&'static str>,
+}
+
+/// One eligible transport enemy: its raw tag, its country and both intel
+/// lanes, or the lanes' failure. Main reads the enemy's regional operand,
+/// which depends on the division's region, between these reads and the lanes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TransportEnemy {
+    raw: u32,
+    enemy: ccountry::Country,
+    lanes: Result<(i64, i64), &'static str>,
+}
+
+/// One transport owner's enemy walk: the eligible enemies in native diplomacy
+/// order, up to the enemy whose reads failed, and that failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TransportOwner {
+    enemies: Run,
+    failure: Option<&'static str>,
+}
+
+/// [`auth`] of a shared object: its identity word is read once per pass.
+fn auth_shared(
+    memory: &impl Memory,
+    base: usize,
+    sources: &mut Sources,
+    p: usize,
+    rva: usize,
+) -> Result<(), &'static str> {
+    if p == 0
+        || base.checked_add(rva).map(|n| n as u64)
+            != Some(sources.field::<u64>(memory, p, 0, UNREADABLE)?)
+    {
+        return Err("reinforcement dependency identity invalid");
+    }
+    Ok(())
+}
+
+fn infrastructure_shared(
+    memory: &impl Memory,
+    base: usize,
+    sources: &mut Sources,
+    state: usize,
+    row: &mut ContextRow,
+) -> Result<(), &'static str> {
+    if state == 0 {
+        return Ok(());
+    }
+    let shared = *share(&mut sources.infrastructure, state, || {
+        let mut scratch = ContextRow::default();
+        infrastructure(memory, base, state, &mut scratch)?;
+        let mut scalars = [0; 5];
+        scalars.copy_from_slice(&scratch.scalar_values[20..25]);
+        Ok(Infrastructure {
+            id: scratch.ids[3],
+            lookup: scratch.flags[10],
+            scalars,
+        })
+    })?;
+    row.flags[9] = 1;
+    row.ids[3] = shared.id;
+    row.flags[10] = shared.lookup;
+    row.scalar_values[20..25].copy_from_slice(&shared.scalars);
+    Ok(())
+}
+
+/// One template's supply entries into the pass's arena, by main's reads.
+fn supply_entries(
+    memory: &impl Memory,
+    base: usize,
+    template: usize,
+    arena: &mut Vec<SupplyTerm>,
+) -> Result<SupplyEntries, &'static str> {
+    let entries = array(memory, template, 0xc0, 16)?;
+    let count = entries.count as usize;
+    if count > SUPPLY_TERM_LIMIT {
+        return Err("reinforcement supply term bound exceeded");
+    }
+    let start = arena.len();
+    let read = (0..count).try_for_each(|index| {
+        let entry = element(entries, index as u32, 16)?;
+        let unit = pointer(memory, entry, 0)?;
+        auth(memory, base, unit, crate::csub_unit_definition::VTABLE_RVA)?;
+        arena.push(SupplyTerm {
+            subunit: field(memory, unit, 8)?,
+            count: field(memory, entry, 8)?,
+            special: field(memory, unit, 0x5b7)?,
+        });
+        Ok(())
+    });
+    Ok(SupplyEntries {
+        count,
+        entries: read.map(|()| Run { start, len: count }),
+    })
+}
+
+/// The template's supply terms: its header, main's arena check, then its
+/// entries, each failing where main fails.
+fn supply_terms(
+    memory: &impl Memory,
+    base: usize,
+    sources: &mut Sources,
+    template: usize,
+    row: &mut ContextRow,
+    output: &mut [SupplyTerm],
+) -> Result<(), &'static str> {
+    let shared = *share(&mut sources.supply_terms, template, || {
+        supply_entries(memory, base, template, &mut sources.supply_arena)
+    })?;
+    if shared.count > output.len() {
+        return Err("reinforcement supply term arena full");
+    }
+    let run = shared.entries?;
+    output[..run.len].copy_from_slice(run.of(&sources.supply_arena));
+    row.supply_term_count = run.len;
+    Ok(())
+}
+
+fn priority(
+    memory: &impl Memory,
+    base: usize,
+    template: usize,
+    arena: &mut Vec<u32>,
+) -> Result<Priority, &'static str> {
+    let selected = carmy::movement_priority_unit(memory, base, template)?;
+    let id = field(memory, selected, 8)?;
+    let token = field::<u32>(memory, selected, 0x5d8)?;
+    let categories = array(memory, selected, 0x508, 8).map(|categories| {
+        let start = arena.len();
+        // Past the bound every division refuses before reading a category.
+        let failure = if categories.count as usize > MODIFIER_LIMIT {
+            None
+        } else {
+            (0..categories.count)
+                .try_for_each(|index| {
+                    let category = pointer(memory, element(categories, index, 8)?, 0)?;
+                    arena.push(field::<u32>(memory, category, 0x60)?);
+                    Ok(())
+                })
+                .err()
+        };
+        Categories {
+            count: categories.count,
+            tokens: Run {
+                start,
+                len: arena.len() - start,
+            },
+            failure,
+        }
+    });
+    Ok(Priority {
+        id,
+        token,
+        categories,
+    })
+}
+
+/// Whether an owned relation is a war (`CRelation` type 0x380a, the type
+/// `CRelation::factory` 140D0A6D0 builds a `CWarRelation` for), in list order.
+/// A world war gives a country thousands of relations, so each batch of
+/// relation pointers is gathered in one call and their types in another.
+/// Each gather reports its first failing lane, and a batch answers exactly as
+/// the one-by-one walk would: a war before the first failure, else that
+/// failure. Nothing is read twice.
+pub(crate) fn owned_war_relation(
+    memory: &impl Memory,
+    relations: Array,
+) -> Result<bool, &'static str> {
+    use crate::memory::{RecordField, RecordLayout, RecordSources};
+    const BATCH: usize = 64;
+    const POINTER: RecordLayout<'static> = RecordLayout::new(
+        &[RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 8,
+        }],
+        8,
+    )
+    .unwrap();
+    const KIND: RecordLayout<'static> = RecordLayout::new(
+        &[RecordField {
+            source_offset: 8,
+            destination_offset: 0,
+            len: 4,
+        }],
+        4,
+    )
+    .unwrap();
+    let mut words = [0_u8; BATCH * 8];
+    let mut kinds = [0_u8; BATCH * 4];
+    let mut pointers = [0_usize; BATCH];
+    let mut first = 0_u32;
+    while first < relations.count {
+        let len = ((relations.count - first) as usize).min(BATCH);
+        // `element` fails only past the header's extent; the one-by-one walk
+        // would fail there before reading that relation.
+        let base = element(relations, first, 8)?;
+        let mut addressable = len;
+        for lane in 1..len {
+            if relations.element(first + lane as u32, 8).is_none() {
+                addressable = lane;
+                break;
+            }
+        }
+        let read = memory
+            .copy_records(
+                RecordSources::Strided {
+                    base,
+                    stride: 8,
+                    count: addressable,
+                },
+                &POINTER,
+                &mut words[..addressable * 8],
+            )
+            .min(addressable);
+        for (lane, pointer) in pointers[..read].iter_mut().enumerate() {
+            *pointer =
+                u64::from_le_bytes(words[lane * 8..lane * 8 + 8].try_into().unwrap()) as usize;
+        }
+        // A null or overflowing relation stops the gather at its lane, where
+        // the one-by-one read of its type fails.
+        let typed = memory
+            .copy_records(
+                RecordSources::Pointers(&pointers[..read]),
+                &KIND,
+                &mut kinds[..read * 4],
+            )
+            .min(read);
+        if kinds[..typed * 4]
+            .chunks_exact(4)
+            .any(|raw| u32::from_le_bytes(raw.try_into().unwrap()) == 0x380a)
+        {
+            return Ok(true);
+        }
+        if typed < read || read < addressable {
+            return Err(UNREADABLE);
+        }
+        if addressable < len {
+            return Err("reinforcement array index invalid");
+        }
+        first += len as u32;
+    }
+    Ok(false)
+}
+
+/// 140C70670 CArmy::GetMovementSpeedModifier's air-supply operands. The
+/// owner's diplomacy walk, relations included, runs once per owner in a pass;
+/// the region entry once per owner and region.
 #[allow(clippy::too_many_arguments)]
 fn air(
     memory: &impl Memory,
     base: usize,
     game: usize,
+    sources: &mut Sources,
+    countries: &ccountry::Reader<'_, impl Memory>,
     army: usize,
     stats: usize,
     location: usize,
     row: &mut ContextRow,
 ) -> Result<(), &'static str> {
-    let owner = ccountry::Reader::new(memory, base, game)?.resolve(field(
-        memory,
-        army,
-        cunit::LOGICAL_OWNER,
-    )?)?;
-    let diplomacy = pointer(memory, owner.pointer, 0xf88)?;
-    let mut active = field::<i32>(memory, diplomacy, 0xa4)? != 0;
-    if !active {
-        let relations = array(memory, diplomacy, 0x20, 8)?;
-        for i in 0..relations.count {
-            let relation = pointer(memory, element(relations, i, 8)?, 0)?;
-            if field::<u32>(memory, relation, 8)? == 0x380a {
-                active = true;
-                break;
-            }
+    use crate::cdiplomacy_status;
+    let owner = countries.resolve(field(memory, army, cunit::LOGICAL_OWNER)?)?;
+    let active = *share(&mut sources.air_owners, owner.pointer, || {
+        let diplomacy = pointer(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
+        if field::<i32>(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)? != 0 {
+            return Ok(true);
         }
-    }
-    let region = pointer(memory, location, cprovince::STRATEGIC_REGION)?;
+        let relations = array(memory, diplomacy, cdiplomacy_status::OWNED_RELATIONS, 8)?;
+        owned_war_relation(memory, relations)
+    })?;
+    let region =
+        sources.field::<u64>(memory, location, cprovince::STRATEGIC_REGION, UNREADABLE)? as usize;
     if !active || region == 0 {
         return Ok(());
     }
-    let manager = pointer(memory, game, cgame_state::STRATEGIC_AIR_MANAGER)?;
-    let countries = array(memory, manager, 0x30, 8)?;
-    let country = pointer(memory, element(countries, owner.canonical_slot, 8)?, 0)?;
-    let index = field::<i32>(memory, region, 0x60)?;
-    let regions = array(memory, country, 0xe0, 0xa0)?;
-    let index = u32::try_from(index).map_err(|_| "reinforcement air region negative")?;
-    let entry = element(regions, index, 0xa0)?;
+    let (index, values) = *share(&mut sources.air_entries, (owner.pointer, region), || {
+        let manager = pointer(memory, game, cgame_state::STRATEGIC_AIR_MANAGER)?;
+        let countries = array(memory, manager, 0x30, 8)?;
+        let country = pointer(memory, element(countries, owner.canonical_slot, 8)?, 0)?;
+        let index = field::<i32>(memory, region, 0x60)?;
+        let regions = array(memory, country, 0xe0, 0xa0)?;
+        let index = u32::try_from(index).map_err(|_| "reinforcement air region negative")?;
+        let entry = element(regions, index, 0xa0)?;
+        let mut values = [field(memory, entry, 0)?, field(memory, entry, 8)?, 0];
+        if values[1] > 0 {
+            values[2] = field(memory, entry, 0x18)?;
+        }
+        Ok((index, values))
+    })?;
     row.flags[7] = 1;
     row.ids[7] = index;
-    row.scalar_values[13] = field(memory, entry, 0)?;
-    row.scalar_values[14] = field(memory, entry, 8)?;
+    row.scalar_values[13] = values[0];
+    row.scalar_values[14] = values[1];
     if row.scalar_values[14] > 0 {
-        row.scalar_values[15] = field(memory, entry, 0x18)?;
+        row.scalar_values[15] = values[2];
         row.scalar_values[16] = field(memory, stats, 0x220)?;
-        row.scalar_values[17] = field(memory, base, 0x0331_ddd8)?;
+        row.scalar_values[17] = sources.field(memory, base, 0x0331_ddd8, UNREADABLE)?;
         if row.scalar_values[16] != 0 {
-            row.scalar_values[18] = field(memory, base, 0x0331_de18)?;
-            row.scalar_values[19] = field(memory, base, 0x0331_dd98)?;
+            row.scalar_values[18] = sources.field(memory, base, 0x0331_de18, UNREADABLE)?;
+            row.scalar_values[19] = sources.field(memory, base, 0x0331_dd98, UNREADABLE)?;
         }
     }
     Ok(())
@@ -542,11 +842,85 @@ fn transport_intel_lane(
     Ok(value)
 }
 
+/// The transport owner's enemy walk (E8DC30 over the +98/+A4 enemy references),
+/// once per owner in a pass: each eligible enemy with its intel lanes, in
+/// native order. The walk stops where main's would fail for every region: at
+/// an enemy whose reads before the regional operand fail (kept as `failure`),
+/// or after one whose lanes fail (kept in its entry, behind its regional read).
+fn transport_owner(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    countries: &ccountry::Reader<'_, impl Memory>,
+    owner: ccountry::Country,
+    arena: &mut Vec<TransportEnemy>,
+) -> Result<TransportOwner, &'static str> {
+    use crate::{ccountry_intel, cdiplomacy_status, cstrategic_navy_manager};
+    cstrategic_navy_manager::authenticate_owner(memory, base, game, owner)?;
+    let owner_intel = pointer(memory, owner.pointer, ccountry::INTEL_TABLE)?;
+    auth(memory, base, owner_intel, ccountry_intel::VTABLE_RVA)?;
+    let diplomacy = pointer(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
+    auth(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
+    if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
+        return Err("reinforcement transport diplomacy backlink mismatch");
+    }
+    // E8DC30 visits every enemy reference in +98/+A4 and appends to a
+    // growable CPdxArray: the native header count is the only bound.
+    let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
+    let start = arena.len();
+    let mut failure = None;
+    for index in 0..enemies.count {
+        let eligible = (|| {
+            let raw = field::<u32>(memory, element(enemies, index, 4)?, 0)?;
+            let enemy = countries.resolve(raw)?;
+            if field::<i32>(memory, enemy.pointer, ccountry::FOG_NETWORK_TABLE_COUNT)? <= 0 {
+                return Ok(None);
+            }
+            let enemy_diplomacy = pointer(memory, enemy.pointer, ccountry::DIPLOMACY_STATUS)?;
+            auth(memory, base, enemy_diplomacy, cdiplomacy_status::VTABLE_RVA)?;
+            if pointer(memory, enemy_diplomacy, cdiplomacy_status::COUNTRY)? != enemy.pointer {
+                return Err("reinforcement transport enemy backlink mismatch");
+            }
+            if field::<u8>(memory, enemy_diplomacy, cdiplomacy_status::CAPITULATED)? != 0 {
+                return Ok(None);
+            }
+            let enemy_intel = pointer(memory, enemy.pointer, ccountry::INTEL_TABLE)?;
+            auth(memory, base, enemy_intel, ccountry_intel::VTABLE_RVA)?;
+            Ok(Some((raw, enemy, enemy_intel)))
+        })();
+        let (raw, enemy, enemy_intel) = match eligible {
+            Ok(Some(eligible)) => eligible,
+            Ok(None) => continue,
+            Err(reason) => {
+                failure = Some(reason);
+                break;
+            }
+        };
+        let lanes = transport_intel_lane(memory, base, countries, owner_intel, enemy_intel, enemy)
+            .and_then(|own| {
+                transport_intel_lane(memory, base, countries, enemy_intel, owner_intel, owner)
+                    .map(|other| (own, other))
+            });
+        arena.push(TransportEnemy { raw, enemy, lanes });
+        if lanes.is_err() {
+            break;
+        }
+    }
+    Ok(TransportOwner {
+        enemies: Run {
+            start,
+            len: arena.len() - start,
+        },
+        failure,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn transport_context(
     memory: &impl Memory,
     base: usize,
     game: usize,
+    sources: &mut Sources,
     army: usize,
     location: usize,
     modifiers: &mut [ModifierTerm],
@@ -554,14 +928,16 @@ fn transport_context(
     start: usize,
 ) -> Result<ContextRow, &'static str> {
     use crate::{
-        ccountry_intel, cdiplomacy_status, cstatic_modifier, cstrategic_navy_manager,
-        cstrategic_region, cweather_manager, modifier_definition as metadata, sweather_per_region,
+        cstatic_modifier, cstrategic_navy_manager, cstrategic_region, cweather_manager,
+        modifier_definition as metadata, sweather_per_region,
     };
     let mut row = ContextRow::default();
     row.flags[11] = 2;
-    row.ids[0] = field(memory, location, cprovince::ID)?;
-    row.ids[5] = field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)?;
-    let callback = pointer(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)?;
+    row.ids[0] = sources.field(memory, location, cprovince::ID, UNREADABLE)?;
+    row.ids[5] = sources.field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA, UNREADABLE)?;
+    let callback =
+        sources.field::<u64>(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA, UNREADABLE)?
+            as usize;
     row.ids[6] = if callback == 0 {
         0
     } else if base.checked_add(metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
@@ -569,12 +945,14 @@ fn transport_context(
     } else {
         return Err("reinforcement modifier callback unsupported");
     };
-    let region = pointer(memory, location, cprovince::STRATEGIC_REGION)?;
-    auth(memory, base, region, cstrategic_region::VTABLE_RVA)?;
-    let region_id = field::<u32>(memory, region, cstrategic_region::ID)?;
+    let region =
+        sources.field::<u64>(memory, location, cprovince::STRATEGIC_REGION, UNREADABLE)? as usize;
+    auth_shared(memory, base, sources, region, cstrategic_region::VTABLE_RVA)?;
+    let region_id = sources.field::<u32>(memory, region, cstrategic_region::ID, UNREADABLE)?;
     row.ids[7] = region_id;
-    let manager = pointer(memory, game, cgame_state::WEATHER_MANAGER)?;
-    auth(memory, base, manager, cweather_manager::VTABLE_RVA)?;
+    let manager =
+        sources.field::<u64>(memory, game, cgame_state::WEATHER_MANAGER, UNREADABLE)? as usize;
+    auth_shared(memory, base, sources, manager, cweather_manager::VTABLE_RVA)?;
     let weather = array(
         memory,
         manager,
@@ -582,13 +960,20 @@ fn transport_context(
         sweather_per_region::STRIDE,
     )?;
     if let Some(record) = weather.element(region_id, sweather_per_region::STRIDE) {
-        auth(memory, base, record, sweather_per_region::VTABLE_RVA)?;
-        if field::<u32>(memory, record, sweather_per_region::ID)? != region_id {
+        auth_shared(
+            memory,
+            base,
+            sources,
+            record,
+            sweather_per_region::VTABLE_RVA,
+        )?;
+        if sources.field::<u32>(memory, record, sweather_per_region::ID, UNREADABLE)? != region_id {
             return Err("reinforcement transport weather identity mismatch");
         }
         append_modifiers(
             memory,
             base,
+            sources,
             record + sweather_per_region::MODIFIERS,
             7,
             &[0x29],
@@ -600,62 +985,45 @@ fn transport_context(
     let countries = ccountry::Reader::new(memory, base, game)?;
     let owner = countries.resolve(owner_raw)?;
     if row.ids[5] & (1 << 4) != 0 {
-        let definitions = pointer(memory, base, 0x0331_7cc8)?;
+        let definitions = sources.field::<u64>(memory, base, 0x0331_7cc8, UNREADABLE)? as usize;
         if definitions == 0 {
             return Err("reinforcement transport static modifier set null");
         }
-        let definition = pointer(memory, definitions, 0xf8)?;
+        let definition = sources.field::<u64>(memory, definitions, 0xf8, UNREADABLE)? as usize;
         if definition != 0 {
-            auth(memory, base, definition, cstatic_modifier::VTABLE_RVA)?;
-            cstrategic_navy_manager::authenticate_owner(memory, base, game, owner)?;
-            let owner_intel = pointer(memory, owner.pointer, ccountry::INTEL_TABLE)?;
-            auth(memory, base, owner_intel, ccountry_intel::VTABLE_RVA)?;
-            let diplomacy = pointer(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
-            auth(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-            if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
-                return Err("reinforcement transport diplomacy backlink mismatch");
-            }
-            // E8DC30 visits every enemy reference in +98/+A4 and appends to a
-            // growable CPdxArray: the native header count is the only bound.
-            let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
-            for index in 0..enemies.count {
-                let raw = field::<u32>(memory, element(enemies, index, 4)?, 0)?;
-                let enemy = countries.resolve(raw)?;
-                if field::<i32>(memory, enemy.pointer, ccountry::FOG_NETWORK_TABLE_COUNT)? <= 0 {
-                    continue;
-                }
-                let enemy_diplomacy = pointer(memory, enemy.pointer, ccountry::DIPLOMACY_STATUS)?;
-                auth(memory, base, enemy_diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-                if pointer(memory, enemy_diplomacy, cdiplomacy_status::COUNTRY)? != enemy.pointer {
-                    return Err("reinforcement transport enemy backlink mismatch");
-                }
-                if field::<u8>(memory, enemy_diplomacy, cdiplomacy_status::CAPITULATED)? != 0 {
-                    continue;
-                }
-                let enemy_intel = pointer(memory, enemy.pointer, ccountry::INTEL_TABLE)?;
-                auth(memory, base, enemy_intel, ccountry_intel::VTABLE_RVA)?;
-                let term = TransportTerm {
-                    country: raw,
-                    regional_value: cstrategic_navy_manager::regional_operand(
-                        memory, base, game, enemy, region_id,
-                    )?,
-                    own_intel: transport_intel_lane(
-                        memory,
-                        base,
-                        &countries,
-                        owner_intel,
-                        enemy_intel,
-                        enemy,
-                    )?,
-                    enemy_intel: transport_intel_lane(
-                        memory,
-                        base,
-                        &countries,
-                        enemy_intel,
-                        owner_intel,
-                        owner,
-                    )?,
-                };
+            auth_shared(
+                memory,
+                base,
+                sources,
+                definition,
+                cstatic_modifier::VTABLE_RVA,
+            )?;
+            let walked = *share(&mut sources.transport_owners, owner.pointer, || {
+                transport_owner(
+                    memory,
+                    base,
+                    game,
+                    &countries,
+                    owner,
+                    &mut sources.transport_enemies,
+                )
+            })?;
+            for index in walked.enemies.start..walked.enemies.start + walked.enemies.len {
+                let entry = sources.transport_enemies[index];
+                let regional_value = *share(
+                    &mut sources.regional,
+                    (entry.enemy.pointer, region_id),
+                    || {
+                        cstrategic_navy_manager::regional_operand(
+                            memory,
+                            base,
+                            game,
+                            entry.enemy,
+                            region_id,
+                        )
+                    },
+                )?;
+                let (own_intel, enemy_intel) = entry.lanes?;
                 // Grow one slot per term whose reads all succeeded, never from
                 // the unverified header count; Vec growth is amortized.
                 let slot = start
@@ -664,8 +1032,16 @@ fn transport_context(
                 if terms.len() <= slot {
                     terms.resize(slot + 1, TransportTerm::default());
                 }
-                terms[slot] = term;
+                terms[slot] = TransportTerm {
+                    country: entry.raw,
+                    regional_value,
+                    own_intel,
+                    enemy_intel,
+                };
                 row.transport_term_count += 1;
+            }
+            if let Some(reason) = walked.failure {
+                return Err(reason);
             }
             for (index, rva) in [
                 (25, 0x0331_e100),
@@ -673,11 +1049,12 @@ fn transport_context(
                 (27, 0x0331_d620),
                 (28, 0x0331_e550),
             ] {
-                row.scalar_values[index] = field(memory, base, rva)?;
+                row.scalar_values[index] = sources.field(memory, base, rva, UNREADABLE)?;
             }
             append_modifiers(
                 memory,
                 base,
+                sources,
                 owner.pointer + ccountry::MODIFIER_ACCUMULATOR,
                 9,
                 &[0x1a7],
@@ -687,17 +1064,20 @@ fn transport_context(
             append_modifiers(
                 memory,
                 base,
+                sources,
                 definition + cstatic_modifier::ACCUMULATOR,
                 8,
                 &[0x29],
                 modifiers,
                 &mut row.modifier_count,
             )?;
-            let metadata_table = pointer(memory, base, metadata::TABLE_RVA)?;
-            row.scalar_values[29] = i64::from(field::<u32>(
+            let metadata_table =
+                sources.field::<u64>(memory, base, metadata::TABLE_RVA, UNREADABLE)? as usize;
+            row.scalar_values[29] = i64::from(sources.field::<u32>(
                 memory,
                 metadata_table,
                 0x29 * metadata::STRIDE + metadata::CATEGORY_MASK,
+                UNREADABLE,
             )?);
         }
     }
@@ -711,11 +1091,16 @@ fn transport_context(
 /// the caller-owned vector as needed, so call it only where the caller may
 /// allocate (the acquisition worker, never the hourly callback). Entries past
 /// the returned count are unspecified scratch.
+///
+/// Per-source reads are shared through `sources` for the pass
+/// ([`crate::combat_sources`]): every read a division still makes, and every
+/// failure, comes at main's point with main's reason.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_context(
     memory: &impl Memory,
     base: usize,
     game: usize,
+    sources: &mut Sources,
     army: usize,
     expected_handle: u64,
     modifiers: &mut [ModifierTerm],
@@ -724,20 +1109,36 @@ pub fn capture_context(
     transport_terms: &mut Vec<TransportTerm>,
     transport_start: usize,
 ) -> Result<ContextRow, &'static str> {
-    auth(memory, base, army, carmy::VTABLE_RVA)?;
-    if expected_handle == 0 || field::<u64>(memory, army, cunit::HANDLE)? != expected_handle {
-        return Err("reinforcement army handle mismatch");
+    // `capture_stats` authenticated this division, its handle and its stat
+    // block moments ago in the same pass; those reads are not repeated.
+    let verified = sources
+        .verified
+        .filter(|(pointer, handle, _)| *pointer == army && *handle == expected_handle);
+    if verified.is_none() {
+        auth(memory, base, army, carmy::VTABLE_RVA)?;
+        if expected_handle == 0 || field::<u64>(memory, army, cunit::HANDLE)? != expected_handle {
+            return Err("reinforcement army handle mismatch");
+        }
     }
     let transfer = pointer(memory, army, carmy::NAVAL_TRANSFER_MEMBERSHIP)?;
-    let stats = pointer(memory, army, cunit::STAT_BLOCK)?;
-    auth(memory, base, stats, crate::csub_unit_definition::VTABLE_RVA)?;
+    let stats = match verified {
+        Some((_, _, stats)) => stats,
+        None => {
+            let stats = pointer(memory, army, cunit::STAT_BLOCK)?;
+            auth(memory, base, stats, crate::csub_unit_definition::VTABLE_RVA)?;
+            stats
+        }
+    };
     let location = pointer(memory, army, cunit::LOCATION)?;
-    carmy::movement_definition(memory, base, location)?;
+    share(&mut sources.definitions, location, || {
+        carmy::movement_definition(memory, base, location)
+    })?;
     if transfer != 0 {
         return transport_context(
             memory,
             base,
             game,
+            sources,
             army,
             location,
             modifiers,
@@ -746,9 +1147,10 @@ pub fn capture_context(
         );
     }
     let template = pointer(memory, army, carmy::STANDARD_TEMPLATE)?;
-    auth(
+    auth_shared(
         memory,
         base,
+        sources,
         template,
         crate::creferenced_division_template::VTABLE_RVA,
     )?;
@@ -762,14 +1164,15 @@ pub fn capture_context(
     };
     let countries = ccountry::Reader::new(memory, base, game)?;
     let owner = countries.resolve(owner_raw)?;
-    let leader = crate::carmy_leader::movement_accumulator(memory, base, army)?;
+    let leader = sources.leader_chain(memory, base, army, expected_handle)?;
     let country_accumulator = owner
         .pointer
         .checked_add(ccountry::MODIFIER_ACCUMULATOR)
         .ok_or("reinforcement country overflow")?;
-    let actual_state = pointer(memory, location, cprovince::STATE)?;
+    let actual_state =
+        sources.field::<u64>(memory, location, cprovince::STATE, UNREADABLE)? as usize;
     let mut row = ContextRow::default();
-    row.ids[0] = field(memory, location, cprovince::ID)?;
+    row.ids[0] = sources.field(memory, location, cprovince::ID, UNREADABLE)?;
     let route = array(memory, army, cunit::ORDINARY_ROUTE_DATA, 4)?;
     let next = if route.count == 0 {
         0
@@ -777,12 +1180,14 @@ pub fn capture_context(
         carmy::movement_route_province(memory, base, game, route, 0)?
     };
     if next != 0 {
-        row.ids[1] = field(memory, next, cprovince::ID)?;
+        row.ids[1] = sources.field(memory, next, cprovince::ID, UNREADABLE)?;
     }
     row.flags[..4].copy_from_slice(&formation_flags(memory, army)?);
     row.flags[5] = u8::from(carmy::movement_attacking(memory, base, game, army)?);
     use crate::modifier_definition as metadata;
-    let callback = pointer(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)?;
+    let callback =
+        sources.field::<u64>(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA, UNREADABLE)?
+            as usize;
     row.ids[6] = if callback == 0 {
         0
     } else if base.checked_add(metadata::ELIGIBILITY_FLAGS_GETTER_RVA) == Some(callback) {
@@ -790,11 +1195,12 @@ pub fn capture_context(
     } else {
         return Err("reinforcement modifier callback unsupported");
     };
-    row.ids[5] = field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)?;
+    row.ids[5] = sources.field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA, UNREADABLE)?;
     let country_keys = [0x2b, 0x1e9, 0x5e, 0x17f, 0x286];
     append_modifiers(
         memory,
         base,
+        sources,
         country_accumulator,
         0,
         &country_keys,
@@ -805,6 +1211,7 @@ pub fn capture_context(
         append_modifiers(
             memory,
             base,
+            sources,
             leader,
             1,
             &[0x2b, 0x5e, 0x17f],
@@ -813,19 +1220,27 @@ pub fn capture_context(
         )?;
     }
     if actual_state != 0 {
-        let accumulator = state_accumulator(memory, base, game, actual_state, roster)?;
-        row.ids[2] = field(memory, actual_state, crate::cstate::ID)?;
-        let controller = field(memory, actual_state, crate::cstate::CONTROLLER)?;
-        row.flags[6] = if ccountry::movement_friendly(memory, base, game, owner_raw, controller)? {
-            1
-        } else if ccountry::movement_enemy(memory, base, game, owner_raw, controller)? {
-            2
-        } else {
-            0
-        };
+        let accumulator = *share(&mut sources.state_sources, (actual_state, roster), || {
+            state_accumulator(memory, base, game, actual_state, roster)
+        })?;
+        row.ids[2] = sources.field(memory, actual_state, crate::cstate::ID, UNREADABLE)?;
+        let controller =
+            sources.field::<u32>(memory, actual_state, crate::cstate::CONTROLLER, UNREADABLE)?;
+        row.flags[6] = *share(&mut sources.controllers, (owner_raw, controller), || {
+            Ok(
+                if ccountry::movement_friendly(memory, base, game, owner_raw, controller)? {
+                    1
+                } else if ccountry::movement_enemy(memory, base, game, owner_raw, controller)? {
+                    2
+                } else {
+                    0
+                },
+            )
+        })?;
         append_modifiers(
             memory,
             base,
+            sources,
             accumulator,
             2,
             &[0x2b, 0x1e9, 0x1e7, 0x1e8],
@@ -834,12 +1249,14 @@ pub fn capture_context(
         )?;
     }
     acclimatization(memory, army, &mut row, acclimatization_terms)?;
-    let (province_weather, region_weather) =
-        crate::cweather_manager::movement_modifiers(memory, base, game, location)?;
+    let (province_weather, region_weather) = *share(&mut sources.weather, location, || {
+        crate::cweather_manager::movement_modifiers(memory, base, game, location)
+    })?;
     for (accumulator, scope) in [(province_weather, 3), (region_weather, 4)] {
         append_modifiers(
             memory,
             base,
+            sources,
             accumulator,
             scope,
             &[0x2b, 0x1e9],
@@ -847,31 +1264,36 @@ pub fn capture_context(
             &mut row.modifier_count,
         )?;
     }
-    let selected = carmy::movement_priority_unit(memory, base, template)?;
-    row.ids[4] = field(memory, selected, 8)?;
-    let token = field::<u32>(memory, selected, 0x5d8)?;
-    if token != 0 {
+    let selected = *share(&mut sources.priorities, template, || {
+        priority(memory, base, template, &mut sources.category_tokens)
+    })?;
+    row.ids[4] = selected.id;
+    if selected.token != 0 {
         append_modifiers(
             memory,
             base,
+            sources,
             country_accumulator,
             5,
-            &[token],
+            &[selected.token],
             modifiers,
             &mut row.modifier_count,
         )?;
     }
-    let categories = array(memory, selected, 0x508, 8)?;
+    let categories = selected.categories?;
     if categories.count as usize > MODIFIER_LIMIT.saturating_sub(row.modifier_count) {
         return Err("reinforcement category bound exceeded");
     }
-    for index in 0..categories.count {
-        let category = pointer(memory, element(categories, index, 8)?, 0)?;
-        let token = field::<u32>(memory, category, 0x60)?;
+    for index in 0..categories.count as usize {
+        if index == categories.tokens.len {
+            return Err(categories.failure.unwrap_or(UNREADABLE));
+        }
+        let token = sources.category_tokens[categories.tokens.start + index];
         if token != 0 {
             append_modifiers(
                 memory,
                 base,
+                sources,
                 country_accumulator,
                 6,
                 &[token],
@@ -880,7 +1302,9 @@ pub fn capture_context(
             )?;
         }
     }
-    air(memory, base, game, army, stats, location, &mut row)?;
+    air(
+        memory, base, game, sources, &countries, army, stats, location, &mut row,
+    )?;
     if row.flags[2] == 0 {
         row.flags[11] = 1;
         for (index, value) in [2, 3, 4, 10, 5, 6, 7, 8]
@@ -889,39 +1313,40 @@ pub fn capture_context(
         {
             row.scalar_values[index] = value;
         }
-        supply_terms(memory, base, template, &mut row, supply)?;
-        if row.flags[3] == 0
-            && !ccountry::has_core_supply_access(
-                memory,
-                base,
-                game,
-                owner_raw,
-                pointer(memory, location, cprovince::CONTROLLER_AREA)?,
-            )?
-        {
-            row.flags[8] = 1;
-            row.scalar_values[9] = field(
-                memory,
-                base,
-                if row.scalar_values[10] > 0 {
-                    0x0331_9618
-                } else {
-                    0x0331_9568
-                },
-            )?;
+        supply_terms(memory, base, sources, template, &mut row, supply)?;
+        if row.flags[3] == 0 {
+            let area =
+                sources.field::<u64>(memory, location, cprovince::CONTROLLER_AREA, UNREADABLE)?
+                    as usize;
+            let access = *share(&mut sources.core_supply, (owner_raw, area), || {
+                ccountry::has_core_supply_access(memory, base, game, owner_raw, area)
+            })?;
+            if !access {
+                row.flags[8] = 1;
+                row.scalar_values[9] = sources.field(
+                    memory,
+                    base,
+                    if row.scalar_values[10] > 0 {
+                        0x0331_9618
+                    } else {
+                        0x0331_9568
+                    },
+                    UNREADABLE,
+                )?;
+            }
         }
     }
     if row.flags[0] != 0 {
-        row.scalar_values[11] = field(memory, base, 0x0331_9758)?;
+        row.scalar_values[11] = sources.field(memory, base, 0x0331_9758, UNREADABLE)?;
     } else if row.flags[1] != 0 {
-        row.scalar_values[12] = field(memory, base, 0x0331_9808)?;
+        row.scalar_values[12] = sources.field(memory, base, 0x0331_9808, UNREADABLE)?;
     }
     let infrastructure_state = if next == 0 {
         actual_state
     } else {
-        pointer(memory, next, cprovince::STATE)?
+        sources.field::<u64>(memory, next, cprovince::STATE, UNREADABLE)? as usize
     };
-    infrastructure(memory, base, infrastructure_state, &mut row)?;
+    infrastructure_shared(memory, base, sources, infrastructure_state, &mut row)?;
     Ok(row)
 }
 
@@ -1134,7 +1559,17 @@ mod tests {
             copies: Cell::new(0),
             bytes: Cell::new(0),
         };
-        append_modifiers(&counted, 0, 0x10, 4, &[6, 5, 7], &mut output, &mut len).unwrap();
+        append_modifiers(
+            &counted,
+            0,
+            &mut Sources::new(),
+            0x10,
+            4,
+            &[6, 5, 7],
+            &mut output,
+            &mut len,
+        )
+        .unwrap();
         assert_eq!(len, 3);
         assert_eq!(output[0].present, 0);
         assert_eq!(output[1].raw, -170_005);
@@ -1146,6 +1581,7 @@ mod tests {
             append_modifiers(
                 &WithMetadata(&bytes),
                 0,
+                &mut Sources::new(),
                 0x10,
                 0,
                 &[1],
@@ -1154,6 +1590,32 @@ mod tests {
             ),
             Err("reinforcement modifier arena full")
         );
+    }
+
+    /// A census that fails partway leaves the shared arena as it found it.
+    #[test]
+    fn a_failed_census_leaves_no_entries_in_the_arena() {
+        let mut bytes = vec![0_u8; 0x400];
+        let mut put =
+            |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        // Header at 0x100: data 0x200, capacity 3, count 3; the keys 5, 7, 6
+        // break the order at the third entry.
+        put(0x100, 0x200);
+        put(0x108, (3_u64 << 32) | 3);
+        for (index, key) in [5_u64, 7, 6].into_iter().enumerate() {
+            put(0x200 + index * 16, key);
+            put(0x208 + index * 16, 100 + index as u64);
+        }
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut arena = vec![(1, 1)];
+        assert_eq!(
+            census(&memory, 0x100, &mut arena),
+            Err("reinforcement modifier order invalid")
+        );
+        assert_eq!(arena, [(1, 1)]);
     }
 
     #[test]
@@ -1195,7 +1657,17 @@ mod tests {
         };
         let mut output = [ModifierTerm::default(); 2];
         let mut len = 0;
-        append_modifiers(&memory, 0, 0x99999, 1, &[4, 5], &mut output, &mut len).unwrap();
+        append_modifiers(
+            &memory,
+            0,
+            &mut Sources::new(),
+            0x99999,
+            1,
+            &[4, 5],
+            &mut output,
+            &mut len,
+        )
+        .unwrap();
         assert_eq!(output[1].raw, -654321);
         assert_eq!(output[0].present, 0);
         assert_eq!(memory.copies.get(), 2);
@@ -1261,6 +1733,7 @@ mod tests {
             &Source(&bytes),
             0,
             0x7000,
+            &mut Sources::new(),
             0x1000,
             0x1234_0000_0033,
             &mut [],
@@ -1530,6 +2003,7 @@ mod tests {
                 &memory,
                 0,
                 GAME,
+                &mut Sources::new(),
                 ARMY,
                 HANDLE,
                 &mut [ModifierTerm::default(); 2],
@@ -1561,6 +2035,7 @@ mod tests {
             &memory,
             0,
             GAME,
+            &mut Sources::new(),
             ARMY,
             HANDLE,
             &mut [ModifierTerm::default(); 2],

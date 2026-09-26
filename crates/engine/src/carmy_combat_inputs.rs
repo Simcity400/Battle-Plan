@@ -145,9 +145,14 @@ fn copy_input_spans<const N: usize>(
 
 /// The caller supplies the authenticated combat/side/role membership.
 /// CArmy, stat-block and formation leader identities are authenticated on entry.
+///
+/// On success the division, its handle and its stat block are recorded in
+/// `sources`, so the same division's later readers in the pass skip those
+/// identity reads.
 pub fn capture_stats(
     memory: &impl Memory,
     base: usize,
+    sources: &mut crate::combat_sources::Sources,
     pointer: usize,
     expected_handle: u64,
 ) -> Result<Row, &'static str> {
@@ -175,6 +180,7 @@ pub fn capture_stats(
     {
         return Err("land combat division stat identity mismatch");
     }
+    sources.verified = None;
     let (mut current, mut entrenchment, mut maxima, mut armour, mut group_pointer) =
         ([0; 24], [0; 16], [0; 16], [0; 16], [0; 8]);
     copy_input_spans(
@@ -240,6 +246,7 @@ pub fn capture_stats(
             &mut scales,
         ],
     )?;
+    sources.verified = Some((pointer, expected_handle, stat));
     let row = Row {
         division: expected_handle,
         name,
@@ -349,18 +356,24 @@ pub fn capture_modifiers(
 pub fn capture_manpower(
     memory: &impl Memory,
     base: usize,
+    sources: &crate::combat_sources::Sources,
     pointer: usize,
     expected_handle: u64,
     terms: &mut [ManpowerTerm],
 ) -> Result<usize, &'static str> {
-    let identity = bytes::<8>(memory, pointer, 0)?;
-    let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
-    if expected_handle == 0
-        || u64::from_le_bytes(handle) != expected_handle
-        || Some(u64::from_le_bytes(identity))
-            != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
+    if !sources
+        .verified
+        .is_some_and(|(verified, handle, _)| verified == pointer && handle == expected_handle)
     {
-        return Err("land combat manpower division identity mismatch");
+        let identity = bytes::<8>(memory, pointer, 0)?;
+        let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
+        if expected_handle == 0
+            || u64::from_le_bytes(handle) != expected_handle
+            || Some(u64::from_le_bytes(identity))
+                != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
+        {
+            return Err("land combat manpower division identity mismatch");
+        }
     }
     let container_identity = bytes::<8>(memory, pointer, 0x3d8)?;
     if Some(u64::from_le_bytes(container_identity))
@@ -392,39 +405,36 @@ pub fn capture_manpower(
     Ok(count)
 }
 
-/// Last complete country and leader modifier inputs within one acquisition
-/// pass. Construct a fresh value for every pass; no observation crosses hours.
-/// Each slot keeps only the three raw values and presence bits, never a partial
-/// census or error. Different accumulator addresses take the ordinary full walk.
-#[derive(Default)]
-pub struct ContextModifiers {
-    country: Option<(usize, [ContextModifier; 3])>,
-    leader: Option<(usize, [ContextModifier; 3])>,
-}
-
 /// Width composition and contextual reinforcement operands. Terms preserve
 /// native order, signed multiplicities and unscaled definition widths. No
 /// width, chance, modifier clamp or speed bonus is calculated here.
+///
+/// Per-source reads are shared through `sources` for the pass
+/// ([`crate::combat_sources`]): every read a division still makes, and every
+/// failure, comes at main's point with main's reason.
 pub fn capture_context(
     memory: &impl Memory,
     base: usize,
     state: usize,
+    sources: &mut crate::combat_sources::Sources,
     pointer: usize,
     expected_handle: u64,
     terms: &mut [WidthTerm],
-    modifiers: &mut ContextModifiers,
 ) -> Result<ContextRow, &'static str> {
-    use crate::{
-        ccountry, creferenced_division_template as template, modifier_definition as metadata,
-    };
-    let identity = bytes::<8>(memory, pointer, 0)?;
-    let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
-    if expected_handle == 0
-        || u64::from_le_bytes(handle) != expected_handle
-        || Some(u64::from_le_bytes(identity))
-            != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
-    {
-        return Err("land combat division context identity mismatch");
+    use crate::{ccountry, combat_sources::share};
+    let verified = sources
+        .verified
+        .filter(|(verified, handle, _)| *verified == pointer && *handle == expected_handle);
+    if verified.is_none() {
+        let identity = bytes::<8>(memory, pointer, 0)?;
+        let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
+        if expected_handle == 0
+            || u64::from_le_bytes(handle) != expected_handle
+            || Some(u64::from_le_bytes(identity))
+                != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
+        {
+            return Err("land combat division context identity mismatch");
+        }
     }
     let owners = bytes::<8>(memory, pointer, cunit::ROSTER_OWNER)?;
     let tags = [
@@ -434,15 +444,14 @@ pub fn capture_context(
     let owner = if tags[1] as i32 > 0 { tags[1] } else { tags[0] };
     let countries = ccountry::Reader::new(memory, base, state)?;
     let country = countries.resolve(owner)?;
-    let country_modifiers = context_modifiers(
-        memory,
-        country
-            .pointer
-            .checked_add(ccountry::MODIFIER_ACCUMULATOR)
-            .ok_or("land combat context country address overflow")?,
-        &mut modifiers.country,
-    )?;
-    let leader = crate::carmy_leader::movement_accumulator(memory, base, pointer)?;
+    let country_accumulator = country
+        .pointer
+        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+        .ok_or("land combat context country address overflow")?;
+    let country_modifiers = *share(&mut sources.context_modifiers, country_accumulator, || {
+        context_modifiers(memory, country_accumulator)
+    })?;
+    let leader = sources.leader_chain(memory, base, pointer, expected_handle)?;
     let leader_modifier_kind = if let Some(accumulator) = leader {
         let group = u64::from_le_bytes(bytes(memory, pointer, carmy::ORDERS_GROUP)?) as usize;
         let leader_pointer =
@@ -458,10 +467,75 @@ pub fn capture_context(
         0
     };
     let leader_modifiers = if let Some(accumulator) = leader {
-        context_modifiers(memory, accumulator, &mut modifiers.leader)?
+        *share(&mut sources.context_modifiers, accumulator, || {
+            context_modifiers(memory, accumulator)
+        })?
     } else {
         [ContextModifier::default(); 3]
     };
+    let ContextMetadata {
+        modifier_metadata,
+        eligibility_callback,
+        feature_flags,
+    } = (*sources
+        .context_metadata
+        .get_or_insert_with(|| context_metadata(memory, base)))?;
+    let stat_pointer = match verified {
+        Some((_, _, stat)) => stat,
+        None => {
+            let stat_pointer =
+                u64::from_le_bytes(bytes(memory, pointer, cunit::STAT_BLOCK)?) as usize;
+            let stat_identity = bytes::<8>(memory, stat_pointer, 0)?;
+            if Some(u64::from_le_bytes(stat_identity))
+                != base
+                    .checked_add(csub_unit_definition::VTABLE_RVA)
+                    .map(|p| p as u64)
+            {
+                return Err("land combat context stat identity mismatch");
+            }
+            stat_pointer
+        }
+    };
+    let base_speed = i64::from_le_bytes(bytes(memory, stat_pointer, 0x290)?);
+    let defines = (*sources
+        .context_defines
+        .get_or_insert_with(|| context_defines(memory, base)))?;
+    let template_pointer =
+        u64::from_le_bytes(bytes(memory, pointer, carmy::STANDARD_TEMPLATE)?) as usize;
+    let mut template_handle = 0;
+    let mut count = 0;
+    if template_pointer != 0 {
+        let width = *share(&mut sources.widths, template_pointer, || {
+            template_width(memory, base, template_pointer, &mut sources.width_arena)
+        })?;
+        template_handle = width.handle;
+        // Main refuses a full arena before reading any term.
+        if width.count > terms.len() {
+            return Err("land combat width term arena full");
+        }
+        let run = width.terms?;
+        terms[..run.len].copy_from_slice(run.of(&sources.width_arena));
+        count = run.len;
+    }
+    Ok(ContextRow {
+        template: template_handle,
+        effective_owner: owner,
+        leader_modifier_kind,
+        country_modifiers,
+        leader_modifiers,
+        modifier_metadata,
+        feature_flags,
+        eligibility_callback,
+        base_speed,
+        defines,
+        width_term_count: count,
+    })
+}
+
+/// The pass's modifier definition operands for [`CONTEXT_MODIFIER_KEYS`], the
+/// eligibility callback and the feature flags: module data, read once a pass.
+fn context_metadata(memory: &impl Memory, base: usize) -> Result<ContextMetadata, &'static str> {
+    use crate::modifier_definition as metadata;
     let table = u64::from_le_bytes(bytes(memory, base, metadata::TABLE_RVA)?) as usize;
     if table == 0 {
         return Err("land combat context metadata table null");
@@ -499,16 +573,15 @@ pub fn capture_context(
         return Err("land combat context modifier callback unsupported");
     };
     let feature_flags = u32::from_le_bytes(bytes(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)?);
-    let stat_pointer = u64::from_le_bytes(bytes(memory, pointer, cunit::STAT_BLOCK)?) as usize;
-    let stat_identity = bytes::<8>(memory, stat_pointer, 0)?;
-    if Some(u64::from_le_bytes(stat_identity))
-        != base
-            .checked_add(csub_unit_definition::VTABLE_RVA)
-            .map(|p| p as u64)
-    {
-        return Err("land combat context stat identity mismatch");
-    }
-    let base_speed = i64::from_le_bytes(bytes(memory, stat_pointer, 0x290)?);
+    Ok(ContextMetadata {
+        modifier_metadata,
+        eligibility_callback,
+        feature_flags,
+    })
+}
+
+/// The context's define scalars ([`CONTEXT_DEFINE_RVAS`]), read once a pass.
+fn context_defines(memory: &impl Memory, base: usize) -> Result<[i64; 8], &'static str> {
     let mut defines = [[0; 8]; 8];
     copy_input_spans(
         memory,
@@ -518,37 +591,43 @@ pub fn capture_context(
         }),
         &mut defines.each_mut().map(|raw| raw.as_mut_slice()),
     )?;
-    let defines = defines.map(i64::from_le_bytes);
-    let template_pointer =
-        u64::from_le_bytes(bytes(memory, pointer, carmy::STANDARD_TEMPLATE)?) as usize;
-    let mut template_handle = 0;
-    let mut count = 0;
-    if template_pointer != 0 {
-        let template_identity = bytes::<16>(memory, template_pointer, 0)?;
-        template_handle = u64::from_le_bytes(template_identity[8..].try_into().unwrap());
-        if Some(u64::from_le_bytes(
-            template_identity[..8].try_into().unwrap(),
-        )) != base.checked_add(template::VTABLE_RVA).map(|p| p as u64)
-            || template_handle as u32 != template::REFERENCE_TYPE
-            || template_handle >> 32 == 0
-        {
-            return Err("land combat width template identity mismatch");
-        }
-        let term_header = bytes(memory, template_pointer, 0xc0)?;
-        let array =
-            Array::from_header(term_header, 16).ok_or("land combat width term header invalid")?;
-        count = array.count as usize;
-        if count > WIDTH_TERM_LIMIT {
-            return Err("land combat width term bound exceeded");
-        }
-        if count > terms.len() {
-            return Err("land combat width term arena full");
-        }
+    Ok(defines.map(i64::from_le_bytes))
+}
+
+/// One template's width composition: its handle and term count, then its
+/// terms in native order into the pass's arena, or the read that stopped them.
+/// Each division checks its own arena between the two, as main does.
+fn template_width(
+    memory: &impl Memory,
+    base: usize,
+    template_pointer: usize,
+    arena: &mut Vec<WidthTerm>,
+) -> Result<TemplateWidth, &'static str> {
+    use crate::creferenced_division_template as template;
+    let template_identity = bytes::<16>(memory, template_pointer, 0)?;
+    let handle = u64::from_le_bytes(template_identity[8..].try_into().unwrap());
+    if Some(u64::from_le_bytes(
+        template_identity[..8].try_into().unwrap(),
+    )) != base.checked_add(template::VTABLE_RVA).map(|p| p as u64)
+        || handle as u32 != template::REFERENCE_TYPE
+        || handle >> 32 == 0
+    {
+        return Err("land combat width template identity mismatch");
+    }
+    let term_header = bytes(memory, template_pointer, 0xc0)?;
+    let array =
+        Array::from_header(term_header, 16).ok_or("land combat width term header invalid")?;
+    let count = array.count as usize;
+    if count > WIDTH_TERM_LIMIT {
+        return Err("land combat width term bound exceeded");
+    }
+    let start = arena.len();
+    let terms = (|| {
         let mut packed = [0; WIDTH_TERM_LIMIT * 16];
         if !read_slice(memory, array.data, &mut packed[..count * 16]) {
             return Err("land combat width terms unreadable");
         }
-        for (output, input) in terms[..count].iter_mut().zip(packed.chunks_exact(16)) {
+        for input in packed[..count * 16].chunks_exact(16) {
             let subunit = u64::from_le_bytes(input[..8].try_into().unwrap()) as usize;
             let raw = bytes::<12>(memory, subunit, 0)?;
             if subunit == 0
@@ -559,39 +638,41 @@ pub fn capture_context(
             {
                 return Err("land combat width subunit identity mismatch");
             }
-            *output = WidthTerm {
+            arena.push(WidthTerm {
                 subunit: u32::from_le_bytes(raw[8..].try_into().unwrap()),
                 count: i32::from_le_bytes(input[8..12].try_into().unwrap()),
                 width: i64::from_le_bytes(bytes(memory, subunit, 0x58)?),
-            };
+            });
         }
-    }
-    Ok(ContextRow {
-        template: template_handle,
-        effective_owner: owner,
-        leader_modifier_kind,
-        country_modifiers,
-        leader_modifiers,
-        modifier_metadata,
-        feature_flags,
-        eligibility_callback,
-        base_speed,
-        defines,
-        width_term_count: count,
+        Ok(crate::combat_sources::Run { start, len: count })
+    })();
+    Ok(TemplateWidth {
+        handle,
+        count,
+        terms,
     })
+}
+
+/// Per-pass shared context operands ([`crate::combat_sources`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextMetadata {
+    modifier_metadata: [[u32; 2]; 3],
+    eligibility_callback: u8,
+    feature_flags: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TemplateWidth {
+    handle: u64,
+    count: usize,
+    terms: Result<crate::combat_sources::Run, &'static str>,
 }
 
 /// Complete bounded accumulator census in64-entry copies, shared across keys.
 fn context_modifiers(
     memory: &impl Memory,
     pointer: usize,
-    retained: &mut Option<(usize, [ContextModifier; 3])>,
 ) -> Result<[ContextModifier; 3], &'static str> {
-    if let Some((address, values)) = *retained
-        && address == pointer
-    {
-        return Ok(values);
-    }
     let header = bytes::<16>(memory, pointer, 0)?;
     let array =
         Array::from_header(header, 16).ok_or("land combat context modifier header invalid")?;
@@ -627,7 +708,6 @@ fn context_modifiers(
             }
         }
     }
-    *retained = Some((pointer, output));
     Ok(output)
 }
 
@@ -845,7 +925,16 @@ mod tests {
         let expected = Observed::new(&source);
         let actual = Observed::new(&source);
         let row = scalar_stats(&expected, 0, 0x1000, 0x1234_0000_0033).unwrap();
-        assert_eq!(capture_stats(&actual, 0, 0x1000, row.division), Ok(row));
+        assert_eq!(
+            capture_stats(
+                &actual,
+                0,
+                &mut crate::combat_sources::Sources::new(),
+                0x1000,
+                row.division
+            ),
+            Ok(row)
+        );
         assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
         assert_eq!(
             *actual.scatters.borrow(),
@@ -884,7 +973,13 @@ mod tests {
                     actual.fault = expected.fault;
                 }
                 assert_eq!(
-                    capture_stats(&actual, 0, 0x1000, row.division),
+                    capture_stats(
+                        &actual,
+                        0,
+                        &mut crate::combat_sources::Sources::new(),
+                        0x1000,
+                        row.division
+                    ),
                     scalar_stats(&expected, 0, 0x1000, row.division),
                     "ordinal {ordinal}, change {change}"
                 );
@@ -906,7 +1001,13 @@ mod tests {
         for fault in [None, Some(0)] {
             let mut actual = Observed::new(&source);
             actual.fault = fault;
-            let result = capture_stats(&actual, usize::MAX, 0x1000, 0x1234_0000_0033);
+            let result = capture_stats(
+                &actual,
+                usize::MAX,
+                &mut crate::combat_sources::Sources::new(),
+                0x1000,
+                0x1234_0000_0033,
+            );
             assert_eq!(
                 result,
                 Err(if fault.is_some() {
@@ -925,7 +1026,13 @@ mod tests {
         let actual = Observed::new(&source);
         let expected = Observed::new(&source);
         assert_eq!(
-            capture_stats(&actual, 0, 0x1000, 0x1234_0000_0033),
+            capture_stats(
+                &actual,
+                0,
+                &mut crate::combat_sources::Sources::new(),
+                0x1000,
+                0x1234_0000_0033
+            ),
             scalar_stats(&expected, 0, 0x1000, 0x1234_0000_0033)
         );
         assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
@@ -986,10 +1093,10 @@ mod tests {
             &baseline,
             0,
             0x5000,
+            &mut crate::combat_sources::Sources::new(),
             0x1000,
             0x1234_0000_0033,
             &mut terms,
-            &mut ContextModifiers::default(),
         )
         .unwrap();
         assert_eq!(row.defines, [1, 2, 3, 4, 5, 6, 7, 8]);
@@ -1016,10 +1123,10 @@ mod tests {
                         &memory,
                         0,
                         0x5000,
+                        &mut crate::combat_sources::Sources::new(),
                         0x1000,
                         0x1234_0000_0033,
-                        &mut out,
-                        &mut ContextModifiers::default()
+                        &mut out
                     ),
                     Err("land combat division inputs unreadable")
                 );
@@ -1061,10 +1168,10 @@ mod tests {
                     &memory,
                     0,
                     0x5000,
+                    &mut crate::combat_sources::Sources::new(),
                     0x1000,
                     0x1234_0000_0033,
-                    &mut [],
-                    &mut ContextModifiers::default()
+                    &mut []
                 ),
                 Err(reason)
             );
@@ -1077,10 +1184,10 @@ mod tests {
                     &failed,
                     0,
                     0x5000,
+                    &mut crate::combat_sources::Sources::new(),
                     0x1000,
                     0x1234_0000_0033,
-                    &mut [],
-                    &mut ContextModifiers::default()
+                    &mut []
                 ),
                 Err("land combat division inputs unreadable")
             );
@@ -1138,7 +1245,14 @@ mod tests {
             bytes: Cell::new(0),
         };
         let mut modifiers = [Modifier::default(); 2];
-        let row = capture_stats(&memory, 0, 0x1000, 0x1234_0000_0033).unwrap();
+        let row = capture_stats(
+            &memory,
+            0,
+            &mut crate::combat_sources::Sources::new(),
+            0x1000,
+            0x1234_0000_0033,
+        )
+        .unwrap();
         assert_eq!(
             capture_modifiers(&memory, 0, 0x1000, 0x1234_0000_0033, &mut modifiers).unwrap(),
             2
@@ -1199,7 +1313,13 @@ mod tests {
             bytes: &image,
         };
         assert_eq!(
-            capture_stats(&memory, 0, 0x1000, 0x1234_0000_0033),
+            capture_stats(
+                &memory,
+                0,
+                &mut crate::combat_sources::Sources::new(),
+                0x1000,
+                0x1234_0000_0033
+            ),
             Err("land combat division stat identity mismatch")
         );
         let mut modifiers = [Modifier::default(); 2];
@@ -1304,10 +1424,10 @@ mod tests {
             &memory,
             0,
             0x5000,
+            &mut crate::combat_sources::Sources::new(),
             0x1000,
             0x1234_0000_0033,
             &mut terms,
-            &mut ContextModifiers::default(),
         )
         .unwrap();
         assert_eq!(row.width_term_count, 2);
@@ -1337,16 +1457,16 @@ mod tests {
     #[test]
     fn context_modifier_reuse_is_shared_only_within_the_current_pass() {
         let mut memory = context_fixture();
-        let mut modifiers = ContextModifiers::default();
+        let mut sources = crate::combat_sources::Sources::new();
         let mut terms = [WidthTerm::default(); 2];
         let first = capture_context(
             &memory,
             0,
             0x5000,
+            &mut sources,
             0x1000,
             0x1234_0000_0033,
             &mut terms,
-            &mut modifiers,
         )
         .unwrap();
         let first_terms = terms;
@@ -1355,29 +1475,29 @@ mod tests {
             &memory,
             0,
             0x5000,
+            &mut sources,
             0x1000,
             0x1234_0000_0033,
             &mut terms,
-            &mut modifiers,
         )
         .unwrap();
         assert_eq!(second, first);
         assert_eq!(terms, first_terms);
-        // Only the complete three-entry country accumulator is reused: its
-        // 16-byte header and 48-byte contents. All other operands stay fresh.
-        assert_eq!(memory.copies.get() - before.0, before.0 - 2);
-        assert_eq!(memory.copied.get() - before.1, before.1 - 64);
+        // Within the pass the country census, the metadata, the defines and
+        // the template's width terms are shared; the division's own identity,
+        // owners, stat block, base speed and template pointer are read again.
+        assert_eq!(memory.copies.get() - before.0, 17);
 
         memory.u64(0xa008, 170);
-        let mut next_pass = ContextModifiers::default();
+        sources.clear();
         let current = capture_context(
             &memory,
             0,
             0x5000,
+            &mut sources,
             0x1000,
             0x1234_0000_0033,
             &mut terms,
-            &mut next_pass,
         )
         .unwrap();
         assert_eq!(
@@ -1393,7 +1513,7 @@ mod tests {
         memory.put(0xe100, &0x10f_u32.to_le_bytes());
         memory.u64(0xe108, 999);
         let before = memory.copies.get();
-        let other = context_modifiers(&memory, 0xe000, &mut next_pass.country).unwrap();
+        let other = context_modifiers(&memory, 0xe000).unwrap();
         assert_eq!(other[0], ContextModifier::default());
         assert_eq!(
             other[1],
@@ -1403,27 +1523,20 @@ mod tests {
             }
         );
         assert_eq!(memory.copies.get() - before, 2);
-        let country = 0x9000 + crate::ccountry::MODIFIER_ACCUMULATOR;
-        assert_eq!(
-            context_modifiers(&memory, country, &mut next_pass.country).unwrap(),
-            current.country_modifiers
-        );
     }
 
     #[test]
-    fn context_modifier_reuse_never_admits_failed_or_partial_censuses() {
+    fn context_modifier_census_fails_at_its_read_and_on_a_malformed_suffix() {
         let mut source = context_fixture();
         let address = 0x9000 + crate::ccountry::MODIFIER_ACCUMULATOR;
-        let mut previous = None;
         for ordinal in [0, 1] {
             let mut observed = Observed::new(&source);
             observed.fault = Some(ordinal);
-            assert!(context_modifiers(&observed, address, &mut previous).is_err());
-            assert!(previous.is_none());
+            assert!(context_modifiers(&observed, address).is_err());
             assert_eq!(observed.reads.borrow().len(), ordinal + 1);
         }
         // The selected values are already in the first chunk. A malformed
-        // unselected suffix must still fail and must not install a cache hit.
+        // unselected suffix must still fail.
         source.array(address, 0x20000, 65);
         for (index, key) in CONTEXT_MODIFIER_KEYS
             .into_iter()
@@ -1434,24 +1547,15 @@ mod tests {
             source.u64(0x20008 + index * 16, index as u64 + 1);
         }
         source.put(0x20000 + 64 * 16, &1_u32.to_le_bytes());
-        for _ in 0..2 {
-            let before = source.copies.get();
-            assert_eq!(
-                context_modifiers(&source, address, &mut previous),
-                Err("land combat context modifier keys not increasing")
-            );
-            assert!(previous.is_none());
-            assert_eq!(source.copies.get() - before, 3);
-        }
-        source.put(0x20000 + 64 * 16, &1064_u32.to_le_bytes());
-        let values = context_modifiers(&source, address, &mut previous).unwrap();
-        assert_eq!(values.map(|value| value.raw), [1, 2, 3]);
         let before = source.copies.get();
         assert_eq!(
-            context_modifiers(&source, address, &mut previous),
-            Ok(values)
+            context_modifiers(&source, address),
+            Err("land combat context modifier keys not increasing")
         );
-        assert_eq!(source.copies.get(), before);
+        assert_eq!(source.copies.get() - before, 3);
+        source.put(0x20000 + 64 * 16, &1064_u32.to_le_bytes());
+        let values = context_modifiers(&source, address).unwrap();
+        assert_eq!(values.map(|value| value.raw), [1, 2, 3]);
     }
 
     #[test]
@@ -1462,10 +1566,10 @@ mod tests {
                 &memory,
                 0,
                 0x5000,
+                &mut crate::combat_sources::Sources::new(),
                 0x1000,
                 0x1234_0000_0033,
-                &mut [],
-                &mut ContextModifiers::default()
+                &mut []
             ),
             Err("land combat width term arena full")
         );
@@ -1475,10 +1579,10 @@ mod tests {
                 &memory,
                 0,
                 0x5000,
+                &mut crate::combat_sources::Sources::new(),
                 0x1000,
                 0x1234_0000_0033,
-                &mut [],
-                &mut ContextModifiers::default()
+                &mut []
             ),
             Err("land combat context modifier bound exceeded")
         );
@@ -1500,10 +1604,10 @@ mod tests {
             &memory,
             0,
             0x5000,
+            &mut crate::combat_sources::Sources::new(),
             0x1000,
             0x1234_0000_0033,
             &mut [WidthTerm::default(); 2],
-            &mut ContextModifiers::default(),
         )
         .unwrap();
         assert_eq!(row.leader_modifier_kind, 1);
@@ -1543,7 +1647,14 @@ mod tests {
         };
         let mut terms = [ManpowerTerm::default(); 2];
         assert_eq!(
-            capture_manpower(&memory, 0, 0x1000, 0x1234_0000_0033, &mut terms),
+            capture_manpower(
+                &memory,
+                0,
+                &crate::combat_sources::Sources::new(),
+                0x1000,
+                0x1234_0000_0033,
+                &mut terms
+            ),
             Ok(2)
         );
         assert_eq!(
@@ -1562,7 +1673,14 @@ mod tests {
         assert_eq!(memory.copies.get(), 5);
         assert_eq!(memory.bytes.get(), 56);
         assert_eq!(
-            capture_manpower(&memory, 0, 0x1000, 0x1234_0000_0033, &mut []),
+            capture_manpower(
+                &memory,
+                0,
+                &crate::combat_sources::Sources::new(),
+                0x1000,
+                0x1234_0000_0033,
+                &mut []
+            ),
             Err("land combat manpower arena full")
         );
     }
