@@ -112,7 +112,9 @@
 .campaign-loading .spinner { width: 13px; height: 13px; }
 .campaign-unload { position: absolute; right: 4px; width: 24px; height: 24px; opacity: 0; }
 .campaign-unload svg { width: 14px; height: 14px; }
-.loaded-campaign:hover .campaign-unload, .campaign-unload:focus-visible { opacity: 1; }
+.campaign-factions { position: absolute; right: 30px; width: 24px; height: 24px; opacity: 0; }
+.campaign-factions svg { width: 14px; height: 14px; }
+.loaded-campaign:hover :is(.campaign-unload, .campaign-factions), :is(.campaign-unload, .campaign-factions):focus-visible, .campaign-factions[aria-expanded='true'] { opacity: 1; }
 .sidebar-row-hint { color: var(--quiet); }
 
 /* Recordings library */

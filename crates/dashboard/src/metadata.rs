@@ -43,6 +43,7 @@ pub fn read(
             .to_string_lossy()
             .into_owned(),
         format: replay.format.version(),
+        campaign_key: crate::map_settings::campaign_key(replay),
         branches,
         countries: Vec::new(),
         player_country_id: None,

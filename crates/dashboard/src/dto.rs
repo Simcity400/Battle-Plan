@@ -10,6 +10,9 @@ pub struct ReplayMetadata {
     pub path: String,
     pub name: String,
     pub format: u16,
+    /// The recorded campaign identity as hex, the same key the map settings use.
+    /// Every recording of one campaign shares it; app settings are stored under it.
+    pub campaign_key: String,
     pub branches: Vec<BranchMetadata>,
     /// Observations from each branch's first readable country snapshot, one
     /// per (slot, tag) at its first observation in branch order. Later

@@ -9,6 +9,7 @@ import ReplayFolderSetting from '../shell/ReplayFolderSetting';
 import { Icon } from '../components/Icons';
 import ReplayFilename from '../components/ReplayFilename';
 import { SourceFlag } from '../components/CountryFlag';
+import FactionColoursButton from './FactionColours';
 
 const replayFilename = (path: string) => path.replaceAll('\\', '/').split('/').pop()!;
 const displayName = (path: string) => replayFilename(path).replace(/\.(?:battleplan|hoi4replay)$/i, '');
@@ -69,6 +70,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
             {source ? <SourceFlag client={client} source={source} tag={tag} /> : <span className="campaign-loading"><span className="spinner" /></span>}
             <span>{displayName(campaign.path)}</span>
           </button>
+          {source && <FactionColoursButton client={client} source={source} label={displayName(campaign.path)} />}
           {source && <button type="button" className="icon-button small campaign-unload" aria-label={`Unload ${displayName(campaign.path)}`} data-tooltip="Unload"
             onClick={() => onUnload(campaign.id)}><Icon name="close" /></button>}
         </div>;

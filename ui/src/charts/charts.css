@@ -21,6 +21,9 @@
 .chart-legend { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin: 0; padding: 0 var(--space-3); list-style: none; font-size: var(--type-sm); }
 .chart-legend li { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; color: var(--muted); }
 .chart-legend li > i { width: 10px; height: 10px; flex: none; border-radius: 2px; }
+.chart-legend-swatch { position: relative; width: 10px; height: 10px; flex: none; border-radius: 2px; cursor: pointer; }
+.chart-legend-swatch:hover, .chart-legend-swatch:has(input:focus-visible) { box-shadow: 0 0 0 2px var(--accent-line); }
+.chart-legend-swatch input { position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px); opacity: 0; cursor: pointer; }
 .chart-legend b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .chart-legend .country-flag { width: 20px; height: 13px; flex: none; }
 

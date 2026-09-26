@@ -44,7 +44,7 @@ export const GREY_CHROMA = 0.045;
  * `minDistance` from every earlier one, changing lightness first and chroma only
  * for greys. Hue is kept. Stable: the same inputs always give the same result,
  * and earlier colours never change because of later ones. */
-export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance = 12): Rgb[] {
+export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance = 12, avoid: readonly Rgb[] = []): Rgb[] {
   const darkSurface = isDark(background);
   // A grey has no real hue (its angle is rounding noise), so a grey input takes the
   // categorical colour for its position instead of an arbitrary one.
@@ -55,7 +55,7 @@ export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance 
     if (base.c < GREY_CHROMA) base = rgbToOklch(fallback[position % fallback.length]);
     let chosen = readable(oklchToRgb(base), background, darkSurface);
     const mark = (candidate: Rgb) => contrast(candidate, background) >= MARK_CONTRAST && rgbToOklch(candidate).c >= GREY_CHROMA;
-    const gap = (candidate: Rgb) => Math.min(...result.map(other => distance(candidate, other)));
+    const gap = (candidate: Rgb) => Math.min(...[...avoid, ...result].map(other => distance(candidate, other)));
     if (!(mark(chosen) && gap(chosen) >= minDistance)) {
       const start = rgbToOklch(chosen);
       let best: { color: Rgb; gap: number } | null = null;
