@@ -313,6 +313,8 @@ packs!(
     building_detection,
     slice_reads,
     faction_theatres,
+    model_inputs,
+    new_divisions,
     weather
 );
 
@@ -331,6 +333,7 @@ impl Capacities {
         self.construction.raise_for_countries(slots);
         self.visibility.raise_for_countries(slots);
         self.building_detection.raise_for_countries(slots);
+        self.model_inputs.raise_for_countries(slots);
     }
 
     /// Presize CountryIntel from the live dense record total.
@@ -476,6 +479,12 @@ impl Captured {
         merged.ticks[0] = merged.ticks[0].saturating_add(report.ticks[0]);
         self.division_eta_inputs
             .restore_range(request.range, request.captured);
+    }
+
+    /// This hour's template rows whose model inputs failed, published in
+    /// status.json.
+    pub(crate) fn template_model_failures(&self) -> division_templates::ModelFailures {
+        self.division_templates.model_failures()
     }
 
     /// This hour's ETA input attribution, published in status.json.
@@ -940,6 +949,7 @@ impl Captured {
         std::mem::swap(&mut self.visibility, &mut packs.visibility);
         std::mem::swap(&mut self.building_detection, &mut packs.building_detection);
         std::mem::swap(&mut self.faction_theatres, &mut packs.faction_theatres);
+        std::mem::swap(&mut self.model_inputs, &mut packs.model_inputs);
     }
 
     /// Loan the order census and the plans to the Orders job.
@@ -1442,6 +1452,11 @@ impl Captured {
         memo.decode(&mut self.air, &mut self.fog, job, context, decode_ticks)
     }
 
+    /// Which divisions this hour's `NewDivisionEquipment` covers.
+    pub(crate) fn set_new_division_mark(&mut self, mark: new_divisions::Mark) {
+        self.new_divisions.set_mark(mark);
+    }
+
     /// Suppress typed division detail reads while the owned acquisition supplies
     /// this hour's rows or terminal failure.
     pub(crate) fn set_divisions_raw_mode(&mut self, raw: bool) {
@@ -1654,7 +1669,8 @@ impl Captured {
                 division_templates,
                 visibility,
                 building_detection,
-                faction_theatres
+                faction_theatres,
+                model_inputs
             );
         }
         if let Some(done) = self.gated_ticks.replace([0; TABLE_COUNT]) {
@@ -1756,6 +1772,11 @@ impl Captured {
             force_full,
         );
         scatter(&production::TABLES, cost, ticks);
+        let divisions = self.divisions.sources();
+        let cost = self
+            .new_divisions
+            .capture(memory, base, divisions.rows, divisions.outcome);
+        scatter(&new_divisions::TABLES, cost, ticks);
         let report = self.acquire_presentation();
         scatter(&division_presentation::TABLES, report.ticks, ticks);
         let eta_inputs_report = self.acquire_eta_inputs(memory, base, game_state);
@@ -1994,6 +2015,7 @@ pub(crate) struct SlowPacks {
     pub(crate) visibility: visibility::Captured,
     pub(crate) building_detection: building_detection::Captured,
     pub(crate) faction_theatres: faction_theatres::Captured,
+    pub(crate) model_inputs: model_inputs::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -2008,6 +2030,7 @@ impl SlowPacks {
         self.building_detection
             .fail_capture(hour, force_full, reason);
         self.faction_theatres.fail_capture(hour, force_full, reason);
+        self.model_inputs.fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
@@ -2020,6 +2043,7 @@ impl SlowPacks {
             + self.visibility.allocated_bytes()
             + self.building_detection.allocated_bytes()
             + self.faction_theatres.allocated_bytes()
+            + self.model_inputs.allocated_bytes()
     }
 
     fn spare() -> Box<Self> {
@@ -2031,6 +2055,7 @@ impl SlowPacks {
             visibility: visibility::Captured::vacant(),
             building_detection: building_detection::Captured::vacant(),
             faction_theatres: faction_theatres::Captured::vacant(),
+            model_inputs: model_inputs::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         })
     }
@@ -2064,7 +2089,8 @@ impl SlowPacks {
             division_templates,
             visibility,
             building_detection,
-            faction_theatres
+            faction_theatres,
+            model_inputs
         );
         self.ticks = ticks;
     }

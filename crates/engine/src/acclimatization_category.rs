@@ -1,8 +1,93 @@
 //! Registered acclimatization category definition.
 
-/// Acclimatization-category registry pointer; division_presentation_inputs.rs:917-922 opens its pointer vector.
+use crate::{Memory, cpdx_array::Array, read, read_slice};
+
+/// 1406082B0 returns this pointer to a CPdxArray header at +0 whose ordered
+/// entries are the registered category pointers (constructor 140607560).
 pub const REGISTRY_RVA: usize = 0x0331_8080;
 /// Acclimatization-category MSVC name string at object start; division_presentation_inputs.rs:959.
 pub const NAME: usize = 0x00;
-/// Acclimatization-category u32 token; division_presentation_inputs.rs:960.
+/// Acclimatization-category u32 token; serializer 140609C70 keys each weight by it.
 pub const TOKEN: usize = 0x20;
+
+/// The registered categories as (pointer, token), sorted by pointer. Read once
+/// per capture: an entry's category pointer is authenticated by membership and
+/// resolved to its token without another read. The owner reserves the storage;
+/// a registry longer than it is refused and its length reported.
+#[derive(Debug, Default)]
+pub struct Categories {
+    entries: Vec<(usize, u32)>,
+}
+
+impl Categories {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.entries.capacity() * std::mem::size_of::<(usize, u32)>()
+    }
+
+    /// Replaces the contents with the live registry. `required` receives the
+    /// registry length whenever it is readable.
+    pub fn load(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        required: &mut usize,
+    ) -> Result<(), &'static str> {
+        self.entries.clear();
+        let registry = base
+            .checked_add(REGISTRY_RVA)
+            .and_then(|at| read::<u64>(memory, at))
+            .and_then(|at| usize::try_from(at).ok())
+            .filter(|at| *at != 0)
+            .ok_or("acclimatization category registry unreadable")?;
+        let array =
+            Array::read(memory, registry, 8).ok_or("acclimatization category registry invalid")?;
+        let count = array.count as usize;
+        *required = (*required).max(count);
+        if count > self.entries.capacity() {
+            return Err("acclimatization category capacity exceeded");
+        }
+        const SPAN: usize = 64;
+        let mut pointers = [0_u8; SPAN * 8];
+        for first in (0..count).step_by(SPAN) {
+            let len = (count - first).min(SPAN);
+            let at = array
+                .element(first as u32, 8)
+                .ok_or("acclimatization category registry index invalid")?;
+            if !read_slice(memory, at, &mut pointers[..len * 8]) {
+                return Err("acclimatization category registry unreadable");
+            }
+            for bytes in pointers[..len * 8].chunks_exact(8) {
+                let pointer = usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))
+                    .ok()
+                    .filter(|pointer| *pointer != 0)
+                    .ok_or("acclimatization category registry entry null")?;
+                let token = pointer
+                    .checked_add(TOKEN)
+                    .and_then(|at| read::<u32>(memory, at))
+                    .filter(|token| *token != 0)
+                    .ok_or("acclimatization category token unreadable")?;
+                self.entries.push((pointer, token));
+            }
+        }
+        self.entries.sort_unstable_by_key(|(pointer, _)| *pointer);
+        Ok(())
+    }
+
+    /// The token of a registered category; `None` for any other pointer.
+    pub fn token(&self, pointer: usize) -> Option<u32> {
+        self.entries
+            .binary_search_by_key(&pointer, |(pointer, _)| *pointer)
+            .ok()
+            .map(|at| self.entries[at].1)
+    }
+}

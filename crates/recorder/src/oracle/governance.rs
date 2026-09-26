@@ -238,6 +238,12 @@ fn compare_politics(
             Some(row.capital),
             country.capital,
         );
+        equal(
+            report,
+            format!("{subject}.original_capital"),
+            Some(row.original_capital),
+            country.original_capital,
+        );
         count += 1;
     }
     for (tag, country) in &pack.countries {

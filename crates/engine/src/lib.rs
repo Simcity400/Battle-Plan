@@ -550,6 +550,9 @@ pub mod mio_bonus_equipment_database;
 pub mod mio_equipment_group;
 pub mod mio_history_entry;
 pub mod model_geometry_object_layout;
+/// Test-only synthetic capture cost of the daily 3D-model inputs.
+#[cfg(test)]
+mod model_input_cost;
 pub mod modifier_accumulator;
 pub mod modifier_definition;
 pub mod modifier_entry;

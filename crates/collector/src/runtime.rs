@@ -799,6 +799,25 @@ fn add_decode_status(status: &mut Value) {
             "calls": shared.native_tick_calls.load(Ordering::Relaxed),
             "scope": "asynchronously sampled cumulative original hourly-tick (trampoline) wall time since attach, including engine waits; excludes the entry read, the collect wait and all acquisition; not a recorder-free baseline or CPU time",
         });
+        let models = shared
+            .template_models
+            .lock()
+            .map(|stats| *stats)
+            .unwrap_or_default();
+        status["template_models"] = json!({
+            "hours": models.hours,
+            "rows": models.rows,
+            "first_reason": models.first_reason,
+            "by_reason": models
+                .reasons
+                .iter()
+                .filter(|(_, rows)| *rows != 0)
+                .map(|(reason, rows)| (reason.to_string(), json!(rows)))
+                .collect::<serde_json::Map<_, _>>(),
+            "other_reasons": models.other,
+            "missed_hours": shared.template_models_missed.load(Ordering::Relaxed),
+            "scope": "cumulative DivisionTemplateIcons rows since attach whose 3D-model inputs could not be read: that row's model fields are empty and its counter fields stand; the viewer draws no model for its divisions. missed_hours counts hours not folded because this status write held the counters",
+        });
         let eta = &shared.eta_inputs;
         let load = |slot: &std::sync::atomic::AtomicU64| slot.load(Ordering::Relaxed);
         let eta_hours = load(&eta.hours);

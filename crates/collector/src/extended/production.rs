@@ -2067,7 +2067,12 @@ fn definitions(
     arena: &Arena<u8>,
 ) -> TableView {
     let bytes = match checked_text(rows, arena, |r| {
-        [r.display_name, r.variant_name, r.equipment_name]
+        [
+            r.display_name,
+            r.variant_name,
+            r.equipment_name,
+            r.explicit_entity,
+        ]
     }) {
         Ok(bytes) => bytes,
         Err(failure) => return failure,
@@ -2085,6 +2090,7 @@ fn definitions(
             display_name: text(bytes, r.display_name).unwrap().to_vec(),
             variant_name: text(bytes, r.variant_name).unwrap().to_vec(),
             equipment_name: text(bytes, r.equipment_name).unwrap().to_vec(),
+            explicit_entity: text(bytes, r.explicit_entity).unwrap().to_vec(),
         }
     })
 }
@@ -3273,6 +3279,7 @@ mod tests {
             display_name: TextSpan { start: 0, len: 2 },
             variant_name: TextSpan { start: 2, len: 0 },
             equipment_name: TextSpan { start: 2, len: 2 },
+            explicit_entity: TextSpan { start: 3, len: 1 },
         };
         captured.variants.module_bytes.first[..2].copy_from_slice(&[0xff, 0]);
         captured.variants.module_bytes.len = 2;

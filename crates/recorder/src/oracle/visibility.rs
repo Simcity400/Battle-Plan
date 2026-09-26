@@ -147,6 +147,16 @@ fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
             complete::<tables::BuildingDetection>(frame)?.len(),
             "no inspected serializer writes the raid-target status detection bits",
         ),
+        (
+            "CountryLocalSubunits",
+            complete::<tables::CountryLocalSubunits>(frame)?.len(),
+            "country-local sub-unit clones are rebuilt from research on load and their requirement vectors are not saved",
+        ),
+        (
+            "NewDivisionEquipment",
+            complete::<tables::NewDivisionEquipment>(frame)?.len(),
+            "it holds only divisions minted since the daily DivisionEquipment walk, which a full hour's walk covers, so a load hour leaves it empty",
+        ),
     ] {
         report.compared(table, 0);
         report.limitation(

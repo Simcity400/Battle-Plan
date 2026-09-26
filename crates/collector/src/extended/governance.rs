@@ -1827,6 +1827,7 @@ impl Captured {
                     elections_allowed: r.row.elections_allowed,
                     capital: r.row.capital,
                     ruling_party: r.row.ruling_party,
+                    original_capital: r.row.original_capital,
                 },
             )),
             wrap(country_view::<tables::PoliticalParties, _>(

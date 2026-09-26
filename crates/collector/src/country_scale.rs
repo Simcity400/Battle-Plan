@@ -208,6 +208,7 @@ mod tests {
                 let object = OBJECTS + slot * OBJECT;
                 let offset = address - object;
                 let capacity = ccountry::COSMETIC_TAG + msvc_string::CAPACITY;
+                let culture = ccountry::GRAPHICAL_CULTURE + msvc_string::CAPACITY;
                 return match offset {
                     0..8 => word(object, (BASE + ccountry::VTABLE_RVA) as u64),
                     o if (ccountry::ID..ccountry::ID + 4).contains(&o) => {
@@ -215,6 +216,9 @@ mod tests {
                     }
                     o if (capacity..capacity + 8).contains(&o) => {
                         word(object + capacity, msvc_string::INLINE_CAPACITY)
+                    }
+                    o if (culture..culture + 8).contains(&o) => {
+                        word(object + culture, msvc_string::INLINE_CAPACITY)
                     }
                     o if (ccountry::DIPLOMACY_STATUS..ccountry::DIPLOMACY_STATUS + 8)
                         .contains(&o) =>

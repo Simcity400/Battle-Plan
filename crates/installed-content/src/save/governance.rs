@@ -17,6 +17,7 @@ pub struct Pack {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Country {
     pub capital: Option<i32>,
+    pub original_capital: Option<i32>,
     pub politics: Option<Politics>,
     pub focus_tree: Option<Vec<u8>>,
     pub focus: Option<Focus>,
@@ -407,6 +408,7 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
         let fields = block(&entry.value)?;
         let country = Country {
             capital: optional_integer(fields, b"capital")?,
+            original_capital: optional_integer(fields, b"original_capital")?,
             politics: optional_block(fields, b"politics")?
                 .map(parse_politics)
                 .transpose()?,

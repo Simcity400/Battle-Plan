@@ -44,6 +44,24 @@ pub struct Production {
     /// `owned_license=` entries, in the same container order. Present exactly
     /// when `licenses` is: the two arrays share one wrapper.
     pub license_records: Option<Vec<LicenseRecord>>,
+    /// E5D3B0 writes the +A0 roster under `available_equipments` as
+    /// `equipment=` typed handles, repeats kept; absent is not empty.
+    pub available_variants: Option<Vec<u64>>,
+    /// The +E8 roster under `foreign_lease_equipments`, written only when
+    /// nonempty: absence is an empty roster.
+    pub foreign_lease_variants: Vec<u64>,
+}
+
+fn parse_equipment_roster(value: &crate::parser::Value) -> io::Result<Vec<u64>> {
+    block(value)?
+        .iter()
+        .map(|item| {
+            if item.key.as_deref() != Some(b"equipment") {
+                return Err(invalid("saved equipment roster has an unmodelled field"));
+            }
+            typed_handle(&item.value)
+        })
+        .collect()
 }
 
 /// One CEquipmentProductionLicense as serializer 141429310 writes it. Every
@@ -160,6 +178,8 @@ pub struct Variant {
     pub obsolete: Option<bool>,
     pub creator: Option<Vec<u8>>,
     pub origin: Option<Vec<u8>>,
+    /// `override_model`, the variant's explicit model entity.
+    pub override_model: Option<Vec<u8>>,
     pub modules: Option<Vec<Module>>,
     pub upgrades: Option<Vec<Upgrade>>,
 }
@@ -410,6 +430,13 @@ fn parse_production(items: &[Item]) -> io::Result<Production> {
                     .collect::<io::Result<Vec<_>>>()
             })
             .transpose()?,
+        available_variants: field(items, b"available_equipments")?
+            .map(parse_equipment_roster)
+            .transpose()?,
+        foreign_lease_variants: field(items, b"foreign_lease_equipments")?
+            .map(parse_equipment_roster)
+            .transpose()?
+            .unwrap_or_default(),
     })
 }
 
@@ -592,6 +619,7 @@ fn parse_variant(id: u64, definition: &[u8], items: &[Item]) -> io::Result<Varia
         obsolete: field(items, b"obsolete")?.map(boolean).transpose()?,
         creator: bytes(items, b"creator")?,
         origin: bytes(items, b"origin")?,
+        override_model: bytes(items, b"override_model")?,
         modules,
         upgrades,
     })
@@ -690,6 +718,32 @@ pub fn parse_delivery(items: &[Item]) -> io::Result<Delivery> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equipment_rosters_keep_saved_order_repeats_and_absence() {
+        let production = |text: &[u8]| {
+            let document = crate::parser::parse(text).unwrap();
+            parse(&document.items).unwrap().countries.unwrap()[b"GER".as_slice()]
+                .production
+                .clone()
+                .unwrap()
+        };
+        let saved = production(
+            br#"countries={GER={production={available_equipments={
+                equipment={id=4294967295 type=70}
+                equipment={id=0 type=70}
+                equipment={id=4294967295 type=70}
+            } foreign_lease_equipments={ equipment={id=0 type=70} }}}}"#,
+        );
+        assert_eq!(
+            saved.available_variants,
+            Some(vec![0xffff_ffff_0000_0046, 70, 0xffff_ffff_0000_0046])
+        );
+        assert_eq!(saved.foreign_lease_variants, [70]);
+        let absent = production(b"countries={GER={production={}}}");
+        assert_eq!(absent.available_variants, None);
+        assert!(absent.foreign_lease_variants.is_empty());
+    }
 
     #[test]
     fn pool_preserves_order_duplicates_signed_extrema_and_zero() {

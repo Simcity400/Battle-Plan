@@ -13,7 +13,7 @@ use engine::{
 };
 use replay::{
     frame::TableInput,
-    rows::{DivisionMovementRow, DivisionStatusRow, TableId, tables},
+    rows::{DivisionAcclimatization, DivisionMovementRow, DivisionStatusRow, TableId, tables},
 };
 
 pub const N: usize = 2;
@@ -263,7 +263,18 @@ impl Captured {
                 unavailable("division presentation projection pending").into()
             });
         }
-        let [movement, status] = self.outcomes();
+        let [movement, mut status] = self.outcomes();
+        let acclimatization = |r: &carmy::StatusRow| self.status_packet.acclimatization(r);
+        if self
+            .status
+            .rows
+            .get(..status.len())
+            .is_none_or(|rows| rows.iter().any(|r| acclimatization(r).is_none()))
+        {
+            status = Outcome::Unavailable {
+                reason: "division acclimatization spans invalid",
+            };
+        }
         let status = scalar_table::<tables::DivisionStatus, _>(
             projection.as_deref_mut(),
             status,
@@ -283,6 +294,16 @@ impl Captured {
                 has_order: r.has_order,
                 invalid_orders: r.invalid_orders,
                 strength_factor: r.strength_factor,
+                model_number: r.model_number,
+                acclimatization_maximum: r.acclimatization_maximum,
+                acclimatization: acclimatization(r)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|entry| DivisionAcclimatization {
+                        category: entry.category,
+                        weight: entry.weight,
+                    })
+                    .collect(),
             },
         );
         let Some(paths) = self.paths.first.get(..self.paths.len) else {

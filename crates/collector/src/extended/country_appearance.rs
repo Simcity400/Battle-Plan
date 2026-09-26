@@ -80,6 +80,7 @@ impl Captured {
                 name_tag: r.name_tag.as_bytes().to_vec(),
                 leader_ideology: r.leader_ideology.as_bytes().to_vec(),
                 overlord: r.overlord,
+                graphical_culture: r.graphical_culture.as_bytes().to_vec(),
             },
         )]
     }

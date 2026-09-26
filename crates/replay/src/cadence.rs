@@ -71,7 +71,14 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::Projects
         | TableId::ProjectHistory
         | TableId::ProjectBreakthroughs => Daily(4),
+        // The 3D model's equipment inputs. The largest eligible variant can
+        // change mid-day (reinforcement, upgrade deliveries, captures) and the
+        // game re-selects the entity on each graphical-map update; the record
+        // catches up at the next slot. A division deployed after the slot is in
+        // the hourly NewDivisionEquipment until then. Local sub-unit clones
+        // change only when research or a doctrine unlocks one.
         TableId::DivisionEquipment
+        | TableId::CountryLocalSubunits
         | TableId::ArmyUpgradeGroups
         | TableId::ArmyUpgradeRequests
         | TableId::ArmyUpgradeDeliveries
@@ -146,10 +153,14 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::IncomingDiplomaticActions
         | TableId::TechSharingGroups
         | TableId::TechSharingMembers
+        // Variants and the rosters that name them share a slot, so a roster
+        // never names a variant the same refresh lacks. A new variant reaches a
+        // division or ship only through days of production.
         | TableId::VariantDefinitions
         | TableId::VariantModules
         | TableId::VariantStats
-        | TableId::VariantUpgrades => Daily(22),
+        | TableId::VariantUpgrades
+        | TableId::AvailableEquipmentVariants => Daily(22),
         TableId::NavalSupremacy
         | TableId::Operations
         | TableId::OperationAssignments
@@ -258,6 +269,8 @@ mod tests {
             TableId::Divisions,
             TableId::DivisionMovement,
             TableId::DivisionStatus,
+            // Equipment of divisions deployed since the daily walk.
+            TableId::NewDivisionEquipment,
             TableId::DivisionEtaInputs,
             TableId::LandTheatres,
             TableId::FactionTheatres,
@@ -300,7 +313,9 @@ mod tests {
                 TableId::VariantDefinitions,
                 TableId::VariantModules,
                 TableId::VariantStats,
+                TableId::AvailableEquipmentVariants,
             ],
+            &[TableId::DivisionEquipment, TableId::CountryLocalSubunits],
         ] {
             let shared = cadence(family[0]);
             assert_ne!(shared, Cadence::Hourly);

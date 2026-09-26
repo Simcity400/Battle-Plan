@@ -11,7 +11,7 @@ use crossbeam_queue::ArrayQueue;
 #[cfg(test)]
 use engine::cunit;
 use engine::{
-    carmy, ccountry, cfaction, cfaction_system,
+    Memory, carmy, ccountry, cfaction, cfaction_system,
     cgame_state::{self, Clock},
     country_memory::{Cache, SeedStatus},
     cprovince, cstate, cwar_relation,
@@ -476,6 +476,40 @@ pub struct EtaInputStats {
     pub air_defense_hits: AtomicU64,
 }
 
+/// Cumulative DivisionTemplateIcons rows whose model inputs failed, by
+/// reason, since attach. Fixed size: folding an hour in allocates nothing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TemplateModelStats {
+    /// Hours with at least one failed row.
+    pub hours: u64,
+    pub rows: u64,
+    pub first_reason: Option<&'static str>,
+    pub reasons: [(&'static str, u64); extended::division_templates::MODEL_REASONS],
+    pub other: u64,
+}
+
+impl TemplateModelStats {
+    fn fold(&mut self, hour: extended::division_templates::ModelFailures) {
+        if hour.rows == 0 {
+            return;
+        }
+        self.hours += 1;
+        self.rows += u64::from(hour.rows);
+        self.other += u64::from(hour.other);
+        for (reason, rows) in hour.reasons.into_iter().filter(|(_, rows)| *rows != 0) {
+            self.first_reason.get_or_insert(reason);
+            match self
+                .reasons
+                .iter_mut()
+                .find(|slot| slot.1 == 0 || slot.0 == reason)
+            {
+                Some(slot) => *slot = (reason, slot.1 + u64::from(rows)),
+                None => self.other += u64::from(rows),
+            }
+        }
+    }
+}
+
 pub struct Shared {
     /// Initialized before hook publication; workers own raw jobs, never frames.
     pub acquisition: OnceLock<acquisition::Pool>,
@@ -550,12 +584,20 @@ pub struct Shared {
     /// Fresh country authentication for this quiescent callback. Game thread only.
     country_cache: UnsafeCell<Arc<Cache>>,
     pub eta_inputs: EtaInputStats,
+    /// Template rows whose model inputs failed; the status thread copies it.
+    pub template_models: Mutex<TemplateModelStats>,
+    /// Hours whose failures were not folded because the status thread held
+    /// `template_models`: the game thread never waits for it.
+    pub template_models_missed: AtomicU64,
     /// Set by the spool when a staggered table truncated or a static table
     /// failed: the next hour walks everything again, with grown buffers.
     pub force_next: AtomicBool,
     /// The lexer's maximum token id at the last dictionary walk; a change
     /// means tokens were appended and the static dictionary is walked again.
     pub lexical_max: AtomicI32,
+    /// The unit and reference id counters when the last daily
+    /// `DivisionEquipment` walk ran, packed; see `new_divisions::next_mark`.
+    pub division_mark: AtomicU64,
     /// A larger country authentication cache prepared off the game thread.
     /// The hook swaps it in with a non-blocking `try_lock` and parks the old
     /// one in `retired` for the spool thread to free: no allocation or
@@ -655,8 +697,11 @@ impl Shared {
             }),
             country_cache: UnsafeCell::new(country_cache),
             eta_inputs: EtaInputStats::default(),
+            template_models: Mutex::new(TemplateModelStats::default()),
+            template_models_missed: AtomicU64::new(0),
             force_next: AtomicBool::new(false),
             lexical_max: AtomicI32::new(-1),
+            division_mark: AtomicU64::new(extended::new_divisions::UNKNOWN),
             country_cache_swap: Mutex::new(CountryCacheSwap::default()),
             country_cache_cells: AtomicUsize::new(country_cells),
             country_intel,
@@ -1295,6 +1340,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if lexical_refresh {
                 shared.lexical_max.store(lexical_max, Ordering::Relaxed);
             }
+            frame.extended.set_new_division_mark(new_division_mark(
+                shared,
+                &memory,
+                replay::cadence::should_walk(
+                    replay::rows::TableId::DivisionEquipment,
+                    clock.hour,
+                    force_full,
+                ),
+            ));
             let relations_refresh = decode::relations_refresh_hour(clock.hour, force_full);
             // ShipModels is the longest single job and walks its own ship census:
             // dispatch it first so it overlaps everything else.
@@ -2395,6 +2449,19 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             frame
                 .extended
                 .restore_slow_request(slow_request, slow_failure.is_none());
+            // Only a completed Slow job's hour is counted; the game thread
+            // never waits for the status thread's copy.
+            let failures = frame.extended.template_model_failures();
+            if slow_failure.is_none() && failures.rows != 0 {
+                match shared.template_models.try_lock() {
+                    Ok(mut stats) => stats.fold(failures),
+                    Err(_) => {
+                        shared
+                            .template_models_missed
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
             let (gated_request, _, gated_failure) = completed!(gated_pending, Gated);
             frame
                 .extended
@@ -4250,9 +4317,117 @@ pub(crate) mod divisions_test_kit {
     }
 }
 
+/// Divisions are minted from two monotonic counters, by handle type: the
+/// counters at the daily walk split walked divisions from new ones.
+fn new_division_mark(
+    shared: &Shared,
+    memory: &impl Memory,
+    daily: bool,
+) -> extended::new_divisions::Mark {
+    extended::new_divisions::next_mark(
+        &shared.division_mark,
+        daily,
+        engine::read::<i32>(memory, shared.base + engine::cship::NEXT_ID_RVA),
+        engine::read::<u32>(
+            memory,
+            shared.base + engine::creference_registry::ID_COUNTER_RVA,
+        ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn template_model_failures_fold_by_reason_and_keep_the_first() {
+        use extended::division_templates::{MODEL_REASONS, ModelFailures};
+        let hour = |reasons: &[(&'static str, u32)]| {
+            let mut failures = ModelFailures::default();
+            for (slot, reason) in failures.reasons.iter_mut().zip(reasons) {
+                *slot = *reason;
+                failures.rows += reason.1;
+            }
+            failures
+        };
+        let mut stats = TemplateModelStats::default();
+        stats.fold(hour(&[]));
+        assert_eq!((stats.hours, stats.rows, stats.first_reason), (0, 0, None));
+        stats.fold(hour(&[("unreadable database", 3)]));
+        stats.fold(hour(&[("bad exclusion", 1), ("unreadable database", 2)]));
+        assert_eq!((stats.hours, stats.rows), (2, 6));
+        assert_eq!(stats.first_reason, Some("unreadable database"));
+        assert_eq!(
+            &stats.reasons[..2],
+            &[("unreadable database", 5), ("bad exclusion", 1)]
+        );
+        // Reasons past the named slots are counted together.
+        let names: Vec<&'static str> = (0..MODEL_REASONS + 2)
+            .map(|index| &*Box::leak(format!("reason {index}").into_boxed_str()))
+            .collect();
+        let mut full = TemplateModelStats::default();
+        for name in names {
+            full.fold(hour(&[(name, 1)]));
+        }
+        assert_eq!((full.rows, full.other), (MODEL_REASONS as u64 + 2, 2));
+    }
+
+    #[test]
+    fn the_daily_hour_stores_both_id_counters_and_later_hours_compare_by_handle_type() {
+        use extended::new_divisions::{Counters, Mark};
+        struct Counterset(i32, u32);
+        impl Memory for Counterset {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let bytes = match address {
+                    engine::cship::NEXT_ID_RVA => self.0.to_le_bytes(),
+                    engine::creference_registry::ID_COUNTER_RVA => self.1.to_le_bytes(),
+                    _ => return false,
+                };
+                if output.len() != 4 {
+                    return false;
+                }
+                output.copy_from_slice(&bytes);
+                true
+            }
+        }
+        let shared = Shared::new(0, 0, 1);
+        assert_eq!(
+            new_division_mark(&shared, &Counterset(9, 9), false),
+            Mark::Unknown
+        );
+        assert_eq!(
+            new_division_mark(&shared, &Counterset(40, 7_000), true),
+            Mark::Daily
+        );
+        let Mark::Above(counters) = new_division_mark(&shared, &Counterset(99, 99), false) else {
+            panic!("a daily walk stores its counters");
+        };
+        assert_eq!(
+            counters,
+            Counters {
+                unit: 40,
+                registry: 7_000
+            }
+        );
+        // A trained division carries a dynamic type minted from the registry.
+        assert!(counters.minted_after((7_001 << 32) | 0x1268));
+        assert!(!counters.minted_after((41 << 32) | 0x1268));
+        // The unit counter's own value is the next unit id.
+        assert!(!counters.minted_after((39 << 32) | u64::from(engine::cship::HANDLE_TYPE)));
+        assert!(counters.minted_after((40 << 32) | u64::from(engine::cship::HANDLE_TYPE)));
+        // An unreadable counter at the daily walk leaves the next hours unknown.
+        struct Unreadable;
+        impl Memory for Unreadable {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                false
+            }
+        }
+        new_division_mark(&shared, &Unreadable, true);
+        assert_eq!(
+            new_division_mark(&shared, &Counterset(1, 1), false),
+            Mark::Unknown
+        );
+    }
 
     #[test]
     fn order_counter_capture_gates_and_clears_recycled_metadata_without_allocation() {
@@ -5244,6 +5419,9 @@ mod tests {
         for army in [kit::A1, kit::A2, kit::A3] {
             bytes[army + cunit::STAT_BLOCK..army + cunit::STAT_BLOCK + 8]
                 .copy_from_slice(&(stats as u64).to_le_bytes());
+            let acclimatization = army + carmy::ACCLIMATIZATION;
+            bytes[acclimatization..acclimatization + 8]
+                .copy_from_slice(&(engine::acclimatization_data::VTABLE_RVA as u64).to_le_bytes());
         }
         Memory(bytes)
     }
