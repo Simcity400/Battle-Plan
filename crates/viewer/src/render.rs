@@ -46,8 +46,9 @@ use crate::map::{
 // political fill + borders
 /// Everything a headless render needs beyond the terrain and water assets.
 pub struct MapLayers<'a> {
+    pub content: &'a crate::document::Content,
     pub omitted: crate::map::layers::Omissions,
-    /// The hour's gradient-border textures and the region keys behind them.
+    /// The hour's compact political region inputs.
     pub political: &'a PoliticalLayers,
     pub border_assets: &'a BorderAssets,
     pub border_meshes: &'a BorderMeshes,
@@ -104,8 +105,149 @@ pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
     }
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut configuration.wgpu_setup {
         setup.device_descriptor = Arc::new(device_descriptor);
+        // The window and the dashboard maps it hosts choose like `--dump`.
+        setup.native_adapter_selector = Some(Arc::new(|adapters, surface| {
+            select_adapter(adapters, surface).map_err(|error| error.to_string())
+        }));
     }
     configuration
+}
+
+/// Shown over every map drawn on the platform's software adapter.
+pub const SOFTWARE_RENDERER_NOTICE: &str = "Software renderer: no graphics card that can run the \
+     map was found, so it is drawn on the CPU and will be slow.";
+
+/// Sampled textures one shader stage binds: the terrain fragment stage's fifteen inputs,
+/// `ShadowMap` and the three `fow.fxh` reads ([`device_descriptor`]). [`Scene::new`] refuses a
+/// device below it, and adapter selection passes over an adapter below it.
+pub const MAP_SAMPLED_TEXTURES: u32 = 19;
+
+/// What adapter selection reads of one adapter.
+#[derive(Clone, Debug)]
+pub struct AdapterCandidate {
+    pub name: String,
+    pub device_type: wgpu::DeviceType,
+    pub backend: wgpu::Backend,
+    /// Compute shaders with the political kernel's storage buffers and workgroups.
+    pub compute: bool,
+    /// BC texture compression and [`MAP_SAMPLED_TEXTURES`] per stage, which [`Scene::new`]
+    /// needs.
+    pub textures: bool,
+    /// Presents to the window's surface; always `true` headless.
+    pub presents: bool,
+}
+
+impl AdapterCandidate {
+    pub fn of(adapter: &wgpu::Adapter, surface: Option<&wgpu::Surface<'_>>) -> Self {
+        let info = adapter.get_info();
+        let limits = adapter.limits();
+        Self {
+            name: info.name,
+            device_type: info.device_type,
+            backend: info.backend,
+            compute: adapter
+                .get_downlevel_capabilities()
+                .flags
+                .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+                && crate::map::political_gpu::compute_limits(&limits),
+            textures: adapter
+                .features()
+                .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+                && limits.max_sampled_textures_per_shader_stage >= MAP_SAMPLED_TEXTURES,
+            presents: surface.is_none_or(|surface| adapter.is_surface_supported(surface)),
+        }
+    }
+
+    fn usable(&self) -> bool {
+        self.compute && self.textures && self.presents
+    }
+}
+
+/// The adapter order the window, the dashboard maps and `--dump` share. First the hardware
+/// adapter `request_adapter` picks at `power` among those that run the map: at high
+/// performance discrete, integrated, other, virtual; at low power integrated first; with no
+/// preference, enumeration order. Enumeration order breaks ties. Then the platform's software
+/// adapter, the one `force_fallback_adapter` selects: WARP on DirectX 12, lavapipe on Vulkan.
+pub fn choose_adapter(
+    candidates: &[AdapterCandidate],
+    power: wgpu::PowerPreference,
+) -> io::Result<usize> {
+    let rank = |device_type| match (power, device_type) {
+        (wgpu::PowerPreference::None, _) => 0,
+        (wgpu::PowerPreference::LowPower, wgpu::DeviceType::IntegratedGpu) => 0,
+        (wgpu::PowerPreference::LowPower, wgpu::DeviceType::DiscreteGpu) => 1,
+        (_, wgpu::DeviceType::DiscreteGpu) => 0,
+        (_, wgpu::DeviceType::IntegratedGpu) => 1,
+        (_, wgpu::DeviceType::Other) => 2,
+        (_, wgpu::DeviceType::VirtualGpu) => 3,
+        (_, wgpu::DeviceType::Cpu) => 4,
+    };
+    let usable = || candidates.iter().enumerate().filter(|(_, c)| c.usable());
+    usable()
+        .filter(|(_, candidate)| candidate.device_type != wgpu::DeviceType::Cpu)
+        .min_by_key(|&(index, candidate)| (rank(candidate.device_type), index))
+        .or_else(|| usable().find(|(_, c)| c.device_type == wgpu::DeviceType::Cpu))
+        .map(|(index, _)| index)
+        .ok_or_else(|| {
+            let seen = candidates
+                .iter()
+                .map(|c| {
+                    let reason = if !c.compute {
+                        "no compute shaders".to_string()
+                    } else if !c.textures {
+                        format!(
+                            "no BC texture compression or fewer than {MAP_SAMPLED_TEXTURES} \
+                             sampled textures per stage"
+                        )
+                    } else if !c.presents {
+                        "cannot present to the window".to_string()
+                    } else {
+                        "usable".to_string()
+                    };
+                    format!(
+                        "{} ({:?}, {:?}): {reason}",
+                        c.name, c.backend, c.device_type
+                    )
+                })
+                .collect::<Vec<_>>();
+            crate::map::political_gpu::unsupported(format!(
+                "no graphics adapter that can run the map was found, not even the platform's \
+                 software renderer (adapters: {}). A DirectX 12 or Vulkan graphics device is \
+                 required.",
+                if seen.is_empty() {
+                    "none".into()
+                } else {
+                    seen.join("; ")
+                }
+            ))
+        })
+}
+
+/// Choose from enumerated adapters by [`choose_adapter`], naming a software choice on stderr.
+pub fn select_adapter(
+    adapters: &[wgpu::Adapter],
+    surface: Option<&wgpu::Surface<'_>>,
+) -> io::Result<wgpu::Adapter> {
+    let candidates = adapters
+        .iter()
+        .map(|adapter| AdapterCandidate::of(adapter, surface))
+        .collect::<Vec<_>>();
+    // `WGPU_POWER_PREF` as egui-wgpu and `request_adapter` honour it.
+    let power = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+    let index = choose_adapter(&candidates, power)?;
+    let chosen = &candidates[index];
+    if chosen.device_type == wgpu::DeviceType::Cpu {
+        eprintln!(
+            "{SOFTWARE_RENDERER_NOTICE} Adapter: {} ({:?}).",
+            chosen.name, chosen.backend
+        );
+    }
+    Ok(adapters[index].clone())
+}
+
+/// Whether a map on this adapter carries [`SOFTWARE_RENDERER_NOTICE`].
+pub fn is_software(adapter: &wgpu::Adapter) -> bool {
+    adapter.get_info().device_type == wgpu::DeviceType::Cpu
 }
 
 /// The device the map pipeline needs.
@@ -123,6 +265,18 @@ pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
 /// headroom several times over.
 pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
     let limits = adapter.limits();
+    // Let Scene issue UnsupportedPoliticalCompute on downlevel adapters, before creating passes.
+    let compute = adapter
+        .get_downlevel_capabilities()
+        .flags
+        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+        && limits.max_storage_buffers_per_shader_stage >= 8
+        && limits.max_compute_invocations_per_workgroup >= 64;
+    let base_limits = if compute {
+        wgpu::Limits::default()
+    } else {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    };
     // Atlases built on the CPU page to this side ([`crate::map::atlas_pages`]).
     crate::map::atlas_pages::record_device_limit(limits.max_texture_dimension_2d);
     let mut wanted = wgpu::Features::TEXTURE_COMPRESSION_BC
@@ -161,11 +315,13 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
         label: Some("Battle Plan viewer"),
         required_features: features,
         required_limits: wgpu::Limits {
+            max_buffer_size: limits.max_buffer_size,
+            max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
             max_texture_dimension_1d: limits.max_texture_dimension_1d,
             max_texture_dimension_2d: limits.max_texture_dimension_2d,
             max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage,
             max_samplers_per_shader_stage: limits.max_samplers_per_shader_stage,
-            ..Default::default()
+            ..base_limits
         },
         ..Default::default()
     }
@@ -392,15 +548,8 @@ pub fn dump_png(
     request.camera.validate()?;
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-                ..Default::default()
-            })
-            .await
-            .map_err(io::Error::other)?;
+        let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
+        let adapter = select_adapter(&adapters, None)?;
         let info = adapter.get_info();
         let (device, queue) = adapter
             .request_device(&device_descriptor(&adapter))
@@ -408,15 +557,10 @@ pub fn dump_png(
             .map_err(io::Error::other)?;
         let mut scene = Scene::new(&device, &queue, assets, icons, Default::default())?;
         // political fill + borders
-        let textures = &layers.political.textures;
-        scene.set_gradient_textures(
-            &device,
-            &queue,
-            &textures.channel1,
-            &textures.channel2,
-            textures.width,
-            textures.height,
-        )?;
+        if !layers.omitted.gradient {
+            scene.warm_political(&device, &queue, layers.content)?;
+            scene.set_political(&device, &queue, &layers.political.regions)?;
+        }
         if !layers.omitted.borders {
             scene.set_borders(
                 &device,
@@ -657,4 +801,103 @@ fn bench_frames(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::{Backend, DeviceType};
+
+    fn adapter(name: &str, device_type: DeviceType, backend: Backend) -> AdapterCandidate {
+        AdapterCandidate {
+            name: name.into(),
+            device_type,
+            backend,
+            compute: true,
+            textures: true,
+            presents: true,
+        }
+    }
+
+    fn chosen(candidates: &[AdapterCandidate]) -> &str {
+        chosen_at(candidates, wgpu::PowerPreference::HighPerformance)
+    }
+
+    fn chosen_at(candidates: &[AdapterCandidate], power: wgpu::PowerPreference) -> &str {
+        &candidates[choose_adapter(candidates, power).unwrap()].name
+    }
+
+    #[test]
+    fn the_power_preference_orders_hardware_as_request_adapter_does() {
+        let candidates = [
+            adapter("warp", DeviceType::Cpu, Backend::Dx12),
+            adapter("virtual", DeviceType::VirtualGpu, Backend::Vulkan),
+            adapter("discrete", DeviceType::DiscreteGpu, Backend::Vulkan),
+            adapter("integrated", DeviceType::IntegratedGpu, Backend::Vulkan),
+        ];
+        let low = wgpu::PowerPreference::LowPower;
+        assert_eq!(chosen_at(&candidates, low), "integrated");
+        assert_eq!(chosen_at(&candidates[..3], low), "discrete");
+        // No preference: the first hardware adapter enumerated, never the software one.
+        assert_eq!(
+            chosen_at(&candidates, wgpu::PowerPreference::None),
+            "virtual"
+        );
+    }
+
+    #[test]
+    fn hardware_follows_high_performance_order_then_enumeration_order() {
+        let candidates = [
+            adapter("warp", DeviceType::Cpu, Backend::Dx12),
+            adapter("integrated", DeviceType::IntegratedGpu, Backend::Vulkan),
+            adapter("discrete vulkan", DeviceType::DiscreteGpu, Backend::Vulkan),
+            adapter("discrete dx12", DeviceType::DiscreteGpu, Backend::Dx12),
+        ];
+        assert_eq!(chosen(&candidates), "discrete vulkan");
+        assert_eq!(chosen(&candidates[..2]), "integrated");
+        let virtual_other = [
+            adapter("virtual", DeviceType::VirtualGpu, Backend::Vulkan),
+            adapter("other", DeviceType::Other, Backend::Gl),
+        ];
+        assert_eq!(chosen(&virtual_other), "other");
+    }
+
+    #[test]
+    fn software_is_used_only_when_no_hardware_adapter_runs_the_map() {
+        let mut no_compute = adapter("old card", DeviceType::DiscreteGpu, Backend::Gl);
+        no_compute.compute = false;
+        let mut elsewhere = adapter("other display", DeviceType::DiscreteGpu, Backend::Vulkan);
+        elsewhere.presents = false;
+        let mut no_bc = adapter("no bc", DeviceType::DiscreteGpu, Backend::Vulkan);
+        no_bc.textures = false;
+        let warp = adapter("warp", DeviceType::Cpu, Backend::Dx12);
+        assert_eq!(chosen(&[no_compute.clone(), warp.clone()]), "warp");
+        assert_eq!(chosen(&[elsewhere.clone(), warp.clone()]), "warp");
+        // A card lacking the map's texture needs falls back rather than being refused.
+        assert_eq!(chosen(&[no_bc, warp.clone()]), "warp");
+        assert_eq!(chosen(std::slice::from_ref(&warp)), "warp");
+        let lavapipe = adapter("lavapipe", DeviceType::Cpu, Backend::Vulkan);
+        assert_eq!(chosen(&[warp.clone(), lavapipe]), "warp");
+        // A usable hardware adapter wins wherever it is listed.
+        let card = adapter("card", DeviceType::IntegratedGpu, Backend::Dx12);
+        assert_eq!(chosen(&[warp, no_compute, card]), "card");
+    }
+
+    #[test]
+    fn no_usable_adapter_is_a_named_refusal() {
+        let mut warp = adapter("warp", DeviceType::Cpu, Backend::Dx12);
+        warp.compute = false;
+        let mut card = adapter("card", DeviceType::DiscreteGpu, Backend::Gl);
+        card.compute = false;
+        for candidates in [vec![], vec![card, warp]] {
+            let error = choose_adapter(&candidates, wgpu::PowerPreference::HighPerformance)
+                .unwrap_err()
+                .to_string();
+            assert!(error.starts_with("UnsupportedPoliticalCompute:"), "{error}");
+            assert!(
+                error.contains("A DirectX 12 or Vulkan graphics device is required"),
+                "{error}"
+            );
+        }
+    }
 }

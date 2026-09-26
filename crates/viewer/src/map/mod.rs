@@ -50,6 +50,7 @@ pub mod orders;
 // political fill
 pub mod pointlights;
 pub mod political;
+pub mod political_gpu;
 pub mod raids;
 // colour
 pub mod post;

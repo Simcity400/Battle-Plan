@@ -176,7 +176,7 @@ impl ShownHour {
         let (summary, [width, height], build) = &self.snow;
         [
             format!(
-                "Political layer: {filled} provinces filled in {distinct} country colors, rebuilt in {:.0} ms",
+                "Political layer: {filled} provinces filled in {distinct} country colors, region tables derived in {:.2} ms",
                 self.political_build.as_secs_f64() * 1000.0
             ),
             format!(
@@ -561,6 +561,7 @@ pub(crate) fn load_scene(
     scene.warm_railways(device, queue, &document.rail_assets)?;
     scene.warm_orders(device, queue, &document.orders)?;
     scene.warm_weather(device, queue, document.weather_effects.clone())?;
+    scene.warm_political(device, queue, &document.content)?;
     Ok(scene)
 }
 
@@ -1368,7 +1369,7 @@ impl Viewer {
         }
         if let Some(shown) = &self.shown {
             messages.push(format!(
-                "Political layer build {:.1} ms",
+                "Political region tables {:.2} ms",
                 shown.political_build.as_secs_f64() * 1000.0
             ));
         }
@@ -2440,31 +2441,9 @@ impl Viewer {
         dropper.drop_later(retired);
         laps.lap("effects_upload");
         if uploaded.political != Some(political.id) {
-            let textures = &political.layers.textures;
-            let rows = political
-                .rows_from
-                .iter()
-                .find(|(base, _)| uploaded.political == Some(*base));
-            match rows {
-                Some((_, rows)) => scene.write_gradient_rows(
-                    &state.queue,
-                    &textures.channel1,
-                    &textures.channel2,
-                    [textures.width, textures.height],
-                    rows,
-                )?,
-                _ => scene.set_gradient_textures(
-                    &state.device,
-                    &state.queue,
-                    &textures.channel1,
-                    &textures.channel2,
-                    textures.width,
-                    textures.height,
-                )?,
-            }
+            scene.set_political(&state.device, &state.queue, &political.layers.regions)?;
             uploaded.political = Some(political.id);
         }
-        laps.lap("gradient_upload");
         // borders: the window has no demilitarised-zone override, so the zone is the
         // recorded one.
         if uploaded.borders != Some(borders.id) {
@@ -3185,14 +3164,22 @@ impl Viewer {
         );
         // The desktop's campaign map has no panels, so its diagnostics sit
         // over the map; dashboard maps draw theirs beside their loading status.
-        if self.diagnostics && self.embedded.is_some() && !self.dashboard_map {
+        // Every map on the software adapter, windowed or on a dashboard, says so.
+        let software = render::is_software(&state.adapter);
+        let diagnostics = self.diagnostics && self.embedded.is_some() && !self.dashboard_map;
+        if software || diagnostics {
             map_overlay(
                 ui,
                 rect.intersect(ui.clip_rect()),
                 "diagnostics",
                 self.interface_points,
                 |ui, height| {
-                    self.diagnostics_ui(ui, height);
+                    if software {
+                        ui.colored_label(egui::Color32::YELLOW, render::SOFTWARE_RENDERER_NOTICE);
+                    }
+                    if diagnostics {
+                        self.diagnostics_ui(ui, height);
+                    }
                 },
             );
         }

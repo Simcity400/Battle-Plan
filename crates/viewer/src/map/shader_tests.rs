@@ -16,6 +16,7 @@ fn validate(name: &str, source: &str) {
 #[test]
 fn standalone_map_shaders_validate() {
     for (name, source) in [
+        ("political_fill", include_str!("political_fill.wgsl")),
         ("post", include_str!("post.wgsl")),
         ("post_luts", include_str!("post_luts.wgsl")),
         ("shadow", include_str!("shadow.wgsl")),

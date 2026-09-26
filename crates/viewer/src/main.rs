@@ -800,21 +800,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {line}");
         }
         // political fill
-        // Layer 1, the strategic regions, is static content; the dump builds it once here.
-        let field = &document.map_defines.gradient_field;
-        let strategic =
-            political::strategic_layer(&document.map, &document.strategic_regions, field)?;
-        let mut layers = political::build(&document.map, document.frame()?, &strategic, field)?;
-        if options.debug_borders || options.layers.gradient {
-            // The engine's `debug_borders` removes both the gradient fill and the border strips.
-            // Channel 2's green is each layer's transparency, the factor the whole
-            // `gradient_border_apply` result is mixed in by, so zeroing it is exactly the
-            // shader's own `#ifndef GRADIENT_BORDERS` early-out; the strips are their own pass
-            // and are omitted separately below.
-            for texel in layers.textures.channel2.iter_mut() {
-                texel[1] = 0;
-            }
-        }
+        let layers = political::build(&document.map, document.frame()?)?;
         let mut omitted = options.layers;
         omitted.borders |= options.debug_borders;
         omitted.gradient |= options.debug_borders;
@@ -956,6 +942,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &document.assets,
             // political fill + borders
             render::MapLayers {
+                content: &document.content,
                 omitted,
                 political: &layers,
                 border_assets: &document.border_assets,
@@ -1066,7 +1053,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // political fill + borders
         let (filled, distinct) = layers.summary();
         println!(
-            "Political layer: {filled} provinces filled in {distinct} country colors (controller); gradient fields rebuilt in {:.0} ms",
+            "Political layer: {filled} provinces filled in {distinct} country colors (controller); region tables derived in {:.2} ms",
             layers.build.as_secs_f64() * 1000.0
         );
         let border_vertices: usize = document

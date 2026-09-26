@@ -27,15 +27,16 @@
 //! buildings when one is built. A part whose value equals the previous hour's
 //! shares that hour's value ([`Shared`], [`Political`], [`Borders`]), so the
 //! window, which remembers the id of what it uploaded, uploads nothing for it;
-//! a political fill that did change carries the rows it differs in from the
-//! previous hour's, so the window rewrites only those rows when the previous
-//! hour's fill is the one on the GPU. Each such part waits for the previous
-//! hour's value, which was dispatched first and so is already being built.
+//! political workers hold compact region tables. The scene diffs those tables and
+//! computes the gradient only when a displayed state changes. Each such part
+//! waits for the previous hour's value, which was dispatched first and so is
+//! already being built. For the political part the wait is not about the cheap
+//! region derivation: an equal hour must keep the same political id, because
+//! the border classes are shared, and their upload skipped, only by that id.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io,
-    ops::Range,
     sync::{
         Arc, Condvar, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -55,7 +56,6 @@ use crate::{
         border_pass::ClassPlan,
         camera::Camera,
         demilitarized::{Zone, ZonePlan},
-        gradient::LayerPlane,
         map_buildings::PreparedBuildings,
         memo::{Keyed, Recent},
         models::ModelField,
@@ -174,10 +174,6 @@ pub struct Political {
     pub id: u64,
     key: FrameKey,
     pub layers: PoliticalLayers,
-    /// The neighbouring hours' political fills these textures were compared
-    /// with, each with the rows they differ from it in. A neighbour most of
-    /// whose rows differ is not listed.
-    pub rows_from: Vec<(u64, Vec<Range<u32>>)>,
 }
 
 /// An hour's border buckets, shared by the hours with the same political fill
@@ -1070,7 +1066,6 @@ struct Coordinator {
     /// The playback decode lane, unless a shared decoder serves this view.
     lane: Option<DecodeLane>,
     requested: Arc<Mutex<Option<(u64, Want)>>>,
-    strategic: Option<Arc<LayerPlane>>,
     want: Option<Want>,
     epoch: u64,
     pending: BTreeMap<(BranchId, Hour), Pending>,
@@ -1279,7 +1274,7 @@ impl Coordinator {
         let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let alive = Arc::new(AtomicBool::new(true));
         let ticket = next_id();
-        let mut pending = Pending {
+        let pending = Pending {
             ticket,
             current: current.clone(),
             alive: Arc::clone(&alive),
@@ -1298,28 +1293,6 @@ impl Coordinator {
             laps: vec![("decode", decode_ms)],
             view: want.view,
         };
-        if self.strategic.is_none() {
-            match political::strategic_layer(
-                &self.content.map,
-                &self.content.strategic_regions,
-                &self.content.map_defines.gradient_field,
-            ) {
-                Ok(plane) => self.strategic = Some(Arc::new(plane)),
-                Err(error) => pending.error = Some(format!("strategic regions: {error}")),
-            }
-        }
-        if let Some(error) = pending.error.take() {
-            return self.send(Built {
-                epoch,
-                branch,
-                hour,
-                view: want.view,
-                current,
-                layers: Err(error),
-                laps: pending.laps,
-                wall: 0.0,
-            });
-        }
         self.pending.insert((branch, hour), pending);
         let slots = Slots::new();
         // A part waits only for the neighbours' slots present now. Each of
@@ -1331,7 +1304,6 @@ impl Coordinator {
             .filter_map(|neighbour| self.slots.get(&(branch, *neighbour)).cloned())
             .collect();
         self.slots.insert((branch, hour), slots.clone());
-        let strategic = Arc::clone(self.strategic.as_ref().expect("built above"));
         let submit = |name: &'static str, work: Box<dyn FnOnce(&HourView<'_>) -> Part + Send>| {
             let content = Arc::clone(&self.content);
             let frame = Arc::clone(&frame);
@@ -1367,37 +1339,22 @@ impl Coordinator {
         {
             let fill = Fill(Arc::clone(&slots.political));
             let fill_borders = Fill(Arc::clone(&slots.borders));
-            let near_political = slots_of(&neighbours, |slots| &slots.political);
+            let near_regions = slots_of(&neighbours, |slots| &slots.political);
             let near_borders = slots_of(&neighbours, |slots| &slots.borders);
             submit(
                 "political",
                 Box::new(move |view| {
                     Part::Political((|| {
                         let key = FrameKey::new(view.frame)?;
-                        let near = wait_all(near_political);
+                        let near = wait_all(near_regions);
                         let political = match near.iter().find(|near| near.key == key) {
                             Some(same) => Arc::clone(same),
                             None => {
-                                let layers = political::build(
-                                    &view.map,
-                                    view.frame,
-                                    &strategic,
-                                    &view.map_defines.gradient_field,
-                                )?;
-                                let rows_from = near
-                                    .iter()
-                                    .filter_map(|near| {
-                                        layers
-                                            .textures
-                                            .changed_rows(&near.layers.textures)
-                                            .map(|rows| (near.id, rows))
-                                    })
-                                    .collect();
+                                let layers = political::build(&view.map, view.frame)?;
                                 Arc::new(Political {
                                     id: next_id(),
                                     key,
                                     layers,
-                                    rows_from,
                                 })
                             }
                         };
@@ -1638,7 +1595,6 @@ impl Pipeline {
             shared_decoder,
             lane,
             requested: Arc::clone(&requested),
-            strategic: None,
             want: None,
             epoch: 0,
             pending: BTreeMap::new(),
