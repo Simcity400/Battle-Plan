@@ -679,6 +679,7 @@ pub mod rail_neighbor;
 pub mod rail_render_functions;
 pub mod rail_supply_arrow_layout;
 pub mod rail_supply_arrow_row_layout;
+pub mod railway_gun_counter_inputs;
 pub mod rasterizer_state_description_layout;
 pub mod rasterizer_state_wrapper_layout;
 /// Test-only measurement instrument for the deterministic cost proxies.

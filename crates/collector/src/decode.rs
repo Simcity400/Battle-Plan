@@ -3962,8 +3962,8 @@ mod tests {
         let index = shared.free.pop().expect("pooled buffer");
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let capacities = crate::extended::characters::Capacities {
-            rows: [4096; 7],
-            bytes: [131_072; 7],
+            rows: [4096; 6],
+            bytes: [131_072; 6],
         };
         let direct = characters_test_kit::direct(&memory, &capacities);
         let mut initial = capacities;
@@ -4068,8 +4068,8 @@ mod tests {
         let shared = Shared::new(kit::BASE, 0, 1);
         let index = shared.free.pop().expect("pooled buffer");
         let capacities = characters::Capacities {
-            rows: [4096; 7],
-            bytes: [131_072; 7],
+            rows: [4096; 6],
+            bytes: [131_072; 6],
         };
         for (missing, missing_mask) in CHARACTER_MASKS.into_iter().enumerate() {
             let bytes = kit::mapped_fixture();
@@ -4127,8 +4127,8 @@ mod tests {
         let shared = Shared::new(kit::BASE, 0, 1);
         let index = shared.free.pop().expect("pooled buffer");
         let capacities = characters::Capacities {
-            rows: [4096; 7],
-            bytes: [131_072; 7],
+            rows: [4096; 6],
+            bytes: [131_072; 6],
         };
         for (hour, force_full) in [(0, false), (21, false), (7, true)] {
             let active =

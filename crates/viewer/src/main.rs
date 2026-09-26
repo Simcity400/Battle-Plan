@@ -1365,6 +1365,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|reason| format!("; undecided: {reason}"))
                 .unwrap_or_default()
         );
+        // counters: railway guns and the ability grid, and what they could not draw
+        println!(
+            "Railway guns: {} plates drawn, {} guns not drawn (incomplete census or unrecorded definition name), {} moving guns standing because content cannot place their route; {} active abilities without a resolved sprite",
+            counter_report.railway_guns,
+            counter_report.unavailable_railway_guns,
+            counter_report.unplaced_railway_gun_routes,
+            counter_report.unavailable_ability_icons,
+        );
         // counters: ETA derivation coverage for this hour
         if let Some(line) = counter_report.eta.line() {
             println!("{line}");

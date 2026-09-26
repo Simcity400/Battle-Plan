@@ -91,6 +91,13 @@ fn compare_unit_intel(frame: &DecodedFrame, saved: &Save, report: &mut Report) -
             ));
         }
     }
+    for (id, gun) in &saved.railway_guns {
+        if expected.insert(*id, &gun.country_intel).is_some() {
+            return Err(invalid(
+                "saved railway gun shares a unit handle with another unit",
+            ));
+        }
+    }
     let mut compared = 0;
     for (unit, entries) in &expected {
         let label = format!("unit {unit} country_intel");
@@ -368,6 +375,7 @@ mod tests {
     };
 
     const DIVISION: u64 = (9_u64 << 32) | 4919;
+    const RAILWAY_GUN: u64 = (7_u64 << 32) | 74;
     const THEATRE: u64 = (5_u64 << 32) | 67;
 
     fn frame(rows: impl IntoIterator<Item = TableRows>) -> DecodedFrame {
@@ -403,6 +411,43 @@ countries={
 states={} provinces={}"#,
         )
         .unwrap()
+    }
+
+    fn railway_saved() -> save::Save {
+        parse(
+            br#"HOI4txt
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
+countries={ GER={ units={ railway_gun={ id={id=7 type=74} logical_country=GER strength=0
+  country_intel={ 2 0 4 -1 0 -1 } } } } }
+states={} provinces={}"#,
+        )
+        .unwrap()
+    }
+
+    fn railway_frame() -> DecodedFrame {
+        frame([TableRows::UnitIntel(vec![
+            UnitIntelRow {
+                unit: RAILWAY_GUN,
+                ordinal: 0,
+                viewer: 2,
+                level: 4,
+            },
+            UnitIntelRow {
+                unit: RAILWAY_GUN,
+                ordinal: 1,
+                viewer: u32::MAX,
+                level: -1,
+            },
+        ])])
+    }
+
+    fn railway_rows(frame: &mut DecodedFrame) -> &mut Vec<UnitIntelRow> {
+        let TableView::Complete(TableRows::UnitIntel(rows)) =
+            &mut *frame.tables[TableId::UnitIntel.index()]
+        else {
+            unreachable!()
+        };
+        rows
     }
 
     fn links() -> (CountryRow, CountryRow) {
@@ -484,6 +529,58 @@ states={} provinces={}"#,
                 wings: vec![69],
             }]),
         ])
+    }
+
+    #[test]
+    fn railway_gun_intel_matches_every_saved_entry_in_native_order() {
+        let mut report = Report::default();
+        compare_unit_intel(&railway_frame(), &railway_saved(), &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["UnitIntel"], 2);
+    }
+
+    #[test]
+    fn railway_gun_intel_missing_extra_and_changed_entries_are_differences() {
+        let save = railway_saved();
+
+        let mut missing = railway_frame();
+        railway_rows(&mut missing).pop();
+        let mut report = Report::default();
+        compare_unit_intel(&missing, &save, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("country_intel.count"));
+
+        let mut extra = railway_frame();
+        railway_rows(&mut extra).push(UnitIntelRow {
+            unit: (8_u64 << 32) | 74,
+            ordinal: 0,
+            viewer: 2,
+            level: 4,
+        });
+        let mut report = Report::default();
+        compare_unit_intel(&extra, &save, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("no saved unit"));
+
+        for change in [
+            |row: &mut UnitIntelRow| row.viewer = 3,
+            |row: &mut UnitIntelRow| row.level = 3,
+        ] {
+            let mut changed = railway_frame();
+            change(&mut railway_rows(&mut changed)[0]);
+            let mut report = Report::default();
+            compare_unit_intel(&changed, &save, &mut report).unwrap();
+            assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        }
+    }
+
+    #[test]
+    fn railway_gun_intel_refuses_a_gap_in_the_native_ordinals() {
+        let mut frame = railway_frame();
+        railway_rows(&mut frame)[1].ordinal = 2;
+        let error =
+            compare_unit_intel(&frame, &railway_saved(), &mut Report::default()).unwrap_err();
+        assert!(error.to_string().contains("native ordinal"), "{error}");
     }
 
     #[test]

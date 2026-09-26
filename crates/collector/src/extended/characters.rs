@@ -30,7 +30,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-pub const N: usize = 7;
+pub const N: usize = 6;
 pub const TABLES: [TableId; N] = [
     TableId::Characters,
     TableId::CountryLeaderRoles,
@@ -38,7 +38,6 @@ pub const TABLES: [TableId; N] = [
     TableId::UnitLeaders,
     TableId::UnitLeaderTraits,
     TableId::UnitLeaderTraitExperience,
-    TableId::ActiveAbilities,
 ];
 
 /// The first table in each group carries its full QPC cost.
@@ -49,7 +48,6 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("country leader roles", 1, &[1]),
     ("advisor roles", 2, &[2]),
     ("unit leader traits and experience", 4, &[4, 5]),
-    ("active abilities", 6, &[6]),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,22 +61,26 @@ impl Default for Capacities {
         Self {
             // First full capture contained 13,095 characters, 2,019 leader
             // roles, 1,271 unit leaders and 19,555 trait-experience entries.
-            rows: [16_384, 4096, 4096, 2048, 4096, 32_768, 128],
-            bytes: [524_288, 0, 262_144, 131_072, 131_072, 524_288, 8192],
+            rows: [16_384, 4096, 4096, 2048, 4096, 32_768],
+            bytes: [524_288, 0, 262_144, 131_072, 131_072, 524_288],
         }
     }
 }
 
-struct Buffer<R> {
-    rows: CaptureRows<R>,
-    bytes: Arena<u8>,
+pub(super) struct Buffer<R> {
+    pub(super) rows: CaptureRows<R>,
+    pub(super) bytes: Arena<u8>,
 }
 
 impl<R: Default + Clone> Buffer<R> {
     fn new(capacities: &Capacities, index: usize) -> Self {
+        Self::with(capacities.rows[index], capacities.bytes[index])
+    }
+
+    pub(super) fn with(rows: usize, bytes: usize) -> Self {
         Self {
-            rows: CaptureRows::new(capacities.rows[index]),
-            bytes: Arena::new(capacities.bytes[index]),
+            rows: CaptureRows::new(rows),
+            bytes: Arena::new(bytes),
         }
     }
 
@@ -105,13 +107,6 @@ impl<R: Default + Clone> Buffer<R> {
         self.bytes.len = result.bytes_len;
         self.bytes.required = result.required_bytes;
     }
-
-    fn capture(&mut self, walk: impl FnOnce(&mut [R], &mut [u8]) -> ReadResult) -> u64 {
-        let begin = qpc();
-        let result = walk(&mut self.rows.rows, &mut self.bytes.first);
-        self.primary(result);
-        elapsed(begin)
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -131,11 +126,10 @@ pub struct Captured {
     units: Buffer<LeaderRow>,
     traits: Buffer<cunit_leader::TraitRow>,
     trait_experience: Buffer<cunit_leader::TraitExperienceRow>,
-    abilities: Buffer<active_ability_record::Row>,
     /// Tables acquired by independent raw jobs, including terminal failures.
     /// The typed walk handles only the remaining tables; the decode worker
     /// merges successful parts before publication. Preserved across reset
-    /// and cleared per part after decode. ActiveAbilities has its own gate.
+    /// and cleared per part after decode.
     pub(crate) raw_active: [bool; 6],
 }
 
@@ -383,7 +377,6 @@ impl Captured {
             units: Buffer::new(capacities, 3),
             traits: Buffer::new(capacities, 4),
             trait_experience: Buffer::new(capacities, 5),
-            abilities: Buffer::new(capacities, 6),
             raw_active: [false; 6],
             active: [false; 6],
         }
@@ -396,7 +389,6 @@ impl Captured {
         self.units.reset();
         self.traits.reset();
         self.trait_experience.reset();
-        self.abilities.reset();
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -406,7 +398,6 @@ impl Captured {
             + self.units.allocated_bytes()
             + self.traits.allocated_bytes()
             + self.trait_experience.allocated_bytes()
-            + self.abilities.allocated_bytes()
     }
 
     pub fn grow(&mut self, capacities: &mut Capacities) {
@@ -418,7 +409,6 @@ impl Captured {
         self.units.grow(capacities, 3);
         self.traits.grow(capacities, 4);
         self.trait_experience.grow(capacities, 5);
-        self.abilities.grow(capacities, 6);
     }
 
     /// The scheduled persistent tables share one current roster.
@@ -474,16 +464,6 @@ impl Captured {
             ticks[slot] = elapsed(begin);
         }
         }
-        if active[6] {
-            ticks[6] = self.abilities.capture(|rows, bytes| {
-                let _reads = read_accounting::table(TABLES[6]);
-                walk_abilities(memory, base, game_state, rows, bytes)
-            });
-        } else {
-            self.abilities.rows.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
-            };
-        }
         ticks
     }
 
@@ -495,7 +475,6 @@ impl Captured {
             self.units.rows.outcome,
             self.traits.rows.outcome,
             self.trait_experience.rows.outcome,
-            self.abilities.rows.outcome,
         ]
     }
 
@@ -656,11 +635,6 @@ impl Captured {
                     experience: row.experience,
                 },
             )),
-            wrap(view::<tables::ActiveAbilities, _>(
-                &self.abilities,
-                |row, bytes| valid(bytes, row.token_start, row.token_len),
-                ability_row,
-            )),
         ]
     }
 }
@@ -670,10 +644,10 @@ fn elapsed(begin: i64) -> u64 {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ReadResult {
-    outcome: Outcome,
-    bytes_len: usize,
-    required_bytes: usize,
+pub(super) struct ReadResult {
+    pub(super) outcome: Outcome,
+    pub(super) bytes_len: usize,
+    pub(super) required_bytes: usize,
 }
 
 impl ReadResult {
@@ -1131,7 +1105,7 @@ fn read_unit(
     }
 }
 
-fn walk_abilities(
+pub(super) fn walk_abilities(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -1168,7 +1142,7 @@ fn walk_abilities(
     output.result()
 }
 
-fn view<S: TableSchema, R>(
+pub(super) fn view<S: TableSchema, R>(
     buffer: &Buffer<R>,
     valid_row: impl Fn(&R, &[u8]) -> bool,
     convert: impl Fn(&R, &[u8]) -> S::Row,
@@ -1189,7 +1163,7 @@ fn view<S: TableSchema, R>(
     table::<S, _>(buffer.rows.outcome, rows, |row| convert(row, bytes))
 }
 
-fn valid(bytes: &[u8], start: usize, len: usize) -> bool {
+pub(super) fn valid(bytes: &[u8], start: usize, len: usize) -> bool {
     start
         .checked_add(len)
         .is_some_and(|end| bytes.get(start..end).is_some())
@@ -1225,7 +1199,7 @@ fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
     }
 }
 
-fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> ActiveAbilityRow {
+pub(super) fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> ActiveAbilityRow {
     ActiveAbilityRow {
         country: row.country,
         ordinal: row.ordinal,
@@ -1246,7 +1220,8 @@ fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> ActiveAbilityR
 
 // ===========================================================================
 // Raw-copy split for hourly Characters/UnitLeaders and scheduled roles,
-// traits and trait experience. ActiveAbilities has an independent daily gate.
+// traits and trait experience. ActiveAbilities is its own hourly pool pack
+// (`super::active_abilities`).
 //
 // The game thread copies raw bytes only: the manager census, the per-entry
 // view spans, heap string payloads by header length, role-map nodes with
@@ -3843,7 +3818,7 @@ impl Captured {
     }
 
     /// Complete a failed persistent-character job after its typed walks were
-    /// gated. The independently acquired abilities are preserved.
+    /// gated.
     #[cfg(test)]
     pub(crate) fn fail_characters_capture(&mut self, active: [bool; 6], reason: &'static str) {
         self.active = active;
@@ -5763,8 +5738,8 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let defaults = Capacities::default();
-        let (mut row_capacity, mut byte_capacity) = (defaults.rows[6], defaults.bytes[6]);
+        let defaults = super::super::active_abilities::Capacities::default();
+        let (mut row_capacity, mut byte_capacity) = (defaults.rows, defaults.bytes);
         let total = COUNTRIES as usize;
         assert!(total > row_capacity && total * 7 > byte_capacity);
         let mut rows = vec![active_ability_record::Row::default(); row_capacity];
@@ -5782,7 +5757,19 @@ mod tests {
         crate::table_capture::grow_capacity(&mut byte_capacity, first.required_bytes);
         let mut rows = vec![active_ability_record::Row::default(); row_capacity];
         let mut arena = vec![0; byte_capacity];
-        let second = walk_abilities(&memory, 0, GAME_STATE, &mut rows, &mut arena);
+        // The walk over raw memory, without the Ordinary job's cached roster
+        // view: a fixed number of guarded calls per live country and per
+        // ability record, whatever the viewer's country. The hourly pack's cost
+        // on the roster view is pinned in `active_abilities`.
+        engine::read_counts::ReadCounts::take_current();
+        let second = walk_abilities(
+            &engine::read_counts::CountedMemory::new(memory),
+            0,
+            GAME_STATE,
+            &mut rows,
+            &mut arena,
+        );
+        let with_records = engine::read_counts::ReadCounts::take_current();
         assert_eq!(second.outcome, Outcome::Rows { len: total });
         assert_eq!((second.bytes_len, second.required_bytes), (total * 7, total * 7));
         for (index, row) in rows[..total].iter().enumerate() {
@@ -5790,6 +5777,34 @@ mod tests {
             assert_eq!((row.token_start, row.token_len), (index * 7, 7));
             assert_eq!(&arena[row.token_start..row.token_start + 7], b"ability");
         }
+        for slot in 1..=COUNTRIES {
+            let country = COUNTRY0 + (slot as usize - 1) * STRIDE;
+            header(&mut bytes, country + ccountry::ACTIVE_ABILITIES, 0, 0);
+        }
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let empty = walk_abilities(
+            &engine::read_counts::CountedMemory::new(memory),
+            0,
+            GAME_STATE,
+            &mut rows,
+            &mut arena,
+        );
+        let countries_only = engine::read_counts::ReadCounts::take_current();
+        assert_eq!(empty.outcome, Outcome::Rows { len: 0 });
+        let calls = |counts: engine::read_counts::ReadCounts| {
+            counts.copy_calls + counts.scattered_calls
+        };
+        // Over raw memory: two registry reads, eight per country
+        // (authentication and the array header), three per record without
+        // caster or region; a caster and a region add their own identity reads.
+        // On the roster view the census answers the authentication, leaving
+        // one call per country.
+        let countries = u64::from(COUNTRIES);
+        assert_eq!(calls(countries_only), 2 + 8 * countries);
+        assert_eq!(calls(with_records) - calls(countries_only), 3 * countries);
     }
 
     #[test]
@@ -5906,25 +5921,6 @@ mod tests {
         for view in &views[..3] {
             assert!(matches!(view, TableView::Unavailable { .. }));
         }
-        captured.abilities.rows.rows[0].token_len = 1;
-        captured.abilities.rows.outcome = Outcome::Rows { len: 1 };
-        assert!(matches!(
-            captured.tables()[6],
-            TableView::Unavailable { .. }
-        ));
-        captured.abilities.bytes.len = 1;
-        captured.abilities.bytes.required = 1;
-        captured.abilities.bytes.first[0] = 0xff;
-        captured.abilities.rows.rows[1] = captured.abilities.rows.rows[0];
-        captured.abilities.rows.outcome = Outcome::Rows { len: 2 };
-        assert!(matches!(
-            captured.tables()[6],
-            TableView::Unavailable { .. }
-        ));
-        captured.abilities.rows.outcome = Outcome::Rows { len: 1 };
-        assert!(matches!(captured.tables()[6], TableView::Complete(_)));
-        captured.reset();
-        assert_eq!(captured.abilities.bytes.len, 0);
     }
 
     // Deterministic read-cost proxy over one synthetic roster. Its proportions
@@ -6797,8 +6793,8 @@ mod tests {
             ([0; N], 0),
             ([1; N], 64),
             ([2; N], 64),
-            ([32, 5, 22, 3, 6, 45, 0], 131_072),
-            ([33, 6, 23, 4, 7, 46, 1], 131_072),
+            ([32, 5, 22, 3, 6, 45], 131_072),
+            ([33, 6, 23, 4, 7, 46], 131_072),
             ([4096; N], 131_072),
         ] {
             let capacities = Capacities {
@@ -6815,7 +6811,7 @@ mod tests {
         }
         // Exact-fit arm pins Rows on every table.
         let capacities = Capacities {
-            rows: [32, 5, 22, 3, 6, 45, 0],
+            rows: [32, 5, 22, 3, 6, 45],
             bytes: [131_072; N],
         };
         let (split, _, _) = kit::split(&memory, &capacities);
@@ -7453,15 +7449,12 @@ mod tests {
     }
 
     #[test]
-    fn failed_character_refresh_preserves_independent_abilities_and_capacity() {
+    fn failed_character_refresh_preserves_capacity() {
         let mut captured = Captured::with_capacities(&small_capacities());
         captured.raw_active = [true; 6];
         captured.characters.rows.outcome = Outcome::Rows { len: 1 };
-        captured.abilities.rows.outcome = Outcome::Rows { len: 1 };
         captured.characters.bytes.len = 1;
         captured.characters.bytes.required = 7;
-        captured.abilities.bytes.len = 1;
-        captured.abilities.bytes.first[0] = 0xff;
         let bytes = captured.allocated_bytes();
         captured.fail_characters_capture([true; 6], "character worker failed");
         assert!(!captured.raw_active.iter().any(|&active| active));
@@ -7475,9 +7468,6 @@ mod tests {
         }
         assert_eq!(captured.characters.bytes.len, 0);
         assert_eq!(captured.characters.bytes.required, 7);
-        assert_eq!(captured.abilities.rows.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(captured.abilities.bytes.len, 1);
-        assert_eq!(captured.abilities.bytes.first[0], 0xff);
         assert_eq!(captured.allocated_bytes(), bytes);
 
         captured.leaders.bytes.required = 11;
@@ -7495,7 +7485,6 @@ mod tests {
                 reason: replay::cadence::SKIPPED_REASON,
             }
         );
-        assert_eq!(captured.abilities.rows.outcome, Outcome::Rows { len: 1 });
         assert_eq!(captured.allocated_bytes(), bytes);
     }
 
@@ -8141,8 +8130,8 @@ mod tests {
 #[cfg(test)]
 pub(crate) fn character_shadow_fixture(value: u8) -> Captured {
     let capacities = Capacities {
-        rows: [2, 2, 2, 1, 2, 1, 1],
-        bytes: [8, 0, 8, 0, 8, 0, 0],
+        rows: [2, 2, 2, 1, 2, 1],
+        bytes: [8, 0, 8, 0, 8, 0],
     };
     let mut captured = Captured::with_capacities(&capacities);
     for index in 0..2 {
@@ -8197,7 +8186,6 @@ pub(crate) fn character_shadow_fixture(value: u8) -> Captured {
     captured.traits.rows.outcome = Outcome::Rows { len: 2 };
     captured.units.rows.outcome = Outcome::Rows { len: 0 };
     captured.trait_experience.rows.outcome = Outcome::Rows { len: 0 };
-    captured.abilities.rows.outcome = Outcome::Rows { len: 0 };
     captured
 }
 
@@ -8477,7 +8465,6 @@ mod shadow_tests {
         dynamic.units.rows.rows[0].native.experience = i64::MIN;
         dynamic.trait_experience.rows.outcome = Outcome::Rows { len: 1 };
         dynamic.trait_experience.rows.rows[0].experience = i64::MAX;
-        dynamic.abilities.rows.outcome = Outcome::Rows { len: 1 };
         let result = inputs(&dynamic, &mut shadow, Some(&cached), 1);
         assert_canonical(&dynamic, &result);
         assert!(
@@ -8486,7 +8473,7 @@ mod shadow_tests {
                 .zip(shared(&result))
                 .all(|(a, b)| Arc::ptr_eq(a, &b))
         );
-        for index in [3, 5, 6] {
+        for index in [3, 5] {
             assert!(matches!(
                 &result[index],
                 TableInput::Sampled(TableView::Complete(_))

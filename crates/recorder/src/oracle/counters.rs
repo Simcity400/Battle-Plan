@@ -26,6 +26,7 @@ fn provinces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
     );
     let mut seen_divisions = BTreeSet::new();
     let mut seen_tasks = BTreeSet::new();
+    let mut seen_guns = BTreeSet::new();
     for row in rows {
         for &handle in &row.mixed {
             if let Some(d) = save.divisions.get(&handle) {
@@ -48,8 +49,22 @@ fn provinces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
                     Some(row.province),
                     t.province,
                 );
+            } else if let Some(g) = save.railway_guns.get(&handle) {
+                if !seen_guns.insert(handle) {
+                    return Err(invalid("railway gun repeated in province mixed roster"));
+                }
+                eq(
+                    r,
+                    &format!("ProvinceUnitOrder {handle} railway gun location"),
+                    Some(row.province),
+                    g.province,
+                );
             } else {
-                r.limitation("this mixed-roster handle has no saved division/task-force counterpart; railway-gun membership is outside this comparison",format!("ProvinceUnitOrder {handle}"));
+                r.difference(
+                    format!("ProvinceUnitOrder {handle} mixed occupant"),
+                    "present",
+                    "no saved division, task force or railway gun",
+                );
             }
         }
         let expected: BTreeSet<_> = save
@@ -86,6 +101,16 @@ fn provinces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
             .values()
             .filter(|t| t.province.is_some())
             .map(|t| t.id)
+            .collect(),
+    );
+    eq(
+        r,
+        "ProvinceUnitOrder located railway-gun census",
+        seen_guns,
+        save.railway_guns
+            .values()
+            .filter(|g| g.province.is_some())
+            .map(|g| g.id)
             .collect(),
     );
     r.compared("ProvinceUnitOrder", rows.len());

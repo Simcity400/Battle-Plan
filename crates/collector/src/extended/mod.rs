@@ -276,6 +276,8 @@ packs!(
     air,
     army_icon_inputs,
     naval_counters,
+    railway_guns,
+    active_abilities,
     country_counters,
     group_counters,
     leader_paths,
@@ -888,6 +890,8 @@ impl Captured {
         std::mem::swap(&mut self.country_appearance, &mut packs.country_appearance);
         std::mem::swap(&mut self.naval_bases, &mut packs.naval_bases);
         std::mem::swap(&mut self.naval_counters, &mut packs.naval_counters);
+        std::mem::swap(&mut self.railway_guns, &mut packs.railway_guns);
+        std::mem::swap(&mut self.active_abilities, &mut packs.active_abilities);
         std::mem::swap(&mut self.country_counters, &mut packs.country_counters);
         std::mem::swap(&mut self.group_counters, &mut packs.group_counters);
     }
@@ -1885,6 +1889,8 @@ pub(crate) struct OrdinaryPacks {
     pub(crate) country_appearance: country_appearance::Captured,
     pub(crate) naval_bases: naval_bases::Captured,
     pub(crate) naval_counters: naval_counters::Captured,
+    pub(crate) railway_guns: railway_guns::Captured,
+    pub(crate) active_abilities: active_abilities::Captured,
     pub(crate) country_counters: country_counters::Captured,
     pub(crate) group_counters: group_counters::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
@@ -1899,6 +1905,8 @@ impl OrdinaryPacks {
         &country_appearance::TABLES,
         &naval_bases::TABLES,
         &naval_counters::TABLES,
+        &railway_guns::TABLES,
+        &active_abilities::TABLES,
         &country_counters::TABLES,
         &group_counters::TABLES,
     ];
@@ -1911,6 +1919,8 @@ impl OrdinaryPacks {
             + self.country_appearance.allocated_bytes()
             + self.naval_bases.allocated_bytes()
             + self.naval_counters.allocated_bytes()
+            + self.railway_guns.allocated_bytes()
+            + self.active_abilities.allocated_bytes()
             + self.country_counters.allocated_bytes()
             + self.group_counters.allocated_bytes()
     }
@@ -1922,6 +1932,8 @@ impl OrdinaryPacks {
         self.country_appearance.reset();
         self.naval_bases.reset();
         self.naval_counters.reset();
+        self.railway_guns.reset();
+        self.active_abilities.reset();
         self.country_counters.reset();
         self.group_counters.reset();
         self.ticks = [0; TABLE_COUNT];
@@ -1937,6 +1949,8 @@ impl OrdinaryPacks {
             country_appearance: country_appearance::Captured::vacant(),
             naval_bases: naval_bases::Captured::vacant(),
             naval_counters: naval_counters::Captured::vacant(),
+            railway_guns: railway_guns::Captured::vacant(),
+            active_abilities: active_abilities::Captured::vacant(),
             country_counters: country_counters::Captured::vacant(),
             group_counters: group_counters::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
@@ -1958,6 +1972,8 @@ impl OrdinaryPacks {
             country_appearance,
             naval_bases,
             naval_counters,
+            railway_guns,
+            active_abilities,
             country_counters,
             group_counters
         );

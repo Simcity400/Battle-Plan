@@ -114,9 +114,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::AirTheatreMembers => Daily(13),
         TableId::IntelNetworks => Daily(14),
         TableId::DynamicModifiers | TableId::ActiveIdeas => Daily(15),
-        TableId::OperativeMemberships | TableId::ActiveAbilities | TableId::WingCumulative => {
-            Daily(16)
-        }
+        TableId::OperativeMemberships | TableId::WingCumulative => Daily(16),
         TableId::Scientists
         | TableId::ScientistSkills
         | TableId::PowerBalances
@@ -274,6 +272,8 @@ mod tests {
             TableId::WeatherProvinces,
             TableId::LandCombatDivisions,
             TableId::AirBaseRegistrations,
+            // The land counter's ability grid: abilities start and change phase at any hour.
+            TableId::ActiveAbilities,
             // Bombing changes a building's mesh and fire within the hour.
             TableId::StateBuildings,
             TableId::ProvinceBuildings,
