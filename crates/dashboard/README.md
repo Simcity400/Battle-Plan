@@ -27,7 +27,7 @@ A product turns a source plus typed parameters into one compact reply covering a
 
 The service, transport, host and frontend route by key and never name a product. Replies are serialized with the frontend's lease identity so they cannot be attributed to another recording. Products read verified recorded content only; missing localisation or artwork stays null.
 
-Current products: national focus order, research slot history, country flags, country styles (each country's engine-built name and recorded map colour at an hour), country groups (human players, recorded factions with their members, and war pairs, as runs of consecutive recorded hours) and land ownership. Their rules live beside their code and in the matching widget README.
+Current products: national focus order, research slot history, country flags, country styles (each country's engine-built name and recorded map colour at an hour), country groups (human players, recorded factions with their members, and war pairs, as runs of consecutive recorded hours), political power (exact balance runs and net drops per country) and land ownership. Their rules live beside their code and in the matching widget README.
 
 ## Service
 

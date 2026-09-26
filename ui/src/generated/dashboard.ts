@@ -185,3 +185,21 @@ export type CountryGroupReply = { branchId: string, humans: Array<MembershipRun>
  * ends or starts next to one of these is a gap, not a join or a leave.
  */
 unobserved: UnobservedHours, warnings: Array<string>, };
+export type PoliticalPowerParams = { branchId: string, tags: Array<string>, };
+export type FixedRun = { firstHour: number, lastHour: number,
+/**
+ * The exact stored integer as a decimal string.
+ */
+valueRaw: string,
+/**
+ * The line breaks before this run: it follows a gap, a missing value or a
+ * different country identity rather than continuing the previous run.
+ */
+startsSegment: boolean, };
+export type BalanceDrop = { hour: number, beforeRaw: string, afterRaw: string, };
+export type PoliticalPowerSeries = { tag: string, runs: Array<FixedRun>, drops: Array<BalanceDrop>, };
+export type PoliticalPowerReply = { branchId: string,
+/**
+ * Decimal places of every raw value in this reply.
+ */
+decimals: number, series: Array<PoliticalPowerSeries>, warnings: Array<string>, };

@@ -1,7 +1,9 @@
 /** Recorded series as runs of equal hourly values. A hour outside every run is a
  * gap: it is never drawn as zero, and lines break across it. */
 
-export interface Run { firstHour: number; lastHour: number; value: number }
+/** `breakBefore` ends the line before this run even when the hours touch, such as
+ * when a different country takes over the tag. */
+export interface Run { firstHour: number; lastHour: number; value: number; breakBefore?: boolean }
 export interface Point { x: number; y: number }
 export type PathCommand = readonly ['M', number, number] | readonly ['L', number, number] | readonly ['C', number, number, number, number, number, number];
 
@@ -34,7 +36,7 @@ export function segments(runs: readonly Run[], from: number, to: number): Run[][
     if (run.lastHour < first || run.firstHour > to) continue;
     const clipped = { firstHour: Math.max(run.firstHour, Math.floor(from)), lastHour: Math.min(run.lastHour, Math.ceil(to)), value: run.value };
     const previous = current.at(-1);
-    if (previous && previous.lastHour + 1 !== run.firstHour) { result.push(current); current = []; }
+    if (previous && (previous.lastHour + 1 !== run.firstHour || run.breakBefore)) { result.push(current); current = []; }
     current.push(clipped);
   }
   if (current.length) result.push(current);

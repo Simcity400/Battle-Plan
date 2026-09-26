@@ -11,6 +11,7 @@ pub mod country_groups;
 pub mod country_styles;
 pub mod land_owners;
 pub mod national_focus;
+pub mod political_power;
 pub mod research;
 
 use std::{io, sync::atomic::AtomicBool};
@@ -178,6 +179,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<land_owners::LandOwnersProduct>(),
     register::<country_styles::CountryStyles>(),
     register::<country_groups::CountryGroups>(),
+    register::<political_power::PoliticalPower>(),
 ];
 
 pub fn find(key: &str) -> Option<&'static Registered> {
@@ -209,6 +211,7 @@ mod tests {
             "ResearchReply",
             "CountryStyleReply",
             "CountryGroupReply",
+            "PoliticalPowerReply",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == name).count(),
