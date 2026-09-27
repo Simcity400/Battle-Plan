@@ -18,7 +18,11 @@ export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
     && Array.isArray(reply.people) && Array.isArray(reply.ideologyTypes) && Array.isArray(reply.leaders)
     && reply.leaders.every((run, index) => typeof run.ideology === 'string' && run.firstHour <= run.lastHour
       && (run.person == null || (Number.isInteger(run.person) && run.person >= 0 && run.person < reply.people.length))
-      && (index === 0 || reply.leaders[index - 1].lastHour < run.firstHour));
+      && (index === 0 || reply.leaders[index - 1].lastHour < run.firstHour))
+    && Array.isArray(reply.partyNames) && reply.partyNames.every(name => name === null || typeof name === 'string')
+    && Array.isArray(reply.partyNameRuns)
+    && reply.partyNameRuns.every((run, index) => Number.isInteger(run.name) && run.name >= 0 && run.name < reply.partyNames.length
+      && run.firstHour <= run.lastHour && (index === 0 || reply.partyNameRuns[index - 1].lastHour < run.firstHour));
   if (!ok) throw new Error('The party history reply is malformed.');
   return reply;
 }
@@ -195,6 +199,21 @@ export function leaderAt(reply: PartyHistoryReply, hour: number): LeaderRun | nu
     else return run;
   }
   return null;
+}
+
+/** The ruling party's name at an hour as the game names it: undefined when it was
+ * not recorded, null when it cannot be known. */
+export function partyNameAt(reply: PartyHistoryReply, hour: number): string | null | undefined {
+  let low = 0;
+  let high = reply.partyNameRuns.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const run = reply.partyNameRuns[middle];
+    if (hour < run.firstHour) high = middle - 1;
+    else if (hour > run.lastHour) low = middle + 1;
+    else return reply.partyNames[run.name];
+  }
+  return undefined;
 }
 
 /** What the header and tooltip say about the leader at an hour. `name` is what to

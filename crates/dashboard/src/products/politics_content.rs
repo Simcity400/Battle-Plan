@@ -132,6 +132,11 @@ impl PoliticsContent {
         })
     }
 
+    /// Whether localisation defines a key, as the game's existence check asks.
+    pub fn defines(&self, key: &str) -> bool {
+        self.catalogue.localisation.get(key).is_some()
+    }
+
     /// Localised text for a key, cleaned of colour codes; None when missing or
     /// when it needs runtime scope.
     pub fn localise(&self, key: &str) -> Option<String> {

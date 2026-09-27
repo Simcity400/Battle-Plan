@@ -19,7 +19,7 @@ import { useProduct } from '../../dashboard/products';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import { readTokens, subscribeTokens } from '../../charts/tokens';
 import { OPTIONS } from './definition';
-import { bands, buildStack, formatPopularity, leaderAt, leaderShown, partyBadges, rawAt, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData';
+import { bands, buildStack, formatPopularity, leaderAt, leaderShown, partyBadges, partyNameAt, rawAt, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData';
 import './rulingParty.css';
 
 const NO_WARNINGS: string[] = [];
@@ -84,7 +84,8 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const leader = leaderShown(data, leaderAt(data, Math.floor(head)));
   // Mock-up politics-2: portrait ringed in the ruling ideology's colour (grey when not
   // known), the leader's name, then ideology · party · share.
-  const detail = [leader.ideology, rulingBand?.name, rulingRaw ? formatPopularity(rulingRaw, data.decimals) : null].filter(Boolean).join(' · ');
+  // The party as the game names it ("NSDAP"); left out when that is not known.
+  const detail = [leader.ideology, partyNameAt(data, Math.floor(head)), rulingRaw ? formatPopularity(rulingRaw, data.decimals) : null].filter(Boolean).join(' · ');
   const header = <div className="ruling-party-leader">
     {/* Why a portrait is missing is on the shared tooltip, reachable by keyboard too. */}
     <span className="ruling-party-portrait" style={rulingBand ? { borderColor: rulingBand.color } : undefined}
@@ -115,7 +116,8 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
         formatValue={value => `${Math.round(value)}%`} badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hovered) => {
           const shown = leaderShown(data, leaderAt(data, hour));
-          const party = list.find(band => band.token === rulingAt(data, hour))?.name;
+          const name = partyNameAt(data, hour);
+          const party = name === undefined ? null : name ?? 'Not known';
           const rows: TooltipRow[] = [{ label: 'Leader', value: shown.name, tone: shown.known ? undefined : 'muted' as const }];
           if (shown.ideology || party) rows.push({ label: 'Ideology · party', value: [shown.ideology ?? 'Not recorded', party ?? 'Not recorded'].join(' · ') });
           if (shown.portraitMissing) rows.push({ label: 'Portrait', value: `Not shown: ${shown.portraitMissing}`, tone: 'muted' });

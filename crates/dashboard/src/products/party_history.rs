@@ -18,6 +18,11 @@
 //! sprite or texture. Otherwise the game generates a portrait
 //! (`ResolveOrGeneratePortrait@141388EC0`) from inputs the recording lacks, so it
 //! is left out and said to be.
+//!
+//! The ruling party's name is the game's (`GetName@14118F860`): its stored key
+//! (`PoliticalParties.name`) when `set_party_name` cleared the default flag,
+//! then with the country's original tag (`CountryAppearance.name_tag`), then the
+//! ideology group's own name. [`party_name`] follows it.
 
 use super::{
     CountryParams, LoadContext, Product, country_measure::FixedRun, idea_history::IdeaCharacter,
@@ -82,6 +87,63 @@ pub struct LeaderRun {
     pub starts_segment: bool,
 }
 
+/// The ruling party's naming over consecutive recorded hours.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PartyNameRun {
+    /// Index in `party_names`.
+    pub name: u32,
+    pub first_hour: i32,
+    pub last_hour: i32,
+}
+
+/// What names a party: its tag and ideology group, or the keys `set_party_name` stored.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PartyNaming {
+    /// The ideology group token.
+    pub token: String,
+    /// The party's own tag; None when no recorded country has its slot.
+    pub tag: Option<String>,
+    /// The country's original tag, empty for none; None when not recorded.
+    pub original_tag: Option<String>,
+    /// The stored key, when the default flag is clear.
+    pub key: Option<String>,
+}
+
+/// The game's name for a party, through `defines` (the existence check) and
+/// `localise`. None when it cannot be known: the tag or original tag is not
+/// recorded, or the text needs runtime scope.
+pub fn party_name(
+    naming: &PartyNaming,
+    defines: impl Fn(&str) -> bool,
+    localise: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if let Some(key) = &naming.key {
+        // The game shows a key localisation lacks as itself (its colour codes as colour).
+        return if defines(key) {
+            localise(key)
+        } else {
+            Some(crate::catalogue::plain_text(key))
+        };
+    }
+    let own = format!("{}_{}_party", naming.tag.as_deref()?, naming.token);
+    let key = if defines(&own) {
+        own
+    } else {
+        match naming.original_tag.as_deref()? {
+            "" => own,
+            original => format!("{original}_{}_party", naming.token),
+        }
+    };
+    if defines(&key) {
+        localise(&key)
+    } else if defines(&naming.token) {
+        localise(&naming.token)
+    } else {
+        Some(crate::catalogue::plain_text(&naming.token))
+    }
+}
+
 /// An ideology group as content names and colours it.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +204,10 @@ pub struct PartyHistoryReply {
     pub ruling: Vec<RulingRun>,
     /// The ruling party's leader; an hour without a run was not recorded.
     pub leaders: Vec<LeaderRun>,
+    /// The ruling party's name; an hour without a run was not recorded.
+    pub party_name_runs: Vec<PartyNameRun>,
+    /// Each name on `party_name_runs`; null when it cannot be known.
+    pub party_names: Vec<Option<String>>,
     /// Each character on `leaders`, named and pictured.
     pub people: Vec<LeaderArtwork>,
     /// The leaders' sub-ideologies, named.
@@ -162,6 +228,8 @@ pub struct ScannedParties {
     pub ruling: Vec<RulingRun>,
     pub leaders: Vec<LeaderRun>,
     pub people: Vec<ScannedLeader>,
+    pub party_name_runs: Vec<PartyNameRun>,
+    pub namings: Vec<PartyNaming>,
     pub elections: Vec<i32>,
     pub unobserved: Vec<HourSpan>,
 }
@@ -230,6 +298,7 @@ pub fn scan(
     let mut last_election: Option<i32> = None;
     let mut runs = 0_usize;
     let mut people: BTreeMap<(u32, String, String, RecordedPortrait), u32> = BTreeMap::new();
+    let mut namings: BTreeMap<PartyNaming, u32> = BTreeMap::new();
     for block in replay.index.iter().filter(|block| block.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancel());
@@ -288,6 +357,10 @@ pub fn scan(
                     .map(|index| links[index].canonical_slot)
                     == Some(slot)
             };
+            let appearance = decoded
+                .complete::<tables::CountryAppearance>()
+                .ok()
+                .and_then(|rows| rows.iter().find(|row| row.country == country.id));
             for party in parties
                 .into_iter()
                 .flatten()
@@ -334,6 +407,50 @@ pub fn scan(
                     }
                 }
                 if party.is_ruling != 0 {
+                    // The tag index is a link id, as `Countries.id` is.
+                    let tag = if party.tag == country.id {
+                        Some(&country.tag)
+                    } else {
+                        countries
+                            .iter()
+                            .find(|other| other.id == party.tag)
+                            .map(|other| &other.tag)
+                    };
+                    let naming = PartyNaming {
+                        token: token.to_owned(),
+                        tag: tag.map(|tag| String::from_utf8_lossy(tag).into_owned()),
+                        original_tag: appearance
+                            .map(|row| String::from_utf8_lossy(&row.name_tag).into_owned()),
+                        key: (party.name_default == 0)
+                            .then(|| String::from_utf8_lossy(&party.name).into_owned()),
+                    };
+                    let next = u32::try_from(result.namings.len()).unwrap_or(u32::MAX);
+                    let name = *namings.entry(naming.clone()).or_insert_with(|| {
+                        result.namings.push(naming);
+                        next
+                    });
+                    match result.party_name_runs.last_mut() {
+                        Some(run)
+                            if continues
+                                && run.name == name
+                                && run.last_hour.checked_add(1) == Some(hour) =>
+                        {
+                            run.last_hour = hour
+                        }
+                        _ => {
+                            runs += 1;
+                            if runs > MAX_RUNS {
+                                return Err(io::Error::other(
+                                    "Party history exceeds its memory budget",
+                                ));
+                            }
+                            result.party_name_runs.push(PartyNameRun {
+                                name,
+                                first_hour: hour,
+                                last_hour: hour,
+                            });
+                        }
+                    }
                     match result.ruling.last_mut() {
                         Some(run)
                             if continues
@@ -358,9 +475,7 @@ pub fn scan(
             }
             // The leader, when this hour's appearance row is recorded; the character is
             // named as an advisor is, and stays unnamed rather than misnamed.
-            if let Ok(appearance) = decoded.complete::<tables::CountryAppearance>()
-                && let Some(row) = appearance.iter().find(|row| row.country == country.id)
-            {
+            if let Some(row) = appearance {
                 let characters = decoded.complete::<tables::Characters>().ok();
                 let lexical = decoded.complete::<tables::LexicalTokens>().ok();
                 let portraits = decoded.complete::<tables::CharacterPortraits>().ok();
@@ -465,6 +580,7 @@ impl Product for PartyHistory {
             PartySeries::decl(),
             RulingRun::decl(),
             LeaderRun::decl(),
+            PartyNameRun::decl(),
             IdeologyTypeInfo::decl(),
             LeaderArtwork::decl(),
             IdeologyInfo::decl(),
@@ -593,6 +709,19 @@ impl Product for PartyHistory {
                 portrait_missing,
             });
         }
+        let party_names = scanned
+            .namings
+            .iter()
+            .map(|naming| {
+                politics.as_ref().and_then(|politics| {
+                    party_name(
+                        naming,
+                        |key| politics.defines(key),
+                        |key| politics.localise(key),
+                    )
+                })
+            })
+            .collect();
         if people.iter().any(|leader| leader.portrait.is_some()) {
             warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
         }
@@ -609,6 +738,8 @@ impl Product for PartyHistory {
             parties: scanned.parties.values().cloned().collect(),
             ruling: scanned.ruling.clone(),
             leaders: scanned.leaders.clone(),
+            party_name_runs: scanned.party_name_runs.clone(),
+            party_names,
             people,
             ideology_types,
             elections: scanned.elections.clone(),
@@ -621,7 +752,81 @@ impl Product for PartyHistory {
 
 #[cfg(test)]
 mod tests {
-    use super::{RecordedPortrait, leader_portrait};
+    use super::{PartyNaming, RecordedPortrait, leader_portrait, party_name};
+
+    #[test]
+    fn a_party_is_named_as_the_game_names_it() {
+        let text = [
+            ("GER_fascism_party", "NSDAP"),
+            (
+                "GER_fascism_party_long",
+                "Nationalsozialistische Deutsche Arbeiterpartei",
+            ),
+            ("SOV_x_party", "VKP(b)"),
+            ("fascism", "Fascism"),
+            ("scoped_party", ""),
+        ];
+        let name = |naming: &PartyNaming| {
+            party_name(
+                naming,
+                |key| text.iter().any(|(k, _)| *k == key),
+                |key| {
+                    text.iter()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, v)| v.to_string())
+                        .filter(|v| !v.is_empty())
+                },
+            )
+        };
+        let naming = |token: &str, tag: Option<&str>, original: Option<&str>, key: Option<&str>| {
+            PartyNaming {
+                token: token.to_owned(),
+                tag: tag.map(str::to_owned),
+                original_tag: original.map(str::to_owned),
+                key: key.map(str::to_owned),
+            }
+        };
+        // The tag's key; the original tag is not needed when it exists.
+        assert_eq!(
+            name(&naming("fascism", Some("GER"), None, None)).as_deref(),
+            Some("NSDAP")
+        );
+        // A dynamic country takes its original tag's key.
+        assert_eq!(
+            name(&naming("fascism", Some("D01"), Some("GER"), None)).as_deref(),
+            Some("NSDAP")
+        );
+        // Neither: the ideology group's own name, or its token.
+        assert_eq!(
+            name(&naming("fascism", Some("ITA"), Some(""), None)).as_deref(),
+            Some("Fascism")
+        );
+        assert_eq!(
+            name(&naming("modism", Some("ITA"), Some(""), None)).as_deref(),
+            Some("modism")
+        );
+        // Not recorded: not guessed.
+        assert_eq!(name(&naming("fascism", Some("D01"), None, None)), None);
+        assert_eq!(name(&naming("fascism", None, Some(""), None)), None);
+        // set_party_name: the stored key, shown as itself when undefined.
+        assert_eq!(
+            name(&naming("x", Some("GER"), None, Some("SOV_x_party"))).as_deref(),
+            Some("VKP(b)")
+        );
+        assert_eq!(
+            name(&naming("x", Some("GER"), None, Some("MOD_key"))).as_deref(),
+            Some("MOD_key")
+        );
+        // A literal name loses its colour codes, as a localised one does.
+        assert_eq!(
+            name(&naming("x", Some("GER"), None, Some("§YCustom Party§!"))).as_deref(),
+            Some("Custom Party")
+        );
+        assert_eq!(
+            name(&naming("x", Some("GER"), None, Some("scoped_party"))),
+            None
+        );
+    }
     use replay::rows::{CharacterPortrait, CharacterPortraitRow};
 
     #[test]

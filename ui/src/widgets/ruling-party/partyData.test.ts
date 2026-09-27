@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { PartyHistoryReply } from '../../generated/dashboard';
-import { bands, buildStack, formatPopularity, leaderAt, leaderShown, partyBadges, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData.ts';
+import { bands, buildStack, formatPopularity, leaderAt, leaderShown, partyBadges, partyNameAt, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData.ts';
 
 const run = (firstHour: number, lastHour: number, percent: number, startsSegment = false) => ({ firstHour, lastHour, valueRaw: String(percent * 100000), startsSegment });
 const REPLY: PartyHistoryReply = {
@@ -17,6 +17,7 @@ const REPLY: PartyHistoryReply = {
     { token: 'fascism', firstHour: 107, lastHour: 110, startsSegment: false }],
   elections: [104],
   leaders: [], people: [], ideologyTypes: [],
+  partyNames: ['NSDAP', null], partyNameRuns: [{ name: 0, firstHour: 100, lastHour: 102 }, { name: 1, firstHour: 104, lastHour: 106 }],
 };
 
 test('bands follow content order and colours; unknown ideologies use the palette after them', () => {
@@ -100,4 +101,11 @@ test('the leader is named as recorded, and every gap in what is known is said', 
   assert.throws(() => validatePartyHistoryReply({ ...reply, leaders: [...reply.leaders].reverse() }));
   assert.throws(() => validatePartyHistoryReply({ ...reply, leaders: [{ ...reply.leaders[0], person: 3 }] }));
   validatePartyHistoryReply(reply);
+});
+
+test('the ruling party is named as the game names it; unrecorded and unknown differ', () => {
+  assert.equal(partyNameAt(REPLY, 101), 'NSDAP');
+  assert.equal(partyNameAt(REPLY, 105), null);
+  assert.equal(partyNameAt(REPLY, 103), undefined);
+  assert.throws(() => validatePartyHistoryReply({ ...REPLY, partyNameRuns: [{ name: 2, firstHour: 100, lastHour: 100 }] }));
 });

@@ -550,6 +550,11 @@ ideology: string,
  * character could not be read.
  */
 person: number | null, firstHour: number, lastHour: number, startsSegment: boolean, };
+export type PartyNameRun = {
+/**
+ * Index in `party_names`.
+ */
+name: number, firstHour: number, lastHour: number, };
 export type IdeologyTypeInfo = { token: string, name: string | null, };
 export type LeaderArtwork = { character: IdeaCharacter,
 /**
@@ -574,6 +579,14 @@ export type PartyHistoryReply = { branchId: string, tag: string, decimals: numbe
  * The ruling party's leader; an hour without a run was not recorded.
  */
 leaders: Array<LeaderRun>,
+/**
+ * The ruling party's name; an hour without a run was not recorded.
+ */
+partyNameRuns: Array<PartyNameRun>,
+/**
+ * Each name on `party_name_runs`; null when it cannot be known.
+ */
+partyNames: Array<string | null>,
 /**
  * Each character on `leaders`, named and pictured.
  */
