@@ -34,11 +34,23 @@ pub struct Politics {
     /// `parties`. `CPoliticalParty::vf2@141191FA0` writes `country_leader`
     /// only for a nonzero leader count (+0x7c), so omission is an empty list.
     pub leaders: BTreeMap<Vec<u8>, Vec<PartyLeader>>,
+    /// Each party's naming, keyed like `parties`.
+    pub names: BTreeMap<Vec<u8>, PartyName>,
     pub ideas: Vec<Vec<u8>>,
     pub ruling_party: Option<Vec<u8>>,
     pub last_election: Option<SavedDate>,
     pub election_frequency: Option<i32>,
     pub elections_allowed: Option<bool>,
+}
+
+/// A party's naming as `CPoliticalParty::vf2@141191FA0` writes it: `default`
+/// (+0x68), then, only when it is false, `name` (+0x28) and `long_name` (+0x48).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PartyName {
+    /// `None` when the save omits `default`.
+    pub default: Option<bool>,
+    /// The stored name and long-name keys; present exactly when `default` is false.
+    pub keys: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 /// CCountryLeader role.
@@ -192,6 +204,7 @@ fn fixed_list(items: &[Item], key: &[u8]) -> io::Result<Vec<Decimal>> {
 fn parse_politics(items: &[Item]) -> io::Result<Politics> {
     let mut parties = BTreeMap::new();
     let mut leaders = BTreeMap::new();
+    let mut names = BTreeMap::new();
     // BA12D0 omits parties/ideas exactly for empty native arrays.
     for party in optional_block(items, b"parties")?.unwrap_or_default() {
         let token = party
@@ -201,6 +214,7 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
         let fields = block(&party.value)?;
         let popularity = Decimal::parse(&required_bytes(fields, b"popularity")?)?;
         leaders.insert(token.clone(), party_leaders(fields)?);
+        names.insert(token.clone(), party_name(fields)?);
         if parties.insert(token, popularity).is_some() {
             return Err(invalid("duplicate political party token"));
         }
@@ -208,6 +222,7 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
     Ok(Politics {
         parties,
         leaders,
+        names,
         ideas: list(items, b"ideas")?,
         ruling_party: bytes(items, b"ruling_party")?,
         last_election: bytes(items, b"last_election")?
@@ -218,6 +233,27 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
             .map(boolean)
             .transpose()?,
     })
+}
+
+fn party_name(items: &[Item]) -> io::Result<PartyName> {
+    let default = field(items, b"default")?.map(boolean).transpose()?;
+    let name = bytes(items, b"name")?;
+    let long_name = bytes(items, b"long_name")?;
+    let keys = match (default, name, long_name) {
+        (Some(false), Some(name), Some(long_name)) => Some((name, long_name)),
+        (Some(false), _, _) => {
+            return Err(invalid(
+                "141191FA0 writes name and long_name whenever default is false",
+            ));
+        }
+        (_, None, None) => None,
+        _ => {
+            return Err(invalid(
+                "141191FA0 writes name and long_name only when default is false",
+            ));
+        }
+    };
+    Ok(PartyName { default, keys })
 }
 
 /// A party's `country_leader` block: one anonymous `{ ideology character }`
@@ -591,6 +627,46 @@ mod tests {
         assert_eq!(country.dynamic_modifiers[1].days, Some(0));
         assert_eq!(country.dynamic_modifiers[0].values[1].raw, -2_147_483_649);
         assert_eq!(country.preferred_tactic, Some(-1));
+    }
+
+    #[test]
+    fn party_names_follow_the_writer_default_rule() {
+        // The writer's layout: a renamed party writes both keys, even an empty one.
+        let pack = parse_text(
+            b"countries={AAA={politics={parties={
+            communism={default=no name=\"AAA_x_party\" long_name=\"\" popularity=100}
+            democratic={default=yes popularity=0}
+            fascism={popularity=0}
+        }}}}",
+        )
+        .unwrap();
+        let names = &pack.countries[b"AAA".as_slice()]
+            .politics
+            .as_ref()
+            .unwrap()
+            .names;
+        assert_eq!(
+            names[b"communism".as_slice()],
+            PartyName {
+                default: Some(false),
+                keys: Some((b"AAA_x_party".to_vec(), Vec::new())),
+            }
+        );
+        assert_eq!(
+            names[b"democratic".as_slice()],
+            PartyName {
+                default: Some(true),
+                keys: None,
+            }
+        );
+        assert_eq!(names[b"fascism".as_slice()], PartyName::default());
+        for text in [
+            b"countries={AAA={politics={parties={x={default=no name=a popularity=1}}}}}".as_slice(),
+            b"countries={AAA={politics={parties={x={default=yes name=a long_name=b popularity=1}}}}}",
+            b"countries={AAA={politics={parties={x={long_name=b popularity=1}}}}}",
+        ] {
+            assert!(parse_text(text).is_err());
+        }
     }
 
     #[test]

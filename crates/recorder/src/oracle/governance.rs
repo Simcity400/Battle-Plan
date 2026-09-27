@@ -167,12 +167,44 @@ fn compare_parties(
                     row.popularity,
                     saved.raw,
                 );
+                let party = format!("{subject}.{}", String::from_utf8_lossy(token));
                 equal(
                     report,
-                    format!("{subject}.{}.is_ruling", String::from_utf8_lossy(token)),
+                    format!("{party}.is_ruling"),
                     row.is_ruling,
                     u8::from(politics.ruling_party.as_deref() == Some(token)),
                 );
+                // A loaded save rebuilds each party with its owner's tag, whose index in
+                // the tag array is the owner's link id (not its canonical slot: dynamic
+                // countries' differ).
+                let owner = links
+                    .get(&row.country)
+                    .map(|country| country.id)
+                    .ok_or_else(|| invalid("political party owner absent from countries"))?;
+                equal(report, format!("{party}.tag"), row.tag, owner);
+                let name = politics.names.get(token).cloned().unwrap_or_default();
+                match name.default {
+                    Some(default) => equal(
+                        report,
+                        format!("{party}.default"),
+                        row.name_default,
+                        u8::from(default),
+                    ),
+                    None => report.difference(
+                        format!("{party}.default"),
+                        row.name_default,
+                        "default omitted from save",
+                    ),
+                }
+                if let Some((saved_name, saved_long)) = &name.keys {
+                    compare_literal(report, &format!("{party}.name"), &row.name, saved_name);
+                    compare_literal(
+                        report,
+                        &format!("{party}.long_name"),
+                        &row.long_name,
+                        saved_long,
+                    );
+                }
                 count += 1;
             }
             None => report.difference(subject, token, "missing saved political party"),
@@ -189,6 +221,7 @@ fn compare_parties(
     }
     report.compared("PoliticalParties", count);
     report.limitation("party numeric IDs are lexical identifiers; saves compare their exact tokens and ruling membership, not the numeric registry allocation", "PoliticalParties");
+    report.limitation("141191FA0 writes a party's name and long-name keys only when its default flag is clear; a default-named party's stored keys are not save-comparable", "PoliticalParties");
     Ok(())
 }
 
@@ -1646,6 +1679,56 @@ mod tests {
                 .failed_comparisons
                 .contains_key("governance PowerBalanceMembers")
         );
+    }
+
+    #[test]
+    fn party_names_and_tags_compare_by_the_writer_default_rule() {
+        let (mut frame, _, country) = fixture();
+        let links = BTreeMap::from([(11, &country)]);
+        let document = installed_content::parser::parse(
+            br#"countries={AAA={politics={parties={
+            communism={default=no name="AAA_red" long_name="AAA_red_long" popularity=1}
+            democratic={default=yes popularity=1}
+            fascism={default=no name="AAA_black" long_name="" popularity=1}
+        }}}}"#,
+        )
+        .unwrap();
+        let pack = saved::parse(&document.items).unwrap();
+        let party = |id, token: &[u8], tag, name_default, name: &[u8], long_name: &[u8]| {
+            replay::rows::PoliticalPartyRow {
+                country: 11,
+                id,
+                popularity: 100_000,
+                token: token.to_vec(),
+                tag,
+                name_default,
+                name: name.to_vec(),
+                long_name: long_name.to_vec(),
+                ..Default::default()
+            }
+        };
+        *frame.tables[TableId::PoliticalParties.index()] =
+            TableView::Complete(TableRows::PoliticalParties(vec![
+                party(1, b"communism", 11, 0, b"AAA_red", b"AAA_red_long"),
+                // A default-named party's stored keys are not saved.
+                party(2, b"democratic", 11, 1, b"stale", b""),
+                // The canonical slot (7) is not the tag index.
+                party(3, b"fascism", 7, 1, b"AAA_black", b"x"),
+            ]));
+        let mut report = Report::default();
+        compare_parties(&frame, &pack, &links, &mut report).unwrap();
+        assert_eq!(report.compared_tables.get("PoliticalParties"), Some(&3));
+        let differences = report.differences.join(
+            "
+",
+        );
+        for subject in ["fascism.tag", "fascism.default", "fascism.long_name"] {
+            assert!(differences.contains(subject), "{subject}: {differences}");
+        }
+        // Keys are compared only where the save wrote them.
+        assert!(!differences.contains("communism"), "{differences}");
+        assert!(!differences.contains("democratic"), "{differences}");
+        assert!(!differences.contains("fascism.name"), "{differences}");
     }
 
     #[test]

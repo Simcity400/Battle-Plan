@@ -2249,6 +2249,7 @@ fn party_frame(
         popularity,
         is_ruling: u8::from(token == ruling),
         token: token.as_bytes().to_vec(),
+        ..Default::default()
     };
     let mut parties = vec![
         party(1, "democratic", democratic),
@@ -2260,6 +2261,7 @@ fn party_frame(
             popularity: 1,
             is_ruling: 1,
             token: b"democratic".to_vec(),
+            ..Default::default()
         },
     ];
     parties.sort_by_key(|row| (row.country, row.id));

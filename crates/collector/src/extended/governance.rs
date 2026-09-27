@@ -1130,6 +1130,8 @@ fn acquire(
                                 );
                                 for row in &mut b.parties[first..first + result.outcome.len()] {
                                     row.token_start += text;
+                                    row.name_start += text;
+                                    row.long_name_start += text;
                                 }
                                 b.party_countries[first..first + result.outcome.len()]
                                     .fill(country.id);
@@ -1833,13 +1835,21 @@ impl Captured {
             wrap(country_view::<tables::PoliticalParties, _>(
                 &self.parties,
                 &self.party_countries.first[..self.party_countries.len],
-                |r| valid(parties, r.token_start, r.token_len),
+                |r| {
+                    valid(parties, r.token_start, r.token_len)
+                        && valid(parties, r.name_start, r.name_len)
+                        && valid(parties, r.long_name_start, r.long_name_len)
+                },
                 |country, r| rows::PoliticalPartyRow {
                     country,
                     id: r.id,
                     popularity: r.popularity,
                     is_ruling: r.is_ruling,
                     token: copy_span(parties, r.token_start, r.token_len),
+                    tag: r.tag,
+                    name_default: r.name_default,
+                    name: copy_span(parties, r.name_start, r.name_len),
+                    long_name: copy_span(parties, r.long_name_start, r.long_name_len),
                 },
             )),
             wrap(country_view::<tables::ActiveIdeas, _>(
