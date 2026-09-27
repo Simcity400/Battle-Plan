@@ -378,7 +378,7 @@ pub struct FontFile {
 
 /// Parses every `bitmapfonts` block of one `interface/*.gfx` file.
 pub fn parse_definitions(input: &[u8], source: &str) -> io::Result<FontFile> {
-    let (document, _) = crate::gfx::parse_interface(input)?;
+    let (document, _) = crate::parser::parse_unclosed(input)?;
     let mut file = FontFile::default();
     for root in crate::fields::all(&document.items, b"bitmapfonts") {
         for item in block(root, "bitmapfonts")? {

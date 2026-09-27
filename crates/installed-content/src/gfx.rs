@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, io};
 use crate::{
     ResolvedLayers,
     fields::{block, integer, invalid, key_str, last, text},
-    parser::{self, Document, Item, MAX_DEPTH},
+    parser::{self, Document, Item, parse_unclosed},
 };
 
 /// Collapses an authored asset path onto one the layers can resolve.
@@ -38,27 +38,6 @@ pub(crate) fn gfx_paths(layers: &ResolvedLayers) -> Vec<String> {
         ".gfx",
         layers.listed_paths("interface/").iter().map(String::as_str),
     )
-}
-
-/// Parses an interface file, closing blocks the file leaves open at its end.
-///
-/// The shipped `interface/powerbalanceview.gfx` stops inside its `spriteTypes`
-/// block with no closing brace, and the game loads it anyway. Returns whether
-/// braces had to be supplied so a caller can report the file. A truncated save
-/// is still an error: only this reader recovers, never [`crate::parser::parse`].
-pub(crate) fn parse_interface(input: &[u8]) -> io::Result<(Document, bool)> {
-    let first = match parser::parse(input) {
-        Ok(document) => return Ok((document, false)),
-        Err(error) => error,
-    };
-    for missing in 1..=MAX_DEPTH {
-        let mut repaired = input.to_vec();
-        repaired.extend(std::iter::repeat_n(b'}', missing));
-        if let Ok(document) = parser::parse(&repaired) {
-            return Ok((document, true));
-        }
-    }
-    Err(first)
 }
 
 /// One entry of a `spriteTypes` block.
@@ -90,7 +69,7 @@ fn optional_text(items: &[Item], key: &str, what: &str) -> io::Result<Option<Str
 
 /// Parses every `spriteTypes` block of one `.gfx` file, in source order.
 pub fn parse_sprites(input: &[u8], source: &str) -> io::Result<Vec<SpriteType>> {
-    let (document, _) = parse_interface(input)?;
+    let (document, _) = parse_unclosed(input)?;
     sprites_of(&document, source)
 }
 
@@ -135,7 +114,7 @@ fn sprites_of(document: &Document, source: &str) -> io::Result<Vec<SpriteType>> 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SpriteSet {
     pub sprites: BTreeMap<String, SpriteType>,
-    /// Files that end inside an open block; see [`parse_interface`].
+    /// Files that end inside an open block; see [`parse_unclosed`].
     pub recovered: Vec<String>,
 }
 
@@ -148,7 +127,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<SpriteSet> {
     for path in gfx_paths(layers) {
         let bytes = layers.read(&path)?;
         let (document, recovered) =
-            parse_interface(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
+            parse_unclosed(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
         if recovered {
             set.recovered.push(path.clone());
         }
@@ -173,7 +152,7 @@ pub fn sprites_of_files(
     for path in paths {
         let bytes = layers.read(path)?;
         let (document, _) =
-            parse_interface(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
+            parse_unclosed(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
         for sprite in sprites_of(&document, path)? {
             sprites.insert(sprite.name.clone(), sprite);
         }
@@ -311,13 +290,13 @@ spriteTypes = {
         let truncated = br#"spriteTypes = {
             spriteType = { name = "GFX_a" texturefile = "a.dds" }
             spriteType = { name = "GFX_b" texturefile = "b.dds" }"#;
-        let (document, recovered) = parse_interface(truncated).unwrap();
+        let (document, recovered) = parse_unclosed(truncated).unwrap();
         assert!(recovered);
         assert_eq!(sprites_of(&document, "a.gfx").unwrap().len(), 2);
-        let (_, recovered) = parse_interface(b"spriteTypes = { }").unwrap();
+        let (_, recovered) = parse_unclosed(b"spriteTypes = { }").unwrap();
         assert!(!recovered);
         // A closing brace too many is still an error, not a recovery.
-        assert!(parse_interface(b"spriteTypes = { } }").is_err());
+        assert!(parse_unclosed(b"spriteTypes = { } }").is_err());
     }
 
     #[test]

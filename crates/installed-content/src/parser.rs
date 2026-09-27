@@ -183,6 +183,28 @@ impl Lexer<'_> {
         Err(invalid(start, "unterminated quoted string"))
     }
 }
+/// Parses a game script file, closing blocks the file leaves open at its end,
+/// as the game's own loader does.
+///
+/// Shipped files do this: `interface/powerbalanceview.gfx` stops inside its
+/// `spriteTypes` block, and `common/ideas/SOV.txt` ends before its last brace,
+/// and the game loads both. Returns whether braces had to be supplied so a
+/// caller can report the file. A truncated save is still an error: only content
+/// readers recover, never [`parse`].
+pub fn parse_unclosed(input: &[u8]) -> io::Result<(Document, bool)> {
+    let first = match parse(input) {
+        Ok(document) => return Ok((document, false)),
+        Err(error) => error,
+    };
+    for missing in 1..=MAX_DEPTH {
+        let mut repaired = input.to_vec();
+        repaired.extend(std::iter::repeat_n(b'}', missing));
+        if let Ok(document) = parse(&repaired) {
+            return Ok((document, true));
+        }
+    }
+    Err(first)
+}
 
 struct Parser<'a> {
     lexer: Lexer<'a>,

@@ -12,7 +12,7 @@ use std::{collections::BTreeMap, io};
 use crate::{
     ResolvedLayers,
     fields::{all, block, invalid, last, number, require, text},
-    gfx, parser,
+    parser,
 };
 
 /// `.gfx` roots in the engine's enumeration order.
@@ -82,7 +82,7 @@ impl Catalog {
     }
 
     fn add_objects(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let (document, _) = gfx::parse_interface(bytes)?;
+        let (document, _) = crate::parser::parse_unclosed(bytes)?;
         for objects in all(&document.items, b"objectTypes") {
             for value in all(block(objects, "objectTypes")?, b"pdxparticle") {
                 let fields = block(value, "pdxparticle")?;
