@@ -22,7 +22,7 @@ Hovering near a tick snaps to it. The tooltip lists each country's exact balance
 
 The chart kit supplies the rest: zoom that holds during playback, axis drags, live hover, and Jump to on right-click.
 
-A group counted at each hour draws a country only while it belongs, with join and leave markers along the top.
+A group counted at each hour draws a country only while it belongs, with join (+) and leave (−) badges along the top in the country's colour.
 
 ## Settings
 

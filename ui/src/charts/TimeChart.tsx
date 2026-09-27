@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Icon } from '../components/Icons';
+import { BADGE_STRIP, badgesAt, drawBadges } from './badges';
+import type { EventBadge } from './badges';
 import { clipToPlot, drawAxes, drawCrosshair, drawPlayhead, drawSelection } from './draw';
 import { approach, easeTau } from './easing';
 import { axisFraction, hitZone, plotFrame, pointerHour, wheelSteps } from './frame';
@@ -40,8 +42,11 @@ export interface TimeChartProps {
   padding?: Partial<Padding>;
   layers: readonly ChartLayer[];
   formatValue: (value: number) => string;
-  /** Tooltip content for an hour under the pointer; null shows none. */
-  tooltip?: (hour: number, frame: PlotFrame) => TooltipContent | null;
+  /** Event glyphs along the top edge. Hovering one snaps to its hour. */
+  badges?: readonly EventBadge[];
+  /** Tooltip content for an hour under the pointer, with any event badges hovered
+   * there; null shows none. */
+  tooltip?: (hour: number, frame: PlotFrame, badges: readonly EventBadge[]) => TooltipContent | null;
   /** Moves a hovered hour onto something nearby, such as an event tick. */
   snap?: (hour: number, frame: PlotFrame) => number;
   /** Drawn after the plot, unclipped: end labels and markers. */
@@ -88,8 +93,9 @@ export default function TimeChart(props: TimeChartProps) {
     let drag: Drag | null = null;
     // The extent the zoom belongs to: another branch or range starts unzoomed.
     let zoomedFor = '';
-    // Tooltip content for the hovered hour, rebuilt only when the hour or the data changes.
-    let hovered: { hour: number; props: TimeChartProps; content: TooltipContent | null } | null = null;
+    // Tooltip content for the hovered hour, rebuilt only when the hour, the hovered
+    // badges or the data change.
+    let hovered: { hour: number; badges: readonly EventBadge[]; props: TimeChartProps; content: TooltipContent | null } | null = null;
 
     const dispatch = (action: ViewAction) => {
       if (!frame) return;
@@ -110,7 +116,8 @@ export default function TimeChart(props: TimeChartProps) {
       if (element.width !== size.width) element.width = size.width;
       if (element.height !== size.height) element.height = size.height;
 
-      const padding = { ...DEFAULT_PADDING, ...p.padding };
+      // Badges sit above the plot, so a chart with them keeps room there.
+      const padding = { ...DEFAULT_PADDING, ...(p.badges ? { top: BADGE_STRIP } : {}), ...p.padding };
       const extentKey = `${p.extent[0]}:${p.extent[1]}:${p.branchStart}`;
       if (extentKey !== zoomedFor) {
         if (zoomedFor && (view.x || view.y)) { view = EMPTY_VIEW; setZoomed(false); }
@@ -142,19 +149,24 @@ export default function TimeChart(props: TimeChartProps) {
       for (const layer of p.layers) layer.draw(context, frame, tokens, { playhead: p.playhead });
       context.restore();
       if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
+      if (p.badges) drawBadges(context, frame, tokens, p.badges, p.playhead);
       p.overlay?.(context, frame, tokens);
       if (drag?.mode === 'box') drawSelection(context, tokens, drag);
 
       // Live hover: re-resolved every frame, so a still pointer stays current during playback.
       const zone = pointer ? hitZone(pointer, frame) : null;
-      const shown = pointer && zone === 'plot' && (!drag || drag.mode !== 'box') ? pointedHour(pointer.x, frame, p) : null;
-      if (pointer && shown != null) {
-        drawCrosshair(context, frame, tokens, shown);
-        const hour = Math.floor(shown);
-        if (!hovered || hovered.hour !== hour || hovered.props !== p) hovered = { hour, props: p, content: p.tooltip?.(hour, frame) ?? null };
-        if (hovered.content) showTooltip(owner, hovered.content, pointer.clientX, pointer.clientY, `${hour}`); else hideTooltip(owner);
+      const pointed = pointer && (!drag || drag.mode !== 'box') ? pointedAt(pointer, frame, p) : null;
+      if (pointer && pointed) {
+        drawCrosshair(context, frame, tokens, pointed.hour);
+        const hour = Math.floor(pointed.hour);
+        if (!hovered || hovered.hour !== hour || hovered.props !== p || !sameBadges(hovered.badges, pointed.badges)) {
+          hovered = { hour, badges: pointed.badges, props: p, content: p.tooltip?.(hour, frame, pointed.badges) ?? null };
+        }
+        const key = `${hour}:${pointed.badges.map(badge => `${badge.hour}|${badge.label}`).join(',')}`;
+        if (hovered.content) showTooltip(owner, hovered.content, pointer.clientX, pointer.clientY, key); else hideTooltip(owner);
       } else { hovered = null; hideTooltip(owner); }
-      element.style.cursor = drag?.mode === 'pan' ? 'grabbing' : zone === 'x-axis' ? 'ew-resize' : zone === 'y-axis' ? 'ns-resize' : zone === 'plot' ? 'crosshair' : 'default';
+      element.style.cursor = drag?.mode === 'pan' ? 'grabbing' : pointed?.badges.length ? 'pointer' : zone === 'x-axis' ? 'ew-resize'
+        : zone === 'y-axis' ? 'ns-resize' : zone === 'plot' ? 'crosshair' : 'default';
 
       const ySpan = Math.abs(targetY.range[1] - targetY.range[0]) || Math.max(1, Math.abs(targetY.range[1]));
       const settled = Math.abs(x[0] - targetX[0]) + Math.abs(x[1] - targetX[1]) < 1e-3
@@ -170,6 +182,15 @@ export default function TimeChart(props: TimeChartProps) {
       const snapped = p.snap(hour, plot);
       return pointerHour(snapped, plot.x, p.playhead) === snapped ? snapped : hour;
     };
+    /** What the pointer is over: an event badge (snapping to its hour) or an hour of the plot. */
+    const pointedAt = (point: { x: number; y: number }, plot: PlotFrame, p: TimeChartProps): { hour: number; badges: readonly EventBadge[] } | null => {
+      const badges = p.badges ? badgesAt(point, plot, p.badges, p.playhead) : [];
+      if (badges.length) return { hour: badges[0].hour, badges };
+      if (hitZone(point, plot) !== 'plot') return null;
+      const hour = pointedHour(point.x, plot, p);
+      return hour == null ? null : { hour, badges: [] };
+    };
+    const sameBadges = (a: readonly EventBadge[], b: readonly EventBadge[]) => a.length === b.length && a.every((badge, index) => badge === b[index]);
     const current: FrameTask = { frame: draw };
     task.current = current;
     const wake = () => scheduler.wake(current);
@@ -195,6 +216,12 @@ export default function TimeChart(props: TimeChartProps) {
       if (!frame || (event.button !== 0 && event.button !== 1)) return;
       const point = local(event);
       const zone = hitZone(point, frame);
+      // A click on an event badge picks its hour.
+      const badges = event.button === 0 && latest.current.badges ? badgesAt(point, frame, latest.current.badges, latest.current.playhead) : [];
+      if (badges.length && latest.current.onPick) {
+        schedulePick(badges[0].hour);
+        return;
+      }
       if (!zone) return;
       if (event.button === 0 && zone === 'x-axis') drag = { mode: 'axis-x', grab: frame.hourAt(point.x) };
       else if (event.button === 0 && zone === 'y-axis') drag = { mode: 'axis-y', grab: frame.valueAt(point.y) };
@@ -220,6 +247,11 @@ export default function TimeChart(props: TimeChartProps) {
       wake();
     };
     let pendingPick: ReturnType<typeof setTimeout> | null = null;
+    // Wait out a possible second click: a double-click resets the zoom instead.
+    const schedulePick = (hour: number) => {
+      if (pendingPick) clearTimeout(pendingPick);
+      pendingPick = setTimeout(() => { pendingPick = null; latest.current.onPick?.(Math.floor(hour)); }, DOUBLE_CLICK_MS);
+    };
     const up = () => {
       const finished = drag;
       drag = null;
@@ -228,11 +260,7 @@ export default function TimeChart(props: TimeChartProps) {
           y: Math.abs(finished.y1 - finished.y0) > BOX_THRESHOLD ? [frame.valueAt(finished.y1), frame.valueAt(finished.y0)] : undefined });
       } else if (finished?.mode === 'box' && frame && Math.abs(finished.y1 - finished.y0) <= BOX_THRESHOLD && latest.current.onPick) {
         const hour = pointedHour(finished.x0, frame, latest.current);
-        // Wait out a possible second click: a double-click resets the zoom instead.
-        if (hour != null) {
-          if (pendingPick) clearTimeout(pendingPick);
-          pendingPick = setTimeout(() => { pendingPick = null; latest.current.onPick?.(Math.floor(hour)); }, DOUBLE_CLICK_MS);
-        }
+        if (hour != null) schedulePick(hour);
       }
       wake();
     };
@@ -255,12 +283,10 @@ export default function TimeChart(props: TimeChartProps) {
     const menu = (event: MouseEvent) => {
       const handler = latest.current.onContextMenu;
       if (!handler || !frame) return;
-      const point = local(event);
-      if (hitZone(point, frame) !== 'plot') return;
-      const hour = pointedHour(point.x, frame, latest.current);
-      if (hour == null) return;
+      const pointed = pointedAt(local(event), frame, latest.current);
+      if (!pointed) return;
       event.preventDefault();
-      handler(Math.floor(hour), event.clientX, event.clientY);
+      handler(Math.floor(pointed.hour), event.clientX, event.clientY);
     };
     element.addEventListener('pointerdown', down);
     element.addEventListener('pointermove', move);

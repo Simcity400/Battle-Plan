@@ -2,7 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, PoliticalPowerSeries } from '../../generated/dashboard';
 import { segments } from '../../charts/series.ts';
-import { clipRuns, formatBalance, isMember, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, resolveCountries, toRuns, validatePoliticalPowerReply } from './politicalPowerData.ts';
+import { clipRuns, isMember, resolveCountries as resolveAny } from '../../dashboard/groups.ts';
+import type { CountrySelection } from '../../dashboard/model';
+import { formatBalance, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, toRuns, validatePoliticalPowerReply } from './politicalPowerData.ts';
+
+const resolveCountries = (selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number) =>
+  resolveAny(selection, fallback, groups, lastHour, MAX_COUNTRIES);
 
 const SERIES: PoliticalPowerSeries = {
   tag: 'GER',

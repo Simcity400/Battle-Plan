@@ -16,7 +16,8 @@ The in-house chart kit every widget draws with. It has no chart dependency: char
 | [labels.ts](labels.ts) | Non-overlapping end labels and label columns measured over the whole campaign. |
 | [tooltipPlacement.ts](tooltipPlacement.ts) | Tooltips beside the pointer, flipped and clamped so they are never cut off. |
 | [frame.ts](frame.ts) | The plot frame (hour/value ↔ pixel, linear or log), hit zones for the two axes and the plot, and thin bar rectangles. |
-| [draw.ts](draw.ts) | Canvas drawing shared by every chart: axes and gridlines, gap-broken lines with a ringed end dot, stacked areas, gap shading, event ticks, playhead, crosshair, box selection and end labels. |
+| [draw.ts](draw.ts) | Canvas drawing shared by every chart: axes and gridlines, gap-broken lines (solid or dashed) with a ringed end dot, stacked areas, gap shading, event ticks, playhead, crosshair, box selection and end labels. |
+| [badges.ts](badges.ts) | Event badges: small glyphs along the top edge with a guide line down the plot. Hovering one snaps to its hour and names the event; a click picks it; right-click jumps there. |
 | [TimeChart.tsx](TimeChart.tsx) | The time chart component: layers, zoom that holds during playback (wheel, box, Shift/middle-drag pan, axis drags, double-click and Escape resets, a Reset zoom chip), live hover and right-click. |
 | [tooltip.ts](tooltip.ts), [TooltipLayer.tsx](TooltipLayer.tsx) | One tooltip for the whole dashboard, fed structured rows (never HTML), rendered in the top layer so no widget clips it and the native map stays visible. |
 | [Legend.tsx](Legend.tsx) | A legend for two or more series, with each series' current value. |

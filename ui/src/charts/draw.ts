@@ -60,9 +60,10 @@ export function clipToPlot(ctx: CanvasRenderingContext2D, frame: PlotFrame): voi
 }
 
 /** A 2px line through recorded runs, broken at gaps, with an optional light area
- * fill and a ringed dot at its last recorded point. Returns that point. */
+ * fill, an optional dash pattern (for a second measure in the same colour) and a
+ * ringed dot at its last recorded point. Returns that point. */
 export function drawLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, runs: readonly Run[],
-  color: string, options: { area?: boolean; endDot?: boolean; until?: number } = {}): { x: number; y: number } | null {
+  color: string, options: { area?: boolean; endDot?: boolean; until?: number; dash?: readonly number[] } = {}): { x: number; y: number } | null {
   const until = Math.min(frame.x[1], options.until ?? Infinity);
   let last: { x: number; y: number } | null = null;
   const baseline = frame.toY(frame.log ? frame.y[0] : Math.max(frame.y[0], Math.min(0, frame.y[1])));
@@ -77,7 +78,8 @@ export function drawLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
     }
     ctx.beginPath(); tracePath(ctx, path);
     if (points.length === 1) ctx.arc(points[0].x, points[0].y, tokens.lineWidth.series / 2, 0, Math.PI * 2);
-    ctx.strokeStyle = color; ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke();
+    ctx.strokeStyle = color; ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round'; ctx.lineCap = options.dash ? 'butt' : 'round';
+    ctx.setLineDash(options.dash ?? []); ctx.stroke(); ctx.setLineDash([]);
     last = points.at(-1)!;
   }
   if (last && options.endDot !== false) {

@@ -1,8 +1,6 @@
-import type { BalanceDrop, CountryGroupReply, FixedRun, HourSpan, MembershipRun, PoliticalPowerReply, PoliticalPowerSeries } from '../../generated/dashboard';
+import type { BalanceDrop, FixedRun, PoliticalPowerReply, PoliticalPowerSeries } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
-import { groupMembers, groupRuns, groupUnobserved } from '../../dashboard/groups.ts';
-import type { CountrySelection } from '../../dashboard/model';
 
 /** Most countries one Political power widget draws. */
 export const MAX_COUNTRIES = 16;
@@ -34,11 +32,6 @@ export function toRuns(series: PoliticalPowerSeries, decimals: number): Run[] {
   return series.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: fixedNumber(run.valueRaw, decimals), breakBefore: run.startsSegment }));
 }
 
-/** Whether `hour` falls in one of the membership runs; always true without them. */
-export function isMember(membership: readonly MembershipRun[] | undefined, hour: number): boolean {
-  return !membership || membership.some(run => run.firstHour <= hour && hour <= run.lastHour);
-}
-
 /** The exact recorded balance at an hour, or null when it was not recorded. */
 export function rawAt(series: PoliticalPowerSeries, hour: number): string | null {
   let low = 0;
@@ -68,49 +61,4 @@ export function nearestDrop(drops: readonly BalanceDrop[], hour: number, toleran
     if (distance <= tolerance && (!best || distance < Math.abs(best.hour - hour))) best = drop;
   }
   return best;
-}
-
-/** Runs cut to the hours a country was a group member, so a line starts when it
- * joins and stops when it leaves. */
-export function clipRuns(runs: readonly Run[], membership: readonly MembershipRun[]): Run[] {
-  const clipped: Run[] = [];
-  for (const run of runs) {
-    for (const member of membership) {
-      const first = Math.max(run.firstHour, member.firstHour);
-      const last = Math.min(run.lastHour, member.lastHour);
-      if (first <= last) clipped.push({ firstHour: first, lastHour: last, value: run.value });
-    }
-  }
-  return clipped.sort((a, b) => a.firstHour - b.firstHour);
-}
-
-export interface ResolvedCountries {
-  tags: string[];
-  /** For a group counted at each hour: each country's membership runs. */
-  membership: Map<string, MembershipRun[]> | null;
-  /** Hours the group's own history was not recorded: breaks there are not joins or leaves. */
-  unobserved: HourSpan[];
-  /** Countries left out beyond the widget's limit. */
-  dropped: number;
-  /** Why no countries are shown, if none are. */
-  reason: string | null;
-}
-
-/** The countries to draw: chosen tags, or a group's members under its rule. */
-export function resolveCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number): ResolvedCountries {
-  if (selection.kind !== 'group') {
-    const tags = selection.kind === 'tags' ? selection.tags : fallback;
-    return { tags: tags.slice(0, MAX_COUNTRIES), membership: null, unobserved: [], dropped: Math.max(0, tags.length - MAX_COUNTRIES), reason: tags.length ? null : 'Choose a country in the widget settings.' };
-  }
-  if (!groups) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null };
-  const runs = groupRuns(groups, selection.group);
-  if (!runs) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: 'This group is not in this campaign branch.' };
-  const unobserved = groupUnobserved(groups, selection.group);
-  const members = groupMembers(runs, selection.membership === 'end' ? 'end' : 'ever', lastHour, lastHour, Infinity, unobserved);
-  // Unknown is not empty: the group's membership at the branch end was not recorded.
-  if (!members) return { tags: [], membership: null, unobserved, dropped: 0, reason: 'This group’s members were not recorded at the end of this campaign branch.' };
-  const tags = members.slice(0, MAX_COUNTRIES);
-  const membership = selection.membership === 'hour'
-    ? new Map(tags.map(tag => [tag, runs.filter(run => run.tag === tag)])) : null;
-  return { tags, membership, unobserved, dropped: Math.max(0, members.length - MAX_COUNTRIES), reason: members.length ? null : 'This group has no members in this campaign branch.' };
 }

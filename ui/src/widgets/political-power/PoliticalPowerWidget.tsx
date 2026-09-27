@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { SourceFlag } from '../../components/CountryFlag';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
+import { badgeRows } from '../../charts/badges';
+import type { EventBadge } from '../../charts/badges';
 import { dayLabel, drawEndLabels, drawEventTicks, drawLine } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { layoutEndLabels } from '../../charts/labels';
@@ -18,7 +20,7 @@ import type { TooltipRow } from '../../charts/tooltip';
 import type { PlaybackMode } from '../../charts/view';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { membershipChanges } from '../../dashboard/groups';
+import { clipRuns, isMember, membershipChanges, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -27,7 +29,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { CountryStyle, CountryStyleReply, PoliticalPowerReply } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color';
 import { OPTIONS } from './definition';
-import { clipRuns, formatBalance, isMember, nearestDrop, netSpend, rawAt, resolveCountries, toRuns, validatePoliticalPowerReply } from './politicalPowerData';
+import { formatBalance, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, toRuns, validatePoliticalPowerReply } from './politicalPowerData';
 import './politicalPower.css';
 
 const NO_WARNINGS: string[] = [];
@@ -53,7 +55,7 @@ export default function PoliticalPowerWidget({ widget, runtime, active, headerSl
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group');
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, MAX_COUNTRIES), [widget.countries, fallback, groups.data, lastHour]);
   const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'political-power',
     params: { branchId: track.branch.id, tags: resolved.tags } } : null;
   const { data, error, retry } = useProduct<PoliticalPowerReply>(runtime.client, request, active, validatePoliticalPowerReply);
@@ -102,8 +104,11 @@ export default function PoliticalPowerWidget({ widget, runtime, active, headerSl
     return raw.map((item, index) => ({ ...item, hex: toHex(adjusted[index]) }));
   }, [data, known, resolved.membership, tokens, track]);
 
-  const changes = useMemo(() => series.flatMap(item => item.membership ? membershipChanges(item.membership, extent[0], extent[1], resolved.unobserved).map(change => ({ ...change, name: item.name, color: item.hex })) : []),
-    [series, extent[0], extent[1], resolved.unobserved]);
+  // Joins and leaves of a group counted at each hour, as badges in the country's colour.
+  const badges = useMemo<EventBadge[]>(() => series.flatMap(item => item.membership
+    ? membershipChanges(item.membership, extent[0], extent[1], resolved.unobserved).map(change => ({
+      hour: change.hour, glyph: change.change === 'joined' ? '+' : '−', label: `${item.name} ${change.change}`, color: item.hex })) : []),
+  [series, extent[0], extent[1], resolved.unobserved]);
   const menu = useContextMenu('Chart actions');
   const head = playhead ?? extent[1];
 
@@ -154,8 +159,8 @@ export default function PoliticalPowerWidget({ widget, runtime, active, headerSl
             .sort((a, b) => Math.abs(a!.hour - hour) - Math.abs(b!.hour - hour))[0];
           return nearest ? nearest.hour : hour;
         }}
-        tooltip={(hour, frame) => {
-          const tolerance = SNAP_PX * hoursPerPixel(frame.plotWidth, frame.x[1] - frame.x[0]);
+        badges={badges.length ? badges : undefined}
+        tooltip={(hour, _frame, hovered) => {
           const rows: TooltipRow[] = series.map(item => {
             const raw = item.valueAt(hour);
             return { label: item.name, swatch: item.hex, value: raw == null ? 'Not recorded' : formatBalance(raw, decimals), tone: raw == null ? 'muted' as const : undefined };
@@ -164,18 +169,10 @@ export default function PoliticalPowerWidget({ widget, runtime, active, headerSl
             const drop = item.drops.find(entry => entry.hour === hour);
             if (drop) rows.push({ label: `${series.length > 1 ? `${item.name}: ` : ''}Spent (net)`, value: netSpend(drop, decimals), tone: 'negative', divider: true });
           }
-          for (const change of changes.filter(entry => Math.abs(entry.hour - hour) <= tolerance)) {
-            rows.push({ label: `${change.name} ${change.change}`, swatch: change.color, divider: true });
-          }
+          rows.push(...badgeRows(hovered));
           return { title: dayLabel(hour), rows, note: rows.some(row => row.tone === 'negative') ? 'Daily income is not recorded, so a spend is the fall in the balance.' : undefined };
         }}
         overlay={(ctx, frame, chartTokens) => {
-          for (const change of changes) {
-            if (change.hour < frame.x[0] || change.hour > Math.min(frame.x[1], head)) continue;
-            const x = frame.toX(change.hour);
-            ctx.fillStyle = change.color;
-            ctx.beginPath(); ctx.moveTo(x, frame.plotTop + 1); ctx.lineTo(x - 4, frame.plotTop - 6); ctx.lineTo(x + 4, frame.plotTop - 6); ctx.fill();
-          }
           if (!options.endLabels) return;
           const at = Math.min(head, frame.x[1]);
           const ends = series.flatMap(item => {

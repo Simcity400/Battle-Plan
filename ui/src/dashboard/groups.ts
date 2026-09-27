@@ -1,5 +1,6 @@
 import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/dashboard';
-import type { CountryGroup, GroupMembership } from './model';
+import type { Run } from '../charts/series';
+import type { CountryGroup, CountrySelection, GroupMembership } from './model';
 
 /** Smart country groups, resolved from the recording's own history: human players,
  * any recorded faction (including ones founded or dissolved partway through),
@@ -71,4 +72,56 @@ export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undef
     case 'war': return `At war with ${countryName(group.tag)}`;
     case 'top': return `Top ${group.count}`;
   }
+}
+
+/** Whether `hour` falls in one of the membership runs; always true without them. */
+export function isMember(membership: readonly MembershipRun[] | undefined, hour: number): boolean {
+  return !membership || membership.some(run => run.firstHour <= hour && hour <= run.lastHour);
+}
+
+/** Runs cut to the hours a country was a group member, so a line starts when it
+ * joins and stops when it leaves. */
+export function clipRuns(runs: readonly Run[], membership: readonly MembershipRun[]): Run[] {
+  const clipped: Run[] = [];
+  for (const run of runs) {
+    for (const member of membership) {
+      const first = Math.max(run.firstHour, member.firstHour);
+      const last = Math.min(run.lastHour, member.lastHour);
+      // A cut piece keeps the run's line break (a new country identity) only where the run itself starts.
+      if (first <= last) clipped.push({ firstHour: first, lastHour: last, value: run.value, ...(run.breakBefore && first === run.firstHour ? { breakBefore: true } : {}) });
+    }
+  }
+  return clipped.sort((a, b) => a.firstHour - b.firstHour);
+}
+
+export interface ResolvedCountries {
+  tags: string[];
+  /** For a group counted at each hour: each country's membership runs. */
+  membership: Map<string, MembershipRun[]> | null;
+  /** Hours the group's own history was not recorded: breaks there are not joins or leaves. */
+  unobserved: HourSpan[];
+  /** Countries left out beyond the widget's limit. */
+  dropped: number;
+  /** Why no countries are shown, if none are. */
+  reason: string | null;
+}
+
+/** The countries a multi-country widget draws: chosen tags, or a group's members
+ * under its rule, at most `max` (the widget's own limit). */
+export function resolveCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number, max: number): ResolvedCountries {
+  if (selection.kind !== 'group') {
+    const tags = selection.kind === 'tags' ? selection.tags : fallback;
+    return { tags: tags.slice(0, max), membership: null, unobserved: [], dropped: Math.max(0, tags.length - max), reason: tags.length ? null : 'Choose a country in the widget settings.' };
+  }
+  if (!groups) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null };
+  const runs = groupRuns(groups, selection.group);
+  if (!runs) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: 'This group is not in this campaign branch.' };
+  const unobserved = groupUnobserved(groups, selection.group);
+  const members = groupMembers(runs, selection.membership === 'end' ? 'end' : 'ever', lastHour, lastHour, Infinity, unobserved);
+  // Unknown is not empty: the group's membership at the branch end was not recorded.
+  if (!members) return { tags: [], membership: null, unobserved, dropped: 0, reason: 'This group’s members were not recorded at the end of this campaign branch.' };
+  const tags = members.slice(0, max);
+  const membership = selection.membership === 'hour'
+    ? new Map(tags.map(tag => [tag, runs.filter(run => run.tag === tag)])) : null;
+  return { tags, membership, unobserved, dropped: Math.max(0, members.length - max), reason: members.length ? null : 'This group has no members in this campaign branch.' };
 }
