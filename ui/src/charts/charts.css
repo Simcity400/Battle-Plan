@@ -14,11 +14,14 @@
 .chart-tooltip-row { display: flex; justify-content: space-between; gap: var(--space-5); }
 .chart-tooltip-row.has-divider { margin-top: var(--space-2); padding-top: var(--space-2); border-top: 1px solid var(--line-soft); }
 .chart-tooltip-row > span { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; color: var(--muted); }
+/* A row that asks for it stays on one line, so a row count bounds the tooltip's height. */
+.chart-tooltip-row.is-short > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chart-tooltip-row i { width: 8px; height: 8px; flex: none; border-radius: 2px; }
 .chart-tooltip-row b { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .chart-tooltip-row b.is-positive { color: var(--positive); }
 .chart-tooltip-row b.is-negative { color: var(--error); }
 .chart-tooltip-row b.is-muted { color: var(--muted); font-weight: 400; }
+.chart-tooltip-row.is-strong > span { color: var(--text); font-weight: 600; }
 .chart-tooltip > small { display: block; margin-top: var(--space-2); color: var(--muted); font-size: var(--type-xs); }
 
 .chart-legend { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin: 0; padding: 0 var(--space-3); list-style: none; font-size: var(--type-sm); }

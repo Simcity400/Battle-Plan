@@ -81,6 +81,12 @@ export function reduceView(state: ViewState, action: ViewAction, context: ViewCo
 
 export type PlaybackMode = 'draw-in' | 'cursor' | 'window';
 
+/** The last hour a chart shows data for: the playhead, unless whole-campaign
+ * playback is set to show what comes after it too (null: the whole range). */
+export function shownUntil(playhead: number | null, mode: PlaybackMode, afterPlayhead: boolean): number | null {
+  return afterPlayhead && mode === 'cursor' ? null : playhead;
+}
+
 /** The time range a chart shows when the user hasn't zoomed. Draw-in grows to the
  * playhead; cursor shows the whole range with the playhead over it; window slides a
  * fixed length behind the playhead. Whole-campaign views pass the branch end. */

@@ -16,11 +16,13 @@ import { hideTooltip, showTooltip } from './tooltip';
 import type { TooltipContent } from './tooltip';
 import { EMPTY_VIEW, playbackDomain, reduceView, resolveX, resolveY } from './view';
 import type { AxisSettings, PlaybackMode, Range, ViewAction, ViewState } from './view';
+import { shownUntil } from './view';
 import './charts.css';
 
 /** One thing a chart draws inside its plot, such as a line per country. */
 export interface ChartLayer {
   /** Draws inside the plot; the canvas is clipped to it. */
+  /** `state.playhead` is the last hour to draw (null: the whole range). */
   draw(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void;
   /** The values this layer shows inside a time range, for auto-fitting the value axis. */
   extent?(x: Range): Range | null;
@@ -34,9 +36,14 @@ export interface TimeChartProps {
   /** The playback hour while following; null shows the whole extent. */
   playhead: number | null;
   playback: PlaybackMode;
+  /** In whole-campaign (cursor) playback, draws, marks and hovers past the playhead too. */
+  afterPlayhead?: boolean;
   windowHours?: number;
   hoursPerSecond?: number;
   axes: AxisSettings;
+  /** Fits the value axis to the values drawn in view (null: none), both bounds,
+   * where the axis settings leave it open; without it an open axis starts at zero. */
+  fitValues?: (shown: Range | null) => Range | null;
   /** Axis settings store offsets from this hour. */
   branchStart: number;
   padding?: Partial<Padding>;
@@ -136,7 +143,8 @@ export default function TimeChart(props: TimeChartProps) {
         const extent = layer.extent?.(x);
         if (extent) data = data ? [Math.min(data[0], extent[0]), Math.max(data[1], extent[1])] : [extent[0], extent[1]];
       }
-      const targetY = resolveY(view, p.axes, data);
+      const fitted = p.fitValues?.(data) ?? null;
+      const targetY = resolveY(view, fitted ? { ...p.axes, yMin: p.axes.yMin ?? fitted[0], yMax: p.axes.yMax ?? fitted[1] } : p.axes, data);
       const y: [number, number] = eased ? [glide(eased.y[0], targetY.range[0]), glide(eased.y[1], targetY.range[1])] : [targetY.range[0], targetY.range[1]];
       eased = { x, y };
       frame = plotFrame(layoutWidth, layoutHeight, padding, x, y, targetY.log);
@@ -146,10 +154,11 @@ export default function TimeChart(props: TimeChartProps) {
       drawAxes(context, frame, tokens, p.formatValue);
       context.save();
       clipToPlot(context, frame);
-      for (const layer of p.layers) layer.draw(context, frame, tokens, { playhead: p.playhead });
+      const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
+      for (const layer of p.layers) layer.draw(context, frame, tokens, { playhead: until });
       context.restore();
       if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
-      if (p.badges) drawBadges(context, frame, tokens, p.badges, p.playhead);
+      if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
       p.overlay?.(context, frame, tokens);
       if (drag?.mode === 'box') drawSelection(context, tokens, drag);
 
@@ -176,15 +185,16 @@ export default function TimeChart(props: TimeChartProps) {
     /** The hour under the pointer as hover and right-click both use it: clamped to the
      * playhead and snapped to nearby marks. */
     const pointedHour = (px: number, plot: PlotFrame, p: TimeChartProps): number | null => {
-      const hour = pointerHour(plot.hourAt(px), plot.x, p.playhead);
+      const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
+      const hour = pointerHour(plot.hourAt(px), plot.x, until);
       if (hour == null || !p.snap) return hour;
       // A snap may only land where the pointer itself could: in view and not after the playhead.
       const snapped = p.snap(hour, plot);
-      return pointerHour(snapped, plot.x, p.playhead) === snapped ? snapped : hour;
+      return pointerHour(snapped, plot.x, until) === snapped ? snapped : hour;
     };
     /** What the pointer is over: an event badge (snapping to its hour) or an hour of the plot. */
     const pointedAt = (point: { x: number; y: number }, plot: PlotFrame, p: TimeChartProps): { hour: number; badges: readonly EventBadge[] } | null => {
-      const badges = p.badges ? badgesAt(point, plot, p.badges, p.playhead) : [];
+      const badges = p.badges ? badgesAt(point, plot, p.badges, shownUntil(p.playhead, p.playback, p.afterPlayhead === true)) : [];
       if (badges.length) return { hour: badges[0].hour, badges };
       if (hitZone(point, plot) !== 'plot') return null;
       const hour = pointedHour(point.x, plot, p);
@@ -217,7 +227,8 @@ export default function TimeChart(props: TimeChartProps) {
       const point = local(event);
       const zone = hitZone(point, frame);
       // A click on an event badge picks its hour.
-      const badges = event.button === 0 && latest.current.badges ? badgesAt(point, frame, latest.current.badges, latest.current.playhead) : [];
+      const shown = latest.current;
+      const badges = event.button === 0 && shown.badges ? badgesAt(point, frame, shown.badges, shownUntil(shown.playhead, shown.playback, shown.afterPlayhead === true)) : [];
       if (badges.length && latest.current.onPick) {
         schedulePick(badges[0].hour);
         return;

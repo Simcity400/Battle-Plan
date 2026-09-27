@@ -10,6 +10,10 @@ export interface TooltipRow {
   tone?: 'positive' | 'negative' | 'muted';
   /** Starts a new group with a divider above it. */
   divider?: boolean;
+  /** A section heading or a total: the label in full text colour, bold. */
+  strong?: boolean;
+  /** Keeps the label on one line, shortened, where a long list must fit the window. */
+  short?: boolean;
 }
 export interface TooltipContent { title: string; rows: readonly TooltipRow[]; note?: string }
 export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number }

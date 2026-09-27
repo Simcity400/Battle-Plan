@@ -2570,11 +2570,12 @@ fn a_stability_breakdown_needs_the_same_country_identity_as_its_history() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    let load = |hour| {
+    let load_with = |hour, breakdown_only| {
         let params = CountryStabilityParams {
             branch_id: "1".into(),
             tags: vec!["GER".into()],
             hour: Some(hour),
+            breakdown_only,
         };
         CountryStability::load(
             &source,
@@ -2584,7 +2585,13 @@ fn a_stability_breakdown_needs_the_same_country_identity_as_its_history() {
         )
         .unwrap()
     };
+    let load = |hour| load_with(hour, false);
     assert!(load(100).series[0].breakdown.is_some());
+    // A breakdown alone leaves the histories out.
+    let alone = load_with(100, true);
+    assert!(alone.series[0].breakdown.is_some());
+    assert!(alone.series[0].stability.is_empty() && !alone.series[0].recorded);
+    assert!(alone.warnings.is_empty(), "{:?}", alone.warnings);
     // CountryLinks no longer maps GER: the history leaves the hour out, and
     // so does the breakdown.
     assert!(load(101).series[0].breakdown.is_none());

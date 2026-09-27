@@ -189,7 +189,12 @@ export type CountryStabilityParams = { branchId: string, tags: Array<string>,
 /**
  * The hour whose breakdown to include; none for runs only.
  */
-hour: number | null, };
+hour: number | null,
+/**
+ * Only the breakdown at `hour`: the histories are left out, so hovering a
+ * chart does not move them again.
+ */
+breakdownOnly: boolean, };
 export type FixedRun = { firstHour: number, lastHour: number,
 /**
  * The exact stored integer as a decimal string.
@@ -238,7 +243,24 @@ secondaryRaw: string, valueRaw: string,
  * The recorded display text of an unpaired line, in `language`, as plain
  * text (see [`display_text`]).
  */
-text: string | null, };
+text: string | null,
+/**
+ * A paired line's name in the viewer's language, from the content stack
+ * (idea, advisor or leader name, ideology, static or dynamic modifier);
+ * None when content does not name it or is not configured.
+ */
+label: string | null,
+/**
+ * What the source is, from content: for an idea in a slot or an advisor,
+ * the slot's name in the viewer's language (`Economy Law`, `Political
+ * Advisor`); None otherwise.
+ */
+group: string | null,
+/**
+ * For an idea in a category rather than a slot, the category's content
+ * type (`national_spirit` for spirits, whatever a mod names the category).
+ */
+groupKind: string | null, };
 export type ModifierBreakdown = {
 /**
  * The modifier's script name.

@@ -9,7 +9,7 @@ import type { Run } from './series.ts';
 import { backingSize, toLocal } from './surface.ts';
 import { placeTooltip } from './tooltipPlacement.ts';
 import { fixedNumber, formatFixed, linearTicks, logTicks, niceStep } from './valueAxis.ts';
-import { EMPTY_VIEW, playbackDomain, reduceView, resolveX, resolveY } from './view.ts';
+import { EMPTY_VIEW, playbackDomain, reduceView, resolveX, resolveY, shownUntil } from './view.ts';
 import type { ViewContext } from './view.ts';
 
 const RUNS: Run[] = [
@@ -153,4 +153,13 @@ test('the scheduler draws only woken, visible tasks and stops when nothing moves
   remove();
   scheduler.wake(task);
   assert.equal(queued, null);
+});
+
+test('whole-campaign playback stops at the playhead unless set to show past it', () => {
+  assert.equal(shownUntil(500, 'cursor', false), 500);
+  assert.equal(shownUntil(500, 'cursor', true), null);
+  // Only whole-campaign playback shows past the playhead.
+  assert.equal(shownUntil(500, 'draw-in', true), 500);
+  assert.equal(shownUntil(500, 'window', true), 500);
+  assert.equal(shownUntil(null, 'cursor', false), null);
 });
