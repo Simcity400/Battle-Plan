@@ -24,7 +24,13 @@ Unsupported executable hashes and simultaneous game processes are refused. Recor
 
 The oracle compares the selected branch/hour with a fresh **text** save. Set `save_as_binary=no` in the chosen user directory; binary saves are refused. It reports differences, unavailable data and comparison limitations. A difference is never waived.
 
-To compare every daily, static and sliced table, take the save at a full-refresh hour. At any other hour a sliced table is compared only for the owners read at that hour (their read hours are in SliceReads); relations are sliced by owner country. Keyframes are not full-refresh hours: they re-encode the rows the recorder already holds. Two kinds of hour are:
+To compare every daily, static and sliced table, take the save at a full-refresh hour. At any other hour the oracle compares only what was read at that hour:
+- Relations only for the owners read at that hour; their read hours are in SliceReads, and relations are sliced by owner country. The other owners are listed as carried.
+- Research technologies only at a proven full refresh: the save has no per-owner scope, and owners without rows have no read record. Otherwise they are listed as carried.
+- A daily table only when it was read at that hour: its slot, or for CountryIntel a measured walk, since its walk can move to a later hour.
+- Hourly and static tables are always compared.
+
+A daily comparison group whose tables were not read at the oracle hour would compare carried rows against the save's current values, so it is not compared. The coverage line counts the carried groups and sliced scopes, and each is listed as "carried, not compared (last read hour N)", or "read hour unknown" when no read is recorded. A carried group is neither a difference nor a failure, so an oracle at a sliced hour can pass. Keyframes are not full-refresh hours: they re-encode the rows the recorder already holds. Two kinds of hour are:
 
 - **A requested refresh.** While paused at the hour you will save, run `recorder refresh --out <dir>`. The collector acknowledges within about a second, and the next hourly sample reads every scheduled table. Make the text save, step one hour so the sample posts, and run the oracle at that hour on the current branch. Nothing is sent to the game. `tools/smoke.ps1` does this at its target hour.
 - **A load.** With the recorder attached, load any save from the in-game menu. At the load hour, while still paused, make a fresh text save. Then step one hour so the sample posts, detach, and run the oracle on the new branch (`LoadSignal` in `inspect`) at that hour. Do not compare against the file you loaded: loading reruns the weather passes. [Reference 12](../../reference/12.md) records a run.

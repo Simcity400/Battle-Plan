@@ -507,40 +507,32 @@ fn compare_research(
     report: &mut Report,
 ) -> io::Result<()> {
     // Technology rows keep the hour their country's slice read them
-    // (SliceReads); the family is comparable only when every row was read at
-    // the oracle hour (a full refresh) and ResearchSlots was refreshed with it.
-    // An unreadable table is not stale: its comparison below reports the failure.
+    // (SliceReads). The saved side has no per-owner scope, so the comparison
+    // needs every owner current, including owners with no rows, which rows
+    // cannot show. With read hours supplied (the oracle command) that takes a
+    // proven full refresh; otherwise the technologies are carried, with the
+    // oldest recorded read. Without them (callers that do not scan the branch)
+    // the earlier row check stays. ResearchSlots is a daily table and is
+    // compared whenever its slot was read (its group's own carried check). An
+    // unreadable table is not stale: its comparison below reports the failure.
+    let tech = replay::rows::TableId::ResearchTechnologies;
+    let oldest_read = complete::<tables::SliceReads>(frame)
+        .ok()
+        .and_then(|reads| {
+            reads
+                .iter()
+                .filter(|row| row.table == tech.index() as u32 && row.sample_hour != frame.hour)
+                .map(|row| row.sample_hour)
+                .min()
+        });
     let technologies_current = match complete::<tables::ResearchTechnologies>(frame) {
         Err(_) => true,
+        Ok(_) if report.read_hours.is_some() => report.full_refresh(),
         Ok(rows) => complete::<tables::SliceReads>(frame).is_ok_and(|reads| {
-            rows.iter().all(|row| {
-                replay::sliced::read_hour(
-                    reads,
-                    replay::rows::TableId::ResearchTechnologies,
-                    row.country,
-                ) == Some(frame.hour)
-            })
+            rows.iter()
+                .all(|row| replay::sliced::read_hour(reads, tech, row.country) == Some(frame.hour))
         }),
     };
-    if !technologies_current
-        || !report.refresh_is_current(replay::rows::TableId::ResearchSlots, frame.hour)
-    {
-        for table in [
-            replay::rows::TableId::ResearchTechnologies,
-            replay::rows::TableId::ResearchSlots,
-            replay::rows::TableId::TechnologyDefinitions,
-        ] {
-            report.limitation(
-                &format!("Research family {}", replay::cadence::STAGGER_LIMITATION),
-                format!(
-                    "{table:?} refreshes on {} (oracle hour {})",
-                    replay::cadence::refresh_text(table),
-                    frame.hour
-                ),
-            );
-        }
-        return Ok(());
-    }
     let definitions = complete::<tables::TechnologyDefinitions>(frame)?;
     let mut dictionary = BTreeMap::new();
     let mut tokens = BTreeSet::new();
@@ -558,12 +550,45 @@ fn compare_research(
     }
     report.compared("TechnologyDefinitions", 0);
     report.limitation("technology definitions provide exact token joins; runtime handles, database ordinals, year, max level and authored cost are not directly certified by a text save", "TechnologyDefinitions");
-    let mut complete = report.attempt("governance ResearchSlots", |report| {
-        compare_research_slots(frame, pack, links, &dictionary, report)
-    });
-    complete &= report.attempt("governance ResearchTechnologies", |report| {
-        compare_research_technologies(frame, pack, links, &dictionary, report)
-    });
+    // Without read hours (callers that do not scan the branch) a stale
+    // ResearchSlots is a limitation, as before; with them, its comparison
+    // group reports it carried.
+    let slots_current = report.refresh_is_current(replay::rows::TableId::ResearchSlots, frame.hour);
+    let mut complete = true;
+    if slots_current || report.read_hours.is_some() {
+        complete &= report.attempt("governance ResearchSlots", |report| {
+            compare_research_slots(frame, pack, links, &dictionary, report)
+        });
+    } else {
+        report.limitation(
+            &format!("Research family {}", replay::cadence::STAGGER_LIMITATION),
+            format!(
+                "ResearchSlots refreshes on {} (oracle hour {})",
+                replay::cadence::refresh_text(replay::rows::TableId::ResearchSlots),
+                frame.hour
+            ),
+        );
+    }
+    // Active-slot coverage of the technologies depends on ResearchSlots.
+    if technologies_current && slots_current {
+        complete &= report.attempt("governance ResearchTechnologies", |report| {
+            compare_research_technologies(frame, pack, links, &dictionary, report)
+        });
+    } else if report.read_hours.is_some() {
+        report.carried.insert(
+            "governance ResearchTechnologies (owners not read at this hour)".into(),
+            oldest_read,
+        );
+    } else {
+        report.limitation(
+            &format!("Research family {}", replay::cadence::STAGGER_LIMITATION),
+            format!(
+                "ResearchTechnologies refreshes on {} (oracle hour {})",
+                replay::cadence::refresh_text(replay::rows::TableId::ResearchTechnologies),
+                frame.hour
+            ),
+        );
+    }
     if complete {
         Ok(())
     } else {
@@ -2109,6 +2134,71 @@ mod tests {
         compare_literal(&mut report, "token", b"name\0native_tail", b"name");
         assert_eq!(report.differences.len(), 1);
         assert_eq!(report.limitations.len(), 1);
+    }
+
+    #[test]
+    fn scoped_research_technologies_need_a_full_refresh() {
+        let (mut frame, pack, country) = fixture();
+        *frame.tables[TableId::TechnologyDefinitions.index()] =
+            TableView::Complete(TableRows::TechnologyDefinitions(vec![
+                TechnologyDefinitionRow {
+                    technology_handle: 5,
+                    id: b"technology".to_vec(),
+                    ..Default::default()
+                },
+            ]));
+        let links = BTreeMap::from([(11, &country)]);
+        let scoped = |frame: &DecodedFrame, full: bool| {
+            let mut report = refreshed_report();
+            report.read_hours = Some(BTreeMap::new());
+            report.forced_full = full;
+            let _ = compare_research(frame, &pack, &links, &mut report);
+            report
+        };
+        // Country 11 has no captured rows: a rowless owner, whose slice was
+        // not read at this hour (only owner 12's read is recorded). Rows
+        // alone would call it current; the scoped oracle carries it.
+        *frame.tables[TableId::ResearchTechnologies.index()] =
+            TableView::Complete(TableRows::ResearchTechnologies(Vec::new()));
+        *frame.tables[TableId::SliceReads.index()] =
+            TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
+                table: TableId::ResearchTechnologies.index() as u32,
+                owner: 12,
+                sample_hour: -3,
+            }]));
+        let carried = scoped(&frame, false);
+        assert!(!carried.compared_tables.contains_key("ResearchTechnologies"));
+        assert!(carried.differences.is_empty(), "{:?}", carried.differences);
+        assert_eq!(
+            carried
+                .carried
+                .get("governance ResearchTechnologies (owners not read at this hour)"),
+            Some(&Some(-3))
+        );
+        // At a full refresh the technologies are compared, and a real
+        // difference (a captured row unlike the save) is kept.
+        *frame.tables[TableId::ResearchTechnologies.index()] =
+            TableView::Complete(TableRows::ResearchTechnologies(vec![
+                ResearchTechnologyRow {
+                    country: 11,
+                    technology_handle: 5,
+                    progress_raw: 999,
+                    ..Default::default()
+                },
+            ]));
+        let full = scoped(&frame, true);
+        assert!(full.carried.is_empty(), "{:?}", full.carried);
+        assert!(
+            full.differences
+                .iter()
+                .any(|line| line.starts_with("AAA.technology")),
+            "{:?} failed {:?}",
+            full.differences,
+            full.failed_comparisons
+        );
+        // The same differing row at a non-full hour is carried, not compared.
+        let hidden = scoped(&frame, false);
+        assert!(hidden.differences.is_empty(), "{:?}", hidden.differences);
     }
 
     #[test]

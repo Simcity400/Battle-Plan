@@ -2878,12 +2878,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             for table in extended::TABLES {
                 let index = table.index();
                 let walk = replay::cadence::should_walk(table, clock.hour, force_full);
-                // Skipped tables keep zero game-thread cost for measurement.
-                frame.table_ns[index] = if walk {
-                    shared.ns(ticks[index] as i64)
-                } else {
-                    0
-                };
+                frame.table_ns[index] = exported_table_ticks(table, walk, ticks[index])
+                    .map_or(0, |ticks| shared.ns(ticks as i64));
             }
             // Relations tables measured copy-only above; same install.
             if relations_report.raw_ok {
@@ -4427,6 +4423,39 @@ fn new_division_mark(
             shared.base + engine::creference_registry::ID_COUNTER_RVA,
         ),
     )
+}
+
+/// The game-thread ticks a frame records for an extended table: a skipped
+/// table keeps zero cost, except CountryIntel, whose walk moves to a later
+/// hour when its shared buffer was held (`daily_intel::Loan::borrow`). That
+/// retried walk is a real read, so it keeps its ticks: the oracle tells a
+/// table read at an hour by its measured cost.
+fn exported_table_ticks(table: replay::rows::TableId, walk: bool, ticks: u64) -> Option<u64> {
+    (walk || (table == replay::rows::TableId::CountryIntel && ticks != 0)).then_some(ticks)
+}
+
+#[cfg(test)]
+mod exported_ticks_tests {
+    use super::exported_table_ticks;
+    use replay::rows::TableId;
+
+    /// A due walk keeps its cost; a skipped table records none; a deferred
+    /// CountryIntel walk retried off its slot keeps its cost, and a deferred
+    /// one that did not run records none.
+    #[test]
+    fn a_retried_country_intel_walk_keeps_its_cost() {
+        assert_eq!(exported_table_ticks(TableId::Subjects, true, 7), Some(7));
+        assert_eq!(exported_table_ticks(TableId::Subjects, false, 7), None);
+        assert_eq!(
+            exported_table_ticks(TableId::CountryIntel, false, 9),
+            Some(9)
+        );
+        assert_eq!(
+            exported_table_ticks(TableId::CountryIntel, true, 0),
+            Some(0)
+        );
+        assert_eq!(exported_table_ticks(TableId::CountryIntel, false, 0), None);
+    }
 }
 
 #[cfg(test)]
