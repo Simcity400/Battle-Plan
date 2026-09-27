@@ -2507,7 +2507,14 @@ fn stability_product_runs_carry_reads_and_break_down_one_hour() {
             (104, 104, "79249", true)
         ]
     );
-    assert_eq!(germany.read_hours, [100, 102, 104]);
+    let carried: Vec<_> = germany
+        .carried
+        .iter()
+        .map(|run| (run.first_hour, run.last_hour, run.read_hour))
+        .collect();
+    // Only hour 101 carries an earlier (hour-100) read; the others were read then.
+    assert_eq!(carried, [(101, 101, 100)]);
+    assert!(germany.recorded);
     let breakdown = germany.breakdown.as_ref().unwrap();
     assert_eq!((breakdown.hour, breakdown.read_hour), (101, 100));
     assert_eq!(breakdown.language, "l_english");

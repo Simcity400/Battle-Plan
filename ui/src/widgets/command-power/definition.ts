@@ -7,5 +7,6 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 },
   countries: { max: 16 },
-  options: MEASURE_OPTIONS,
+  options: [...MEASURE_OPTIONS,
+    { key: 'ceiling', section: 'options', label: 'Maximum', hint: 'Each country’s maximum command power, dashed', kind: 'toggle', default: true }],
 } as const satisfies WidgetMeta;

@@ -200,6 +200,7 @@ valueRaw: string,
  * different country identity rather than continuing the previous run.
  */
 startsSegment: boolean, };
+export type ReadRun = { firstHour: number, lastHour: number, readHour: number, };
 export type FormulaTerm = { term: string, valueRaw: string | null, };
 export type FormulaBreakdown = {
 /**
@@ -271,9 +272,15 @@ language: string, stability: FormulaBreakdown, warSupport: FormulaBreakdown, max
 linesAvailable: boolean, modifiers: Array<ModifierBreakdown>, };
 export type CountryStabilitySeries = { tag: string, stability: Array<FixedRun>, warSupport: Array<FixedRun>, maxCommandPower: Array<FixedRun>,
 /**
- * Hours the country's inputs were read at, ascending.
+ * Shown hours whose values come from an earlier read, as consecutive
+ * hours with the same read, in hour order. Every other shown hour was read
+ * at that hour, so hourly reads cost nothing here.
  */
-readHours: Array<number>, breakdown: StabilityBreakdown | null, };
+carried: Array<ReadRun>,
+/**
+ * Whether any hour was read at all; false when no inputs were recorded.
+ */
+recorded: boolean, breakdown: StabilityBreakdown | null, };
 export type CountryStabilityReply = { branchId: string,
 /**
  * Decimal places of every raw value in this reply.

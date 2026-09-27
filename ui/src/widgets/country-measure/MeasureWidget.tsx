@@ -26,7 +26,10 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { CountryStyle, CountryStyleReply, Measure, MeasureReply } from '../../generated/dashboard';
+import { readHourAt, validateStabilityReply } from '../../dashboard/stabilityReply';
+import { formatDateTime } from '../../dashboard/calendar';
+import type { OptionField } from '../../dashboard/options';
+import type { CountryStabilityReply, CountryStyle, CountryStyleReply, Measure, MeasureReply } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color';
 import { formatBalance, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, toRuns, validateMeasureReply } from './measureData';
 import { MEASURE_OPTIONS } from './options';
@@ -37,6 +40,10 @@ const NO_WARNINGS: string[] = [];
 const STYLE_STEP = 30 * 24;
 /** Hovering within this many pixels of a spend tick snaps to it. */
 const SNAP_PX = 6;
+/** The recorded maximum's dash pattern, in pixels. */
+const CEILING_DASH = [6, 4] as const;
+/** Beyond this many countries the tooltip lists balances only, so it fits the window. */
+const CEILING_ROWS_MAX = 4;
 
 function useTokens(): ChartTokens {
   const [tokens, setTokens] = useState(readTokens);
@@ -51,6 +58,10 @@ export interface MeasureConfig {
   title: string;
   /** The measure in running text, such as "political power". */
   noun: string;
+  /** The widget's settings, when it adds to the shared ones. */
+  options?: readonly OptionField[];
+  /** Draws the recorded maximum dashed (command power), named in running text. */
+  ceiling?: string;
 }
 
 /** A recorded balance over time (political power, command power), one line per
@@ -59,7 +70,8 @@ export interface MeasureConfig {
 export default function MeasureWidget({ widget, runtime, active, headerSlot, onDiagnostics, config }: WidgetProps & { config: MeasureConfig }) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useTokens();
-  const options = resolveOptions(MEASURE_OPTIONS, widget.options);
+  const options = resolveOptions(config.options ?? MEASURE_OPTIONS, widget.options);
+  const showCeiling = config.ceiling != null && options.ceiling !== false;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const lastHour = track?.branch.lastHour ?? 0;
@@ -69,6 +81,10 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
   const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-measure',
     params: { branchId: track.branch.id, measure: config.measure, tags: resolved.tags } } : null;
   const { data, error, retry } = useProduct<MeasureReply>(runtime.client, request, active, validateMeasureReply);
+  // The maximum comes from the recorded inputs; it never holds up the balance lines.
+  const ceilingRequest = showCeiling && track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-stability',
+    params: { branchId: track.branch.id, tags: resolved.tags, hour: null } } : null;
+  const ceiling = useProduct<CountryStabilityReply>(runtime.client, ceilingRequest, active, validateStabilityReply);
 
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';
@@ -91,10 +107,12 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
 
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []), ...(groups.data?.warnings ?? []),
+      ...(ceilingRequest && ceiling.error ? [`The ${config.ceiling} could not be loaded: ${ceiling.error}`] : []),
+      ...(ceilingRequest ? ceiling.data?.warnings ?? [] : []),
       ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget draws at most ${resolved.tags.length}.`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, styles.data, groups.data, resolved.dropped, resolved.tags.length, onDiagnostics]);
+  }, [data, styles.data, groups.data, resolved.dropped, resolved.tags.length, onDiagnostics, ceilingRequest != null, ceiling.error, ceiling.data, config.ceiling]);
 
   const series = useMemo(() => {
     if (!data) return [];
@@ -107,12 +125,19 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
       // A country counted at each hour shows nothing (line, value, spend) outside its membership.
       const drops = item.drops.filter(drop => isMember(membership, drop.hour));
       const valueAt = (hour: number) => isMember(membership, hour) ? rawAt(item, hour) : null;
+      // The recorded maximum, clipped to the same membership as the balance.
+      const maximum = showCeiling ? ceiling.data?.series.find(entry => entry.tag === item.tag) : undefined;
+      const ceilingRuns = maximum && ceiling.data ? toRuns({ runs: maximum.maxCommandPower }, ceiling.data.decimals) : [];
+      const ceilingAt = (hour: number) => maximum && isMember(membership, hour) ? rawAt({ runs: maximum.maxCommandPower }, hour) : null;
+      // The read a shown maximum comes from: an older one is carried, so its time is shown.
+      const ceilingReadAt = (hour: number) => maximum ? readHourAt(maximum.carried, hour) : null;
       return { tag: item.tag, name: style?.name ?? track?.source.metadata.countries.find(country => country.tag === item.tag)?.name ?? item.tag,
-        color: recorded, drops, valueAt, runs: membership ? clipRuns(runs, membership) : runs, membership };
+        color: recorded, drops, valueAt, runs: membership ? clipRuns(runs, membership) : runs, membership,
+        ceilingRuns: membership ? clipRuns(ceilingRuns, membership) : ceilingRuns, ceilingAt, ceilingReadAt };
     });
     const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw.map(item => item.color), parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw.map(item => item.color);
     return raw.map((item, index) => ({ ...item, hex: toHex(adjusted[index]) }));
-  }, [data, known, resolved.membership, tokens, track]);
+  }, [data, known, resolved.membership, tokens, track, showCeiling, ceiling.data]);
 
   // Joins and leaves of a group counted at each hour, as badges in the country's colour.
   const badges = useMemo<EventBadge[]>(() => series.flatMap(item => item.membership
@@ -128,6 +153,11 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
       draw: (ctx, frame, chartTokens, state) => { drawLine(ctx, frame, chartTokens, item.runs, item.hex, { area: single && options.areaFill === true, until: state.playhead ?? undefined }); },
       extent: (x: readonly [number, number]) => extentOf(item.runs as Run[], x[0], Math.min(x[1], playhead ?? x[1])),
     }));
+    // Each country's maximum, dashed in its colour.
+    for (const item of series) if (item.ceilingRuns.length) list.push({
+      draw: (ctx, frame, chartTokens, state) => { drawLine(ctx, frame, chartTokens, item.ceilingRuns, item.hex, { dash: CEILING_DASH, until: state.playhead ?? undefined }); },
+      extent: (x: readonly [number, number]) => extentOf(item.ceilingRuns as Run[], x[0], Math.min(x[1], playhead ?? x[1])),
+    });
     if (options.spendTicks) list.push({ draw: (ctx, frame, chartTokens) => {
       for (const item of series) drawEventTicks(ctx, frame, chartTokens, item.drops.map(drop => drop.hour).filter(hour => playhead == null || hour <= playhead), single ? chartTokens.muted : item.hex);
     } });
@@ -152,6 +182,8 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
       return { id: item.tag, label: item.name, color: item.hex, value: raw == null ? 'Not recorded' : formatBalance(raw, decimals),
         flag: <SourceFlag client={runtime.client} source={track.source} tag={item.tag} size="shield" /> };
     })} />
+    {/* The dashed line is named, so it never rests on its dash pattern alone. */}
+    {series.some(item => item.ceilingRuns.length) && <p className="measure-key"><i aria-hidden="true" />Dashed line: {config.ceiling}</p>}
     <div className="country-measure-chart">
       <TimeChart label={`${config.title} of ${series.map(item => item.name).join(', ')}`} extent={extent} playhead={playhead}
         playback={(options.playback as PlaybackMode) ?? 'draw-in'} windowHours={Number(options.windowDays ?? 365) * 24}
@@ -171,16 +203,36 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
         }}
         badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hovered) => {
-          const rows: TooltipRow[] = series.map(item => {
+          // Without maximum rows, maximums carried from an earlier read are still named.
+          const carriedNote = (at: number) => {
+            const carried = series.flatMap(item => {
+              const read = item.ceilingAt(at) != null ? item.ceilingReadAt(at) : null;
+              return read != null && read < at ? [`${item.name} (${formatDateTime(read)})`] : [];
+            });
+            if (!carried.length) return [];
+            const listed = carried.slice(0, CEILING_ROWS_MAX).join(', ');
+            return [`Maximums read earlier: ${listed}${carried.length > CEILING_ROWS_MAX ? ` and ${carried.length - CEILING_ROWS_MAX} more` : ''}.`];
+          };
+          const rows: TooltipRow[] = series.flatMap(item => {
             const raw = item.valueAt(hour);
-            return { label: item.name, swatch: item.hex, value: raw == null ? 'Not recorded' : formatBalance(raw, decimals), tone: raw == null ? 'muted' as const : undefined };
+            const balance: TooltipRow = { label: item.name, swatch: item.hex, value: raw == null ? 'Not recorded' : formatBalance(raw, decimals), tone: raw == null ? 'muted' : undefined };
+            if (!showCeiling || !ceiling.data || series.length > CEILING_ROWS_MAX) return [balance];
+            const maximum = item.ceilingAt(hour);
+            const read = item.ceilingReadAt(hour);
+            // A carried maximum always names its read, even an hour with no calendar date.
+            const carried = maximum != null && read != null && read < hour ? ` (read ${formatDateTime(read)})` : '';
+            return [balance, { label: series.length > 1 ? `${item.name}: maximum` : 'Maximum', value: maximum == null ? 'Not recorded' : `${formatBalance(maximum, ceiling.data.decimals)}${carried}`, tone: 'muted' }];
           });
           for (const item of series) {
             const drop = item.drops.find(entry => entry.hour === hour);
             if (drop) rows.push({ label: `${series.length > 1 ? `${item.name}: ` : ''}Spent (net)`, value: netSpend(drop, decimals), tone: 'negative', divider: true });
           }
           rows.push(...badgeRows(hovered));
-          return { title: dayLabel(hour), rows, note: rows.some(row => row.tone === 'negative') ? 'Daily income is not recorded, so a spend is the fall in the balance.' : undefined };
+          const notes = [
+            ...(rows.some(row => row.tone === 'negative') ? ['Daily income is not recorded, so a spend is the fall in the balance.'] : []),
+            ...(showCeiling && ceiling.data && series.length > CEILING_ROWS_MAX ? [`Maximums are drawn dashed; they are listed here for up to ${CEILING_ROWS_MAX} countries.`, ...carriedNote(hour)] : []),
+          ];
+          return { title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined };
         }}
         overlay={(ctx, frame, chartTokens) => {
           if (!options.endLabels) return;

@@ -6,12 +6,16 @@ import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 export const MAX_COUNTRIES = 16;
 const RAW = /^-?\d{1,20}$/;
 
-const isRun = (value: unknown): value is FixedRun => typeof value === 'object' && value != null
+export const isFixedRun = (value: unknown): value is FixedRun => typeof value === 'object' && value != null
   && Number.isInteger((value as FixedRun).firstHour) && Number.isInteger((value as FixedRun).lastHour)
   && typeof (value as FixedRun).startsSegment === 'boolean'
   && (value as FixedRun).firstHour <= (value as FixedRun).lastHour && RAW.test((value as FixedRun).valueRaw);
 const isDrop = (value: unknown): value is BalanceDrop => typeof value === 'object' && value != null
   && Number.isInteger((value as BalanceDrop).hour) && RAW.test((value as BalanceDrop).beforeRaw) && RAW.test((value as BalanceDrop).afterRaw);
+
+/** Fixed runs in hour order that never overlap. */
+export const orderedRuns = (runs: unknown): runs is FixedRun[] => Array.isArray(runs) && runs.every(isFixedRun)
+  && runs.every((run, index) => index === 0 || runs[index - 1].lastHour < run.firstHour);
 
 /** Checks the reply's shape; runs must be in hour order and never overlap. */
 export function validateMeasureReply(data: unknown): MeasureReply {
@@ -20,20 +24,19 @@ export function validateMeasureReply(data: unknown): MeasureReply {
     && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.series) && reply.series.every(series => typeof series.tag === 'string'
-      && Array.isArray(series.runs) && series.runs.every(isRun)
-      && series.runs.every((run, index) => index === 0 || series.runs[index - 1].lastHour < run.firstHour)
+      && orderedRuns(series.runs)
       && Array.isArray(series.drops) && series.drops.every(isDrop));
   if (!ok) throw new Error('The balance reply is malformed.');
   return reply;
 }
 
 /** Runs as plotting numbers; labels use the exact raw values. */
-export function toRuns(series: MeasureSeries, decimals: number): Run[] {
+export function toRuns(series: Pick<MeasureSeries, 'runs'>, decimals: number): Run[] {
   return series.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: fixedNumber(run.valueRaw, decimals), breakBefore: run.startsSegment }));
 }
 
 /** The exact recorded balance at an hour, or null when it was not recorded. */
-export function rawAt(series: MeasureSeries, hour: number): string | null {
+export function rawAt(series: Pick<MeasureSeries, 'runs'>, hour: number): string | null {
   let low = 0;
   let high = series.runs.length - 1;
   while (low <= high) {
