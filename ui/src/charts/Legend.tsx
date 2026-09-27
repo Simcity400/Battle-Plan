@@ -3,6 +3,8 @@ import './charts.css';
 
 export interface LegendItem {
   id: string; label: string; color: string; value?: string; flag?: ReactNode;
+  /** A value read out to assistive technology only, where the look shows names alone. */
+  spokenValue?: string;
   /** Makes the swatch a colour picker, as faction swatches are; the choice applies campaign-wide. */
   onColor?: (hex: string) => void;
 }
@@ -18,5 +20,6 @@ export default function Legend({ items, label }: { items: readonly LegendItem[];
           onChange={event => item.onColor!(event.currentTarget.value)} /></label>
       : <i style={{ background: item.color }} aria-hidden="true" />}
     {item.flag}<span>{item.label}</span>{item.value != null && <b>{item.value}</b>}
+    {item.spokenValue != null && <span className="sr-only">: {item.spokenValue}</span>}
   </li>)}</ul>;
 }

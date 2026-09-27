@@ -16,7 +16,7 @@ The signed-off look is the balance line from mock-ups politics-1/2:
 - a 2px line, with a light area fill when one country is shown;
 - the exact current value in the header;
 - spend ticks along the bottom;
-- names and values at the line ends.
+- values at the line ends: one country's value and unit ("164.0 PP", mock-up politics-1), or each country's name and value.
 
 Hovering near a tick snaps to it. The tooltip lists each country's exact balance and any net spend that hour.
 

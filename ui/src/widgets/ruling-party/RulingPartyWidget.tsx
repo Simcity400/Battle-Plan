@@ -20,7 +20,7 @@ import { useProduct } from '../../dashboard/products';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import { readTokens, subscribeTokens } from '../../charts/tokens';
 import { OPTIONS } from './definition';
-import { bands, buildStack, formatPopularity, partyBadges, rawAt, rulingAt, stackedSegments, validatePartyHistoryReply } from './partyData';
+import { bands, buildStack, formatPopularity, partyBadges, rawAt, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData';
 import './rulingParty.css';
 
 const NO_WARNINGS: string[] = [];
@@ -43,7 +43,9 @@ export default function RulingPartyWidget({ widget, runtime, active, headerSlot,
   // Fallback colours are solved against the current theme, so they follow a theme change.
   const [surface, setSurface] = useState(() => readTokens().surface);
   useEffect(() => subscribeTokens(tokens => setSurface(tokens.surface)), []);
-  const list = useMemo(() => data ? bands(data, categoricalPalette(surface)) : [], [data, surface]);
+  // The party ruling at the moment shown goes first: the bottom band and the first legend entry.
+  const rulingShown = data ? rulingAt(data, Math.floor(head)) : null;
+  const list = useMemo(() => data ? rulingFirst(bands(data, categoricalPalette(surface)), rulingShown) : [], [data, surface, rulingShown]);
   // Built once per reply; each frame only slices and thins it.
   const stack = useMemo(() => data ? buildStack(list, data.decimals) : null, [data, list]);
   const names = useMemo(() => new Map(list.map(band => [band.token, band.name])), [list]);
@@ -76,10 +78,10 @@ export default function RulingPartyWidget({ widget, runtime, active, headerSlot,
   const rulingRaw = ruling ? rawAt(list.find(band => band.token === ruling)!.series, Math.floor(head)) : null;
   return <div className="ruling-party">
     {headerSlot && ruling && createPortal(<span className="pill">{names.get(ruling) ?? ruling}{rulingRaw ? ` · ${formatPopularity(rulingRaw, data.decimals)}` : ''}</span>, headerSlot)}
+    {/* Names only, as signed off; each popularity is still read out to assistive technology. */}
     <Legend label="Parties" items={list.map(band => {
       const raw = rawAt(band.series, Math.floor(head));
-      return { id: band.token, label: band.token === ruling ? `${band.name} (ruling)` : band.name, color: band.color,
-        value: raw == null ? 'Not recorded' : formatPopularity(raw, data.decimals) };
+      return { id: band.token, label: band.name, color: band.color, spokenValue: raw == null ? 'not recorded' : formatPopularity(raw, data.decimals) };
     })} />
     <div className="ruling-party-chart">
       <TimeChart label={`Party popularity in ${tag}`} extent={extent} playhead={playhead}

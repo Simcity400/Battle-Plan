@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { PartyHistoryReply } from '../../generated/dashboard';
-import { bands, buildStack, formatPopularity, partyBadges, rulingAt, stackedSegments, validatePartyHistoryReply } from './partyData.ts';
+import { bands, buildStack, formatPopularity, partyBadges, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData.ts';
 
 const run = (firstHour: number, lastHour: number, percent: number, startsSegment = false) => ({ firstHour, lastHour, valueRaw: String(percent * 100000), startsSegment });
 const REPLY: PartyHistoryReply = {
@@ -55,4 +55,12 @@ test('a change of government next to a gap is not a badge; elections are', () =>
   assert.equal(rulingAt(REPLY, 103), null);
   assert.equal(formatPopularity('4512345', 5), '45.1%');
   assert.throws(() => validatePartyHistoryReply({ ...REPLY, parties: [{ token: 'x', runs: [run(5, 1, 1)] }] }));
+});
+
+test('the ruling party comes first, the others keep content order', () => {
+  const band = (token: string) => ({ token, name: token, color: '#000', series: { token, runs: [] } });
+  const list = [band('democratic'), band('communism'), band('fascism'), band('neutrality')];
+  assert.deepEqual(rulingFirst(list, 'fascism').map(item => item.token), ['fascism', 'democratic', 'communism', 'neutrality']);
+  assert.deepEqual(rulingFirst(list, 'democratic').map(item => item.token), ['democratic', 'communism', 'fascism', 'neutrality']);
+  assert.deepEqual(rulingFirst(list, null).map(item => item.token), ['democratic', 'communism', 'fascism', 'neutrality']);
 });

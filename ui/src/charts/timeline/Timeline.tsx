@@ -201,8 +201,10 @@ export default function Timeline(props: TimelineProps) {
           const from = Math.max(left, toX(hours[0]) + 1);
           const to = Math.min(right, toX(hours[1]) - 1);
           if (to - from < 1.5) continue;
-          const fill = span.emphasis ? mix(tokens.surface, tokens.accent, 0.55)
-            : span.shade == null ? mix(tokens.surface, tokens.text, 0.1) : mix(tokens.surface, tokens.accent, 0.3 + 0.6 * span.shade);
+          // A law keeps its escalation shade even while held (signed off, mock-up politics-4);
+          // other held spans are accented.
+          const fill = span.shade != null ? mix(tokens.surface, tokens.accent, 0.3 + 0.6 * span.shade)
+            : span.emphasis ? mix(tokens.surface, tokens.accent, 0.55) : mix(tokens.surface, tokens.text, 0.1);
           context.fillStyle = fill;
           context.beginPath(); context.roundRect(from, centre - 12, to - from, 24, 5); context.fill();
           let textX = from + 7;

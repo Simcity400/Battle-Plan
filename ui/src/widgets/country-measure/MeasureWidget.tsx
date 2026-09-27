@@ -11,6 +11,7 @@ import { layoutEndLabels } from '../../charts/labels';
 import Legend from '../../charts/Legend';
 import { categoricalPalette, nudgeApart } from '../../charts/palette';
 import { extentOf } from '../../charts/series';
+import { formatFixed } from '../../charts/valueAxis';
 import type { Run } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
@@ -58,6 +59,8 @@ export interface MeasureConfig {
   title: string;
   /** The measure in running text, such as "political power". */
   noun: string;
+  /** The unit a single country's end label names, such as "PP" (mock-up politics-1). */
+  unit: string;
   /** The widget's settings, when it adds to the shared ones. */
   options?: readonly OptionField[];
   /** Draws the recorded maximum dashed (command power), named in running text. */
@@ -239,7 +242,10 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
           const at = Math.min(head, frame.x[1]);
           const ends = series.flatMap(item => {
             const raw = item.valueAt(Math.floor(at));
-            return raw == null ? [] : [{ id: item.tag, y: frame.toY(Number(raw) / 10 ** decimals), height: 14, text: `${item.name} ${formatBalance(raw, decimals)}`, color: item.hex }];
+            if (raw == null) return [];
+            // One country: its value and unit, as signed off; several: each named.
+            const text = series.length === 1 ? `${formatFixed(raw, decimals, 1)} ${config.unit}` : `${item.name} ${formatBalance(raw, decimals)}`;
+            return [{ id: item.tag, y: frame.toY(Number(raw) / 10 ** decimals), height: 14, text, color: item.hex }];
           });
           const placed = layoutEndLabels(ends, frame.plotTop, frame.plotTop + frame.plotHeight);
           drawEndLabels(ctx, frame, chartTokens, ends.map(end => ({ text: end.text, y: placed.get(end.id)!, from: end.y, color: end.color })));
