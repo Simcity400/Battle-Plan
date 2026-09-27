@@ -3,8 +3,7 @@
 //! The old identity word at +0 is not a proven vtable and is not used to authenticate the collection.
 
 use crate::{
-    Memory, cequipment_module,
-    cequipment_variant::{self, Literal, TextOutcome, TextSpan, text_failure},
+    Memory, cequipment_module, cequipment_variant,
     cpdx_array::Array,
     equipment_module_entry,
     memory::{RecordField, RecordLayout, RecordSources},
@@ -21,6 +20,9 @@ pub const ENTRIES_CAPACITY_CANDIDATE: usize = 0x10;
 /// Candidate module-container u32 count; old air reader uses variant+C4, relative header+14.
 pub const ENTRIES_COUNT_CANDIDATE: usize = 0x14;
 
+/// The module is named by `definition_token`: CEquipmentModule's constructor
+/// 1415196D0 copies the authored key into its name and adds the token from
+/// that same string, so the name is content and is not copied per row.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub variant: u64,
@@ -28,7 +30,6 @@ pub struct Row {
     pub slot: u32,
     pub definition_token: u32,
     pub definition_active: u8,
-    pub definition_name: TextSpan,
 }
 
 /// The containing variant authenticates this header. Native BCFF10/BD0D50
@@ -40,15 +41,12 @@ pub fn walk(
     base: usize,
     variants: &[cequipment_variant::RegistryRow],
     output: &mut Vec<Row>,
-    bytes: &mut Vec<u8>,
-) -> TextOutcome {
+) -> Outcome {
     let result = (|| {
         let expected = base
             .checked_add(cequipment_module::VTABLE_RVA)
             .ok_or("module definition address overflow")?;
         let mut len = 0_usize;
-        let mut bytes_len = 0_usize;
-        let mut required_bytes = 0_usize;
         // One chunk's module entries are read with a single contiguous copy
         // whose failure is reported for the whole chunk, so this size is part
         // of the walker's error precedence rather than a free tuning knob.
@@ -58,7 +56,7 @@ pub fn walk(
             destination_offset: 0,
             len: 16,
         }];
-        const DEFINITIONS: [RecordField; 3] = [
+        const DEFINITIONS: [RecordField; 2] = [
             RecordField {
                 source_offset: 0,
                 destination_offset: 0,
@@ -69,21 +67,17 @@ pub fn walk(
                 destination_offset: 12,
                 len: 1,
             },
-            RecordField {
-                source_offset: cequipment_module::NAME,
-                destination_offset: 13,
-                len: 32,
-            },
         ];
+        const DEFINITION_SIZE: usize = 13;
         const HEADERS_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&HEADERS, 16).expect("valid record layout");
         const DEFINITIONS_LAYOUT: RecordLayout<'static> =
-            RecordLayout::new(&DEFINITIONS, 45).expect("valid record layout");
+            RecordLayout::new(&DEFINITIONS, DEFINITION_SIZE).expect("valid record layout");
         let mut pointers = [0; BATCH];
         let mut headers = [0; BATCH * 16];
         let mut entries = [0; BATCH * equipment_module_entry::STRIDE];
         let mut definitions = [0; BATCH];
-        let mut definition_fields = [0; BATCH * 45];
+        let mut definition_fields = [0; BATCH * DEFINITION_SIZE];
         for sources in variants.chunks(BATCH) {
             for (pointer, source) in pointers.iter_mut().zip(sources) {
                 *pointer = source.pointer();
@@ -140,58 +134,38 @@ pub fn walk(
                         .chunks_exact(equipment_module_entry::STRIDE)
                         .enumerate()
                     {
-                        let ordinal = first + slot as u32;
                         if definitions[slot] == 0 {
                             return Err("module definition pointer null or invalid");
                         }
                         if definition_copied < (slot + 1) * DEFINITIONS.len() {
                             return Err("module definition identity or active byte unreadable");
                         }
-                        let field = &definition_fields[slot * 45..(slot + 1) * 45];
+                        let field = &definition_fields
+                            [slot * DEFINITION_SIZE..(slot + 1) * DEFINITION_SIZE];
                         if u64::from_le_bytes(field[..8].try_into().unwrap()) != expected as u64 {
                             return Err("module definition vtable mismatch");
                         }
-                        let name = Literal::from_header(field[13..].try_into().unwrap())?;
-                        let size = name.len;
-                        required_bytes = required_bytes
-                            .checked_add(size)
-                            .ok_or("module name size overflow")?;
-                        name.copy_growing(
-                            memory,
-                            bytes,
-                            bytes_len,
-                            "module name allocation failed",
-                        )?;
                         output[len] = Row {
                             variant,
-                            source_ordinal: ordinal,
+                            source_ordinal: first + slot as u32,
                             slot: u32::from_le_bytes(entry[..4].try_into().unwrap()),
                             definition_token: u32::from_le_bytes(field[8..12].try_into().unwrap()),
                             definition_active: field[12],
-                            definition_name: TextSpan {
-                                start: bytes_len,
-                                len: size,
-                            },
                         };
-                        bytes_len += size;
                         len += 1;
                     }
                 }
             }
         }
-        Ok(TextOutcome {
-            outcome: Outcome::Rows { len },
-            bytes_len,
-            required_bytes,
-        })
+        Ok(Outcome::Rows { len })
     })();
-    result.unwrap_or_else(text_failure)
+    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{memory::SliceMemory, walk::Outcome};
+    use crate::memory::SliceMemory;
 
     fn source(bytes: &[u8]) -> crate::cequipment_variant::RegistryRow {
         crate::cequipment_variant::RegistryRow::read(
@@ -218,10 +192,14 @@ mod tests {
         bytes[0x200..0x208].copy_from_slice(&(cequipment_module::VTABLE_RVA as u64).to_le_bytes());
         bytes[0x208..0x20c].copy_from_slice(&0x8765_4321_u32.to_le_bytes());
         bytes[0x210] = 0xff;
-        bytes[0x218..0x21a].copy_from_slice(&[0xff, b'M']);
-        bytes[0x228..0x230].copy_from_slice(&2_u64.to_le_bytes());
-        bytes[0x230..0x238].copy_from_slice(&15_u64.to_le_bytes());
         bytes
+    }
+
+    fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+        SliceMemory {
+            base: 0x1000,
+            bytes,
+        }
     }
 
     #[test]
@@ -232,78 +210,42 @@ mod tests {
             bytes[start..start + 4].copy_from_slice(&32_768_u32.to_le_bytes());
         }
         let mut rows = Vec::new();
-        let result = walk(
-            &SliceMemory {
-                base: 0x1000,
-                bytes: &bytes,
-            },
-            0,
-            &[source(&bytes)],
-            &mut rows,
-            &mut Vec::new(),
-        );
         assert_eq!(
-            result.outcome,
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut rows),
             Outcome::Unavailable {
                 reason: "module entry unreadable"
             }
         );
         assert_eq!(rows.capacity(), 0);
-        assert_eq!(result.required_bytes, 0);
     }
 
     #[test]
     fn module_uses_real_variant_and_definition_authentication() {
         let bytes = fixture();
         let mut rows = vec![Row::default(); 1];
-        let mut names = vec![0; 2];
-        let result = walk(
-            &SliceMemory {
-                base: 0x1000,
-                bytes: &bytes,
-            },
-            0,
-            &[source(&bytes)],
-            &mut rows,
-            &mut names,
+        assert_eq!(
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut rows),
+            Outcome::Rows { len: 1 }
         );
-        assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(
             (rows[0].slot, rows[0].definition_token),
             (u32::MAX, 0x8765_4321)
         );
-        assert_eq!(names, [0xff, b'M']);
         assert_eq!(rows[0].definition_active, 0xff);
     }
 
     #[test]
-    fn module_names_never_clip_and_null_definitions_are_unavailable() {
+    fn module_names_are_never_read_and_null_definitions_are_unavailable() {
         let mut bytes = fixture();
-        let result = walk(
-            &SliceMemory {
-                base: 0x1000,
-                bytes: &bytes,
-            },
-            0,
-            &[source(&bytes)],
-            &mut vec![Row::default(); 1],
-            &mut vec![0; 1],
+        // The name header is content: a corrupt one no longer denies the row.
+        bytes[0x218..0x238].fill(0xff);
+        assert_eq!(
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut Vec::new()),
+            Outcome::Rows { len: 1 }
         );
-        assert_eq!(result.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(result.required_bytes, 2);
         bytes[0x188..0x190].fill(0);
         assert!(matches!(
-            walk(
-                &SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes
-                },
-                0,
-                &[source(&bytes)],
-                &mut vec![Row::default(); 1],
-                &mut vec![0; 8]
-            )
-            .outcome,
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut Vec::new()),
             Outcome::Unavailable { .. }
         ));
     }
@@ -336,31 +278,28 @@ mod tests {
             bytes[start + 8..start + 16].copy_from_slice(&0x1200_u64.to_le_bytes());
         }
         let mut memory = Trace {
-            memory: SliceMemory {
-                base: 0x1000,
-                bytes: &bytes,
-            },
+            memory: memory(&bytes),
             reads: Default::default(),
             blocked: None,
         };
         let variants = [source(&bytes)];
         let mut rows = Vec::new();
-        let mut names = Vec::new();
-        let result = walk(&memory, 0, &variants, &mut rows, &mut names);
-        assert_eq!(result.outcome, Outcome::Rows { len: COUNT });
+        assert_eq!(
+            walk(&memory, 0, &variants, &mut rows),
+            Outcome::Rows { len: COUNT }
+        );
         assert_eq!((rows[32].source_ordinal, rows[32].slot), (32, 132));
-        assert_eq!(&names[64..], &[0xff, b'M']);
         let reads = memory.reads.take();
         rows.truncate(32);
-        names.truncate(64);
-        let result = walk(&memory, 0, &variants, &mut rows, &mut names);
-        assert_eq!(result.outcome, Outcome::Rows { len: COUNT });
-        assert_eq!((result.bytes_len, result.required_bytes), (66, 66));
+        assert_eq!(
+            walk(&memory, 0, &variants, &mut rows),
+            Outcome::Rows { len: COUNT }
+        );
         assert_eq!(memory.reads.take(), reads);
         memory.blocked = Some(0x1400 + 32 * equipment_module_entry::STRIDE);
         let mut failed_rows = Vec::new();
         assert_eq!(
-            walk(&memory, 0, &variants, &mut failed_rows, &mut Vec::new()).outcome,
+            walk(&memory, 0, &variants, &mut failed_rows),
             Outcome::Unavailable {
                 reason: "module entry unreadable"
             }

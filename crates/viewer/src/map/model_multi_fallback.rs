@@ -48,6 +48,8 @@ pub struct Inputs<'a, 'b> {
     pub countries: &'a BTreeMap<u32, ModelCountry>,
     pub links: &'a BTreeMap<u32, u32>,
     pub definitions: &'a BTreeMap<u64, &'b VariantDefinitionRow>,
+    /// Spells the definitions' equipment type tokens.
+    pub tokens: &'a crate::table_access::TokenNames<'b>,
     pub viewing_country_ref: u32,
     pub dlc_names: &'a BTreeSet<String>,
     pub registered: &'a std::collections::HashSet<String>,
@@ -443,8 +445,7 @@ fn pair_candidates<'a>(
     definition: &VariantDefinitionRow,
     country_ref: u32,
 ) -> Result<Vec<Row>, String> {
-    let equipment_key = std::str::from_utf8(&definition.equipment_name)
-        .map_err(|_| format!("variant {} equipment key is not UTF-8", variant.handle))?;
+    let equipment_key = inputs.content.equipment_key(inputs.tokens, definition)?;
     let equipment = inputs
         .content
         .equipment_model(equipment_key)

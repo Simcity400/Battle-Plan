@@ -144,8 +144,11 @@ impl<'a> Prepared<'a> {
             return Err("SimulationFeatures must have one complete row".into());
         };
         let module_categories = enabled_module_categories(features.dlc_mask);
+        let tokens =
+            crate::table_access::TokenNames::new(frame).map_err(|error| error.to_string())?;
         Self::from_rows(
             content,
+            &tokens,
             variants,
             upgrades,
             available,
@@ -156,6 +159,7 @@ impl<'a> Prepared<'a> {
 
     fn from_rows(
         content: &'a Content,
+        tokens: &crate::table_access::TokenNames<'_>,
         definitions: &'a [VariantDefinitionRow],
         upgrades: &[VariantUpgradeRow],
         available: &[AvailableEquipmentVariantRow],
@@ -186,13 +190,21 @@ impl<'a> Prepared<'a> {
         let mut invalid_by_archetype = BTreeMap::new();
         let mut invalid_unknown = None;
         for row in definitions {
-            match build_variant(content, row, &links, &upgrade_sums, module_categories) {
+            match build_variant(
+                content,
+                tokens,
+                row,
+                &links,
+                &upgrade_sums,
+                module_categories,
+            ) {
                 Ok(variant) => {
                     states.push(VariantState::Ready(variants.len()));
                     variants.push(variant);
                 }
                 Err(error) => {
-                    let archetype = std::str::from_utf8(&row.equipment_name)
+                    let archetype = content
+                        .equipment_key(tokens, row)
                         .ok()
                         .and_then(|key| content.archetype(key).ok());
                     let index = states.len();
@@ -336,13 +348,13 @@ impl<'a> Prepared<'a> {
 
 fn build_variant<'a>(
     content: &'a Content,
+    tokens: &crate::table_access::TokenNames<'_>,
     row: &'a VariantDefinitionRow,
     links: &BTreeMap<u32, u32>,
     upgrade_sums: &BTreeMap<u64, i32>,
     module_categories: u64,
 ) -> Result<legacy::Variant<'a>, String> {
-    let key = std::str::from_utf8(&row.equipment_name)
-        .map_err(|_| format!("variant {} has a non-UTF8 equipment key", row.id))?;
+    let key = content.equipment_key(tokens, row)?;
     let model = content
         .equipment_model(key)
         .map_err(|error| format!("variant {}: {error}", row.id))?;

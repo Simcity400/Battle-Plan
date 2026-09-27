@@ -71,8 +71,6 @@ pub struct Sources<'a, T> {
 pub struct Capacities {
     pub rows: [usize; N],
     pub definition_bytes: usize,
-    pub module_bytes: usize,
-    pub upgrade_bytes: usize,
     pub conveyor_name_bytes: usize,
     pub line_custom_name_bytes: usize,
     pub license_handles: usize,
@@ -86,8 +84,6 @@ impl Default for Capacities {
                 8192, 16384, 32768, 1024,
             ],
             definition_bytes: 128 * 1024,
-            module_bytes: 128 * 1024,
-            upgrade_bytes: 128 * 1024,
             conveyor_name_bytes: 128 * 1024,
             line_custom_name_bytes: 16 * 1024,
             license_handles: 4096,
@@ -102,8 +98,6 @@ pub(crate) struct Variants {
     stats: CaptureRows<cequipment_variant::StatsRow>,
     upgrades: CaptureRows<cequipment_upgrades_instance::Row>,
     definition_bytes: Arena<u8>,
-    module_bytes: Arena<u8>,
-    upgrade_bytes: Arena<u8>,
 }
 
 impl Variants {
@@ -114,8 +108,6 @@ impl Variants {
             stats: CaptureRows::new(capacities.rows[5]),
             upgrades: CaptureRows::new(capacities.rows[6]),
             definition_bytes: Arena::new(capacities.definition_bytes),
-            module_bytes: Arena::new(capacities.module_bytes),
-            upgrade_bytes: Arena::new(capacities.upgrade_bytes),
         }
     }
 
@@ -126,8 +118,6 @@ impl Variants {
             stats: CaptureRows::new(0),
             upgrades: CaptureRows::new(0),
             definition_bytes: Arena::new(0),
-            module_bytes: Arena::new(0),
-            upgrade_bytes: Arena::new(0),
         }
     }
 
@@ -137,8 +127,6 @@ impl Variants {
         self.stats.reset();
         self.upgrades.reset();
         self.definition_bytes.reset();
-        self.module_bytes.reset();
-        self.upgrade_bytes.reset();
     }
 
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -147,8 +135,6 @@ impl Variants {
             + self.stats.allocated_bytes()
             + self.upgrades.allocated_bytes()
             + self.definition_bytes.allocated_bytes()
-            + self.module_bytes.allocated_bytes()
-            + self.upgrade_bytes.allocated_bytes()
     }
 
     fn grow(&mut self, capacities: &mut Capacities) {
@@ -164,14 +150,6 @@ impl Variants {
             .definition_bytes
             .max(self.definition_bytes.first.capacity());
         self.definition_bytes.grow(&mut capacities.definition_bytes);
-        capacities.module_bytes = capacities
-            .module_bytes
-            .max(self.module_bytes.first.capacity());
-        self.module_bytes.grow(&mut capacities.module_bytes);
-        capacities.upgrade_bytes = capacities
-            .upgrade_bytes
-            .max(self.upgrade_bytes.first.capacity());
-        self.upgrade_bytes.grow(&mut capacities.upgrade_bytes);
     }
 
     pub(crate) fn fail(&mut self, reason: &'static str, hour: i32, force_full: bool) {
@@ -221,32 +199,19 @@ impl Variants {
             self.modules.outcome = skipped;
             self.stats.outcome = skipped;
             self.upgrades.outcome = skipped;
-            self.module_bytes.reset();
-            self.upgrade_bytes.reset();
             return ticks;
         }
         reads.select(TABLES[4]);
         let begin = qpc();
-        capture_text(
-            &mut self.modules,
-            &mut self.module_bytes,
-            source,
-            |source, rows, arena| {
-                equipment_module_container::walk(memory, base, source, rows, arena)
-            },
-        );
-        self.stats.outcome = match source {
-            Ok(source) => cequipment_variant::walk_stats(memory, source, &mut self.stats.rows),
-            Err(reason) => Outcome::Unavailable { reason },
-        };
-        capture_text(
-            &mut self.upgrades,
-            &mut self.upgrade_bytes,
-            source,
-            |source, rows, arena| {
-                cequipment_upgrades_instance::walk(memory, base, source, rows, arena)
-            },
-        );
+        capture_source(&mut self.modules, source, |source, rows| {
+            equipment_module_container::walk(memory, base, source, rows)
+        });
+        capture_source(&mut self.stats, source, |source, rows| {
+            cequipment_variant::walk_stats(memory, source, rows)
+        });
+        capture_source(&mut self.upgrades, source, |source, rows| {
+            cequipment_upgrades_instance::walk(memory, base, source, rows)
+        });
         ticks[4] = elapsed(begin);
         ticks
     }
@@ -1761,7 +1726,18 @@ impl Captured {
                 },
             ),
             definitions(&self.variants.definitions, &self.variants.definition_bytes).into(),
-            modules(&self.variants.modules, &self.variants.module_bytes).into(),
+            table::<tables::VariantModules, _>(
+                self.variants.modules.outcome,
+                &self.variants.modules.rows,
+                |r| rows::VariantModuleRow {
+                    variant: r.variant,
+                    source_ordinal: r.source_ordinal,
+                    slot: r.slot,
+                    definition_token: r.definition_token,
+                    definition_active: r.definition_active,
+                },
+            )
+            .into(),
             table::<tables::VariantStats, _>(
                 self.variants.stats.outcome,
                 &self.variants.stats.rows,
@@ -1771,7 +1747,17 @@ impl Captured {
                 },
             )
             .into(),
-            upgrades(&self.variants.upgrades, &self.variants.upgrade_bytes).into(),
+            table::<tables::VariantUpgrades, _>(
+                self.variants.upgrades.outcome,
+                &self.variants.upgrades.rows,
+                |r| rows::VariantUpgradeRow {
+                    variant: r.variant,
+                    source_ordinal: r.source_ordinal,
+                    definition_token: r.definition_token,
+                    level: r.level,
+                },
+            )
+            .into(),
             scalar_table::<tables::ArmyUpgradeGroups, _>(
                 projection.as_deref_mut(),
                 self.groups.outcome,
@@ -2033,6 +2019,17 @@ fn capture_text<R>(
     arena.required = result.required_bytes;
 }
 
+fn capture_source<R>(
+    rows: &mut CaptureRows<R>,
+    source: Result<&[cequipment_variant::RegistryRow], &'static str>,
+    walk: impl FnOnce(&[cequipment_variant::RegistryRow], &mut Vec<R>) -> Outcome,
+) {
+    rows.outcome = match source {
+        Ok(source) => walk(source, &mut rows.rows),
+        Err(reason) => Outcome::Unavailable { reason },
+    };
+}
+
 fn text(arena: &[u8], span: cequipment_variant::TextSpan) -> Option<&[u8]> {
     arena.get(span.start..span.start.checked_add(span.len)?)
 }
@@ -2067,12 +2064,7 @@ fn definitions(
     arena: &Arena<u8>,
 ) -> TableView {
     let bytes = match checked_text(rows, arena, |r| {
-        [
-            r.display_name,
-            r.variant_name,
-            r.equipment_name,
-            r.explicit_entity,
-        ]
+        [r.display_name, r.variant_name, r.explicit_entity]
     }) {
         Ok(bytes) => bytes,
         Err(failure) => return failure,
@@ -2089,38 +2081,8 @@ fn definitions(
             mission_mask: r.identity.mission_mask,
             display_name: text(bytes, r.display_name).unwrap().to_vec(),
             variant_name: text(bytes, r.variant_name).unwrap().to_vec(),
-            equipment_name: text(bytes, r.equipment_name).unwrap().to_vec(),
             explicit_entity: text(bytes, r.explicit_entity).unwrap().to_vec(),
         }
-    })
-}
-
-fn modules(rows: &CaptureRows<equipment_module_container::Row>, arena: &Arena<u8>) -> TableView {
-    let bytes = match checked_text(rows, arena, |r| [r.definition_name]) {
-        Ok(bytes) => bytes,
-        Err(failure) => return failure,
-    };
-    table::<tables::VariantModules, _>(rows.outcome, &rows.rows, |r| rows::VariantModuleRow {
-        variant: r.variant,
-        source_ordinal: r.source_ordinal,
-        slot: r.slot,
-        definition_token: r.definition_token,
-        definition_active: r.definition_active,
-        definition_name: text(bytes, r.definition_name).unwrap().to_vec(),
-    })
-}
-
-fn upgrades(rows: &CaptureRows<cequipment_upgrades_instance::Row>, arena: &Arena<u8>) -> TableView {
-    let bytes = match checked_text(rows, arena, |r| [r.definition_name]) {
-        Ok(bytes) => bytes,
-        Err(failure) => return failure,
-    };
-    table::<tables::VariantUpgrades, _>(rows.outcome, &rows.rows, |r| rows::VariantUpgradeRow {
-        variant: r.variant,
-        source_ordinal: r.source_ordinal,
-        definition_token: r.definition_token,
-        level: r.level,
-        definition_name: text(bytes, r.definition_name).unwrap().to_vec(),
     })
 }
 
@@ -2541,8 +2503,6 @@ pub(crate) mod production_rest_test_kit {
         Capacities {
             rows: [8; N],
             definition_bytes: 64,
-            module_bytes: 64,
-            upgrade_bytes: 64,
             conveyor_name_bytes: 64,
             line_custom_name_bytes: 64,
             license_handles: 64,
@@ -2755,22 +2715,6 @@ mod tests {
                     assert_eq!(counts[table.index()], engine::memory::ReadCounts::ZERO);
                 }
             }
-            if !details_active {
-                assert_eq!(
-                    (
-                        captured.variants.module_bytes.len,
-                        captured.variants.module_bytes.required
-                    ),
-                    (0, 0)
-                );
-                assert_eq!(
-                    (
-                        captured.variants.upgrade_bytes.len,
-                        captured.variants.upgrade_bytes.required
-                    ),
-                    (0, 0)
-                );
-            }
         }
     }
 
@@ -2828,8 +2772,6 @@ mod tests {
         Capacities {
             rows: [2; N],
             definition_bytes: 16,
-            module_bytes: 16,
-            upgrade_bytes: 16,
             conveyor_name_bytes: 16,
             line_custom_name_bytes: 16,
             license_handles: 4,
@@ -3277,12 +3219,9 @@ mod tests {
                 ..Default::default()
             },
             display_name: TextSpan { start: 0, len: 2 },
-            variant_name: TextSpan { start: 2, len: 0 },
-            equipment_name: TextSpan { start: 2, len: 2 },
+            variant_name: TextSpan { start: 2, len: 2 },
             explicit_entity: TextSpan { start: 3, len: 1 },
         };
-        captured.variants.module_bytes.first[..2].copy_from_slice(&[0xff, 0]);
-        captured.variants.module_bytes.len = 2;
         captured.variants.modules.outcome = Outcome::Rows { len: 2 };
         captured.variants.modules.rows[0] = equipment_module_container::Row {
             variant: u64::MAX,
@@ -3290,30 +3229,26 @@ mod tests {
             slot: 3,
             definition_token: u32::MAX,
             definition_active: 0xfe,
-            definition_name: TextSpan { start: 0, len: 2 },
         };
         captured.variants.modules.rows[1] = equipment_module_container::Row {
             source_ordinal: 1,
             slot: 9,
             ..captured.variants.modules.rows[0]
         };
-        captured.variants.upgrade_bytes.first[0] = 0xff;
-        captured.variants.upgrade_bytes.len = 1;
         captured.variants.upgrades.outcome = Outcome::Rows { len: 1 };
         captured.variants.upgrades.rows[0] = cequipment_upgrades_instance::Row {
             variant: u64::MAX,
             source_ordinal: u32::MAX,
             definition_token: i32::MIN,
             level: u8::MAX,
-            definition_name: TextSpan { start: 0, len: 1 },
         };
         let views = captured.tables();
         let definition = &complete::<tables::VariantDefinitions>(&views[3])[0];
         assert_eq!(
-            (&definition.display_name[..], &definition.equipment_name[..]),
+            (&definition.display_name[..], &definition.variant_name[..]),
             (&[0xff, 0][..], &[0x80, b'A'][..])
         );
-        assert!(definition.variant_name.is_empty());
+        assert_eq!(definition.explicit_entity, b"A");
         assert_eq!(
             (
                 definition.equipment_token,
@@ -3326,19 +3261,17 @@ mod tests {
         assert_eq!((modules[0].source_ordinal, modules[0].slot), (1, 9));
         assert_eq!((modules[1].source_ordinal, modules[1].slot), (7, 3));
         assert_eq!(modules[0].definition_active, 0xfe);
-        assert_eq!(modules[0].definition_name, [0xff, 0]);
         let upgrade = &complete::<tables::VariantUpgrades>(&views[6])[0];
         assert_eq!(
             (upgrade.definition_token, upgrade.level),
             (i32::MIN, u8::MAX)
         );
-        assert_eq!(upgrade.definition_name, [0xff]);
-        captured.variants.modules.rows[0].definition_name = TextSpan {
+        captured.variants.definitions.rows[0].variant_name = TextSpan {
             start: usize::MAX,
             len: 2,
         };
         assert!(matches!(
-            captured.tables()[4],
+            captured.tables()[3],
             TableView::Unavailable { .. }
         ));
         captured.reset();
@@ -3468,14 +3401,15 @@ mod tests {
         };
         captured.stockpiles.rows[0].ordinal = 0;
         captured.stockpiles.rows[1].ordinal = 1;
-        captured.variants.module_bytes.required = 33;
+        captured.variants.definition_bytes.required = 33;
         assert!(matches!(
             captured.tables()[1],
             TableView::Truncated { missing: 5, .. }
         ));
         captured.grow(&mut capacities);
         assert!(
-            captured.stockpiles.rows.len() >= 7 && captured.variants.module_bytes.first.len() >= 33
+            captured.stockpiles.rows.len() >= 7
+                && captured.variants.definition_bytes.first.len() >= 33
         );
         let allocated = captured.allocated_bytes();
         captured.reset();
@@ -3495,9 +3429,9 @@ mod tests {
             before
         );
         variants.definitions.rows.resize(33, Default::default());
-        variants.module_bytes.first.resize(65, 0);
+        variants.definition_bytes.first.resize(65, 0);
         let row_capacity = variants.definitions.rows.capacity();
-        let byte_capacity = variants.module_bytes.first.capacity();
+        let byte_capacity = variants.definition_bytes.first.capacity();
         variants.fail("variant worker stopped", 0, true);
         captured.restore_variants(variants);
         assert!(captured.outcomes()[3..7].iter().all(|outcome| {
@@ -3509,7 +3443,7 @@ mod tests {
         let allocated = captured.allocated_bytes();
         captured.grow(&mut capacities);
         assert_eq!(capacities.rows[3], row_capacity);
-        assert_eq!(capacities.module_bytes, byte_capacity);
+        assert_eq!(capacities.definition_bytes, byte_capacity);
         assert_eq!(captured.allocated_bytes(), allocated);
         let mut variants = captured.take_variants();
         variants.fail("variant worker stopped", 0, false);
@@ -3713,8 +3647,6 @@ mod tests {
             let capacities = Capacities {
                 rows,
                 definition_bytes: 0,
-                module_bytes: 0,
-                upgrade_bytes: 0,
                 conveyor_name_bytes: 64,
                 line_custom_name_bytes: 64,
                 license_handles: 64,
@@ -3752,8 +3684,6 @@ mod tests {
         let capacities = Capacities {
             rows: [1; N],
             definition_bytes: 0,
-            module_bytes: 0,
-            upgrade_bytes: 0,
             conveyor_name_bytes: 2,
             line_custom_name_bytes: 0,
             license_handles: 0,
@@ -3823,3 +3753,7 @@ mod tests {
         assert!(capacities.license_handles >= 4096);
     }
 }
+
+#[cfg(test)]
+#[path = "variants_scale_tests.rs"]
+mod variant_scale_tests;

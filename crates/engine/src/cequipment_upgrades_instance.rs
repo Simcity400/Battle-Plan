@@ -1,8 +1,7 @@
 //! CEquipmentUpgradesInstance, pinned a729; embedded at CEquipmentVariant+68.
 
 use crate::{
-    Memory, cequipment_upgrade,
-    cequipment_variant::{self, Literal, TextOutcome, TextSpan, text_failure},
+    Memory, cequipment_upgrade, cequipment_variant,
     cpdx_array::Array,
     equipment_upgrade_entry,
     memory::{RecordField, RecordLayout, RecordSources},
@@ -18,17 +17,19 @@ pub const ENTRIES_CAPACITY: usize = 0x10;
 /// CEquipmentUpgradesInstance entry-vector u32 count; legacy variant+7C normalizes to instance+14.
 pub const ENTRIES_COUNT: usize = 0x14;
 
+/// The upgrade is named by `definition_token`: CEquipmentUpgrade's
+/// constructor 1415251B0 copies the authored key into its name and adds the
+/// token from that same string, so the name is content and is not copied.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub variant: u64,
     pub source_ordinal: u32,
     pub definition_token: i32,
     pub level: u8,
-    pub definition_name: TextSpan,
 }
 
 /// Reads the full native upgrade identity and byte level. Pointer values and
-/// entry padding never escape into replay fields. Names use the caller's arena.
+/// entry padding never escape into replay fields.
 /// `variants` must be the same complete registry census used for variant
 /// definitions. Missing source tables cannot be represented by a shorter slice.
 /// Destinations grow after bounded payload reads; callers must permit allocation.
@@ -37,15 +38,12 @@ pub fn walk(
     base: usize,
     variants: &[cequipment_variant::RegistryRow],
     output: &mut Vec<Row>,
-    bytes: &mut Vec<u8>,
-) -> TextOutcome {
+) -> Outcome {
     let result = (|| {
         let expected = base
             .checked_add(VTABLE_RVA)
             .ok_or("upgrade module address overflow")?;
         let mut len = 0_usize;
-        let mut bytes_len = 0_usize;
-        let mut required_bytes = 0_usize;
         let definition_vtable = base
             .checked_add(cequipment_upgrade::VTABLE_RVA)
             .ok_or("upgrade definition module address overflow")?;
@@ -60,30 +58,23 @@ pub fn walk(
             destination_offset: 0,
             len: 9,
         }];
-        const DEFINITIONS: [RecordField; 2] = [
-            RecordField {
-                source_offset: 0,
-                destination_offset: 0,
-                len: 12,
-            },
-            RecordField {
-                source_offset: cequipment_upgrade::NAME,
-                destination_offset: 12,
-                len: 32,
-            },
-        ];
+        const DEFINITIONS: [RecordField; 1] = [RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 12,
+        }];
         const HEADERS_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&HEADERS, 24).expect("valid record layout");
         const ENTRIES_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&ENTRIES_FIELDS, 9).expect("valid record layout");
         const DEFINITIONS_LAYOUT: RecordLayout<'static> =
-            RecordLayout::new(&DEFINITIONS, 44).expect("valid record layout");
+            RecordLayout::new(&DEFINITIONS, 12).expect("valid record layout");
         let mut pointers = [0; BATCH];
         let mut headers = [0; BATCH * 24];
         let mut entries = [0; BATCH * 9];
         let mut entry_pointers = [0; BATCH];
         let mut definitions = [0; BATCH];
-        let mut definition_fields = [0; BATCH * 44];
+        let mut definition_fields = [0; BATCH * 12];
         for sources in variants.chunks(BATCH) {
             for (pointer, source) in pointers.iter_mut().zip(sources) {
                 *pointer = source.pointer();
@@ -149,51 +140,29 @@ pub fn walk(
                         if definitions[slot] == 0 {
                             return Err("upgrade definition pointer null or invalid");
                         }
-                        if definition_copied < (slot + 1) * DEFINITIONS.len() {
-                            return Err("upgrade definition identity or name unreadable");
+                        if definition_copied <= slot {
+                            return Err("upgrade definition identity unreadable");
                         }
-                        let entry = &entries[slot * 9..(slot + 1) * 9];
-                        let field = &definition_fields[slot * 44..(slot + 1) * 44];
+                        let field = &definition_fields[slot * 12..(slot + 1) * 12];
                         if u64::from_le_bytes(field[..8].try_into().unwrap())
                             != definition_vtable as u64
                         {
                             return Err("upgrade definition vtable mismatch");
                         }
-                        let definition_token = i32::from_le_bytes(field[8..12].try_into().unwrap());
-                        let name = Literal::from_header(field[12..].try_into().unwrap())?;
-                        let size = name.len;
-                        required_bytes = required_bytes
-                            .checked_add(size)
-                            .ok_or("upgrade name size overflow")?;
-                        name.copy_growing(
-                            memory,
-                            bytes,
-                            bytes_len,
-                            "upgrade name allocation failed",
-                        )?;
                         output[len] = Row {
                             variant,
                             source_ordinal: first + slot as u32,
-                            definition_token,
-                            level: entry[8],
-                            definition_name: TextSpan {
-                                start: bytes_len,
-                                len: size,
-                            },
+                            definition_token: i32::from_le_bytes(field[8..12].try_into().unwrap()),
+                            level: entries[slot * 9 + 8],
                         };
-                        bytes_len += size;
                         len += 1;
                     }
                 }
             }
         }
-        Ok(TextOutcome {
-            outcome: Outcome::Rows { len },
-            bytes_len,
-            required_bytes,
-        })
+        Ok(Outcome::Rows { len })
     })();
-    result.unwrap_or_else(text_failure)
+    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
 #[cfg(test)]
@@ -202,15 +171,14 @@ mod tests {
     use crate::{memory::SliceMemory, read_census::ReadCensus};
 
     fn source(bytes: &[u8]) -> crate::cequipment_variant::RegistryRow {
-        crate::cequipment_variant::RegistryRow::read(
-            &SliceMemory {
-                base: 0x1000,
-                bytes,
-            },
-            0,
-            0x1000,
-        )
-        .unwrap()
+        crate::cequipment_variant::RegistryRow::read(&memory(bytes), 0, 0x1000).unwrap()
+    }
+
+    fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+        SliceMemory {
+            base: 0x1000,
+            bytes,
+        }
     }
 
     fn fixture() -> Vec<u8> {
@@ -226,9 +194,6 @@ mod tests {
         bytes[0x189..0x190].fill(0xce);
         bytes[0x200..0x208].copy_from_slice(&(cequipment_upgrade::VTABLE_RVA as u64).to_le_bytes());
         bytes[0x208..0x20c].copy_from_slice(&i32::MIN.to_le_bytes());
-        bytes[0x218] = b'X';
-        bytes[0x228..0x230].copy_from_slice(&1_u64.to_le_bytes());
-        bytes[0x230..0x238].copy_from_slice(&15_u64.to_le_bytes());
         bytes
     }
 
@@ -240,24 +205,13 @@ mod tests {
             bytes[start..start + 4].copy_from_slice(&32_768_u32.to_le_bytes());
         }
         let mut rows = Vec::new();
-        let result = walk(
-            &SliceMemory {
-                base: 0x1000,
-                bytes: &bytes,
-            },
-            0,
-            &[source(&bytes)],
-            &mut rows,
-            &mut Vec::new(),
-        );
         assert_eq!(
-            result.outcome,
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut rows),
             Outcome::Unavailable {
                 reason: "upgrade entry unreadable"
             }
         );
         assert_eq!(rows.capacity(), 0);
-        assert_eq!(result.required_bytes, 0);
     }
 
     #[test]
@@ -282,47 +236,36 @@ mod tests {
                         return false;
                     }
                 }
-                SliceMemory {
-                    base: 0x1000,
-                    bytes: self.0,
-                }
-                .copy(address, output)
+                memory(self.0).copy(address, output)
             }
         }
         let variants = [source(&bytes)];
         let mut rows = vec![Row::default(); COUNT];
-        let mut names = vec![0; COUNT];
         let memory = NoPadding(&bytes);
         let census = ReadCensus::new(&memory);
-        let result = walk(&census, 0, &variants, &mut rows, &mut names);
-        assert_eq!(result.outcome, Outcome::Rows { len: COUNT });
+        assert_eq!(
+            walk(&census, 0, &variants, &mut rows),
+            Outcome::Rows { len: COUNT }
+        );
         assert_eq!((rows[64].source_ordinal, rows[64].level), (64, 64));
-        assert_eq!(names, [b'X'; COUNT]);
+        // Header, then entries and definitions per 64-entry batch.
         let counts = (census.calls(), census.spans(), census.bytes());
-        assert_eq!(counts, (5, 1 + COUNT * 3, 24 + COUNT * 53));
+        assert_eq!(counts, (5, 1 + COUNT * 2, 24 + COUNT * 21));
         for initial in [0, 64] {
             let mut growing_rows = vec![Row::default(); initial];
-            let mut growing_names = vec![0; initial];
             census.reset();
-            let result = walk(&census, 0, &variants, &mut growing_rows, &mut growing_names);
-            assert_eq!(result.outcome, Outcome::Rows { len: COUNT });
-            assert_eq!((result.bytes_len, result.required_bytes), (COUNT, COUNT));
+            assert_eq!(
+                walk(&census, 0, &variants, &mut growing_rows),
+                Outcome::Rows { len: COUNT }
+            );
             assert_eq!(growing_rows, rows);
-            assert_eq!(growing_names, names);
             assert_eq!((census.calls(), census.spans(), census.bytes()), counts);
         }
         bytes[0x400 + 64 * equipment_upgrade_entry::STRIDE
             ..0x408 + 64 * equipment_upgrade_entry::STRIDE]
             .fill(0);
         assert_eq!(
-            walk(
-                &NoPadding(&bytes),
-                0,
-                &variants,
-                &mut Vec::new(),
-                &mut Vec::new()
-            )
-            .outcome,
+            walk(&NoPadding(&bytes), 0, &variants, &mut Vec::new()),
             Outcome::Unavailable {
                 reason: "upgrade definition pointer null or invalid"
             }
@@ -330,195 +273,60 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_resolves_definition_and_native_byte_without_padding() {
-        let bytes = fixture();
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        };
+    fn upgrade_resolves_definition_and_native_byte_without_padding_or_name() {
+        let mut bytes = fixture();
+        // The name header is content: a corrupt one no longer denies the row.
+        bytes[0x218..0x238].fill(0xff);
         let mut rows = vec![Row::default(); 1];
-        let mut names = vec![0; 1];
         assert_eq!(
-            walk(&memory, 0, &[source(&bytes)], &mut rows, &mut names).outcome,
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut rows),
             Outcome::Rows { len: 1 }
         );
         assert_eq!(
             (rows[0].variant, rows[0].definition_token, rows[0].level),
             (0x8000_0000_0000_0046, i32::MIN, 255)
         );
-        assert_eq!(names, [b'X']);
-    }
-
-    #[test]
-    fn heap_name_growth_keeps_occurrences_costs_and_first_faults() {
-        struct Fault<'a> {
-            memory: SliceMemory<'a>,
-            blocked: Option<(usize, usize, usize)>,
-            seen: std::cell::Cell<usize>,
-        }
-        impl Memory for Fault<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if let Some((blocked, len, occurrence)) = self.blocked
-                    && address == blocked
-                    && output.len() == len
-                {
-                    self.seen.set(self.seen.get() + 1);
-                    if self.seen.get() == occurrence {
-                        return false;
-                    }
-                }
-                self.memory.copy(address, output)
-            }
-        }
-        let mut bytes = fixture();
-        bytes.resize(0x440, 0);
-        bytes[0x78..0x7c].copy_from_slice(&2_u32.to_le_bytes());
-        bytes[0x7c..0x80].copy_from_slice(&2_u32.to_le_bytes());
-        bytes[0x190..0x198].copy_from_slice(&0x1200_u64.to_le_bytes());
-        bytes[0x198] = 7;
-        bytes[0x218..0x220].copy_from_slice(&0x1400_u64.to_le_bytes());
-        bytes[0x228..0x230].copy_from_slice(&20_u64.to_le_bytes());
-        bytes[0x230..0x238].copy_from_slice(&31_u64.to_le_bytes());
-        bytes[0x400..0x414].copy_from_slice(b"abcdefghijklmnopqrst");
-        let variants = [source(&bytes)];
-        for (blocked, expected) in [
-            (None, Outcome::Rows { len: 2 }),
-            (
-                Some((0x1200, 12, 1)),
-                Outcome::Unavailable {
-                    reason: "upgrade definition identity or name unreadable",
-                },
-            ),
-            (
-                Some((0x1400, 20, 1)),
-                Outcome::Unavailable {
-                    reason: "equipment string bytes or terminator unreadable",
-                },
-            ),
-            (
-                Some((0x1414, 1, 1)),
-                Outcome::Unavailable {
-                    reason: "equipment string bytes or terminator unreadable",
-                },
-            ),
-            (
-                Some((0x1400, 20, 2)),
-                Outcome::Unavailable {
-                    reason: "equipment string bytes or terminator unreadable",
-                },
-            ),
-        ] {
-            let mut expected_counts = None;
-            for initial in [40, 0, 20] {
-                let memory = Fault {
-                    memory: SliceMemory {
-                        base: 0x1000,
-                        bytes: &bytes,
-                    },
-                    blocked,
-                    seen: std::cell::Cell::new(0),
-                };
-                let census = ReadCensus::new(&memory);
-                let mut rows = vec![Row::default(); usize::from(initial == 40) * 2];
-                let mut names = vec![0; initial];
-                let result = walk(&census, 0, &variants, &mut rows, &mut names);
-                assert_eq!(result.outcome, expected);
-                let counts = (census.calls(), census.spans(), census.bytes());
-                assert_eq!(counts, *expected_counts.get_or_insert(counts));
-                assert_eq!(rows.len(), 2);
-                if blocked.is_none() {
-                    assert_eq!(counts, (5, 11, 172));
-                    assert_eq!((result.bytes_len, result.required_bytes), (40, 40));
-                    assert_eq!(
-                        names.as_slice(),
-                        b"abcdefghijklmnopqrstabcdefghijklmnopqrst"
-                    );
-                    assert_eq!((rows[0].source_ordinal, rows[1].source_ordinal), (0, 1));
-                    assert_eq!((rows[0].level, rows[1].level), (255, 7));
-                } else {
-                    assert_eq!((result.bytes_len, result.required_bytes), (0, 0));
-                }
-            }
-        }
-        // The batched definition gather observes this later invalid pointer,
-        // but the earlier entry's payload failure still has precedence.
-        bytes[0x190..0x198].fill(0);
-        let memory = Fault {
-            memory: SliceMemory {
-                base: 0x1000,
-                bytes: &bytes,
-            },
-            blocked: Some((0x1400, 20, 1)),
-            seen: std::cell::Cell::new(0),
-        };
-        assert_eq!(
-            walk(&memory, 0, &variants, &mut Vec::new(), &mut Vec::new()).outcome,
-            Outcome::Unavailable {
-                reason: "equipment string bytes or terminator unreadable"
-            }
-        );
     }
 
     #[test]
     fn upgrade_growth_retains_rows_and_invalid_identity_does_not_become_empty() {
         let mut bytes = fixture();
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        };
-        let result = walk(
-            &memory,
-            0,
-            &[source(&bytes)],
-            &mut Vec::new(),
-            &mut Vec::new(),
+        assert_eq!(
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut Vec::new()),
+            Outcome::Rows { len: 1 }
         );
-        assert_eq!(result.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(result.required_bytes, 1);
         bytes[0x200] ^= 1;
         assert!(matches!(
-            walk(
-                &SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes
-                },
-                0,
-                &[source(&bytes)],
-                &mut Vec::new(),
-                &mut Vec::new()
-            )
-            .outcome,
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut Vec::new()),
             Outcome::Unavailable { .. }
         ));
         bytes[0x7c..0x80].fill(0);
         assert_eq!(
-            walk(
-                &SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes
-                },
-                0,
-                &[source(&bytes)],
-                &mut Vec::new(),
-                &mut Vec::new()
-            )
-            .outcome,
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut Vec::new()),
             Outcome::Rows { len: 0 }
         );
         bytes[0x68] ^= 1;
         assert!(matches!(
-            walk(
-                &SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes
-                },
-                0,
-                &[source(&bytes)],
-                &mut Vec::new(),
-                &mut Vec::new()
-            )
-            .outcome,
+            walk(&memory(&bytes), 0, &[source(&bytes)], &mut Vec::new()),
             Outcome::Unavailable { .. }
         ));
+        bytes[0x68] ^= 1;
+        bytes[0x7c..0x80].copy_from_slice(&1_u32.to_le_bytes());
+        let blocked = Blocked(&bytes, 0x1200 + 11);
+        assert_eq!(
+            walk(&blocked, 0, &[source(&bytes)], &mut Vec::new()),
+            Outcome::Unavailable {
+                reason: "upgrade definition identity unreadable"
+            }
+        );
+    }
+
+    struct Blocked<'a>(&'a [u8], usize);
+
+    impl Memory for Blocked<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            !(address..address + output.len()).contains(&self.1)
+                && memory(self.0).copy(address, output)
+        }
     }
 }

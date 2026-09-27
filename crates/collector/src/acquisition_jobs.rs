@@ -60,8 +60,6 @@ pub(crate) struct GovernanceRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub captured: governance::Captured,
-    pub registry: crate::extended::Registry,
-    pub variants: production::Variants,
     pub buildings: construction::Buildings,
     /// The technologies family's only fingerprint store, loaned for this hour.
     pub technology_fingerprints: Box<crate::slicing::SliceFingerprints>,
@@ -69,24 +67,36 @@ pub(crate) struct GovernanceRequest {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct GovernanceReport {
     pub governance: governance::CaptureReport,
-    pub variants: [u64; production::N],
     pub buildings: u64,
 }
 impl GovernanceRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
-        self.captured.allocated_bytes()
-            + self.registry.allocated_bytes()
-            + self.variants.allocated_bytes()
-            + self.buildings.allocated_bytes()
+        self.captured.allocated_bytes() + self.buildings.allocated_bytes()
     }
 
     pub(crate) fn fail(&mut self, reason: &'static str) -> GovernanceReport {
         self.captured.fail_owned_capture(self.context, reason);
+        self.buildings.fail(reason);
+        GovernanceReport::default()
+    }
+}
+/// The variant registry and its detail tables, on their daily slot. Their
+/// buffers grow from counts read during the walk, so only a worker runs it.
+pub(crate) struct VariantsRequest {
+    pub context: governance::CaptureContext,
+    pub registry: crate::extended::Registry,
+    pub variants: production::Variants,
+}
+impl VariantsRequest {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.registry.allocated_bytes() + self.variants.allocated_bytes()
+    }
+
+    pub(crate) fn fail(&mut self, reason: &'static str) -> [u64; production::N] {
         self.registry.fail(reason);
         self.variants
             .fail(reason, self.context.hour, self.context.force_full);
-        self.buildings.fail(reason);
-        GovernanceReport::default()
+        [0; production::N]
     }
 }
 /// The governance family's hourly research tables, walked beside the rest
@@ -295,6 +305,7 @@ pub(crate) enum Job {
     Divisions(DivisionsRequest),
     World(WorldRequest),
     Governance(GovernanceRequest),
+    Variants(VariantsRequest),
     Research(ResearchRequest),
     Intel(IntelRequest),
     Presentation(PresentationRequest),
@@ -338,6 +349,7 @@ pub(crate) enum Report {
     Divisions(sampling::DivisionsCopyReport),
     World(WorldReport),
     Governance(GovernanceReport),
+    Variants([u64; production::N]),
     Research(ResearchReport),
     Intel(fog::IntelCopyReport),
     Presentation(division_presentation::CaptureReport),
@@ -386,6 +398,7 @@ pub(crate) enum Role {
     Divisions,
     World,
     Governance,
+    Variants,
     Research,
     Intel,
     Presentation,
@@ -412,7 +425,7 @@ impl Role {
     fn worker_only(self) -> bool {
         matches!(
             self,
-            Self::Governance | Self::Orders | Self::Ordinary | Self::Presentation
+            Self::Governance | Self::Variants | Self::Orders | Self::Ordinary | Self::Presentation
         )
     }
     /// Shared native work follows an hourly consumer in mixed families. Detail
@@ -442,6 +455,7 @@ impl Role {
             Self::Divisions => T::Divisions,
             Self::World => T::ProvinceSupply,
             Self::Governance => T::Politics,
+            Self::Variants => T::VariantDefinitions,
             Self::Research => T::ResearchInputs,
             Self::Intel => T::UnitIntel,
             Self::Presentation => T::DivisionMovement,
@@ -513,14 +527,15 @@ impl Role {
             | Self::Relations
             | Self::Ordinary
             | Self::Slow
-            | Self::Gated => 5,
+            | Self::Gated
+            | Self::Variants => 5,
             Self::Presentation | Self::EtaInputs => 6,
             Self::Late => 7,
         }
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 42;
+pub(crate) const ROLE_COUNT: usize = 43;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -544,6 +559,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Divisions,
     Role::World,
     Role::Governance,
+    Role::Variants,
     Role::Research,
     Role::Intel,
     Role::Presentation,
@@ -592,6 +608,7 @@ impl Job {
             Self::Divisions(..) => Role::Divisions,
             Self::World(..) => Role::World,
             Self::Governance(..) => Role::Governance,
+            Self::Variants(..) => Role::Variants,
             Self::Research(..) => Role::Research,
             Self::Intel(..) => Role::Intel,
             Self::Presentation(..) => Role::Presentation,
@@ -937,30 +954,6 @@ fn run_with_memory(
                 context,
                 &mut request.technology_fingerprints,
             );
-            // The campaign registry includes variants absent from units,
-            // production and stockpiles. Keep all entries and duplicates.
-            let registry_ticks = if replay::cadence::should_walk(
-                replay::rows::TableId::VariantDefinitions,
-                context.hour,
-                context.force_full,
-            ) {
-                let begin = sampling::qpc();
-                request
-                    .registry
-                    .acquire(&cached, context.base, context.game_state);
-                sampling::qpc().saturating_sub(begin).max(0) as u64
-            } else {
-                request.registry.mark_skipped();
-                0
-            };
-            let mut variants = request.variants.capture(
-                &cached,
-                context.base,
-                request.registry.sources(),
-                context.hour,
-                context.force_full,
-            );
-            variants[3] = variants[3].saturating_add(registry_ticks);
             let buildings = request.buildings.capture(
                 &cached,
                 context.base,
@@ -970,9 +963,27 @@ fn run_with_memory(
             );
             Report::Governance(GovernanceReport {
                 governance,
-                variants,
                 buildings,
             })
+        }
+        Job::Variants(request) => {
+            let context = request.context;
+            // The campaign registry includes variants absent from units,
+            // production and stockpiles. Keep all entries and duplicates.
+            let begin = sampling::qpc();
+            request
+                .registry
+                .acquire(memory, context.base, context.game_state);
+            let registry_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
+            let mut variants = request.variants.capture(
+                memory,
+                context.base,
+                request.registry.sources(),
+                context.hour,
+                context.force_full,
+            );
+            variants[3] = variants[3].saturating_add(registry_ticks);
+            Report::Variants(variants)
         }
         Job::Research(request) => {
             let cached = request.countries.roster_view(memory);
@@ -1139,7 +1150,7 @@ fn run_with_memory(
     report
 }
 
-const WORKER_ONLY_JOBS: usize = 4;
+const WORKER_ONLY_JOBS: usize = 5;
 
 pub(crate) struct Pool {
     executor: acquisition::Pool<Job, Report>,

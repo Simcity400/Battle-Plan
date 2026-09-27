@@ -2,9 +2,9 @@ use crate::invalid;
 use replay::{
     Hour,
     frame::{DecodedFrame, TableView},
-    rows::{TableRows, TableSchema},
+    rows::{LexicalTokenRow, TableRows, TableSchema, tables},
 };
-use std::io;
+use std::{collections::BTreeMap, io};
 
 /// What one table of one decoded hour actually holds.
 ///
@@ -51,6 +51,114 @@ pub fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Available<'_, T>
     }
 }
 
+/// Content names spelled by this hour's `LexicalTokens`. Rows record an
+/// equipment type, module or upgrade by its token: the engine builds each
+/// definition's name and token from one authored key, so the spelling is the
+/// name. The exception is token 0, which `AddDynamicToken` (1424A65A0)
+/// returns for every key it rejects (empty, or starting with a digit or
+/// '-'), so it names no one key. A spelling that is not NUL-free UTF-8 names
+/// nothing here.
+pub struct TokenNames<'a> {
+    /// The hour's rows, in token order.
+    rows: &'a [LexicalTokenRow],
+    complete: bool,
+}
+
+/// Why a token has no name this hour. Formatted only when reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenError {
+    Rejected,
+    Absent(u32),
+    Missing(u32),
+    NotText(u32),
+}
+
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected => write!(f, "token 0 stands for every key the lexer rejects"),
+            Self::Absent(token) => write!(f, "token {token} is not in LexicalTokens"),
+            Self::Missing(token) => {
+                write!(f, "token {token} is among LexicalTokens' missing rows")
+            }
+            Self::NotText(token) => write!(f, "token {token} is not spelled as text"),
+        }
+    }
+}
+
+impl<'a> TokenNames<'a> {
+    pub fn new(frame: &'a DecodedFrame) -> io::Result<Self> {
+        let tokens = rows::<tables::LexicalTokens>(frame)?;
+        let rows = tokens.rows();
+        if !rows.is_sorted_by(|a, b| a.token < b.token) {
+            return Err(invalid(format!(
+                "hour {} LexicalTokens rows are not in token order",
+                frame.hour
+            )));
+        }
+        Ok(Self::from_rows(rows, tokens.is_complete()))
+    }
+
+    /// Rows already in ascending token order, as every replay table is.
+    pub fn from_rows(rows: &'a [LexicalTokenRow], complete: bool) -> Self {
+        Self { rows, complete }
+    }
+
+    /// The token's name, or why this hour cannot give one.
+    pub fn name(&self, token: u32) -> Result<&'a str, TokenError> {
+        if token == 0 {
+            return Err(TokenError::Rejected);
+        }
+        let Ok(index) = self.rows.binary_search_by_key(&token, |row| row.token) else {
+            return Err(if self.complete {
+                TokenError::Absent(token)
+            } else {
+                TokenError::Missing(token)
+            });
+        };
+        std::str::from_utf8(&self.rows[index].literal)
+            .ok()
+            .filter(|name| !name.contains('\0'))
+            .ok_or(TokenError::NotText(token))
+    }
+}
+
+/// A key as the lexer identifies it: only ASCII A-Z fold (see `TokenKeys`).
+pub fn fold_token(key: &str) -> String {
+    key.to_ascii_lowercase()
+}
+
+/// Content keys grouped by the lexer's token identity. `AddDynamicToken`
+/// (1424A65A0) finds an existing token with 1424A5EE0: an FNV-1a hash that
+/// folds only ASCII A-Z, then equal length and `_strnicmp` (142549958, whose
+/// C-locale path 14254990C also folds only A-Z). Two keys equal under that
+/// fold share one token, so a token's spelling names the one content key
+/// equal to it, and several such keys are ambiguous.
+#[derive(Clone, Debug, Default)]
+pub struct TokenKeys(BTreeMap<String, Vec<String>>);
+
+impl TokenKeys {
+    pub fn new<'k>(keys: impl IntoIterator<Item = &'k String>) -> Self {
+        let mut folded = BTreeMap::<String, Vec<String>>::new();
+        for key in keys {
+            folded.entry(fold_token(key)).or_default().push(key.clone());
+        }
+        Self(folded)
+    }
+
+    /// The content key a spelling names; `None` when content has none.
+    pub fn resolve(&self, spelling: &str) -> Result<Option<&str>, String> {
+        match self.0.get(&fold_token(spelling)).map(Vec::as_slice) {
+            None => Ok(None),
+            Some([key]) => Ok(Some(key)),
+            Some(keys) => Err(format!(
+                "token {spelling} names several content keys: {}",
+                keys.join(", ")
+            )),
+        }
+    }
+}
+
 fn typed<T: TableSchema>(rows: &TableRows, hour: Hour) -> io::Result<&[T::Row]> {
     rows.rows::<T>().ok_or_else(|| {
         invalid(format!(
@@ -58,4 +166,87 @@ fn typed<T: TableSchema>(rows: &TableRows, hour: Hour) -> io::Result<&[T::Row]> 
             T::ID
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay::rows::{LexicalTokenRow, TableId};
+
+    fn frame(view: TableView) -> DecodedFrame {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 0,
+            metrics: Default::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+        };
+        *frame.tables[TableId::LexicalTokens.index()] = view;
+        frame
+    }
+
+    #[test]
+    fn token_names_spell_text_and_refuse_everything_else() {
+        let rows = TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 7,
+                literal: b"light_tank_chassis".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 8,
+                literal: b"a\0b".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 9,
+                literal: vec![0xff],
+            },
+        ]);
+        let complete = frame(TableView::Complete(rows.clone()));
+        let names = TokenNames::new(&complete).unwrap();
+        assert_eq!(names.name(7), Ok("light_tank_chassis"));
+        for token in [8, 9] {
+            assert_eq!(names.name(token), Err(TokenError::NotText(token)));
+        }
+        assert_eq!(names.name(10), Err(TokenError::Absent(10)));
+        // Token 0 is shared by every key the lexer rejects.
+        assert_eq!(names.name(0), Err(TokenError::Rejected));
+        let truncated = frame(TableView::Truncated { rows, missing: 3 });
+        let names = TokenNames::new(&truncated).unwrap();
+        assert_eq!(names.name(7), Ok("light_tank_chassis"));
+        assert_eq!(names.name(10), Err(TokenError::Missing(10)));
+        let unavailable = frame(TableView::Unavailable {
+            reason: "not captured".into(),
+        });
+        assert_eq!(
+            TokenNames::new(&unavailable).unwrap().name(7),
+            Err(TokenError::Missing(7))
+        );
+        assert_eq!(
+            TokenError::Missing(7).to_string(),
+            "token 7 is among LexicalTokens' missing rows"
+        );
+    }
+
+    #[test]
+    fn token_keys_follow_the_lexers_ascii_fold() {
+        let keys = [
+            "Light_Tank".to_owned(),
+            "infantry".to_owned(),
+            "INFANTRY".to_owned(),
+            "\u{e9}t\u{e9}".to_owned(),
+        ];
+        let keys = TokenKeys::new(&keys);
+        assert_eq!(keys.resolve("light_tank"), Ok(Some("Light_Tank")));
+        assert_eq!(keys.resolve("LIGHT_TANK"), Ok(Some("Light_Tank")));
+        assert_eq!(keys.resolve("light_tanks"), Ok(None));
+        assert_eq!(
+            keys.resolve("Infantry"),
+            Err("token Infantry names several content keys: infantry, INFANTRY".to_owned())
+        );
+        // Only A-Z fold: other letters must match exactly.
+        assert_eq!(keys.resolve("\u{e9}t\u{e9}"), Ok(Some("\u{e9}t\u{e9}")));
+        assert_eq!(keys.resolve("\u{c9}t\u{c9}"), Ok(None));
+    }
 }

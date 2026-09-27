@@ -34,6 +34,7 @@ use replay::{
 };
 
 use super::tables::rows;
+use crate::table_access::{TokenKeys, TokenNames};
 
 #[derive(Clone, Debug, Default)]
 pub struct SubUnit {
@@ -81,6 +82,8 @@ pub struct Content {
     subunits: BTreeMap<String, SubUnit>,
     equipment: BTreeMap<String, Equipment>,
     module_categories: BTreeMap<String, u64>,
+    /// The equipment keys by the lexer's token identity, built on first use.
+    equipment_tokens: std::sync::OnceLock<TokenKeys>,
 }
 
 fn model_definition_source(path: &str) -> Option<(u8, &str)> {
@@ -430,6 +433,30 @@ impl Content {
         })
     }
 
+    /// The authored equipment type a variant records by token. The engine
+    /// builds a type's name and token from one authored key, so this hour's
+    /// spelling (`TokenNames`) names the one declared key equal to it under
+    /// the lexer's fold (`TokenKeys`); an unspelled token, several such keys
+    /// or none are refused.
+    pub fn equipment_key<'a>(
+        &'a self,
+        tokens: &TokenNames<'_>,
+        variant: &VariantDefinitionRow,
+    ) -> Result<&'a str, String> {
+        let spelling = tokens
+            .name(variant.equipment_token)
+            .map_err(|reason| format!("variant {} equipment type: {reason}", variant.id))?;
+        self.equipment_tokens
+            .get_or_init(|| TokenKeys::new(self.equipment.keys()))
+            .resolve(spelling)?
+            .ok_or_else(|| {
+                format!(
+                    "variant {} equipment type {spelling} is not authored equipment",
+                    variant.id
+                )
+            })
+    }
+
     pub fn subunit(&self, key: &str) -> Option<&SubUnit> {
         self.subunits.get(key)
     }
@@ -757,6 +784,7 @@ impl Content {
         excluded_variants: &[u64],
         equipment: &[&DivisionEquipmentRow],
         variants: &BTreeMap<u64, &'a VariantDefinitionRow>,
+        tokens: &TokenNames<'_>,
     ) -> io::Result<Option<SelectedPair<'a>>> {
         let Some(representative) = &template.representative else {
             return Ok(None);
@@ -775,19 +803,19 @@ impl Content {
             let variant = *variants.get(&row.variant_handle).ok_or_else(|| {
                 invalid(format!("missing equipment variant {}", row.variant_handle))
             })?;
-            let key = text(&variant.equipment_name)?;
+            let key = self.equipment_key(tokens, variant).map_err(invalid)?;
             let archetype = self.archetype(key)?;
             let matches = match model_category {
                 Some(category) => self.equipment_category(key)? == category,
                 None => largest == Some(archetype),
             };
             if matches {
-                candidates.push((*row, variant, archetype));
+                candidates.push((*row, variant, key, archetype));
             }
         }
-        candidates.sort_by_key(|(row, _, _)| row.ordinal);
-        candidates.sort_by_key(|(row, _, _)| Reverse(row.amount_raw));
-        for (_, variant, archetype) in candidates {
+        candidates.sort_by_key(|(row, _, _, _)| row.ordinal);
+        candidates.sort_by_key(|(row, _, _, _)| Reverse(row.amount_raw));
+        for (_, variant, key, archetype) in candidates {
             if model_category.is_none() {
                 return Ok(Some(SelectedPair {
                     variant,
@@ -798,7 +826,7 @@ impl Content {
             if excluded_variants.contains(&variant.id) {
                 continue;
             }
-            let equipment_priority = self.equipment_priority(text(&variant.equipment_name)?)?;
+            let equipment_priority = self.equipment_priority(key)?;
             let mut selected = None;
             let mut best = -1;
             for group in &template.groups {
@@ -1012,19 +1040,103 @@ mod tests {
         }
     }
 
-    fn variants() -> BTreeMap<u64, &'static VariantDefinitionRow> {
-        [(10, &b"rifles_1"[..]), (20, b"tanks_1"), (30, b"tanks_2")]
+    /// Equipment type spellings; `Tanks_1` differs from its authored key
+    /// only in ASCII case, and `trucks` is not authored.
+    fn names() -> TokenNames<'static> {
+        let rows: &'static [LexicalTokenRow] = Box::leak(
+            [
+                (101, &b"rifles_1"[..]),
+                (102, b"Tanks_1"),
+                (103, b"tanks_2"),
+                (104, b"trucks"),
+            ]
             .into_iter()
-            .map(|(id, name)| {
+            .map(|(token, literal)| LexicalTokenRow {
+                token,
+                literal: literal.to_vec(),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        );
+        TokenNames::from_rows(rows, true)
+    }
+
+    fn variants() -> BTreeMap<u64, &'static VariantDefinitionRow> {
+        [(10, 101), (20, 102), (30, 103)]
+            .into_iter()
+            .map(|(id, equipment_token)| {
                 let row: &'static VariantDefinitionRow =
                     Box::leak(Box::new(VariantDefinitionRow {
                         id,
-                        equipment_name: name.to_vec(),
+                        equipment_token,
                         ..Default::default()
                     }));
                 (id, row)
             })
             .collect()
+    }
+
+    #[test]
+    fn equipment_types_resolve_their_token_under_the_lexers_fold() {
+        let authored = content();
+        let names = names();
+        let variant = |equipment_token| VariantDefinitionRow {
+            id: 1,
+            equipment_token,
+            ..Default::default()
+        };
+        assert_eq!(authored.equipment_key(&names, &variant(102)), Ok("tanks_1"));
+        let refused = |token| authored.equipment_key(&names, &variant(token)).unwrap_err();
+        assert_eq!(
+            refused(104),
+            "variant 1 equipment type trucks is not authored equipment"
+        );
+        assert_eq!(
+            refused(0),
+            "variant 1 equipment type: token 0 stands for every key the lexer rejects"
+        );
+        assert_eq!(
+            refused(105),
+            "variant 1 equipment type: token 105 is not in LexicalTokens"
+        );
+        // Two authored keys equal under the fold share one token: refused.
+        let mut ambiguous = content();
+        ambiguous
+            .read_document(
+                &parser::parse(b"equipments = { Tanks_1 = { archetype = tanks } }").unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            ambiguous.equipment_key(&names, &variant(102)),
+            Err("token Tanks_1 names several content keys: Tanks_1, tanks_1".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_unnamed_candidate_refuses_the_pair_instead_of_ranking_the_next() {
+        let content = content();
+        let template = content
+            .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &sources(&[]))
+            .unwrap();
+        let mut variants = variants();
+        // Variant 40's token is not in the hour's LexicalTokens.
+        variants.insert(
+            40,
+            Box::leak(Box::new(VariantDefinitionRow {
+                id: 40,
+                equipment_token: 999,
+                ..Default::default()
+            })),
+        );
+        let rows = [equipment(40, 900, 0), equipment(20, 500, 2)];
+        let refs: Vec<_> = rows.iter().collect();
+        let error = content
+            .select_pair(&template, None, &[], &refs, &variants, &names())
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "variant 40 equipment type: token 999 is not in LexicalTokens"
+        );
     }
 
     fn row(representative: (u32, u8), subunits: &[(u32, u8, i32)]) -> DivisionTemplateIconRow {
@@ -1138,6 +1250,20 @@ mod tests {
         assert_eq!(content.equipment("flameold_tank").unwrap().parent, None);
         assert!(content.equipment_model("root_only").is_ok());
         assert!(content.equipment_model("root_only_0").is_err());
+        // A generated copy is authored equipment its own token names.
+        let rows = [LexicalTokenRow {
+            token: 7,
+            literal: b"Flame_1".to_vec(),
+        }];
+        let variant = VariantDefinitionRow {
+            id: 1,
+            equipment_token: 7,
+            ..Default::default()
+        };
+        assert_eq!(
+            content.equipment_key(&TokenNames::from_rows(&rows, true), &variant),
+            Ok("flame_1")
+        );
     }
 
     #[test]
@@ -1225,7 +1351,7 @@ mod tests {
         ];
         let refs: Vec<_> = rows.iter().collect();
         let pair = content
-            .select_pair(&template, None, &[20], &refs, &variants)
+            .select_pair(&template, None, &[20], &refs, &variants, &names())
             .unwrap()
             .unwrap();
         assert_eq!((pair.variant.id, pair.subunit.key.as_str()), (20, "armor"));
@@ -1235,7 +1361,7 @@ mod tests {
             .unwrap();
         assert!(
             content
-                .select_pair(&null, None, &[], &refs, &variants)
+                .select_pair(&null, None, &[], &refs, &variants, &names())
                 .unwrap()
                 .is_none()
         );
@@ -1256,20 +1382,27 @@ mod tests {
         let refs: Vec<_> = rows.iter().collect();
         // Armor wins the tanks pair: the only group needing tanks.
         let pair = content
-            .select_pair(&template, Some(1 << 2), &[20], &refs, &variants)
+            .select_pair(&template, Some(1 << 2), &[20], &refs, &variants, &names())
             .unwrap()
             .unwrap();
         assert_eq!((pair.variant.id, pair.subunit.key.as_str()), (30, "armor"));
         // Rifles: infantry's two entries outscore armor's one.
         let pair = content
-            .select_pair(&template, Some(1 << 5), &[], &refs, &variants)
+            .select_pair(&template, Some(1 << 5), &[], &refs, &variants, &names())
             .unwrap()
             .unwrap();
         assert_eq!(pair.subunit.key, "infantry");
         let missing = [equipment(99, 1, 0)];
         assert!(
             content
-                .select_pair(&template, Some(1 << 5), &[], &[&missing[0]], &variants)
+                .select_pair(
+                    &template,
+                    Some(1 << 5),
+                    &[],
+                    &[&missing[0]],
+                    &variants,
+                    &names()
+                )
                 .is_err()
         );
     }
@@ -1295,7 +1428,7 @@ mod tests {
         let rows = [equipment(10, 900, 0), equipment(20, 100, 1)];
         let refs: Vec<_> = rows.iter().collect();
         let pair = content
-            .select_pair(&template, None, &[], &refs, &variants)
+            .select_pair(&template, None, &[], &refs, &variants, &names())
             .unwrap()
             .unwrap();
         assert_eq!(pair.variant.id, 20);

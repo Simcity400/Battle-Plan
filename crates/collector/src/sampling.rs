@@ -41,7 +41,7 @@ const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
 const CHARACTER_PARTS: usize = extended::characters::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
-pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first); 1 division inputs copy + divisions/intel dispatch + character parts, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
+pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first, slot-hour Variants); 1 division inputs copy + divisions/intel dispatch + character parts, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/variants/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
 pub const INITIAL_CAPACITIES: [usize; 9] = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
 
 /// Countries has one row per canonical slot and CountryLinks one per raw
@@ -1412,6 +1412,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 let bytes = request.allocated_bytes();
                 (queue!(acquisition::Job::Governance(request)), bytes)
             });
+            // Variant rows read live memory only; the family leaves on its slot.
+            let variants_pending = frame
+                .extended
+                .take_variants_request(shared.base, state, clock.hour, force_full)
+                .map(|request| {
+                    let bytes = request.allocated_bytes();
+                    (queue!(acquisition::Job::Variants(request)), bytes)
+                });
             // Naval uses this callback's independently bounded wing-membership census.
             let mut naval_job = decode::acquire_naval_job();
             // The orders-group registry census, once for the pass: the Orders
@@ -2497,6 +2505,30 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             unsafe {
                 *shared.slice_fingerprints[crate::slicing::TECHNOLOGIES].get() = Some(technologies)
             };
+            if let Some((pending, loaned_bytes)) = variants_pending {
+                // SAFETY: this thread still owns the live acquisition boundary.
+                let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
+                let acquisition::Job::Variants(request) = completed.request else {
+                    unreachable!("Variants ticket type")
+                };
+                let acquired_bytes = request.allocated_bytes();
+                if acquired_bytes >= loaned_bytes {
+                    shared
+                        .pool_bytes
+                        .fetch_add((acquired_bytes - loaned_bytes) as u64, Ordering::Relaxed);
+                } else {
+                    shared
+                        .pool_bytes
+                        .fetch_sub((loaned_bytes - acquired_bytes) as u64, Ordering::Relaxed);
+                }
+                let report = completed.report.map(|report| {
+                    let acquisition::Report::Variants(ticks) = report else {
+                        unreachable!("Variants report type")
+                    };
+                    ticks
+                });
+                frame.extended.restore_variants_request(request, report);
+            }
             // Research returns into the restored family and charges its costs there.
             let (research_request, research_report) = {
                 // SAFETY: this thread still owns the live acquisition boundary.
@@ -3319,6 +3351,16 @@ unsafe fn finish_acquisition(
                 return acquisition::Completion {
                     request,
                     report: Ok(acquisition::Report::Governance(report)),
+                    table_reads: crate::read_accounting::ZERO,
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                };
+            }
+            if let acquisition::Job::Variants(variants) = &mut request {
+                let ticks = variants.fail("variant worker admission failed");
+                return acquisition::Completion {
+                    request,
+                    report: Ok(acquisition::Report::Variants(ticks)),
                     table_reads: crate::read_accounting::ZERO,
                     #[cfg(feature = "callback_profile")]
                     profile: Default::default(),

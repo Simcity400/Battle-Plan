@@ -608,7 +608,6 @@ impl Captured {
         technology_fingerprints: Box<crate::slicing::SliceFingerprints>,
     ) -> crate::acquisition_jobs::GovernanceRequest {
         self.governance_report = None;
-        self.variants_ticks = None;
         crate::acquisition_jobs::GovernanceRequest {
             technology_fingerprints,
             countries: Arc::clone(countries),
@@ -619,10 +618,57 @@ impl Captured {
                 force_full,
             },
             captured: std::mem::replace(&mut self.governance, governance::Captured::vacant()),
-            registry: std::mem::replace(&mut self.registry, Registry::new(0)),
-            variants: self.production.take_variants(),
             buildings: self.construction.take_buildings(),
         }
+    }
+
+    /// Loan the variant registry and its detail tables on their slot or a
+    /// full hour. Off the slot they are skipped here without reads.
+    pub(crate) fn take_variants_request(
+        &mut self,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> Option<crate::acquisition_jobs::VariantsRequest> {
+        self.variants_ticks = None;
+        let context = governance::CaptureContext {
+            base,
+            game_state: state,
+            hour,
+            force_full,
+        };
+        if !replay::cadence::should_walk(TableId::VariantDefinitions, hour, force_full) {
+            self.registry.mark_skipped();
+            let mut variants = self.production.take_variants();
+            variants.fail(replay::cadence::SKIPPED_REASON, hour, force_full);
+            self.production.restore_variants(variants);
+            self.variants_ticks = Some([0; production::N]);
+            return None;
+        }
+        Some(crate::acquisition_jobs::VariantsRequest {
+            context,
+            registry: std::mem::replace(&mut self.registry, Registry::new(0)),
+            variants: self.production.take_variants(),
+        })
+    }
+
+    pub(crate) fn restore_variants_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::VariantsRequest,
+        report: Result<[u64; production::N], crate::acquisition::Failure>,
+    ) {
+        let ticks = report.unwrap_or_else(|failure| {
+            request.fail(match failure {
+                crate::acquisition::Failure::Panicked => "variant acquisition panicked",
+                crate::acquisition::Failure::Stopped => {
+                    "variant acquisition stopped before reading"
+                }
+            })
+        });
+        self.variants_ticks = Some(ticks);
+        self.registry = request.registry;
+        self.production.restore_variants(request.variants);
     }
 
     /// Returns the technology fingerprint store: forgotten if the job was
@@ -656,10 +702,7 @@ impl Captured {
                 .invalidate(&mut request.technology_fingerprints);
         }
         self.governance_report = Some(report.governance);
-        self.variants_ticks = Some(report.variants);
         self.governance = request.captured;
-        self.registry = request.registry;
-        self.production.restore_variants(request.variants);
         self.construction
             .restore_buildings(request.buildings, Ok(report.buildings));
         request.technology_fingerprints
@@ -3160,6 +3203,68 @@ mod tests {
     }
 
     #[test]
+    fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worker() {
+        struct Reads(std::cell::Cell<usize>);
+        impl Memory for Reads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                self.0.set(self.0.get() + 1);
+                false
+            }
+        }
+        let slot = replay::cadence::refresh_slot(TableId::VariantDefinitions).unwrap() as i32;
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let bytes = captured.allocated_bytes();
+        let memory = engine::memory::CountedMemory::new(Reads(std::cell::Cell::new(0)));
+        assert!(
+            captured
+                .take_variants_request(11, 0x1000, slot + 1, false)
+                .is_none()
+        );
+        let ticks = captured.capture_tables_all(&memory, 11, 0x1000, slot + 1, false);
+        for (index, table) in production::TABLES.into_iter().enumerate().skip(3).take(4) {
+            assert_eq!(ticks[table.index()], 0);
+            assert_eq!(
+                captured.production.outcomes()[index],
+                Outcome::Unavailable {
+                    reason: replay::cadence::SKIPPED_REASON
+                }
+            );
+        }
+        for failure in [
+            crate::acquisition::Failure::Panicked,
+            crate::acquisition::Failure::Stopped,
+        ] {
+            let request = captured
+                .take_variants_request(11, 0x1000, slot, false)
+                .expect("the variant slot loans the family");
+            assert_eq!(
+                captured.allocated_bytes() + request.allocated_bytes(),
+                bytes
+            );
+            captured.restore_variants_request(request, Err(failure));
+            assert_eq!(captured.allocated_bytes(), bytes);
+            let reads = crate::read_accounting::Capture::new();
+            captured.capture_tables_all(&memory, 11, 0x1000, slot, false);
+            let counts = reads.finish();
+            for table in &production::TABLES[3..7] {
+                assert_eq!(counts[table.index()], engine::memory::ReadCounts::ZERO);
+            }
+            let expected = match failure {
+                crate::acquisition::Failure::Panicked => "variant acquisition panicked",
+                crate::acquisition::Failure::Stopped => {
+                    "variant acquisition stopped before reading"
+                }
+            };
+            for index in 3..7 {
+                assert_eq!(
+                    captured.production.outcomes()[index],
+                    Outcome::Unavailable { reason: expected }
+                );
+            }
+        }
+    }
+
+    #[test]
     fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results() {
         struct Reads {
             total: std::cell::Cell<usize>,
@@ -3218,15 +3323,15 @@ mod tests {
                 governance: governance::CaptureReport {
                     ticks: std::array::from_fn(|slot| slot as u64 + 101),
                 },
-                variants: std::array::from_fn(|slot| {
-                    if (3..=6).contains(&slot) {
-                        slot as u64 + 211
-                    } else {
-                        0
-                    }
-                }),
                 buildings: 307,
             };
+            let variant_ticks: [u64; production::N] = std::array::from_fn(|slot| {
+                if (3..=6).contains(&slot) {
+                    slot as u64 + 211
+                } else {
+                    0
+                }
+            });
             // Gated borrows the rest of construction while the allocating
             // building buffers are still on their worker. Restore that pack
             // before restoring the worker-only families.
@@ -3234,6 +3339,12 @@ mod tests {
             captured.restore_gated_request(gated, false);
             let _technologies =
                 captured.restore_governance_request(request, failure.map_or(Ok(report), Err));
+            // Variants leave only on their slot or a full hour.
+            let variants = captured.take_variants_request(11, 0x1000, 1, context.force_full);
+            assert_eq!(variants.is_some(), context.force_full);
+            if let Some(variants) = variants {
+                captured.restore_variants_request(variants, Ok(variant_ticks));
+            }
             assert_eq!(Arc::strong_count(&countries), 1);
             assert_eq!(captured.allocated_bytes(), bytes);
             assert!(captured.governance.focus_raw_mode);
@@ -3281,7 +3392,7 @@ mod tests {
                 assert_eq!(
                     ticks[table.index()],
                     if failure.is_none() {
-                        report.variants[slot]
+                        variant_ticks[slot]
                     } else {
                         0
                     }
