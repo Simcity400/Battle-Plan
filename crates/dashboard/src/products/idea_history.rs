@@ -15,7 +15,7 @@
 
 use super::{
     CountryParams, LoadContext, Product,
-    politics_content::{PoliticsContent, politics_content},
+    politics_content::{PoliticsContent, RecordedName, politics_content},
 };
 use crate::{
     Artwork, Source,
@@ -60,7 +60,11 @@ pub struct IdeaSpan {
 pub struct IdeaCharacter {
     /// The recorded character id.
     pub id: u32,
+    /// The script token (resolved through LexicalTokens); empty when unresolved.
     pub token: String,
+    /// The saved name as recorded (a localisation key or a literal); a rename
+    /// changes it, so it comes before the authored name.
+    pub name: String,
 }
 
 /// One authored effect line, before formatting: a modifier and its value, or
@@ -174,6 +178,10 @@ pub struct HolderArtwork {
     pub token: String,
     /// The recorded character id, as on the span.
     pub character: u32,
+    /// The script token and saved name, as on the span: a rename, or a token
+    /// that resolves later, has its own artwork.
+    pub character_token: String,
+    pub name: String,
     pub artwork: Artwork,
 }
 
@@ -214,6 +222,7 @@ pub fn scan(
         TableId::ActiveIdeas,
         TableId::HiredAdvisors,
         TableId::Characters,
+        TableId::LexicalTokens,
     ];
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Idea request cancelled");
     let mut result = ScannedIdeas::default();
@@ -295,6 +304,7 @@ pub fn scan(
             };
             // Each appointed advisor's idea with its recorded seat and character.
             let characters = decoded.complete::<tables::Characters>().ok();
+            let lexical = decoded.complete::<tables::LexicalTokens>().ok();
             let mut roles: BTreeMap<&[u8], (String, IdeaCharacter)> = BTreeMap::new();
             for advisor in advisors.iter().filter(|advisor| owner(advisor.country)) {
                 let Ok(seat) = std::str::from_utf8(&advisor.slot) else {
@@ -305,12 +315,19 @@ pub fn scan(
                     tokenless = true;
                     continue;
                 }
-                let token = characters
-                    .and_then(|rows| {
-                        rows.binary_search_by_key(&advisor.character, |character| character.id)
-                            .ok()
-                            .and_then(|index| std::str::from_utf8(&rows[index].token).ok())
-                    })
+                // The character's script token (its saved name is another field);
+                // unresolved, the holder stays unidentified rather than misnamed.
+                let row = characters.and_then(|rows| {
+                    rows.binary_search_by_key(&advisor.character, |character| character.id)
+                        .ok()
+                        .map(|index| &rows[index])
+                });
+                let token = row
+                    .zip(lexical)
+                    .and_then(|(row, lexical)| super::character_script_token(row, lexical))
+                    .unwrap_or_default();
+                let name = row
+                    .and_then(|row| std::str::from_utf8(&row.token).ok())
                     .unwrap_or_default();
                 roles.insert(
                     advisor.idea.as_slice(),
@@ -319,6 +336,7 @@ pub fn scan(
                         IdeaCharacter {
                             id: advisor.character,
                             token: token.to_owned(),
+                            name: name.to_owned(),
                         },
                     ),
                 );
@@ -673,12 +691,31 @@ impl Product for IdeaHistory {
             if found.category.is_none() {
                 unplaced.push(token.to_owned());
             }
-            // The idea's artwork shows its latest holder; each holder also has its own.
-            let character = latest
-                .and_then(|span| span.character.as_ref())
-                .map(|character| character.token.as_str())
-                .filter(|token| !token.is_empty());
-            let (art, problem) = content.idea_artwork(token, character);
+            // A holder's artwork: the content's for its script token, named as recorded.
+            let holder_art = |script: Option<&str>, saved: &str| {
+                let (mut art, problem) = content.idea_artwork(token, script);
+                // Without a script token the content cannot say whose portrait
+                // this is; the idea's authored advisor may be someone else.
+                if script.is_none() {
+                    art.icon = None;
+                }
+                // The saved name first, so a renamed character shows its current name.
+                match content.recorded_name(saved, script) {
+                    RecordedName::Named(name) => art.name = Some(name),
+                    RecordedName::Unresolved => art.name = None,
+                    RecordedName::None => {}
+                }
+                (art, problem)
+            };
+            // The idea's artwork shows its latest holder as recorded; each holder
+            // also has its own.
+            let (art, problem) = match latest.and_then(|span| span.character.as_ref()) {
+                Some(holder) => holder_art(
+                    (!holder.token.is_empty()).then_some(holder.token.as_str()),
+                    &holder.name,
+                ),
+                None => content.idea_artwork(token, None),
+            };
             artwork.push(art);
             warnings.extend(problem);
             let mut seen = BTreeSet::new();
@@ -687,12 +724,18 @@ impl Product for IdeaHistory {
                 .iter()
                 .filter(|span| span.token == token)
                 .filter_map(|span| span.character.as_ref())
-                .filter(|holder| !holder.token.is_empty() && seen.insert(holder.id))
+                .filter(|holder| {
+                    (!holder.token.is_empty() || !holder.name.is_empty())
+                        && seen.insert((holder.id, holder.token.clone(), holder.name.clone()))
+                })
             {
-                let (art, problem) = content.idea_artwork(token, Some(&holder.token));
+                let script = (!holder.token.is_empty()).then_some(holder.token.as_str());
+                let (art, problem) = holder_art(script, &holder.name);
                 holders.push(HolderArtwork {
                     token: token.to_owned(),
                     character: holder.id,
+                    character_token: holder.token.clone(),
+                    name: holder.name.clone(),
                     artwork: art,
                 });
                 warnings.extend(problem);

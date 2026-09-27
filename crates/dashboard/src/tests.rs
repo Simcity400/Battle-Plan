@@ -2022,13 +2022,22 @@ fn idea_frame(hour: i32, ideas: &[&str]) -> DecodedFrame {
     *frame.tables[TableId::ActiveIdeas.index()] = TableView::Complete(TableRows::ActiveIdeas(rows));
     *frame.tables[TableId::HiredAdvisors.index()] =
         TableView::Complete(TableRows::HiredAdvisors(hired));
+    // As recorded: the saved name in `token`, the script token as a lexer id.
     *frame.tables[TableId::Characters.index()] =
         TableView::Complete(TableRows::Characters(vec![replay::rows::CharacterRow {
             id: 7,
             country: 9001,
-            token: b"GER_schacht".to_vec(),
+            name_token_id: 42,
+            token: b"Hjalmar Schacht".to_vec(),
             ..Default::default()
         }]));
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            replay::rows::LexicalTokenRow {
+                token: 42,
+                literal: b"GER_schacht".to_vec(),
+            },
+        ]));
     frame
 }
 
@@ -2048,6 +2057,7 @@ fn idea_history_spans_break_at_gaps_and_advisors_keep_their_recorded_role() {
         character: Some(IdeaCharacter {
             id: 7,
             token: "GER_schacht".into(),
+            name: "Hjalmar Schacht".into(),
         }),
         ..span("GER_schacht_idea", first_hour, last_hour)
     };

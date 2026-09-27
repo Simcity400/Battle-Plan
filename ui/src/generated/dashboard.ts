@@ -322,7 +322,16 @@ export type IdeaCharacter = {
 /**
  * The recorded character id.
  */
-id: number, token: string, };
+id: number,
+/**
+ * The script token (resolved through LexicalTokens); empty when unresolved.
+ */
+token: string,
+/**
+ * The saved name as recorded (a localisation key or a literal); a rename
+ * changes it, so it comes before the authored name.
+ */
+name: string, };
 export type EffectLine = { key: string, value: number | null,
 /**
  * The authored text of a value this reader does not evaluate.
@@ -347,7 +356,12 @@ export type HolderArtwork = { token: string,
 /**
  * The recorded character id, as on the span.
  */
-character: number, artwork: Artwork, };
+character: number,
+/**
+ * The script token and saved name, as on the span: a rename, or a token
+ * that resolves later, has its own artwork.
+ */
+characterToken: string, name: string, artwork: Artwork, };
 export type IdeaInfo = { token: string,
 /**
  * The idea category (`government`, `country`, a mod's own …); None when

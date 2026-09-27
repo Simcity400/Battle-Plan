@@ -189,6 +189,19 @@ pub static PRODUCTS: &[Registered] = &[
     register::<party_history::PartyHistory>(),
 ];
 
+/// A recorded character's script token: its lexer id (`CCharacter` +0x18,
+/// the row's `name_token_id`) resolved through LexicalTokens. The row's `token`
+/// field is the saved name (+0x48), not the script token. None when the id is
+/// negative or not in the dictionary.
+pub fn character_script_token<'a>(
+    character: &replay::rows::CharacterRow,
+    lexical: &'a [replay::rows::LexicalTokenRow],
+) -> Option<&'a str> {
+    let token = u32::try_from(character.name_token_id).ok()?;
+    let index = lexical.binary_search_by_key(&token, |row| row.token).ok()?;
+    std::str::from_utf8(&lexical[index].literal).ok()
+}
+
 pub fn find(key: &str) -> Option<&'static Registered> {
     PRODUCTS.iter().find(|product| product.key == key)
 }

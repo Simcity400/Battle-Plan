@@ -99,12 +99,12 @@ test('an advisor span shows its own recorded holder, not the idea’s latest one
   const art = (name: string) => ({ token: 'schacht', name, description: null, baseDurationDays: null, icon: null });
   const reply = { ...REPLY,
     spans: [
-      { token: 'schacht', firstHour: 10, lastHour: 100, slot: 'political_advisor', character: { id: 1, token: 'A' } },
-      { token: 'schacht', firstHour: 101, lastHour: 300, slot: 'political_advisor', character: { id: 2, token: 'B' } },
+      { token: 'schacht', firstHour: 10, lastHour: 100, slot: 'political_advisor', character: { id: 1, token: 'A', name: 'A' } },
+      { token: 'schacht', firstHour: 101, lastHour: 300, slot: 'political_advisor', character: { id: 2, token: 'B', name: 'B' } },
     ],
     ideas: [idea('schacht', 'political_advisor')],
     artwork: [art('Holder B')],
-    holders: [{ token: 'schacht', character: 1, artwork: art('Holder A') }, { token: 'schacht', character: 2, artwork: art('Holder B') }] };
+    holders: [{ token: 'schacht', character: 1, characterToken: 'A', name: 'A', artwork: art('Holder A') }, { token: 'schacht', character: 2, characterToken: 'B', name: 'B', artwork: art('Holder B') }] };
   const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
   assert.deepEqual(seat.spans.map(span => span.label), ['Holder A', 'Holder B']);
 });
@@ -113,12 +113,70 @@ test('a holder the recording could not identify stays unnamed, not the latest ho
   const art = (name: string) => ({ token: 'schacht', name, description: null, baseDurationDays: null, icon: null });
   const reply = { ...REPLY,
     spans: [
-      { token: 'schacht', firstHour: 10, lastHour: 100, slot: 'political_advisor', character: { id: 1, token: '' } },
-      { token: 'schacht', firstHour: 101, lastHour: 300, slot: 'political_advisor', character: { id: 2, token: 'B' } },
+      { token: 'schacht', firstHour: 10, lastHour: 100, slot: 'political_advisor', character: { id: 1, token: '', name: '' } },
+      { token: 'schacht', firstHour: 101, lastHour: 300, slot: 'political_advisor', character: { id: 2, token: 'B', name: 'B' } },
     ],
     ideas: [idea('schacht', 'political_advisor')],
     artwork: [art('Holder B')],
-    holders: [{ token: 'schacht', character: 2, artwork: art('Holder B') }] };
+    holders: [{ token: 'schacht', character: 2, characterToken: 'B', name: 'B', artwork: art('Holder B') }] };
   const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
   assert.deepEqual(seat.spans.map(span => span.label), [UNIDENTIFIED_HOLDER, 'Holder B']);
+});
+
+test('a renamed holder shows each recorded name for its own span', () => {
+  const art = (name: string) => ({ token: 'schacht', name, description: null, baseDurationDays: null, icon: null });
+  const reply = { ...REPLY,
+    spans: [
+      { token: 'schacht', firstHour: 10, lastHour: 20, slot: 'political_advisor', character: { id: 7, token: 'X', name: 'Old Name' } },
+      { token: 'schacht', firstHour: 21, lastHour: 30, slot: 'political_advisor', character: { id: 7, token: 'X', name: 'New Name' } },
+    ],
+    ideas: [idea('schacht', 'political_advisor')],
+    artwork: [art('New Name')],
+    holders: [{ token: 'schacht', character: 7, characterToken: 'X', name: 'Old Name', artwork: art('Old Name') }, { token: 'schacht', character: 7, characterToken: 'X', name: 'New Name', artwork: art('New Name') }] };
+  const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
+  assert.deepEqual(seat.spans.map(span => span.label), ['Old Name', 'New Name']);
+});
+
+test('holders whose texts contain separators never share a key', () => {
+  const art = (name: string) => ({ token: 'schacht', name, description: null, baseDurationDays: null, icon: null });
+  const reply = { ...REPLY,
+    spans: [
+      { token: 'schacht', firstHour: 10, lastHour: 20, slot: 'political_advisor', character: { id: 1, token: 'char', name: 'Alice#2#other#Bob' } },
+      { token: 'schacht', firstHour: 21, lastHour: 30, slot: 'political_advisor', character: { id: 2, token: 'other', name: 'Bob' } },
+    ],
+    ideas: [idea('schacht', 'political_advisor')],
+    artwork: [art('Bob')],
+    holders: [{ token: 'schacht', character: 1, characterToken: 'char', name: 'Alice#2#other#Bob', artwork: art('Alice') },
+      { token: 'schacht', character: 2, characterToken: 'other', name: 'Bob', artwork: art('Bob') }] };
+  const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
+  assert.deepEqual(seat.spans.map(span => span.label), ['Alice', 'Bob']);
+});
+
+test('an advisor whose details resolve later stays in its seat', () => {
+  const art = (name: string) => ({ token: 'b', name, description: null, baseDurationDays: null, icon: null });
+  const reply = { ...REPLY,
+    spans: [
+      { token: 'a', firstHour: 10, lastHour: 20, slot: 'political_advisor', character: { id: 1, token: 'A', name: 'A' } },
+      { token: 'b', firstHour: 11, lastHour: 30, slot: 'political_advisor', character: { id: 2, token: '', name: 'B' } },
+      // Only B's script token resolving: a new span, the same appointment.
+      { token: 'b', firstHour: 31, lastHour: 40, slot: 'political_advisor', character: { id: 2, token: 'B', name: 'B' } },
+    ],
+    ideas: [idea('a', 'political_advisor'), idea('b', 'political_advisor')],
+    artwork: [art('B')], holders: [] };
+  const lanes = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).filter(lane => lane.id.startsWith('political_advisor#'));
+  assert.deepEqual(lanes.map(lane => lane.spans.map(span => span.firstHour)), [[10], [11, 31]]);
+});
+
+test('a newcomer starting the same hour never takes the seat a continuing holder keeps', () => {
+  const reply = { ...REPLY,
+    spans: [
+      { token: 'b', firstHour: 10, lastHour: 20, slot: 'political_advisor', character: { id: 2, token: '', name: 'B' } },
+      { token: 'c', firstHour: 10, lastHour: 20, slot: 'political_advisor', character: { id: 3, token: 'C', name: 'C' } },
+      // At 21 C leaves, A arrives (listed first), and B's token resolves.
+      { token: 'a', firstHour: 21, lastHour: 40, slot: 'political_advisor', character: { id: 1, token: 'A', name: 'A' } },
+      { token: 'b', firstHour: 21, lastHour: 40, slot: 'political_advisor', character: { id: 2, token: 'B', name: 'B' } },
+    ],
+    ideas: [idea('a', 'political_advisor'), idea('b', 'political_advisor'), idea('c', 'political_advisor')], artwork: [], holders: [] };
+  const lanes = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).filter(lane => lane.id.startsWith('political_advisor#'));
+  assert.deepEqual(lanes.map(lane => lane.spans.map(span => span.id)), [['b:10', 'b:21'], ['c:10', 'a:21']]);
 });

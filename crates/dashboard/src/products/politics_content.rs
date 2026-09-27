@@ -26,6 +26,40 @@ const ICON_EDGE: u32 = 96;
 /// Idea artwork kept per catalogue.
 const MAX_CACHED_ARTWORK: usize = 2048;
 
+/// See [`PoliticsContent::recorded_name`].
+pub fn recorded_name(
+    localisation: &installed_content::localisation::Localisation,
+    saved: &str,
+    script: Option<&str>,
+) -> RecordedName {
+    if saved.is_empty() {
+        return RecordedName::None;
+    }
+    // Only a key localisation lacks altogether is a literal name; a key whose text
+    // cannot be expanded is a name that is not known.
+    match localisation.get(saved) {
+        Some(text) => match catalogue::resolve_text(text, localisation) {
+            catalogue::Localised::Text(text) => RecordedName::Named(text),
+            catalogue::Localised::NeedsScope | catalogue::Localised::Missing => {
+                RecordedName::Unresolved
+            }
+        },
+        None if Some(saved) == script => RecordedName::None,
+        None => RecordedName::Named(catalogue::plain_text(saved)),
+    }
+}
+
+/// A recorded character name, as [`PoliticsContent::recorded_name`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordedName {
+    /// The name to show.
+    Named(String),
+    /// A key whose text needs runtime scope: the name is not known.
+    Unresolved,
+    /// Nothing recorded beyond the script token: the authored name stands.
+    None,
+}
+
 pub struct PoliticsContent {
     pub catalogue: Arc<Catalogue>,
     pub ideas: IdeaContent,
@@ -95,6 +129,15 @@ impl PoliticsContent {
     pub fn localise(&self, key: &str) -> Option<String> {
         let localisation = &self.catalogue.localisation;
         catalogue::resolve_text(localisation.get(key)?, localisation).text()
+    }
+
+    /// What a recorded character's saved name (CCharacter +0x48) says. A key is
+    /// localised even when it equals the script token; text that needs runtime
+    /// scope or does not expand is unresolved rather than shown as its key; a
+    /// name localisation does not define is a literal, unless it is only the
+    /// script token itself.
+    pub fn recorded_name(&self, saved: &str, script: Option<&str>) -> RecordedName {
+        recorded_name(&self.catalogue.localisation, saved, script)
     }
 
     pub fn idea(&self, token: &str) -> Option<&Idea> {
@@ -200,5 +243,42 @@ impl PoliticsContent {
         }
         cached.insert(key, (art.clone(), problem.clone()));
         (art, problem)
+    }
+}
+
+#[cfg(test)]
+mod recorded_name_tests {
+    use super::{RecordedName, recorded_name};
+
+    #[test]
+    fn a_saved_name_is_localised_scoped_or_literal_as_recorded() {
+        let localisation: installed_content::localisation::Localisation = [
+            ("MOD_advisor".to_owned(), "Current Name".to_owned()),
+            ("SCOPED_NAME".to_owned(), "[ROOT.GetLeader]".to_owned()),
+            ("BROKEN_NAME".to_owned(), "$MISSING_REFERENCE$".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let name = |saved: &str, script: Option<&str>| recorded_name(&localisation, saved, script);
+        // A key is localised even when it is the script token.
+        assert_eq!(
+            name("MOD_advisor", Some("MOD_advisor")),
+            RecordedName::Named("Current Name".into())
+        );
+        assert_eq!(
+            name("SCOPED_NAME", Some("MOD_advisor")),
+            RecordedName::Unresolved
+        );
+        // A key that does not expand is not a literal name either.
+        assert_eq!(
+            name("BROKEN_NAME", Some("MOD_advisor")),
+            RecordedName::Unresolved
+        );
+        assert_eq!(
+            name("Alex Reed", Some("MOD_advisor")),
+            RecordedName::Named("Alex Reed".into())
+        );
+        assert_eq!(name("MOD_other", Some("MOD_other")), RecordedName::None);
+        assert_eq!(name("", None), RecordedName::None);
     }
 }
