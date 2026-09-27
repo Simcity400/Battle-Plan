@@ -20,6 +20,9 @@
 //! - a failed or unparsable span stops only the sub-path that needs it; the
 //!   replay fails identically from the same recorded spans, so later extras
 //!   are harmless;
+//! - a record gather logs the field it stopped at as a failed span even when
+//!   its row pointer is null (address 0) or non-canonical; the replay's
+//!   `copy_records` stops at the same field before any lookup;
 //! - pool overflow aborts the copy and grows staging capacity on recycle.
 //!   The caller may use the typed fallback only before a prepared source
 //!   observation; afterward, that capture fails without repeating live reads.
@@ -1092,6 +1095,75 @@ impl<const N: usize> RawLog<N> {
         Some((start, completed))
     }
 
+    /// Stage fixed-layout fields of several records with one guarded call.
+    /// Record `row` lands at `start + row * stride`; each completed nonempty
+    /// field is its own exact span and the first failed field is recorded.
+    /// Nothing after that failure is read. Returns the completed field count.
+    pub fn take_records(
+        &mut self,
+        memory: &impl Memory,
+        sources: engine::memory::RecordSources<'_>,
+        layout: &engine::memory::RecordLayout<'_>,
+        mask: u32,
+    ) -> Option<(usize, usize)> {
+        if !self.allow_unplanned_operation() || self.overflowed {
+            return None;
+        }
+        let rows = sources.len();
+        let fields = layout.fields();
+        let start = self.bytes.len();
+        let end = rows
+            .checked_mul(layout.stride())
+            .and_then(|size| start.checked_add(size))?;
+        let spans = rows.saturating_mul(fields.len()).saturating_add(1);
+        if self.spans.capacity() - self.spans.len() < spans
+            || end > self.bytes.capacity()
+            || end > u32::MAX as usize
+        {
+            self.span_exhausted = self.spans.capacity() - self.spans.len() < spans;
+            self.required_bytes = end;
+            self.overflowed = true;
+            return None;
+        }
+        let completed = memory.copy_records(sources, layout, &mut self.bytes.storage[start..end]);
+        let width = fields.len();
+        debug_assert!(completed <= rows * width);
+        if width == 0 {
+            return Some((start, completed));
+        }
+        let (full, partial) = (completed / width, completed % width);
+        self.bytes.used = start + (full + usize::from(partial != 0)) * layout.stride();
+        let table = lowest_table(mask);
+        for row in 0..rows.min(full + 1) {
+            let pointer = sources.pointer(row).unwrap_or(0);
+            let base = start + row * layout.stride();
+            let done = if row < full { width } else { partial };
+            for field in &fields[..done] {
+                if field.len != 0 {
+                    self.spans.push(Span {
+                        addr: pointer.wrapping_add(field.source_offset),
+                        len: field.len as u32,
+                        ok: true,
+                        mask,
+                        start: (base + field.destination_offset) as u32,
+                        bulk: false,
+                    });
+                    self.raw_bytes[table] += field.len as u64;
+                }
+            }
+            if row == full && full < rows {
+                let field = &fields[partial];
+                let address = sources
+                    .pointer(row)
+                    .filter(|&pointer| pointer != 0)
+                    .and_then(|pointer| pointer.checked_add(field.source_offset))
+                    .unwrap_or(0);
+                self.note_fail(address, field.len as u32, mask);
+            }
+        }
+        Some((start, completed))
+    }
+
     fn note_fail(&mut self, addr: usize, len32: u32, mask: u32) {
         if self.spans.len() == self.spans.capacity() {
             self.span_exhausted = true;
@@ -2089,8 +2161,8 @@ impl Memory for Recorded<'_> {
         }
         // Mirror the live canonical gate so the replay fails the same way for
         // a noncanonical derived pointer even if a log ever contained it.
-        // `take_inner` never records such spans, so this is unreachable in
-        // normal decodes and only keeps outcomes identical by construction.
+        // `take_inner` never records such spans; `take_records` may log one
+        // as failed, but `copy_records` stops before reaching this read.
         if !is_canonical_range(address, destination.len()) {
             return false;
         }
@@ -4369,6 +4441,84 @@ mod tests {
         fn copy(&self, _address: usize, _destination: &mut [u8]) -> bool {
             false
         }
+    }
+
+    #[test]
+    fn record_gathers_stage_each_field_and_replay_to_the_same_fault() {
+        use engine::memory::{CountedMemory, ReadCounts, RecordField, RecordLayout, RecordSources};
+        struct Fault<'a>(SliceMemory<'a>);
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                address != 0x1110 && self.0.copy(address, destination)
+            }
+        }
+        let bytes: Vec<u8> = (0..0x200).map(|at| at as u8).collect();
+        let memory = CountedMemory::new(Fault(SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        }));
+        let fields = [
+            RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 4,
+            },
+            RecordField {
+                source_offset: 0x10,
+                destination_offset: 4,
+                len: 2,
+            },
+        ];
+        let layout = RecordLayout::new(&fields, 6).unwrap();
+        let sources = RecordSources::Pointers(&[0x1000, 0x1100, 0x1180]);
+        let mut log = RawLog::<2>::new(8, 64);
+        ReadCounts::take_current();
+        let (start, completed) = log.take_records(&memory, sources, &layout, 0x02).unwrap();
+        assert_eq!(ReadCounts::take_current().record_calls, 1);
+        assert_eq!((start, completed), (0, 3));
+        let shape: Vec<_> = log
+            .spans
+            .iter()
+            .map(|s| (s.addr, s.len, s.ok, s.start))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (0x1000, 4, true, 0),
+                (0x1010, 2, true, 4),
+                (0x1100, 4, true, 6),
+                (0x1110, 2, false, 0)
+            ]
+        );
+        assert_eq!(log.fault, [false, true]);
+        assert_eq!(log.raw_bytes, [0, 10]);
+        let recorded = Recorded::build(&log);
+        let mut direct = [0; 18];
+        let mut replayed = [0; 18];
+        assert_eq!(memory.copy_records(sources, &layout, &mut direct), 3);
+        assert_eq!(recorded.copy_records(sources, &layout, &mut replayed), 3);
+        assert_eq!(direct[..10], replayed[..10]);
+        drop(recorded);
+        // A null row stops the gather before any read of it.
+        let null = RecordSources::Pointers(&[0x1000, 0, 0x1180]);
+        let mut log = RawLog::<2>::new(8, 64);
+        ReadCounts::take_current();
+        assert_eq!(log.take_records(&memory, null, &layout, 0x02), Some((0, 2)));
+        let shape: Vec<_> = log.spans.iter().map(|s| (s.addr, s.len, s.ok)).collect();
+        assert_eq!(shape, [(0x1000, 4, true), (0x1010, 2, true), (0, 4, false)]);
+        let recorded = Recorded::build(&log);
+        let mut direct = [0; 18];
+        let mut replayed = [0; 18];
+        assert_eq!(memory.copy_records(null, &layout, &mut direct), 2);
+        assert_eq!(recorded.copy_records(null, &layout, &mut replayed), 2);
+        assert_eq!(direct[..6], replayed[..6]);
+        drop(recorded);
+        // Staging that cannot hold every field overflows before reading.
+        let mut small = RawLog::<2>::new(3, 64);
+        ReadCounts::take_current();
+        assert_eq!(small.take_records(&memory, sources, &layout, 0x02), None);
+        assert!(small.overflowed && small.spans.is_empty());
+        assert_eq!(ReadCounts::take_current(), ReadCounts::ZERO);
     }
 
     #[test]

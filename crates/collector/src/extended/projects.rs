@@ -8,11 +8,14 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
 use engine::{
-    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke, cpdx_array::Array, craid_instance,
-    craid_province_entries, craid_system, msvc_string, nproject_breakthrough_node,
-    nproject_cbreakthrough_progress, nproject_cprogram, nproject_cprogram_status,
-    nproject_cproject, nproject_cproject_pool, nproject_cproject_state_machine,
-    nproject_sproject_context, nproject_sproject_history, peace_conference, scientist_roster,
+    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke,
+    cpdx_array::Array,
+    craid_instance, craid_province_entries, craid_system,
+    memory::{RecordField, RecordLayout, RecordSources},
+    msvc_string, nproject_breakthrough_node, nproject_cbreakthrough_progress, nproject_cprogram,
+    nproject_cprogram_status, nproject_cproject, nproject_cproject_pool,
+    nproject_cproject_state_machine as machine, nproject_sproject_context,
+    nproject_sproject_history, peace_conference, scientist_roster,
     walk::Outcome,
 };
 use replay::{
@@ -543,18 +546,20 @@ fn elapsed(begin: i64) -> u64 {
 // Scheduled raw-copy split (ProjectPrograms, Projects, ProjectHistory,
 // ProjectBreakthroughs; independent tables use separate typed acquisition).
 //
-// The acquisition worker copies raw bytes: one shared country census, program
-// pointers/rows/strings, project pool records with state machines and
-// history entries, and breakthrough tree nodes. The single FIFO decode worker
-// replays the existing typed
-// walks against the recorded spans (`crate::raw::Recorded`), so typed rows,
+// The acquisition worker copies raw bytes: one shared country census and
+// status read per country, program pointers/rows/strings, project pool
+// records with their state machines and history entries, and breakthrough
+// tree nodes. The single FIFO decode worker replays the existing typed walks
+// against the recorded spans (`crate::raw::Recorded`), so typed rows,
 // ordinals, skips, truncation counts and failure reasons are identical by
 // construction (see `crate::raw` for the mirror rules).
 //
-// Census sharing: the three typed walks each run their own country census,
-// but the read sets are identical, so the mirror records one census and all
-// three replays read it from the log. Inner `resolve` calls likewise reuse
-// the census's authentication spans and record only their link span.
+// The three typed walks each run their own census and status reads; the
+// replay serves every repeat of a staged key with its bytes, so the mirror
+// stages each key once, including a slot's link, canonical pointer and status
+// that the walks read again. Pool records, state machines and tree nodes are
+// gathered in batches; a batch stages each field as its own span and stops at
+// its first failure, which the replay then reaches at the same field.
 // ===========================================================================
 
 /// Fault-attribution bits, one per project table in `TABLES[0..4]` order.
@@ -570,8 +575,28 @@ const M_PROJECT_TABLES: u32 = M_PROJECTS | M_HISTORY;
 const PROJECT_HEADER_LEN: usize = nproject_cproject::HISTORY_COUNT + 4;
 /// Project lifecycle flag length (`RECORD_SIZE - HEADER_LEN`).
 const PROJECT_FLAG_LEN: usize = 2;
-/// Project batch size; the engine documents it as error-precedence state.
-const PROJECT_BATCH: u32 = 16;
+/// Pool records per gather. The walk's own batch sets error precedence; this
+/// one only bounds a guarded call, and stages a superset of each walk batch.
+const PROJECT_CHUNK: usize = 64;
+const POOL_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: PROJECT_HEADER_LEN,
+    },
+    RecordField {
+        source_offset: nproject_cproject::STARTED,
+        destination_offset: PROJECT_HEADER_LEN,
+        len: PROJECT_FLAG_LEN,
+    },
+];
+const POOL_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&POOL_FIELDS, PROJECT_HEADER_LEN + PROJECT_FLAG_LEN)
+        .expect("valid record layout");
+/// Breakthrough node left, parent and right links.
+const NODE_LINKS: usize = nproject_breakthrough_node::RIGHT + 8;
+/// Staged breakthrough nodes one tree walk remembers.
+const TREE_NODES: usize = 64;
 
 /// One refresh of raw project payload. The census scratch is reused across
 /// passes without allocation; growth happens on the decode side only (see
@@ -582,6 +607,8 @@ pub(crate) struct ProjectsJob {
     pub game_state: usize,
     pub active: bool,
     census: Vec<CensusEntry>,
+    /// Program status per canonical census entry, in census order.
+    statuses: Vec<usize>,
     pointers: Vec<usize>,
     capacity_charge: crate::raw_memory::Charge,
 }
@@ -591,19 +618,25 @@ struct CensusEntry {
     pointer: usize,
     id: u32,
     slot: u32,
-    canonical: bool,
+    /// The slot its link names; equal to `slot` for a canonical object.
+    canonical: u32,
 }
 
 /// Shared census borrowed by every scheduled project walk mirror.
 #[derive(Clone, Copy)]
 struct ProjectCensus<'a> {
     links: &'a Array,
-    countries: u32,
+    countries: &'a Array,
+    vtable: u64,
+    /// Slots below this were read; a failed census stops at it.
+    read_to: u32,
+    /// Non-null slots in slot order.
     census: &'a [CensusEntry],
 }
 
 impl ProjectsJob {
     pub fn new() -> Self {
+        let census = crate::country_scale::census_rows(512);
         let mut job = Self {
             // Late-campaign worst case is about 21k projects with state
             // machines plus history rows; both pools start above that so
@@ -611,7 +644,8 @@ impl ProjectsJob {
             log: RawLog::new(1 << 20, 48 << 20),
             game_state: 0,
             active: false,
-            census: Vec::with_capacity(crate::country_scale::census_rows(512)),
+            census: Vec::with_capacity(census),
+            statuses: Vec::with_capacity(census),
             pointers: Vec::with_capacity(32768),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
@@ -625,6 +659,7 @@ impl ProjectsJob {
         self.game_state = 0;
         self.active = false;
         self.census.clear();
+        self.statuses.clear();
         self.pointers.clear();
     }
 
@@ -637,6 +672,7 @@ impl ProjectsJob {
     pub fn grow(&mut self) {
         self.log.grow();
         crate::raw::double_capacity(&mut self.census);
+        crate::raw::double_capacity(&mut self.statuses);
         crate::raw::double_capacity(&mut self.pointers);
         self.update_capacity_charge();
     }
@@ -644,7 +680,8 @@ impl ProjectsJob {
     /// Off the game thread: hold one census row per observed country slot so
     /// the first hour after a large save loads does not overflow.
     pub fn presize_countries(&mut self) {
-        if crate::country_scale::reserve_census(&mut self.census) {
+        let census = crate::country_scale::reserve_census(&mut self.census);
+        if crate::country_scale::reserve_census(&mut self.statuses) || census {
             self.update_capacity_charge();
         }
     }
@@ -652,7 +689,9 @@ impl ProjectsJob {
     fn update_capacity_charge(&mut self) {
         use crate::raw_memory::{Capacity, vector_bytes};
         self.capacity_charge.set(Capacity {
-            auxiliary_vectors: vector_bytes(&self.census) + vector_bytes(&self.pointers),
+            auxiliary_vectors: vector_bytes(&self.census)
+                + vector_bytes(&self.statuses)
+                + vector_bytes(&self.pointers),
             ..Default::default()
         });
     }
@@ -696,32 +735,42 @@ fn span(
     log.take(memory, addr?, len, mask)
 }
 
-/// Mirror of `walk_tables`' read set for one country: pool header, batched
-/// identity/flag records, state machines and history entries. Pooled
-/// capacities are ignored (a superset is recorded); validation, precedence
-/// and error scope are local parses, so any failure aborts the walk exactly
-/// like the typed error.
+/// Staged spans of one validated pool record.
+#[derive(Clone, Copy, Default)]
+struct PoolRecord {
+    header: usize,
+    machine: usize,
+}
+
+/// Mirror of `walk_tables`' read set for every country: pool header, pool
+/// records and flags, state machines, their current phases and history
+/// entries. Pooled capacities are ignored (a superset is staged); validation,
+/// precedence and error scope are local parses, so any failure aborts the
+/// walk exactly like the typed error.
 fn copy_project_tables(
     log: &mut RawLog<4>,
     memory: &impl Memory,
     base: usize,
-    links: &Array,
-    countries: u32,
-    census: &[CensusEntry],
+    shared: ProjectCensus<'_>,
+    statuses: &[usize],
 ) {
-    let expected = match base.checked_add(nproject_cproject::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return,
+    let Some(expected) = base
+        .checked_add(nproject_cproject::VTABLE_RVA)
+        .map(|expected| expected as u64)
+    else {
+        return;
     };
-    let shared = ProjectCensus {
-        links,
-        countries,
-        census,
+    let Some(pool_vtable) = base.checked_add(nproject_cproject_pool::VTABLE_RVA) else {
+        return;
     };
-    for country in census.iter().filter(|entry| entry.canonical) {
-        let Some(status) = copy_status(log, memory, base, shared, country, M_PROJECT_TABLES) else {
-            return;
-        };
+    let mut machines_dead = false;
+    let mut hist_dead = false;
+    for (country, &status) in shared
+        .census
+        .iter()
+        .filter(|entry| entry.canonical == entry.slot)
+        .zip(statuses)
+    {
         let Some(pool_start) = span(
             log,
             memory,
@@ -731,101 +780,66 @@ fn copy_project_tables(
         ) else {
             return;
         };
-        let pool = match usize::try_from(pool_u64(log, pool_start))
+        let Some(pool) = usize::try_from(pool_u64(log, pool_start))
             .ok()
-            .filter(|&p| p != 0)
-        {
-            Some(pool) => pool,
-            None => return,
-        };
-        let Some(pool_vtable) = span(log, memory, Some(pool), 8, M_PROJECT_TABLES) else {
+            .filter(|&pool| pool != 0)
+        else {
             return;
         };
-        if pool_u64(log, pool_vtable)
-            != base
-                .checked_add(nproject_cproject_pool::VTABLE_RVA)
-                .unwrap_or(0) as u64
-        {
+        // The walk reads the vtable, then the array header.
+        let Some(array_address) = pool.checked_add(nproject_cproject_pool::PROJECTS) else {
             return;
-        }
-        let Some(pool_array) = span(
-            log,
+        };
+        let Some((starts, 2)) = log.take_scattered(
             memory,
-            pool.checked_add(nproject_cproject_pool::PROJECTS),
-            16,
-            M_PROJECT_TABLES,
+            [pool, array_address],
+            [8, 16],
+            [M_PROJECT_TABLES; 2],
         ) else {
             return;
         };
+        if pool_u64(log, starts[0]) != pool_vtable as u64 {
+            return;
+        }
         let mut raw = [0u8; 16];
-        raw.copy_from_slice(&log.bytes[pool_array..pool_array + 16]);
-        let pool_array = match Array::from_header(raw, nproject_cproject::POOL_STRIDE) {
-            Some(array) => array,
-            None => return,
+        raw.copy_from_slice(&log.bytes[starts[1]..starts[1] + 16]);
+        let Some(pool_array) = Array::from_header(raw, nproject_cproject::POOL_STRIDE) else {
+            return;
         };
         let mut authenticated_owner = country.id;
-        let mut hist_dead = false;
         let mut index = 0u32;
         while index < pool_array.count {
-            let count = (pool_array.count - index).min(PROJECT_BATCH);
-            // Identity gather in row-major order with the walk's completed-
-            // field precedence. The mirror always gathers both fields; the
-            // replay's truncated passes request a prefix subset.
-            let mut headers = [0usize; PROJECT_BATCH as usize];
-            let mut copied = 0u32;
-            let mut stopped = false;
-            for ordinal in 0..count {
-                let ptr = match ((index + ordinal) as usize)
-                    .checked_mul(nproject_cproject::POOL_STRIDE)
-                    .and_then(|offset| pool_array.data.checked_add(offset))
-                {
-                    Some(ptr) => ptr,
-                    // Typed address overflow aborts the whole walk.
-                    None => return,
-                };
-                match span(log, memory, Some(ptr), PROJECT_HEADER_LEN, M_PROJECTS) {
-                    Some(start) => {
-                        headers[ordinal as usize] = start;
-                        copied += 1;
-                    }
-                    None => {
-                        stopped = true;
-                        break;
-                    }
-                }
-                match span(
-                    log,
-                    memory,
-                    ptr.checked_add(nproject_cproject::STARTED),
-                    PROJECT_FLAG_LEN,
-                    M_PROJECTS,
-                ) {
-                    Some(_) => copied += 1,
-                    None => {
-                        stopped = true;
-                        break;
-                    }
-                }
-                if log.overflowed {
-                    return;
-                }
-            }
-            if copied < count * 2 && copied.is_multiple_of(2) {
+            let rows = ((pool_array.count - index) as usize).min(PROJECT_CHUNK);
+            // `from_header` proved every record address in range.
+            let first = pool_array.data + index as usize * nproject_cproject::POOL_STRIDE;
+            let Some((start, completed)) = log.take_records(
+                memory,
+                RecordSources::Strided {
+                    base: first,
+                    stride: nproject_cproject::POOL_STRIDE,
+                    count: rows,
+                },
+                &POOL_LAYOUT,
+                M_PROJECTS,
+            ) else {
                 return;
-            }
-            let header_count = copied.div_ceil(2);
-            if header_count == 0 {
-                return;
-            }
-            let _ = stopped;
-            for ordinal in 0..header_count {
-                let header = headers[ordinal as usize];
+            };
+            // A failed header ends the walk; a failed flag word ends only
+            // project rows, and the walk goes on after that record.
+            let header_failed = completed < rows * 2 && completed.is_multiple_of(2);
+            let headers = completed.div_ceil(2);
+            let mut records = [PoolRecord::default(); PROJECT_CHUNK];
+            let mut valid = 0;
+            let mut invalid = false;
+            for (ordinal, record) in records.iter_mut().enumerate().take(headers) {
+                let header = start + ordinal * POOL_LAYOUT.stride();
                 if pool_u64(log, header) != expected
                     || pool_u32(log, header + nproject_cproject::TYPE)
                         != nproject_cproject::REFERENCE_TYPE
                     || pool_u32(log, header + nproject_cproject::ID) == 0
                 {
-                    return;
+                    invalid = true;
+                    break;
                 }
                 let owner = pool_u32(log, header + nproject_cproject::OWNER);
                 if owner != authenticated_owner {
@@ -833,56 +847,102 @@ fn copy_project_tables(
                         Some(pointer) if pointer == country.pointer => {
                             authenticated_owner = owner;
                         }
-                        _ => return,
+                        _ => {
+                            invalid = true;
+                            break;
+                        }
                     }
                 }
-                let machine =
-                    match usize::try_from(pool_u64(log, header + nproject_cproject::STATE_MACHINE))
-                        .ok()
-                    {
-                        Some(machine) => machine,
-                        None => return,
-                    };
-                if span(
-                    log,
-                    memory,
-                    Some(machine),
-                    nproject_cproject_state_machine::SIZE,
-                    M_PROJECTS,
-                )
-                .is_none()
-                    && !log.overflowed
-                {
-                    // A failed machine gather fails projects only; history
-                    // continues below exactly like the typed walk.
-                }
+                let Ok(machine) =
+                    usize::try_from(pool_u64(log, header + nproject_cproject::STATE_MACHINE))
+                else {
+                    invalid = true;
+                    break;
+                };
+                *record = PoolRecord { header, machine };
+                valid += 1;
+            }
+            if log.overflowed {
+                return;
+            }
+            if !machines_dead {
+                machines_dead = !copy_machines(log, memory, &records[..valid]);
                 if log.overflowed {
                     return;
                 }
-                if !hist_dead {
-                    copy_project_history(log, memory, base, header, owner, &mut hist_dead);
-                    if log.overflowed {
-                        return;
-                    }
+            }
+            for record in &records[..valid] {
+                if hist_dead {
+                    break;
+                }
+                copy_project_history(log, memory, base, record.header, &mut hist_dead);
+                if log.overflowed {
+                    return;
                 }
             }
-            index += header_count;
+            if header_failed || invalid || headers == 0 {
+                return;
+            }
+            index += headers as u32;
         }
     }
 }
 
+/// Mirror of one batch's state-machine gathers: the recorded words of every
+/// machine, then each one's current phase. False once a gather faults; the
+/// walk then reads no further machine.
+fn copy_machines(log: &mut RawLog<4>, memory: &impl Memory, records: &[PoolRecord]) -> bool {
+    if records.is_empty() {
+        return true;
+    }
+    let mut pointers = [0usize; PROJECT_CHUNK];
+    // Machines are scattered heap objects: hint every line first, so the
+    // gather's misses overlap instead of arriving one machine at a time.
+    for (pointer, record) in pointers.iter_mut().zip(records) {
+        *pointer = record.machine;
+        engine::prefetch::fields(record.machine, &machine::FIELDS);
+    }
+    let rows = records.len();
+    let Some((start, completed)) = log.take_records(
+        memory,
+        RecordSources::Pointers(&pointers[..rows]),
+        &machine::LAYOUT,
+        M_PROJECTS,
+    ) else {
+        return false;
+    };
+    let copied = completed / machine::FIELDS.len();
+    let mut phases = [0usize; PROJECT_CHUNK];
+    for (ordinal, phase) in phases.iter_mut().enumerate().take(copied) {
+        let at = start + ordinal * machine::FIELDS_SIZE;
+        *phase = machine::phase_source(
+            pointers[ordinal],
+            log.bytes[at..at + machine::FIELDS_SIZE].try_into().unwrap(),
+        );
+        engine::prefetch::fields(*phase, &machine::PHASE_FIELDS);
+    }
+    let Some((_, phased)) = log.take_records(
+        memory,
+        RecordSources::Pointers(&phases[..copied]),
+        &machine::PHASE_LAYOUT,
+        M_PROJECTS,
+    ) else {
+        return false;
+    };
+    copied == rows && phased == rows
+}
+
 /// Mirror of one record's history read set: array header plus every entry's
-/// row and context spans. Sets `hist_dead` on the first typed abort point;
-/// later history takes are skipped exactly like the filtered walk.
+/// row and context fields in one gather, then present optional payloads. Sets
+/// `hist_dead` on the first typed abort point; later history is skipped
+/// exactly like the filtered walk.
 fn copy_project_history(
     log: &mut RawLog<4>,
     memory: &impl Memory,
     base: usize,
     header: usize,
-    owner: u32,
     hist_dead: &mut bool,
 ) {
-    let id = pool_u32(log, header + nproject_cproject::ID);
     let data = match usize::try_from(pool_u64(log, header + nproject_cproject::HISTORY)) {
         Ok(data) => data,
         Err(_) => {
@@ -903,140 +963,62 @@ fn copy_project_history(
         *hist_dead = true;
         return;
     }
-    let expected = match base.checked_add(nproject_sproject_history::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => {
-            *hist_dead = true;
-            return;
-        }
+    let (Some(expected), Some(context_expected)) = (
+        base.checked_add(nproject_sproject_history::VTABLE_RVA),
+        base.checked_add(nproject_sproject_context::VTABLE_RVA),
+    ) else {
+        *hist_dead = true;
+        return;
     };
-    let context_expected = match base.checked_add(nproject_sproject_context::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => {
-            *hist_dead = true;
-            return;
-        }
-    };
-    for ordinal in 0..count {
-        let address = (ordinal as usize)
-            .checked_mul(nproject_sproject_history::STRIDE)
-            .and_then(|offset| data.checked_add(offset));
-        let Some(address) = address else {
+    for ordinal in 0..count as usize {
+        // The array check above keeps every entry field in range.
+        let entry = data + ordinal * nproject_sproject_history::STRIDE;
+        let context = entry + nproject_sproject_history::CONTEXT;
+        // Row vtable, handles and date, then the context's vtable, fixed
+        // words and presence bytes: the walk's read order.
+        let Some((starts, completed)) = log.take_scattered(
+            memory,
+            [
+                entry,
+                entry + nproject_sproject_history::PROTOTYPE_REWARD_HANDLE,
+                entry + nproject_sproject_history::DATE,
+                context,
+                context + nproject_sproject_context::PROVINCE,
+                context + nproject_sproject_context::COUNTRY_PRESENT,
+                context + nproject_sproject_context::SCIENTIST_PRESENT,
+                context + nproject_sproject_context::STATE_PRESENT,
+            ],
+            [8, 8, 4, 8, 16, 1, 1, 1],
+            [M_HISTORY; 8],
+        ) else {
             *hist_dead = true;
             return;
         };
-        let Some(vtable) = span(log, memory, Some(address), 8, M_HISTORY) else {
-            *hist_dead = true;
-            return;
-        };
-        if pool_u64(log, vtable) != expected {
-            *hist_dead = true;
-            return;
-        }
-        let handles = span(
-            log,
-            memory,
-            address.checked_add(nproject_sproject_history::PROTOTYPE_REWARD_HANDLE),
-            8,
-            M_HISTORY,
-        );
-        let date = span(
-            log,
-            memory,
-            address.checked_add(nproject_sproject_history::DATE),
-            4,
-            M_HISTORY,
-        );
-        if handles.is_none() || date.is_none() {
+        if completed < 1
+            || pool_u64(log, starts[0]) != expected as u64
+            || completed < 4
+            || pool_u64(log, starts[3]) != context_expected as u64
+            || completed < 8
+        {
             *hist_dead = true;
             return;
         }
-        let context = match address.checked_add(nproject_sproject_history::CONTEXT) {
-            Some(context) => context,
-            None => {
+        for (present, offset) in [
+            (starts[5], nproject_sproject_context::COUNTRY_REFERENCE),
+            (starts[6], nproject_sproject_context::SCIENTIST_REFERENCE),
+            (starts[7], nproject_sproject_context::STATE_REFERENCE),
+        ] {
+            if log.bytes[present] != 0 && log.take(memory, context + offset, 4, M_HISTORY).is_none()
+            {
                 *hist_dead = true;
                 return;
             }
-        };
-        if !copy_project_context(log, memory, context_expected, context) {
-            *hist_dead = true;
-            return;
-        }
-        let _ = (owner, id, ordinal);
-    }
-}
-
-/// Mirror of `SProjectContext::read_row`: vtable, fixed scatter and optional
-/// payloads by presence byte. Presence is parsed from the recorded bytes, so
-/// the optional read set matches the typed walk exactly.
-fn copy_project_context(
-    log: &mut RawLog<4>,
-    memory: &impl Memory,
-    expected: u64,
-    address: usize,
-) -> bool {
-    let Some(vtable) = span(log, memory, Some(address), 8, M_HISTORY) else {
-        return false;
-    };
-    if pool_u64(log, vtable) != expected {
-        return false;
-    }
-    let fixed = span(
-        log,
-        memory,
-        address.checked_add(nproject_sproject_context::PROVINCE),
-        16,
-        M_HISTORY,
-    );
-    let country_present = span(
-        log,
-        memory,
-        address.checked_add(nproject_sproject_context::COUNTRY_PRESENT),
-        1,
-        M_HISTORY,
-    );
-    let scientist_present = span(
-        log,
-        memory,
-        address.checked_add(nproject_sproject_context::SCIENTIST_PRESENT),
-        1,
-        M_HISTORY,
-    );
-    let state_present = span(
-        log,
-        memory,
-        address.checked_add(nproject_sproject_context::STATE_PRESENT),
-        1,
-        M_HISTORY,
-    );
-    let (Some(fixed), Some(country_present), Some(scientist_present), Some(state_present)) =
-        (fixed, country_present, scientist_present, state_present)
-    else {
-        return false;
-    };
-    for (present_start, offset) in [
-        (
-            country_present,
-            nproject_sproject_context::COUNTRY_REFERENCE,
-        ),
-        (
-            scientist_present,
-            nproject_sproject_context::SCIENTIST_REFERENCE,
-        ),
-        (state_present, nproject_sproject_context::STATE_REFERENCE),
-    ] {
-        if log.bytes[present_start] != 0
-            && span(log, memory, address.checked_add(offset), 4, M_HISTORY).is_none()
-        {
-            return false;
         }
     }
-    let _ = fixed;
-    true
 }
 
 /// Parsed breakthrough tree links for the traversal mirror.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct BreakthroughLinks {
     left: usize,
     parent: usize,
@@ -1044,7 +1026,20 @@ struct BreakthroughLinks {
     nil: bool,
 }
 
-/// Mirror of `Links::read`: the 24-byte link span plus the nil byte.
+fn parse_links(log: &RawLog<4>, pointers: usize, nil: usize) -> Option<BreakthroughLinks> {
+    if log.bytes[nil] > 1 {
+        return None;
+    }
+    let pointer = |offset: usize| usize::try_from(pool_u64(log, pointers + offset)).ok();
+    Some(BreakthroughLinks {
+        left: pointer(nproject_breakthrough_node::LEFT)?,
+        parent: pointer(nproject_breakthrough_node::PARENT)?,
+        right: pointer(nproject_breakthrough_node::RIGHT)?,
+        nil: log.bytes[nil] != 0,
+    })
+}
+
+/// Mirror of `Links::read` for the tree sentinel: links and nil byte.
 fn copy_breakthrough_links(
     log: &mut RawLog<4>,
     memory: &impl Memory,
@@ -1053,31 +1048,66 @@ fn copy_breakthrough_links(
     if address == 0 {
         return None;
     }
-    let pointers = span(log, memory, Some(address), 24, M_BREAKTHROUGH)?;
-    let nil = span(
-        log,
-        memory,
-        address.checked_add(nproject_breakthrough_node::IS_NIL),
-        1,
-        M_BREAKTHROUGH,
-    )?;
-    if log.bytes[nil] > 1 {
+    let nil = address.checked_add(nproject_breakthrough_node::IS_NIL)?;
+    let (starts, 2) =
+        log.take_scattered(memory, [address, nil], [NODE_LINKS, 1], [M_BREAKTHROUGH; 2])?
+    else {
         return None;
-    }
-    let pointer = |offset: usize| {
-        usize::try_from(u64::from_le_bytes(
-            log.bytes[pointers + offset..pointers + offset + 8]
-                .try_into()
-                .unwrap(),
-        ))
-        .ok()
     };
-    Some(BreakthroughLinks {
-        left: pointer(nproject_breakthrough_node::LEFT)?,
-        parent: pointer(nproject_breakthrough_node::PARENT)?,
-        right: pointer(nproject_breakthrough_node::RIGHT)?,
-        nil: log.bytes[nil] != 0,
-    })
+    parse_links(log, starts[0], starts[1])
+}
+
+/// One tree's staged nodes, so a successor walk that revisits a node reads
+/// nothing again. Bounded; a node past the bound is staged again.
+struct TreeNodes {
+    nodes: [(usize, BreakthroughLinks, Option<usize>); TREE_NODES],
+    len: usize,
+}
+
+impl TreeNodes {
+    fn new() -> Self {
+        Self {
+            nodes: [(0, BreakthroughLinks::default(), None); TREE_NODES],
+            len: 0,
+        }
+    }
+
+    /// Mirror of `Links::read` plus the node's payload, which the walk reads
+    /// when the node is current. Returns the links and the payload's span.
+    fn read(
+        &mut self,
+        log: &mut RawLog<4>,
+        memory: &impl Memory,
+        address: usize,
+    ) -> Option<(BreakthroughLinks, Option<usize>)> {
+        if address == 0 {
+            return None;
+        }
+        if let Some(&(_, links, value)) = self.nodes[..self.len]
+            .iter()
+            .find(|(node, ..)| *node == address)
+        {
+            return Some((links, value));
+        }
+        let nil = address.checked_add(nproject_breakthrough_node::IS_NIL)?;
+        let value = address.checked_add(nproject_breakthrough_node::SPECIALIZATION_HANDLE)?;
+        let (starts, completed) = log.take_scattered(
+            memory,
+            [address, nil, value],
+            [NODE_LINKS, 1, 8],
+            [M_BREAKTHROUGH; 3],
+        )?;
+        if completed < 2 {
+            return None;
+        }
+        let links = parse_links(log, starts[0], starts[1])?;
+        let value = (completed == 3).then_some(starts[2]);
+        if self.len < TREE_NODES {
+            self.nodes[self.len] = (address, links, value);
+            self.len += 1;
+        }
+        Some((links, value))
+    }
 }
 
 /// Brent-style cycle guard with no reads, mirroring the typed `Chain`.
@@ -1115,6 +1145,7 @@ impl BreakthroughChain {
 fn copy_breakthrough_successor(
     log: &mut RawLog<4>,
     memory: &impl Memory,
+    nodes: &mut TreeNodes,
     header: usize,
     mut current: usize,
     links: BreakthroughLinks,
@@ -1126,7 +1157,7 @@ fn copy_breakthrough_successor(
             if !chain.visit(candidate) {
                 return None;
             }
-            let child = copy_breakthrough_links(log, memory, candidate)?;
+            let (child, _) = nodes.read(log, memory, candidate)?;
             if child.nil || child.parent != current {
                 return None;
             }
@@ -1146,7 +1177,7 @@ fn copy_breakthrough_successor(
         if !chain.visit(parent) {
             return None;
         }
-        let ancestor = copy_breakthrough_links(log, memory, parent)?;
+        let (ancestor, _) = nodes.read(log, memory, parent)?;
         if ancestor.nil {
             return None;
         }
@@ -1161,49 +1192,41 @@ fn copy_breakthrough_successor(
     }
 }
 
-/// Mirror of `walk_progress`'s read set: vtable, tree header, sentinel,
+/// Mirror of `walk_progress`'s read set: vtable and tree header, sentinel,
 /// root and the in-order node/payload sequence. Capacity truncation is
-/// ignored (a superset is recorded); order and coherence checks are local.
+/// ignored (a superset is staged); order and coherence checks are local.
 fn copy_breakthrough_tree(
     log: &mut RawLog<4>,
     memory: &impl Memory,
     base: usize,
     status: usize,
 ) -> bool {
-    let address = match status.checked_add(nproject_cprogram_status::BREAKTHROUGH) {
-        Some(address) => address,
-        None => return false,
-    };
-    let expected = match base.checked_add(nproject_cbreakthrough_progress::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return false,
-    };
-    let Some(vtable) = span(log, memory, Some(address), 8, M_BREAKTHROUGH) else {
+    let Some(address) = status.checked_add(nproject_cprogram_status::BREAKTHROUGH) else {
         return false;
     };
-    if pool_u64(log, vtable) != expected {
+    let Some(expected) = base.checked_add(nproject_cbreakthrough_progress::VTABLE_RVA) else {
         return false;
-    }
-    let Some(header_start) = span(
-        log,
+    };
+    let Some(header_address) = address.checked_add(nproject_cbreakthrough_progress::TREE_HEADER)
+    else {
+        return false;
+    };
+    let Some((starts, 2)) = log.take_scattered(
         memory,
-        address.checked_add(nproject_cbreakthrough_progress::TREE_HEADER),
-        16,
-        M_BREAKTHROUGH,
+        [address, header_address],
+        [8, 16],
+        [M_BREAKTHROUGH; 2],
     ) else {
         return false;
     };
-    let header = match usize::try_from(pool_u64(log, header_start)).ok() {
-        Some(header) => header,
-        None => return false,
+    if pool_u64(log, starts[0]) != expected as u64 {
+        return false;
+    }
+    let Ok(header) = usize::try_from(pool_u64(log, starts[1])) else {
+        return false;
     };
-    let count = match u32::try_from(u64::from_le_bytes(
-        log.bytes[header_start + 8..header_start + 16]
-            .try_into()
-            .unwrap(),
-    )) {
-        Ok(count) => count,
-        Err(_) => return false,
+    let Ok(count) = u32::try_from(pool_u64(log, starts[1] + 8)) else {
+        return false;
     };
     let Some(sentinel) = copy_breakthrough_links(log, memory, header) else {
         return false;
@@ -1214,7 +1237,8 @@ fn copy_breakthrough_tree(
     if count == 0 {
         return sentinel.left == header && sentinel.parent == header && sentinel.right == header;
     }
-    let Some(root) = copy_breakthrough_links(log, memory, sentinel.parent) else {
+    let mut nodes = TreeNodes::new();
+    let Some((root, _)) = nodes.read(log, memory, sentinel.parent) else {
         return false;
     };
     if root.nil || root.parent != header {
@@ -1226,28 +1250,20 @@ fn copy_breakthrough_tree(
         if current == header {
             return false;
         }
-        let Some(links) = copy_breakthrough_links(log, memory, current) else {
+        let Some((links, Some(value))) = nodes.read(log, memory, current) else {
             return false;
         };
         if links.nil {
             return false;
         }
-        let Some(value) = span(
-            log,
-            memory,
-            current.checked_add(nproject_breakthrough_node::SPECIALIZATION_HANDLE),
-            8,
-            M_BREAKTHROUGH,
-        ) else {
-            return false;
-        };
         let specialization = pool_u32(log, value);
         if previous_key.is_some_and(|key| key >= specialization as i32) {
             return false;
         }
         previous_key = Some(specialization as i32);
         let last = current;
-        let Some(next) = copy_breakthrough_successor(log, memory, header, current, links) else {
+        let Some(next) = copy_breakthrough_successor(log, memory, &mut nodes, header, current, links)
+        else {
             return false;
         };
         if ordinal + 1 == count && (next != header || sentinel.right != last) {
@@ -1263,40 +1279,56 @@ fn copy_breakthroughs(
     log: &mut RawLog<4>,
     memory: &impl Memory,
     base: usize,
-    links: &Array,
-    countries: u32,
-    census: &[CensusEntry],
+    statuses: &[usize],
 ) {
-    for country in census.iter().filter(|entry| entry.canonical) {
-        let shared = ProjectCensus {
-            links,
-            countries,
-            census,
-        };
-        let Some(status) = copy_status(log, memory, base, shared, country, M_BREAKTHROUGH) else {
-            return;
-        };
-        if !copy_breakthrough_tree(log, memory, base, status) {
-            return;
-        }
-        if log.overflowed {
+    for &status in statuses {
+        if !copy_breakthrough_tree(log, memory, base, status) || log.overflowed {
             return;
         }
     }
 }
 
-/// One structural pass over the scheduled read set: shared census first, then
-/// the three walk mirrors in typed order. Failures stop only the affected
-/// walk; the replay derives every outcome from the same recorded spans.
+/// One structural pass over the scheduled read set: the shared census and
+/// statuses first, then the three walk mirrors in typed order. A census or
+/// status failure ends every walk at that country, so each mirror still
+/// stages the countries before it. Failures stop only the affected walk; the
+/// replay derives every outcome from the same recorded spans.
 fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut ProjectsJob) {
     let _reads = read_accounting::table(TABLES[0]);
     job.game_state = game_state;
     job.census.clear();
-    let (links, countries) =
-        match copy_census(&mut job.log, memory, base, game_state, &mut job.census) {
-            Some(census) => census,
-            None => return,
+    job.statuses.clear();
+    let Some((links, countries, vtable, read_to)) =
+        copy_census(&mut job.log, memory, base, game_state, &mut job.census)
+    else {
+        return;
+    };
+    if job.log.overflowed {
+        return;
+    }
+    let mut complete = read_to == countries.count;
+    let shared = ProjectCensus {
+        links: &links,
+        countries: &countries,
+        vtable,
+        read_to,
+        census: &job.census,
+    };
+    for country in job
+        .census
+        .iter()
+        .filter(|entry| entry.canonical == entry.slot)
+    {
+        let Some(status) = copy_status(&mut job.log, memory, base, shared, country) else {
+            complete = false;
+            break;
         };
+        if job.statuses.len() == job.statuses.capacity() {
+            job.log.overflowed = true;
+            return;
+        }
+        job.statuses.push(status);
+    }
     if job.log.overflowed {
         return;
     }
@@ -1304,30 +1336,31 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Pro
         &mut job.log,
         memory,
         base,
-        &links,
-        countries,
-        &job.census,
+        shared,
+        &job.statuses,
+        complete,
         &mut job.pointers,
     );
     if job.log.overflowed {
         return;
     }
-    copy_project_tables(&mut job.log, memory, base, &links, countries, &job.census);
+    copy_project_tables(&mut job.log, memory, base, shared, &job.statuses);
     if job.log.overflowed {
         return;
     }
-    copy_breakthroughs(&mut job.log, memory, base, &links, countries, &job.census);
+    copy_breakthroughs(&mut job.log, memory, base, &job.statuses);
 }
 
-/// Shared census plus the tables it authenticates. The walks replayed at
-/// decode time re-derive everything else from the recorded spans.
+/// Country census in walk order. Returns the headers, the country vtable and
+/// the first slot not read (the country count when every slot was read); a
+/// failed slot keeps the census before it, where every walk stops.
 fn copy_census(
     log: &mut RawLog<4>,
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     census: &mut Vec<CensusEntry>,
-) -> Option<(Array, u32)> {
+) -> Option<(Array, Array, u64, u32)> {
     let countries_start = span(
         log,
         memory,
@@ -1352,60 +1385,88 @@ fn copy_census(
     }
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
     for slot in 1..countries.count {
-        // Full `read_at` authentication in walk order.
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries.data.checked_add(offset));
-        let pointer_start = span(log, memory, pointer_addr, 8, M_ALL)?;
-        let pointer = match usize::try_from(pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-        {
-            Some(pointer) => pointer,
-            // Null slots are skipped without reads, like the typed walk.
-            None => continue,
-        };
-        let vtable_start = span(log, memory, Some(pointer), 8, M_ALL)?;
-        let id_start = span(log, memory, pointer.checked_add(ccountry::ID), 4, M_ALL)?;
-        if pool_u64(log, vtable_start) != vtable {
-            return None;
+        match copy_slot(log, memory, vtable, &countries, &links, slot) {
+            Some(Some(entry)) => {
+                if census.len() == census.capacity() {
+                    log.overflowed = true;
+                    return None;
+                }
+                census.push(entry);
+            }
+            Some(None) => {}
+            None => return Some((links, countries, vtable, slot)),
         }
-        let id = pool_u32(log, id_start);
-        let Some(Some(canonical)) = copy_link(log, memory, &links, countries.count, id) else {
-            return None;
-        };
-        let Some(Some(canonical_slot)) = copy_link(log, memory, &links, countries.count, slot)
+    }
+    Some((links, countries, vtable, countries.count))
+}
+
+/// Mirror of `Reader::read_at`. A repeated link or pointer read of a key this
+/// slot already staged is not staged again. `None` ends the census; an inner
+/// `None` is a null slot, skipped without further reads.
+fn copy_slot(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    vtable: u64,
+    countries: &Array,
+    links: &Array,
+    slot: u32,
+) -> Option<Option<CensusEntry>> {
+    let pointer_at = |slot: u32| {
+        (slot as usize)
+            .checked_mul(8)
+            .and_then(|offset| countries.data.checked_add(offset))
+    };
+    let pointer_start = span(log, memory, pointer_at(slot), 8, M_ALL)?;
+    let Some(pointer) = usize::try_from(pool_u64(log, pointer_start))
+        .ok()
+        .filter(|&pointer| pointer != 0)
+    else {
+        return Some(None);
+    };
+    let Some(id_address) = pointer.checked_add(ccountry::ID) else {
+        span(log, memory, Some(pointer), 8, M_ALL)?;
+        return None;
+    };
+    let (starts, 2) = log.take_scattered(memory, [pointer, id_address], [8, 4], [M_ALL; 2])?
+    else {
+        return None;
+    };
+    if pool_u64(log, starts[0]) != vtable {
+        return None;
+    }
+    let id = pool_u32(log, starts[1]);
+    let Some(Some(canonical)) = copy_link(log, memory, links, countries.count, id) else {
+        return None;
+    };
+    if slot != id {
+        let Some(Some(canonical_slot)) = copy_link(log, memory, links, countries.count, slot)
         else {
             return None;
         };
         if canonical_slot != canonical {
             return None;
         }
-        let Some(Some(check)) = copy_link(log, memory, &links, countries.count, canonical) else {
+    }
+    if canonical != id && canonical != slot {
+        let Some(Some(check)) = copy_link(log, memory, links, countries.count, canonical) else {
             return None;
         };
         if check != canonical {
             return None;
         }
-        let canonical_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries.data.checked_add(offset));
-        let canonical_pointer = span(log, memory, canonical_addr, 8, M_ALL)?;
+    }
+    if canonical != slot {
+        let canonical_pointer = span(log, memory, pointer_at(canonical), 8, M_ALL)?;
         if pool_u64(log, canonical_pointer) != pointer as u64 {
             return None;
         }
-        if census.len() == census.capacity() {
-            log.overflowed = true;
-            return None;
-        }
-        census.push(CensusEntry {
-            pointer,
-            id,
-            slot,
-            canonical: canonical == slot,
-        });
     }
-    Some((links, countries.count))
+    Some(Some(CensusEntry {
+        pointer,
+        id,
+        slot,
+        canonical,
+    }))
 }
 
 /// Acquire one refresh into an owned job.
@@ -1529,9 +1590,19 @@ fn copy_link(
     Some(Some(slot))
 }
 
+impl ProjectCensus<'_> {
+    fn entry(&self, slot: u32) -> Option<&CensusEntry> {
+        self.census
+            .binary_search_by_key(&slot, |entry| entry.slot)
+            .ok()
+            .map(|index| &self.census[index])
+    }
+}
+
 /// Mirror of `Reader::resolve` without re-reading authentication: the link
-/// span is recorded here and the `read_at` spans come from the shared
-/// census, which covered every slot. Local checks match the walk exactly.
+/// span is recorded here and the `read_at` spans come from the shared census.
+/// A slot a failed census never reached is staged here, as the walk reads it
+/// before reaching that slot itself. Local checks match the walk exactly.
 fn copy_resolve(
     log: &mut RawLog<4>,
     memory: &impl Memory,
@@ -1545,37 +1616,45 @@ fn copy_resolve(
     let offset = (raw as usize).checked_mul(4)?;
     let start = span(log, memory, census.links.data.checked_add(offset), 4, mask)?;
     let slot = pool_u32(log, start);
-    if slot == 0 || slot >= census.countries {
+    if slot == 0 || slot >= census.countries.count {
         return None;
     }
-    let entry = census.census.iter().find(|entry| entry.slot == slot)?;
-    if !entry.canonical {
-        return None;
-    }
-    Some(entry.pointer)
+    let entry = match census.entry(slot) {
+        Some(entry) => *entry,
+        None if slot >= census.read_to => copy_slot(
+            log,
+            memory,
+            census.vtable,
+            census.countries,
+            census.links,
+            slot,
+        )??,
+        None => return None,
+    };
+    (entry.canonical == entry.slot).then_some(entry.pointer)
 }
 
 /// Mirror of `from_country`: status pointer, 20-byte header and owner
-/// resolution. `None` aborts the calling walk exactly like the typed error.
+/// resolution, staged once for all three walks. `None` aborts them exactly
+/// like the typed error.
 fn copy_status(
     log: &mut RawLog<4>,
     memory: &impl Memory,
     base: usize,
     census: ProjectCensus<'_>,
     country: &CensusEntry,
-    mask: u32,
 ) -> Option<usize> {
     let pointer_start = span(
         log,
         memory,
         country.pointer.checked_add(ccountry::PROGRAM_STATUS),
         8,
-        mask,
+        M_ALL,
     )?;
     let status = usize::try_from(pool_u64(log, pointer_start))
         .ok()
         .filter(|&status| status != 0)?;
-    let header_start = span(log, memory, Some(status), 20, mask)?;
+    let header_start = span(log, memory, Some(status), 20, M_ALL)?;
     let mut header = [0u8; 20];
     header.copy_from_slice(&log.bytes[header_start..header_start + 20]);
     let expected = base.checked_add(nproject_cprogram_status::VTABLE_RVA)? as u64;
@@ -1585,13 +1664,13 @@ fn copy_status(
     {
         return None;
     }
+    // The census resolved this country's own id to itself.
     let owner = u32::from_le_bytes(header[16..20].try_into().unwrap());
-    if copy_resolve(log, memory, census, owner, mask)? != country.pointer {
+    if owner != country.id && copy_resolve(log, memory, census, owner, M_ALL)? != country.pointer {
         return None;
     }
     Some(status)
 }
-
 /// Mirror of one program row's read set: identity, field scatter, optional
 /// active-project handle, building terminator and payload, owner link.
 /// String parses are local; any failure aborts the programs walk.
@@ -1718,30 +1797,21 @@ fn copy_program_row(
 /// Mirror of `nproject_cprogram::walk`'s read set across the shared census.
 /// The walk runs in two phases — a pointer census over every country, then
 /// row reads — so a row failure must not skip later countries' census
-/// spans: the replay censuses everything before decoding the first row.
+/// spans: the replay censuses everything before decoding the first row. An
+/// incomplete census or status list ends the walk before its rows.
 fn copy_programs(
     log: &mut RawLog<4>,
     memory: &impl Memory,
     base: usize,
-    links: &Array,
-    countries: u32,
-    census: &[CensusEntry],
+    shared: ProjectCensus<'_>,
+    statuses: &[usize],
+    complete: bool,
     pointers: &mut Vec<usize>,
 ) {
     // Phase 1: pointer census. Only census-span failures abort the walk;
     // row failures below never reach back into this phase.
     pointers.clear();
-    let shared = ProjectCensus {
-        links,
-        countries,
-        census,
-    };
-    let mut census_ok = true;
-    for country in census.iter().filter(|entry| entry.canonical) {
-        let Some(status) = copy_status(log, memory, base, shared, country, M_PROGRAMS) else {
-            census_ok = false;
-            break;
-        };
+    for &status in statuses {
         let Some(array_start) = span(
             log,
             memory,
@@ -1749,39 +1819,42 @@ fn copy_programs(
             16,
             M_PROGRAMS,
         ) else {
-            census_ok = false;
-            break;
+            return;
         };
         let mut raw = [0u8; 16];
         raw.copy_from_slice(&log.bytes[array_start..array_start + 16]);
         let Some(array) = Array::from_header(raw, 8) else {
-            census_ok = false;
-            break;
+            return;
         };
-        for index in 0..array.count {
-            let addr = (index as usize)
-                .checked_mul(8)
-                .and_then(|offset| array.data.checked_add(offset));
-            let pointer = addr
-                .and_then(|addr| span(log, memory, Some(addr), 8, M_PROGRAMS))
-                .and_then(|start| usize::try_from(pool_u64(log, start)).ok())
-                .filter(|&pointer| pointer != 0);
-            let Some(pointer) = pointer else {
-                census_ok = false;
-                break;
+        let mut index = 0;
+        while index < array.count as usize {
+            let count = (array.count as usize - index).min(64);
+            // `from_header` proved the whole array in range.
+            let Some((start, copied)) =
+                log.take_array_chunk(memory, array.data + index * 8, 8, count, M_PROGRAMS)
+            else {
+                return;
             };
-            if pointers.len() == pointers.capacity() {
-                log.overflowed = true;
-                census_ok = false;
-                break;
+            for ordinal in 0..copied {
+                let Some(pointer) = usize::try_from(pool_u64(log, start + ordinal * 8))
+                    .ok()
+                    .filter(|&pointer| pointer != 0)
+                else {
+                    return;
+                };
+                if pointers.len() == pointers.capacity() {
+                    log.overflowed = true;
+                    return;
+                }
+                pointers.push(pointer);
             }
-            pointers.push(pointer);
-        }
-        if !census_ok || log.overflowed {
-            break;
+            if copied < count {
+                return;
+            }
+            index += count;
         }
     }
-    if !census_ok {
+    if !complete {
         return;
     }
     // Phase 2: row reads in census order (a superset of the walk's sorted
@@ -2349,10 +2422,13 @@ mod tests {
         static LOCAL: Tracker = Tracker::new();
         let mut job = ProjectsJob::default();
         job.census.reserve_exact(3);
+        job.statuses.reserve_exact(3);
         job.pointers.reserve_exact(3);
         job.capacity_charge = Charge::empty_on(&LOCAL);
         job.update_capacity_charge();
-        let expected = |job: &ProjectsJob| vector_bytes(&job.census) + vector_bytes(&job.pointers);
+        let expected = |job: &ProjectsJob| {
+            vector_bytes(&job.census) + vector_bytes(&job.statuses) + vector_bytes(&job.pointers)
+        };
         let initial = LOCAL.snapshot().current.auxiliary_vectors;
         assert_eq!(initial, expected(&job));
         job.grow();
@@ -2896,6 +2972,9 @@ mod tests {
         Array::from_header(bytes[start..start + 16].try_into().unwrap(), 4).unwrap()
     }
 
+    /// The fixture's three-slot country table, read in full.
+    const COUNTRIES: Array = Array { data: 0, count: 3 };
+
     fn copy_fixture_program(log: &mut RawLog<4>, memory: &ProgramSource<'_>) -> bool {
         use super::projects_test_kit as kit;
         let links = program_links(memory.memory.bytes);
@@ -2905,12 +2984,14 @@ mod tests {
             kit::BASE,
             ProjectCensus {
                 links: &links,
-                countries: 3,
+                countries: &COUNTRIES,
+                vtable: 0,
+                read_to: 3,
                 census: &[CensusEntry {
                     pointer: kit::GAME_STATE + kit::C1,
                     id: 1,
                     slot: 1,
-                    canonical: true,
+                    canonical: 1,
                 }],
             },
             memory.pointer,
@@ -3206,7 +3287,9 @@ mod tests {
             usize::MAX,
             ProjectCensus {
                 links: &links,
-                countries: 3,
+                countries: &COUNTRIES,
+                vtable: 0,
+                read_to: 3,
                 census: &[]
             },
             pointer,
@@ -3515,6 +3598,7 @@ mod tests {
             game_state: 0,
             active: false,
             census: Vec::with_capacity(1),
+            statuses: Vec::with_capacity(1),
             pointers: Vec::with_capacity(1),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
@@ -3525,3 +3609,7 @@ mod tests {
         assert!(tiny.grow_for_next());
     }
 }
+
+#[cfg(test)]
+#[path = "projects_scale_tests.rs"]
+mod scale_tests;

@@ -241,6 +241,10 @@ impl<M: Memory> Memory for CountedMemory<M> {
         self.0.modifier_accumulator_value(address, key)
     }
 
+    fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
+        self.0.modifier_definitions()
+    }
+
     fn core_supply_access(
         &self,
         base: usize,

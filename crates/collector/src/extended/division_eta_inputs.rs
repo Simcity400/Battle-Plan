@@ -16,6 +16,7 @@ use engine::{
     modifier_accumulator::{
         SNAPSHOT_ENTRY_CAPACITY, SNAPSHOT_NODE_CAPACITY, SnapshotArena, SnapshotCapacity, Value,
     },
+    modifier_definition::PassDefinitions,
     walk::Outcome,
 };
 use replay::{
@@ -137,12 +138,14 @@ impl AirDefenseMemo {
 /// One walk's raw modifier accumulators. Every division of the same country
 /// asks the same accumulator for the same movement keys, and the native lookup
 /// scans the whole array for each one; the first lookup reads exactly what it
-/// read and the rest are answered from those bytes. Only raw arrays are shared:
-/// metadata, graph authentication and every other read stay with the source,
-/// and the arena is cleared before each capture to acquire current values.
+/// read and the rest are answered from those bytes. Only raw arrays and each
+/// key's static metadata flags are shared: graph authentication and every
+/// other read stay with the source, and both are cleared before each capture
+/// to acquire current values.
 struct ModifierMemory<'a, M> {
     inner: &'a M,
     arena: &'a RefCell<SnapshotArena>,
+    definitions: &'a PassDefinitions,
     air_defense: &'a RefCell<AirDefenseMemo>,
     countries: Option<(usize, usize, engine::ccountry::AuthenticatedRoster<'a>)>,
 }
@@ -188,6 +191,9 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
             .filter(|(module, game, _)| (*module, *game) == (base, state))
             .map(|(_, _, roster)| roster)
             .or_else(|| self.inner.authenticated_countries(base, state))
+    }
+    fn modifier_definitions(&self) -> Option<&PassDefinitions> {
+        Some(self.definitions)
     }
     fn modifier_accumulator_value(
         &self,
@@ -292,6 +298,8 @@ pub struct RangeCaptured {
     statics: cprovince::StaticGeometry,
     /// Walk-local raw modifier accumulators, cleared before each capture.
     modifiers: RefCell<SnapshotArena>,
+    /// Walk-local modifier metadata flags, cleared before each capture.
+    definitions: PassDefinitions,
     /// Pure results keyed by every signed argument, retained across captures.
     air_defense: RefCell<AirDefenseMemo>,
     /// This capture's modifier demand, retained for off-thread growth.
@@ -310,6 +318,7 @@ impl RangeCaptured {
             geometry: cprovince::GeometryPacket::with_capacities(c.geometry),
             statics: cprovince::StaticGeometry::default(),
             modifiers: RefCell::new(SnapshotArena::new(bounded_snapshot_capacity(c.modifiers))),
+            definitions: PassDefinitions::default(),
             air_defense: RefCell::new(AirDefenseMemo::with_capacity(c.rows)),
             required_modifiers: SnapshotCapacity::default(),
             captured_current: false,
@@ -416,9 +425,11 @@ impl RangeCaptured {
         self.captured_current = true;
         let started = qpc();
         let span = context.span.0.min(rows.len())..context.span.1.min(rows.len());
+        self.definitions.clear();
         let memory = &ModifierMemory {
             inner: memory,
             arena: &self.modifiers,
+            definitions: &self.definitions,
             air_defense: &self.air_defense,
             countries: countries.map(|roster| (context.base, context.game_state, roster)),
         };
@@ -811,6 +822,7 @@ mod tests {
         let memory = ModifierMemory {
             inner: &source,
             arena: &arena,
+            definitions: &PassDefinitions::default(),
             air_defense: &air_defense,
             countries: None,
         };
@@ -996,6 +1008,7 @@ mod tests {
         let memory = ModifierMemory {
             inner: &source,
             arena: &arena,
+            definitions: &PassDefinitions::default(),
             air_defense: &air_defense,
             countries: Some((0, 0x1000, roster)),
         };
@@ -1148,6 +1161,7 @@ mod tests {
         let memory = ModifierMemory {
             inner: &source,
             arena: &arena,
+            definitions: &PassDefinitions::default(),
             air_defense: &air_defense,
             countries: None,
         };
@@ -1172,6 +1186,7 @@ mod tests {
         let memory = ModifierMemory {
             inner: &source,
             arena: &small,
+            definitions: &PassDefinitions::default(),
             air_defense: &air_defense,
             countries: None,
         };
@@ -1191,6 +1206,7 @@ mod tests {
         let memory = ModifierMemory {
             inner: &source,
             arena: &empty,
+            definitions: &PassDefinitions::default(),
             air_defense: &air_defense,
             countries: None,
         };
@@ -1229,6 +1245,7 @@ mod tests {
             let memory = ModifierMemory {
                 inner: &source,
                 arena: &arena,
+                definitions: &PassDefinitions::default(),
                 air_defense: &air_defense,
                 countries: None,
             };

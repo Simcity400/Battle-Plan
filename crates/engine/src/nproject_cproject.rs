@@ -15,7 +15,7 @@ use crate::{
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
     nproject_cprogram_status, nproject_cproject_pool,
-    nproject_cproject_state_machine::{self, State},
+    nproject_cproject_state_machine::{self as machine, State},
     nproject_sproject_history as history,
     walk::Outcome,
 };
@@ -69,18 +69,10 @@ const PROJECT_FIELDS: [RecordField; 2] = [
         len: 2,
     },
 ];
-const MACHINE_FIELDS: [RecordField; 1] = [RecordField {
-    source_offset: 0,
-    destination_offset: 0,
-    len: nproject_cproject_state_machine::SIZE,
-}];
 const PROJECT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PROJECT_FIELDS, RECORD_SIZE).expect("valid record layout");
 const PROJECT_HEADER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(std::slice::from_ref(&PROJECT_FIELDS[0]), RECORD_SIZE)
-        .expect("valid record layout");
-const MACHINE_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&MACHINE_FIELDS, nproject_cproject_state_machine::SIZE)
         .expect("valid record layout");
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -165,14 +157,16 @@ fn walk_tables(
     let mut history_unread = 0_u32;
     let mut history_error = None;
     let mut headers = [0; RECORD_SIZE * BATCH];
-    let mut machines = [0; nproject_cproject_state_machine::SIZE * BATCH];
+    let mut machines = [0; machine::FIELDS_SIZE * BATCH];
+    let mut phases = [0; machine::PHASE_SIZE * BATCH];
     let mut pointers = [0; BATCH];
     let mut machine_pointers = [0; BATCH];
+    let mut phase_pointers = [0; BATCH];
     let result = (|| {
         let expected = base
             .checked_add(VTABLE_RVA)
             .ok_or("project vtable overflow")? as u64;
-        let decoder = nproject_cproject_state_machine::Decoder::new(base)?;
+        let decoder = machine::Decoder::new(base)?;
         for_each_pool(memory, base, game_state, |countries, country, pool| {
             let mut index = 0;
             // Alias resolution is valid for this one synchronous pool census.
@@ -238,12 +232,28 @@ fn walk_tables(
                         .map_err(|_| "project state address overflow")?;
                 }
                 if capture_project && project_error.is_none() {
+                    // The recorded words, then each row's current phase.
                     let copied = memory.copy_records(
                         RecordSources::Pointers(&machine_pointers[..header_count]),
-                        &MACHINE_LAYOUT,
-                        &mut machines[..header_count * nproject_cproject_state_machine::SIZE],
+                        &machine::LAYOUT,
+                        &mut machines[..header_count * machine::FIELDS_SIZE],
                     );
-                    if copied != header_count {
+                    let copied = copied == header_count * machine::FIELDS.len() && {
+                        for (ordinal, source) in
+                            phase_pointers[..header_count].iter_mut().enumerate()
+                        {
+                            *source = machine::phase_source(
+                                machine_pointers[ordinal],
+                                machine_fields(&machines, ordinal),
+                            );
+                        }
+                        memory.copy_records(
+                            RecordSources::Pointers(&phase_pointers[..header_count]),
+                            &machine::PHASE_LAYOUT,
+                            &mut phases[..header_count * machine::PHASE_SIZE],
+                        ) == header_count
+                    };
+                    if !copied {
                         project_error = Some("project state machine unreadable");
                     }
                 }
@@ -262,11 +272,7 @@ fn walk_tables(
                                 if flags.iter().any(|&flag| flag > 1) {
                                     return Err("project lifecycle flag invalid");
                                 }
-                                let state_start = ordinal * nproject_cproject_state_machine::SIZE;
-                                let state_bytes = machines[state_start
-                                    ..state_start + nproject_cproject_state_machine::SIZE]
-                                    .try_into()
-                                    .unwrap();
+                                let phase = ordinal * machine::PHASE_SIZE;
                                 Ok(Row {
                                     owner,
                                     local_id: id,
@@ -274,8 +280,13 @@ fn walk_tables(
                                     program_reference: u64_at(bytes, PROGRAM_REFERENCE_TYPE),
                                     started: flags[0],
                                     completed: flags[1],
-                                    state: decoder
-                                        .decode(machine_pointers[ordinal], state_bytes)?,
+                                    state: decoder.decode(
+                                        machine_pointers[ordinal],
+                                        machine_fields(&machines, ordinal),
+                                        phases[phase..phase + machine::PHASE_SIZE]
+                                            .try_into()
+                                            .unwrap(),
+                                    )?,
                                 })
                             })();
                             match row {
@@ -355,6 +366,12 @@ fn outcome(len: usize, unread_rows: u32, error: Option<&'static str>) -> Outcome
     }
 }
 
+fn machine_fields(machines: &[u8], ordinal: usize) -> &[u8; machine::FIELDS_SIZE] {
+    machines[ordinal * machine::FIELDS_SIZE..(ordinal + 1) * machine::FIELDS_SIZE]
+        .try_into()
+        .unwrap()
+}
+
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
@@ -387,8 +404,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        cgame_state, memory::SliceMemory, nproject_cprototype_project_state as prototype,
-        nproject_csimple_project_state as simple, nproject_sproject_context,
+        cgame_state, memory::SliceMemory, nproject_cproject_state_machine,
+        nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
+        nproject_sproject_context,
     };
 
     const GAME: usize = 0x1000;

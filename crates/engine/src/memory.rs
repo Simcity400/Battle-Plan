@@ -480,6 +480,14 @@ pub trait Memory {
         None
     }
 
+    /// Optional modifier metadata shared within one acquisition pass: the
+    /// eligibility verdict and flags word of each key already read in full.
+    /// Absence keeps the ordinary reads. Observation-recording wrappers must
+    /// not forward this capability.
+    fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
+        None
+    }
+
     /// Optional exact core-supply predicate shared only within an acquisition
     /// pass. All keys and results are acquired from the current source and
     /// cleared between passes; collisions/capacity use the ordinary
@@ -700,6 +708,60 @@ pub fn read_slice(memory: &impl Memory, address: usize, destination: &mut [u8]) 
     address != 0
         && address.checked_add(destination.len()).is_some()
         && memory.copy(address, destination)
+}
+
+/// Independent scalar fields gathered in one guarded call ahead of the reader
+/// that consumes them. The reader consults each field where it would otherwise
+/// read it: a gathered field is served, the field the gather failed on fails
+/// again without another read, and a field after that failure is read singly
+/// on first use. A field the reader never consults cannot affect its result,
+/// so a gather may run ahead of the branches that select its fields; callers
+/// only include module globals and fields of objects the reader already
+/// dereferences on that path.
+pub(crate) struct FieldBatch<const N: usize> {
+    addresses: [usize; N],
+    lens: [usize; N],
+    bytes: [[u8; FIELD_BATCH_BYTES]; N],
+    completed: usize,
+}
+
+/// The widest field a batch holds: a 16-byte array header or a 17-byte hash header.
+const FIELD_BATCH_BYTES: usize = 24;
+
+impl<const N: usize> FieldBatch<N> {
+    /// `fields` are (address, byte length <= 24). A null or overflowing
+    /// address fails its field, exactly as a single read of it would.
+    #[inline]
+    pub(crate) fn gather(memory: &impl Memory, fields: [(usize, usize); N]) -> Self {
+        let mut batch = Self {
+            addresses: fields.map(|(address, _)| address),
+            lens: fields.map(|(_, len)| {
+                debug_assert!(len <= FIELD_BATCH_BYTES, "batched field too wide");
+                len
+            }),
+            bytes: [[0; FIELD_BATCH_BYTES]; N],
+            completed: 0,
+        };
+        let lens = batch.lens;
+        let mut index = 0;
+        let mut destinations = batch.bytes.each_mut().map(|bytes| {
+            let len = lens[index];
+            index += 1;
+            &mut bytes[..len]
+        });
+        batch.completed = memory.copy_scattered_prefetched(batch.addresses, &mut destinations);
+        batch
+    }
+
+    #[inline]
+    pub(crate) fn get<T: Raw>(&self, memory: &impl Memory, index: usize) -> Option<T> {
+        debug_assert_eq!(size_of::<T>(), self.lens[index]);
+        match index.cmp(&self.completed) {
+            std::cmp::Ordering::Less => scalar_from_bytes(&self.bytes[index][..size_of::<T>()]),
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => read(memory, self.addresses[index]),
+        }
+    }
 }
 
 /// [`read_slice`] into uninitialized scratch: the same checks and the same

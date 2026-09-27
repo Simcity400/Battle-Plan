@@ -1,8 +1,9 @@
 //! `NProject::CProjectStateMachine`; archived collector `read_project_state_row`.
 
 #[cfg(test)]
-use crate::{Memory, read};
+use crate::Memory;
 use crate::{
+    memory::{RecordField, RecordLayout},
     nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
 };
 
@@ -23,6 +24,96 @@ pub const SIMPLE_STATE_3: usize = 0x1e8;
 /// CProjectStateMachine allocated extent; FCADC0 allocates 0x268 bytes before constructor 1A218A0 initializes all four states.
 pub const SIZE: usize = 0x268;
 
+const STATES: [usize; 4] = [
+    PROTOTYPE_STATE,
+    SIMPLE_STATE_1,
+    SIMPLE_STATE_2,
+    SIMPLE_STATE_3,
+];
+
+// Spans joining neighbouring words, and where each word sits in a packed
+// `FIELDS` record.
+const PROTOTYPE_TAIL: usize = prototype::ITERATIONS + 4 - prototype::STATE_ENUM;
+const SIMPLE_1_TAIL: usize = SIMPLE_STATE_2 + 8 - (SIMPLE_STATE_1 + simple::STATE_ENUM);
+const SIMPLE_2_TAIL: usize = SIMPLE_STATE_3 + 8 - (SIMPLE_STATE_2 + simple::STATE_ENUM);
+const PROTOTYPE_ENUM: usize = PROTOTYPE_STATE + 8;
+const PROTOTYPE_PROGRESS: usize =
+    PROTOTYPE_ENUM + prototype::PROTOTYPE_PROGRESS - prototype::STATE_ENUM;
+const PROTOTYPE_ITERATIONS: usize = PROTOTYPE_ENUM + prototype::ITERATIONS - prototype::STATE_ENUM;
+const SIMPLE_1_VTABLE: usize = PROTOTYPE_ENUM + PROTOTYPE_TAIL;
+const SIMPLE_1_ENUM: usize = SIMPLE_1_VTABLE + 8;
+const SIMPLE_2_VTABLE: usize =
+    SIMPLE_1_ENUM + SIMPLE_STATE_2 - (SIMPLE_STATE_1 + simple::STATE_ENUM);
+const SIMPLE_2_ENUM: usize = SIMPLE_1_ENUM + SIMPLE_1_TAIL;
+const SIMPLE_3_VTABLE: usize =
+    SIMPLE_2_ENUM + SIMPLE_STATE_3 - (SIMPLE_STATE_2 + simple::STATE_ENUM);
+const SIMPLE_3_ENUM: usize = SIMPLE_2_ENUM + SIMPLE_2_TAIL;
+/// Packed size of one `FIELDS` record.
+pub const FIELDS_SIZE: usize = SIMPLE_3_ENUM + 4;
+
+/// The words a row records, 100 of the machine's 616 bytes: the identity,
+/// current state and completion flag, every inline state's vtable and enum,
+/// and the prototype's progress and iterations. Neighbouring words share one
+/// span, so the padding between them inside the machine is read too.
+pub const FIELDS: [RecordField; 6] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: PROTOTYPE_STATE + 8,
+    },
+    RecordField {
+        source_offset: PROTOTYPE_STATE + prototype::STATE_ENUM,
+        destination_offset: PROTOTYPE_ENUM,
+        len: PROTOTYPE_TAIL,
+    },
+    RecordField {
+        source_offset: SIMPLE_STATE_1,
+        destination_offset: SIMPLE_1_VTABLE,
+        len: 8,
+    },
+    RecordField {
+        source_offset: SIMPLE_STATE_1 + simple::STATE_ENUM,
+        destination_offset: SIMPLE_1_ENUM,
+        len: SIMPLE_1_TAIL,
+    },
+    RecordField {
+        source_offset: SIMPLE_STATE_2 + simple::STATE_ENUM,
+        destination_offset: SIMPLE_2_ENUM,
+        len: SIMPLE_2_TAIL,
+    },
+    RecordField {
+        source_offset: SIMPLE_STATE_3 + simple::STATE_ENUM,
+        destination_offset: SIMPLE_3_ENUM,
+        len: 4,
+    },
+];
+pub const LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&FIELDS, FIELDS_SIZE).expect("valid record layout");
+
+/// The current state's phase progress and target, gathered from the state
+/// `phase_source` names once `FIELDS` is copied.
+pub const PHASE_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: simple::PHASE_PROGRESS,
+    destination_offset: 0,
+    len: simple::PHASE_TARGET + 4 - simple::PHASE_PROGRESS,
+}];
+pub const PHASE_SIZE: usize = PHASE_FIELDS[0].len;
+pub const PHASE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&PHASE_FIELDS, PHASE_SIZE).expect("valid record layout");
+
+// The packing relies on these native neighbours and shared state offsets:
+// the first span holds the vtable, current state and flag before the states.
+const _: () = assert!(
+    CURRENT_STATE + 8 <= PROTOTYPE_STATE
+        && NOT_COMPLETED < PROTOTYPE_STATE
+        && prototype::STATE_ENUM == simple::STATE_ENUM
+        && prototype::PHASE_PROGRESS == simple::PHASE_PROGRESS
+        && prototype::PHASE_TARGET == simple::PHASE_TARGET
+        && SIMPLE_2_VTABLE + 8 == SIMPLE_2_ENUM
+        && SIMPLE_3_VTABLE + 8 == SIMPLE_3_ENUM
+        && SIMPLE_STATE_3 + simple::STATE_ENUM + 4 <= SIZE
+);
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct State {
     pub current_offset: u32,
@@ -35,10 +126,41 @@ pub struct State {
     pub iterations: i32,
 }
 
+fn word(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+}
+
+fn half(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+/// The inline state whose phase a row records: the current one, or, for a
+/// current pointer decoding refuses, the prototype, so the gather never
+/// leaves the machine.
+pub fn phase_source(pointer: usize, fields: &[u8; FIELDS_SIZE]) -> usize {
+    let current = word(fields, CURRENT_STATE) as usize;
+    match current.checked_sub(pointer) {
+        Some(offset) if STATES.contains(&offset) => current,
+        _ => pointer + PROTOTYPE_STATE,
+    }
+}
+
 #[cfg(test)]
 fn read_state(memory: &impl Memory, base: usize, pointer: usize) -> Result<State, &'static str> {
-    let bytes = read::<[u8; SIZE]>(memory, pointer).ok_or("project state machine unreadable")?;
-    Decoder::new(base)?.decode(pointer, &bytes)
+    use crate::memory::RecordSources;
+    let mut fields = [0; FIELDS_SIZE];
+    let mut phase = [0; PHASE_SIZE];
+    if memory.copy_records(RecordSources::Pointers(&[pointer]), &LAYOUT, &mut fields)
+        != FIELDS.len()
+        || memory.copy_records(
+            RecordSources::Pointers(&[phase_source(pointer, &fields)]),
+            &PHASE_LAYOUT,
+            &mut phase,
+        ) != 1
+    {
+        return Err("project state machine unreadable");
+    }
+    Decoder::new(base)?.decode(pointer, &fields, &phase)
 }
 
 /// Relocated immutable layout, prepared once for a complete pool walk.
@@ -62,27 +184,27 @@ impl Decoder {
         })
     }
 
-    /// Decodes only a fully copied record. This does no foreign reads.
-    pub(crate) fn decode(&self, pointer: usize, bytes: &[u8; SIZE]) -> Result<State, &'static str> {
-        if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != self.machine_vtable {
+    /// Decodes copied `FIELDS` and the phase `phase_source` named, checking in
+    /// native object order. This does no foreign reads.
+    pub(crate) fn decode(
+        &self,
+        pointer: usize,
+        fields: &[u8; FIELDS_SIZE],
+        phase: &[u8; PHASE_SIZE],
+    ) -> Result<State, &'static str> {
+        if word(fields, 0) != self.machine_vtable {
             return Err("project state machine vtable mismatch");
         }
-        let current = usize::try_from(u64::from_le_bytes(bytes[8..16].try_into().unwrap()))
+        let current = usize::try_from(word(fields, CURRENT_STATE))
             .map_err(|_| "project current state address overflow")?;
-        let not_completed = bytes[NOT_COMPLETED];
+        let not_completed = fields[NOT_COMPLETED];
         if not_completed > 1 {
             return Err("project state completion flag invalid");
         }
         let current_offset = current
             .checked_sub(pointer)
             .ok_or("project current state outside machine")?;
-        let offsets = [
-            PROTOTYPE_STATE,
-            SIMPLE_STATE_1,
-            SIMPLE_STATE_2,
-            SIMPLE_STATE_3,
-        ];
-        if !offsets.contains(&current_offset) {
+        if !STATES.contains(&current_offset) {
             return Err("project current state outside machine");
         }
         let mut state = State {
@@ -90,28 +212,29 @@ impl Decoder {
             not_completed,
             ..State::default()
         };
-        for (index, offset) in offsets.into_iter().enumerate() {
+        for (index, (vtable, value)) in [
+            (PROTOTYPE_STATE, PROTOTYPE_ENUM),
+            (SIMPLE_1_VTABLE, SIMPLE_1_ENUM),
+            (SIMPLE_2_VTABLE, SIMPLE_2_ENUM),
+            (SIMPLE_3_VTABLE, SIMPLE_3_ENUM),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let expected = if index == 0 {
                 self.prototype_vtable
             } else {
                 self.simple_vtable
             };
-            if u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) != expected {
+            if word(fields, vtable) != expected {
                 return Err("project inline state vtable mismatch");
             }
-            let at = offset + simple::STATE_ENUM;
-            state.state_enums[index] = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+            state.state_enums[index] = half(fields, value);
         }
-        let phase = current_offset + simple::PHASE_PROGRESS;
-        let target = current_offset + simple::PHASE_TARGET;
-        let progress = PROTOTYPE_STATE + prototype::PROTOTYPE_PROGRESS;
-        let iterations = PROTOTYPE_STATE + prototype::ITERATIONS;
-        state.phase_progress = i64::from_le_bytes(bytes[phase..phase + 8].try_into().unwrap());
-        state.phase_target = i32::from_le_bytes(bytes[target..target + 4].try_into().unwrap());
-        state.prototype_progress =
-            i32::from_le_bytes(bytes[progress..progress + 4].try_into().unwrap());
-        state.iterations =
-            i32::from_le_bytes(bytes[iterations..iterations + 4].try_into().unwrap());
+        state.phase_progress = word(phase, 0) as i64;
+        state.phase_target = half(phase, simple::PHASE_TARGET - simple::PHASE_PROGRESS) as i32;
+        state.prototype_progress = half(fields, PROTOTYPE_PROGRESS) as i32;
+        state.iterations = half(fields, PROTOTYPE_ITERATIONS) as i32;
         Ok(state)
     }
 }
@@ -126,15 +249,7 @@ mod tests {
         bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
         bytes[8..16].copy_from_slice(&(0x1000_u64 + SIMPLE_STATE_1 as u64).to_le_bytes());
         bytes[NOT_COMPLETED] = 1;
-        for (index, offset) in [
-            PROTOTYPE_STATE,
-            SIMPLE_STATE_1,
-            SIMPLE_STATE_2,
-            SIMPLE_STATE_3,
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (index, offset) in STATES.into_iter().enumerate() {
             let vtable = if index == 0 {
                 prototype::VTABLE_RVA
             } else {
@@ -178,45 +293,94 @@ mod tests {
         assert_eq!(state.iterations, i32::MAX);
     }
 
-    #[test]
-    fn every_current_state_uses_its_own_phase_and_one_guarded_copy() {
-        use std::cell::Cell;
-        struct Counted<'a> {
-            memory: SliceMemory<'a>,
-            calls: Cell<usize>,
+    struct Counted<'a> {
+        memory: SliceMemory<'a>,
+        calls: std::cell::Cell<usize>,
+        bytes: std::cell::Cell<usize>,
+        fault: Option<usize>,
+    }
+
+    impl Memory for Counted<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.bytes.set(self.bytes.get() + destination.len());
+            !self
+                .fault
+                .is_some_and(|fault| (address..address + destination.len()).contains(&fault))
+                && self.memory.copy(address, destination)
         }
-        impl Memory for Counted<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                self.calls.set(self.calls.get() + 1);
-                self.memory.copy(address, destination)
+
+        fn copy_records(
+            &self,
+            sources: crate::memory::RecordSources<'_>,
+            layout: &RecordLayout<'_>,
+            destination: &mut [u8],
+        ) -> usize {
+            self.calls.set(self.calls.get() + 1);
+            struct Fields<'a, 'b>(&'a Counted<'b>);
+            impl Memory for Fields<'_, '_> {
+                fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                    self.0.copy(address, destination)
+                }
             }
+            Fields(self).copy_records(sources, layout, destination)
         }
-        for offset in [
-            PROTOTYPE_STATE,
-            SIMPLE_STATE_1,
-            SIMPLE_STATE_2,
-            SIMPLE_STATE_3,
-        ] {
+    }
+
+    fn counted(bytes: &[u8], fault: Option<usize>) -> Counted<'_> {
+        Counted {
+            memory: SliceMemory {
+                base: 0x1000,
+                bytes,
+            },
+            calls: Default::default(),
+            bytes: Default::default(),
+            fault,
+        }
+    }
+
+    #[test]
+    fn every_current_state_uses_its_own_phase_and_two_guarded_gathers() {
+        for offset in STATES {
             let mut bytes = machine();
             bytes[8..16].copy_from_slice(&(0x1000_u64 + offset as u64).to_le_bytes());
             let phase = offset + simple::PHASE_PROGRESS;
             let target = offset + simple::PHASE_TARGET;
             bytes[phase..phase + 8].copy_from_slice(&i64::MIN.to_le_bytes());
             bytes[target..target + 4].copy_from_slice(&i32::MAX.to_le_bytes());
-            let memory = Counted {
-                memory: SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes,
-                },
-                calls: Cell::new(0),
-            };
+            let memory = counted(&bytes, None);
             let state = read_state(&memory, 0, 0x1000).unwrap();
             assert_eq!(
                 (state.phase_progress, state.phase_target),
                 (i64::MIN, i32::MAX)
             );
             assert_eq!((state.prototype_progress, state.iterations), (99, i32::MAX));
-            assert_eq!(memory.calls.get(), 1);
+            assert_eq!(state.state_enums, [10, 11, 12, 13]);
+            assert_eq!(memory.calls.get(), 2);
+            assert_eq!(memory.bytes.get(), FIELDS_SIZE + PHASE_SIZE);
+        }
+    }
+
+    #[test]
+    fn only_recorded_words_and_the_current_phase_can_deny_the_machine() {
+        let bytes = machine();
+        let read = |fault| read_state(&counted(&bytes, Some(0x1000 + fault)), 0, 0x1000);
+        for fault in [
+            0,
+            NOT_COMPLETED,
+            SIMPLE_STATE_1 + simple::PHASE_TARGET + 3,
+            PROTOTYPE_STATE + prototype::ITERATIONS + 3,
+            SIMPLE_STATE_3 + simple::STATE_ENUM + 3,
+        ] {
+            assert_eq!(read(fault), Err("project state machine unreadable"));
+        }
+        // Words no row field records, including other states' phases.
+        for fault in [
+            PROTOTYPE_STATE + prototype::PHASE_PROGRESS,
+            SIMPLE_STATE_2 + simple::PHASE_PROGRESS,
+            SIMPLE_STATE_1 + 0x20,
+            SIZE - 1,
+        ] {
+            assert!(read(fault).is_ok(), "{fault:#x}");
         }
     }
 
