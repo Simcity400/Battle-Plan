@@ -1,9 +1,11 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
+import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in',
     choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent year' }] },
+  AFTER_PLAYHEAD_OPTION,
   { key: 'changes', section: 'options', label: 'Government changes and elections', hint: 'Badges along the top', kind: 'toggle', default: true },
 ];
 

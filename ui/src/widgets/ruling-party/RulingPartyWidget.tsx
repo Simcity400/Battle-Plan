@@ -85,7 +85,7 @@ export default function RulingPartyWidget({ widget, runtime, active, headerSlot,
     })} />
     <div className="ruling-party-chart">
       <TimeChart label={`Party popularity in ${tag}`} extent={extent} playhead={playhead}
-        playback={(options.playback as PlaybackMode) ?? 'draw-in'} windowHours={365 * 24}
+        playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={365 * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false }} layers={layers} active={active} revision={`${head}:${data.branchId}`}
         formatValue={value => `${Math.round(value)}%`} badges={badges.length ? badges : undefined}

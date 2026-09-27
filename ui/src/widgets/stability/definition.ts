@@ -1,4 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
+import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
 
 /** Settings as signed off (mock-ups politics-1/2): either line can be switched
@@ -8,8 +9,7 @@ import type { OptionField } from '../../dashboard/options';
 export const STABILITY_OPTIONS: readonly OptionField[] = [
   { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in',
     choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },
-  { key: 'afterPlayhead', section: 'time', label: 'Show after the playhead', hint: 'Draws the lines, events and hover past the moment shown',
-    kind: 'toggle', default: false, visibleWhen: options => options.playback === 'cursor' },
+  AFTER_PLAYHEAD_OPTION,
   { key: 'windowDays', section: 'time', label: 'Window length', kind: 'number', min: 7, max: 3650, step: 1, unit: 'days', default: 365,
     visibleWhen: options => options.playback === 'window' },
   { key: 'stability', section: 'options', label: 'Stability', hint: 'The solid line', kind: 'toggle', default: true },

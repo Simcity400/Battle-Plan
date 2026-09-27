@@ -1,6 +1,6 @@
 # Ruling party
 
-One country's politics over time (mock-up politics-2): each party's popularity as stacked bands in its ideology's own colour from content (a mod's ideologies too; without a content colour, the categorical palette in order), with a legend that wraps for many ideologies. The party ruling at the moment shown is the bottom band and the legend's first entry (mock-ups politics-1/2); it is named in the header and the tooltip, and the legend lists names only. Changes of government and elections are badges along the top (a change next to a recording gap is not shown as one). Right-click jumps to that moment.
+One country's politics over time (mock-up politics-2): each party's popularity as stacked bands in its ideology's own colour from content (a mod's ideologies too; without a content colour, the categorical palette in order), with a legend that wraps for many ideologies. The party ruling at the moment shown is the bottom band and the legend's first entry (mock-ups politics-1/2); it is named in the header and the tooltip, and the legend lists names only. Changes of government and elections are badges along the top (a change next to a recording gap is not shown as one). Right-click jumps to that moment. In whole-campaign playback the bands and badges stop at the playhead unless **Show after the playhead** is on.
 
 ## Data
 

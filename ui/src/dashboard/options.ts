@@ -32,6 +32,10 @@ export type OptionField = FieldBase & (
 /** A stored content-choice value: empty (automatic) or a content token. */
 const CONTENT_TOKEN = /^[\w.:-]{0,160}$/;
 
+/** Whole-campaign playback stops at the playhead unless this is on (user decision). */
+export const AFTER_PLAYHEAD_OPTION: OptionField = { key: 'afterPlayhead', section: 'time', label: 'Show after the playhead',
+  hint: 'Draws the chart, events and hover past the moment shown', kind: 'toggle', default: false, visibleWhen: options => options.playback === 'cursor' };
+
 export const MAX_OPTION_KEYS = 48;
 const MAX_TEXT = 160;
 const KEY = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;

@@ -18,6 +18,7 @@ import type { ChartLayer } from '../../charts/TimeChart';
 import { readTokens, subscribeTokens } from '../../charts/tokens';
 import type { ChartTokens } from '../../charts/tokens';
 import type { TooltipRow } from '../../charts/tooltip';
+import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -149,23 +150,26 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
   [series, extent[0], extent[1], resolved.unobserved]);
   const menu = useContextMenu('Chart actions');
   const head = playhead ?? extent[1];
+  const playback = (options.playback as PlaybackMode) ?? 'draw-in';
+  // The last hour drawn: the playhead, unless whole-campaign playback shows past it.
+  const until = shownUntil(playhead, playback, options.afterPlayhead === true);
 
   const layers = useMemo<ChartLayer[]>(() => {
     const single = series.length === 1;
     const list: ChartLayer[] = series.map(item => ({
       draw: (ctx, frame, chartTokens, state) => { drawLine(ctx, frame, chartTokens, item.runs, item.hex, { area: single && options.areaFill === true, until: state.playhead ?? undefined }); },
-      extent: (x: readonly [number, number]) => extentOf(item.runs as Run[], x[0], Math.min(x[1], playhead ?? x[1])),
+      extent: (x: readonly [number, number]) => extentOf(item.runs as Run[], x[0], Math.min(x[1], until ?? x[1])),
     }));
     // Each country's maximum, dashed in its colour.
     for (const item of series) if (item.ceilingRuns.length) list.push({
       draw: (ctx, frame, chartTokens, state) => { drawLine(ctx, frame, chartTokens, item.ceilingRuns, item.hex, { dash: CEILING_DASH, until: state.playhead ?? undefined }); },
-      extent: (x: readonly [number, number]) => extentOf(item.ceilingRuns as Run[], x[0], Math.min(x[1], playhead ?? x[1])),
+      extent: (x: readonly [number, number]) => extentOf(item.ceilingRuns as Run[], x[0], Math.min(x[1], until ?? x[1])),
     });
-    if (options.spendTicks) list.push({ draw: (ctx, frame, chartTokens) => {
-      for (const item of series) drawEventTicks(ctx, frame, chartTokens, item.drops.map(drop => drop.hour).filter(hour => playhead == null || hour <= playhead), single ? chartTokens.muted : item.hex);
+    if (options.spendTicks) list.push({ draw: (ctx, frame, chartTokens, state) => {
+      for (const item of series) drawEventTicks(ctx, frame, chartTokens, item.drops.map(drop => drop.hour).filter(hour => state.playhead == null || hour <= state.playhead), single ? chartTokens.muted : item.hex);
     } });
     return list;
-  }, [series, options.areaFill, options.spendTicks, playhead]);
+  }, [series, options.areaFill, options.spendTicks, until]);
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message={`Load a campaign to see ${config.noun}.`} />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
@@ -189,7 +193,7 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
     {series.some(item => item.ceilingRuns.length) && <p className="measure-key"><i aria-hidden="true" />Dashed line: {config.ceiling}</p>}
     <div className="country-measure-chart">
       <TimeChart label={`${config.title} of ${series.map(item => item.name).join(', ')}`} extent={extent} playhead={playhead}
-        playback={(options.playback as PlaybackMode) ?? 'draw-in'} windowHours={Number(options.windowDays ?? 365) * 24}
+        playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
         padding={{ right: options.endLabels ? 128 : 14 }} layers={layers} active={active} revision={`${head}:${data.branchId}:${series.length}`}
@@ -197,8 +201,8 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
         snap={(hour, frame) => {
           if (!options.spendTicks) return hour;
           const tolerance = SNAP_PX * hoursPerPixel(frame.plotWidth, frame.x[1] - frame.x[0]);
-          // Only ticks that are drawn: inside the view and not after the playhead.
-          const last = Math.min(frame.x[1], playhead ?? frame.x[1]);
+          // Only ticks that are drawn: inside the view and not after the last hour drawn.
+          const last = Math.min(frame.x[1], until ?? frame.x[1]);
           const visible = (drop: { hour: number }) => drop.hour >= frame.x[0] && drop.hour <= last;
           const nearest = series.map(item => nearestDrop(item.drops.filter(visible), hour, tolerance)).filter(drop => drop != null)
             .sort((a, b) => Math.abs(a!.hour - hour) - Math.abs(b!.hour - hour))[0];
@@ -239,7 +243,8 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
         }}
         overlay={(ctx, frame, chartTokens) => {
           if (!options.endLabels) return;
-          const at = Math.min(head, frame.x[1]);
+          // At the end of the lines drawn, never past the recorded hours.
+          const at = Math.min(until ?? extent[1], frame.x[1], extent[1]);
           const ends = series.flatMap(item => {
             const raw = item.valueAt(Math.floor(at));
             if (raw == null) return [];

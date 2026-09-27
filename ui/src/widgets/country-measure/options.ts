@@ -1,9 +1,11 @@
+import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
 
 /** Settings every balance widget (political power, command power) offers. */
 export const MEASURE_OPTIONS: readonly OptionField[] = [
   { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in',
     choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },
+  AFTER_PLAYHEAD_OPTION,
   { key: 'windowDays', section: 'time', label: 'Window length', kind: 'number', min: 7, max: 3650, step: 1, unit: 'days', default: 365,
     visibleWhen: options => options.playback === 'window' },
   { key: 'spendTicks', section: 'options', label: 'Spend ticks', hint: 'Mark each hour the balance fell', kind: 'toggle', default: true },

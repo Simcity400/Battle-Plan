@@ -26,7 +26,7 @@ A group counted at each hour draws a country only while it belongs, with join (+
 
 ## Settings
 
-- **Time:** Live, Whole campaign, Pinned or Date range. While following playback the chart can grow to now (default), show the whole campaign with the playhead, or show a recent window.
+- **Time:** Live, Whole campaign, Pinned or Date range. While following playback the chart can grow to now (default), show the whole campaign with the playhead (stopping there unless **Show after the playhead** is on), or show a recent window.
 - **Options:** spend ticks, area fill, names at line ends.
 - **Axes:** value axis from/to, log scale.
 - **Countries:** up to 16, or a group.
