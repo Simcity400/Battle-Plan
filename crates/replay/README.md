@@ -41,4 +41,6 @@ The replay stores content identity, ordered layer hashes and the coverage policy
 
 Use existing round-trip, delta/baseline, malformed-input, version-rejection, provenance, branch and recovery tests. Validate affected collector, recorder, viewer and analytics consumers in the same change. See [AGENTS.md](../../AGENTS.md) for commands.
 
+ModifierDefinitions keeps each registered modifier key's native metadata by index, with its script name as a lexer token resolved through LexicalTokens; consumers decode the flag words. HiredAdvisors keeps each country's appointed advisors in native order, keyed by raw country reference and ordinal; resolve the country through CountryLinks like any other raw reference.
+
 The hourly research tables (ResearchInputs, ResearchAppliedBonuses and ResearchModifiers) keep slot-local inputs, applied-bonus attribution and modifier operands as native values. Country-wide modifier rows share one reserved slot index; slot rows identify the exact technology and retain speed components, source text, sharing witnesses, category filters, eligibility metadata and define values. The codec owns its kind tags.

@@ -60,6 +60,10 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::ResearchTechnologies | TableId::TechnologyDefinitions => Sliced,
         // Cannot change after the save loads (the DLC set included).
         TableId::LexicalTokens | TableId::SimulationFeatures => Static,
+        // Modifier definitions are registered only by database loaders; the
+        // collector also re-reads them whenever the table's data pointer or
+        // count changes, as it does the lexer on a new maximum token.
+        TableId::ModifierDefinitions => Static,
         // Relations feed the perspective. Daily (owner decision): an opinion
         // or relation change made by an event can show up to a game day late.
         // One walk of every owner would spike its hour at thousands of
@@ -150,10 +154,15 @@ pub const fn cadence(table: TableId) -> Cadence {
         // Raids stay hourly: RaidTargets is the same walk's map-icon projection.
         TableId::SunkShips | TableId::Focus | TableId::CompletedFocuses => Daily(19),
         TableId::IntelligenceAgencies | TableId::OperationTokens => Daily(20),
+        // HiredAdvisors shares the advisor roles' slot, so every appointed
+        // advisor's role (traits, idea, slot) comes from the same refresh. An
+        // appointment is a player or AI decision shown by daily panels; one
+        // made after the slot appears at the next day's slot.
         TableId::AirAces
         | TableId::PeaceConferences
         | TableId::CountryLeaderRoles
         | TableId::AdvisorRoles
+        | TableId::HiredAdvisors
         | TableId::UnitLeaderTraits
         | TableId::UnitLeaderTraitExperience => Daily(21),
         TableId::Cryptology
@@ -299,6 +308,7 @@ mod tests {
             &[
                 TableId::CountryLeaderRoles,
                 TableId::AdvisorRoles,
+                TableId::HiredAdvisors,
                 TableId::UnitLeaderTraits,
                 TableId::UnitLeaderTraitExperience,
             ][..],
@@ -328,6 +338,7 @@ mod tests {
         assert_eq!(refresh_text(TableId::LexicalTokens), "static");
         assert!(is_staggered(TableId::LexicalTokens));
         assert_eq!(refresh_slot(TableId::LexicalTokens), None);
+        assert_eq!(cadence(TableId::ModifierDefinitions), Cadence::Static);
     }
 
     #[test]

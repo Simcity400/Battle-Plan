@@ -595,6 +595,11 @@ pub struct Shared {
     /// The lexer's maximum token id at the last dictionary walk; a change
     /// means tokens were appended and the static dictionary is walked again.
     pub lexical_max: AtomicI32,
+    /// The modifier definition table's data pointer and row count at the last
+    /// hour; a change means a loader registered keys, and the static
+    /// ModifierDefinitions table is walked again. `u64::MAX` before the first
+    /// observation; an unreadable header is `(0, u64::MAX)`.
+    pub modifier_table: [AtomicU64; 2],
     /// The unit and reference id counters when the last daily
     /// `DivisionEquipment` walk ran, packed; see `new_divisions::next_mark`.
     pub division_mark: AtomicU64,
@@ -701,6 +706,7 @@ impl Shared {
             template_models_missed: AtomicU64::new(0),
             force_next: AtomicBool::new(false),
             lexical_max: AtomicI32::new(-1),
+            modifier_table: [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)],
             division_mark: AtomicU64::new(extended::new_divisions::UNKNOWN),
             country_cache_swap: Mutex::new(CountryCacheSwap::default()),
             country_cache_cells: AtomicUsize::new(country_cells),
@@ -1342,6 +1348,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if lexical_refresh {
                 shared.lexical_max.store(lexical_max, Ordering::Relaxed);
             }
+            frame
+                .extended
+                .set_modifier_definitions_moved(modifier_table_moved(shared, &memory));
             frame.extended.set_new_division_mark(new_division_mark(
                 shared,
                 &memory,
@@ -4405,6 +4414,26 @@ pub(crate) mod divisions_test_kit {
         );
         assert_eq!(split.produced, direct.produced, "produced rows");
     }
+}
+
+/// Whether the modifier definition table header differs from the previous
+/// hour's; one guarded 16-byte read on the game thread. Records the new value.
+fn modifier_table_moved(shared: &Shared, memory: &impl engine::Memory) -> bool {
+    let observed = engine::modifier_definition::table(memory, shared.base)
+        .map_or([0, u64::MAX], |table| {
+            [table.data as u64, u64::from(table.count)]
+        });
+    let moved = shared
+        .modifier_table
+        .iter()
+        .zip(observed)
+        .any(|(held, value)| held.load(Ordering::Relaxed) != value);
+    if moved {
+        for (held, value) in shared.modifier_table.iter().zip(observed) {
+            held.store(value, Ordering::Relaxed);
+        }
+    }
+    moved
 }
 
 /// Divisions are minted from two monotonic counters, by handle type: the

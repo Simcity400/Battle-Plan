@@ -102,6 +102,7 @@ pub mod cconvoy_ship;
 pub mod cconvoys;
 pub mod ccountry;
 pub mod ccountry_air_container;
+pub mod ccountry_characters;
 pub mod ccountry_collaboration_data;
 pub mod ccountry_collaboration_status;
 pub mod ccountry_database;

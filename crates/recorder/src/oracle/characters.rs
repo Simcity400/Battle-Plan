@@ -777,6 +777,7 @@ mod tests {
                 )]),
             }),
             abilities: BTreeMap::from([(b"GER".to_vec(), Vec::new())]),
+            appointed_advisors: BTreeMap::from([(b"GER".to_vec(), Vec::new())]),
         };
         let country = CountryRow {
             id: 102,

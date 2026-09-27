@@ -1,4 +1,4 @@
-//! Scientist roster object reached through `CCountry +0xff0`; native class name unknown.
+//! Scientist roster: the +0xa0 vector of the CCountryCharacters object at `CCountry +0xff0` (`ccountry_characters.rs`).
 //!
 //! Sources: `scientists_live_lane/src/lib.rs:9-12` and archived collector
 //! `scientist_pins_from_country_object`. No vtable guard identifies this root,

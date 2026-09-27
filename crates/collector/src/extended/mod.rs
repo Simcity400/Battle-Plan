@@ -314,6 +314,8 @@ packs!(
     slice_reads,
     faction_theatres,
     model_inputs,
+    modifier_definitions,
+    hired_advisors,
     new_divisions,
     weather
 );
@@ -334,6 +336,7 @@ impl Capacities {
         self.visibility.raise_for_countries(slots);
         self.building_detection.raise_for_countries(slots);
         self.model_inputs.raise_for_countries(slots);
+        self.hired_advisors.raise_for_countries(slots);
     }
 
     /// Presize CountryIntel from the live dense record total.
@@ -994,6 +997,11 @@ impl Captured {
         std::mem::swap(&mut self.building_detection, &mut packs.building_detection);
         std::mem::swap(&mut self.faction_theatres, &mut packs.faction_theatres);
         std::mem::swap(&mut self.model_inputs, &mut packs.model_inputs);
+        std::mem::swap(
+            &mut self.modifier_definitions,
+            &mut packs.modifier_definitions,
+        );
+        std::mem::swap(&mut self.hired_advisors, &mut packs.hired_advisors);
     }
 
     /// Loan the order census and the plans to the Orders job.
@@ -1497,6 +1505,13 @@ impl Captured {
     }
 
     /// Which divisions this hour's `NewDivisionEquipment` covers.
+    /// Whether the modifier definition table header (data pointer, count)
+    /// changed since the previous hour; set before the Slow job is taken so
+    /// the flag travels with the pack that walks it.
+    pub(crate) fn set_modifier_definitions_moved(&mut self, moved: bool) {
+        self.modifier_definitions.header_changed = moved;
+    }
+
     pub(crate) fn set_new_division_mark(&mut self, mark: new_divisions::Mark) {
         self.new_divisions.set_mark(mark);
     }
@@ -1714,7 +1729,9 @@ impl Captured {
                 visibility,
                 building_detection,
                 faction_theatres,
-                model_inputs
+                model_inputs,
+                modifier_definitions,
+                hired_advisors
             );
         }
         if let Some(done) = self.gated_ticks.replace([0; TABLE_COUNT]) {
@@ -2047,8 +2064,8 @@ impl OrdinaryPacks {
 }
 
 /// The live-memory packs run as a second pool job from the first burst
-/// (leader sprites, map names, templates, visibility, building detection and
-/// faction theatres). No defines are recorded: the viewer reads the movement
+/// (leader sprites, map names, templates, visibility, building detection,
+/// faction theatres, model inputs, modifier definitions and hired advisors). No defines are recorded: the viewer reads the movement
 /// defines from the content's `NDefines`. Each table keeps its own [`replay::cadence`]: the
 /// template dictionary is daily, its counter inputs hourly.
 pub(crate) struct SlowPacks {
@@ -2060,6 +2077,8 @@ pub(crate) struct SlowPacks {
     pub(crate) building_detection: building_detection::Captured,
     pub(crate) faction_theatres: faction_theatres::Captured,
     pub(crate) model_inputs: model_inputs::Captured,
+    pub(crate) modifier_definitions: modifier_definitions::Captured,
+    pub(crate) hired_advisors: hired_advisors::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -2075,6 +2094,9 @@ impl SlowPacks {
             .fail_capture(hour, force_full, reason);
         self.faction_theatres.fail_capture(hour, force_full, reason);
         self.model_inputs.fail_capture(hour, force_full, reason);
+        self.modifier_definitions
+            .fail_capture(hour, force_full, reason);
+        self.hired_advisors.fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
@@ -2088,6 +2110,8 @@ impl SlowPacks {
             + self.building_detection.allocated_bytes()
             + self.faction_theatres.allocated_bytes()
             + self.model_inputs.allocated_bytes()
+            + self.modifier_definitions.allocated_bytes()
+            + self.hired_advisors.allocated_bytes()
     }
 
     fn spare() -> Box<Self> {
@@ -2100,6 +2124,8 @@ impl SlowPacks {
             building_detection: building_detection::Captured::vacant(),
             faction_theatres: faction_theatres::Captured::vacant(),
             model_inputs: model_inputs::Captured::vacant(),
+            modifier_definitions: modifier_definitions::Captured::vacant(),
+            hired_advisors: hired_advisors::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         })
     }
@@ -2134,7 +2160,9 @@ impl SlowPacks {
             visibility,
             building_detection,
             faction_theatres,
-            model_inputs
+            model_inputs,
+            modifier_definitions,
+            hired_advisors
         );
         self.ticks = ticks;
     }
@@ -4082,6 +4110,20 @@ mod tests {
             unread_rows: 9,
         };
         assert_eq!(bounded_registry(truncated, 1), truncated);
+    }
+
+    #[test]
+    fn modifier_header_verdict_travels_with_the_slow_pack_and_returns() {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        captured.set_modifier_definitions_moved(true);
+        let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false);
+        assert!(request.packs.modifier_definitions.header_changed);
+        assert!(!captured.modifier_definitions.header_changed);
+        captured.restore_slow_request(request, true);
+        assert!(captured.modifier_definitions.header_changed);
+        captured.set_modifier_definitions_moved(false);
+        assert!(!captured.modifier_definitions.header_changed);
     }
 
     #[test]
