@@ -334,6 +334,7 @@ impl Captured {
                     keys: keys.clone(),
                     children: row.children,
                     language: language.clone(),
+                    allocated_command_power_raw: row.allocated_command_power_raw,
                 }
             },
         );

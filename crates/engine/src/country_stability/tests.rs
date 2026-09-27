@@ -182,6 +182,8 @@ fn world() -> World {
         w.i64(C1 + PROPAGANDA_STABILITY_PENALTY + index * 8, value);
     }
     w.i64(C1 + COASTAL_PROTECTION_STABILITY, 2_500);
+    // Command power reserved by allocators; negative values occur live.
+    w.i64(C1 + ccountry::ALLOCATED_COMMAND_POWER, -1_500_000);
     // Interception ring: one slot, column 1 = 777.
     w.u64(C1 + AIR_STATISTICS, STATS as u64);
     w.u64(STATS + RING, RING_OBJECT as u64);
@@ -405,6 +407,7 @@ fn inputs_copy_every_operand_exactly() {
     );
     assert_eq!(input.coastal_protection_stability_raw, 2_500);
     assert_eq!(input.interception_sum_raw, 777);
+    assert_eq!(input.allocated_command_power_raw, -1_500_000);
     assert_eq!(input.children, 6);
     let mut totals = [None; TRACKED];
     totals[0] = Some(30_000);
@@ -647,6 +650,7 @@ fn the_fingerprint_follows_bases_totals_and_tree_shape() {
         (C1 + ccountry::STABILITY, 1_i64),
         (C1 + COASTAL_PROTECTION_STABILITY, 7),
         (PARTY + cpolitical_party::POPULARITY, 1),
+        (C1 + ccountry::ALLOCATED_COMMAND_POWER, 0),
         (ENTRIES + 0x8000 + 8, 1),
     ] {
         let mut w = world();
@@ -667,6 +671,16 @@ fn the_fingerprint_follows_bases_totals_and_tree_shape() {
         w.u64(slot, other as u64);
         assert_ne!(fingerprint_country(&w, BASE, C1, &keys), Ok(first));
     }
+    // A dynamic modifier replaced in place (same array header) or disabled.
+    let mut w = world();
+    w.u64(
+        ENTRY + dynamic_modifier_entry::DEFINITION,
+        (DEFINITION + 0x10) as u64,
+    );
+    assert_ne!(fingerprint_country(&w, BASE, C1, &keys), Ok(first));
+    let mut w = world();
+    w.put(ENTRY + dynamic_modifier_entry::ENABLED, &[0]);
+    assert_ne!(fingerprint_country(&w, BASE, C1, &keys), Ok(first));
     let mut w = world();
     w.bytes.remove(&(D1 + DIPLOMACY_WAR_COUNTER));
     assert!(fingerprint_country(&w, BASE, C1, &keys).is_err());

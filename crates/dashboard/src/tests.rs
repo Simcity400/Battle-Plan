@@ -2396,6 +2396,12 @@ fn stability_formula_follows_the_engine_getters() {
     assert_eq!(interception_term(&row), -30_000);
     // Maximum command power: (base + flat) * (1 + mult).
     assert_eq!(max_command_power(&row).value, Some(9_900_000));
+    // The game shows and clamps to the maximum minus the allocated command
+    // power, which can be negative.
+    row.allocated_command_power_raw = 400_000;
+    assert_eq!(max_command_power(&row).value, Some(9_500_000));
+    row.allocated_command_power_raw = -10_600_000;
+    assert_eq!(max_command_power(&row).value, Some(20_500_000));
     row.max_command_power_mult = None;
     assert_eq!(max_command_power(&row).value, None);
 }
