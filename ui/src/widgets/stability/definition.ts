@@ -1,6 +1,14 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
+import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import type { Breakdown } from '../../charts/drill/drillState';
+
+/** The breakdowns a click opens, and that Pin as widget can show as the widget itself. */
+export const STABILITY_BREAKDOWNS: readonly Breakdown[] = [
+  { id: 'stability', label: 'Stability parts' },
+  { id: 'warSupport', label: 'War support parts' },
+];
 
 /** Settings as signed off (mock-ups politics-1/2): either line can be switched
  * off, the scale is fixed 0–100% or zooms to the data, line playback is
@@ -21,6 +29,8 @@ export const STABILITY_OPTIONS: readonly OptionField[] = [
   { key: 'markFocus', section: 'options', label: 'Markers: focuses completed', hint: '★ along the top', kind: 'toggle', default: true },
   { key: 'scale', section: 'axes', label: 'Scale', kind: 'choice', default: 'fixed',
     choices: [{ value: 'fixed', label: '0–100%' }, { value: 'zoom', label: 'Zoom' }] },
+  breakdownOption(STABILITY_BREAKDOWNS, 'Stability and war support'),
+  DRILL_OPTION,
 ];
 
 export const definition = {

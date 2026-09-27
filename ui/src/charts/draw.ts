@@ -92,6 +92,27 @@ export function drawLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
 
 /** Stacked areas: `tops[k][i]` is the top of layer k at `hours[i]`, drawn with a
  * surface-coloured seam between layers. */
+/** Filled bands between explicit lower and upper edges (a diverging stack), each
+ * with a thin surface outline so neighbouring bands stay apart. */
+export function drawBands(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], bands: readonly { low: readonly number[]; high: readonly number[] }[], colors: readonly string[]): void {
+  bands.forEach((band, layer) => {
+    if (band.high.every((value, index) => value === band.low[index])) return;
+    // A single sample (an hour between gaps) has no width: it is drawn as a thin bar.
+    if (hours.length === 1) {
+      const top = frame.toY(band.high[0]);
+      ctx.fillStyle = colors[layer];
+      ctx.fillRect(frame.toX(hours[0]) - 1, top, 2, frame.toY(band.low[0]) - top);
+      return;
+    }
+    ctx.beginPath();
+    hours.forEach((hour, index) => index ? ctx.lineTo(frame.toX(hour), frame.toY(band.high[index])) : ctx.moveTo(frame.toX(hour), frame.toY(band.high[index])));
+    for (let index = hours.length - 1; index >= 0; index--) ctx.lineTo(frame.toX(hours[index]), frame.toY(band.low[index]));
+    ctx.closePath();
+    ctx.fillStyle = colors[layer]; ctx.fill();
+    ctx.lineWidth = 1; ctx.strokeStyle = tokens.surface; ctx.stroke();
+  });
+}
+
 export function drawStack(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], tops: readonly (readonly number[])[], colors: readonly string[]): void {
   let base = hours.map(() => (frame.log ? frame.y[0] : 0));
   tops.forEach((top, layer) => {

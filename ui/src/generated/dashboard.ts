@@ -328,6 +328,34 @@ export type CountryStabilityReply = { branchId: string,
  * Decimal places of every raw value in this reply.
  */
 decimals: number, series: Array<CountryStabilitySeries>, warnings: Array<string>, };
+export type StabilityPart = {
+/**
+ * Stable within a reply: `term:<term>`, `line:<kind>:<identity>:<id>:<secondary>`,
+ * `unpaired:<text>`, `remainder` or `clamp`.
+ */
+id: string,
+/**
+ * The formula term (`base`, `war`, …) of a term part.
+ */
+term: string | null,
+/**
+ * A line part's latest line, named as the breakdown names it.
+ */
+line: BreakdownLine | null,
+/**
+ * Its value, fixed5, where it is not zero.
+ */
+runs: Array<FixedRun>, };
+export type MeasureParts = { parts: Array<StabilityPart>,
+/**
+ * Hours whose parts are known; outside them nothing is.
+ */
+observed: Array<HourSpan>, };
+export type StabilityPartsReply = { branchId: string, tag: string,
+/**
+ * Decimal places of every raw value in this reply.
+ */
+decimals: number, stability: MeasureParts, warSupport: MeasureParts, warnings: Array<string>, };
 export type Measure = "politicalPower" | "commandPower";
 export type MeasureParams = { branchId: string, measure: Measure, tags: Array<string>, };
 export type BalanceDrop = { hour: number, beforeRaw: string, afterRaw: string, };

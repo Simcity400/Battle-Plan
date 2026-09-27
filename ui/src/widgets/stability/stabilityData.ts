@@ -91,6 +91,11 @@ export function zoomRange(shown: readonly [number, number] | null): [number, num
   return [Math.floor(low - room), Math.ceil(high + room)];
 }
 
+/** A formula term's label, as the tooltip names it. */
+export function termLabel(measure: Measure, term: string): string {
+  return TERMS[measure].find(item => item.term === term)?.label ?? term;
+}
+
 /** A tree line's name: the viewer-language label content gives it, prefixed
  * with what it is (a national spirit, a law's or advisor's slot, the leader),
  * else the game's own recorded text, else its script identity. */

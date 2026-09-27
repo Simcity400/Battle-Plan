@@ -145,3 +145,36 @@ export function extentOf(runs: readonly Run[], from: number, to: number): [numbe
   }
   return low <= high ? [low, high] : null;
 }
+
+/** A stacked layer's lower and upper edge at each point. */
+export interface Band { low: number[]; high: number[] }
+
+/** Stacks layers of signed values: at each point the positive values stack up
+ * from zero and the negative ones down, each in layer order, so a layer's band
+ * is its own share either side of the axis. */
+export function divergingStack(layers: readonly (readonly number[])[]): Band[] {
+  const points = layers[0]?.length ?? 0;
+  const up = new Array<number>(points).fill(0);
+  const down = new Array<number>(points).fill(0);
+  return layers.map(layer => {
+    // A zero sample stays on the side the layer is on around it, so a band that
+    // shrinks to nothing closes where it is instead of jumping across the axis.
+    // Leading zeros take the side of the first non-zero sample.
+    const firstValue = layer.find(value => (value ?? 0) !== 0) ?? 0;
+    let last = firstValue >= 0;
+    const side = new Array<boolean>(points);
+    for (let index = 0; index < points; index++) {
+      const value = layer[index] ?? 0;
+      if (value !== 0) last = value > 0;
+      side[index] = last;
+    }
+    const low: number[] = [];
+    const high: number[] = [];
+    for (let index = 0; index < points; index++) {
+      const value = layer[index] ?? 0;
+      if (side[index]) { low.push(up[index]); up[index] += value; high.push(up[index]); }
+      else { high.push(down[index]); down[index] += value; low.push(down[index]); }
+    }
+    return { low, high };
+  });
+}

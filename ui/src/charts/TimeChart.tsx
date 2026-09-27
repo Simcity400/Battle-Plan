@@ -342,6 +342,11 @@ export default function TimeChart(props: TimeChartProps) {
 
   const keyDown = (event: ReactKeyboardEvent) => {
     if (event.key === 'Escape' && zoomed) { event.preventDefault(); controls.current?.dispatch({ type: 'reset' }); }
+    // Enter or Space picks the moment shown, as a click on the chart would.
+    if ((event.key === 'Enter' || event.key === ' ') && props.onPick) {
+      event.preventDefault();
+      props.onPick(Math.floor(props.playhead ?? props.extent[1]));
+    }
     if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && props.playhead != null) {
       event.preventDefault();
       const bounds = canvas.current!.getBoundingClientRect();

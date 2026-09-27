@@ -1,4 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import DrillHost from '../../charts/drill/DrillHost';
+import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import type { StabilityPartsReply } from '../../generated/dashboard';
+import StabilityDrill, { MEASURE_NAMES } from './StabilityDrill';
+import { validateStabilityPartsReply } from './partsData';
 import { SourceFlag } from '../../components/CountryFlag';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -29,7 +34,7 @@ import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { CountryStabilityReply, CountryStyle, CountryStyleReply } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color';
-import { STABILITY_OPTIONS } from './definition';
+import { STABILITY_BREAKDOWNS, STABILITY_OPTIONS } from './definition';
 import { stabilityMarkers } from './markers';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import type { NameAt } from '../../dashboard/countryNamesAt';
@@ -176,7 +181,9 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
   // Event markers (mock-up politics-2), for one country: each kind can be switched off.
   const kinds = useMemo(() => new Set(([['wars', 'markWars'], ['factions', 'markFactions'], ['government', 'markGovernment'], ['focus', 'markFocus']] as const)
     .filter(([, key]) => options[key] !== false).map(([kind]) => kind as MarkerKind)), [options.markWars, options.markFactions, options.markGovernment, options.markFocus]);
-  const markerTag = resolved.tags.length === 1 && kinds.size ? resolved.tags[0] : null;
+  // A widget showing only a breakdown draws no markers, so asks for none.
+  const partsOnly = options.show === 'stability' || options.show === 'warSupport';
+  const markerTag = resolved.tags.length === 1 && kinds.size && !partsOnly ? resolved.tags[0] : null;
   const markerGroups = useCountryGroups(runtime, track, active && markerTag != null && (kinds.has('wars') || kinds.has('factions')));
   const markerRequest = (product: string) => track && markerTag ? { sourceId: track.source.id, revision: track.source.revision, product, params: { branchId: track.branch.id, tag: markerTag } } : null;
   const markerParties = useProduct<PartyHistoryReply>(runtime.client, kinds.has('government') ? markerRequest('party-history') : null, active, validatePartyHistoryReply);
@@ -209,6 +216,20 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
     const product = state as { error?: string; data?: { warnings: string[] } };
     return product.error ? [`Markers for ${what} could not be loaded: ${product.error}`] : product.data?.warnings ?? [];
   }) : [], [markerTag, kinds, markerGroups.data, markerGroups.error, markerIdeas.data, markerIdeas.error, markerParties.data, markerParties.error, markerFocus.data, markerFocus.error]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The drill-down (mock-up drill-1): one country's parts, opened by a click on the
+  // chart, or shown as the widget itself when pinned as a breakdown (the Show setting).
+  const pinnedMeasure = options.show === 'stability' || options.show === 'warSupport' ? options.show as Measure : null;
+  const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
+  const [drillMeasure, setDrillMeasure] = useState<Measure>(pinnedMeasure ?? 'stability');
+  // A changed Show setting shows its measure.
+  useEffect(() => { if (pinnedMeasure) setDrillMeasure(pinnedMeasure); }, [pinnedMeasure]);
+  const drillAnchor = useRef<HTMLDivElement>(null);
+  // The one country the widget shows, known before its values load.
+  const singleTag = resolved.tags.length === 1 ? resolved.tags[0] : null;
+  useEffect(() => dispatchDrill({ type: 'close' }), [track?.source.id, track?.source.revision, track?.branch.id, singleTag]);
+  const partsRequest = track && singleTag && (drill.breakdown || pinnedMeasure) ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'stability-parts', params: { branchId: track.branch.id, tag: singleTag } } : null;
+  const parts = useProduct<StabilityPartsReply>(runtime.client, partsRequest, active, validateStabilityPartsReply);
   // Every diagnostic in one place, so no source's warning replaces another's.
   useEffect(() => {
     const uncoloured = series.filter(item => !item.recordedColour).map(item => item.name);
@@ -217,10 +238,11 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
       ...(uncoloured.length ? [`No map colour was recorded for ${uncoloured.join(', ')}; shown in grey.`] : []),
       ...(breakdown.data?.warnings ?? []), ...(breakdown.error ? [`The breakdown could not be loaded: ${breakdown.error}`] : []),
       ...markerNotes,
+      ...(partsRequest ? [...(parts.data?.warnings ?? []), ...(parts.error ? [`The parts could not be loaded: ${parts.error}`] : [])] : []),
       ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget draws at most ${resolved.tags.length}.`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, styles.data, styles.error, series, groups.data, breakdown.data, breakdown.error, resolved.dropped, resolved.tags.length, markerNotes, onDiagnostics]);
+  }, [data, styles.data, styles.error, series, groups.data, breakdown.data, breakdown.error, resolved.dropped, resolved.tags.length, markerNotes, partsRequest != null, parts.data, parts.error, onDiagnostics]);
   const menu = useContextMenu('Chart actions');
   const head = playhead ?? extent[1];
   // With the keyboard: while focus is in the widget, the breakdown of the read behind
@@ -259,12 +281,30 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
   if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
+  // A pinned breakdown is the widget itself: the main chart's settings do not apply.
+  if (pinnedMeasure) {
+    if (!singleTag) return <WidgetState kind="empty" message="Choose one country to see what makes up its values." />;
+    if (parts.error) return <WidgetState kind="error" message={parts.error} onRetry={parts.retry} />;
+    // The values' reads say which parts were carried from an earlier read: needed too.
+    if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+    if (!parts.data || !data) return <WidgetState kind="loading" label="Loading what makes up the values…" />;
+    const carried = data.series.find(item => item.tag === singleTag)?.carried;
+    return <div className="stability is-pinned">
+      <StabilityDrill reply={parts.data} measure={pinnedMeasure} playback={{ playhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={Math.floor(head)} extent={extent}
+        within={resolved.membership?.get(singleTag) ?? null} readAt={carried ? hour => readHourAt(carried, hour) : undefined}
+        onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
+        branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens} />
+      {menu.menu}
+    </div>;
+  }
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
   if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading stability and war support…" />;
   if (!shown.length) return <WidgetState kind="empty" message="Both lines are switched off in the settings." />;
   if (series.every(item => shown.every(measure => !item.lines[measure.key].length))) return <WidgetState kind="unavailable" message="No stability or war support was recorded for these countries in this branch." />;
 
   const decimals = data.decimals;
+  // Following with Live off, the breakdown shows the moment shown: the end of the view.
+  const drillAt = drillHour(drill, playhead ?? extent[1]);
   // Zoom fits the values drawn in view (both bounds, as the view moves); the fixed scale is 0-100%.
   const zoom = options.scale === 'zoom';
   // The breakdown of the moment shown, every line, when it has been loaded for the keyboard.
@@ -275,8 +315,7 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
     : spokenBreakdown ? `Breakdown on ${dayLabel(Math.floor(head))}${headRead < Math.floor(head) ? `, as read at ${formatDateTime(headRead)}` : ''}: ${spokenBreakdown}.`
       : spoken.error && spokenAt?.read === headRead ? 'The breakdown could not be loaded.'
         : spokenEmpty && spokenAt?.read === headRead && spokenAt.hour === Math.floor(head) ? `No breakdown was recorded for ${dayLabel(Math.floor(head))}.` : '';
-  return <div className="stability" onFocus={() => setFocused(true)}
-    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false); }}>
+  const main = <div className="stability-main">
     <Legend label="Countries" items={series.map(item => ({ id: item.tag, label: item.name, color: item.hex,
       flag: <SourceFlag client={runtime.client} source={track.source} tag={item.tag} size="shield" /> }))} />
     {/* The line styles are named, as signed off: never the dash pattern alone. */}
@@ -300,7 +339,7 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: zoom ? null : 0, yMax: zoom ? null : 100, log: false }} fitValues={zoom ? zoomRange : undefined}
-        padding={{ right: options.endLabels ? 150 : 14 }} layers={layers} active={active}
+        padding={{ right: options.endLabels ? 150 : 14 }} layers={layers} active={active && !(drill.breakdown && options.drill !== 'popout')}
         revision={`${head}:${data.branchId}:${series.length}:${shown.length}:${breakdown.data ? breakdownFor?.readHour ?? 'empty' : breakdown.error ? 'failed' : 'none'}`}
         formatValue={value => `${Number.isInteger(value) ? value : value.toFixed(1)}%`}
         badges={badges.length ? badges : undefined}
@@ -350,6 +389,7 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
               // Values carried from an earlier read say when they were read.
               ...(read < hour ? [`As read at ${formatDateTime(read)}.`] : []),
               ...(recorded && ready ? [`Grey lines are the game's own text (${ready.language}); their source is not identified.`] : []),
+              'Click for the full breakdown.',
             ];
             return { title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined };
           }
@@ -397,8 +437,39 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
           const placed = layoutEndLabels(ends, frame.plotTop, frame.plotTop + frame.plotHeight, END_LABEL_GAP);
           drawEndLabels(ctx, frame, chartTokens, ends.map(end => ({ text: end.text, y: placed.get(end.id)!, from: end.y, color: end.color })));
         }}
+        onPick={single ? hour => {
+          // Opening with one line shown opens that line's parts.
+          if (!drill.breakdown && shown.length === 1) setDrillMeasure(shown[0].key);
+          dispatchDrill(drill.breakdown ? { type: 'pick', hour }
+            : { type: 'open', breakdown: 'parts', hour, playing: runtime.clock.getSnapshot().playing, playhead });
+        } : undefined}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     </div>
+  </div>;
+  const breakdownOf = STABILITY_BREAKDOWNS.find(item => item.id === drillMeasure) ?? STABILITY_BREAKDOWNS[0];
+  return <div className="stability" ref={drillAnchor} onFocus={() => setFocused(true)}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false); }}>
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor}
+      title={`What makes up ${MEASURE_NAMES[drillMeasure].toLowerCase()}`} day={drillAt == null ? '' : dayLabel(Math.floor(drillAt))}
+      following={drill.follow} canFollow={playhead != null} onClose={() => {
+        dispatchDrill({ type: 'close' });
+        // Focus goes back to the chart (once it is no longer inert) when the breakdown's own
+        // controls closed it, so the keyboard keeps its place; a click elsewhere keeps its focus.
+        requestAnimationFrame(() => {
+          const focused = document.activeElement;
+          const lost = !focused || focused === document.body;
+          if (!lost && !drillAnchor.current?.contains(focused) && !focused.closest('.drill-popout')) return;
+          drillAnchor.current?.querySelector<HTMLCanvasElement>('.stability-chart canvas')?.focus({ preventScroll: true });
+        });
+      }} onFollow={() => dispatchDrill({ type: 'follow' })}
+      onPin={() => runtime.addWidgetBelow(widget.id, pinnedBreakdown(widget, breakdownOf, track.id))} main={main}>
+      {parts.error ? <WidgetState kind="error" message={parts.error} onRetry={parts.retry} />
+        : !parts.data ? <WidgetState kind="loading" label="Loading what makes up the values…" />
+          : <StabilityDrill reply={parts.data} measure={drillMeasure} onMeasure={setDrillMeasure} playback={{ playhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} onPick={hour => dispatchDrill({ type: 'pick', hour })}
+            within={single ? resolved.membership?.get(single.tag) ?? null : null} readAt={single ? hour => readHourAt(single.carried, hour) : undefined}
+            onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
+            extent={extent} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens} />}
+    </DrillHost>
     {menu.menu}
   </div>;
 }

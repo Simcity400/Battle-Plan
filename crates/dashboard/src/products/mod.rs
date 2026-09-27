@@ -17,6 +17,7 @@ pub mod national_focus;
 pub mod party_history;
 pub mod politics_content;
 pub mod research;
+pub mod stability_parts;
 
 use std::{io, sync::atomic::AtomicBool};
 
@@ -184,6 +185,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_styles::CountryStyles>(),
     register::<country_groups::CountryGroups>(),
     register::<country_stability::CountryStability>(),
+    register::<stability_parts::StabilityParts>(),
     register::<country_measure::CountryMeasure>(),
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
@@ -232,6 +234,7 @@ mod tests {
             "CountryStyleReply",
             "CountryGroupReply",
             "CountryStabilityReply",
+            "StabilityPartsReply",
             "FixedRun",
             "MeasureReply",
             "IdeaHistoryReply",

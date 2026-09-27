@@ -23,7 +23,7 @@ The in-house chart kit every widget draws with. It has no chart dependency: char
 | [tooltip.ts](tooltip.ts), [TooltipLayer.tsx](TooltipLayer.tsx) | One tooltip for the whole dashboard, fed structured rows (never HTML), rendered in the top layer so no widget clips it and the native map stays visible. |
 | [Legend.tsx](Legend.tsx) | A legend for two or more series, with each series' current value. |
 | [jump.ts](jump.ts) | The "Jump to <date>" menu item, which asks the clock to seek. |
-| [drill/](drill/) | The drill-down: its state (follow playback or a picked day), settings fields, Pin as widget, the host (a slide inside the widget or a panel beside it) and the parts list. |
+| [drill/](drill/) | The drill-down: its state (follow playback or a picked day), settings fields, Pin as widget, the host (a slide inside the widget or a panel beside it) and the parts list (swatches in the chart's colours, shares and a total row). `drawBands` and `divergingStack` draw a stack of signed parts. |
 
 Widgets show loading, empty, error and "Not in this recording" with [WidgetState](../components/WidgetState.tsx). The Appearance settings' **Charts** section holds the app-wide chart motion (snappy, smooth, cinematic) and country colours (raw or adjusted); charts read both from `ChartTokens`.
 
