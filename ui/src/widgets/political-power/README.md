@@ -1,10 +1,10 @@
 # Political power
 
-Each country's political power balance over time, one line per country, with the hours its balance fell. The first widget built on the shared chart kit ([charts](../../charts/README.md)); it is the pattern for the other line-chart widgets.
+Each country's political power balance over time, one line per country, with the hours its balance fell. The first widget built on the shared chart kit ([charts](../../charts/README.md)); it is the pattern for the other line-chart widgets. It shares its chart, settings and data helpers with [Command power](../command-power/README.md) through [country-measure](../country-measure/README.md).
 
 ## Data
 
-- **Product `political-power`** (`crates/dashboard/src/products/political_power.rs`): `{branchId, tags ≤ 16}` → each country's balance as runs of the exact recorded fixed-point integer (`Countries.political_power_raw`, `decimals` places), and its net drops.
+- **Product `country-measure`** with `measure: 'politicalPower'` (`crates/dashboard/src/products/country_measure.rs`): `{branchId, measure, tags ≤ 16}` → each country's balance as runs of the exact recorded fixed-point integer (`Countries.political_power_raw`, `decimals` places), and its net drops.
   - Runs break at a gap, a missing value (never zero) and a change of country identity.
   - A drop is a fall between two consecutive recorded hours of the same country, never across a gap.
 - **Product `country-styles`**: each country's engine-built name and recorded map colour. It is read once per 30 game days during playback.

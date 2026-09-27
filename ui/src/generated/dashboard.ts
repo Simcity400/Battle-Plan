@@ -185,7 +185,11 @@ export type CountryGroupReply = { branchId: string, humans: Array<MembershipRun>
  * ends or starts next to one of these is a gap, not a join or a leave.
  */
 unobserved: UnobservedHours, warnings: Array<string>, };
-export type PoliticalPowerParams = { branchId: string, tags: Array<string>, };
+export type CountryStabilityParams = { branchId: string, tags: Array<string>,
+/**
+ * The hour whose breakdown to include; none for runs only.
+ */
+hour: number | null, };
 export type FixedRun = { firstHour: number, lastHour: number,
 /**
  * The exact stored integer as a decimal string.
@@ -196,18 +200,6 @@ valueRaw: string,
  * different country identity rather than continuing the previous run.
  */
 startsSegment: boolean, };
-export type BalanceDrop = { hour: number, beforeRaw: string, afterRaw: string, };
-export type PoliticalPowerSeries = { tag: string, runs: Array<FixedRun>, drops: Array<BalanceDrop>, };
-export type PoliticalPowerReply = { branchId: string,
-/**
- * Decimal places of every raw value in this reply.
- */
-decimals: number, series: Array<PoliticalPowerSeries>, warnings: Array<string>, };
-export type CountryStabilityParams = { branchId: string, tags: Array<string>,
-/**
- * The hour whose breakdown to include; none for runs only.
- */
-hour: number | null, };
 export type FormulaTerm = { term: string, valueRaw: string | null, };
 export type FormulaBreakdown = {
 /**
@@ -287,3 +279,12 @@ export type CountryStabilityReply = { branchId: string,
  * Decimal places of every raw value in this reply.
  */
 decimals: number, series: Array<CountryStabilitySeries>, warnings: Array<string>, };
+export type Measure = "politicalPower" | "commandPower";
+export type MeasureParams = { branchId: string, measure: Measure, tags: Array<string>, };
+export type BalanceDrop = { hour: number, beforeRaw: string, afterRaw: string, };
+export type MeasureSeries = { tag: string, runs: Array<FixedRun>, drops: Array<BalanceDrop>, };
+export type MeasureReply = { branchId: string, measure: Measure,
+/**
+ * Decimal places of every raw value in this reply.
+ */
+decimals: number, series: Array<MeasureSeries>, warnings: Array<string>, };

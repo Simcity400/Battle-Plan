@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CountryGroupReply, PoliticalPowerSeries } from '../../generated/dashboard';
+import type { CountryGroupReply, MeasureSeries } from '../../generated/dashboard';
 import { segments } from '../../charts/series.ts';
 import { clipRuns, isMember, resolveCountries as resolveAny } from '../../dashboard/groups.ts';
 import type { CountrySelection } from '../../dashboard/model';
-import { formatBalance, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, toRuns, validatePoliticalPowerReply } from './politicalPowerData.ts';
+import { formatBalance, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, toRuns, validateMeasureReply } from './measureData.ts';
 
 const resolveCountries = (selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number) =>
   resolveAny(selection, fallback, groups, lastHour, MAX_COUNTRIES);
 
-const SERIES: PoliticalPowerSeries = {
+const SERIES: MeasureSeries = {
   tag: 'GER',
   runs: [{ firstHour: 100, lastHour: 101, valueRaw: '1000000', startsSegment: true }, { firstHour: 102, lastHour: 102, valueRaw: '900001', startsSegment: false },
     { firstHour: 110, lastHour: 120, valueRaw: '-50000', startsSegment: true }],
@@ -17,11 +17,11 @@ const SERIES: PoliticalPowerSeries = {
 };
 
 test('replies are validated, including run order', () => {
-  assert.equal(validatePoliticalPowerReply({ branchId: '1', decimals: 5, series: [SERIES], warnings: [] }).series[0].tag, 'GER');
+  assert.equal(validateMeasureReply({ branchId: '1', decimals: 5, series: [SERIES], warnings: [] }).series[0].tag, 'GER');
   for (const bad of [null, { branchId: '1', decimals: 5, series: [{ ...SERIES, runs: [...SERIES.runs].reverse() }], warnings: [] },
     { branchId: '1', decimals: 5, series: [{ ...SERIES, runs: [{ firstHour: 1, lastHour: 2, valueRaw: '1.5' }] }], warnings: [] },
     { branchId: '1', decimals: 99, series: [], warnings: [] }]) {
-    assert.throws(() => validatePoliticalPowerReply(bad));
+    assert.throws(() => validateMeasureReply(bad));
   }
 });
 
@@ -61,7 +61,7 @@ test('group members draw only while they belong, and are capped at the widget li
 });
 
 test('a new country identity breaks the line even between consecutive hours', () => {
-  const series: PoliticalPowerSeries = { tag: 'GER', drops: [], runs: [
+  const series: MeasureSeries = { tag: 'GER', drops: [], runs: [
     { firstHour: 100, lastHour: 101, valueRaw: '100000', startsSegment: true },
     { firstHour: 102, lastHour: 103, valueRaw: '200000', startsSegment: false },
     { firstHour: 104, lastHour: 105, valueRaw: '300000', startsSegment: true }] };

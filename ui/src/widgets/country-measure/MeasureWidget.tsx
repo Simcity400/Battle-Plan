@@ -26,11 +26,11 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { CountryStyle, CountryStyleReply, PoliticalPowerReply } from '../../generated/dashboard';
+import type { CountryStyle, CountryStyleReply, Measure, MeasureReply } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color';
-import { OPTIONS } from './definition';
-import { formatBalance, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, toRuns, validatePoliticalPowerReply } from './politicalPowerData';
-import './politicalPower.css';
+import { formatBalance, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, toRuns, validateMeasureReply } from './measureData';
+import { MEASURE_OPTIONS } from './options';
+import './measure.css';
 
 const NO_WARNINGS: string[] = [];
 /** Country names and colours are read at most once per this many hours of playback. */
@@ -44,21 +44,31 @@ function useTokens(): ChartTokens {
   return tokens;
 }
 
-/** Political power balance over time, one line per country, with net-spend ticks.
- * Daily income is not recorded, so spends are the falls in the balance. */
-export default function PoliticalPowerWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
+/** Which balance a widget charts, and how it names it. */
+export interface MeasureConfig {
+  measure: Measure;
+  /** The chart's name, such as "Political power". */
+  title: string;
+  /** The measure in running text, such as "political power". */
+  noun: string;
+}
+
+/** A recorded balance over time (political power, command power), one line per
+ * country, with net-spend ticks. Daily income is not recorded, so spends are the
+ * falls in the balance. */
+export default function MeasureWidget({ widget, runtime, active, headerSlot, onDiagnostics, config }: WidgetProps & { config: MeasureConfig }) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useTokens();
-  const options = resolveOptions(OPTIONS, widget.options);
+  const options = resolveOptions(MEASURE_OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group');
   const fallback = defaultCountryTag(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, MAX_COUNTRIES), [widget.countries, fallback, groups.data, lastHour]);
-  const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'political-power',
-    params: { branchId: track.branch.id, tags: resolved.tags } } : null;
-  const { data, error, retry } = useProduct<PoliticalPowerReply>(runtime.client, request, active, validatePoliticalPowerReply);
+  const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-measure',
+    params: { branchId: track.branch.id, measure: config.measure, tags: resolved.tags } } : null;
+  const { data, error, retry } = useProduct<MeasureReply>(runtime.client, request, active, validateMeasureReply);
 
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';
@@ -124,26 +134,26 @@ export default function PoliticalPowerWidget({ widget, runtime, active, headerSl
     return list;
   }, [series, options.areaFill, options.spendTicks, playhead]);
 
-  if (!track) return <WidgetState kind="empty" icon="sparkle" message="Load a campaign to see political power." />;
+  if (!track) return <WidgetState kind="empty" icon="sparkle" message={`Load a campaign to see ${config.noun}.`} />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
   if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading political power…" />;
-  if (series.every(item => !item.runs.length)) return <WidgetState kind="unavailable" message="No political power was recorded for these countries in this branch." />;
+  if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label={`Loading ${config.noun}…`} />;
+  if (series.every(item => !item.runs.length)) return <WidgetState kind="unavailable" message={`No ${config.noun} was recorded for these countries in this branch.`} />;
 
   const decimals = data.decimals;
   const currentRaw = series.length === 1 ? series[0].valueAt(Math.floor(head)) : null;
   const hoursPerPixel = (frameWidth: number, span: number) => span / Math.max(1, frameWidth);
-  return <div className="political-power">
+  return <div className="country-measure">
     {headerSlot && currentRaw != null && createPortal(<span className="pill">{formatBalance(currentRaw, decimals)}</span>, headerSlot)}
     <Legend label="Countries" items={series.map(item => {
       const raw = item.valueAt(Math.floor(head));
       return { id: item.tag, label: item.name, color: item.hex, value: raw == null ? 'Not recorded' : formatBalance(raw, decimals),
         flag: <SourceFlag client={runtime.client} source={track.source} tag={item.tag} size="shield" /> };
     })} />
-    <div className="political-power-chart">
-      <TimeChart label={`Political power of ${series.map(item => item.name).join(', ')}`} extent={extent} playhead={playhead}
+    <div className="country-measure-chart">
+      <TimeChart label={`${config.title} of ${series.map(item => item.name).join(', ')}`} extent={extent} playhead={playhead}
         playback={(options.playback as PlaybackMode) ?? 'draw-in'} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}

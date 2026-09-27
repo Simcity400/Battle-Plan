@@ -1,19 +1,24 @@
-//! Each country's political power balance over one branch, for the Political
-//! power widget.
+//! One recorded country balance over one branch, per country: political power
+//! or command power, for the widgets that chart them.
 //!
-//! `Countries.political_power_raw` is the engine's fixed-point balance with
-//! [`POLITICAL_POWER_DECIMALS`] decimal places. Runs compress equal consecutive
-//! hours and never bridge a gap, a missing value or a change of country
-//! identity. Spend ticks are derived: a fall in the balance between two
-//! consecutive recorded hours of the same country. They are net changes,
-//! because daily income is not recorded.
+//! Both are the engine's fixed-point balances with [`MEASURE_DECIMALS`]
+//! decimal places (`Countries.political_power_raw`, optional per country, and
+//! `Countries.command_power_raw`). Runs compress equal consecutive hours and
+//! never bridge a gap, a missing value or a change of country identity. Spend
+//! ticks are derived: a fall in the balance between two consecutive recorded
+//! hours of the same country. They are net changes, because daily income is not
+//! recorded.
 
 use super::{LoadContext, Product, validate_tag};
 use crate::{
     Source,
     metadata::{mapped_slot, validate_campaign},
 };
-use replay::{container::Replay, frame::FrameDecoder, rows::tables};
+use replay::{
+    container::Replay,
+    frame::FrameDecoder,
+    rows::{CountryRow, tables},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -22,11 +27,11 @@ use std::{
 };
 use ts_rs::TS;
 
-pub struct PoliticalPower;
+pub struct CountryMeasure;
 
-/// Decimal places of the recorded fixed-point balance (10.00001 is stored as
+/// Decimal places of the recorded fixed-point balances (10.00001 is stored as
 /// 1_000_001; see the recorder's fresh-save oracle).
-pub const POLITICAL_POWER_DECIMALS: u8 = 5;
+pub const MEASURE_DECIMALS: u8 = 5;
 /// Most countries one request may name.
 pub const MAX_COUNTRIES: usize = 16;
 /// Runs kept per country before the scan refuses, far above a long campaign's
@@ -34,10 +39,37 @@ pub const MAX_COUNTRIES: usize = 16;
 const MAX_RUNS: usize = 400_000;
 const MAX_CACHED_COUNTRIES: usize = 32;
 
+/// Which recorded balance to chart.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum Measure {
+    PoliticalPower,
+    CommandPower,
+}
+
+impl Measure {
+    /// The recorded value for a country this hour; political power is optional
+    /// per country, and a missing value stays missing.
+    fn value(self, country: &CountryRow) -> Option<i64> {
+        match self {
+            Self::PoliticalPower => country.political_power_raw,
+            Self::CommandPower => Some(country.command_power_raw),
+        }
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            Self::PoliticalPower => "political power",
+            Self::CommandPower => "command power",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PoliticalPowerParams {
+pub struct MeasureParams {
     pub branch_id: String,
+    pub measure: Measure,
     pub tags: Vec<String>,
 }
 
@@ -65,7 +97,7 @@ pub struct BalanceDrop {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct PoliticalPowerSeries {
+pub struct MeasureSeries {
     pub tag: String,
     pub runs: Vec<FixedRun>,
     pub drops: Vec<BalanceDrop>,
@@ -73,38 +105,40 @@ pub struct PoliticalPowerSeries {
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct PoliticalPowerReply {
+pub struct MeasureReply {
     pub branch_id: String,
+    pub measure: Measure,
     /// Decimal places of every raw value in this reply.
     pub decimals: u8,
-    pub series: Vec<PoliticalPowerSeries>,
+    pub series: Vec<MeasureSeries>,
     pub warnings: Vec<String>,
 }
 
-impl Product for PoliticalPower {
-    const KEY: &'static str = "political-power";
-    type Params = PoliticalPowerParams;
-    type Reply = PoliticalPowerReply;
+impl Product for CountryMeasure {
+    const KEY: &'static str = "country-measure";
+    type Params = MeasureParams;
+    type Reply = MeasureReply;
 
     fn types() -> Vec<String> {
         vec![
-            PoliticalPowerParams::decl(),
+            Measure::decl(),
+            MeasureParams::decl(),
             FixedRun::decl(),
             BalanceDrop::decl(),
-            PoliticalPowerSeries::decl(),
-            PoliticalPowerReply::decl(),
+            MeasureSeries::decl(),
+            MeasureReply::decl(),
         ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         if params.tags.is_empty() || params.tags.len() > MAX_COUNTRIES {
-            return Err("Invalid political power selection");
+            return Err("Invalid country selection");
         }
         for tag in &params.tags {
             validate_tag(tag)?;
         }
         if params.branch_id.parse::<u64>().is_err() {
-            return Err("Invalid political power branch");
+            return Err("Invalid branch");
         }
         Ok(())
     }
@@ -116,27 +150,24 @@ impl Product for PoliticalPower {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
+        let measure = params.measure;
+        let key = |tag: &str| (branch, measure, tag.to_owned());
         let state = source.state::<Cache>();
         let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
         let missing: Vec<&str> = params
             .tags
             .iter()
             .map(String::as_str)
-            .filter(|tag| {
-                !cache
-                    .entries
-                    .iter()
-                    .any(|(b, t, _)| *b == branch && t == tag)
-            })
+            .filter(|tag| !cache.entries.iter().any(|(cached, _)| *cached == key(tag)))
             .collect();
         let mut scanned = if missing.is_empty() {
             BTreeMap::new()
         } else {
-            scan(&source.replay(), branch, &missing, cancelled)?
+            scan(&source.replay(), branch, measure, &missing, cancelled)?
         };
         // Build the reply before caching, so eviction can never drop a country it needs.
         let mut warnings = Vec::new();
-        let series: Vec<PoliticalPowerSeries> = params
+        let series: Vec<MeasureSeries> = params
             .tags
             .iter()
             .map(|tag| {
@@ -144,61 +175,61 @@ impl Product for PoliticalPower {
                     cache
                         .entries
                         .iter()
-                        .find(|(b, t, _)| *b == branch && t == tag)
-                        .map(|(_, _, series)| series.clone())
+                        .find(|(cached, _)| *cached == key(tag))
+                        .map(|(_, series)| series.clone())
                 });
                 let found = found.unwrap_or_default();
                 if found.runs.is_empty() {
-                    warnings.push(format!("{tag}: no recorded political power in this branch"));
+                    warnings.push(format!(
+                        "{tag}: no recorded {} in this branch",
+                        measure.noun()
+                    ));
                 }
-                PoliticalPowerSeries {
+                MeasureSeries {
                     tag: tag.clone(),
                     ..found
                 }
             })
             .collect();
         for (tag, series) in std::mem::take(&mut scanned) {
-            cache.entries.push_back((branch, tag, series));
+            cache.entries.push_back((key(&tag), series));
         }
         while cache.entries.len() > MAX_CACHED_COUNTRIES.max(params.tags.len()) {
             cache.entries.pop_front();
         }
-        Ok(PoliticalPowerReply {
+        Ok(MeasureReply {
             branch_id: params.branch_id.clone(),
-            decimals: POLITICAL_POWER_DECIMALS,
+            measure,
+            decimals: MEASURE_DECIMALS,
             series,
             warnings,
         })
     }
 }
 
-/// Recently requested countries, oldest first.
+/// Recently requested (branch, measure, country) series, oldest first.
 #[derive(Default)]
 struct Cache {
-    entries: VecDeque<(u64, String, PoliticalPowerSeries)>,
+    entries: VecDeque<((u64, Measure, String), MeasureSeries)>,
 }
 
 /// Scans one branch once for every tag given.
 pub fn scan(
     replay: &Replay,
     branch: u64,
+    measure: Measure,
     tags: &[&str],
     cancelled: &AtomicBool,
-) -> io::Result<BTreeMap<String, PoliticalPowerSeries>> {
+) -> io::Result<BTreeMap<String, MeasureSeries>> {
     let selected = [
         replay::rows::TableId::Campaign,
         replay::rows::TableId::Countries,
         replay::rows::TableId::CountryLinks,
     ];
-    let cancel = || {
-        io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Political power request cancelled",
-        )
-    };
-    let mut result: BTreeMap<String, PoliticalPowerSeries> = tags
+    let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Country request cancelled");
+    let mut result: BTreeMap<String, MeasureSeries> = tags
         .iter()
-        .map(|tag| ((*tag).to_owned(), PoliticalPowerSeries::default()))
+        .map(|tag| ((*tag).to_owned(), MeasureSeries::default()))
         .collect();
     // The identity and value each country was last seen with, and at which hour.
     let mut last: BTreeMap<String, ((u32, u32), i64, i32)> = BTreeMap::new();
@@ -234,8 +265,7 @@ pub fn scan(
                     continue;
                 };
                 let tag = std::str::from_utf8(&country.tag).expect("checked above");
-                let (Ok(slot), Some(value)) =
-                    (mapped_slot(country, links), country.political_power_raw)
+                let (Ok(slot), Some(value)) = (mapped_slot(country, links), measure.value(country))
                 else {
                     continue;
                 };
@@ -260,9 +290,10 @@ pub fn scan(
                             });
                         }
                         if series.runs.len() >= MAX_RUNS {
-                            return Err(io::Error::other(
-                                "Political power history exceeds its memory budget",
-                            ));
+                            return Err(io::Error::other(format!(
+                                "The {} history exceeds its memory budget",
+                                measure.noun()
+                            )));
                         }
                         series.runs.push(FixedRun {
                             first_hour: hour,

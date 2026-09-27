@@ -1841,8 +1841,8 @@ fn country_groups_leave_out_unknown_countries_and_localise_faction_keys() {
 }
 
 #[test]
-fn political_power_runs_compress_equal_hours_break_at_gaps_and_mark_net_drops() {
-    use crate::products::political_power::{BalanceDrop, FixedRun, scan};
+fn measure_runs_compress_equal_hours_break_at_gaps_and_mark_net_drops() {
+    use crate::products::country_measure::{BalanceDrop, FixedRun, Measure, scan};
     let run = |first_hour, last_hour, value: &str, starts_segment| FixedRun {
         first_hour,
         last_hour,
@@ -1867,7 +1867,14 @@ fn political_power_runs_compress_equal_hours_break_at_gaps_and_mark_net_drops() 
         )],
     )
     .unwrap();
-    let result = scan(&replay, 1, &["GER", "ITA"], &AtomicBool::new(false)).unwrap();
+    let result = scan(
+        &replay,
+        1,
+        Measure::PoliticalPower,
+        &["GER", "ITA"],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     let germany = &result["GER"];
     assert_eq!(
         germany.runs,
@@ -1893,10 +1900,10 @@ fn political_power_runs_compress_equal_hours_break_at_gaps_and_mark_net_drops() 
 }
 
 #[test]
-fn political_power_replies_every_requested_country_and_warns_for_unrecorded_ones() {
+fn measures_reply_every_requested_country_and_warn_for_unrecorded_ones() {
     use crate::products::{
         LoadContext, Product,
-        political_power::{PoliticalPower, PoliticalPowerParams},
+        country_measure::{CountryMeasure, Measure, MeasureParams},
     };
     let replay = Arc::new(
         Replay::from_records(
@@ -1918,11 +1925,12 @@ fn political_power_replies_every_requested_country_and_warns_for_unrecorded_ones
         &AtomicBool::new(false),
     )
     .unwrap();
-    let params = PoliticalPowerParams {
+    let params = MeasureParams {
         branch_id: "1".into(),
+        measure: Measure::PoliticalPower,
         tags: vec!["GER".into(), "XXX".into()],
     };
-    let reply = PoliticalPower::load(
+    let reply = CountryMeasure::load(
         &source,
         &params,
         &LoadContext { content: None },
@@ -1946,7 +1954,7 @@ fn political_power_replies_every_requested_country_and_warns_for_unrecorded_ones
             .any(|warning| warning.starts_with("XXX:"))
     );
     // A second request is answered from the cache.
-    let again = PoliticalPower::load(
+    let again = CountryMeasure::load(
         &source,
         &params,
         &LoadContext { content: None },
@@ -1954,11 +1962,25 @@ fn political_power_replies_every_requested_country_and_warns_for_unrecorded_ones
     )
     .unwrap();
     assert_eq!(again.series, reply.series);
-    let too_many = PoliticalPowerParams {
+    // Command power comes from its own field and is cached apart from political power.
+    let command = CountryMeasure::load(
+        &source,
+        &MeasureParams {
+            measure: Measure::CommandPower,
+            ..params.clone()
+        },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(command.measure, Measure::CommandPower);
+    assert_ne!(command.series[0].runs, reply.series[0].runs);
+    let too_many = MeasureParams {
         branch_id: "1".into(),
+        measure: Measure::PoliticalPower,
         tags: (0..17).map(|index| format!("T{index}")).collect(),
     };
-    assert!(PoliticalPower::validate(&too_many).is_err());
+    assert!(CountryMeasure::validate(&too_many).is_err());
 }
 
 fn stability_inputs() -> replay::rows::CountryStabilityInputRow {

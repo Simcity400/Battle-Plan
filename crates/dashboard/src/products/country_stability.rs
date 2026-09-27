@@ -21,7 +21,7 @@ use super::{LoadContext, Product, recorded_rows, validate_tag};
 use crate::{
     Source,
     metadata::{mapped_slot, validate_campaign},
-    products::political_power::FixedRun,
+    products::country_measure::FixedRun,
 };
 use replay::{
     container::Replay,

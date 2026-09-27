@@ -1,0 +1,11 @@
+import type { WidgetMeta } from '../../dashboard/definitions';
+import { MEASURE_OPTIONS } from '../country-measure/options.ts';
+
+export const definition = {
+  kind: 'command-power', version: 1, title: 'Command power', icon: 'target',
+  description: 'Each country’s command power balance over time, with the days it was spent.',
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 },
+  countries: { max: 16 },
+  options: MEASURE_OPTIONS,
+} as const satisfies WidgetMeta;

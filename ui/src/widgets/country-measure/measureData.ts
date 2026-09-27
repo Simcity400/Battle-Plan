@@ -1,8 +1,8 @@
-import type { BalanceDrop, FixedRun, PoliticalPowerReply, PoliticalPowerSeries } from '../../generated/dashboard';
+import type { BalanceDrop, FixedRun, MeasureReply, MeasureSeries } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 
-/** Most countries one Political power widget draws. */
+/** Most countries one balance widget draws. */
 export const MAX_COUNTRIES = 16;
 const RAW = /^-?\d{1,20}$/;
 
@@ -14,8 +14,8 @@ const isDrop = (value: unknown): value is BalanceDrop => typeof value === 'objec
   && Number.isInteger((value as BalanceDrop).hour) && RAW.test((value as BalanceDrop).beforeRaw) && RAW.test((value as BalanceDrop).afterRaw);
 
 /** Checks the reply's shape; runs must be in hour order and never overlap. */
-export function validatePoliticalPowerReply(data: unknown): PoliticalPowerReply {
-  const reply = data as PoliticalPowerReply;
+export function validateMeasureReply(data: unknown): MeasureReply {
+  const reply = data as MeasureReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string'
     && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
@@ -23,17 +23,17 @@ export function validatePoliticalPowerReply(data: unknown): PoliticalPowerReply 
       && Array.isArray(series.runs) && series.runs.every(isRun)
       && series.runs.every((run, index) => index === 0 || series.runs[index - 1].lastHour < run.firstHour)
       && Array.isArray(series.drops) && series.drops.every(isDrop));
-  if (!ok) throw new Error('The political power reply is malformed.');
+  if (!ok) throw new Error('The balance reply is malformed.');
   return reply;
 }
 
 /** Runs as plotting numbers; labels use the exact raw values. */
-export function toRuns(series: PoliticalPowerSeries, decimals: number): Run[] {
+export function toRuns(series: MeasureSeries, decimals: number): Run[] {
   return series.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: fixedNumber(run.valueRaw, decimals), breakBefore: run.startsSegment }));
 }
 
 /** The exact recorded balance at an hour, or null when it was not recorded. */
-export function rawAt(series: PoliticalPowerSeries, hour: number): string | null {
+export function rawAt(series: MeasureSeries, hour: number): string | null {
   let low = 0;
   let high = series.runs.length - 1;
   while (low <= high) {
