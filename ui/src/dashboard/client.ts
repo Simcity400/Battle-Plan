@@ -44,6 +44,8 @@ export interface DashboardMapView {
   path: string;
   revision: string;
   branchId: string;
+  /** Playing: the map may answer with the newest hour built before `hour`. */
+  playing?: boolean;
   hour: number;
   fraction: number;
   sequence: number;

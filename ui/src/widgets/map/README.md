@@ -6,6 +6,6 @@ The native map drawn into a widget body. React owns the rectangle and the status
 
 **Header controls:** `MapWidgetControls` replaces the settings gear with the shared map pop-down (appearance, branch, export) and nests the common widget settings inside it.
 
-**Rules:** a queued target is not a displayed frame; the status shows "Updating" until the acknowledgement matches the request. Out-of-branch hours show no map rather than a neighbouring one.
+**Rules:** a queued target is not a displayed frame; the status shows "Updating" until the acknowledgement answers the request (`presentation.ts`). While a following map plays, the native map may answer with the newest hour built at or before the clock: its date shows, without an updating label, and it returns to exact hours when the builders catch up. Paused, pinned and exported maps stay exact; the target's `playing` flag says which. Out-of-branch hours show no map rather than a neighbouring one.
 
 **Remaining:** none open in the widget. Renderer fidelity is tracked in `crates/viewer/README.md`.

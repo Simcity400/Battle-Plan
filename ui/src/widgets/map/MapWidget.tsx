@@ -7,6 +7,7 @@ import type { MapTarget } from '../../dashboard/geometry';
 import { resolveWindow } from '../../dashboard/model';
 import { usePlaybackHour } from '../../dashboard/playback';
 import type { PlaybackController } from '../../dashboard/playback';
+import { mapPresentationMatches } from './presentation';
 
 /** The native map's body: the renderer draws into this rectangle; React shows its state. */
 export default function MapWidget({ widget, runtime, active, mapOptions }: WidgetProps) {
@@ -19,14 +20,14 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
     const window = resolveWindow(widget, track, runtime.tracks, clock.position);
     if (!window || window.lastHour < track.branch.firstHour || window.lastHour > track.branch.lastHour) return null;
     return { options: { fog: mapOptions.fog, country: widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : track.selectedTag }, sourceId: track.source.id, path: track.source.path, revision: track.source.revision, branchId: track.branch.id,
+      playing: widget.time.mode === 'follow' && clock.playing,
       hour: window.lastHour, fraction: widget.time.mode === 'follow' ? clock.fraction : 0,
       sequence: widget.time.mode === 'follow' ? clock.sequence : staticSequence };
   }, [track, widget, runtime.tracks, staticSequence, mapOptions]);
   useLayoutEffect(() => body.current ? runtime.maps.register(widget.id, body.current, target) : undefined, [runtime.maps, widget.id, target]);
   const state = useMapState(runtime.maps, widget.id);
   const desired = target(runtime.clock.getSnapshot());
-  const matched = desired && state?.sourceId === desired.sourceId && !state.loading && !state.error && state.revision === desired.revision
-    && state.branchId === desired.branchId && state.hour === desired.hour && state.sequence >= desired.sequence;
+  const matched = mapPresentationMatches(state, desired);
   const nativeUnavailable = !runtime.client.available || runtime.client.nativeMaps === false;
   return <div className="dash-map-widget">
     <div className="dash-map-surface" ref={body}>

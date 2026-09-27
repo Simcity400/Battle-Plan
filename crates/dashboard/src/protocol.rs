@@ -286,6 +286,10 @@ pub struct DashboardMapView {
     pub path: String,
     pub revision: String,
     pub branch_id: String,
+    /// Playing: the map may show, and acknowledge, the newest hour built
+    /// before `hour`. Paused targets and exports stay exact.
+    #[serde(default)]
+    pub playing: bool,
     pub hour: i32,
     pub fraction: f32,
     pub sequence: u64,

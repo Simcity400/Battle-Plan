@@ -93,6 +93,10 @@ pub struct Want {
     pub ahead: i32,
     /// Hours before the playhead to keep built, for a step back.
     pub behind: i32,
+    /// Playing: an hour in flight at or before the playhead is finished, not
+    /// cancelled, because the window may show it while the playhead's own hour
+    /// is still being built.
+    pub playing: bool,
     pub perspective: perspective::Choice,
     pub view: View,
     /// The hours of this branch the window holds built, the one on screen
@@ -125,6 +129,12 @@ impl Want {
     /// Whether a change from `self` to `next` invalidates what was built.
     fn invalidates(&self, next: &Want) -> bool {
         self.perspective != next.perspective
+    }
+
+    /// Whether an hour in flight is still worth finishing: one of `keep`, or,
+    /// playing, one of this branch at or before the playhead.
+    fn keeps_pending(&self, key: (BranchId, Hour), keep: &BTreeSet<(BranchId, Hour)>) -> bool {
+        keep.contains(&key) || (self.playing && key.0 == self.branch && key.1 <= self.hour)
     }
 
     /// Old-generation hours cannot satisfy a changed perspective.
@@ -1089,7 +1099,7 @@ struct Coordinator {
     pool: Arc<Pool>,
     parallel: usize,
     events: Sender<Event>,
-    outbox: Sender<Built>,
+    outbox: mpsc::SyncSender<Built>,
 }
 
 impl Coordinator {
@@ -1195,7 +1205,7 @@ impl Coordinator {
             .map(|hour| (want.branch, hour))
             .collect();
         self.pending.retain(|key, pending| {
-            let wanted = keep.contains(key);
+            let wanted = want.keeps_pending(*key, &keep);
             if !wanted {
                 pending.alive.store(false, Ordering::Relaxed);
             }
@@ -1206,7 +1216,8 @@ impl Coordinator {
             keep.contains(key)
                 && (*order >= want.received || (key.0 == want.branch && want.have.contains(&key.1)))
         });
-        self.slots.retain(|key, _| keep.contains(key));
+        self.slots
+            .retain(|key, _| keep.contains(key) || self.pending.contains_key(key));
         if let Some(lane) = &self.lane {
             lane.want(
                 want.hours(range)
@@ -1586,7 +1597,10 @@ impl Pipeline {
         parallel: usize,
     ) -> io::Result<Self> {
         let (events, inbox) = mpsc::channel();
-        let (outbox, results) = mpsc::channel();
+        // At most one finished hour waits per hour in flight; a window that
+        // stops taking them holds the coordinator instead of a backlog. The
+        // window dropping `results` releases a coordinator blocked on it.
+        let (outbox, results) = mpsc::sync_channel(parallel);
         let requested = Arc::new(Mutex::new(None));
         let lane = match shared_decoder {
             Some(_) => None,
@@ -1697,13 +1711,37 @@ fn stopped() -> io::Error {
 
 /// Frees what the window let go of on a thread of its own, so a frame that
 /// swaps in a new hour does not pay for returning the last one's memory.
+///
+/// The destructor runs at the builders' priority, so saturated builders can
+/// starve it. At most one retirement per builder waits behind the one being
+/// freed; past that the caller frees its retirement itself, spending that
+/// frame's time rather than holding an unbounded backlog of hours.
 pub struct Dropper {
-    bin: Option<Sender<Box<dyn Send>>>,
+    bin: Option<mpsc::SyncSender<Box<dyn Send>>>,
+}
+
+/// Everything one frame lets go of, handed to the [`Dropper`] as a single
+/// retirement so its bound counts frames, not the pieces of an hour.
+#[derive(Default)]
+pub struct Retired(Vec<Box<dyn Send>>);
+
+impl Retired {
+    pub fn push<T: Send + 'static>(&mut self, value: T) {
+        self.0.push(Box::new(value));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl Dropper {
     pub fn new() -> io::Result<Self> {
-        let (bin, inbox) = mpsc::channel::<Box<dyn Send>>();
+        Self::with_capacity(builder_count())
+    }
+
+    fn with_capacity(capacity: usize) -> io::Result<Self> {
+        let (bin, inbox) = mpsc::sync_channel::<Box<dyn Send>>(capacity);
         thread::Builder::new()
             .name("hour dropper".into())
             .spawn(move || {
@@ -1713,15 +1751,12 @@ impl Dropper {
         Ok(Self { bin: Some(bin) })
     }
 
-    /// Frees `value` off the frame path.
+    /// Frees `value` off the frame path, or here, without waiting, when the
+    /// queue is full.
     pub fn drop_later<T: Send + 'static>(&self, value: T) {
-        match &self.bin {
-            Some(bin) => {
-                if let Err(mpsc::SendError(value)) = bin.send(Box::new(value)) {
-                    drop(value);
-                }
-            }
-            None => drop(value),
+        if let Some(bin) = &self.bin {
+            // A full or closed queue hands the value back; it drops here.
+            let _ = bin.try_send(Box::new(value));
         }
     }
 }
@@ -1729,6 +1764,103 @@ impl Dropper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retirements_are_bounded_even_when_the_destructor_stalls() {
+        /// Counts its drop; the first one stalls the destructor until released.
+        struct Counted(
+            Arc<std::sync::atomic::AtomicUsize>,
+            Option<(Sender<()>, Receiver<()>)>,
+        );
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                if let Some((started, release)) = self.1.take() {
+                    started.send(()).unwrap();
+                    release.recv().unwrap();
+                }
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        for capacity in [1, builder_count()] {
+            let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let frame = |pieces| {
+                let mut retired = Retired::default();
+                for _ in 0..pieces {
+                    retired.push(Counted(Arc::clone(&dropped), None));
+                }
+                retired
+            };
+            let (started, stalled) = mpsc::channel();
+            let (release, wait) = mpsc::channel();
+            let dropper = Dropper::with_capacity(capacity).unwrap();
+            dropper.drop_later(Counted(Arc::clone(&dropped), Some((started, wait))));
+            stalled.recv().unwrap();
+            // A frame's pieces take one place in the queue however many.
+            for _ in 0..capacity {
+                dropper.drop_later(frame(3));
+            }
+            assert_eq!(dropped.load(Ordering::SeqCst), 0);
+            // Full: this frame's retirement is freed here, without waiting on
+            // the stalled destructor; every queued one is still held.
+            dropper.drop_later(frame(2));
+            assert_eq!(dropped.load(Ordering::SeqCst), 2);
+            release.send(()).unwrap();
+            // The destructor frees the queue in order, then the thread ends.
+            drop(dropper);
+            let deadline = Instant::now() + std::time::Duration::from_secs(10);
+            while dropped.load(Ordering::SeqCst) < 3 + 3 * capacity {
+                assert!(
+                    Instant::now() < deadline,
+                    "the queued retirements were not freed"
+                );
+                thread::yield_now();
+            }
+        }
+    }
+
+    #[test]
+    fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
+        let old = Want {
+            branch: 1,
+            hour: 10,
+            ahead: 0,
+            behind: 0,
+            playing: true,
+            perspective: Default::default(),
+            view: test_view(),
+            have: vec![],
+            received: 0,
+        };
+        let mut next = Want {
+            hour: 100,
+            ..old.clone()
+        };
+        let keep = BTreeSet::from([(1, 100)]);
+        assert!(next.keeps_pending((1, 10), &keep));
+        assert!(!next.keeps_pending((2, 10), &keep));
+        assert!(!next.keeps_pending((1, 101), &keep));
+        // Paused, only the wanted hours are finished.
+        next.playing = false;
+        assert!(!next.keeps_pending((1, 10), &keep));
+        assert!(next.keeps_pending((1, 100), &keep));
+        // Seeks and branch changes keep what was built for a step back; only
+        // a perspective change starts a new epoch.
+        for moved in [
+            Want {
+                hour: 9,
+                ..old.clone()
+            },
+            Want {
+                branch: 2,
+                ..old.clone()
+            },
+        ] {
+            assert!(!old.invalidates(&moved));
+        }
+        next = old.clone();
+        next.perspective.fog = !next.perspective.fog;
+        assert!(old.invalidates(&next));
+    }
 
     /// The row size `sized_frame` fills its `Countries` table with.
     const ROW: u64 = std::mem::size_of::<replay::rows::CountryRow>() as u64;
@@ -1921,6 +2053,7 @@ mod tests {
             hour: 10,
             ahead: 2,
             behind: 2,
+            playing: false,
             perspective: Default::default(),
             view: test_view(),
             have: vec![10, 11],

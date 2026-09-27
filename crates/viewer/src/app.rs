@@ -881,7 +881,7 @@ impl Viewer {
             hour: target.hour,
             fraction: target.fraction,
         };
-        self.playing = false;
+        self.playing = target.playing;
         self.playhead = Some(head);
         let valid = self
             .document
@@ -908,9 +908,25 @@ impl Viewer {
             }
             self.document = Some(document);
         }
-        if self.rendered == Some(head) && self.error.is_none() && self.map_error.is_none() {
+        if self.presentation_ready(head, target.playing)
+            && self.error.is_none()
+            && self.map_error.is_none()
+        {
             self.rendered_sequence = target.sequence;
         }
+    }
+
+    /// Whether the frame drawn answers `target` with a built hour of this
+    /// epoch: exactly, or, playing, with the newest hour built before it.
+    fn presentation_ready(&self, target: Playhead, playing: bool) -> bool {
+        self.shown.as_ref().is_some_and(|shown| {
+            shown.epoch == self.epoch
+                && shown.error.is_none()
+                && self.rendered.is_some_and(|rendered| {
+                    (rendered.branch, rendered.hour) == (shown.branch, shown.hour)
+                        && presentation_matches(rendered, target, playing)
+                })
+        })
     }
 
     pub(crate) fn map_state(
@@ -925,10 +941,15 @@ impl Viewer {
                 })
                 .and(self.map_error.clone())
         });
-        let ready = self.rendered.is_some_and(|shown| {
-            shown.branch.to_string() == target.branch_id
-                && shown.hour == target.hour
-                && shown.fraction == target.fraction
+        let ready = target.branch_id.parse().ok().is_some_and(|branch| {
+            self.presentation_ready(
+                Playhead {
+                    branch,
+                    hour: target.hour,
+                    fraction: target.fraction,
+                },
+                target.playing,
+            )
         }) && self.rendered_sequence == target.sequence;
         dashboard::protocol::DashboardMapState {
             id: target.id.clone(),
@@ -2042,24 +2063,31 @@ impl Viewer {
             let elapsed = self.last_step.elapsed().as_secs_f64();
             self.last_step = Instant::now();
             let fraction = f64::from(playhead.fraction) + elapsed * f64::from(self.speed);
-            if !self.advance_playhead(&mut playhead, fraction, last) {
+            if !advance_clock(&mut playhead, fraction, last) {
                 self.playing = false;
             }
             ui.ctx().request_repaint();
         }
         self.playhead = Some(playhead);
         ui.horizontal(|ui| {
-            let displayed = playhead.hour;
-            let fraction = playhead.fraction;
+            // Playing, the date is the hour on screen, which trails the clock
+            // when the builders cannot keep up; it is not labelled as lagging.
+            let displayed = if self.playing {
+                document.playback.hour()
+            } else {
+                playhead.hour
+            };
+            let fraction = if displayed == playhead.hour {
+                playhead.fraction
+            } else {
+                0.0
+            };
             ui.strong(date(displayed));
             if self.diagnostics {
                 if fraction > 0.0 {
                     ui.weak(format!("Hour {displayed} + {fraction:.2} h"));
                 } else {
                     ui.weak(format!("Hour {displayed}"));
-                }
-                if document.playback.hour() != displayed || document.playback.branch() != branch {
-                    ui.weak(format!("drawing hour {}", document.playback.hour()));
                 }
             }
             // colour
@@ -2076,33 +2104,6 @@ impl Viewer {
             || self.shown.as_ref().is_some_and(|shown| {
                 shown.epoch == self.epoch && (shown.branch, shown.hour) == (branch, hour)
             })
-    }
-
-    /// Moves a playing playhead to `fraction` hours past its hour.
-    ///
-    /// The clock enters an hour only once that hour is built, so playback never
-    /// runs ahead of what the map shows: when the builders fall behind the
-    /// speed, the clock waits at the end of the hour on screen and the replay
-    /// plays at the builders' pace instead. When one slow frame owes more than
-    /// one hour, the clock steps through every ready hour but the map draws
-    /// only the latest, so a sped-up hour may never be drawn. Returns false at
-    /// the branch's last hour.
-    fn advance_playhead(&self, playhead: &mut Playhead, mut fraction: f64, last: i32) -> bool {
-        while fraction >= 1.0 {
-            if playhead.hour >= last {
-                playhead.fraction = 0.0;
-                return false;
-            }
-            if !self.hour_ready(playhead.branch, playhead.hour + 1) {
-                // Just short of the boundary, where the divisions have arrived.
-                fraction = f64::from(1.0_f32.next_down());
-                break;
-            }
-            fraction -= 1.0;
-            playhead.hour += 1;
-        }
-        playhead.fraction = fraction as f32;
-        true
     }
 
     /// Keeps the hour builders told where the playhead is and uploads the
@@ -2193,6 +2194,7 @@ impl Viewer {
             hour: playhead.hour,
             ahead,
             behind,
+            playing: self.playing,
             perspective: self.perspective.clone(),
             view,
             have: self
@@ -2219,21 +2221,31 @@ impl Viewer {
         if self.dropper.is_none() {
             self.dropper = Some(Arc::new(hours::Dropper::new()?));
         }
-        let dropper = self.dropper.as_ref().expect("started above");
+        // Everything this frame lets go of, freed off the frame path at its end.
+        let mut retired = hours::Retired::default();
         for built in pipeline.take()? {
             if built.epoch == epoch {
                 if let Some(old) = self.ready.insert((built.branch, built.hour), built) {
-                    dropper.drop_later(old);
+                    retired.push(old);
                 }
             } else {
-                dropper.drop_later(built);
+                retired.push(built);
             }
         }
+        let fallback = self
+            .playing
+            .then(|| {
+                latest_built_key(&self.ready, (playhead.branch, playhead.hour), |built| {
+                    built.layers.is_ok()
+                })
+            })
+            .flatten();
         let (keep, gone): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.ready)
             .into_iter()
             .partition(|((branch, hour), _)| {
                 *branch == playhead.branch
-                    && (playhead.hour - behind..=playhead.hour + ahead).contains(hour)
+                    && ((playhead.hour - behind..=playhead.hour + ahead).contains(hour)
+                        || fallback == Some((*branch, *hour)))
             });
         self.ready = keep;
         let mut passed = gone;
@@ -2257,9 +2269,7 @@ impl Viewer {
                 while next.is_none() {
                     let built = pipeline.wait()?;
                     if built.epoch != epoch {
-                        if let Some(dropper) = &self.dropper {
-                            dropper.drop_later(built);
-                        }
+                        retired.push(built);
                         continue;
                     }
                     if (built.branch, built.hour) == target {
@@ -2271,15 +2281,8 @@ impl Viewer {
             }
             if next.is_none() && self.playing {
                 // The newest hour on the way from the one on screen.
-                let on_the_way = self
-                    .ready
-                    .range(..target)
-                    .next_back()
-                    .map(|(key, _)| *key)
-                    .filter(|key| {
-                        key.0 == target.0
-                            && shown_at.is_none_or(|shown| shown.0 != key.0 || shown.1 < key.1)
-                    });
+                let on_the_way = fallback
+                    .filter(|key| shown_at.is_none_or(|shown| shown.0 != key.0 || shown.1 < key.1));
                 if let Some(key) = on_the_way {
                     next = self.ready.remove(&key);
                     let later = self.ready.split_off(&key);
@@ -2287,23 +2290,46 @@ impl Viewer {
                 }
             }
         }
-        if let Some(built) = next {
-            // The hour on screen of any epoch: a perspective change starts a new
-            // build epoch, but the scene's building history does not depend on
-            // the viewing country, so it continues across it.
-            let on_screen = self.shown.as_ref().map(|shown| (shown.branch, shown.hour));
-            let skipped = skipped_hours(on_screen, (built.branch, built.hour), |hour| {
-                let key = (built.branch, hour);
-                let passed_hour = self.ready.get(&key).or_else(|| passed.get(&key))?;
-                Some(Arc::clone(&passed_hour.layers.as_ref().ok()?.buildings))
-            });
-            self.apply_hour(state, document, built, skipped, laps)?;
+        let applied = match next {
+            Some(built) => {
+                // The hour on screen of any epoch: a perspective change starts
+                // a new build epoch, but the scene's building history does not
+                // depend on the viewing country, so it continues across it.
+                let on_screen = self.shown.as_ref().map(|shown| (shown.branch, shown.hour));
+                // Playing, hours the builders passed over to keep up with the
+                // clock continue the history; a gap in the recording does not.
+                let passes_unbuilt = self.playing
+                    && on_screen.is_some_and(|(_, from)| {
+                        !document.playback.replay().gaps.iter().any(|gap| {
+                            gap.branch == built.branch
+                                && gap.last_hour > from
+                                && gap.first_hour < built.hour
+                        })
+                    });
+                let skipped = skipped_hours(
+                    on_screen,
+                    (built.branch, built.hour),
+                    passes_unbuilt,
+                    |hour| {
+                        let key = (built.branch, hour);
+                        let passed_hour = self.ready.get(&key).or_else(|| passed.get(&key))?;
+                        let layers = passed_hour.layers.as_ref().ok();
+                        Some(layers.map(|layers| Arc::clone(&layers.buildings)))
+                    },
+                );
+                self.apply_hour(state, document, built, skipped, &mut retired, laps)
+            }
+            None => Ok(()),
+        };
+        if !passed.is_empty() {
+            retired.push(passed);
         }
-        if !passed.is_empty()
-            && let Some(dropper) = &self.dropper
+        if let Some(dropper) = &self.dropper
+            && !retired.is_empty()
         {
-            dropper.drop_later(passed);
+            dropper.drop_later(retired);
         }
+        applied?;
         // The frame sits past the playhead's hour only when it is the hour on
         // screen.
         document.hour_fraction = if (document.playback.branch(), document.playback.hour()) == target
@@ -2330,6 +2356,7 @@ impl Viewer {
         document: &mut Document,
         built: hours::Built,
         skipped: Option<Vec<Arc<hours::Shared<map::map_buildings::PreparedBuildings>>>>,
+        retired: &mut hours::Retired,
         laps: &mut Laps,
     ) -> Result<(), std::io::Error> {
         let hours::Built {
@@ -2350,12 +2377,7 @@ impl Viewer {
                 opened.elapsed().as_secs_f64() * 1000.0
             ));
         }
-        let passed = document.playback.present(branch, hour, current);
-        let dropper = self
-            .dropper
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("the hour dropper was not started"))?;
-        dropper.drop_later(passed);
+        retired.push(document.playback.present(branch, hour, current));
         laps.lap("present");
         if map::counter_move::profiling() {
             map::counter_move::profile_print(format!(
@@ -2442,7 +2464,7 @@ impl Viewer {
         laps.lap("buildings_upload");
         let replaced =
             scene.set_trains(&state.device, &state.queue, document.trains.clone(), trains)?;
-        dropper.drop_later(replaced);
+        retired.push(replaced);
         laps.lap("trains_upload");
         let replaced = scene.set_aircraft(
             &state.device,
@@ -2450,10 +2472,10 @@ impl Viewer {
             document.aircraft.clone(),
             aircraft,
         )?;
-        dropper.drop_later(replaced);
+        retired.push(replaced);
         laps.lap("aircraft_upload");
         let model_warnings = units.report.warnings();
-        dropper.drop_later(self.unit_models.replace(units));
+        retired.push(self.unit_models.replace(units));
         self.unit_fraction = None;
         if uploaded
             .orders
@@ -2461,18 +2483,18 @@ impl Viewer {
             .is_none_or(|had| !Arc::ptr_eq(had, &orders))
         {
             scene.set_orders(&state.device, &state.queue, &document.orders, &orders)?;
-            dropper.drop_later(uploaded.orders.replace(Arc::clone(&orders)));
+            retired.push(uploaded.orders.replace(Arc::clone(&orders)));
         }
         let plan_warnings = orders.report.warnings();
-        dropper.drop_later(orders);
+        retired.push(orders);
         laps.lap("orders_upload");
-        let retired = scene.set_prepared_weather_effects(
+        let replaced = scene.set_prepared_weather_effects(
             &state.device,
             &state.queue,
             document.weather_effects.clone(),
             effects,
         )?;
-        dropper.drop_later(retired);
+        retired.push(replaced);
         laps.lap("effects_upload");
         if uploaded.political != Some(political.id) {
             scene.set_political(&state.device, &state.queue, &political.layers.regions)?;
@@ -2515,9 +2537,9 @@ impl Viewer {
             uploaded.intel = Some(Arc::clone(&intel));
         }
         laps.lap("fog_upload");
-        dropper.drop_later(self.placements.replace(names));
+        retired.push(self.placements.replace(names));
         self.placements_at = Some((branch, hour));
-        dropper.drop_later(self.prepared_overlay.replace(overlay));
+        retired.push(self.prepared_overlay.replace(overlay));
         self.overlay_at = Some((
             branch,
             hour,
@@ -2546,8 +2568,8 @@ impl Viewer {
                 snow_mud.build,
             ),
         };
-        dropper.drop_later(self.shown.replace(shown));
-        dropper.drop_later((political, borders, rails, buildings, snow_mud, intel));
+        retired.push(self.shown.replace(shown));
+        retired.push((political, borders, rails, buildings, snow_mud, intel));
         laps.lap("apply_end");
         Ok(())
     }
@@ -3570,7 +3592,7 @@ impl eframe::App for Viewer {
                         .map_or(moved.hour, |(_, last)| last);
                     let fraction =
                         f64::from(moved.fraction) + f64::from(speed) / crate::profiling::hz();
-                    self.advance_playhead(&mut moved, fraction, last);
+                    advance_clock(&mut moved, fraction, last);
                     self.playhead = Some(moved);
                 }
                 if playing.is_none()
@@ -3684,18 +3706,64 @@ fn filter_tags<'a>(tags: &'a [String], filter: &str) -> Vec<&'a str> {
 
 /// What the hours strictly between the hour on screen and `next` built,
 /// oldest first, so the scene's building history advances through them; empty
-/// for the same hour rebuilt. `None` when `next` is on another branch, earlier,
-/// or a passed hour is not built: the scene then treats it as a seek.
+/// for the same hour rebuilt. `built` answers `None` for an hour never built
+/// and `Some(None)` for one built without buildings (a gap). The result is
+/// `None` when `next` is on another branch or earlier, or a passed hour has no
+/// buildings: the scene then treats it as a seek. An hour never built is
+/// passed over when `passes_unbuilt`, and otherwise also makes it a seek.
 fn skipped_hours<T>(
     shown: Option<(replay::BranchId, i32)>,
     (branch, next): (replay::BranchId, i32),
-    built: impl Fn(i32) -> Option<T>,
+    passes_unbuilt: bool,
+    built: impl Fn(i32) -> Option<Option<T>>,
 ) -> Option<Vec<T>> {
     let (shown_branch, from) = shown?;
     if shown_branch != branch || next < from {
         return None;
     }
-    (from + 1..next).map(built).collect()
+    let mut passed = Vec::new();
+    for hour in from + 1..next {
+        match built(hour) {
+            Some(buildings) => passed.push(buildings?),
+            None if passes_unbuilt => {}
+            None => return None,
+        }
+    }
+    Some(passed)
+}
+
+/// Moves a playing playhead `fraction` hours past its hour, whether or not the
+/// builders have reached it: the map shows the newest built hour at or before
+/// it ([`latest_built_key`]). Returns false at the branch's last hour.
+fn advance_clock(playhead: &mut Playhead, fraction: f64, last: i32) -> bool {
+    if fraction >= f64::from(last.saturating_sub(playhead.hour)) {
+        playhead.hour = last;
+        playhead.fraction = 0.0;
+        return false;
+    }
+    playhead.hour += fraction.floor() as i32;
+    playhead.fraction = fraction.fract() as f32;
+    true
+}
+
+/// The newest `usable` hour of `target`'s branch at or before it.
+fn latest_built_key<T>(
+    ready: &BTreeMap<(replay::BranchId, i32), T>,
+    target: (replay::BranchId, i32),
+    usable: impl Fn(&T) -> bool,
+) -> Option<(replay::BranchId, i32)> {
+    ready
+        .range((target.0, i32::MIN)..=target)
+        .rev()
+        .find(|(_, built)| usable(built))
+        .map(|(key, _)| *key)
+}
+
+/// Whether `rendered` answers `target`: exactly, or, playing, as an earlier
+/// hour of its branch.
+fn presentation_matches(rendered: Playhead, target: Playhead, playing: bool) -> bool {
+    rendered == target
+        || (playing && rendered.branch == target.branch && rendered.hour < target.hour)
 }
 
 #[cfg(test)]
@@ -3703,38 +3771,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn playing_shows_the_newest_built_hour_until_the_playheads_own_arrives() {
+        let mut ready = BTreeMap::from([((1, 11), true), ((1, 14), true), ((2, 12), true)]);
+        assert_eq!(latest_built_key(&ready, (1, 15), |ok| *ok), Some((1, 14)));
+        // A failed hour or one past the playhead does not stand in.
+        ready.insert((1, 15), false);
+        ready.insert((1, 16), true);
+        assert_eq!(latest_built_key(&ready, (1, 15), |ok| *ok), Some((1, 14)));
+        ready.insert((1, 15), true);
+        assert_eq!(latest_built_key(&ready, (1, 15), |ok| *ok), Some((1, 15)));
+        assert_eq!(latest_built_key(&ready, (3, 15), |ok| *ok), None);
+        let target = Playhead {
+            branch: 1,
+            hour: 15,
+            fraction: 0.5,
+        };
+        let shown = Playhead {
+            hour: 14,
+            fraction: 0.0,
+            ..target
+        };
+        assert!(presentation_matches(shown, target, true));
+        assert!(
+            !presentation_matches(shown, target, false),
+            "paused is exact"
+        );
+        assert!(!presentation_matches(
+            Playhead { branch: 2, ..shown },
+            target,
+            true
+        ));
+        assert!(!presentation_matches(
+            Playhead { hour: 16, ..shown },
+            target,
+            true
+        ));
+        assert!(presentation_matches(target, target, false));
+    }
+
+    #[test]
+    fn the_playback_clock_runs_without_the_builders_and_stops_at_the_end() {
+        let mut head = Playhead {
+            branch: 1,
+            hour: 10,
+            fraction: 0.0,
+        };
+        assert!(advance_clock(&mut head, 6.25, 30));
+        assert_eq!((head.hour, head.fraction), (16, 0.25));
+        assert!(!advance_clock(&mut head, 100.0, 30));
+        assert_eq!((head.hour, head.fraction), (30, 0.0));
+    }
+
+    #[test]
     fn a_move_over_built_hours_is_a_skip_and_anything_else_a_seek() {
-        let built = |hour: i32| (hour != 13).then_some(hour);
-        assert_eq!(
-            skipped_hours(Some((1, 10)), (1, 13), built),
-            Some(vec![11, 12])
-        );
-        assert_eq!(skipped_hours(Some((1, 10)), (1, 11), built), Some(vec![]));
-        assert_eq!(
-            skipped_hours(Some((1, 10)), (1, 10), built),
-            Some(vec![]),
-            "same hour"
-        );
-        assert_eq!(
-            skipped_hours(Some((1, 10)), (1, 15), built),
-            None,
-            "13 is not built"
-        );
-        assert_eq!(
-            skipped_hours(Some((1, 10)), (1, 9), built),
-            None,
-            "backwards"
-        );
-        assert_eq!(
-            skipped_hours(Some((2, 10)), (1, 12), built),
-            None,
-            "another branch"
-        );
-        assert_eq!(
-            skipped_hours(None, (1, 12), built),
-            None,
-            "nothing on screen"
-        );
+        // 13 was never built, 14 was built without buildings (a gap).
+        let built = |hour: i32| match hour {
+            13 => None,
+            14 => Some(None),
+            _ => Some(Some(hour)),
+        };
+        let skipped = |shown, next| skipped_hours(shown, next, false, built);
+        assert_eq!(skipped(Some((1, 10)), (1, 13)), Some(vec![11, 12]));
+        assert_eq!(skipped(Some((1, 10)), (1, 11)), Some(vec![]));
+        assert_eq!(skipped(Some((1, 10)), (1, 10)), Some(vec![]), "same hour");
+        assert_eq!(skipped(Some((1, 10)), (1, 14)), None, "13 is not built");
+        assert_eq!(skipped(Some((1, 10)), (1, 9)), None, "backwards");
+        assert_eq!(skipped(Some((2, 10)), (1, 12)), None, "another branch");
+        assert_eq!(skipped(None, (1, 12)), None, "nothing on screen");
+        // Playing, the builders passed 13 over and the history continues,
+        // but not through the gap at 14.
+        let playing = |shown, next| skipped_hours(shown, next, true, built);
+        assert_eq!(playing(Some((1, 10)), (1, 14)), Some(vec![11, 12]));
+        assert_eq!(playing(Some((1, 10)), (1, 16)), None, "14 is a gap");
+        assert_eq!(playing(Some((1, 10)), (1, 9)), None, "backwards");
     }
 
     #[test]

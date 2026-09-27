@@ -34,6 +34,10 @@ The map size is the content's provinces bitmap (`MAP_SIZE`), carried by `camera:
 
 Windowed playback and headless export use the same wgpu rendering path. Preserve the game's verified camera, asset selection, texture colour spaces, shader inputs, blend/depth states and draw order. Do not hide a missing rendering term with a fitted global brightness or colour correction.
 
+Playback runs at the chosen speed whether or not the hour builders keep up (owner decision, 2026-09-27). The map shows the playhead's hour once it is built, else the newest hour built before it, all layers at once and with that hour's date, never a lagging label. Hours in flight at or before the playhead are finished rather than cancelled, and a skip over hours the builders passed keeps the building history unless the recording has a gap there. Paused seeks, exports and captures wait for their exact hour. Dashboard map targets say whether they play, and maps acknowledge the hour they show ([hours.rs](src/hours.rs), `Viewer::refresh_hour`).
+
+Queues between the window and its threads are bounded by concurrency, not by data: finished hours wait at most one per hour in flight, and deferred destruction holds one frame's retirements per builder, beyond which a frame frees its own (`hours::Dropper`).
+
 Recorded values remain exact. Do not interpolate recorded data between hourly samples: a moving division's counter and figure stand at the game's settled route point (one world unit along the route spline from the current province's anchor) all hour, as the game draws them. Effects whose seeds, phase or runtime state were not recorded must remain explicitly identified as reconstructions, not exact observations.
 
 Show gaps, unavailable tables, wrong-viewpoint inputs and unsupported content honestly: in diagnostics mode and in the machine-readable outputs for agents. A carried background sample does not become fresh because the map renders another hour. New visible features may require new recorded operands; do not fabricate them in the renderer.
