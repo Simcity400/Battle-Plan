@@ -5,7 +5,7 @@ import { AXIS_HEIGHT, ROW_HEIGHT, barHours, inSpans, laneAt, leftColumn, spanAt,
 import { validOption } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
 import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
-import { chosenCategory, lanesFor, lawLevel, timelineCategories } from './ideaTimelineData.ts';
+import { chosenCategory, lanesFor, lawLevel, timelineCategories, UNIDENTIFIED_HOLDER } from './ideaTimelineData.ts';
 
 const idea = (token: string, slot: string | null, category = 'government'): IdeaInfo => ({ token, category, slot, law: false, designer: false,
   effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [] });
@@ -107,4 +107,18 @@ test('an advisor span shows its own recorded holder, not the idea’s latest one
     holders: [{ token: 'schacht', character: 1, artwork: art('Holder A') }, { token: 'schacht', character: 2, artwork: art('Holder B') }] };
   const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
   assert.deepEqual(seat.spans.map(span => span.label), ['Holder A', 'Holder B']);
+});
+
+test('a holder the recording could not identify stays unnamed, not the latest holder', () => {
+  const art = (name: string) => ({ token: 'schacht', name, description: null, baseDurationDays: null, icon: null });
+  const reply = { ...REPLY,
+    spans: [
+      { token: 'schacht', firstHour: 10, lastHour: 100, slot: 'political_advisor', character: { id: 1, token: '' } },
+      { token: 'schacht', firstHour: 101, lastHour: 300, slot: 'political_advisor', character: { id: 2, token: 'B' } },
+    ],
+    ideas: [idea('schacht', 'political_advisor')],
+    artwork: [art('Holder B')],
+    holders: [{ token: 'schacht', character: 2, artwork: art('Holder B') }] };
+  const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
+  assert.deepEqual(seat.spans.map(span => span.label), [UNIDENTIFIED_HOLDER, 'Holder B']);
 });

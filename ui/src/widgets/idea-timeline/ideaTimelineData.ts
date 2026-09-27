@@ -6,6 +6,9 @@ import type { Artwork, CategoryInfo, IdeaHistoryReply, IdeaInfo, IdeaSpan } from
  * are three lanes). Categories and slots are the content's own. */
 
 export type LawStyle = 'both' | 'shade' | 'icons';
+
+/** A recorded holder whose character details were not recorded. */
+export const UNIDENTIFIED_HOLDER = 'Holder not recorded';
 export type HolderStyle = 'both' | 'name' | 'portrait';
 
 /** Categories a timeline can show: on the political screen, not hidden, with slots. */
@@ -22,12 +25,19 @@ export function chosenCategory(categories: readonly CategoryInfo[], chosen: stri
 export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo, styles: { laws: LawStyle; holders: HolderStyle }): TimelineLane[] {
   const infos = new Map<string, IdeaInfo>(reply.ideas.map(info => [info.token, info]));
   const art = new Map<string, Artwork>(reply.artwork.map(item => [item.token, item]));
-  // An advisor span shows its own recorded holder, not the idea's latest one.
+  // An advisor span shows its own recorded holder, not the idea's latest one. A
+  // holder the recording could not identify stays unnamed rather than borrowing
+  // another holder's name and portrait.
   const holder = (token: string, character: number) => `${token}#${character}`;
   const holders = new Map<string, Artwork>(reply.holders.map(item => [holder(item.token, item.character), item.artwork]));
   const span = (item: IdeaSpan, shade?: number): TimelineSpan => {
-    const look = (item.character && holders.get(holder(item.token, item.character.id))) || art.get(item.token);
-    return { id: `${item.token}:${item.firstHour}`, firstHour: item.firstHour, lastHour: item.lastHour, label: look?.name ?? item.token, icon: look?.icon ?? undefined, shade };
+    const base = { id: `${item.token}:${item.firstHour}`, firstHour: item.firstHour, lastHour: item.lastHour, shade };
+    if (item.character) {
+      const look = holders.get(holder(item.token, item.character.id));
+      return look ? { ...base, label: look.name ?? item.token, icon: look.icon ?? undefined } : { ...base, label: UNIDENTIFIED_HOLDER };
+    }
+    const look = art.get(item.token);
+    return { ...base, label: look?.name ?? item.token, icon: look?.icon ?? undefined };
   };
   const lanes: TimelineLane[] = [];
   for (const slot of category.slots) {
