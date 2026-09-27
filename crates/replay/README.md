@@ -43,6 +43,8 @@ The replay stores content identity, ordered layer hashes and the coverage policy
 
 Use existing round-trip, delta/baseline, malformed-input, version-rejection, provenance, branch and recovery tests. Validate affected collector, recorder, viewer and analytics consumers in the same change. See [AGENTS.md](../../AGENTS.md) for commands.
 
+CountryAppearance keeps each country's stored map colour and name operands, and the ruling party's first country leader: its ideology token and CCharacter id. The id is missing, never zero, when there is no such leader or its character could not be read.
+
 ModifierDefinitions keeps each registered modifier key's native metadata by index, with its script name as a lexer token resolved through LexicalTokens; consumers decode the flag words. HiredAdvisors keeps each country's appointed advisors in native order, keyed by raw country reference and ordinal; resolve the country through CountryLinks like any other raw reference.
 
 CountryStabilityInputs keeps one row per country of the stability, war support and maximum command power operands in native representation (fixed5, Q15 penalty words, raw predicates, loaded defines, tracked modifier totals with their resolved key indices, the command power reserved by allocators, and the game language); consumers compute the displayed values. The maximum command power the game shows and clamps the balance to is `GetMaxCommandPower` minus that reserved amount. CountryStabilityLines keeps each modifier tree child's value per tracked key, keyed by country, tree position and native key, with the source kind and identity the recorder proved; only an unpaired line keeps the game's display text. Both are sliced by country; use each row's SliceReads hour.

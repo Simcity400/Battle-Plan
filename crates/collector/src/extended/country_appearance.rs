@@ -1,4 +1,5 @@
-//! Current country colour bits, cosmetic tag and name operands, sampled hourly.
+//! Current country colour bits, cosmetic tag, name operands and the ruling
+//! party's first leader's character, sampled hourly.
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
 use engine::{Memory, ccountry, walk::Outcome};
 use replay::{
@@ -81,6 +82,7 @@ impl Captured {
                 leader_ideology: r.leader_ideology.as_bytes().to_vec(),
                 overlord: r.overlord,
                 graphical_culture: r.graphical_culture.as_bytes().to_vec(),
+                leader_character: r.leader_character,
             },
         )]
     }
@@ -104,6 +106,7 @@ mod tests {
         capture.rows.rows[0].rgba = [0x7fc01234, 0x80000000, 0xffffffff, 0x3f800000];
         capture.rows.rows[0].cosmetic_tag.bytes[..3].copy_from_slice(&[65, 0, 255]);
         capture.rows.rows[0].cosmetic_tag.len = 3;
+        capture.rows.rows[0].leader_character = Some(0);
         capture.rows.outcome = Outcome::Rows { len: 1 };
         let [TableView::Complete(replay::rows::TableRows::CountryAppearance(rows))] =
             capture.tables()
@@ -115,5 +118,6 @@ mod tests {
         assert_eq!(rows[0].green, 0x80000000);
         assert_eq!(rows[0].blue, 0xffffffff);
         assert_eq!(rows[0].alpha, 0x3f800000);
+        assert_eq!(rows[0].leader_character, Some(0));
     }
 }

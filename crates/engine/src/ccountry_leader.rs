@@ -3,6 +3,7 @@
 /// CCountryLeader vtable; build_profile.rs:192 and the pinned executable's MSVC RTTI confirm the class.
 pub const VTABLE_RVA: usize = 0x0296_a720;
 /// CCountryLeader parent CCharacter*; extractor.rs:113 and read_vtable_and_character_ptr validate this link.
+/// The leader-name effect 1402E5230 dereferences it for the character, and the
 pub const CHARACTER: usize = 0x08;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

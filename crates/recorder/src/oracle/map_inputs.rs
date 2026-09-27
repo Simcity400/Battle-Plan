@@ -47,6 +47,7 @@ fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
             &row.cosmetic_tag,
             cosmetic,
         );
+        ruling_leader(save, tag, &label, row, report)?;
     }
     for tag in remaining {
         report.difference(
@@ -63,8 +64,52 @@ fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
     );
     report.compared("CountryAppearance", rows.len());
     report.limitation("the save carries cosmetic_tag but has no counterpart for current primary RGBA; all four raw f32 bit patterns, including alpha, remain independently unverified", "CountryAppearance raw RGBA");
-    report.limitation("name_tag, leader_ideology and overlord are census only; the viewer's resolved names need a matched-hour screenshot", "CountryAppearance name operands");
+    report.limitation("name_tag and overlord are census only; the viewer's resolved names need a matched-hour screenshot", "CountryAppearance name operands");
     report.limitation("graphical_culture (CCountry+0x1028) is not serialized by the country writer; it comes from the country's content file and needs a matched-hour screenshot of a model or portrait that depends on it", "CountryAppearance.graphical_culture");
+    Ok(())
+}
+
+/// The ruling party's first saved `country_leader` against the recorded leader
+/// ideology and character. CCountry::Write@14070C580 writes `politics`
+/// unconditionally; CPoliticalStatus::vf2@140BA12D0 omits `ruling_party` for a
+/// null party, and the party writer lists its leaders in vector order, the
+/// and recorded as missing.
+fn ruling_leader(
+    save: &Save,
+    tag: &[u8],
+    label: &str,
+    row: &replay::rows::CountryAppearanceRow,
+    report: &mut Report,
+) -> io::Result<()> {
+    let politics = save
+        .governance
+        .countries
+        .get(tag)
+        .and_then(|country| country.politics.as_ref())
+        .ok_or_else(|| invalid(format!("{label} save lacks unconditional politics")))?;
+    let leader = match &politics.ruling_party {
+        None => None,
+        Some(party) => politics
+            .leaders
+            .get(party)
+            .ok_or_else(|| invalid(format!("{label} ruling party is not a saved party")))?
+            .first(),
+    };
+    eq(
+        report,
+        &format!("{label}.leader_ideology"),
+        row.leader_ideology.as_slice(),
+        leader.map_or(&[][..], |leader| leader.ideology.as_slice()),
+    );
+    eq(
+        report,
+        &format!("{label}.leader_character"),
+        row.leader_character
+            .map(|id| (id, engine::ccharacter::REFERENCE_TYPE)),
+        leader
+            .map(|leader| leader.character)
+            .filter(|&reference| reference != (0, 0)),
+    );
     Ok(())
 }
 
@@ -323,5 +368,101 @@ mod tests {
         compare(&frame, &saved, &mut report);
         assert!(report.failed_comparisons.contains_key("CountryAppearance"));
         assert!(report.failed_comparisons.contains_key("ArmyIconInputs"));
+    }
+
+    #[test]
+    fn ruling_leader_compares_the_first_saved_leader_and_keeps_missing_distinct() {
+        fn politics(saved: &mut Save) -> &mut save::governance::Politics {
+            saved
+                .governance
+                .countries
+                .get_mut(b"GER".as_slice())
+                .unwrap()
+                .politics
+                .as_mut()
+                .unwrap()
+        }
+        let (mut frame, mut saved, _, _) = super::super::tests::fixture();
+        saved
+            .countries
+            .get_mut(b"GER".as_slice())
+            .unwrap()
+            .cosmetic_tag = Some(Vec::new());
+        politics(&mut saved).ruling_party = Some(b"fascism".to_vec());
+        let leader = |ideology: &[u8], character| save::governance::PartyLeader {
+            ideology: ideology.to_vec(),
+            character,
+        };
+        politics(&mut saved).leaders.insert(
+            b"fascism".to_vec(),
+            vec![
+                leader(b"nazism", (1800, 73)),
+                leader(b"fascism_ideology", (1801, 73)),
+            ],
+        );
+        let run = |frame: &mut DecodedFrame, saved: &Save, ideology: &[u8], character| {
+            *frame.tables[TableId::CountryAppearance.index()] =
+                TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+                    country: 101,
+                    leader_ideology: ideology.to_vec(),
+                    leader_character: character,
+                    ..Default::default()
+                }]));
+            let mut report = Report::default();
+            report.attempt_table(TableId::CountryAppearance, |r| countries(frame, saved, r));
+            report
+        };
+        let report = run(&mut frame, &saved, b"nazism", Some(1800));
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report.failed_comparisons.is_empty(),
+            "{:?}",
+            report.failed_comparisons
+        );
+        // A missing character, another character or leader, and a zero id all differ.
+        for (ideology, character) in [
+            (b"nazism".as_slice(), None),
+            (b"nazism", Some(1801)),
+            (b"nazism", Some(0)),
+            (b"fascism_ideology", Some(1801)),
+            (b"", None),
+        ] {
+            let report = run(&mut frame, &saved, ideology, character);
+            assert!(!report.differences.is_empty(), "{ideology:?} {character:?}");
+        }
+        // A saved null parent reference is recorded as missing.
+        politics(&mut saved)
+            .leaders
+            .get_mut(b"fascism".as_slice())
+            .unwrap()[0]
+            .character = (0, 0);
+        assert!(
+            run(&mut frame, &saved, b"nazism", None)
+                .differences
+                .is_empty()
+        );
+        assert!(
+            !run(&mut frame, &saved, b"nazism", Some(0))
+                .differences
+                .is_empty()
+        );
+        // A ruling party without saved leaders has none; one without a party
+        // block cannot be compared.
+        politics(&mut saved)
+            .leaders
+            .insert(b"fascism".to_vec(), Vec::new());
+        assert!(run(&mut frame, &saved, b"", None).differences.is_empty());
+        politics(&mut saved).leaders.clear();
+        let report = run(&mut frame, &saved, b"", None);
+        assert!(report.failed_comparisons["CountryAppearance"].contains("not a saved party"));
+        // Politics is written unconditionally, so its absence is refused.
+        saved
+            .governance
+            .countries
+            .get_mut(b"GER".as_slice())
+            .unwrap()
+            .politics = None;
+        let report = run(&mut frame, &saved, b"", None);
+        assert!(report.failed_comparisons["CountryAppearance"].contains("unconditional politics"));
     }
 }

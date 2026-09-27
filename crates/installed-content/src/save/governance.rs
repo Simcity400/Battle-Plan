@@ -30,11 +30,25 @@ pub struct Country {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Politics {
     pub parties: BTreeMap<Vec<u8>, Decimal>,
+    /// Each party's country leaders in native vector order, keyed like
+    /// `parties`. `CPoliticalParty::vf2@141191FA0` writes `country_leader`
+    /// only for a nonzero leader count (+0x7c), so omission is an empty list.
+    pub leaders: BTreeMap<Vec<u8>, Vec<PartyLeader>>,
     pub ideas: Vec<Vec<u8>>,
     pub ruling_party: Option<Vec<u8>>,
     pub last_election: Option<SavedDate>,
     pub election_frequency: Option<i32>,
     pub elections_allowed: Option<bool>,
+}
+
+/// CCountryLeader role.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartyLeader {
+    /// The role's ideology token (leader+0x140, then +0x10).
+    pub ideology: Vec<u8>,
+    /// The parent CCharacter's reference words (`*(leader+8)+8`): id and type.
+    /// A null parent is written as the zeroed invalid reference, `{0, 0}`.
+    pub character: (u32, u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,19 +191,23 @@ fn fixed_list(items: &[Item], key: &[u8]) -> io::Result<Vec<Decimal>> {
 
 fn parse_politics(items: &[Item]) -> io::Result<Politics> {
     let mut parties = BTreeMap::new();
+    let mut leaders = BTreeMap::new();
     // BA12D0 omits parties/ideas exactly for empty native arrays.
     for party in optional_block(items, b"parties")?.unwrap_or_default() {
         let token = party
             .key
             .clone()
             .ok_or_else(|| invalid("party lacks token"))?;
-        let popularity = Decimal::parse(&required_bytes(block(&party.value)?, b"popularity")?)?;
+        let fields = block(&party.value)?;
+        let popularity = Decimal::parse(&required_bytes(fields, b"popularity")?)?;
+        leaders.insert(token.clone(), party_leaders(fields)?);
         if parties.insert(token, popularity).is_some() {
             return Err(invalid("duplicate political party token"));
         }
     }
     Ok(Politics {
         parties,
+        leaders,
         ideas: list(items, b"ideas")?,
         ruling_party: bytes(items, b"ruling_party")?,
         last_election: bytes(items, b"last_election")?
@@ -200,6 +218,37 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
             .map(boolean)
             .transpose()?,
     })
+}
+
+/// A party's `country_leader` block: one anonymous `{ ideology character }`
+/// entry per element of the leader vector, in order. The writer emits the key
+/// once, and only for a nonempty vector.
+fn party_leaders(items: &[Item]) -> io::Result<Vec<PartyLeader>> {
+    let Some(entries) = optional_block(items, b"country_leader")? else {
+        return Ok(Vec::new());
+    };
+    if entries.is_empty() {
+        return Err(invalid(
+            "141191FA0 writes country_leader only for a nonzero leader count",
+        ));
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            if entry.key.is_some() {
+                return Err(invalid("party country leader entry must be anonymous"));
+            }
+            let fields = block(&entry.value)?;
+            let handle = super::null_permitted_handle(
+                field(fields, b"character")?
+                    .ok_or_else(|| invalid("party country leader lacks character"))?,
+            )?;
+            Ok(PartyLeader {
+                ideology: required_bytes(fields, b"ideology")?,
+                character: ((handle >> 32) as u32, handle as u32),
+            })
+        })
+        .collect()
 }
 
 fn parse_focus(items: &[Item]) -> io::Result<Focus> {
@@ -542,6 +591,43 @@ mod tests {
         assert_eq!(country.dynamic_modifiers[1].days, Some(0));
         assert_eq!(country.dynamic_modifiers[0].values[1].raw, -2_147_483_649);
         assert_eq!(country.preferred_tactic, Some(-1));
+    }
+
+    #[test]
+    fn party_leaders_keep_native_order_and_the_null_character_reference() {
+        // The writer's own layout, including its unkeyed entry blocks.
+        let pack = parse_text(
+            b"countries={AAA={politics={parties={
+            fascism={default=yes popularity=40 country_leader={
+{
+                ideology=\"nazism\"
+                character={ id=1800 type=73 }
+            }
+            {
+                ideology=\"nazism\"
+                character={ id=0 type=0 }
+            }
+ }}
+            democratic={popularity=60}
+        } ruling_party=fascism}}}",
+        )
+        .unwrap();
+        let politics = pack.countries[b"AAA".as_slice()].politics.as_ref().unwrap();
+        let fascism = &politics.leaders[b"fascism".as_slice()];
+        assert_eq!(fascism.len(), 2);
+        assert_eq!(fascism[0].ideology, b"nazism");
+        assert_eq!(fascism[0].character, (1800, 73));
+        assert_eq!(fascism[1].character, (0, 0));
+        assert!(politics.leaders[b"democratic".as_slice()].is_empty());
+        for text in [
+            b"countries={AAA={politics={parties={x={popularity=1 country_leader={}}}}}}".as_slice(),
+            b"countries={AAA={politics={parties={x={popularity=1 country_leader={a={ideology=y character={id=1 type=73}}}}}}}}",
+            b"countries={AAA={politics={parties={x={popularity=1 country_leader={{ideology=y}}}}}}}",
+            b"countries={AAA={politics={parties={x={popularity=1 country_leader={{character={id=1 type=73}}}}}}}}",
+            b"countries={AAA={politics={parties={x={popularity=1 country_leader={{ideology=y character={id=1 type=73}}} country_leader={{ideology=y character={id=1 type=73}}}}}}}}",
+        ] {
+            assert!(parse_text(text).is_err(), "{}", String::from_utf8_lossy(text));
+        }
     }
 
     #[test]
