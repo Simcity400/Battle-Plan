@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { badgeRows } from '../../charts/badges';
@@ -20,14 +19,15 @@ import { useProduct } from '../../dashboard/products';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import { readTokens, subscribeTokens } from '../../charts/tokens';
 import { OPTIONS } from './definition';
-import { bands, buildStack, formatPopularity, partyBadges, rawAt, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData';
+import { bands, buildStack, formatPopularity, leaderAt, leaderShown, partyBadges, rawAt, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData';
 import './rulingParty.css';
 
 const NO_WARNINGS: string[] = [];
 
-/** One country's politics over time: party popularity as stacked bands in each
- * ideology's own colour, with changes of ruling party and elections as badges. */
-export default function RulingPartyWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
+/** One country's politics over time: the ruling party's leader, then party
+ * popularity as stacked bands in each ideology's own colour, with changes of
+ * ruling party and elections as badges. */
+export default function RulingPartyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -49,7 +49,11 @@ export default function RulingPartyWidget({ widget, runtime, active, headerSlot,
   // Built once per reply; each frame only slices and thins it.
   const stack = useMemo(() => data ? buildStack(list, data.decimals) : null, [data, list]);
   const names = useMemo(() => new Map(list.map(band => [band.token, band.name])), [list]);
-  const badges = useMemo(() => data && options.changes ? partyBadges(data, token => names.get(token) ?? token) : [], [data, names, options.changes]);
+  const badges = useMemo(() => {
+    if (!data) return [];
+    const all = partyBadges(data, token => names.get(token) ?? token, options.leaders === true);
+    return options.changes ? all : all.filter(badge => badge.glyph === '♔');
+  }, [data, names, options.changes, options.leaders]);
   const menu = useContextMenu('Chart actions');
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
@@ -72,12 +76,32 @@ export default function RulingPartyWidget({ widget, runtime, active, headerSlot,
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading parties…" />;
-  if (!list.length) return <WidgetState kind="unavailable" message="No parties were recorded for this country in this branch." />;
+  if (!list.length && !data.leaders.length) return <WidgetState kind="unavailable" message="No parties were recorded for this country in this branch." />;
 
   const ruling = rulingAt(data, Math.floor(head));
-  const rulingRaw = ruling ? rawAt(list.find(band => band.token === ruling)!.series, Math.floor(head)) : null;
+  const rulingBand = list.find(band => band.token === ruling);
+  const rulingRaw = rulingBand ? rawAt(rulingBand.series, Math.floor(head)) : null;
+  const leader = leaderShown(data, leaderAt(data, Math.floor(head)));
+  // Mock-up politics-2: portrait ringed in the ruling ideology's colour (grey when not
+  // known), the leader's name, then ideology · party · share.
+  const detail = [leader.ideology, rulingBand?.name, rulingRaw ? formatPopularity(rulingRaw, data.decimals) : null].filter(Boolean).join(' · ');
+  const header = <div className="ruling-party-leader">
+    {/* Why a portrait is missing is on the shared tooltip, reachable by keyboard too. */}
+    <span className="ruling-party-portrait" style={rulingBand ? { borderColor: rulingBand.color } : undefined}
+      {...(leader.portraitMissing ? { tabIndex: 0, role: 'img', 'aria-label': `Portrait not shown: ${leader.portraitMissing}`, 'data-tooltip': leader.portraitMissing } : {})}>
+      {leader.portrait ? <img src={leader.portrait} alt="" /> : <span className="ruling-party-silhouette" aria-hidden="true" />}
+    </span>
+    <div className="ruling-party-leader-text">
+      <strong className={leader.known ? undefined : 'is-notice'}>{leader.name}</strong>
+      {detail && <span>{detail}</span>}
+    </div>
+  </div>;
+  // A recorded leader still shows when no party popularity was recorded.
+  if (!list.length) return <div className="ruling-party">{header}
+    <WidgetState kind="unavailable" message="No party popularity was recorded for this country in this branch." />
+  </div>;
   return <div className="ruling-party">
-    {headerSlot && ruling && createPortal(<span className="pill">{names.get(ruling) ?? ruling}{rulingRaw ? ` · ${formatPopularity(rulingRaw, data.decimals)}` : ''}</span>, headerSlot)}
+    {header}
     {/* Names only, as signed off; each popularity is still read out to assistive technology. */}
     <Legend label="Parties" items={list.map(band => {
       const raw = rawAt(band.series, Math.floor(head));
@@ -90,10 +114,15 @@ export default function RulingPartyWidget({ widget, runtime, active, headerSlot,
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false }} layers={layers} active={active} revision={`${head}:${data.branchId}`}
         formatValue={value => `${Math.round(value)}%`} badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hovered) => {
-          const rows: TooltipRow[] = list.map(band => ({ band, raw: rawAt(band.series, hour) }))
+          const shown = leaderShown(data, leaderAt(data, hour));
+          const party = list.find(band => band.token === rulingAt(data, hour))?.name;
+          const rows: TooltipRow[] = [{ label: 'Leader', value: shown.name, tone: shown.known ? undefined : 'muted' as const }];
+          if (shown.ideology || party) rows.push({ label: 'Ideology · party', value: [shown.ideology ?? 'Not recorded', party ?? 'Not recorded'].join(' · ') });
+          if (shown.portraitMissing) rows.push({ label: 'Portrait', value: `Not shown: ${shown.portraitMissing}`, tone: 'muted' });
+          rows.push(...list.map(band => ({ band, raw: rawAt(band.series, hour) }))
             .sort((a, b) => Number(b.raw ?? -1) - Number(a.raw ?? -1))
             .map(({ band, raw }) => ({ label: band.token === rulingAt(data, hour) ? `${band.name} (ruling)` : band.name, swatch: band.color,
-              value: raw == null ? 'Not recorded' : formatPopularity(raw, data.decimals), tone: raw == null ? 'muted' as const : undefined }));
+              value: raw == null ? 'Not recorded' : formatPopularity(raw, data.decimals), tone: raw == null ? 'muted' as const : undefined })));
           rows.push(...badgeRows(hovered));
           return { title: dayLabel(hour), rows };
         }}

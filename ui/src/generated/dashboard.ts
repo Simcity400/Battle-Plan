@@ -539,6 +539,31 @@ export type RulingRun = { token: string, firstHour: number, lastHour: number,
  * so the change between them is not a change of government.
  */
 startsSegment: boolean, };
+export type LeaderRun = {
+/**
+ * The leader's ideology token (a sub-ideology); empty when the ruling party
+ * had no leader.
+ */
+ideology: string,
+/**
+ * The leader's index in `people`; null when the party had no leader or the
+ * character could not be read.
+ */
+person: number | null, firstHour: number, lastHour: number, startsSegment: boolean, };
+export type IdeologyTypeInfo = { token: string, name: string | null, };
+export type LeaderArtwork = { character: IdeaCharacter,
+/**
+ * Null when the saved name needs runtime scope or nothing names the character.
+ */
+name: string | null,
+/**
+ * A PNG data URL; null when the portrait is not known.
+ */
+portrait: string | null,
+/**
+ * Why `portrait` is null.
+ */
+portraitMissing: string | null, };
 export type IdeologyInfo = { token: string, name: string | null,
 /**
  * sRGB bytes; null when content gives no usable colour.
@@ -546,10 +571,27 @@ export type IdeologyInfo = { token: string, name: string | null,
 color: [number, number, number] | null, };
 export type PartyHistoryReply = { branchId: string, tag: string, decimals: number, parties: Array<PartySeries>, ruling: Array<RulingRun>,
 /**
+ * The ruling party's leader; an hour without a run was not recorded.
+ */
+leaders: Array<LeaderRun>,
+/**
+ * Each character on `leaders`, named and pictured.
+ */
+people: Array<LeaderArtwork>,
+/**
+ * The leaders' sub-ideologies, named.
+ */
+ideologyTypes: Array<IdeologyTypeInfo>,
+/**
  * Hours an election was first seen held.
  */
 elections: Array<number>,
 /**
  * Every ideology group in content order, for colours, names and legend order.
  */
-ideologies: Array<IdeologyInfo>, unobserved: Array<HourSpan>, warnings: Array<string>, };
+ideologies: Array<IdeologyInfo>,
+/**
+ * Hours the country's parties were not observed: a change of government next
+ * to one is a gap, not a change.
+ */
+unobserved: Array<HourSpan>, warnings: Array<string>, };

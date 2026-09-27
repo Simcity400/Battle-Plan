@@ -1,6 +1,6 @@
 import type { EventBadge } from '../../charts/badges';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
-import type { FixedRun, HourSpan, PartyHistoryReply, PartySeries } from '../../generated/dashboard';
+import type { FixedRun, HourSpan, LeaderRun, PartyHistoryReply, PartySeries } from '../../generated/dashboard';
 
 /** Party popularity as stacked bands in each ideology's content colour, with the
  * ruling party's changes and elections as badges. */
@@ -14,7 +14,11 @@ export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
     && /^-?\d{1,20}$/.test(run.valueRaw) && (index === 0 || runs[index - 1].lastHour < run.firstHour));
   const ok = typeof reply === 'object' && reply != null && Number.isInteger(reply.decimals) && Array.isArray(reply.parties)
     && reply.parties.every(party => typeof party.token === 'string' && Array.isArray(party.runs) && ordered(party.runs))
-    && Array.isArray(reply.ruling) && Array.isArray(reply.elections) && Array.isArray(reply.ideologies) && Array.isArray(reply.warnings);
+    && Array.isArray(reply.ruling) && Array.isArray(reply.elections) && Array.isArray(reply.ideologies) && Array.isArray(reply.warnings)
+    && Array.isArray(reply.people) && Array.isArray(reply.ideologyTypes) && Array.isArray(reply.leaders)
+    && reply.leaders.every((run, index) => typeof run.ideology === 'string' && run.firstHour <= run.lastHour
+      && (run.person == null || (Number.isInteger(run.person) && run.person >= 0 && run.person < reply.people.length))
+      && (index === 0 || reply.leaders[index - 1].lastHour < run.firstHour));
   if (!ok) throw new Error('The party history reply is malformed.');
   return reply;
 }
@@ -151,9 +155,10 @@ export function stackedSegments(model: StackModel, from: number, to: number, min
   return segments;
 }
 
-/** Ruling-party changes and elections as badges. A change next to a gap is a gap in
- * the recording, not a change of government. */
-export function partyBadges(reply: PartyHistoryReply, name: (token: string) => string): EventBadge[] {
+/** Ruling-party changes and elections as badges, and changes of leader when
+ * `leaders` is set. A change next to a gap is a gap in the recording, not a change
+ * of government or of leader; a leader who is not identified is no change either. */
+export function partyBadges(reply: PartyHistoryReply, name: (token: string) => string, leaders = false): EventBadge[] {
   const hidden = (hour: number, unobserved: readonly HourSpan[]) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
   const badges: EventBadge[] = [];
   reply.ruling.forEach((run, index) => {
@@ -164,5 +169,45 @@ export function partyBadges(reply: PartyHistoryReply, name: (token: string) => s
     }
   });
   for (const hour of reply.elections) badges.push({ hour, glyph: '✓', label: 'Election held' });
+  if (leaders) {
+    reply.leaders.forEach((run, index) => {
+      const previous = reply.leaders[index - 1];
+      if (!previous || run.startsSegment || previous.lastHour + 1 !== run.firstHour || run.person == null || previous.person == null) return;
+      // A rename or a new portrait is the same leader.
+      if (reply.people[run.person].character.id === reply.people[previous.person].character.id) return;
+      const was = leaderShown(reply, previous);
+      const now = leaderShown(reply, run);
+      badges.push({ hour: run.firstHour, glyph: '♔', label: now.known && was.known ? `${now.name} succeeded ${was.name} as leader` : 'The leader changed' });
+    });
+  }
   return badges.sort((a, b) => a.hour - b.hour);
+}
+
+/** The ruling party's leader run at an hour, or null when not recorded. */
+export function leaderAt(reply: PartyHistoryReply, hour: number): LeaderRun | null {
+  let low = 0;
+  let high = reply.leaders.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const run = reply.leaders[middle];
+    if (hour < run.firstHour) high = middle - 1;
+    else if (hour > run.lastHour) low = middle + 1;
+    else return run;
+  }
+  return null;
+}
+
+/** What the header and tooltip say about the leader at an hour. `name` is what to
+ * show; `known` is false when that is a notice rather than the leader's name;
+ * `portraitMissing` says why there is no portrait. */
+export interface LeaderShown { name: string; known: boolean; portrait: string | null; portraitMissing: string | null; ideology: string | null }
+
+export function leaderShown(reply: PartyHistoryReply, run: LeaderRun | null): LeaderShown {
+  const none = (name: string, ideology: string | null = null): LeaderShown => ({ name, known: false, portrait: null, portraitMissing: null, ideology });
+  if (!run) return none('Leader not recorded');
+  if (!run.ideology) return none('No leader');
+  const ideology = reply.ideologyTypes.find(item => item.token === run.ideology)?.name ?? run.ideology;
+  const person = run.person == null ? undefined : reply.people[run.person];
+  if (!person) return none('Leader not identified', ideology);
+  return { name: person.name ?? 'Leader’s name not known', known: person.name != null, portrait: person.portrait, portraitMissing: person.portraitMissing, ideology };
 }

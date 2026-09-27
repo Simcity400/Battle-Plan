@@ -55,7 +55,7 @@ pub struct IdeaSpan {
     pub character: Option<IdeaCharacter>,
 }
 
-/// One recorded character behind an advisor idea.
+/// One recorded character: the holder of an advisor idea, or a country leader.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaCharacter {

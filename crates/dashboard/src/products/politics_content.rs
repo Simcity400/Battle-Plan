@@ -25,6 +25,8 @@ use std::{
 const ICON_EDGE: u32 = 96;
 /// Idea artwork kept per catalogue.
 const MAX_CACHED_ARTWORK: usize = 2048;
+/// Recorded portraits kept per catalogue.
+const MAX_CACHED_PORTRAITS: usize = 512;
 
 /// See [`PoliticsContent::recorded_name`].
 pub fn recorded_name(
@@ -60,6 +62,9 @@ pub enum RecordedName {
     None,
 }
 
+/// A recorded portrait entry: its kind and identity.
+type PortraitKey = (u32, Vec<u8>);
+
 pub struct PoliticsContent {
     pub catalogue: Arc<Catalogue>,
     pub ideas: IdeaContent,
@@ -71,6 +76,8 @@ pub struct PoliticsContent {
     pub warnings: Vec<String>,
     /// Artwork already built, by token, with why its icon is missing if it is.
     artwork: Mutex<BTreeMap<String, (Artwork, Option<String>)>>,
+    /// Recorded portraits already loaded, by kind and identity.
+    portraits: Mutex<BTreeMap<PortraitKey, Result<String, String>>>,
 }
 
 /// The source's politics content for these folders, read on first use and
@@ -121,6 +128,7 @@ impl PoliticsContent {
             modifier_definitions,
             warnings,
             artwork: Mutex::new(BTreeMap::new()),
+            portraits: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -182,6 +190,76 @@ impl PoliticsContent {
                 _ => None,
             }
         })
+    }
+
+    /// A recorded character's name: the saved name first (a rename shows its
+    /// current name), then the authored name of its script token; None when the
+    /// saved name needs runtime scope or nothing names the character.
+    pub fn character_name(&self, script: Option<&str>, saved: &str) -> Option<String> {
+        match self.recorded_name(saved, script) {
+            RecordedName::Named(name) => Some(name),
+            RecordedName::Unresolved => None,
+            RecordedName::None => match self.characters.names.get(script?)? {
+                Authored::Asset(key) => self.localise(key),
+                _ => None,
+            },
+        }
+    }
+
+    /// A recorded portrait entry as a PNG data URL (kind 0 a sprite, kind 1 a
+    /// texture path), or why it cannot be shown: a sprite content lacks or a
+    /// texture that does not load is one the game replaces with a generated
+    /// portrait (`IsPortraitDescriptorAvailable@141388180`).
+    pub fn recorded_portrait(&self, kind: u32, identity: &[u8]) -> Result<String, String> {
+        let key = (kind, identity.to_vec());
+        if let Some(cached) = self
+            .portraits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&key)
+        {
+            return cached.clone();
+        }
+        let loaded = self.load_recorded_portrait(kind, identity);
+        let mut cached = self
+            .portraits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Start over rather than grow without bound, as idea artwork does.
+        if cached.len() >= MAX_CACHED_PORTRAITS {
+            cached.clear();
+        }
+        cached.insert(key, loaded.clone());
+        loaded
+    }
+
+    fn load_recorded_portrait(&self, kind: u32, identity: &[u8]) -> Result<String, String> {
+        let text = String::from_utf8_lossy(identity);
+        let loaded = match kind {
+            0 => match self.catalogue.sprites.sprites.get(text.as_ref()) {
+                Some(_) => self.sprite_png(&text),
+                None => {
+                    return Err(format!(
+                        "Content has no sprite {text}; the game generates this portrait."
+                    ));
+                }
+            },
+            1 => {
+                let path = text
+                    .split(['/', '\\'])
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                catalogue::texture_png(&self.catalogue.content.layers, &path, 1, ICON_EDGE)
+                    .map(Some)
+            }
+            other => return Err(format!("Portrait kind {other} is not supported.")),
+        };
+        match loaded {
+            Ok(Some(png)) => Ok(png),
+            Ok(None) => Err(format!("{text} has no texture.")),
+            Err(error) => Err(format!("{text} did not load: {error}")),
+        }
     }
 
     /// Name, description and icon for an idea token, with why the icon is missing

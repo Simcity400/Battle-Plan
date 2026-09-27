@@ -7,11 +7,12 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent year' }] },
   AFTER_PLAYHEAD_OPTION,
   { key: 'changes', section: 'options', label: 'Government changes and elections', hint: 'Badges along the top', kind: 'toggle', default: true },
+  { key: 'leaders', section: 'options', label: 'Leader changes', hint: 'Badges along the top', kind: 'toggle', default: true },
 ];
 
 export const definition = {
   kind: 'ruling-party', version: 1, title: 'Ruling party', icon: 'palette',
-  description: 'Party popularity over time, with changes of government and elections.',
+  description: 'The country leader and party popularity over time, with changes of government, leader and elections.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 },
   options: OPTIONS,

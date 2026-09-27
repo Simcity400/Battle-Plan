@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { PartyHistoryReply } from '../../generated/dashboard';
-import { bands, buildStack, formatPopularity, partyBadges, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData.ts';
+import { bands, buildStack, formatPopularity, leaderAt, leaderShown, partyBadges, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData.ts';
 
 const run = (firstHour: number, lastHour: number, percent: number, startsSegment = false) => ({ firstHour, lastHour, valueRaw: String(percent * 100000), startsSegment });
 const REPLY: PartyHistoryReply = {
@@ -16,6 +16,7 @@ const REPLY: PartyHistoryReply = {
   ruling: [{ token: 'fascism', firstHour: 100, lastHour: 102, startsSegment: true }, { token: 'democratic', firstHour: 104, lastHour: 106, startsSegment: true },
     { token: 'fascism', firstHour: 107, lastHour: 110, startsSegment: false }],
   elections: [104],
+  leaders: [], people: [], ideologyTypes: [],
 };
 
 test('bands follow content order and colours; unknown ideologies use the palette after them', () => {
@@ -63,4 +64,40 @@ test('the ruling party comes first, the others keep content order', () => {
   assert.deepEqual(rulingFirst(list, 'fascism').map(item => item.token), ['fascism', 'democratic', 'communism', 'neutrality']);
   assert.deepEqual(rulingFirst(list, 'democratic').map(item => item.token), ['democratic', 'communism', 'fascism', 'neutrality']);
   assert.deepEqual(rulingFirst(list, null).map(item => item.token), ['democratic', 'communism', 'fascism', 'neutrality']);
+});
+
+test('the leader is named as recorded, and every gap in what is known is said', () => {
+  const adolf = { id: 7, token: 'GER_adolf_hitler', name: 'GER_adolf_hitler' };
+  const reply: PartyHistoryReply = { ...REPLY,
+    leaders: [
+      { ideology: 'nazism', person: 0, firstHour: 100, lastHour: 101, startsSegment: true },
+      { ideology: 'nazism', person: 1, firstHour: 102, lastHour: 102, startsSegment: false },
+      { ideology: 'nazism', person: null, firstHour: 104, lastHour: 104, startsSegment: true },
+      { ideology: '', person: null, firstHour: 105, lastHour: 105, startsSegment: false },
+      { ideology: 'mod_type', person: 2, firstHour: 106, lastHour: 106, startsSegment: false },
+    ],
+    people: [{ character: adolf, name: 'Adolf Hitler', portrait: 'data:image/png;base64,AA', portraitMissing: null },
+      { character: { ...adolf, name: 'Der Führer' }, name: 'Der Führer', portrait: null, portraitMissing: 'The game generates this portrait from inputs the recording lacks.' },
+      { character: { id: 9, token: '', name: 'SCOPED' }, name: null, portrait: null, portraitMissing: 'The leader’s portraits were not recorded.' }],
+    ideologyTypes: [{ token: 'nazism', name: 'Nazism' }, { token: 'mod_type', name: null }] };
+  const at = (hour: number) => leaderShown(reply, leaderAt(reply, hour));
+  assert.deepEqual(at(100), { name: 'Adolf Hitler', known: true, portrait: 'data:image/png;base64,AA', portraitMissing: null, ideology: 'Nazism' });
+  // A rename or a new portrait is its own entry, so both follow the hour shown.
+  assert.deepEqual([at(102).name, at(102).portrait], ['Der Führer', null]);
+  assert.match(at(102).portraitMissing!, /generates/);
+  assert.deepEqual([at(103).name, at(104).name, at(105).name], ['Leader not recorded', 'Leader not identified', 'No leader']);
+  assert.equal(at(104).ideology, 'Nazism');
+  // An unnamed character and an ideology content does not name say so, rather than guessing.
+  assert.deepEqual([at(106).name, at(106).known, at(106).ideology], ['Leader’s name not known', false, 'mod_type']);
+  // A new character is a change of leader; a rename, a gap or an unidentified leader is not.
+  const successions = { ...reply, leaders: [...reply.leaders, { ideology: 'nazism', person: 3, firstHour: 107, lastHour: 107, startsSegment: false }],
+    people: [...reply.people, { character: { id: 8, token: 'GER_karl_donitz', name: 'GER_karl_donitz' }, name: 'Karl Dönitz', portrait: null, portraitMissing: null }] };
+  assert.deepEqual(partyBadges(successions, token => token, true).filter(badge => badge.glyph === '♔').map(badge => [badge.hour, badge.label]),
+    [[107, 'The leader changed']]);
+  assert.equal(partyBadges(successions, token => token).filter(badge => badge.glyph === '♔').length, 0);
+  const named = { ...successions, leaders: [...successions.leaders.slice(0, 2), { ...successions.leaders[5], firstHour: 103, lastHour: 103 }] };
+  assert.deepEqual(partyBadges(named, token => token, true).filter(badge => badge.glyph === '♔').map(badge => badge.label), ['Karl Dönitz succeeded Der Führer as leader']);
+  assert.throws(() => validatePartyHistoryReply({ ...reply, leaders: [...reply.leaders].reverse() }));
+  assert.throws(() => validatePartyHistoryReply({ ...reply, leaders: [{ ...reply.leaders[0], person: 3 }] }));
+  validatePartyHistoryReply(reply);
 });
