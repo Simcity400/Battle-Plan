@@ -89,3 +89,47 @@ test('pausing and changing speed keep the time played since the last tick', t =>
   assert.ok(clock.getSnapshot().position >= beforePause, 'pausing never steps back');
   assert.equal(clock.positionAt(performance.now() + 1000), clock.getSnapshot().position);
 });
+
+
+test('seek sequence survives coalesced playback updates but not pauses, speed changes or the branch end', t => {
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  const clock = new PlaybackController();
+  t.after(() => clock.stop());
+  clock.setBounds({ firstHour: 0, lastHour: 1000 });
+  const initial = clock.getSnapshot().seekSequence;
+  clock.setSpeed(720);
+  clock.setPlaying(true);
+  now += 100;
+  clock.setPlaying(false);
+  assert.equal(clock.getSnapshot().hour, 72);
+  assert.equal(clock.getSnapshot().seekSequence, initial);
+  clock.seek(200);
+  clock.setPlaying(true); // The native viewer may receive only this latest update.
+  now += 100;
+  clock.setSpeed(168);
+  assert.equal(clock.getSnapshot().hour, 272);
+  assert.equal(clock.getSnapshot().seekSequence, initial + 1);
+  clock.seek(272); // A same-hour seek is still explicit.
+  assert.equal(clock.getSnapshot().seekSequence, initial + 2);
+  clock.setPlaying(true);
+  now += 10_000;
+  clock.setPlaying(false);
+  assert.equal(clock.getSnapshot().hour, 1000);
+  assert.equal(clock.getSnapshot().seekSequence, initial + 2);
+});
+
+
+test('forward steps keep animation history and backward steps reset it', () => {
+  const clock = new PlaybackController();
+  clock.setBounds({ firstHour: 10, lastHour: 20 });
+  const initial = clock.getSnapshot().seekSequence;
+  clock.step(1);
+  assert.equal(clock.getSnapshot().hour, 11);
+  assert.equal(clock.getSnapshot().seekSequence, initial);
+  clock.step(-1);
+  assert.equal(clock.getSnapshot().hour, 10);
+  assert.equal(clock.getSnapshot().seekSequence, initial + 1);
+  clock.seek(11);
+  assert.equal(clock.getSnapshot().seekSequence, initial + 2);
+});

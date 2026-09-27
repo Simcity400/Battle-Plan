@@ -37,6 +37,8 @@ pub enum NativeCommand {
         revision: String,
         branch: String,
         hour: i32,
+        #[serde(default)]
+        playback: Option<MapPlayback>,
     },
     /// Replaces the complete dashboard map layout and its absolute targets.
     MapViews {
@@ -273,6 +275,26 @@ pub struct MapDetails {
     pub messages: Vec<String>,
 }
 
+/// The largest integer a JavaScript number holds exactly.
+const MAX_EXACT_JS_INTEGER: u64 = 9_007_199_254_740_991;
+
+/// A full-map clock update. Without this, `Seek` is an explicit seek.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MapPlayback {
+    pub playing: bool,
+    pub seek_sequence: u64,
+}
+
+impl MapPlayback {
+    pub fn validate(self) -> Result<(), &'static str> {
+        if self.seek_sequence > MAX_EXACT_JS_INTEGER {
+            return Err("Map seek sequence exceeds the exact JavaScript integer range");
+        }
+        Ok(())
+    }
+}
+
 /// A native map body in physical host-client pixels. `bounds` is the full
 /// projection rectangle; `clip` is its visible portion after scrolling and
 /// host overlays. Only the latter contributes to the native window region.
@@ -293,6 +315,10 @@ pub struct DashboardMapView {
     pub hour: i32,
     pub fraction: f32,
     pub sequence: u64,
+    /// Changes only on a seek. Omitted for pinned targets and older clients;
+    /// their hour changes start a new animation history.
+    #[serde(default)]
+    pub seek_sequence: Option<u64>,
     pub bounds: ViewBounds,
     pub clip: ViewBounds,
     pub visible: bool,
@@ -321,7 +347,11 @@ impl DashboardMapView {
         if !self.fraction.is_finite() || !(0.0..1.0).contains(&self.fraction) {
             return Err("Map hour fraction must be finite and in [0, 1)");
         }
-        if self.sequence > 9_007_199_254_740_991 {
+        if self.sequence > MAX_EXACT_JS_INTEGER
+            || self
+                .seek_sequence
+                .is_some_and(|sequence| sequence > MAX_EXACT_JS_INTEGER)
+        {
             return Err("Map sequence exceeds the exact JavaScript integer range");
         }
         if self.bounds.x.abs_diff(0) > 32_768
@@ -440,6 +470,29 @@ impl ViewBounds {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn map_targets_preserve_seek_sequence_and_accept_pinned_targets_without_it() {
+        let input = serde_json::json!({
+            "id": "map", "sourceId": "source", "path": "replay.battleplan",
+            "revision": "1", "branchId": "1", "playing": true,
+            "hour": 20, "fraction": 0.0, "sequence": 8, "seekSequence": 2,
+            "bounds": { "x": 0, "y": 0, "width": 640, "height": 360 },
+            "clip": { "x": 0, "y": 0, "width": 640, "height": 360 },
+            "visible": true
+        });
+        let view: super::DashboardMapView = serde_json::from_value(input.clone()).unwrap();
+        view.validate().unwrap();
+        assert_eq!(view.seek_sequence, Some(2));
+        assert_eq!(serde_json::to_value(&view).unwrap()["seekSequence"], 2);
+        let mut pinned = input;
+        pinned.as_object_mut().unwrap().remove("seekSequence");
+        let mut view: super::DashboardMapView = serde_json::from_value(pinned).unwrap();
+        assert_eq!(view.seek_sequence, None);
+        view.validate().unwrap();
+        view.seek_sequence = Some(9_007_199_254_740_992);
+        assert!(view.validate().is_err());
+    }
+
     #[test]
     fn graphics_migrate_existing_preferences_and_validate_quality() {
         let old = r#"{"trees":true,"shadows":true,"rivers":true,"buildings":true,"units":true,"citySprawl":true,"weather":true}"#;
@@ -599,6 +652,10 @@ mod tests {
             revision: "snapshot".into(),
             branch: u64::MAX.to_string(),
             hour: 60_832_633,
+            playback: Some(super::MapPlayback {
+                playing: true,
+                seek_sequence: 7,
+            }),
         };
         let json = serde_json::to_string(&command).unwrap();
         assert!(json.contains("\"18446744073709551615\""));
@@ -607,6 +664,7 @@ mod tests {
             revision,
             branch,
             hour,
+            playback,
         } = serde_json::from_str(&json).unwrap()
         else {
             panic!("wrong command");
@@ -615,6 +673,13 @@ mod tests {
         assert_eq!(revision, "snapshot");
         assert_eq!(branch.parse::<u64>().unwrap(), u64::MAX);
         assert_eq!(hour, 60_832_633);
+        assert_eq!(
+            playback,
+            Some(super::MapPlayback {
+                playing: true,
+                seek_sequence: 7
+            })
+        );
     }
 
     #[test]

@@ -54,6 +54,7 @@ pub struct Seek {
     pub revision: String,
     pub branch: replay::BranchId,
     pub hour: i32,
+    pub playback: Option<dashboard::protocol::MapPlayback>,
 }
 
 impl Seek {
@@ -189,7 +190,11 @@ impl Pending {
                 revision,
                 branch,
                 hour,
+                playback,
             } => {
+                if let Some(playback) = playback {
+                    playback.validate()?;
+                }
                 validate_snapshot(&path, &revision)?;
                 if branch.is_empty() || !branch.bytes().all(|byte| byte.is_ascii_digit()) {
                     return Err("A branch must be an unsigned decimal string".into());
@@ -201,6 +206,7 @@ impl Pending {
                         .parse()
                         .map_err(|_| "Branch exceeds the replay's u64 id")?,
                     hour,
+                    playback,
                 });
                 self.error = None;
             }
@@ -1251,6 +1257,10 @@ mod tests {
                     revision: "100:10:0".into(),
                     branch: u64::MAX.to_string(),
                     hour,
+                    playback: Some(dashboard::protocol::MapPlayback {
+                        playing: true,
+                        seek_sequence: (hour / 100) as u64,
+                    }),
                 })
                 .unwrap();
         }
@@ -1260,7 +1270,11 @@ mod tests {
                 path: PathBuf::from("initial.battleplan"),
                 revision: "100:10:0".into(),
                 branch: u64::MAX,
-                hour: 9999
+                hour: 9999,
+                playback: Some(dashboard::protocol::MapPlayback {
+                    playing: true,
+                    seek_sequence: 99
+                }),
             })
         );
         pending
@@ -1280,6 +1294,7 @@ mod tests {
                 revision: "100:20:0".into(),
                 branch: "2".into(),
                 hour: 12,
+                playback: None,
             })
             .unwrap();
         assert_eq!(
@@ -1288,7 +1303,8 @@ mod tests {
                 path: PathBuf::from("new.battleplan"),
                 revision: "100:20:0".into(),
                 branch: 2,
-                hour: 12
+                hour: 12,
+                playback: None,
             })
         );
         pending.push(NativeCommand::Close).unwrap();
@@ -1321,6 +1337,7 @@ mod tests {
                     revision: revision.into(),
                     branch: u64::MAX.to_string(),
                     hour: 12,
+                    playback: None,
                 })
                 .unwrap();
             let seek = pending.seek.as_ref().unwrap();
@@ -1353,6 +1370,7 @@ mod tests {
                 revision: "100:20:0".into(),
                 branch: "1".into(),
                 hour: 12,
+                playback: None,
             })
             .unwrap();
         let retained = pending.seek.clone();
@@ -1369,6 +1387,7 @@ mod tests {
                         revision,
                         branch: "1".into(),
                         hour: 12,
+                        playback: None,
                     })
                     .is_err()
             );

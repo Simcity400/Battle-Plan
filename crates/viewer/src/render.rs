@@ -619,6 +619,7 @@ pub fn dump_png(
                 &queue,
                 layers.trains.clone(),
                 layers.train_plan.clone(),
+                crate::map::presentation::Continuity::Reset,
             )?;
             scene.set_bridges(
                 &device,

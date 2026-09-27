@@ -66,11 +66,11 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
         {draft != null && reference && <button type="button" className="button primary small" onClick={() => { clock.seek(draft - reference.axisOffset); setDraft(null); }}>Go</button>}
       </div>
       <div className="header-transport" aria-label="Playback controls">
-        <button type="button" className="icon-button" disabled={!bounds || snapshot.hour <= bounds.firstHour} onClick={() => { setDraft(null); clock.seek(snapshot.hour - 1); }} aria-label="Previous hour" data-tooltip="Previous hour"><Icon name="chevrons-left" /></button>
+        <button type="button" className="icon-button" disabled={!bounds || snapshot.hour <= bounds.firstHour} onClick={() => { setDraft(null); clock.step(-1); }} aria-label="Previous hour" data-tooltip="Previous hour"><Icon name="chevrons-left" /></button>
         <button type="button" className={`header-play${snapshot.playing ? ' is-playing' : ''}`} disabled={!bounds || snapshot.hour >= bounds.lastHour} onClick={() => { setDraft(null); clock.setPlaying(!snapshot.playing); }} aria-label={snapshot.playing ? 'Pause playback' : 'Play recording'} data-tooltip={snapshot.playing ? 'Pause' : 'Play'}>
           <Icon name={snapshot.playing ? 'pause' : 'play'} />
         </button>
-        <button type="button" className="icon-button" disabled={!bounds || snapshot.hour >= bounds.lastHour} onClick={() => { setDraft(null); clock.seek(snapshot.hour + 1); }} aria-label="Next hour" data-tooltip="Next hour"><Icon name="chevrons-right" /></button>
+        <button type="button" className="icon-button" disabled={!bounds || snapshot.hour >= bounds.lastHour} onClick={() => { setDraft(null); clock.step(1); }} aria-label="Next hour" data-tooltip="Next hour"><Icon name="chevrons-right" /></button>
       </div>
       <PlaybackSpeed value={snapshot.hoursPerSecond} onChange={(speed) => clock.setSpeed(speed)} />
     </section>

@@ -125,12 +125,14 @@ fn seek_map(
     revision: String,
     branch: String,
     hour: i32,
+    playback: Option<dashboard::protocol::MapPlayback>,
 ) -> Result<(), String> {
     host.seek(
         replay_path(&path)?.to_string_lossy().into_owned(),
         revision,
         branch,
         hour,
+        playback,
     )
 }
 

@@ -448,6 +448,11 @@ pub struct Viewer {
     // hours
     /// The timeline's position; the map follows it as hours are built.
     playhead: Option<Playhead>,
+    /// A seek waiting for the next built hour to start a fresh animation
+    /// history (`map::presentation`).
+    animation_seek: bool,
+    /// The last host clock target, to tell its seeks from playback.
+    map_animation_target: Option<map::presentation::Target>,
     /// The worker threads that build every hour's layers off the frame path.
     hours: Option<hours::Pipeline>,
     /// The builders' generation the window keeps hours of.
@@ -727,6 +732,8 @@ impl Viewer {
             opened: None,
             // hours
             playhead: None,
+            animation_seek: false,
+            map_animation_target: None,
             hours: None,
             epoch: 0,
             ready: BTreeMap::new(),
@@ -881,6 +888,15 @@ impl Viewer {
             hour: target.hour,
             fraction: target.fraction,
         };
+        let animation_target = map::presentation::Target {
+            branch,
+            hour: target.hour,
+            seek_sequence: target.seek_sequence,
+        };
+        self.animation_seek |= self
+            .map_animation_target
+            .is_some_and(|old| animation_target.seeks_from(old));
+        self.map_animation_target = Some(animation_target);
         self.playing = target.playing;
         self.playhead = Some(head);
         let valid = self
@@ -920,7 +936,8 @@ impl Viewer {
     /// epoch: exactly, or, playing, with the newest hour built before it.
     fn presentation_ready(&self, target: Playhead, playing: bool) -> bool {
         self.shown.as_ref().is_some_and(|shown| {
-            shown.epoch == self.epoch
+            !self.animation_seek
+                && shown.epoch == self.epoch
                 && shown.error.is_none()
                 && self.rendered.is_some_and(|rendered| {
                     (rendered.branch, rendered.hour) == (shown.branch, shown.hour)
@@ -1238,8 +1255,18 @@ impl Viewer {
             match result {
                 Ok(()) => {
                     self.error = None;
-                    self.playing = false;
+                    self.playing = seek.playback.is_some_and(|clock| clock.playing);
                     self.last_step = Instant::now();
+                    let animation_target = map::presentation::Target {
+                        branch: seek.branch,
+                        hour: seek.hour,
+                        seek_sequence: seek.playback.map(|clock| clock.seek_sequence),
+                    };
+                    self.animation_seek |= seek.playback.is_none()
+                        || self
+                            .map_animation_target
+                            .is_none_or(|old| animation_target.seeks_from(old));
+                    self.map_animation_target = Some(animation_target);
                     self.playhead = Some(Playhead {
                         branch: seek.branch,
                         hour: seek.hour,
@@ -1947,6 +1974,7 @@ impl Viewer {
                     }
                 });
             if selected_branch != playhead.branch {
+                self.animation_seek = true;
                 self.playing = false;
                 match document.playback.range(selected_branch) {
                     Some((first, _)) => {
@@ -2003,10 +2031,12 @@ impl Viewer {
         let mut hour = playhead.hour;
         ui.horizontal(|ui| {
             if ui.button("|<").on_hover_text("First hour").clicked() {
+                self.animation_seek = true;
                 hour = first;
                 self.playing = false;
             }
             if ui.button("<").on_hover_text("Previous hour").clicked() {
+                self.animation_seek = true;
                 hour = hour.saturating_sub(1).max(first);
                 self.playing = false;
             }
@@ -2022,6 +2052,7 @@ impl Viewer {
                 self.playing = false;
             }
             if ui.button(">|").on_hover_text("Last hour").clicked() {
+                self.animation_seek = true;
                 hour = last;
                 self.playing = false;
             }
@@ -2041,6 +2072,7 @@ impl Viewer {
             })
             .inner;
         if response.changed() {
+            self.animation_seek = true;
             self.playing = false;
             // A scrub lands on a recorded hour, not between two.
             playhead.fraction = 0.0;
@@ -2072,6 +2104,7 @@ impl Viewer {
         }
         if hour != playhead.hour {
             // Every button and the scrub land on a recorded hour.
+            // A forward step continues animation; the seek controls reset it above.
             playhead.hour = hour;
             playhead.fraction = 0.0;
         }
@@ -2219,13 +2252,14 @@ impl Viewer {
             playing: self.playing,
             perspective: self.perspective.clone(),
             view,
+            // Not the hour on screen after a seek, which may be to that hour.
             have: self
                 .ready
                 .keys()
                 .chain(
                     self.shown
                         .as_ref()
-                        .filter(|shown| shown.epoch == self.epoch)
+                        .filter(|shown| shown.epoch == self.epoch && !self.animation_seek)
                         .map(|shown| (shown.branch, shown.hour))
                         .iter(),
                 )
@@ -2279,7 +2313,10 @@ impl Viewer {
             .filter(|shown| shown.epoch == epoch)
             .map(|shown| (shown.branch, shown.hour));
         let mut next = None;
-        if shown_at != Some(target) {
+        // A seek to the hour on screen takes it again, rebuilt (see `have`),
+        // to start a fresh animation history. The fallback below still moves
+        // only forward from the hour on screen.
+        if self.animation_seek || shown_at != Some(target) {
             next = self.ready.remove(&target);
             // A capture names its hour, and waits for it.
             let wait = self
@@ -2318,15 +2355,17 @@ impl Viewer {
                 // a new build epoch, but the scene's building history does not
                 // depend on the viewing country, so it continues across it.
                 let on_screen = self.shown.as_ref().map(|shown| (shown.branch, shown.hour));
-                // Playing, hours the builders passed over to keep up with the
-                // clock continue the history; a gap in the recording does not.
-                let passes_unbuilt = self.playing
+                // Hours the builders passed over to keep up with the clock
+                // continue the history, also on the catch-up after a pause; a
+                // seek or a gap in the recording does not.
+                let passes_unbuilt = !self.animation_seek
                     && on_screen.is_some_and(|(_, from)| {
-                        !document.playback.replay().gaps.iter().any(|gap| {
-                            gap.branch == built.branch
-                                && gap.last_hour > from
-                                && gap.first_hour < built.hour
-                        })
+                        !map::presentation::crosses_gap(
+                            &document.playback.replay().gaps,
+                            built.branch,
+                            from,
+                            built.hour,
+                        )
                     });
                 let skipped = skipped_hours(
                     on_screen,
@@ -2416,6 +2455,7 @@ impl Viewer {
         let layers = match layers {
             Ok(layers) => layers,
             Err(error) => {
+                self.animation_seek = false;
                 self.shown = Some(ShownHour {
                     epoch,
                     branch,
@@ -2434,6 +2474,15 @@ impl Viewer {
                 return Ok(());
             }
         };
+        let continuity = map::presentation::continuity(
+            self.shown
+                .as_ref()
+                .filter(|shown| shown.error.is_none())
+                .map(|shown| (shown.branch, shown.hour, shown.header.viewing.as_deref())),
+            (branch, hour, layers.header.viewing.as_deref()),
+            self.animation_seek,
+            &document.playback.replay().gaps,
+        );
         let hours::Layers {
             political,
             borders,
@@ -2484,8 +2533,13 @@ impl Viewer {
             uploaded.buildings = Some(buildings.id);
         }
         laps.lap("buildings_upload");
-        let replaced =
-            scene.set_trains(&state.device, &state.queue, document.trains.clone(), trains)?;
+        let replaced = scene.set_trains(
+            &state.device,
+            &state.queue,
+            document.trains.clone(),
+            trains,
+            continuity,
+        )?;
         retired.push(replaced);
         laps.lap("trains_upload");
         let replaced = scene.set_aircraft(
@@ -2515,6 +2569,7 @@ impl Viewer {
             &state.queue,
             document.weather_effects.clone(),
             effects,
+            continuity,
         )?;
         retired.push(replaced);
         laps.lap("effects_upload");
@@ -2590,6 +2645,7 @@ impl Viewer {
                 snow_mud.build,
             ),
         };
+        self.animation_seek = false;
         retired.push(self.shown.replace(shown));
         retired.push((political, borders, rails, buildings, snow_mud, intel));
         laps.lap("apply_end");
@@ -3589,6 +3645,7 @@ impl eframe::App for Viewer {
                         && mode == "seek_end"
                         && let Some((_, last)) = document.playback.range(playhead.branch)
                     {
+                        self.animation_seek = true;
                         playhead.hour = last;
                         playhead.fraction = 0.0;
                     }
@@ -4036,6 +4093,7 @@ mod tests {
             revision: "100:20:0".into(),
             branch: 1,
             hour: 12,
+            playback: None,
         };
         let target = seek.open_request();
         let a = std::path::Path::new("A.battleplan");
@@ -4076,6 +4134,7 @@ mod tests {
             revision: "120:30:0".into(),
             branch: u64::MAX,
             hour: 12,
+            playback: None,
         };
         let path = seek.path.as_path();
         for revision in [None, Some("100:20:0")] {

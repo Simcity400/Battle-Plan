@@ -75,9 +75,9 @@ export function selectNativeView(dashboard: boolean): Promise<void> {
   return invoke<void>('select_native_view', { dashboard });
 }
 
-export function seekMap(path: string, revision: string, branch: string, hour: number): Promise<void> {
+export function seekMap(path: string, revision: string, branch: string, hour: number, playback?: { playing: boolean; seekSequence: number }): Promise<void> {
   requireDesktop();
-  return invoke<void>('seek_map', { path, revision, branch, hour });
+  return invoke<void>('seek_map', { path, revision, branch, hour, playback });
 }
 
 export { errorMessage } from './errors';

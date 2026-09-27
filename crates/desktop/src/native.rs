@@ -33,6 +33,7 @@ struct SeekTarget {
     revision: String,
     branch: String,
     hour: i32,
+    playback: Option<dashboard::protocol::MapPlayback>,
 }
 
 impl SeekTarget {
@@ -42,6 +43,7 @@ impl SeekTarget {
             revision: self.revision,
             branch: self.branch,
             hour: self.hour,
+            playback: self.playback,
         }
     }
 
@@ -382,7 +384,11 @@ impl NativeHost {
         revision: String,
         branch: String,
         hour: i32,
+        playback: Option<dashboard::protocol::MapPlayback>,
     ) -> Result<(), String> {
+        if let Some(playback) = playback {
+            playback.validate()?;
+        }
         branch.parse::<u64>().map_err(|_| "Invalid replay branch")?;
         if replay_revision(&path).map_err(|e| e.to_string())? != revision {
             return Err("The recording changed since this analysis. Refresh the analysis before viewing this sample on the map.".into());
@@ -403,6 +409,7 @@ impl NativeHost {
             revision,
             branch,
             hour,
+            playback,
         };
         inner.requested_seek = Some(target.clone());
         inner.pending.seek = Some(target);
@@ -830,6 +837,7 @@ impl Inner {
                         revision: revision.clone(),
                         branch,
                         hour,
+                        playback: None,
                     })
             })
             .flatten();
@@ -967,6 +975,10 @@ mod tests {
             revision: "new-version".into(),
             branch: "9".into(),
             hour: 456,
+            playback: Some(dashboard::protocol::MapPlayback {
+                playing: true,
+                seek_sequence: 7,
+            }),
         };
         let mut inner = Inner {
             requested_path: Some("new.battleplan".into()),
@@ -1004,6 +1016,7 @@ mod tests {
                 revision: "old-version".into(),
                 branch: "2".into(),
                 hour: 123,
+                playback: None,
             })
         );
     }
@@ -1015,6 +1028,7 @@ mod tests {
             revision: "v1".into(),
             branch: "3".into(),
             hour: 42,
+            playback: None,
         };
         let mut state = ViewerState {
             path: Some("second.battleplan".into()),
@@ -1039,6 +1053,7 @@ mod tests {
                 revision: "v2".into(),
                 branch: "3".into(),
                 hour: 42,
+                playback: None,
             }),
             visibility: Some(false),
             ..Default::default()

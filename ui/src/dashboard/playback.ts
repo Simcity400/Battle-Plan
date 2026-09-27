@@ -27,12 +27,14 @@ export interface PlaybackSnapshot {
   playing: boolean;
   hoursPerSecond: number;
   sequence: number;
+  /** Distinguishes a seek from forward playback even when updates coalesce. */
+  seekSequence: number;
   bounds: HourWindow | null;
 }
 
 /** One wall clock per dashboard. React only subscribes where time is needed. */
 export class PlaybackController {
-  private snapshot: PlaybackSnapshot = { position: 0, hour: 0, fraction: 0, playing: false, hoursPerSecond: 1, sequence: 0, bounds: null };
+  private snapshot: PlaybackSnapshot = { position: 0, hour: 0, fraction: 0, playing: false, hoursPerSecond: 1, sequence: 0, seekSequence: 0, bounds: null };
   private listeners = new Set<() => void>();
   private hourListeners = new Set<() => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -63,6 +65,15 @@ export class PlaybackController {
     const bounds = this.snapshot.bounds;
     if (!bounds || !Number.isFinite(position)) return;
     this.publish({ ...this.snapshot, position: Math.max(bounds.firstHour, Math.min(bounds.lastHour, Math.floor(position))), playing: false }, true);
+    this.syncTimer();
+  }
+
+  /** Forward steps keep presentation history; a step back starts it again. */
+  step(direction: -1 | 1): void {
+    const bounds = this.snapshot.bounds;
+    if (!bounds) return;
+    const position = Math.max(bounds.firstHour, Math.min(bounds.lastHour, this.snapshot.hour + direction));
+    this.publish({ ...this.snapshot, position, playing: false }, direction < 0);
     this.syncTimer();
   }
 
@@ -100,7 +111,8 @@ export class PlaybackController {
     const hour = Math.floor(next.position);
     const hourChanged = hour !== this.snapshot.hour;
     this.snapshot = { ...next, hour, fraction: next.position - hour,
-      sequence: this.snapshot.sequence + (hourChanged || discontinuity ? 1 : 0) };
+      sequence: this.snapshot.sequence + (hourChanged || discontinuity ? 1 : 0),
+      seekSequence: this.snapshot.seekSequence + (discontinuity ? 1 : 0) };
     for (const listener of this.listeners) listener();
     if (hourChanged || discontinuity) for (const listener of this.hourListeners) listener();
   }

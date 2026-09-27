@@ -49,6 +49,8 @@ export interface DashboardMapView {
   hour: number;
   fraction: number;
   sequence: number;
+  /** Changes only on a seek; omitted for pinned targets. */
+  seekSequence?: number;
   bounds: MapBounds;
   clip: MapBounds;
   visible: boolean;

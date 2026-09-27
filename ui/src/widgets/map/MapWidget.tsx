@@ -20,6 +20,7 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
     const window = resolveWindow(widget, track, runtime.tracks, clock.position);
     if (!window || window.lastHour < track.branch.firstHour || window.lastHour > track.branch.lastHour) return null;
     return { options: { fog: mapOptions.fog, country: widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : track.selectedTag }, sourceId: track.source.id, path: track.source.path, revision: track.source.revision, branchId: track.branch.id,
+      seekSequence: widget.time.mode === 'follow' ? clock.seekSequence : undefined,
       playing: widget.time.mode === 'follow' && clock.playing,
       hour: window.lastHour, fraction: widget.time.mode === 'follow' ? clock.fraction : 0,
       sequence: widget.time.mode === 'follow' ? clock.sequence : staticSequence };
