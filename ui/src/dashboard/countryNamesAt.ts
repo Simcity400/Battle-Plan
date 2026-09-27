@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
 import type { BoundTrack } from './model';
-import { loadProduct } from './products';
+import { loadProduct } from './products.ts';
 
 /** Most distinct hours one label set may ask names for. */
 export const MAX_NAME_HOURS = 64;
@@ -15,45 +15,58 @@ export interface NameAt { hour: number; tag: string }
 export const nameKey = (hour: number, tag: string) => JSON.stringify([hour, tag]);
 
 /** Country names as recorded at the given hours (`country-styles`, one request
- * per hour and at most MAX_NAME_HOURS hours), for labels dated to an event. A
- * name the recording does not give at its hour is simply absent: the caller
- * falls back to another name. */
-export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean): ReadonlyMap<string, string> {
+ * per hour, at most `maxHours` hours), for labels dated to an event. Each hour and
+ * country is read once per track; names read stay; a read that failed is tried
+ * again when `attempt` changes. A name the recording does not give at its hour is
+ * simply absent: the caller falls back to another name. */
+export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
+  maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, string> {
   const byHour = new Map<number, Set<string>>();
   for (const item of wanted) {
     const tags = byHour.get(item.hour) ?? new Set<string>();
     tags.add(item.tag);
     byHour.set(item.hour, tags);
   }
-  const hours = [...byHour.keys()].sort((a, b) => a - b).slice(0, MAX_NAME_HOURS);
+  const hours = [...byHour.keys()].sort((a, b) => a - b).slice(0, maxHours);
   // Structured, so no tag (a mod's tags may hold any character) can blur two requests.
-  const key = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, hours.map(hour => [hour, [...byHour.get(hour)!].sort()])]) : '';
-  const [names, setNames] = useState<{ key: string; names: ReadonlyMap<string, string> }>({ key: '', names: new Map() });
+  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : '';
+  const key = track ? JSON.stringify([trackKey, hours.map(hour => [hour, [...byHour.get(hour)!].sort()])]) : '';
+  // Names already read stay available while more are read, for the same track.
+  const [names, setNames] = useState<{ trackKey: string; names: ReadonlyMap<string, string> }>({ trackKey: '', names: new Map() });
+  // The hours and countries already read for this track, so each is read once.
+  const read = useRef<{ trackKey: string; keys: Set<string> }>({ trackKey: '', keys: new Set() });
   useEffect(() => {
     if (!active || !track || !hours.length) return;
+    if (read.current.trackKey !== trackKey) read.current = { trackKey, keys: new Set() };
+    const done = read.current.keys;
+    const todo = hours.map(hour => [hour, [...byHour.get(hour)!].filter(tag => !done.has(nameKey(hour, tag)))] as const).filter(([, tags]) => tags.length);
+    if (!todo.length) return;
     const controller = new AbortController();
     void (async () => {
-      const found = new Map<string, string>();
-      for (const hour of hours) {
-        const tags = [...byHour.get(hour)!];
+      for (const [hour, tags] of todo) {
         for (let start = 0; start < tags.length; start += TAGS_PER_REQUEST) {
+          const chunk = tags.slice(start, start + TAGS_PER_REQUEST);
+          const found = new Map<string, string>();
+          let answered = false;
           try {
             const reply = await loadProduct<CountryStyleReply>(client, { sourceId: track.source.id, revision: track.source.revision, product: 'country-styles',
-              params: { branchId: track.branch.id, hour, tags: tags.slice(start, start + TAGS_PER_REQUEST) } }, controller.signal);
+              params: { branchId: track.branch.id, hour, tags: chunk } }, controller.signal);
             for (const style of reply.styles) if (style.name) found.set(nameKey(hour, style.tag), style.name);
+            answered = true;
           } catch {
-            // An hour the recording cannot name at (a gap) keeps the fallback.
+            // Not read (a gap, or a failure): the fallback shows, and it is asked again next time.
           }
           if (controller.signal.aborted) return;
+          if (answered) for (const tag of chunk) done.add(nameKey(hour, tag));
+          setNames(previous => ({ trackKey, names: previous.trackKey === trackKey ? new Map([...previous.names, ...found]) : found }));
         }
       }
-      setNames({ key, names: found });
     })();
     return () => controller.abort();
     // The key names every request; the arrays behind it are rebuilt each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, key, active]);
-  return names.key === key ? names.names : EMPTY;
+  }, [client, key, active, attempt]);
+  return names.trackKey === trackKey ? names.names : EMPTY;
 }
 
 const EMPTY: ReadonlyMap<string, string> = new Map();

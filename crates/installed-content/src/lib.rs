@@ -10,6 +10,7 @@ pub mod content;
 pub mod country_names;
 pub mod defines;
 mod fields;
+pub mod fixed5;
 pub mod flags;
 pub mod focus;
 pub mod fonts;

@@ -24,6 +24,9 @@ pub enum Amount {
 pub struct Modifier {
     pub key: String,
     pub amount: Amount,
+    /// The value as the engine reads the authored text (`fixed5::script_fixed5`):
+    /// five decimals, truncated; None when it is not a number.
+    pub fixed5: Option<i64>,
 }
 
 /// A modifier block: its values in source order, the values its
@@ -53,8 +56,8 @@ pub struct EquipmentBonus {
     pub values: Vec<Modifier>,
 }
 
-/// `@name = value` definitions at the top of a file.
-pub type Variables = BTreeMap<String, f64>;
+/// `@name = value` definitions at the top of a file, with their authored text.
+pub type Variables = BTreeMap<String, String>;
 
 /// The numeric `@name = value` definitions among a file's top-level items.
 pub fn variables(items: &[Item]) -> Variables {
@@ -63,10 +66,35 @@ pub fn variables(items: &[Item]) -> Variables {
         .filter_map(|item| {
             let key = std::str::from_utf8(item.key.as_deref()?).ok()?;
             let name = key.strip_prefix('@')?;
-            let value = item.value.scalar_str()?.parse::<f64>().ok()?;
-            value.is_finite().then(|| (name.to_owned(), value))
+            let text = item.value.scalar_str()?;
+            number(text).map(|_| (name.to_owned(), text.to_owned()))
         })
         .collect()
+}
+
+/// A finite authored number.
+fn number(text: &str) -> Option<f64> {
+    text.parse::<f64>().ok().filter(|number| number.is_finite())
+}
+
+/// The authored number text behind a value: itself, or the `@variable` it names.
+fn number_text<'a>(value: &'a Value, variables: &'a Variables) -> Option<&'a str> {
+    let text = value.scalar_str()?;
+    if number(text).is_some() {
+        return Some(text);
+    }
+    let named = variables.get(text.strip_prefix('@')?)?;
+    Some(named.as_str())
+}
+
+/// An authored value as the engine's fixed point: yes/no as one/zero, a number
+/// or `@variable` through the script conversion.
+pub fn fixed5(value: &Value, variables: &Variables) -> Option<i64> {
+    match value.scalar_str()? {
+        "yes" => Some(100_000),
+        "no" => Some(0),
+        _ => crate::fixed5::script_fixed5(number_text(value, variables)?.as_bytes()),
+    }
 }
 
 /// One authored value.
@@ -78,11 +106,14 @@ pub fn amount(value: &Value, variables: &Variables) -> Amount {
         "yes" => Amount::Flag(true),
         "no" => Amount::Flag(false),
         _ => {
-            if let Some(number) = text.parse::<f64>().ok().filter(|n| n.is_finite()) {
+            if let Some(number) = number(text) {
                 Amount::Number(number)
-            } else if let Some(number) = text.strip_prefix('@').and_then(|name| variables.get(name))
+            } else if let Some(number) = text
+                .strip_prefix('@')
+                .and_then(|name| variables.get(name))
+                .and_then(|text| number(text))
             {
-                Amount::Number(*number)
+                Amount::Number(number)
             } else {
                 Amount::Unsupported(text.to_owned())
             }
@@ -124,6 +155,7 @@ pub fn values(items: &[Item], structure: &[&str], variables: &Variables) -> Modi
         result.values.push(Modifier {
             key: key.to_owned(),
             amount: amount(&item.value, variables),
+            fixed5: fixed5(&item.value, variables),
         });
     }
     result
@@ -203,8 +235,28 @@ mod tests {
             block.hidden,
             [Modifier {
                 key: "war_support_factor".into(),
-                amount: Amount::Number(0.05)
+                amount: Amount::Number(0.05),
+                fixed5: Some(5_000),
             }]
+        );
+    }
+
+    #[test]
+    fn a_value_carries_the_engine_fixed_point_of_its_authored_text() {
+        let document =
+            parser::parse(b"@v = 0.099999999999999999 b = { a = 0.099999 b = @v c = yes d = -0.1234567 e = [?x] }")
+                .unwrap();
+        let variables = variables(&document.items);
+        let block = values(
+            document.get(b"b").unwrap().items().unwrap(),
+            &[],
+            &variables,
+        );
+        let raw: Vec<_> = block.values.iter().map(|m| m.fixed5).collect();
+        // Truncated to five decimals of the text, never rounded through a float.
+        assert_eq!(
+            raw,
+            [Some(9_999), Some(9_999), Some(100_000), Some(-12_345), None]
         );
     }
 

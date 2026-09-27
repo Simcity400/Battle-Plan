@@ -11,6 +11,7 @@ pub mod country_groups;
 pub mod country_measure;
 pub mod country_stability;
 pub mod country_styles;
+pub mod idea_format;
 pub mod idea_history;
 pub mod land_owners;
 pub mod national_focus;

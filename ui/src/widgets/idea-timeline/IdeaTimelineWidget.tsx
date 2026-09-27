@@ -8,6 +8,8 @@ import Timeline from '../../charts/timeline/Timeline';
 import type { TooltipRow } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useIdeaHistory } from '../../dashboard/ideaHistory';
+import { ideaTooltip, tooltipText } from '../../dashboard/ideaTooltip';
+import { useIdeaTooltips } from '../../dashboard/useIdeaTooltips';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -32,6 +34,8 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   const lanes = useMemo(() => data && category ? lanesFor(data, category, { laws: options.laws as LawStyle, holders: options.holders as HolderStyle }) : [],
     [data, category, options.laws, options.holders]);
   const menu = useContextMenu('Timeline actions');
+  // Each idea's effects, formatted as the game's tooltip shows them.
+  const tooltips = useIdeaTooltips(data, track, runtime.client, active);
 
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
@@ -48,20 +52,33 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
     : 'This campaign’s content has no idea categories with slots.'} />;
 
   const infos = new Map(data.ideas.map(info => [info.token, info]));
+  const tokenOf = (span: { id: string }) => span.id.slice(0, span.id.lastIndexOf(':'));
+  // Each slot's holder at the moment shown, with its effects, for keyboard and screen-reader users.
+  const at = Math.floor(playhead ?? extent[1]);
+  const description = `${dayLabel(at)}: ${lanes.map(lane => {
+    const span = lane.spans.find(item => item.firstHour <= at && at <= item.lastHour);
+    if (!span) return `${lane.label}: ${inSpans(data.unobserved, at) ? 'not recorded' : 'empty'}`;
+    const token = tokenOf(span);
+    return tooltips ? tooltipText(ideaTooltip({ title: `${lane.label}: ${span.label}` }, tooltips.infos.get(token), tooltips.sources,
+      tooltips.art.get(token)?.description, [], undefined, span.firstHour, Infinity)) : `${lane.label}: ${span.label}`;
+  }).join('. ')}.`;
   return <div className="idea-timeline">
-    <Timeline label={`${category.name ?? category.token} of ${tag}`} extent={extent} playhead={playhead} lanes={lanes}
+    <Timeline label={`${category.name ?? category.token} of ${tag}`} extent={extent} playhead={playhead} lanes={lanes} description={description}
       showIcons showNames unobserved={data.unobserved} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={data}
-      tooltip={(lane, span, hour) => {
+      tooltip={(lane, span, hour, full) => {
         if (!span) return { title: lane.label, rows: [{ label: inSpans(data.unobserved, hour) ? 'Not recorded' : 'Empty', value: dayLabel(hour), tone: 'muted' }] };
-        const token = span.id.slice(0, span.id.lastIndexOf(':'));
+        const token = tokenOf(span);
         const level = lawLevel(category, infos.get(token));
         const until = playhead != null && span.lastHour + 1 > playhead ? 'now' : dayLabel(span.lastHour);
         const rows: TooltipRow[] = [
-          { label: lane.label, value: level ? `Level ${level}` : undefined },
-          { label: 'Observed from', value: dayLabel(span.firstHour), divider: true },
+          { label: 'Observed from', value: dayLabel(span.firstHour) },
           { label: 'Until', value: until },
         ];
-        return { title: span.label, rows, note: 'Ideas are recorded once a day, so a change is dated to the day it was first seen.' };
+        const note = 'Ideas are recorded once a day, so a change is dated to the day it was first seen.';
+        const subtitle = level ? `${lane.label} · level ${level}` : lane.label;
+        if (!tooltips) return { title: span.label, subtitle, icon: span.icon, rows, note };
+        return ideaTooltip({ title: span.label, icon: span.icon, subtitle }, infos.get(token), tooltips.sources, tooltips.art.get(token)?.description, rows, note, span.firstHour,
+          full ? Infinity : undefined);
       }}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     {menu.menu}

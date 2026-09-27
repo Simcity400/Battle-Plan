@@ -10,7 +10,7 @@ import type { FrameInfo, FrameTask } from '../scheduler';
 import { backingSize, toLocal } from '../surface';
 import { timeTicks } from '../timeAxis';
 import { readTokens, subscribeTokens } from '../tokens';
-import { hideTooltip, showTooltip } from '../tooltip';
+import { hideTooltip, showTooltip, tooltipStore } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { EMPTY_VIEW, reduceView } from '../view';
 import type { ViewAction, ViewState } from '../view';
@@ -36,7 +36,10 @@ export interface TimelineProps {
   /** Hours the data was not recorded: a lane there has an unknown holder, not an empty slot. */
   unobserved?: readonly { firstHour: number; lastHour: number }[];
   hoursPerSecond?: number;
-  tooltip?: (lane: TimelineLane, span: TimelineSpan | null, hour: number) => TooltipContent | null;
+  /** `full` asks for every row, for text read out rather than shown. */
+  tooltip?: (lane: TimelineLane, span: TimelineSpan | null, hour: number, full?: boolean) => TooltipContent | null;
+  /** What the timeline shows at the moment shown, as text for keyboard and screen-reader users. */
+  description?: string;
   onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
   active: boolean;
   revision: unknown;
@@ -139,6 +142,8 @@ export default function Timeline(props: TimelineProps) {
       const tau = drag ? 0 : easeTau(tokens.motion, p.hoursPerSecond ?? 24, tokens.reducedMotion);
       const glide = (current: number, goal: number) => goal + approach(current - goal, 0, info.dt, tau);
       x = eased ? [glide(eased[0], target[0]), glide(eased[1], target[1])] : target;
+      if (keyed.current && (viewed.current?.[0] !== target[0] || viewed.current?.[1] !== target[1])) queueMicrotask(() => refreshKeyed.current());
+      viewed.current = target;
       eased = x;
       const bottom = AXIS_HEIGHT + p.lanes.length * ROW_HEIGHT;
       const right = left + plotWidth();
@@ -230,13 +235,14 @@ export default function Timeline(props: TimelineProps) {
 
       // Hover: the left column describes the lane's holder at the playhead; the plot, the span under the pointer.
       const index = pointer && !drag ? laneAt(pointer.y, p.lanes.length) : null;
-      if (pointer && index != null && p.tooltip) {
+      // A tooltip opened from the keyboard wins over a pointer resting on the chart.
+      if (pointer && index != null && p.tooltip && !keyed.current && !quiet.current) {
         const lane = p.lanes[index];
         const hour = pointer.x < left ? holderHour : Math.min(hourAt(pointer.x), p.playhead ?? Infinity);
         const span = spanAt(lane.spans, Math.floor(hour));
         const content = p.tooltip(lane, span && span.firstHour <= (p.playhead ?? Infinity) ? span : null, Math.floor(hour));
         if (content) showTooltip(owner, content, pointer.clientX, pointer.clientY, `${lane.id}:${span?.id ?? ''}:${Math.floor(hour)}`); else hideTooltip(owner);
-      } else hideTooltip(owner);
+      } else if (!keyed.current) hideTooltip(owner);
       element.style.cursor = drag?.mode === 'pan' ? 'grabbing' : pointer && pointer.y < AXIS_HEIGHT && pointer.x > left ? 'ew-resize' : 'default';
 
       const settled = Math.abs(x[0] - target[0]) + Math.abs(x[1] - target[1]) < 1e-3;
@@ -267,6 +273,9 @@ export default function Timeline(props: TimelineProps) {
       wake();
     };
     const move = (event: PointerEvent) => {
+      // Moving the pointer hands the tooltip back to it.
+      keyed.current = null;
+      quiet.current = false;
       pointer = local(event);
       if (drag?.mode === 'axis') dispatch({ type: 'axis-x', grab: drag.grab, fraction: (pointer.x - left) / plotWidth() });
       else if (drag?.mode === 'pan') {
@@ -321,16 +330,125 @@ export default function Timeline(props: TimelineProps) {
   useEffect(() => { setHeight(AXIS_HEIGHT + props.lanes.length * ROW_HEIGHT + 8); }, [props.lanes.length]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
 
+  // With the keyboard: Up and Down choose a lane, Left and Right step through its
+  // bars (up to the playhead); the bar's tooltip shows beside the lane and is read out.
+  // The lane is remembered by id, so lanes coming and going never move the selection.
+  const keyed = useRef<{ lane: number; id: string; span: number; spanId?: string } | null>(null);
+  const refreshKeyed = useRef<() => void>(() => {});
+  // After Escape, no tooltip until the pointer moves again.
+  const quiet = useRef(false);
+  // A lane's bars the keyboard can reach: those shown, inside the range and up to the playhead.
+  // The hours in view (zoom included), as last drawn.
+  const viewed = useRef<readonly [number, number] | null>(null);
+  const barsOf = (lane: number) => {
+    const p = latest.current;
+    const [from, to] = viewed.current ?? p.extent;
+    const end = Math.min(p.playhead ?? to, to);
+    // A bar is drawn from its first hour to its end, cut at the playhead.
+    return p.lanes[lane]?.spans.filter(span => span.firstHour <= end && Math.min(span.lastHour + 1, p.playhead ?? Infinity) > from) ?? [];
+  };
+  const [spoken, setSpoken] = useState('');
+  // Scrolls the nearest scrolling container so a keyboard-selected lane is in view.
+  const revealLane = (lane: number) => {
+    const element = canvas.current;
+    if (!element) return;
+    const bounds = element.getBoundingClientRect();
+    const scale = element.offsetHeight ? bounds.height / element.offsetHeight : 1;
+    const top = bounds.top + (AXIS_HEIGHT + lane * ROW_HEIGHT) * scale;
+    const bottom = top + ROW_HEIGHT * scale;
+    let parent = element.parentElement;
+    while (parent && !(parent.scrollHeight > parent.clientHeight && /auto|scroll/.test(getComputedStyle(parent).overflowY))) parent = parent.parentElement;
+    if (!parent) return;
+    const box = parent.getBoundingClientRect();
+    // Screen pixels to the container's own scroll units (a Size zoom scales them).
+    const units = parent.clientHeight ? box.height / parent.clientHeight : 1;
+    if (top < box.top) parent.scrollTop -= (box.top - top) / units;
+    else if (bottom > box.bottom) parent.scrollTop += (bottom - box.bottom) / units;
+  };
+  const showKeyed = () => {
+    const p = latest.current;
+    const at = keyed.current;
+    if (!at || !p.tooltip || !canvas.current) return;
+    // A lane playback took away since is left: the tooltip closes.
+    at.lane = p.lanes.findIndex(item => item.id === at.id);
+    const lane = p.lanes[at.lane];
+    if (!lane) { keyed.current = null; hideTooltip(owner); setSpoken(''); return; }
+    const bars = barsOf(at.lane);
+    // The selected bar is followed by id; one zoomed out of view gives way to the nearest in view.
+    const same = at.spanId == null ? -1 : bars.findIndex(bar => bar.id === at.spanId);
+    at.span = same >= 0 ? same : Math.max(0, Math.min(at.span, bars.length - 1));
+    at.spanId = bars[at.span]?.id;
+    const span = bars[at.span] ?? null;
+    // With no bar in view, the lane is described at an hour in view, never one outside it.
+    const [viewFrom, viewTo] = viewed.current ?? p.extent;
+    // A view lying after the playback moment shows nothing yet: nothing is described.
+    if (!span && p.playhead != null && viewFrom > p.playhead) { hideTooltip(owner); setSpoken(`${lane.label}: not reached yet`); return; }
+    const hour = span ? Math.max(span.firstHour, viewFrom) : Math.floor(Math.max(viewFrom, Math.min(p.playhead ?? viewTo, viewTo)));
+    // With no bar reachable, the lane's holder at that hour (as hover resolves it), not an empty slot.
+    const holder = span ?? spanAt(lane.spans, hour);
+    const shown = holder && holder.firstHour <= (p.playhead ?? Infinity) ? holder : null;
+    const content = p.tooltip(lane, shown, hour);
+    if (!content) { hideTooltip(owner); setSpoken(''); return; }
+    const bounds = canvas.current.getBoundingClientRect();
+    // Layout pixels to screen pixels: the widget's Size zoom scales the canvas.
+    const scale = canvas.current.offsetHeight ? bounds.height / canvas.current.offsetHeight : 1;
+    showTooltip(owner, content, bounds.left + bounds.width / 2, bounds.top + (AXIS_HEIGHT + (at.lane + 1) * ROW_HEIGHT) * scale, `key:${lane.id}:${shown?.id ?? ''}`);
+    // Read out in full: every row, not only those the window fits.
+    const full = p.tooltip(lane, shown, hour, true) ?? content;
+    setSpoken([full.title, full.subtitle, ...full.rows.map(row => row.value ? `${row.label} ${row.value}` : row.label), full.description, full.note]
+      .filter(Boolean).join('; '));
+  };
+  // Only while no other chart holds the shared tooltip: one hovered since keeps it. A hidden
+  // tooltip (such as one withheld until playback reaches the view) is free to take again.
+  const ownsTooltip = () => { const current = tooltipStore.get(); return current == null || current.owner === owner; };
+  refreshKeyed.current = () => { if (keyed.current && latest.current.active && ownsTooltip()) showKeyed(); };
+  // As playback moves, a keyboard tooltip follows what its lane shows now; an
+  // off-screen timeline drops it.
+  useEffect(() => {
+    if (!keyed.current) return;
+    if (!props.active) { keyed.current = null; setSpoken(''); return; }
+    if (ownsTooltip()) showKeyed();
+  });
   const keyDown = (event: ReactKeyboardEvent) => {
+    const lanes = latest.current.lanes;
+    const bars = (lane: number) => barsOf(lane).length;
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key) && lanes.length) {
+      event.preventDefault();
+      // The remembered lane is found by id; one that has gone starts over at the first lane.
+      const remembered = keyed.current && lanes.findIndex(lane => lane.id === keyed.current!.id);
+      if (keyed.current && remembered != null && remembered >= 0) keyed.current.lane = remembered;
+      else keyed.current = null;
+      const at = keyed.current ?? { lane: 0, id: lanes[0].id, span: Math.max(0, bars(0) - 1) };
+      if (keyed.current) {
+        if (event.key === 'ArrowDown') { at.lane = Math.min(lanes.length - 1, at.lane + 1); at.span = Math.max(0, bars(at.lane) - 1); }
+        if (event.key === 'ArrowUp') { at.lane = Math.max(0, at.lane - 1); at.span = Math.max(0, bars(at.lane) - 1); }
+        if (event.key === 'ArrowLeft') at.span = Math.max(0, at.span - 1);
+        if (event.key === 'ArrowRight') at.span = Math.min(Math.max(0, bars(at.lane) - 1), at.span + 1);
+      }
+      at.id = lanes[at.lane].id;
+      // A key press chooses the bar by position; the id then follows it through zoom.
+      at.spanId = undefined;
+      keyed.current = at;
+      revealLane(at.lane);
+      showKeyed();
+      return;
+    }
+    if (event.key === 'Escape' && keyed.current) { keyed.current = null; quiet.current = true; hideTooltip(owner); setSpoken(''); return; }
     if (event.key === 'Escape' && zoomed) { event.preventDefault(); controls.current?.dispatch({ type: 'reset' }); }
-    if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && props.playhead != null) {
+    // The keyboard's Jump to: the selected bar's first hour shown, else the playhead.
+    const selected = keyed.current ? barsOf(keyed.current.lane)[keyed.current.span] : undefined;
+    const menuHour = selected ? Math.max(selected.firstHour, (viewed.current ?? props.extent)[0]) : props.playhead;
+    if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && menuHour != null) {
       event.preventDefault();
       const bounds = canvas.current!.getBoundingClientRect();
-      props.onContextMenu(Math.floor(props.playhead), bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+      props.onContextMenu(Math.floor(menuHour), bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
     }
   };
   return <div className="timeline-chart">
-    <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} onKeyDown={keyDown} style={{ height }} />
+    <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={props.description ? `${owner}-description` : undefined}
+      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight" onKeyDown={keyDown} onBlur={() => { keyed.current = null; hideTooltip(owner); setSpoken(''); }} style={{ height }} />
+    <p className="sr-only" aria-live="polite">{spoken}</p>
+    {props.description && <p id={`${owner}-description`} className="sr-only">{props.description}</p>}
     {zoomed && <button type="button" className="button small time-chart-reset" onClick={() => controls.current?.dispatch({ type: 'reset' })}>
       <Icon name="refresh" />Reset zoom</button>}
   </div>;

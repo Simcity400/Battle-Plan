@@ -382,6 +382,11 @@ token: string,
 name: string, };
 export type EffectLine = { key: string, value: number | null,
 /**
+ * The value as the engine reads the authored text: fixed point with five
+ * decimals, truncated, as a decimal string; None when not a number.
+ */
+fixed5: string | null,
+/**
  * The authored text of a value this reader does not evaluate.
  */
 unsupported: string | null,
@@ -410,6 +415,49 @@ character: number,
  * that resolves later, has its own artwork.
  */
 characterToken: string, name: string, artwork: Artwork, };
+export type ModifierFormat = { key: string,
+/**
+ * The engine's key index: the game lists an idea's lines in this order.
+ * None for a definition only content gives (registered after every built-in one).
+ */
+index: number | null,
+/**
+ * The modifier's name in the viewer's language; None when it cannot be localised.
+ */
+label: string | null,
+/**
+ * The localised postfix shown after the value (days, hours, daily), if any.
+ */
+postfix: string | null,
+/**
+ * The postfix's localisation key, when the definition has one: with `postfix`
+ * empty, the unit exists but its text could not be read.
+ */
+postfixKey: string | null,
+/**
+ * Definition flags: 0x1 percent (value ×100), 0x2 good, 0x4 neutral colour,
+ * 0x8 no plus sign, 0x20 yes/no, 0x80 percent as written, 0x100 shown when zero.
+ */
+flags: number,
+/**
+ * Decimal places at most (the caller's precision may lower it).
+ */
+precision: number,
+/**
+ * The game feature the modifier needs (`feature_selector`); zero for none. The
+ * game shows and applies such a modifier only while that feature is on, which
+ * the recording does not say.
+ */
+feature: number,
+/**
+ * `recorded` (the game's own table) or `content` (a scripted definition).
+ */
+source: string, };
+export type LocalisedText = { key: string,
+/**
+ * None when the key has no text, or its text needs runtime scope.
+ */
+text: string | null, };
 export type IdeaInfo = { token: string,
 /**
  * The idea category (`government`, `country`, a mod's own …); None when
@@ -424,7 +472,13 @@ slot: string | null, law: boolean, designer: boolean, effects: Array<EffectLine>
 /**
  * Custom tooltip localisation keys the idea shows instead of values.
  */
-tooltips: Array<string>, };
+tooltips: Array<string>,
+/**
+ * Content defines the idea or its advisor role, so the lists above are its
+ * effects. When not (an advisor placed only by its recorded seat), they are
+ * empty because they are unknown, not because it has none.
+ */
+effectsKnown: boolean, };
 export type SlotInfo = { token: string, name: string | null,
 /**
  * A character seat (advisors) rather than an idea slot (laws, designers).
@@ -463,7 +517,17 @@ unobserved: Array<HourSpan>,
  * seen, after an hour it was not seen, or as another country identity. The
  * ideas held then are that identity's initial state, not changes.
  */
-identityStarts: Array<number>, warnings: Array<string>, };
+identityStarts: Array<number>,
+/**
+ * How the game shows each modifier the effects above use (see `idea_format`);
+ * a key missing here is shown as authored, unformatted.
+ */
+modifiers: Array<ModifierFormat>,
+/**
+ * The texts the tooltips need: custom tooltips, research categories
+ * (`<category>_research`), equipment names, and `YES` / `NO`.
+ */
+texts: Array<LocalisedText>, warnings: Array<string>, };
 export type PartySeries = {
 /**
  * The party's ideology group token.

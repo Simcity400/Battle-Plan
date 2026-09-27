@@ -8,7 +8,7 @@ import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { chosenCategory, lanesFor, lawLevel, timelineCategories, UNIDENTIFIED_HOLDER } from './ideaTimelineData.ts';
 
 const idea = (token: string, slot: string | null, category = 'government'): IdeaInfo => ({ token, category, slot, law: false, designer: false,
-  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [] });
+  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true });
 const GOVERNMENT: CategoryInfo = { token: 'government', name: 'Laws & Government', kind: null, hidden: false, politicsTab: true, slots: [
   { token: 'economy', name: 'Economy Law', character: false, seats: 1, laws: ['civilian_economy', 'partial_mobilisation', 'war_economy'] },
   { token: 'political_advisor', name: 'Political Advisor', character: true, seats: 2, laws: [] },
@@ -18,7 +18,7 @@ const OTHERS: CategoryInfo[] = [
   { token: 'army_spirit', name: null, kind: 'army_spirit', hidden: false, politicsTab: false, slots: [{ token: 'army_spirit', name: null, character: false, seats: 1, laws: [] }] },
 ];
 const REPLY: IdeaHistoryReply = {
-  branchId: '1', tag: 'GER', unobserved: [], identityStarts: [], warnings: [], categories: [GOVERNMENT, ...OTHERS],
+  branchId: '1', tag: 'GER', unobserved: [], identityStarts: [], modifiers: [], texts: [], warnings: [], categories: [GOVERNMENT, ...OTHERS],
   spans: [
     { token: 'civilian_economy', firstHour: 0, lastHour: 99, slot: null, character: null },
     { token: 'war_economy', firstHour: 100, lastHour: 500, slot: null, character: null },

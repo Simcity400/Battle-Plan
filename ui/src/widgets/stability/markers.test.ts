@@ -42,7 +42,7 @@ test('laws and advisors taken on while recorded are government changes; focuses 
       { token: 'total_mobilisation', firstHour: 600, lastHour: 1000, slot: null, character: null },
       { token: 'speer', firstHour: 700, lastHour: 1000, slot: 'political_advisor', character: { id: 7, token: 'GER_albert_speer', name: 'GER_albert_speer' } },
     ],
-    ideas: ['civilian_economy', 'war_economy', 'total_mobilisation'].map(token => ({ token, category: 'government', slot: 'economy', law: true, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [] })),
+    ideas: ['civilian_economy', 'war_economy', 'total_mobilisation'].map(token => ({ token, category: 'government', slot: 'economy', law: true, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true })),
     artwork: [{ token: 'war_economy', name: 'War Economy', description: null, baseDurationDays: null, icon: null }],
     holders: [{ token: 'speer', character: 7, characterToken: 'GER_albert_speer', name: 'GER_albert_speer', artwork: { token: 'speer', name: 'Albert Speer', description: null, baseDurationDays: null, icon: null } }],
     categories: [{ token: 'government', name: null, kind: null, hidden: false, politicsTab: true, slots: [
@@ -84,7 +84,7 @@ test('a continuing advisor, a shared founding and a repeated focus are read hone
   assert.deepEqual(stabilityMarkers({ ...base, groups: switched }, ALL).map(badge => badge.label), ['Joined Second Pact']);
   assert.deepEqual(stabilityMarkers({ ...base, tag: 'AAA', groups: switched }, ALL).map(badge => badge.label), ['Joined First Pact', 'Left First Pact']);
   const ideas = {
-    branchId: '1', tag: 'GER', warnings: [], unobserved: [], identityStarts: [], artwork: [], holders: [],
+    branchId: '1', tag: 'GER', warnings: [], unobserved: [], identityStarts: [], modifiers: [], texts: [], artwork: [], holders: [],
     spans: [
       { token: 'speer', firstHour: 100, lastHour: 199, slot: 'political_advisor', character: { id: 7, token: '', name: '' } },
       { token: 'speer', firstHour: 200, lastHour: 300, slot: 'political_advisor', character: { id: 7, token: 'GER_albert_speer', name: 'Albert Speer' } },
@@ -128,7 +128,7 @@ test('a continuing advisor, a shared founding and a repeated focus are read hone
   assert.deepEqual(stabilityMarkers({ ...base, ideas: moved }, ALL).map(badge => badge.hour), [100]);
   // A designer in a law slot is not a law.
   const designer = { ...kept, spans: [{ token: 'designer', firstHour: 150, lastHour: 300, slot: 'economy', character: null }],
-    ideas: [{ token: 'designer', category: 'government', slot: 'economy', law: false, designer: true, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [] }] } as unknown as IdeaHistoryReply;
+    ideas: [{ token: 'designer', category: 'government', slot: 'economy', law: false, designer: true, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true }] } as unknown as IdeaHistoryReply;
   assert.deepEqual(stabilityMarkers({ ...base, ideas: designer }, ALL), []);
 });
 

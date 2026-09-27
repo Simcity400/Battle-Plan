@@ -20,11 +20,17 @@ export default function TooltipLayer() {
   }, [state]);
   return <div ref={ref} popover="manual" role="tooltip" className="chart-tooltip" aria-live="off">
     {state && <>
-      <strong>{state.content.title}</strong>
+      {state.content.icon || state.content.subtitle
+        ? <div className="chart-tooltip-head">
+          {state.content.icon && <img src={state.content.icon} alt="" />}
+          <div><strong>{state.content.title}</strong>{state.content.subtitle && <small>{state.content.subtitle}</small>}</div>
+        </div>
+        : <strong>{state.content.title}</strong>}
       {state.content.rows.map((row, index) => <div key={index} className={`chart-tooltip-row${row.divider ? ' has-divider' : ''}${row.strong ? ' is-strong' : ''}${row.short ? ' is-short' : ''}`}>
         <span>{row.swatch && <i style={{ background: row.swatch }} aria-hidden="true" />}{row.label}</span>
         {row.value != null && <b className={row.tone ? `is-${row.tone}` : undefined}>{row.value}</b>}
       </div>)}
+      {state.content.description && <p className="chart-tooltip-description">{state.content.description}</p>}
       {state.content.note && <small>{state.content.note}</small>}
     </>}
   </div>;

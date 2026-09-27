@@ -4,9 +4,9 @@ import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 import { activeAt, endedBy, historyLanes, spiritState, spirits, startUnseen } from './spiritsData.ts';
 
 const info = (token: string, category: string): IdeaInfo => ({ token, category, slot: null, law: false, designer: false,
-  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [] });
+  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true });
 const REPLY: IdeaHistoryReply = {
-  branchId: '1', tag: 'GER', unobserved: [], identityStarts: [], warnings: [],
+  branchId: '1', tag: 'GER', unobserved: [], identityStarts: [], modifiers: [], texts: [], warnings: [],
   categories: [
     { token: 'mod_spirits', name: null, kind: 'national_spirit', hidden: false, politicsTab: true, slots: [] },
     { token: 'government', name: null, kind: null, hidden: false, politicsTab: true, slots: [] },

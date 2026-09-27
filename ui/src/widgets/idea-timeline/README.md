@@ -17,4 +17,4 @@ There is one widget kind for every category. Its **Category** setting lists the 
 
 ## Not yet
 
-- Hovering a holder shows its slot and dates. The game's own idea tooltip (effects, targeted effects, traits, description) follows once built-in modifier labels are recorded (Wave 2 part A).
+- Hovering a holder shows the game's own idea tooltip (`dashboard/ideaTooltip.ts`): its icon, name, slot (and a law's level), the days it was observed, then its traits and effects formatted as the game formats them, and its description. For keyboard and screen-reader users the timeline describes each slot's holder at the moment shown, with its effects; Up and Down choose a lane and Left and Right step through its holders, showing and reading out each one's tooltip (Escape closes it).

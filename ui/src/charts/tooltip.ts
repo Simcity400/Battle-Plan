@@ -7,7 +7,8 @@ export interface TooltipRow {
   value?: string;
   /** A colour square identifying the series. */
   swatch?: string;
-  tone?: 'positive' | 'negative' | 'muted';
+  /** `neutral` is the game's yellow, for a value neither good nor bad. */
+  tone?: 'positive' | 'negative' | 'neutral' | 'muted';
   /** Starts a new group with a divider above it. */
   divider?: boolean;
   /** A section heading or a total: the label in full text colour, bold. */
@@ -15,7 +16,13 @@ export interface TooltipRow {
   /** Keeps the label on one line, shortened, where a long list must fit the window. */
   short?: boolean;
 }
-export interface TooltipContent { title: string; rows: readonly TooltipRow[]; note?: string }
+export interface TooltipContent {
+  title: string; rows: readonly TooltipRow[]; note?: string;
+  /** A game-style header (mock-up politics-4): the thing's icon and a line under its name. */
+  icon?: string; subtitle?: string;
+  /** Running text after the rows, such as an idea's description. */
+  description?: string;
+}
 export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number }
 
 type Listener = () => void;

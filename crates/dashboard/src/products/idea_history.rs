@@ -15,6 +15,7 @@
 
 use super::{
     CountryParams, LoadContext, Product,
+    idea_format::{LocalisedText, ModifierFormat},
     politics_content::{PoliticsContent, RecordedName, politics_content},
 };
 use crate::{
@@ -74,6 +75,9 @@ pub struct IdeaCharacter {
 pub struct EffectLine {
     pub key: String,
     pub value: Option<f64>,
+    /// The value as the engine reads the authored text: fixed point with five
+    /// decimals, truncated, as a decimal string; None when not a number.
+    pub fixed5: Option<String>,
     /// The authored text of a value this reader does not evaluate.
     pub unsupported: Option<String>,
     /// Applied without showing in the game's own tooltip.
@@ -124,6 +128,10 @@ pub struct IdeaInfo {
     pub traits: Vec<TraitEffects>,
     /// Custom tooltip localisation keys the idea shows instead of values.
     pub tooltips: Vec<String>,
+    /// Content defines the idea or its advisor role, so the lists above are its
+    /// effects. When not (an advisor placed only by its recorded seat), they are
+    /// empty because they are unknown, not because it has none.
+    pub effects_known: bool,
 }
 
 /// One slot of a category, as the category lists it.
@@ -172,6 +180,12 @@ pub struct IdeaHistoryReply {
     /// seen, after an hour it was not seen, or as another country identity. The
     /// ideas held then are that identity's initial state, not changes.
     pub identity_starts: Vec<i32>,
+    /// How the game shows each modifier the effects above use (see `idea_format`);
+    /// a key missing here is shown as authored, unformatted.
+    pub modifiers: Vec<ModifierFormat>,
+    /// The texts the tooltips need: custom tooltips, research categories
+    /// (`<category>_research`), equipment names, and `YES` / `NO`.
+    pub texts: Vec<LocalisedText>,
     pub warnings: Vec<String>,
 }
 
@@ -423,6 +437,7 @@ fn line(modifier: &Modifier, hidden: bool) -> EffectLine {
     EffectLine {
         key: modifier.key.clone(),
         value,
+        fixed5: modifier.fixed5.map(|raw| raw.to_string()),
         unsupported,
         hidden,
     }
@@ -553,6 +568,7 @@ pub fn info(content: &Joined, token: &str, recorded_seat: Option<&str>) -> IdeaI
         tooltips: idea
             .map(|idea| idea.modifiers.tooltips.clone())
             .unwrap_or_default(),
+        effects_known: idea.is_some() || authored_role.is_some(),
     }
 }
 
@@ -626,6 +642,8 @@ impl Product for IdeaHistory {
             EffectGroup::decl(),
             TraitEffects::decl(),
             HolderArtwork::decl(),
+            ModifierFormat::decl(),
+            LocalisedText::decl(),
             IdeaInfo::decl(),
             SlotInfo::decl(),
             CategoryInfo::decl(),
@@ -762,6 +780,46 @@ impl Product for IdeaHistory {
                     .join(", ")
             ));
         }
+        // How the effects are shown, and the texts the tooltips name.
+        let mut modifier_keys = BTreeSet::new();
+        let mut text_keys: BTreeSet<String> = ["YES", "NO"].map(str::to_owned).into();
+        let mut effects = |lines: &[EffectLine], targeted: &[EffectGroup], tooltips: &[String]| {
+            modifier_keys.extend(
+                lines
+                    .iter()
+                    .chain(targeted.iter().flat_map(|group| &group.lines))
+                    .map(|line| line.key.clone()),
+            );
+            text_keys.extend(tooltips.iter().cloned());
+        };
+        for idea in &ideas {
+            effects(&idea.effects, &idea.targeted, &idea.tooltips);
+            for found in &idea.traits {
+                effects(&found.lines, &found.targeted, &found.tooltips);
+            }
+        }
+        for idea in &ideas {
+            text_keys.extend(
+                idea.research
+                    .iter()
+                    .map(|line| format!("{}_research", line.key)),
+            );
+            text_keys.extend(
+                idea.equipment
+                    .iter()
+                    .chain(idea.traits.iter().flat_map(|found| &found.equipment))
+                    .filter_map(|group| group.target.clone()),
+            );
+        }
+        let (modifiers, format_warnings) = super::idea_format::modifier_formats(
+            &source.replay(),
+            params.branch(),
+            &modifier_keys,
+            &content,
+            cancelled,
+        )?;
+        warnings.extend(format_warnings);
+        let texts = super::idea_format::texts(&content, &text_keys);
         Ok(IdeaHistoryReply {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
@@ -772,6 +830,8 @@ impl Product for IdeaHistory {
             categories: categories(&joined),
             unobserved: scanned.unobserved.clone(),
             identity_starts: scanned.identity_starts.clone(),
+            modifiers,
+            texts,
             warnings,
         })
     }

@@ -13,7 +13,9 @@ pub struct ModifierDefinition {
     pub color_type: Option<String>,
     /// `number`, `percentage`, `percentage_in_hundred` or `yes_no` as authored.
     pub value_type: Option<String>,
-    pub precision: Option<u32>,
+    /// Signed: the engine's reader keeps a negative precision, which writes a
+    /// value's decimals with trailing zeros dropped.
+    pub precision: Option<i32>,
     /// `none`, `days`, `hours` or `daily` as authored.
     pub postfix: Option<String>,
     /// Every category it belongs to; `category` may be assigned more than once.
@@ -87,5 +89,8 @@ mod tests {
         assert_eq!(definitions[0].value_type.as_deref(), Some("percentage"));
         assert_eq!(definitions[0].precision, Some(0));
         assert_eq!(definitions[0].postfix, None);
+        // A negative precision is kept, not dropped.
+        let negative = parse(b"fine = { precision = -1 }").unwrap();
+        assert_eq!(negative[0].precision, Some(-1));
     }
 }
