@@ -3,18 +3,23 @@ import type { ReactNode } from 'react';
 import { Segmented } from '../../components/Segmented';
 import { validOption } from '../options';
 import type { OptionField, OptionValue } from '../options';
+import type { OptionChoices } from '../definitions';
 
 /** Short choice lists are a segmented row; longer ones a drop-down. */
 const SEGMENTED_MAX = 4;
 
 /** Renders a widget's declared option fields; each change saves at once. */
-export function OptionFields({ fields, values, onChange }: {
-  fields: readonly OptionField[]; values: Readonly<Record<string, OptionValue>>; onChange: (key: string, value: OptionValue) => void;
+export function OptionFields({ fields, values, choices, onChange }: {
+  fields: readonly OptionField[]; values: Readonly<Record<string, OptionValue>>; choices?: OptionChoices;
+  onChange: (key: string, value: OptionValue) => void;
 }) {
-  return <>{fields.map(field => <OptionRow key={field.key} field={field} value={values[field.key]} onChange={value => onChange(field.key, value)} />)}</>;
+  return <>{fields.map(field => <OptionRow key={field.key} field={field} value={values[field.key]} choices={choices?.[field.key]}
+    onChange={value => onChange(field.key, value)} />)}</>;
 }
 
-function OptionRow({ field, value, onChange }: { field: OptionField; value: OptionValue; onChange: (value: OptionValue) => void }) {
+function OptionRow({ field, value, choices, onChange }: {
+  field: OptionField; value: OptionValue; choices?: readonly { value: string; label: string }[]; onChange: (value: OptionValue) => void;
+}) {
   const caption = <span>{field.label}{field.hint && <small>{field.hint}</small>}</span>;
   switch (field.kind) {
     case 'toggle':
@@ -28,6 +33,17 @@ function OptionRow({ field, value, onChange }: { field: OptionField; value: Opti
           <select value={String(value)} onChange={event => onChange(event.currentTarget.value)}>
             {field.choices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
           </select></label>;
+    case 'content-choice': {
+      // A saved choice this campaign lacks stays selectable, so opening the panel never changes it.
+      const listed = choices ?? [];
+      const kept = typeof value === 'string' && value && !listed.some(choice => choice.value === value)
+        ? [{ value, label: `${value} (not in this campaign)` }] : [];
+      return <label className="setting-row">{caption}
+        <select value={String(value)} onChange={event => onChange(event.currentTarget.value)}>
+          <option value="">{field.automatic}</option>
+          {[...listed, ...kept].map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
+        </select></label>;
+    }
     case 'number':
       return <NumberRow field={field} value={typeof value === 'number' ? value : null} caption={caption} onChange={onChange} />;
   }

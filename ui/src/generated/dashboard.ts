@@ -342,7 +342,11 @@ character: boolean,
 /**
  * How many seats of this slot the category has.
  */
-seats: number, };
+seats: number,
+/**
+ * For a law slot: its laws in content order, so a law's escalation is its place here.
+ */
+laws: Array<string>, };
 export type CategoryInfo = { token: string, name: string | null,
 /**
  * `type`, such as `national_spirit`.

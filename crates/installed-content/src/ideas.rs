@@ -252,6 +252,9 @@ pub struct IdeaContent {
     pub tags: IdeaTags,
     /// By token. A token defined again later in load order replaces the earlier one.
     pub ideas: BTreeMap<String, Idea>,
+    /// Tokens in load order (a token defined again keeps its first place): a law
+    /// slot lists its laws from least to most escalated this way.
+    pub order: Vec<String>,
 }
 
 /// Reads `common/idea_tags` and `common/ideas`. A file that cannot be parsed is
@@ -281,7 +284,12 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(IdeaContent, Vec<String>)> {
     let mut repeated = 0;
     for (_, document) in script_files::documents(layers, "common/ideas/", "Ideas", &mut warnings)? {
         for idea in ideas_from(&document) {
-            repeated += usize::from(content.ideas.insert(idea.token.clone(), idea).is_some());
+            let token = idea.token.clone();
+            if content.ideas.insert(token.clone(), idea).is_some() {
+                repeated += 1;
+            } else {
+                content.order.push(token);
+            }
         }
     }
     if repeated > 0 {

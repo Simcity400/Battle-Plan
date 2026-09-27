@@ -132,6 +132,8 @@ pub struct SlotInfo {
     pub character: bool,
     /// How many seats of this slot the category has.
     pub seats: u32,
+    /// For a law slot: its laws in content order, so a law's escalation is its place here.
+    pub laws: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
@@ -543,6 +545,14 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
                     name: (content.localise)(slot),
                     character: false,
                     seats: 1,
+                    laws: content
+                        .ideas
+                        .order
+                        .iter()
+                        .filter_map(|token| content.ideas.ideas.get(token))
+                        .filter(|idea| idea.law && idea.group == *slot)
+                        .map(|idea| idea.token.clone())
+                        .collect(),
                 })
                 .collect();
             for seat in &category.character_slots {
@@ -556,6 +566,7 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
                         name: (content.localise)(seat),
                         character: true,
                         seats: 1,
+                        laws: Vec::new(),
                     }),
                 }
             }

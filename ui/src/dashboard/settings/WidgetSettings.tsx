@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Icon } from '../../components/Icons';
 import CampaignPicker from '../CampaignPicker';
 import { resolveWidgetCampaign } from '../campaigns';
 import { widgetDefinition } from '../definitions';
-import type { WidgetRuntime } from '../definitions';
+import type { OptionChoices, WidgetDefinition, WidgetRuntime } from '../definitions';
 import { WIDGET_CONTENT_SCALES } from '../model';
 import type { DashboardTemplate, WidgetSpec } from '../model';
 import { resolveOptions, sectionFields, setOption } from '../options';
@@ -17,9 +18,26 @@ import './settings.css';
 
 /** Every widget's settings, in the same sections and order for all widgets. Each
  * change is a view preference and saves at once (`onChange(widget, true)`). */
-export function WidgetSettings({ widget, template, runtime, onChange, onReset }: {
+export function WidgetSettings(props: {
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
   onChange: (widget: WidgetSpec, view?: boolean) => void; onReset?: () => void;
+}) {
+  const use = widgetDefinition(props.widget.kind)?.useOptionChoices;
+  // Content choices come from a hook; it runs in its own component so the panel's hooks never change.
+  // It sees the widget with its campaign resolved, as the widget itself does.
+  return use ? <WithChoices key={props.widget.kind} use={use} widget={resolveWidgetCampaign(props.widget, props.template, props.runtime.defaultRoleId)} runtime={props.runtime}>
+    {choices => <SettingsBody {...props} choices={choices} />}</WithChoices> : <SettingsBody {...props} />;
+}
+
+function WithChoices({ use, widget, runtime, children }: {
+  use: NonNullable<WidgetDefinition['useOptionChoices']>; widget: WidgetSpec; runtime: WidgetRuntime; children: (choices: OptionChoices) => ReactNode;
+}) {
+  return <>{children(use(widget, runtime))}</>;
+}
+
+function SettingsBody({ widget, template, runtime, onChange, onReset, choices }: {
+  widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
+  onChange: (widget: WidgetSpec, view?: boolean) => void; onReset?: () => void; choices?: OptionChoices;
 }) {
   const definition = widgetDefinition(widget.kind);
   const values = resolveOptions(definition?.options, widget.options);
@@ -28,9 +46,16 @@ export function WidgetSettings({ widget, template, runtime, onChange, onReset }:
   const save = (next: WidgetSpec) => onChange(next, true);
   const setValue = (key: string, value: OptionValue) => {
     const options = setOption(definition?.options, widget.options, key, value);
-    if (options) save({ ...widget, options });
+    if (!options) return;
+    // A title that still names the previous content choice follows the new one.
+    const label = (choice: OptionValue) => choices?.[key]?.find(item => item.value === choice)?.label;
+    const field = definition?.options?.find(item => item.key === key);
+    const named = field?.kind === 'content-choice' && [definition?.title, label(values[key])].includes(widget.title);
+    const title = named ? label(value) ?? definition?.title ?? widget.title : widget.title;
+    save({ ...widget, options, title });
   };
-  const fields = (section: OptionSection) => <OptionFields fields={sectionFields(definition?.options, section, values)} values={values} onChange={setValue} />;
+  const fields = (section: OptionSection) => <OptionFields fields={sectionFields(definition?.options, section, values)} values={values}
+    choices={choices} onChange={setValue} />;
   const body = (section: SettingsSection) => {
     switch (section) {
       case 'campaign': return <CampaignPicker widget={widget} template={template} runtime={runtime} />;

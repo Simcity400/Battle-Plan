@@ -1,0 +1,69 @@
+import { useEffect, useMemo } from 'react';
+import { useContextMenu } from '../../components/ContextMenu';
+import WidgetState from '../../components/WidgetState';
+import { dayLabel } from '../../charts/draw';
+import { jumpItem } from '../../charts/jump';
+import { inSpans } from '../../charts/timeline/layout';
+import Timeline from '../../charts/timeline/Timeline';
+import type { TooltipRow } from '../../charts/tooltip';
+import type { WidgetProps } from '../../dashboard/definitions';
+import { resolveWindow } from '../../dashboard/model';
+import { resolveOptions } from '../../dashboard/options';
+import { usePlaybackHour } from '../../dashboard/playback';
+import { OPTIONS } from './definition';
+import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData';
+import type { HolderStyle, LawStyle } from './ideaTimelineData';
+import { useIdeaHistory } from './useIdeaHistory';
+import './ideaTimeline.css';
+
+const NO_WARNINGS: string[] = [];
+
+/** One idea category over time: a lane per law or designer slot and per advisor
+ * seat, with each slot's holder at the playhead in the left column. */
+export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const options = resolveOptions(OPTIONS, widget.options);
+  const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
+  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
+  const playhead = window && following ? window.lastHour : null;
+  const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
+  const category = data ? chosenCategory(data.categories, String(options.category ?? '')) : null;
+  const lanes = useMemo(() => data && category ? lanesFor(data, category, { laws: options.laws as LawStyle, holders: options.holders as HolderStyle }) : [],
+    [data, category, options.laws, options.holders]);
+  const menu = useContextMenu('Timeline actions');
+
+  useEffect(() => {
+    onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
+    return () => onDiagnostics(NO_WARNINGS);
+  }, [data, onDiagnostics]);
+
+  if (!track || !tag) return <WidgetState kind="empty" icon="layers" message="Load a campaign and choose a country to see its idea history." />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." />;
+  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (!data) return <WidgetState kind="loading" label="Loading ideas…" />;
+  if (!category) return <WidgetState kind="unavailable" message={options.category
+    ? 'This campaign’s content has no such idea category. Choose another in the widget settings.'
+    : 'This campaign’s content has no idea categories with slots.'} />;
+
+  const infos = new Map(data.ideas.map(info => [info.token, info]));
+  return <div className="idea-timeline">
+    <Timeline label={`${category.name ?? category.token} of ${tag}`} extent={extent} playhead={playhead} lanes={lanes}
+      showIcons showNames unobserved={data.unobserved} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={data}
+      tooltip={(lane, span, hour) => {
+        if (!span) return { title: lane.label, rows: [{ label: inSpans(data.unobserved, hour) ? 'Not recorded' : 'Empty', value: dayLabel(hour), tone: 'muted' }] };
+        const token = span.id.slice(0, span.id.lastIndexOf(':'));
+        const level = lawLevel(category, infos.get(token));
+        const until = playhead != null && span.lastHour + 1 > playhead ? 'now' : dayLabel(span.lastHour);
+        const rows: TooltipRow[] = [
+          { label: lane.label, value: level ? `Level ${level}` : undefined },
+          { label: 'Observed from', value: dayLabel(span.firstHour), divider: true },
+          { label: 'Until', value: until },
+        ];
+        return { title: span.label, rows, note: 'Ideas are recorded once a day, so a change is dated to the day it was first seen.' };
+      }}
+      onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
+    {menu.menu}
+  </div>;
+}

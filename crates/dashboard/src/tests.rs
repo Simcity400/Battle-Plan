@@ -2106,6 +2106,7 @@ fn ideas_join_content_for_category_slot_and_traits() {
     .unwrap();
     let content = installed_content::ideas::IdeaContent {
         tags: installed_content::ideas::IdeaTags { categories: tags },
+        order: ideas.iter().map(|idea| idea.token.clone()).collect(),
         ideas: ideas
             .into_iter()
             .map(|idea| (idea.token.clone(), idea))
@@ -2162,6 +2163,8 @@ fn ideas_join_content_for_category_slot_and_traits() {
         [("economy", false, 1), ("political_advisor", true, 2)]
     );
     assert_eq!(government.slots[0].name.as_deref(), Some("Economy"));
+    assert_eq!(government.slots[0].laws, ["civilian_economy"]);
+    assert!(government.slots[1].laws.is_empty());
 }
 
 #[test]

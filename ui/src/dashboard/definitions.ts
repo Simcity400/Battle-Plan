@@ -83,14 +83,20 @@ export interface WidgetMeta {
   migrate?: (from: number, widget: WidgetSpec) => WidgetSpec | null;
 }
 
+/** Run-time choices for a widget's content-choice fields, by field key. */
+export type OptionChoices = Readonly<Record<string, readonly { value: string; label: string }[]>>;
+
 export interface WidgetDefinition extends WidgetMeta {
   render?: ComponentType<WidgetProps>;
+  /** A hook listing the choices of the widget's content-choice fields from its
+   * campaign's content. The settings panel calls it while open. */
+  useOptionChoices?: (widget: WidgetSpec, runtime: WidgetRuntime) => OptionChoices;
   /** Replaces the default settings gear, as the map's pop-down does. */
   headerControls?: ComponentType<HeaderControlsProps>;
 }
 
 /** The React half of a widget; its folder's index.ts exports one. */
-export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'headerControls'>;
+export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'headerControls' | 'useOptionChoices'>;
 
 const registry = new Map<string, WidgetDefinition>();
 

@@ -22,7 +22,15 @@ export type OptionField = FieldBase & (
   | { kind: 'choice'; choices: readonly { value: string; label: string }[]; default: string }
   /** A null default means "automatic" until the user sets a number. */
   | { kind: 'number'; min: number; max: number; step: number; unit?: string; default: number | null }
+  /** A choice among things only the recording's content knows (such as its idea
+   * categories): the widget lists them at run time (`useOptionChoices`). Any
+   * short token is kept, so a choice survives a campaign that lacks it. The empty
+   * default lets the widget pick, shown as `automatic`. */
+  | { kind: 'content-choice'; automatic: string; default: '' }
 );
+
+/** A stored content-choice value: empty (automatic) or a content token. */
+const CONTENT_TOKEN = /^[\w.:-]{0,160}$/;
 
 export const MAX_OPTION_KEYS = 48;
 const MAX_TEXT = 160;
@@ -51,6 +59,7 @@ export function validOption(field: OptionField, value: unknown): value is Option
   switch (field.kind) {
     case 'toggle': return typeof value === 'boolean';
     case 'choice': return typeof value === 'string' && field.choices.some(choice => choice.value === value);
+    case 'content-choice': return typeof value === 'string' && CONTENT_TOKEN.test(value);
     case 'number': return (value === null && field.default === null) || (typeof value === 'number' && Number.isFinite(value) && value >= field.min && value <= field.max
       && Math.abs((value - field.min) / field.step - Math.round((value - field.min) / field.step)) < 1e-9);
   }
