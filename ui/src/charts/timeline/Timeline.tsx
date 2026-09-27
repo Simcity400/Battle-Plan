@@ -164,7 +164,9 @@ export default function Timeline(props: TimelineProps) {
         const centre = y + ROW_HEIGHT / 2;
         if (index) { context.fillStyle = mix(tokens.surface, tokens.border, 0.5); context.fillRect(8, y, layoutWidth - 16, 1); }
         // The holder at the playhead (or the end, off Live), cross-fading when it changes.
-        const current = unknown ? null : spanAt(lane.spans, holderHour);
+        // A lane about one thing names it whatever the hour holds.
+        const current = lane.identity ? { id: lane.id, firstHour: 0, lastHour: 0, ...lane.identity }
+          : unknown ? null : spanAt(lane.spans, holderHour);
         const state = holders.get(lane.id) ?? { id: current?.id ?? null, previous: null, current, t: 1 };
         if (state.id !== (current?.id ?? null)) { state.previous = state.current; state.current = current; state.id = current?.id ?? null; state.t = 0; }
         state.t = tokens.reducedMotion ? 1 : Math.min(1, state.t + info.dt / FADE_MS);
@@ -199,7 +201,8 @@ export default function Timeline(props: TimelineProps) {
           const from = Math.max(left, toX(hours[0]) + 1);
           const to = Math.min(right, toX(hours[1]) - 1);
           if (to - from < 1.5) continue;
-          const fill = span.shade == null ? mix(tokens.surface, tokens.text, 0.1) : mix(tokens.surface, tokens.accent, 0.3 + 0.6 * span.shade);
+          const fill = span.emphasis ? mix(tokens.surface, tokens.accent, 0.55)
+            : span.shade == null ? mix(tokens.surface, tokens.text, 0.1) : mix(tokens.surface, tokens.accent, 0.3 + 0.6 * span.shade);
           context.fillStyle = fill;
           context.beginPath(); context.roundRect(from, centre - 12, to - from, 24, 5); context.fill();
           let textX = from + 7;
@@ -208,7 +211,7 @@ export default function Timeline(props: TimelineProps) {
           context.font = font(tokens, tokens.fontSize.small, 500);
           if (context.measureText(span.label).width + (textX - from) + 6 < to - from) {
             const background = parseColor(fill);
-            context.fillStyle = span.shade == null || !background ? tokens.text : readableText(background);
+            context.fillStyle = (span.shade == null && !span.emphasis) || !background ? tokens.text : readableText(background);
             context.fillText(span.label, textX, centre);
           }
         }

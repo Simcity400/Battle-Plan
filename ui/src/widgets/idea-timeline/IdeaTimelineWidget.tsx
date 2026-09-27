@@ -7,13 +7,13 @@ import { inSpans } from '../../charts/timeline/layout';
 import Timeline from '../../charts/timeline/Timeline';
 import type { TooltipRow } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { useIdeaHistory } from '../../dashboard/ideaHistory';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { OPTIONS } from './definition';
 import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData';
 import type { HolderStyle, LawStyle } from './ideaTimelineData';
-import { useIdeaHistory } from './useIdeaHistory';
 import './ideaTimeline.css';
 
 const NO_WARNINGS: string[] = [];

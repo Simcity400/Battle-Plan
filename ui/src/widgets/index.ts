@@ -7,10 +7,12 @@ import commandPower from './command-power';
 import ideaTimeline from './idea-timeline';
 import map from './map';
 import nationalFocus from './national-focus';
+import nationalSpirits from './national-spirits';
 import placeholder from './placeholder';
 import politicalPower from './political-power';
 import research from './research';
+import spiritHistory from './spirit-history';
 
-const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, 'idea-timeline': ideaTimeline, placeholder };
+const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, placeholder };
 
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

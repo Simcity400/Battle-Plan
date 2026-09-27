@@ -8,16 +8,6 @@ import type { Artwork, CategoryInfo, IdeaHistoryReply, IdeaInfo, IdeaSpan } from
 export type LawStyle = 'both' | 'shade' | 'icons';
 export type HolderStyle = 'both' | 'name' | 'portrait';
 
-/** Checks the reply's shape before the widget reads it. */
-export function validateIdeaHistoryReply(data: unknown): IdeaHistoryReply {
-  const reply = data as IdeaHistoryReply;
-  const ok = typeof reply === 'object' && reply != null && Array.isArray(reply.spans) && Array.isArray(reply.ideas)
-    && Array.isArray(reply.artwork) && Array.isArray(reply.categories) && Array.isArray(reply.unobserved) && Array.isArray(reply.warnings)
-    && reply.spans.every(span => typeof span.token === 'string' && Number.isInteger(span.firstHour) && Number.isInteger(span.lastHour) && span.firstHour <= span.lastHour);
-  if (!ok) throw new Error('The idea history reply is malformed.');
-  return reply;
-}
-
 /** Categories a timeline can show: on the political screen, not hidden, with slots. */
 export function timelineCategories(categories: readonly CategoryInfo[]): CategoryInfo[] {
   return categories.filter(category => category.politicsTab && !category.hidden && category.slots.length > 0);

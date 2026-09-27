@@ -11,6 +11,8 @@ export interface TimelineSpan {
   icon?: string;
   /** 0..1 along a sequential ramp (a law's escalation); none draws the neutral fill. */
   shade?: number;
+  /** Drawn in the accent colour, such as a spirit still active at the playhead. */
+  emphasis?: boolean;
 }
 
 export interface TimelineLane {
@@ -21,6 +23,9 @@ export interface TimelineLane {
   /** Icons and names inside this lane's bars; the chart's settings otherwise. */
   icons?: boolean;
   names?: boolean;
+  /** A lane about one thing (a spirit) names it in the left column whatever the
+   * playhead holds, with `label` beneath. */
+  identity?: { label: string; icon?: string };
 }
 
 export const AXIS_HEIGHT = 24;

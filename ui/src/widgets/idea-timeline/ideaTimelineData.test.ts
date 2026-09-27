@@ -4,7 +4,8 @@ import type { CategoryInfo, IdeaHistoryReply, IdeaInfo } from '../../generated/d
 import { AXIS_HEIGHT, ROW_HEIGHT, barHours, inSpans, laneAt, leftColumn, spanAt, spansExtent } from '../../charts/timeline/layout.ts';
 import { validOption } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
-import { chosenCategory, lanesFor, lawLevel, timelineCategories, validateIdeaHistoryReply } from './ideaTimelineData.ts';
+import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
+import { chosenCategory, lanesFor, lawLevel, timelineCategories } from './ideaTimelineData.ts';
 
 const idea = (token: string, slot: string | null, category = 'government'): IdeaInfo => ({ token, category, slot, law: false, designer: false,
   effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [] });
