@@ -1,6 +1,20 @@
 //! Hourly combat-window operands. One bounded census feeds three independent
 //! tables. Division destinations grow from their original counts on the
 //! acquisition worker; projection and other capacity growth stay on the spool.
+//!
+//! The pass holds the simulation thread, so the walk reuses what it has read
+//! in the pass instead of reading it again: the census's authenticated
+//! participants (`cland_combat::Members`) serve the window, commander, detail
+//! and unit readers; each side's commander is selected once for the window,
+//! detail and tactic readers (`cland_combat::Commanders`); the window's
+//! template-frame country data is shared for the pass
+//! (`cland_combat::CombatScratch`); a combat's divisions' army and stat block
+//! fields are gathered in two calls (`combat_sources::Images`) for their four
+//! readers and modifier member; and the division readers share per-source
+//! results (`combat_sources::Sources`). Each reader meets a shared value, or
+//! its failure, where it would have read it; the tests' reference walk
+//! (`reference_walk`, test-only copies of `visit` and `detail`) shares none of
+//! it and must publish the same.
 use crate::{
     sampling::qpc,
     spooling::table,
@@ -8,8 +22,10 @@ use crate::{
 };
 use engine::land_tactic_inputs;
 use engine::{
-    Memory, carmy_combat_inputs, cland_combat, combat_sources::Sources,
-    land_reinforcement_inputs as reinforcement, walk::Outcome,
+    Memory, carmy_combat_inputs, cland_combat,
+    combat_sources::{Images, Sources},
+    land_reinforcement_inputs as reinforcement,
+    walk::Outcome,
 };
 use replay::rows::LandDivisionManpowerTerm;
 use replay::rows::{LandCombatCommanderPortraitModifier, LandCombatCommanderPortraitTooltip};
@@ -179,9 +195,6 @@ struct Scratch {
     reinforcement_modifiers: Vec<reinforcement::ModifierTerm>,
     supply: Vec<reinforcement::SupplyTerm>,
     acclimatization: Vec<reinforcement::AcclimatizationTerm>,
-    /// The division's army and stat block images.
-    army: Vec<u8>,
-    stat: Vec<u8>,
     /// Both committed/reserve lists on each side have independent bounds.
     rosters: Vec<u64>,
     modifiers: Vec<carmy_combat_inputs::Modifier>,
@@ -189,7 +202,6 @@ struct Scratch {
 impl Scratch {
     /// Sizes each buffer at its reader's bound; a no-op once sized.
     fn ensure(&mut self) {
-        use engine::combat_sources::{ARMY_IMAGE, STAT_IMAGE};
         grow_vec(&mut self.widths, carmy_combat_inputs::WIDTH_TERM_LIMIT);
         grow_vec(&mut self.manpower, carmy_combat_inputs::MANPOWER_TERM_LIMIT);
         grow_vec(
@@ -201,8 +213,6 @@ impl Scratch {
             &mut self.acclimatization,
             reinforcement::ACCLIMATIZATION_LIMIT,
         );
-        grow_vec(&mut self.army, ARMY_IMAGE);
-        grow_vec(&mut self.stat, STAT_IMAGE);
         grow_vec(
             &mut self.rosters,
             cland_combat::DETAIL_UNIT_LIMIT as usize * 4,
@@ -215,8 +225,6 @@ impl Scratch {
             + self.reinforcement_modifiers.capacity() * size_of::<reinforcement::ModifierTerm>()
             + self.supply.capacity() * size_of::<reinforcement::SupplyTerm>()
             + self.acclimatization.capacity() * size_of::<reinforcement::AcclimatizationTerm>()
-            + self.army.capacity()
-            + self.stat.capacity()
             + self.rosters.capacity() * size_of::<u64>()
             + self.modifiers.capacity() * size_of::<carmy_combat_inputs::Modifier>()
     }
@@ -230,8 +238,8 @@ type DivisionRead = (
     usize,
 );
 
-/// One division's four readers in the walk's order, through the division's
-/// army and stat block image (engine::combat_sources), into `scratch`.
+/// One division's four readers in the walk's order, through `memory` (the
+/// division's image, engine::combat_sources), into `scratch`.
 #[allow(clippy::too_many_arguments)]
 fn read_division(
     memory: &impl Memory,
@@ -244,26 +252,15 @@ fn read_division(
     pointer: usize,
     handle: u64,
 ) -> Result<DivisionRead, &'static str> {
-    use engine::combat_sources::{ARMY_IMAGE, DivisionImage, STAT_IMAGE};
-    let Scratch {
-        widths,
-        manpower,
-        reinforcement_modifiers,
-        supply,
-        acclimatization,
-        army,
-        stat,
-        ..
-    } = scratch;
-    // `ensure` sized both at the start of the pass.
-    let unsized_image = "land combat division image storage unsized";
-    let army = <&mut [u8; ARMY_IMAGE]>::try_from(&mut army[..]).map_err(|_| unsized_image)?;
-    let stat = <&mut [u8; STAT_IMAGE]>::try_from(&mut stat[..]).map_err(|_| unsized_image)?;
-    let image = DivisionImage::new(memory, pointer, army, stat);
-    let memory = &image;
     let stats = carmy_combat_inputs::capture_stats(memory, base, sources, pointer, handle)?;
     let context = carmy_combat_inputs::capture_context(
-        memory, base, state, sources, pointer, handle, widths,
+        memory,
+        base,
+        state,
+        sources,
+        pointer,
+        handle,
+        &mut scratch.widths,
     )?;
     let row = reinforcement::capture_context(
         memory,
@@ -272,20 +269,37 @@ fn read_division(
         sources,
         pointer,
         handle,
-        reinforcement_modifiers,
-        supply,
-        acclimatization,
+        &mut scratch.reinforcement_modifiers,
+        &mut scratch.supply,
+        &mut scratch.acclimatization,
         transport_terms,
         transport_start,
     )?;
-    let manpower =
-        carmy_combat_inputs::capture_manpower(memory, base, sources, pointer, handle, manpower)?;
+    let manpower = carmy_combat_inputs::capture_manpower(
+        memory,
+        base,
+        sources,
+        pointer,
+        handle,
+        &mut scratch.manpower,
+    )?;
     Ok((stats, context, row, manpower))
 }
 
 struct Destination<'a> {
     sources: &'a mut Sources,
+    /// Per-pass shares of the combat readers, and their storage.
+    combat: &'a mut cland_combat::CombatScratch,
+    /// This combat's commander selections, shared by its readers.
+    commanders: cland_combat::Commanders,
+    /// This combat's division images.
+    images: &'a mut Images,
     scratch: &'a mut Scratch,
+    /// Tests only: read as main's readers read, sharing nothing between
+    /// readers (no census members, selections, pass shares or division
+    /// image) nor between divisions (no shared sources).
+    #[cfg(test)]
+    reference: bool,
     division_commanders: &'a mut Vec<engine::naval_commander_inputs::DivisionCommanderRow>,
     commander_progress: Progress,
     commander_keys: &'a mut [CommanderKey],
@@ -366,8 +380,12 @@ impl Destination<'_> {
         base: usize,
         state: usize,
         source: cland_combat::Source,
+        members: cland_combat::Members<'_>,
     ) {
         self.current_window = None;
+        // Selections are the combat's own.
+        self.commanders = cland_combat::Commanders::default();
+        // The census authenticated every participant moments ago in this pass.
         {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
@@ -384,6 +402,9 @@ impl Destination<'_> {
                 base,
                 state,
                 source,
+                &members,
+                &mut self.commanders,
+                self.combat,
                 &mut self.window[start..],
             ) {
                 Ok(operands) => {
@@ -406,7 +427,7 @@ impl Destination<'_> {
         }
         {
             let started = qpc();
-            self.detail(memory, base, state, source);
+            self.detail(memory, base, state, source, &members);
             self.ticks[0] += elapsed(started);
         }
         let mut side_indices = [None; 2];
@@ -437,6 +458,20 @@ impl Destination<'_> {
             }
             self.ticks[2] += elapsed(started);
         }
+        // Every division's army and stat block fields, two gathers for the
+        // combat, for its four readers and its modifier member. Lent while
+        // the visitor borrows `self`.
+        let mut images = std::mem::take(self.images);
+        if self.progress[1].failure.is_none() || self.progress[2].failure.is_none() {
+            let _reads = crate::read_accounting::table(TABLES[1]);
+            let started = qpc();
+            images.capture(memory, members.pointers);
+            self.ticks[1] += elapsed(started);
+        } else {
+            images.clear();
+        }
+        // The unit visit's storage, lent while the visitor borrows `self`.
+        let mut shares = std::mem::take(self.combat);
         {
             let started = qpc();
             let before = self.ticks[1] + self.ticks[2];
@@ -444,7 +479,16 @@ impl Destination<'_> {
                 memory,
                 base,
                 source,
+                &members,
+                &mut shares,
                 |side, ordinal, pointer, handle, province, role| {
+                    let row = ordinal as usize
+                        + if side == 0 {
+                            0
+                        } else {
+                            source.attackers.count as usize
+                        };
+                    let divisional = &images.division(memory, row, pointer);
                     {
                         let _reads = crate::read_accounting::table(TABLES[1]);
                         let started = qpc();
@@ -454,18 +498,11 @@ impl Destination<'_> {
                         // fails the table closed rather than zero-filling
                         // operands the viewer would draw as absent icons.
                         let operand = match self.current_window {
-                            Some((combat, start, len, _)) if combat == source.id => {
-                                let index = ordinal as usize
-                                    + if side == 0 {
-                                        0
-                                    } else {
-                                        source.attackers.count as usize
-                                    };
-                                self.window[start..start + len]
-                                    .get(index)
-                                    .filter(|row| row.handle == handle)
-                                    .copied()
-                            }
+                            Some((combat, start, len, _)) if combat == source.id => self.window
+                                [start..start + len]
+                                .get(row)
+                                .filter(|row| row.handle == handle)
+                                .copied(),
                             _ => None,
                         };
                         if operand.is_none() && self.progress[1].failure.is_none() {
@@ -479,7 +516,7 @@ impl Destination<'_> {
                             // this worker, one successfully read term at a time.
                             let transport_start = self.reinforcement_progress[3].len;
                             let result = read_division(
-                                memory,
+                                divisional,
                                 base,
                                 state,
                                 self.sources,
@@ -576,7 +613,7 @@ impl Destination<'_> {
                         let _reads = crate::read_accounting::table(TABLES[2]);
                         let started = qpc();
                         self.modifier_member(
-                            memory,
+                            divisional,
                             base,
                             pointer,
                             handle,
@@ -597,6 +634,8 @@ impl Destination<'_> {
                 }
             }
         }
+        *self.combat = shares;
+        *self.images = images;
     }
     fn detail(
         &mut self,
@@ -604,6 +643,7 @@ impl Destination<'_> {
         base: usize,
         state: usize,
         source: cland_combat::Source,
+        members: &cland_combat::Members<'_>,
     ) {
         self.progress[0].required += 1;
         if self.progress[0].failure.is_some() {
@@ -625,14 +665,23 @@ impl Destination<'_> {
             Outcome::Truncated { .. } => return,
             Outcome::Rows { .. } => {}
         }
-        match cland_combat::read_details(memory, base, source, &mut self.scratch.rosters) {
+        match cland_combat::read_details(
+            memory,
+            base,
+            source,
+            members,
+            &mut self.commanders,
+            &mut self.scratch.rosters,
+        ) {
             Ok((mut row, count)) => {
                 self.arenas[0].required += count;
-                let mut context = land_tactic_inputs::capture_context(
+                        let mut context = land_tactic_inputs::capture_context(
                     memory,
                     base,
                     state,
                     source,
+                    members,
+                    &mut self.commanders,
                     &mut self.tactic_unlocks[self.tactic_unlock_progress.len..],
                 );
                 self.tactic_unlock_progress.required += context.row.required_unlocks;
@@ -767,12 +816,21 @@ pub struct Captured {
     window: Arena<cland_combat::WindowDivision>,
     census: Vec<cland_combat::Row>,
     census_participants: Vec<u64>,
+    /// Each census participant's pointer, beside its handle.
+    census_pointers: Vec<usize>,
     required_census: usize,
     required_census_participants: usize,
     /// Per-pass shared division sources; cleared before each pass.
     sources: Sources,
+    /// Per-pass shares of the combat readers; cleared before each pass.
+    combat: cland_combat::CombatScratch,
+    /// Each combat's division images, storage reused.
+    images: Images,
     /// Reader storage reused across divisions and passes.
     scratch: Scratch,
+    /// Tests only: the reference walk (see `Destination`).
+    #[cfg(test)]
+    reference: bool,
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -827,9 +885,12 @@ impl Captured {
             window: Arena::new(c.window_divisions),
             census: vec![cland_combat::Row::default(); c.combats],
             census_participants: vec![0; c.census_participants],
+            census_pointers: vec![0; c.census_participants],
             required_census: 0,
             required_census_participants: 0,
             sources: Sources::new(),
+            combat: cland_combat::CombatScratch::default(),
+            images: Images::default(),
             // Sized with the capture, off the game thread; a vacant
             // placeholder stays allocation-free and is sized if it is walked.
             scratch: if c.combats == 0 {
@@ -839,6 +900,8 @@ impl Captured {
                 scratch.ensure();
                 scratch
             },
+            #[cfg(test)]
+            reference: false,
         }
     }
     pub fn reset(&mut self) {
@@ -891,6 +954,7 @@ impl Captured {
             + self.window.allocated_bytes()
             + self.census.capacity() * size_of::<cland_combat::Row>()
             + self.census_participants.capacity() * size_of::<u64>()
+            + self.census_pointers.capacity() * size_of::<usize>()
             + self.scratch.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
@@ -935,6 +999,7 @@ impl Captured {
         );
         grow_vec(&mut self.census, c.combats);
         grow_vec(&mut self.census_participants, c.census_participants);
+        grow_vec(&mut self.census_pointers, c.census_participants);
         c.commander_keys = c.commander_keys.max(self.census_participants.len());
         grow_vec(&mut self.commander_keys, c.commander_keys);
     }
@@ -945,6 +1010,7 @@ impl Captured {
         state: usize,
     ) -> ([Outcome; N], [u64; N]) {
         self.sources.clear();
+        self.combat.clear();
         self.scratch.ensure();
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
@@ -957,7 +1023,12 @@ impl Captured {
         let commander_ticks = elapsed(commander_started);
         let mut destination = Destination {
             sources: &mut self.sources,
+            combat: &mut self.combat,
+            commanders: cland_combat::Commanders::default(),
+            images: &mut self.images,
             scratch: &mut self.scratch,
+            #[cfg(test)]
+            reference: self.reference,
             division_commanders: &mut self.division_commanders.first,
             commander_progress: Progress::default(),
             commander_keys: &mut self.commander_keys,
@@ -990,13 +1061,21 @@ impl Captured {
             window_progress: Progress::default(),
             current_window: None,
         };
-        let census = cland_combat::walk_with(
+        let census = cland_combat::walk_members(
             memory,
             base,
             state,
             &mut self.census,
             &mut self.census_participants,
-            |source| destination.visit(memory, base, state, source),
+            &mut self.census_pointers,
+            |source, members| {
+                // Tests only: the reference walk (`reference_walk`).
+                #[cfg(test)]
+                if destination.reference {
+                    return destination.visit_reference(memory, base, state, source, members);
+                }
+                destination.visit(memory, base, state, source, members)
+            },
         );
         destination.finish();
         let outcomes = destination.progress.map(|p| p.outcome(census.outcome));
@@ -1449,6 +1528,9 @@ pub(super) fn commander_presentation(
             .collect(),
     }
 }
+#[cfg(test)]
+mod reference_walk;
+
 fn elapsed(start: i64) -> u64 {
     qpc().saturating_sub(start).max(0) as u64
 }
@@ -1490,11 +1572,17 @@ mod tests {
         let mut members = [ModifierMember::default(); 2];
         let mut values = [carmy_combat_inputs::Modifier::default(); 1];
         let mut test_sources = Sources::new();
+        let mut combat = cland_combat::CombatScratch::default();
+        let mut images = Images::default();
         let mut scratch = Scratch::default();
         scratch.ensure();
         let mut destination = Destination {
             sources: &mut test_sources,
+            combat: &mut combat,
+            commanders: Default::default(),
+            images: &mut images,
             scratch: &mut scratch,
+            reference: false,
             details: &mut [],
             division_commanders: &mut Vec::new(),
             commander_keys: &mut [],
@@ -1562,6 +1650,7 @@ mod tests {
                 defenders: engine::cpdx_array::Array { data: 0, count: 0 },
                 provinces: engine::cpdx_array::Array { data: 0, count: 0 },
             },
+            cland_combat::Members::none(),
         );
         assert_eq!(destination.window_progress.required, 1);
         assert_eq!(destination.window.len(), 1);
@@ -2019,5 +2108,1443 @@ mod tests {
             }; N],
         );
         assert_eq!(captured.allocated_bytes(), allocated);
+    }
+}
+
+/// The whole land combat family over a synthetic combat world, walked as the
+/// recorder walks it and as the reference walk (main's reads, nothing
+/// shared): the census, window operands, details, tactic registry and
+/// context, modifier sides and every division reader run on total memory
+/// (any address from 0x1_0000 reads, as zero unless written) with the module
+/// at base 0.
+#[cfg(test)]
+mod family {
+    use super::*;
+    use engine::{
+        carmy, carmy_combat_inputs as inputs, cbuilding_database, ccombat_tactic, ccountry,
+        cgame_state, cland_combatant, cnaval_combat, cprovince,
+        creferenced_division_template as template, cstate, cstrategic_region, csub_unit_definition,
+        cterrain_type, cunit, cweather_manager, modifier_definition, province_definition,
+        sweather_per_region,
+    };
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const PAGE: usize = 4096;
+    const GAME: usize = 0x4000_0000;
+
+    #[derive(Default)]
+    struct World {
+        pages: HashMap<usize, Box<[u8; PAGE]>>,
+        next: usize,
+        /// Guarded calls, as the recorder's live reader counts them.
+        calls: AtomicUsize,
+        /// Byte ranges whose reads fail.
+        poisoned: Vec<(usize, usize)>,
+        /// Every guarded span, when logging.
+        log: std::sync::Mutex<Option<Vec<(usize, usize)>>>,
+        /// Every guarded call's first address, when logging calls.
+        call_log: std::sync::Mutex<Option<Vec<usize>>>,
+    }
+
+    impl World {
+        fn put(&mut self, at: usize, bytes: &[u8]) {
+            for (index, byte) in bytes.iter().enumerate() {
+                let address = at + index;
+                self.pages
+                    .entry(address / PAGE)
+                    .or_insert_with(|| Box::new([0; PAGE]))[address % PAGE] = *byte;
+            }
+        }
+        fn u64(&mut self, at: usize, value: u64) {
+            self.put(at, &value.to_le_bytes());
+        }
+        fn u32(&mut self, at: usize, value: u32) {
+            self.put(at, &value.to_le_bytes());
+        }
+        fn alloc(&mut self, size: usize) -> usize {
+            if self.next == 0 {
+                self.next = 0x1_0000_0000;
+            }
+            let at = self.next;
+            self.next += size.next_multiple_of(64);
+            at
+        }
+        /// A CPdxArray header: data, capacity, count.
+        fn array(&mut self, at: usize, data: usize, count: u32) {
+            self.u64(at, data as u64);
+            self.u32(at + 8, count);
+            self.u32(at + 12, count);
+        }
+        fn object(&mut self, size: usize, vtable: usize) -> usize {
+            let at = self.alloc(size);
+            self.u64(at, vtable as u64);
+            at
+        }
+        /// An inline MSVC string.
+        fn text(&mut self, at: usize, text: &[u8]) {
+            assert!(text.len() <= 15);
+            self.put(at, text);
+            self.u64(at + 16, text.len() as u64);
+            self.u64(at + 24, 15);
+        }
+        fn accumulator(&mut self, at: usize, entries: &[(u32, i64)]) {
+            let data = self.alloc(entries.len().max(1) * 16);
+            for (index, (key, value)) in entries.iter().enumerate() {
+                self.u32(data + index * 16, *key);
+                self.u64(data + index * 16 + 8, *value as u64);
+            }
+            self.array(at, data, entries.len() as u32);
+        }
+        fn poison(&mut self, at: usize, len: usize) {
+            self.poisoned.push((at, len));
+        }
+        fn get_u64(&self, at: usize) -> u64 {
+            let mut bytes = [0; 8];
+            assert!(self.fill(at, &mut bytes));
+            u64::from_le_bytes(bytes)
+        }
+        fn fill(&self, address: usize, output: &mut [u8]) -> bool {
+            if let Some(log) = self.log.lock().unwrap().as_mut() {
+                log.push((address, output.len()));
+            }
+            // A process's first pages fault: a null object's field fails.
+            if address < 0x1_0000
+                || self
+                    .poisoned
+                    .iter()
+                    .any(|&(at, len)| address < at + len && at < address + output.len())
+            {
+                return false;
+            }
+            let mut done = 0;
+            while done < output.len() {
+                let at = address + done;
+                let offset = at % PAGE;
+                let chunk = (PAGE - offset).min(output.len() - done);
+                match self.pages.get(&(at / PAGE)) {
+                    Some(page) => {
+                        output[done..done + chunk].copy_from_slice(&page[offset..offset + chunk])
+                    }
+                    None => output[done..done + chunk].fill(0),
+                }
+                done += chunk;
+            }
+            true
+        }
+    }
+
+    impl World {
+        fn call(&self, address: usize) {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(log) = self.call_log.lock().unwrap().as_mut() {
+                log.push(address);
+            }
+        }
+    }
+
+    impl Memory for World {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.call(address);
+            self.fill(address, output)
+        }
+        fn copy_scattered<const M: usize>(
+            &self,
+            addresses: [usize; M],
+            destinations: &mut [&mut [u8]; M],
+        ) -> usize {
+            self.call(addresses.first().copied().unwrap_or(0));
+            for (ordinal, (address, destination)) in
+                addresses.into_iter().zip(destinations).enumerate()
+            {
+                if !destination.is_empty() && !self.fill(address, destination) {
+                    return ordinal;
+                }
+            }
+            M
+        }
+        /// One guarded call, as the recorder's live gather makes one.
+        fn copy_records(
+            &self,
+            sources: engine::memory::RecordSources<'_>,
+            layout: &engine::memory::RecordLayout<'_>,
+            destination: &mut [u8],
+        ) -> usize {
+            self.call(sources.pointer(0).unwrap_or(0));
+            let mut completed = 0;
+            for row in 0..sources.len() {
+                for field in layout.fields() {
+                    if field.len != 0 {
+                        let Some(address) = sources
+                            .pointer(row)
+                            .filter(|&pointer| pointer != 0)
+                            .and_then(|pointer| pointer.checked_add(field.source_offset))
+                        else {
+                            return completed;
+                        };
+                        let start = row * layout.stride() + field.destination_offset;
+                        if !self.fill(address, &mut destination[start..start + field.len]) {
+                            return completed;
+                        }
+                    }
+                    completed += 1;
+                }
+            }
+            completed
+        }
+    }
+
+    /// The Ordinary job's country roster over `world`: an authenticated
+    /// census, as the callback prepares it.
+    fn roster(world: &World) -> engine::country_memory::Cache {
+        let mut cache = engine::country_memory::Cache::with_capacity(
+            engine::country_memory::Cache::cells_for_countries(8192, 1024),
+        );
+        cache.prepare(world, 0, GAME);
+        world.calls.store(0, Ordering::Relaxed);
+        cache
+    }
+
+    /// The fixture behind the recorder's read accounting.
+    struct Shared<'a>(&'a World);
+
+    impl Memory for Shared<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.0.copy(address, output)
+        }
+        fn copy_scattered<const M: usize>(
+            &self,
+            addresses: [usize; M],
+            destinations: &mut [&mut [u8]; M],
+        ) -> usize {
+            self.0.copy_scattered(addresses, destinations)
+        }
+        fn copy_records(
+            &self,
+            sources: engine::memory::RecordSources<'_>,
+            layout: &engine::memory::RecordLayout<'_>,
+            destination: &mut [u8],
+        ) -> usize {
+            self.0.copy_records(sources, layout, destination)
+        }
+    }
+
+    type Rostered<'a> =
+        engine::country_memory::CountryMemory<'a, engine::memory::CountedMemory<Shared<'a>>, false>;
+
+    /// Guarded calls per table, attributed as the recorder attributes them,
+    /// over the authenticated roster.
+    fn per_table(
+        world: &World,
+        cache: &engine::country_memory::Cache,
+        work: impl FnOnce(&Rostered<'_>),
+    ) -> [u64; N] {
+        let counted = engine::memory::CountedMemory::new(Shared(world));
+        let capture = crate::read_accounting::Capture::new();
+        work(&cache.roster_view(&counted));
+        let counts = capture.finish();
+        TABLES.map(|table| {
+            let c = counts[table.index()];
+            c.copy_calls + c.scattered_calls + c.record_calls + c.plan_calls
+        })
+    }
+
+    struct Shape {
+        countries: u32,
+        combats: usize,
+        /// Divisions per combat, both sides.
+        divisions: usize,
+        owners: usize,
+        templates: usize,
+        states: usize,
+        provinces: usize,
+        relations: usize,
+        transports: usize,
+        tactics: u32,
+        /// Army leaders; every fourth division, from the second, has one.
+        leaders: usize,
+    }
+
+    impl Shape {
+        fn small() -> Self {
+            Self {
+                countries: 24,
+                combats: 7,
+                divisions: 5,
+                owners: 5,
+                templates: 7,
+                states: 5,
+                provinces: 11,
+                relations: 6,
+                transports: 3,
+                tactics: 2,
+                leaders: 3,
+            }
+        }
+        fn scale(divisions: usize) -> Self {
+            Self {
+                countries: 1_500,
+                combats: divisions.div_ceil(20),
+                divisions: 20,
+                owners: (divisions / 25).clamp(6, 150),
+                templates: (divisions / 6).max(20),
+                states: (divisions / 8).max(10),
+                provinces: (divisions / 5).max(20),
+                relations: 20,
+                transports: divisions / 50,
+                tactics: 40,
+                leaders: (divisions / 20).clamp(1, 48),
+            }
+        }
+    }
+
+    /// A built world and what the variants break.
+    struct Built {
+        world: World,
+        combats: Vec<usize>,
+        /// Army pointers per combat, attackers first.
+        armies: Vec<Vec<usize>>,
+        /// Attacker and defender CLandCombatant per combat.
+        sides: Vec<[usize; 2]>,
+    }
+
+    fn world(shape: &Shape) -> Built {
+        let mut w = World::default();
+        let slots = shape.countries as usize + 1;
+        // Module data: definitions, defines and singletons.
+        let table = w.alloc(0x78 * 0x300);
+        w.u64(modifier_definition::TABLE_RVA, table as u64);
+        for key in [0x2b_usize, 0x5e, 0x17f, 0x1e9, 0xfb, 0x10f] {
+            w.u32(
+                table + key * modifier_definition::STRIDE + modifier_definition::FLAGS,
+                3,
+            );
+        }
+        let database = w.alloc(0x400);
+        w.u64(cbuilding_database::SINGLETON_RVA, database as u64);
+        let definition = w.alloc(0x400);
+        w.u64(database + 0x3b0, definition as u64);
+        // The tactic database: its null entry and `tactics` definitions.
+        let tactics = w.alloc(0x100);
+        w.u64(land_tactic_inputs::DATABASE_RVA, tactics as u64);
+        let entries = w.alloc((shape.tactics as usize + 1) * 8);
+        w.array(tactics + 0x10, entries, shape.tactics + 1);
+        for id in 1..=shape.tactics {
+            let tactic = w.object(0x200, ccombat_tactic::VTABLE_RVA);
+            w.u32(tactic + ccombat_tactic::ID, id);
+            w.text(
+                tactic + ccombat_tactic::TOKEN,
+                format!("tactic_{id}").as_bytes(),
+            );
+            w.u32(tactic + 0xc0, 10 * id);
+            w.u64(entries + id as usize * 8, tactic as u64);
+        }
+        let group = w.alloc(cland_combat::COUNTRY_GROUP_ARRAY + slots * 4);
+        w.u64(cland_combat::COUNTRY_GROUP_BASE_RVA, group as u64);
+        for slot in 0..slots {
+            w.u32(
+                group + cland_combat::COUNTRY_GROUP_ARRAY + slot * 4,
+                (slot % 3) as u32,
+            );
+        }
+        let doctrine = w.alloc(0x40);
+        w.u64(GAME + land_tactic_inputs::DOCTRINE_SYSTEM, doctrine as u64);
+        // Countries.
+        let countries = w.alloc(slots * 8);
+        let links = w.alloc(slots * 4);
+        w.array(GAME + cgame_state::COUNTRIES, countries, slots as u32);
+        w.array(GAME + cgame_state::COUNTRY_LINKS, links, slots as u32);
+        let relation = w.alloc(0x40);
+        w.u32(relation + 8, 0x3801);
+        let air_manager = w.alloc(0x100);
+        w.u64(
+            GAME + cgame_state::STRATEGIC_AIR_MANAGER,
+            air_manager as u64,
+        );
+        let air_countries = w.alloc(slots * 8);
+        w.array(air_manager + 0x30, air_countries, slots as u32);
+        for slot in 1..slots {
+            w.u32(links + slot * 4, slot as u32);
+        }
+        let mut owners = Vec::new();
+        let mut diplomacies = Vec::new();
+        for owner in 0..shape.owners {
+            let slot = 1 + owner * (slots - 1) / shape.owners.max(1);
+            let country = w.object(0x1000, ccountry::VTABLE_RVA);
+            w.u32(country + ccountry::ID, slot as u32);
+            w.u64(countries + slot * 8, country as u64);
+            w.accumulator(
+                country + ccountry::MODIFIER_ACCUMULATOR,
+                &[
+                    (0x2b, 5_000),
+                    (0x5e, -2_000),
+                    (0xfb, 7),
+                    (0x17f, 11),
+                    (0x1e9, 13),
+                ],
+            );
+            let diplomacy = w.object(0x300, engine::cdiplomacy_status::VTABLE_RVA);
+            w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
+            w.u64(
+                diplomacy + engine::cdiplomacy_status::COUNTRY,
+                country as u64,
+            );
+            diplomacies.push(diplomacy);
+            // Every third owner is at war with the next owner: its enemy list,
+            // whose count (CDiplomacyStatus+0xA4) is the air test's at-war
+            // answer.
+            let next = 1 + ((owner + 1) % shape.owners) * (slots - 1) / shape.owners;
+            let tags = w.alloc(8);
+            w.u32(tags, slot as u32);
+            w.u32(tags + 4, next as u32);
+            w.array(diplomacy + cland_combat::COUNTRY_TAG_SET, tags, 2);
+            let list = w.alloc(4);
+            let at_war = owner % 3 == 0;
+            if at_war {
+                let enemy = (owner + 1) % shape.owners;
+                w.u32(list, (1 + enemy * (slots - 1) / shape.owners) as u32);
+            }
+            w.array(
+                diplomacy + engine::cdiplomacy_status::ENEMY_COUNTRIES,
+                list,
+                u32::from(at_war),
+            );
+            let list = w.alloc(shape.relations.max(1) * 8);
+            for index in 0..shape.relations {
+                w.u64(list + index * 8, relation as u64);
+            }
+            w.array(diplomacy + 0x20, list, shape.relations as u32);
+            let air = w.alloc(0x100);
+            w.u64(air_countries + slot * 8, air as u64);
+            let regions = w.alloc(0xa0 * 4);
+            w.array(air + 0xe0, regions, 4);
+            for index in 0..4 {
+                w.u64(regions + index * 0xa0, 100 + index as u64);
+                w.u64(regions + index * 0xa0 + 8, index as u64);
+                w.u64(regions + index * 0xa0 + 0x18, 900 + index as u64);
+            }
+            owners.push(slot as u32);
+        }
+        for (from, &diplomacy) in diplomacies.iter().enumerate() {
+            let row = w.alloc(slots * 8);
+            w.array(
+                diplomacy + engine::cdiplomacy_status::RELATIONS,
+                row,
+                slots as u32,
+            );
+            for (to, &target) in owners.iter().enumerate() {
+                if to == from {
+                    continue;
+                }
+                let tuple = w.object(0x300, engine::crelation_status::VTABLE_RVA);
+                w.u64(
+                    tuple + engine::crelation_status::DIPLOMACY_STATUS,
+                    diplomacy as u64,
+                );
+                w.u32(tuple + engine::crelation_status::TARGET_COUNTRY, target);
+                w.u64(tuple + 0x2a0, u64::from((from + to) % 2 == 0));
+                w.u64(row + target as usize * 8, tuple as u64);
+            }
+        }
+        // Weather: two strategic regions with records.
+        let weather = w.object(0x100, cweather_manager::VTABLE_RVA);
+        w.u64(GAME + cgame_state::WEATHER_MANAGER, weather as u64);
+        let records = w.alloc(sweather_per_region::STRIDE * 2);
+        w.array(weather + cweather_manager::REGIONS, records, 2);
+        let mut regions = Vec::new();
+        for id in 0..2_u32 {
+            let record = records + id as usize * sweather_per_region::STRIDE;
+            w.u64(record, sweather_per_region::VTABLE_RVA as u64);
+            w.u32(record + sweather_per_region::ID, id);
+            w.accumulator(record + sweather_per_region::MODIFIERS, &[(0x29, 3)]);
+            let region = w.object(0x100, cstrategic_region::VTABLE_RVA);
+            w.u32(region + cstrategic_region::ID, id);
+            w.u32(region + 0x60, id + 1);
+            regions.push(region);
+        }
+        // Sub-units and templates.
+        let subunits: Vec<usize> = (0..6)
+            .map(|index| {
+                let unit = w.object(0x600, csub_unit_definition::VTABLE_RVA);
+                w.u32(unit + 8, 40 + index);
+                w.u64(unit + 0x58, 200_000 + u64::from(index) * 50_000);
+                unit
+            })
+            .collect();
+        let templates: Vec<usize> = (0..shape.templates)
+            .map(|index| {
+                let t = w.object(0x600, template::VTABLE_RVA);
+                w.u64(
+                    t + 8,
+                    ((index as u64 + 1) << 32) | u64::from(template::REFERENCE_TYPE),
+                );
+                let terms = w.alloc(16 * 4);
+                let count = 2 + index % 3;
+                for term in 0..count {
+                    w.u64(terms + term * 16, subunits[(index + term) % 6] as u64);
+                    w.u32(terms + term * 16 + 8, 1 + term as u32);
+                }
+                w.array(t + 0xc0, terms, count as u32);
+                w.u64(t + template::PRIORITY_UNIT, subunits[index % 6] as u64);
+                if index % 2 == 0 {
+                    let inner = t + cland_combat::TEMPLATE_INNER;
+                    w.u32(inner + cland_combat::TEMPLATE_STATE, 2);
+                    w.u32(
+                        inner + cland_combat::TEMPLATE_COUNTRY,
+                        owners[index % owners.len()],
+                    );
+                }
+                t
+            })
+            .collect();
+        // States, terrain and provinces, registered by id.
+        let states: Vec<usize> = (0..shape.states)
+            .map(|index| {
+                let state = w.object(0x1000, cstate::VTABLE_RVA);
+                w.u32(state + cstate::ID, 500 + index as u32);
+                w.u32(state + cstate::CONTROLLER, owners[index % owners.len()]);
+                let cores = w.alloc(4);
+                w.u32(cores, owners[(index + 1) % owners.len()]);
+                w.array(state + cstate::CORES, cores, 1);
+                let buckets = w.alloc(0x40);
+                w.u64(state + cstate::COUNTRY_MODIFIERS, buckets as u64);
+                w.accumulator(
+                    state + cstate::RESOURCE_MODIFIER + 0x10,
+                    &[(0x2b, 4), (0x1e7, 9)],
+                );
+                state
+            })
+            .collect();
+        let terrains: Vec<usize> = (0..2)
+            .map(|index| {
+                let terrain = w.object(0x100, cterrain_type::VTABLE_RVA);
+                w.put(terrain + cterrain_type::VALID, &[1]);
+                w.text(
+                    terrain + cterrain_type::NAME,
+                    [&b"plains"[..], &b"forest"[..]][index],
+                );
+                w.u64(
+                    terrain + cterrain_type::COMBAT_WIDTH,
+                    9_000_000 + index as u64,
+                );
+                terrain
+            })
+            .collect();
+        let first_province = 1000;
+        let registered = w.alloc((first_province + shape.provinces) * 8);
+        w.array(
+            GAME + cgame_state::PROVINCES,
+            registered,
+            (first_province + shape.provinces) as u32,
+        );
+        let provinces: Vec<usize> = (0..shape.provinces)
+            .map(|index| {
+                let province = w.object(0x200, cprovince::VTABLE_RVA);
+                let definition = w.alloc(0x100);
+                let id = first_province + index;
+                w.u32(province + cprovince::ID, id as u32);
+                w.u32(definition + province_definition::ID, id as u32);
+                w.u64(
+                    definition + cland_combat::DEFINITION_TERRAIN,
+                    terrains[index % 2] as u64,
+                );
+                w.u64(province + cprovince::DEFINITION, definition as u64);
+                w.u64(
+                    province + cprovince::STATE,
+                    states[index % states.len()] as u64,
+                );
+                if index % 4 != 3 {
+                    w.u64(
+                        province + cprovince::STRATEGIC_REGION,
+                        regions[index % 2] as u64,
+                    );
+                }
+                w.u64(registered + id * 8, province as u64);
+                province
+            })
+            .collect();
+        // Army leaders with their orders groups, resolved by reference.
+        let groups = leaders(&mut w, shape.leaders, owners[0]);
+        // Divisions.
+        let total = shape.combats * shape.divisions;
+        let mut armies = Vec::new();
+        for index in 0..total {
+            let army = w.object(0x800, carmy::VTABLE_RVA);
+            w.u64(
+                army + carmy::SECONDARY_BASE,
+                carmy::SECONDARY_VTABLE_RVA as u64,
+            );
+            let handle = ((index as u64 + 1) << 32) | 3;
+            w.u64(army + cunit::HANDLE, handle);
+            let stats = w.object(0x600, csub_unit_definition::VTABLE_RVA);
+            w.u64(army + cunit::STAT_BLOCK, stats as u64);
+            let province = provinces[(index * 7) % provinces.len()];
+            w.u64(army + cunit::LOCATION, province as u64);
+            w.u64(
+                army + carmy::STANDARD_TEMPLATE,
+                templates[(index * 5) % templates.len()] as u64,
+            );
+            let owner = owners[index % owners.len()];
+            w.u32(army + cunit::ROSTER_OWNER, owner);
+            w.u32(army + cunit::LOGICAL_OWNER, owner);
+            let name = w.alloc(0x100);
+            w.u64(army + inputs::DISPLAY_NAME_OWNER, name as u64);
+            w.u64(name + inputs::DISPLAY_NAME + 0x18, 15);
+            w.u64(
+                army + 0x3d8,
+                engine::carmy_manpower_values::VTABLE_RVA as u64,
+            );
+            w.put(army + 0x2e, &[1]);
+            if index < shape.transports {
+                w.u64(army + carmy::NAVAL_TRANSFER_MEMBERSHIP, 1);
+                w.u64(army + cunit::LOCATION, provinces[0] as u64);
+            }
+            let modifiers = index % 3;
+            let data = w.alloc(modifiers.max(1) * 24);
+            for entry in 0..modifiers {
+                w.u32(data + entry * 24, 10 + entry as u32);
+                w.u64(data + entry * 24 + 8, (index * 100 + entry) as u64);
+                w.u64(data + entry * 24 + 16, (entry as i64 - 1) as u64);
+            }
+            w.array(army + cunit::COMBAT_MODIFIER_DATA, data, modifiers as u32);
+            if !groups.is_empty() && index % 4 == 1 {
+                w.u64(
+                    army + carmy::ORDERS_GROUP,
+                    groups[(index / 4) % groups.len()] as u64,
+                );
+            }
+            armies.push(army);
+        }
+        // Combats: a naval combat first, which the land census skips.
+        let registry = w.alloc((shape.combats + 1) * 8);
+        w.array(
+            GAME + cgame_state::COMBATS + 8,
+            registry,
+            shape.combats as u32 + 1,
+        );
+        let naval = w.object(0x100, cnaval_combat::VTABLE_RVA);
+        w.u64(registry, naval as u64);
+        let mut combats = Vec::new();
+        let mut members = Vec::new();
+        let mut all_sides = Vec::new();
+        for combat in 0..shape.combats {
+            let object = w.object(0x600, cland_combat::VTABLE_RVA);
+            w.u64(
+                object + cland_combat::BODY,
+                cland_combat::BODY_VTABLE_RVA as u64,
+            );
+            w.u64(
+                object + cland_combat::HANDLE,
+                ((combat as u64 + 1) << 32) | u64::from(cland_combat::TYPE_WORD),
+            );
+            w.u64(
+                object + cland_combat::PROVINCE,
+                provinces[(combat * 3) % provinces.len()] as u64,
+            );
+            w.u64(
+                object + cland_combat::STORED_TERRAIN,
+                terrains[combat % 2] as u64,
+            );
+            w.put(object + cland_combat::INDICATOR_FRAME_HIGH, &[combat as u8]);
+            w.u64(object + cland_combat::WIDTH_FACTOR, (combat as u64) * 1_000);
+            let own = armies[combat * shape.divisions..(combat + 1) * shape.divisions].to_vec();
+            let attackers = (shape.divisions / 2 + combat % 2).clamp(1, shape.divisions - 1);
+            let mut pair = [0; 2];
+            for (index, (units, is_attacker)) in [(&own[..attackers], 1_u8), (&own[attackers..], 0)]
+                .into_iter()
+                .enumerate()
+            {
+                let side = w.object(0x600, cland_combatant::VTABLE_RVA);
+                w.u64(side + cland_combatant::COMBAT, object as u64);
+                w.put(side + cland_combatant::IS_ATTACKER, &[is_attacker]);
+                w.u32(side + cland_combatant::FLAGS, (combat * 2 + index) as u32);
+                let list = w.alloc(units.len() * 8);
+                for (ordinal, &unit) in units.iter().enumerate() {
+                    w.u64(list + ordinal * 8, unit as u64);
+                }
+                w.array(side + cland_combatant::UNITS, list, units.len() as u32);
+                // Committed first, then one reserve, the rest unassigned.
+                let committed = units.len().div_ceil(2);
+                let reserves = usize::from(units.len() > committed);
+                w.array(side + cland_combatant::COMMITTED, list, committed as u32);
+                w.array(
+                    side + cland_combatant::RESERVES,
+                    list + committed * 8,
+                    reserves as u32,
+                );
+                pair[index] = side;
+            }
+            w.u64(object + cland_combat::ATTACKER, pair[0] as u64);
+            w.u64(object + cland_combat::DEFENDER, pair[1] as u64);
+            w.u64(registry + (combat + 1) * 8, object as u64);
+            combats.push(object);
+            members.push(own);
+            all_sides.push(pair);
+        }
+        Built {
+            world: w,
+            combats,
+            armies: members,
+            sides: all_sides,
+        }
+    }
+
+    /// `count` category-2 army leaders (no formation), each in its own orders
+    /// group, resolvable through the high reference root. Returns the groups.
+    fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
+        use engine::{
+            carmy_leader, cnull_combat_tactic, corders_group, creference_registry as registry,
+            cunit_leader, cunit_leader_skill, reference_bucket as bucket,
+        };
+        if count == 0 {
+            return Vec::new();
+        }
+        let skill = w.object(0x200, cunit_leader_skill::VTABLE_RVA);
+        w.u32(skill + cunit_leader_skill::LEVEL, 3);
+        w.u32(skill + cunit_leader_skill::CATEGORY, 2);
+        let skills = w.alloc(0x200);
+        w.u64(
+            engine::naval_commander_inputs::SKILL_DATABASE_RVA,
+            skills as u64,
+        );
+        let levels = w.alloc(8 * 5);
+        for level in 0..5 {
+            w.u64(levels + level * 8, skill as u64);
+        }
+        w.array(skills + 0xe8 + 2 * 0x18, levels, 5);
+        let preferred = w.object(0x100, cnull_combat_tactic::VTABLE_RVA);
+        // One bucket per leader in a 64-slot table, without collisions.
+        let (mask, overflow) = (63_u32, 8_u8);
+        let table = w.alloc(0x40);
+        let entries = w.alloc((mask as usize + 1 + overflow as usize + 1) * bucket::STRIDE);
+        w.u64(registry::HIGH_ROOT_RVA, table as u64);
+        w.u64(table + registry::ENTRIES, entries as u64);
+        w.u32(table + registry::COUNT, count as u32);
+        w.u32(table + registry::MASK, mask);
+        w.put(table + registry::OVERFLOW_DISTANCE, &[overflow]);
+        w.put(
+            entries + (mask as usize + 1 + overflow as usize) * bucket::STRIDE + bucket::DISTANCE,
+            &[bucket::TERMINAL_DISTANCE],
+        );
+        let mut used = Vec::new();
+        let mut groups = Vec::new();
+        let mut id = 0_u64;
+        while groups.len() < count {
+            id += 1;
+            let handle = (id << 32) | u64::from(cunit_leader::REFERENCE_TYPE);
+            let hash = handle
+                .rotate_left(32)
+                .wrapping_mul(registry::HASH_MULTIPLIER);
+            let slot = ((hash >> 32) as u32 ^ hash as u32) & mask;
+            if used.contains(&slot) {
+                continue;
+            }
+            used.push(slot);
+            let leader = w.object(0x1100, carmy_leader::VTABLE_RVA);
+            w.u64(leader + cunit_leader::TYPE, handle);
+            w.u64(leader + cunit_leader::SKILL, skill as u64);
+            w.u32(leader + cunit_leader::CATEGORY, 2);
+            w.u64(leader + cunit_leader::EXPERIENCE, 10 * id);
+            w.text(
+                leader + cunit_leader::NAME,
+                format!("leader {id}").as_bytes(),
+            );
+            w.u64(leader + 0x60 + 24, 15);
+            for offset in [0xc0, 0xe0, 0x100] {
+                w.text(leader + offset, b"fallback");
+            }
+            w.u32(leader + 0x120, country);
+            w.u64(
+                leader + land_tactic_inputs::LEADER_PREFERRED_TACTIC,
+                preferred as u64,
+            );
+            let cell = entries + slot as usize * bucket::STRIDE;
+            w.put(cell + bucket::DISTANCE, &[1]);
+            w.u64(cell + 8, handle);
+            w.u64(cell + 16, leader as u64);
+            let group = w.object(corders_group::SIZE, corders_group::VTABLE_RVA);
+            w.u64(
+                group + corders_group::HANDLE,
+                (id << 32) | u64::from(corders_group::REFERENCE_TYPE),
+            );
+            w.u64(group + corders_group::LEADER, leader as u64);
+            groups.push(group);
+        }
+        groups
+    }
+
+    /// Large enough for every fixture here, so nothing truncates.
+    fn roomy() -> Capacities {
+        Capacities {
+            divisions: 8192,
+            window_divisions: 8192,
+            details: 1024,
+            sides: 2048,
+            ..Capacities::default()
+        }
+    }
+
+    /// Everything a walk publishes: tables, outcomes, and the demand of every
+    /// arena and census.
+    #[derive(Debug, PartialEq)]
+    struct Observed {
+        tables: [TableView; N],
+        outcomes: [Outcome; N],
+        demand: Vec<usize>,
+    }
+
+    fn demand(captured: &Captured) -> Vec<usize> {
+        vec![
+            captured.division_commanders.required,
+            captured.rosters.required,
+            captured.members.required,
+            captured.modifiers.required,
+            captured.width_terms.required,
+            captured.manpower.required,
+            captured.reinforcement_modifiers.required,
+            captured.supply_terms.required,
+            captured.acclimatization.required,
+            captured.transport_terms.required,
+            captured.window.required,
+            captured.tactic_unlocks.required,
+            captured.tactic_candidates.required,
+            captured.tactic_weights.required,
+            captured.required_census,
+            captured.required_census_participants,
+            captured.required_commander_keys,
+        ]
+    }
+
+    fn observe(captured: &Captured) -> Observed {
+        Observed {
+            tables: captured.tables(),
+            outcomes: captured.outcomes(),
+            demand: demand(captured),
+        }
+    }
+
+    fn pass(captured: &mut Captured, world: &impl Memory) {
+        captured.reset();
+        captured.capture(world, 0, GAME);
+    }
+
+    fn run(world: &impl Memory, c: Capacities) -> Observed {
+        let mut captured = Captured::with_capacities(&c);
+        pass(&mut captured, world);
+        observe(&captured)
+    }
+
+    /// One walk as main's readers read: nothing shared (see `Destination`).
+    fn run_reference(world: &impl Memory, c: Capacities) -> Observed {
+        let mut captured = Captured::with_capacities(&c);
+        captured.reference = true;
+        pass(&mut captured, world);
+        observe(&captured)
+    }
+
+    /// The walk and the reference walk publish the same, with and without
+    /// the authenticated roster: every table, outcome, failure and demand.
+    fn assert_equivalent_with(world: &World, c: Capacities) -> Observed {
+        let cache = roster(world);
+        let rostered = cache.roster_view(world);
+        let one = run(world, c);
+        assert_eq!(run_reference(world, c), one, "reference walk");
+        let with_roster = run(&rostered, c);
+        assert_eq!(
+            run_reference(&rostered, c),
+            with_roster,
+            "reference walk, roster"
+        );
+        if one
+            .outcomes
+            .iter()
+            .all(|outcome| !matches!(outcome, Outcome::Unavailable { .. }))
+        {
+            assert_eq!(with_roster, one, "authenticated roster");
+        }
+        one
+    }
+
+    fn assert_equivalent(world: &World) -> Observed {
+        assert_equivalent_with(world, roomy())
+    }
+
+    /// Every failure is the reference walk's: a read that fails at a chosen
+    /// ordinal of the reference walk publishes the tables, outcomes and
+    /// demand the reference walk publishes.
+    #[test]
+    fn walk_fails_as_the_reference_walk() {
+        let shape = Shape::small();
+        let mut built = world(&shape);
+        *built.world.log.lock().unwrap() = Some(Vec::new());
+        run_reference(&built.world, roomy());
+        let log = built.world.log.lock().unwrap().take().unwrap();
+        let mut seen = std::collections::HashSet::new();
+        let spans: Vec<_> = log.into_iter().filter(|span| seen.insert(*span)).collect();
+        let step = (spans.len() / 150).max(1);
+        let mut failed = 0;
+        for &span in spans.iter().step_by(step) {
+            built.world.poisoned = vec![span];
+            let one = assert_equivalent(&built.world);
+            failed += usize::from(
+                one.outcomes
+                    .iter()
+                    .any(|outcome| matches!(outcome, Outcome::Unavailable { .. })),
+            );
+        }
+        assert!(failed > 0);
+    }
+
+    fn rows(view: &TableView) -> usize {
+        match view {
+            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
+            _ => 0,
+        }
+    }
+
+    /// Every table complete and identical to the reference walk's, with
+    /// shared owners, templates, states, provinces and regions, leaders,
+    /// transport divisions, a naval combat the census skips and a tactic
+    /// registry.
+    #[test]
+    fn family_walk_publishes_the_reference_tables() {
+        let shape = Shape::small();
+        let built = world(&shape);
+        let one = assert_equivalent(&built.world);
+        for (table, view) in one.tables.iter().enumerate() {
+            assert!(
+                matches!(view, TableView::Complete(_)),
+                "table {table}: {view:?}"
+            );
+        }
+        assert_eq!(rows(&one.tables[0]), shape.combats);
+        assert_eq!(rows(&one.tables[1]), shape.combats * shape.divisions);
+        assert_eq!(rows(&one.tables[2]), shape.combats * 2);
+        let TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)) =
+            &one.tables[1]
+        else {
+            unreachable!()
+        };
+        let commanded = divisions
+            .iter()
+            .filter(|row| row.commander_inputs.is_some())
+            .count();
+        assert_eq!(
+            commanded,
+            (0..shape.combats * shape.divisions)
+                .filter(|index| index % 4 == 1)
+                .count()
+        );
+        assert!(divisions.iter().any(|row| !row.width_terms.is_empty()));
+        // Committed divisions evaluate both template frames through the tag
+        // sets and core lists.
+        for frame in [1, 2] {
+            assert!(divisions.iter().any(|row| row.template_frames & frame != 0));
+        }
+        assert!(divisions.iter().any(|row| row.template_frames == 0));
+        let TableView::Complete(replay::rows::TableRows::LandCombatDetails(details)) =
+            &one.tables[0]
+        else {
+            unreachable!()
+        };
+        assert!(details.iter().all(|row| row.tactic_candidates.len() == 2));
+        assert!(
+            details
+                .iter()
+                .any(|row| row.sides.iter().any(|side| side.commander != 0))
+        );
+        let TableView::Complete(replay::rows::TableRows::LandCombatModifiers(sides)) =
+            &one.tables[2]
+        else {
+            unreachable!()
+        };
+        assert!(
+            sides
+                .iter()
+                .any(|side| side.divisions.iter().any(|d| !d.entries.is_empty()))
+        );
+    }
+
+    fn reason(outcome: Outcome) -> &'static str {
+        match outcome {
+            Outcome::Unavailable { reason } => reason,
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    /// Guarded division failures keep the earliest combat's reason.
+    #[test]
+    fn earliest_guarded_failure_wins() {
+        let shape = Shape::small();
+        let stat_block = |built: &mut Built, combat: usize| {
+            let army = built.armies[combat][0];
+            built.world.poison(army + cunit::STAT_BLOCK, 8);
+        };
+        let stat_vtable = |built: &mut Built, combat: usize| {
+            let army = built.armies[combat][1];
+            let stats = built.world.get_u64(army + cunit::STAT_BLOCK) as usize;
+            built.world.u64(stats, 0x1234);
+        };
+        // Each failure alone, to show the reasons differ.
+        let mut built = world(&shape);
+        stat_block(&mut built, 3);
+        let first = reason(assert_equivalent(&built.world).outcomes[1]);
+        let mut built = world(&shape);
+        stat_vtable(&mut built, 4);
+        let second = reason(assert_equivalent(&built.world).outcomes[1]);
+        assert_ne!(first, second);
+        for (early, late, expected) in [(3, 4, first), (2, 5, second)] {
+            let mut built = world(&shape);
+            if expected == first {
+                stat_block(&mut built, early);
+                stat_vtable(&mut built, late);
+            } else {
+                stat_vtable(&mut built, early);
+                stat_block(&mut built, late);
+            }
+            let observed = assert_equivalent(&built.world);
+            assert_eq!(reason(observed.outcomes[1]), expected);
+            assert!(matches!(observed.tables[0], TableView::Complete(_)));
+        }
+    }
+
+    /// A failure that replaces earlier ones (a combat's unit list) keeps the
+    /// latest combat's reason, also over an earlier or later guarded failure.
+    #[test]
+    fn latest_overwriting_failure_wins() {
+        let shape = Shape::small();
+        let duplicate = |built: &mut Built, combat: usize| {
+            let side = built.sides[combat][0];
+            let list = built.world.get_u64(side + cland_combatant::COMMITTED) as usize;
+            let first = built.world.get_u64(list);
+            built.world.u64(list + 8, first);
+        };
+        let overlap = |built: &mut Built, combat: usize| {
+            let side = built.sides[combat][0];
+            let list = built.world.get_u64(side + cland_combatant::COMMITTED);
+            built.world.u64(side + cland_combatant::RESERVES, list);
+        };
+        for (duplicated, overlapped, expected) in [
+            (1, 4, "land role subsets overlap"),
+            (5, 2, "land role subset has duplicate unit"),
+            (0, 6, "land role subsets overlap"),
+        ] {
+            let mut built = world(&shape);
+            duplicate(&mut built, duplicated);
+            overlap(&mut built, overlapped);
+            // A guarded division failure between them never replaces one.
+            let army = built.armies[3][0];
+            built.world.poison(army + cunit::STAT_BLOCK, 8);
+            let observed = assert_equivalent(&built.world);
+            assert_eq!(reason(observed.outcomes[1]), expected);
+            assert_eq!(reason(observed.outcomes[2]), expected);
+        }
+    }
+
+    /// The window read precedes detail() within a combat, and the earlier
+    /// combat's failure wins.
+    #[test]
+    fn window_and_detail_failures_order_by_combat() {
+        let shape = Shape::small();
+        let window = |built: &mut Built, combat: usize| {
+            let army = built.armies[combat][0];
+            built
+                .world
+                .poison(army + cland_combat::UNIT_DIRECTION_GROUP, 4);
+        };
+        // The stored terrain is read only by detail(): point it at the combat.
+        let detail = |built: &mut Built, combat: usize| {
+            let object = built.combats[combat];
+            built
+                .world
+                .u64(object + cland_combat::STORED_TERRAIN, object as u64);
+        };
+        let mut built = world(&shape);
+        window(&mut built, 1);
+        let window_reason = reason(assert_equivalent(&built.world).outcomes[0]);
+        let mut built = world(&shape);
+        detail(&mut built, 1);
+        let detail_reason = reason(assert_equivalent(&built.world).outcomes[0]);
+        assert_ne!(window_reason, detail_reason);
+        for (windowed, detailed, expected) in [
+            (1, 2, window_reason),
+            (4, 1, detail_reason),
+            (3, 3, window_reason),
+        ] {
+            let mut built = world(&shape);
+            window(&mut built, windowed);
+            detail(&mut built, detailed);
+            let observed = assert_equivalent(&built.world);
+            assert_eq!(reason(observed.outcomes[0]), expected);
+            // The division table sees only the window failure.
+            assert_eq!(reason(observed.outcomes[1]), window_reason);
+        }
+    }
+
+    /// A failed tactic registry fails the details at the first combat; a
+    /// truncated one reads no details.
+    #[test]
+    fn tactic_registry_outcome_governs_the_details() {
+        let shape = Shape::small();
+        let detail = |built: &mut Built, combat: usize| {
+            let object = built.combats[combat];
+            built.world.poison(object + cland_combat::STORED_TERRAIN, 8);
+        };
+        let mut built = world(&shape);
+        built.world.poison(land_tactic_inputs::DATABASE_RVA, 8);
+        detail(&mut built, 1);
+        let observed = assert_equivalent(&built.world);
+        assert_eq!(reason(observed.outcomes[0]), "tactic input unreadable");
+        // Truncated: two tactics, one candidate slot.
+        let mut built = world(&shape);
+        detail(&mut built, 3);
+        let one = assert_equivalent_with(
+            &built.world,
+            Capacities {
+                tactic_candidates: 1,
+                ..roomy()
+            },
+        );
+        assert_eq!(
+            one.outcomes[0],
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: shape.combats as u32
+            }
+        );
+        assert!(matches!(one.tables[1], TableView::Complete(_)));
+    }
+
+    /// A census that fails at a later combat stops the walk there; an
+    /// earlier division failure still names the division table.
+    #[test]
+    fn census_failure_stops_the_walk_at_its_combat() {
+        let shape = Shape::small();
+        let mut built = world(&shape);
+        let army = built.armies[5][0];
+        built.world.poison(army + carmy::SECONDARY_BASE, 16);
+        let census = reason(assert_equivalent(&built.world).outcomes[0]);
+        let army = built.armies[2][0];
+        built.world.poison(army + cunit::STAT_BLOCK, 8);
+        let observed = assert_equivalent(&built.world);
+        assert_eq!(reason(observed.outcomes[0]), census);
+        assert_eq!(reason(observed.outcomes[2]), census);
+        assert_ne!(reason(observed.outcomes[1]), census);
+    }
+
+    /// Detail and side slots too few for the census truncate as the
+    /// reference walk does, and publish every row after growth.
+    #[test]
+    fn truncated_walk_matches_the_reference_and_grows() {
+        let shape = Shape {
+            combats: 5,
+            ..Shape::small()
+        };
+        let built = world(&shape);
+        let mut c = Capacities {
+            details: 4,
+            sides: 8,
+            ..Capacities::default()
+        };
+        let truncated = assert_equivalent_with(&built.world, c);
+        assert_eq!(
+            truncated.outcomes[0],
+            Outcome::Truncated {
+                len: 4,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(
+            truncated.outcomes[2],
+            Outcome::Truncated {
+                len: 8,
+                unread_rows: 2
+            }
+        );
+        let mut captured = Captured::with_capacities(&c);
+        pass(&mut captured, &built.world);
+        captured.grow(&mut c);
+        pass(&mut captured, &built.world);
+        let grown = observe(&captured);
+        assert_eq!(grown, run_reference(&built.world, c));
+        assert!(
+            grown
+                .tables
+                .iter()
+                .all(|view| matches!(view, TableView::Complete(_)))
+        );
+    }
+
+    /// The live rate on the run3 save: 44,741 guarded calls in 0.96 ms.
+    const LIVE_NS_PER_CALL: f64 = 21.5;
+
+    /// Guarded calls per pass for the whole land combat family (census,
+    /// details, divisions and modifiers) over the authenticated roster, as
+    /// the Ordinary job reads, at 153, 1,000, 3,000 and 5,000 divisions in
+    /// combat: the reference walk (main's reads, nothing shared) and the
+    /// walk. A gather (`copy_records`) or scatter is one guarded call, as
+    /// live. The estimate uses run3's 21.5 ns per guarded call; the
+    /// fixture's own time is its slow sparse memory, not the game's. Run in
+    /// release with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn family_cost_at_scale() {
+        const PASSES: usize = 5;
+        let live = |calls: usize| calls as f64 * LIVE_NS_PER_CALL / 1e6;
+        println!(
+            "| divisions | combats | reference calls | walk calls | walk live ms | calls per division | fixture ms |"
+        );
+        println!("|---|---|---|---|---|---|---|");
+        let mut attribution = Vec::new();
+        let mut kinds = Vec::new();
+        let mut by_stage = Vec::new();
+        for divisions in [153, 1_000, 3_000, 5_000] {
+            let shape = Shape::scale(divisions);
+            let built = world(&shape);
+            let w = &built.world;
+            let cache = roster(w);
+            let view = &cache.roster_view(w);
+            let mut capacities = Capacities::default();
+            let mut walk = Captured::with_capacities(&capacities);
+            // Grow to the census and warm storage, as a running recorder has.
+            for _ in 0..3 {
+                pass(&mut walk, view);
+                walk.grow(&mut capacities);
+            }
+            pass(&mut walk, view);
+            let published = observe(&walk);
+            assert!(
+                published
+                    .tables
+                    .iter()
+                    .all(|view| matches!(view, TableView::Complete(_)))
+            );
+            let mut reference = Captured::with_capacities(&capacities);
+            reference.reference = true;
+            pass(&mut reference, view);
+            w.calls.store(0, Ordering::Relaxed);
+            pass(&mut reference, view);
+            let reference_calls = w.calls.swap(0, Ordering::Relaxed);
+            assert_eq!(observe(&reference), published);
+            let (mut fixture_ms, mut calls) = (Vec::new(), 0);
+            for _ in 0..PASSES {
+                walk.reset();
+                w.calls.store(0, Ordering::Relaxed);
+                let started = std::time::Instant::now();
+                walk.capture(view, 0, GAME);
+                fixture_ms.push(started.elapsed().as_secs_f64() * 1e3);
+                calls = w.calls.swap(0, Ordering::Relaxed);
+            }
+            fixture_ms.sort_by(f64::total_cmp);
+            assert_eq!(observe(&walk), published);
+            let tables = per_table(w, &cache, |memory| {
+                walk.reset();
+                walk.capture(memory, 0, GAME);
+            });
+            kinds.push((divisions, calls_by_object(&built, view, &mut walk)));
+            let total = shape.combats * shape.divisions;
+            let stages = stages(w, view, tables);
+            assert_eq!(
+                stages.iter().map(|(_, calls)| calls).sum::<u64>(),
+                calls as u64,
+                "stages cover the walk"
+            );
+            by_stage.push((total, stages));
+            attribution.push(format!(
+                "| {total} | {} | {} | {} |",
+                tables[0], tables[1], tables[2]
+            ));
+            println!(
+                "| {total} | {} | {reference_calls} | {calls} | {:.2} | {:.1} | {:.2} |",
+                shape.combats,
+                live(calls),
+                calls as f64 / total as f64,
+                fixture_ms[PASSES / 2],
+            );
+        }
+        println!();
+        println!("Guarded calls by table, as the recorder attributes them:");
+        println!("| divisions | details | divisions table | modifiers |");
+        println!("|---|---|---|---|");
+        for row in attribution {
+            println!("{row}");
+        }
+        println!();
+        println!("Guarded calls by stage (live ms at 21.5 ns per call):");
+        for (divisions, stages) in by_stage {
+            let row: Vec<String> = stages
+                .iter()
+                .map(|(stage, calls)| {
+                    format!("{stage} {calls} ({:.2} ms)", live(*calls as usize))
+                })
+                .collect();
+            println!("{divisions} divisions: {}", row.join("; "));
+        }
+        println!();
+        println!("The walk's guarded calls by the object each call reads first:");
+        for (divisions, kinds) in kinds {
+            println!("{divisions} divisions: {kinds:?}");
+        }
+    }
+
+    /// One walk's guarded calls by stage over `memory` (the roster view of
+    /// `w`). Each stage runs in the walk's order with the walk's shares and
+    /// counts as the difference from the stages before it; the division
+    /// readers (with their commanders) and the modifier members are what the
+    /// divisions and modifiers tables (`tables`) count beyond those stages.
+    fn stages(w: &World, memory: &impl Memory, tables: [u64; N]) -> Vec<(&'static str, u64)> {
+        use engine::land_tactic_inputs as tactic;
+        let through = |stage: u8| {
+            let mut census = vec![cland_combat::Row::default(); 4096];
+            let mut participants = vec![0; 1 << 17];
+            let mut pointers = vec![0; 1 << 17];
+            let mut shares = cland_combat::CombatScratch::default();
+            let mut images = engine::combat_sources::Images::default();
+            let mut window =
+                vec![cland_combat::WindowDivision::default(); cland_combat::WINDOW_DIVISION_LIMIT];
+            let mut rosters = vec![0; cland_combat::DETAIL_UNIT_LIMIT as usize * 4];
+            let mut candidates = vec![tactic::Candidate::default(); 1024];
+            let mut weights = vec![tactic::WeightTerm::default(); 4096];
+            let mut unlocks = vec![tactic::Unlock::default(); 1 << 16];
+            w.calls.store(0, Ordering::Relaxed);
+            if stage >= 2 {
+                tactic::capture_registry(memory, 0, &mut candidates, &mut weights);
+            }
+            let walk = cland_combat::walk_members(
+                memory,
+                0,
+                GAME,
+                &mut census,
+                &mut participants,
+                &mut pointers,
+                |source, members| {
+                    let mut commanders = cland_combat::Commanders::default();
+                    if stage >= 1 {
+                        cland_combat::read_window_operands(
+                            memory,
+                            0,
+                            GAME,
+                            source,
+                            &members,
+                            &mut commanders,
+                            &mut shares,
+                            &mut window,
+                        )
+                        .unwrap();
+                    }
+                    if stage >= 2 {
+                        cland_combat::read_details(
+                            memory,
+                            0,
+                            source,
+                            &members,
+                            &mut commanders,
+                            &mut rosters,
+                        )
+                        .unwrap();
+                        tactic::capture_context(
+                            memory,
+                            0,
+                            GAME,
+                            source,
+                            &members,
+                            &mut commanders,
+                            &mut unlocks,
+                        );
+                    }
+                    if stage >= 3 {
+                        cland_combat::read_modifiers_context(memory, 0, source).unwrap();
+                    }
+                    if stage >= 4 {
+                        images.capture(memory, members.pointers);
+                    }
+                    if stage >= 5 {
+                        cland_combat::visit_units(
+                            memory,
+                            0,
+                            source,
+                            &members,
+                            &mut shares,
+                            |_, _, _, _, _, _| {},
+                        )
+                        .unwrap();
+                    }
+                },
+            );
+            assert!(matches!(walk.outcome, Outcome::Rows { .. }));
+            w.calls.swap(0, Ordering::Relaxed) as u64
+        };
+        let counts: Vec<u64> = (0..=5).map(through).collect();
+        let stage = |index: usize| counts[index] - counts[index - 1];
+        vec![
+            ("census", counts[0]),
+            ("window", stage(1)),
+            ("details and tactic context", stage(2)),
+            ("unit visit", stage(5)),
+            ("division images", stage(4)),
+            (
+                "division readers and commanders",
+                tables[1] - stage(1) - stage(4),
+            ),
+            ("modifier context", stage(3)),
+            ("modifier members", tables[2] - stage(3)),
+        ]
+    }
+
+    /// One walk's guarded calls by the object each call reads first: the
+    /// divisions' own armies and stat blocks, the combats and their sides,
+    /// module and game-state words, and every other object (countries,
+    /// provinces, states, templates, leaders, participant lists).
+    fn calls_by_object(
+        built: &Built,
+        memory: &impl Memory,
+        captured: &mut Captured,
+    ) -> Vec<(&'static str, usize)> {
+        let w = &built.world;
+        let armies: Vec<usize> = built.armies.iter().flatten().copied().collect();
+        let mut stats: Vec<usize> = armies
+            .iter()
+            .map(|&army| w.get_u64(army + cunit::STAT_BLOCK) as usize)
+            .collect();
+        stats.sort_unstable();
+        let mut sorted = armies.clone();
+        sorted.sort_unstable();
+        let mut sides: Vec<usize> = built.sides.iter().flatten().copied().collect();
+        sides.sort_unstable();
+        let mut combats = built.combats.clone();
+        combats.sort_unstable();
+        *w.call_log.lock().unwrap() = Some(Vec::new());
+        captured.reset();
+        captured.capture(memory, 0, GAME);
+        let log = w.call_log.lock().unwrap().take().unwrap();
+        let within = |objects: &[usize], size: usize, address: usize| {
+            let at = objects.partition_point(|&start| start <= address);
+            at > 0 && address < objects[at - 1] + size
+        };
+        let mut counts = [
+            ("division army", 0),
+            ("division stat block", 0),
+            ("combat", 0),
+            ("combat side", 0),
+            ("module or game state", 0),
+            ("other", 0),
+        ];
+        for address in log {
+            let kind = if within(&sorted, 0x800, address) {
+                0
+            } else if within(&stats, 0x600, address) {
+                1
+            } else if within(&combats, 0x600, address) {
+                2
+            } else if within(&sides, 0x600, address) {
+                3
+            } else if address < 0x1_0000_0000 {
+                4
+            } else {
+                5
+            };
+            counts[kind].1 += 1;
+        }
+        counts.to_vec()
     }
 }

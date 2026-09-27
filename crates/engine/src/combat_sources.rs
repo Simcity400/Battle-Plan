@@ -10,13 +10,21 @@
 //! keeps each stage's failure apart, so every division meets the value or the
 //! reason main's reader meets, at the point where main meets it.
 //!
+//! A combat's divisions' own army and stat block fields are gathered in two
+//! guarded calls ([`Images`]) and served to each division's readers through
+//! its [`DivisionImage`].
+//!
 //! [`Sources::clear`] starts each pass; nothing crosses hours. Storage is kept
 //! between passes: the maps and the flat arenas below grow on the acquisition
 //! worker to the pass's exact demand and are reused. The equivalence tests run
 //! a test-only copy of main's readers (`main_reinforcement`, `main_combat`) as
 //! the baseline and compare every output and every failure.
 
-use crate::{Memory, memory::Raw, read};
+use crate::{
+    Memory,
+    memory::{Raw, RecordField, RecordLayout, RecordSources},
+    read,
+};
 use std::{
     collections::HashMap,
     hash::{BuildHasherDefault, Hash, Hasher},
@@ -209,78 +217,218 @@ pub(crate) fn share<K: Hash + Eq, V>(
     }
 }
 
-/// The CArmy bytes one division's readers use: every field they read on the
-/// army lies below +0x628 (the fuel word at +0x620 is the last).
-pub const ARMY_IMAGE: usize = 0x628;
-/// The stat block's: every field they read lies below +0x2A8 (armour and
-/// piercing at +0x298 are the last).
-pub const STAT_IMAGE: usize = 0x2a8;
+const fn span(start: usize, end: usize, destination: usize) -> RecordField {
+    RecordField {
+        source_offset: start,
+        destination_offset: destination,
+        len: end - start,
+    }
+}
 
-/// One division's army and stat block, each copied once, serving every read
-/// that falls inside them; everything else goes to the source.
-///
-/// The division's readers (stats, context, reinforcement, manpower) read some
-/// twenty separate army and stat fields. The images replace those guarded
-/// reads with two copies. The pass holds the simulation thread, so the bytes
-/// are the ones each field read would return. An image that cannot be copied
-/// is not used, and its fields are read one by one as without it, failing
-/// where they fail.
+/// The CArmy spans one division's readers read (stats, context,
+/// reinforcement, manpower, the modifier member and the leader chain), packed
+/// in order: identity/class/handle; formation and supply bytes; the orders
+/// group; the stat block; modifier data and attack accumulator; owners,
+/// location and route; retreat flags; the transfer membership; the name
+/// owner; the template; manpower; strength and organisation; entrenchment and
+/// strength factor; supply days; acclimatization; supply and fuel. Small gaps
+/// inside a span are the same object's bytes.
+const ARMY_FIELDS: [RecordField; 17] = [
+    span(0x000, 0x020, 0x000),
+    span(0x028, 0x060, 0x020),
+    span(0x0c0, 0x0c8, 0x058),
+    span(0x138, 0x140, 0x060),
+    span(0x170, 0x1a8, 0x068),
+    span(0x1d8, 0x210, 0x0a0),
+    span(0x24c, 0x24e, 0x0d8),
+    span(0x2ae, 0x2af, 0x0da),
+    span(0x2f8, 0x300, 0x0e0),
+    span(0x340, 0x348, 0x0e8),
+    span(0x3b8, 0x3c0, 0x0f0),
+    span(0x3d8, 0x3f0, 0x0f8),
+    span(0x420, 0x438, 0x110),
+    span(0x458, 0x470, 0x128),
+    span(0x498, 0x49c, 0x140),
+    span(0x4c0, 0x4f8, 0x148),
+    span(0x600, 0x628, 0x180),
+];
+const ARMY_STRIDE: usize = 0x1a8;
+/// The stat block spans the readers read: identity; defence to initiative;
+/// fuel capacity; anti-air; maxima, base speed, armour and piercing.
+const STAT_FIELDS: [RecordField; 5] = [
+    span(0x000, 0x008, 0x000),
+    span(0x0a8, 0x0e8, 0x008),
+    span(0x120, 0x128, 0x048),
+    span(0x220, 0x228, 0x050),
+    span(0x280, 0x2a8, 0x058),
+];
+const STAT_STRIDE: usize = 0x80;
+const ARMY_LAYOUT: RecordLayout<'static> = RecordLayout::new(&ARMY_FIELDS, ARMY_STRIDE).unwrap();
+const STAT_LAYOUT: RecordLayout<'static> = RecordLayout::new(&STAT_FIELDS, STAT_STRIDE).unwrap();
+/// Where the army record keeps the stat block pointer (`cunit::STAT_BLOCK`).
+const STAT_POINTER: usize = 0x060;
+const _: () = assert!(
+    ARMY_FIELDS[3].source_offset == crate::cunit::STAT_BLOCK
+        && ARMY_FIELDS[3].destination_offset == STAT_POINTER
+);
+
+/// Many divisions' army and stat block fields, gathered with one guarded call
+/// for the armies and one for their stat blocks (a failing record costs one
+/// more call, which resumes after it). The pass holds the simulation thread,
+/// so each field is the value its reader would read; a division whose record
+/// did not copy completely is served nothing, and its reads go to the source
+/// one by one, failing where they fail. Storage grows on the acquisition
+/// worker and is reused.
+#[derive(Default)]
+pub struct Images {
+    armies: Vec<usize>,
+    stats: Vec<usize>,
+    army_bytes: Vec<u8>,
+    stat_bytes: Vec<u8>,
+    army_complete: Vec<bool>,
+    stat_complete: Vec<bool>,
+}
+
+impl Images {
+    /// Holds no division: every read goes to the source.
+    pub fn clear(&mut self) {
+        self.armies.clear();
+    }
+
+    /// Gathers the images of `armies` (the census's authenticated pointers).
+    pub fn capture(&mut self, memory: &impl Memory, armies: &[usize]) {
+        let count = armies.len();
+        self.armies.clear();
+        self.armies.extend_from_slice(armies);
+        self.army_bytes.resize(count * ARMY_STRIDE, 0);
+        self.army_complete.resize(count, false);
+        gather(
+            memory,
+            &self.armies,
+            &ARMY_LAYOUT,
+            &mut self.army_bytes,
+            &mut self.army_complete,
+        );
+        self.stats.clear();
+        for row in 0..count {
+            let at = row * ARMY_STRIDE + STAT_POINTER;
+            self.stats.push(if self.army_complete[row] {
+                u64::from_le_bytes(self.army_bytes[at..at + 8].try_into().unwrap()) as usize
+            } else {
+                0
+            });
+        }
+        self.stat_bytes.resize(count * STAT_STRIDE, 0);
+        self.stat_complete.resize(count, false);
+        gather(
+            memory,
+            &self.stats,
+            &STAT_LAYOUT,
+            &mut self.stat_bytes,
+            &mut self.stat_complete,
+        );
+    }
+
+    /// The memory `army`'s readers read through: its image when `row` holds
+    /// that division, else the source alone.
+    pub fn division<'a, M: Memory>(
+        &'a self,
+        inner: &'a M,
+        row: usize,
+        army: usize,
+    ) -> DivisionImage<'a, M> {
+        let held = self.armies.get(row) == Some(&army) && self.army_complete[row];
+        let stat = held && self.stat_complete[row];
+        DivisionImage {
+            inner,
+            army,
+            army_row: held.then(|| &self.army_bytes[row * ARMY_STRIDE..][..ARMY_STRIDE]),
+            stat: if stat { self.stats[row] } else { 0 },
+            stat_row: stat.then(|| &self.stat_bytes[row * STAT_STRIDE..][..STAT_STRIDE]),
+        }
+    }
+}
+
+/// Copies every row of `pointers` it can, marking each complete one. A null
+/// pointer is skipped; a failing record ends its call and the next resumes
+/// after it, so nothing is read twice.
+fn gather(
+    memory: &impl Memory,
+    pointers: &[usize],
+    layout: &RecordLayout<'_>,
+    bytes: &mut [u8],
+    complete: &mut [bool],
+) {
+    let (fields, stride) = (layout.field_count(), layout.stride());
+    complete.fill(false);
+    let mut row = 0;
+    while row < pointers.len() {
+        if pointers[row] == 0 {
+            row += 1;
+            continue;
+        }
+        let end = pointers[row..]
+            .iter()
+            .position(|&pointer| pointer == 0)
+            .map_or(pointers.len(), |run| row + run);
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&pointers[row..end]),
+            layout,
+            &mut bytes[row * stride..end * stride],
+        ) / fields;
+        complete[row..row + copied].fill(true);
+        // The failed record, if any, is skipped.
+        row += copied + usize::from(row + copied < end);
+    }
+}
+
+/// One division's army and stat block fields from [`Images`], serving every
+/// read that falls inside one of their spans; everything else goes to the
+/// source.
 pub struct DivisionImage<'a, M> {
     inner: &'a M,
     army: usize,
-    army_bytes: Option<&'a [u8; ARMY_IMAGE]>,
+    army_row: Option<&'a [u8]>,
     stat: usize,
-    stat_bytes: Option<&'a [u8; STAT_IMAGE]>,
+    stat_row: Option<&'a [u8]>,
 }
 
 impl<'a, M: Memory> DivisionImage<'a, M> {
-    /// Copies `army` and its stat block into the caller's buffers.
-    pub fn new(
-        inner: &'a M,
-        army: usize,
-        army_buffer: &'a mut [u8; ARMY_IMAGE],
-        stat_buffer: &'a mut [u8; STAT_IMAGE],
-    ) -> Self {
-        let mut image = Self {
-            inner,
-            army,
-            army_bytes: None,
-            stat: 0,
-            stat_bytes: None,
+    /// The image bytes for `[address, address + len)`, when one span holds
+    /// them all.
+    fn served(&self, address: usize, len: usize) -> Option<&'a [u8]> {
+        let within = |base: usize, row: Option<&'a [u8]>, fields: &[RecordField]| {
+            let row = row?;
+            let offset = address.checked_sub(base)?;
+            let end = offset.checked_add(len)?;
+            fields
+                .iter()
+                .find(|field| {
+                    field.len != 0
+                        && field.source_offset <= offset
+                        && end <= field.source_offset + field.len
+                })
+                .map(|field| {
+                    let start = field.destination_offset + offset - field.source_offset;
+                    &row[start..start + len]
+                })
         };
-        if !crate::read_slice(inner, army, army_buffer) {
-            return image;
+        if address == 0 {
+            return None;
         }
-        let at = crate::cunit::STAT_BLOCK;
-        let stat = u64::from_le_bytes(army_buffer[at..at + 8].try_into().unwrap()) as usize;
-        image.army_bytes = Some(army_buffer);
-        if stat != 0 && crate::read_slice(inner, stat, stat_buffer) {
-            image.stat = stat;
-            image.stat_bytes = Some(stat_buffer);
-        }
-        image
-    }
-
-    /// The image bytes for `[address, address + len)`, when one holds them all.
-    fn served(&self, address: usize, len: usize) -> Option<&[u8]> {
-        let within = |base: usize, bytes: &'a [u8]| -> Option<&'a [u8]> {
-            let start = address.checked_sub(base)?;
-            bytes.get(start..start.checked_add(len)?)
-        };
-        self.army_bytes
-            .and_then(|bytes| within(self.army, bytes))
-            .or_else(|| self.stat_bytes.and_then(|bytes| within(self.stat, bytes)))
+        within(self.army, self.army_row, &ARMY_FIELDS)
+            .or_else(|| within(self.stat, self.stat_row, &STAT_FIELDS))
     }
 }
 
 impl<M: Memory> Memory for DivisionImage<'_, M> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         match self.served(address, destination.len()) {
-            Some(bytes) if address != 0 => {
+            Some(bytes) => {
                 destination.copy_from_slice(bytes);
                 true
             }
-            _ => self.inner.copy(address, destination),
+            None => self.inner.copy(address, destination),
         }
     }
     fn prefetch(&self, address: usize, len: usize) {
@@ -328,7 +476,7 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         self.inner
             .movement_air_defense_value(defense, denominator, reduction)
     }
-    /// All lanes from the images, or the whole scatter from the source: one
+    /// All lanes from the image, or the whole scatter from the source: one
     /// guarded call either way, and the same bytes.
     fn copy_scattered<const N: usize>(
         &self,
@@ -338,9 +486,7 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         if addresses
             .iter()
             .zip(destinations.iter())
-            .all(|(&address, destination)| {
-                address != 0 && self.served(address, destination.len()).is_some()
-            })
+            .all(|(&address, destination)| self.served(address, destination.len()).is_some())
         {
             for (&address, destination) in addresses.iter().zip(destinations.iter_mut()) {
                 let bytes = self.served(address, destination.len()).unwrap();
@@ -358,14 +504,21 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         if addresses
             .iter()
             .zip(destinations.iter())
-            .all(|(&address, destination)| {
-                address != 0 && self.served(address, destination.len()).is_some()
-            })
+            .all(|(&address, destination)| self.served(address, destination.len()).is_some())
         {
             return self.copy_scattered(addresses, destinations);
         }
         self.inner
             .copy_scattered_prefetched(addresses, destinations)
+    }
+    /// One guarded gather at the source; a gather never touches the image.
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        self.inner.copy_records(sources, layout, destination)
     }
 }
 
@@ -1022,6 +1175,9 @@ mod tests {
 
     type Walked = Vec<Result<Captured, &'static str>>;
 
+    /// Divisions per image gather in the test walk: a combat's.
+    const IMAGE_BATCH: usize = 20;
+
     /// Per-division scratch, as the collector's.
     struct Scratch {
         widths: [inputs::WidthTerm; inputs::WIDTH_TERM_LIMIT],
@@ -1106,11 +1262,22 @@ mod tests {
     fn walk_shared(memory: &World, sources: &mut Sources, divisions: &[(usize, u64)]) -> Walked {
         sources.clear();
         let mut s = Scratch::new();
+        let mut images = Images::default();
         divisions
             .iter()
-            .map(|&(army, handle)| {
-                let (mut army_bytes, mut stat_bytes) = ([0; ARMY_IMAGE], [0; STAT_IMAGE]);
-                let image = DivisionImage::new(memory, army, &mut army_bytes, &mut stat_bytes);
+            .enumerate()
+            .map(|(index, &(army, handle))| {
+                // Images gathered twenty divisions at a time, as a combat's.
+                let row = index % IMAGE_BATCH;
+                if row == 0 {
+                    let armies: Vec<usize> = divisions[index..]
+                        .iter()
+                        .take(IMAGE_BATCH)
+                        .map(|division| division.0)
+                        .collect();
+                    images.capture(memory, &armies);
+                }
+                let image = images.division(memory, row, army);
                 let memory = &image;
                 let stats = inputs::capture_stats(memory, 0, sources, army, handle)?;
                 let context =
@@ -1369,6 +1536,102 @@ mod tests {
         let ((both_fail, _), (shared, _)) = both(&built);
         assert_eq!(both_fail, shared);
         assert_eq!(first(&both_fail), Some("reinforcement input unreadable"));
+    }
+
+    /// The image layouts hold every army and stat block field the division
+    /// readers read on this fixture (leaders, routes, acclimatization,
+    /// transports, manpower): every read of a division's army or stat block
+    /// lies inside a gathered span. (A scatter that also reads a module
+    /// define goes to the source whole, as one call either way.)
+    #[test]
+    fn images_serve_every_division_field() {
+        let mut built = world(&small());
+        built.world.authenticated = true;
+        let armies: Vec<usize> = built.divisions.iter().map(|division| division.0).collect();
+        let stats: Vec<usize> = armies
+            .iter()
+            .map(|&army| built.world.get_u64(army + cunit::STAT_BLOCK) as usize)
+            .collect();
+        *built.world.log.borrow_mut() = Some(Vec::new());
+        let walked = walk_shared(&built.world, &mut Sources::new(), &built.divisions);
+        assert!(walked.iter().all(Result::is_ok));
+        let log = built.world.log.borrow_mut().take().unwrap();
+        let gathered = |base: usize, fields: &[RecordField], address: usize, len: usize| {
+            fields.iter().any(|field| {
+                field.len != 0
+                    && base + field.source_offset <= address
+                    && address + len <= base + field.source_offset + field.len
+            })
+        };
+        let misses: Vec<_> = log
+            .iter()
+            .filter_map(|&(address, len)| {
+                let army = armies
+                    .iter()
+                    .find(|&&army| (army..army + 0x800).contains(&address));
+                let stat = stats
+                    .iter()
+                    .find(|&&stat| (stat..stat + 0x600).contains(&address));
+                match (army, stat) {
+                    (Some(&army), _) if !gathered(army, &ARMY_FIELDS, address, len) => {
+                        Some(("army", address - army, len))
+                    }
+                    (_, Some(&stat)) if !gathered(stat, &STAT_FIELDS, address, len) => {
+                        Some(("stat", address - stat, len))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        assert!(misses.is_empty(), "{misses:x?}");
+    }
+
+    /// A record that does not copy completely is served nothing: the gather
+    /// resumes after it (one more call per failed record, nothing reread),
+    /// and that division's reads go to the source, as do the stat block reads
+    /// of a division whose army record failed.
+    #[test]
+    fn images_resume_after_a_failed_record() {
+        let built = world(&small());
+        let w = &built.world;
+        let armies: Vec<usize> = built.divisions.iter().take(6).map(|d| d.0).collect();
+        let stats: Vec<usize> = armies
+            .iter()
+            .map(|&army| w.get_u64(army + cunit::STAT_BLOCK) as usize)
+            .collect();
+        // Division 2's army and division 4's stat block fail inside a span.
+        w.poisoned
+            .borrow_mut()
+            .extend([(armies[2] + carmy::STRENGTH, 8), (stats[4] + 0x280, 8)]);
+        let mut images = Images::default();
+        w.copies.set(0);
+        *w.log.borrow_mut() = Some(Vec::new());
+        images.capture(w, &armies);
+        // Armies: rows 0-1, then 3-5. Stat blocks: rows 0-1, then 3, then 5.
+        assert_eq!(w.copies.get(), 5);
+        let log = w.log.borrow_mut().take().unwrap();
+        let mut seen = std::collections::HashSet::new();
+        assert!(log.iter().all(|span| seen.insert(*span)), "a span reread");
+        let read = |row: usize, address: usize| {
+            let image = images.division(w, row, armies[row]);
+            let before = w.copies.get();
+            let mut bytes = [0; 8];
+            let copied = image.copy(address, &mut bytes);
+            (copied, w.copies.get() - before)
+        };
+        for row in 0..6 {
+            let army = read(row, armies[row] + cunit::HANDLE);
+            let stat = read(row, stats[row] + 0x290);
+            assert_eq!(army, (true, usize::from(row == 2)), "row {row}");
+            assert_eq!(stat, (true, usize::from(row == 2 || row == 4)), "row {row}");
+        }
+        // A read outside every span, and a division the row does not hold,
+        // go to the source.
+        assert_eq!(read(0, armies[0] + 0x700), (true, 1));
+        let other = images.division(w, 1, armies[0]);
+        let before = w.copies.get();
+        assert!(other.copy(armies[0] + cunit::HANDLE, &mut [0; 8]));
+        assert_eq!(w.copies.get() - before, 1);
     }
 
     /// The batched owned-relation walk answers as the one-by-one walk does,

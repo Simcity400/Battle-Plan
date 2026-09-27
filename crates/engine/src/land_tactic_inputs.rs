@@ -313,17 +313,22 @@ fn parent_commander(
 }
 
 /// Bounded hourly context and unlock arena, preserving native selection order.
+/// The combat's commander selections are shared with its other readers
+/// (`cland_combat::Commanders`); `members` are the census's participants.
 pub fn capture_context(
     memory: &impl Memory,
     base: usize,
     game: usize,
     source: cland_combat::Source,
+    members: &cland_combat::Members<'_>,
+    selections: &mut cland_combat::Commanders,
     unlocks: &mut [Unlock],
 ) -> ContextCapture {
     let mut row = ContextRow::default();
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game)?;
-        let commanders = cland_combat::commander_sources(memory, base, source)?;
+        let commanders =
+            cland_combat::commander_sources(memory, base, source, members, selections)?;
         let sides = [
             pointer(memory, source.pointer, cland_combat::ATTACKER)?,
             pointer(memory, source.pointer, cland_combat::DEFENDER)?,
