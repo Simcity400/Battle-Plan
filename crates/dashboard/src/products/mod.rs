@@ -8,6 +8,7 @@
 pub mod artwork;
 pub mod country_flags;
 pub mod country_groups;
+pub mod country_stability;
 pub mod country_styles;
 pub mod land_owners;
 pub mod national_focus;
@@ -180,6 +181,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_styles::CountryStyles>(),
     register::<country_groups::CountryGroups>(),
     register::<political_power::PoliticalPower>(),
+    register::<country_stability::CountryStability>(),
 ];
 
 pub fn find(key: &str) -> Option<&'static Registered> {
@@ -212,6 +214,8 @@ mod tests {
             "CountryStyleReply",
             "CountryGroupReply",
             "PoliticalPowerReply",
+            "CountryStabilityReply",
+            "FixedRun",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == name).count(),

@@ -58,6 +58,15 @@ pub const fn cadence(table: TableId) -> Cadence {
         // are the templates the hour's rosters reach, merged by handle; the
         // console command reloadtechnologies can rewrite them after a load.
         TableId::ResearchTechnologies | TableId::TechnologyDefinitions => Sliced,
+        // Stability and war-support breakdowns: one country slice per hour
+        // plus every country whose change fingerprint moved (bases, stored
+        // penalty and coastal terms, ruling party popularity, the war counter,
+        // the tree's child count and the tracked modifier totals), so a
+        // recalculated tree or a weekly base change is read within the hour
+        // without walking every country's tree and sources at one hour. The
+        // war flags and world tension join a read but are not fingerprinted:
+        // a change of only those reaches the rows at the country's slice.
+        TableId::CountryStabilityInputs | TableId::CountryStabilityLines => Sliced,
         // Cannot change after the save loads (the DLC set included).
         TableId::LexicalTokens | TableId::SimulationFeatures => Static,
         // Modifier definitions are registered only by database loaders; the
@@ -346,6 +355,8 @@ mod tests {
         assert!(is_sliced(TableId::ResearchInputs));
         assert!(!is_staggered(TableId::ResearchInputs));
         assert_eq!(refresh_slot(TableId::ResearchModifiers), None);
+        assert!(is_sliced(TableId::CountryStabilityInputs));
+        assert!(is_sliced(TableId::CountryStabilityLines));
         for owner in [0, 1, 23, 24, 439, 5_000, u32::MAX] {
             for base in [0, 60_827_795, -48] {
                 let hits = (base..base + 24)

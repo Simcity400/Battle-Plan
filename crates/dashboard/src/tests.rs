@@ -1960,3 +1960,281 @@ fn political_power_replies_every_requested_country_and_warns_for_unrecorded_ones
     };
     assert!(PoliticalPower::validate(&too_many).is_err());
 }
+
+fn stability_inputs() -> replay::rows::CountryStabilityInputRow {
+    replay::rows::CountryStabilityInputRow {
+        country: 9001,
+        stability_raw: 50_000,
+        war_support_raw: 40_000,
+        ruling_party_popularity_raw: 4_500_000,
+        propaganda_stability_q15: -3277,
+        coastal_protection_stability_raw: 2_500,
+        interception_sum_raw: 10_000,
+        world_tension_raw: 50_000,
+        base_stability_war_factor: -20_000,
+        base_stability_party_popularity_factor: 15_000,
+        min_stability: 0,
+        max_stability: 100_000,
+        war_support_offensive_war: -20_000,
+        war_support_defensive_war: 20_000,
+        war_support_tension_impact: 40_000,
+        min_war_support: 0,
+        max_war_support: 100_000,
+        interception_war_support_scale_q15: 16_384,
+        interception_bombing_war_support_impact: 30_000,
+        base_max_command_power: 8_000_000,
+        stability_factor: Some(30_000),
+        party_popularity_stability_factor: Some(0),
+        war_stability_factor: Some(-10_000),
+        offensive_war_stability_factor: Some(5_000),
+        defensive_war_stability_factor: Some(0),
+        war_support_factor: Some(0),
+        stability_weekly: Some(0),
+        war_support_weekly: Some(0),
+        max_command_power: Some(1_000_000),
+        max_command_power_mult: Some(10_000),
+        keys: vec![
+            0x8d, 0x90, 0x91, 0x17b, 0x17c, 0x95, 0x8e, 0x96, 0x14b, 0x14d,
+        ],
+        language: b"l_english".to_vec(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn stability_formula_follows_the_engine_getters() {
+    use crate::products::country_stability::formula::*;
+    // Q15 conversions: rounding half up on the fraction, truncation back.
+    assert_eq!(q15_to_fixed5(32_768), 100_000);
+    assert_eq!(q15_to_fixed5(16_384), 50_000);
+    assert_eq!(q15_to_fixed5(-3277), -10_001);
+    // Whole parts beyond the engine's bound saturate.
+    assert_eq!(q15_to_fixed5(0x36f9_bfb2 << 15), 0x53e2_d61f_d320);
+    assert_eq!(q15_to_fixed5(-0x36f9_bfb2 << 15), -0x53e2_d61f_d321);
+    assert_eq!(fixed5_to_q15(-20_000), -6553);
+    assert_eq!(fixed5_to_q15(100_000), 32_768);
+    // Popularity: two truncating divisions, toward zero for a negative factor.
+    assert_eq!(popularity_term(15_000, 4_500_000), 6_750);
+    assert_eq!(popularity_term(15_000, 3_333_333), 4_999);
+    assert_eq!(popularity_term(-15_000, 3_333_333), -4_999);
+    // At an offensive war: base, war term, popularity, propaganda, factor, coast.
+    let mut row = stability_inputs();
+    row.at_war = 1;
+    row.offensive_war = 1;
+    let war = stability(&row);
+    assert_eq!(
+        war.unclamped,
+        Some(50_000 - 25_000 + 6_750 - 10_001 + 30_000 + 2_500)
+    );
+    assert_eq!(war.value, war.unclamped);
+    // An offensive war without IsAtWar(mode 1) adds nothing, as at peace.
+    row.at_war = 0;
+    assert_eq!(stability(&row).value, Some(79_249));
+    // Clamped to the defines.
+    row.stability_factor = Some(90_000);
+    let clamped = stability(&row);
+    assert_eq!(
+        (clamped.unclamped, clamped.value),
+        (Some(139_249), Some(100_000))
+    );
+    row.stability_raw = -500_000;
+    assert_eq!(stability(&row).value, Some(0));
+    // An unregistered key needed at war leaves the value unknown.
+    let mut row = stability_inputs();
+    row.at_war = 1;
+    row.defensive_war = 1;
+    row.defensive_war_stability_factor = None;
+    assert_eq!(stability(&row).value, None);
+    // War support: war define, tension, interception scaled and clamped.
+    let mut row = stability_inputs();
+    row.at_war = 1;
+    row.offensive_war = 1;
+    assert_eq!(interception_term(&row), 4_999);
+    assert_eq!(
+        war_support(&row).value,
+        Some(40_000 - 20_000 + 20_000 + 4_999)
+    );
+    row.interception_sum_raw = -10_000_000;
+    assert_eq!(interception_term(&row), -30_000);
+    // Maximum command power: (base + flat) * (1 + mult).
+    assert_eq!(max_command_power(&row).value, Some(9_900_000));
+    row.max_command_power_mult = None;
+    assert_eq!(max_command_power(&row).value, None);
+}
+
+fn stability_frame(
+    hour: i32,
+    inputs: replay::rows::CountryStabilityInputRow,
+    read: i32,
+    lines: Vec<replay::rows::CountryStabilityLineRow>,
+) -> DecodedFrame {
+    let mut frame = source(1, hour, Some(1));
+    let reads = [
+        TableId::CountryStabilityInputs,
+        TableId::CountryStabilityLines,
+    ]
+    .into_iter()
+    .filter(|table| *table == TableId::CountryStabilityInputs || !lines.is_empty())
+    .map(|table| replay::rows::SliceReadRow {
+        table: table.index() as u32,
+        owner: 9001,
+        sample_hour: read,
+    })
+    .collect();
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
+    *frame.tables[TableId::CountryStabilityInputs.index()] =
+        TableView::Complete(TableRows::CountryStabilityInputs(vec![inputs]));
+    *frame.tables[TableId::CountryStabilityLines.index()] =
+        TableView::Complete(TableRows::CountryStabilityLines(lines));
+    *frame.tables[TableId::ModifierDefinitions.index()] =
+        TableView::Complete(TableRows::ModifierDefinitions(vec![
+            replay::rows::ModifierDefinitionRow {
+                index: 0x8d,
+                token: 1,
+                flags: 3,
+                ..Default::default()
+            },
+        ]));
+    frame
+}
+
+#[test]
+fn stability_product_runs_carry_reads_and_break_down_one_hour() {
+    use crate::products::country_stability::scan;
+    use replay::rows::CountryStabilityLineRow as Line;
+    let line = |line, kind, identity: &[u8], value, text: &[u8]| Line {
+        country: 9001,
+        line,
+        key: 0x8d,
+        kind,
+        identity: identity.to_vec(),
+        value,
+        text: text.to_vec(),
+        ..Default::default()
+    };
+    let lines = vec![
+        line(0, Line::IDEA, b"idea_a", 10_000, b""),
+        line(2, Line::UNPAIRED, b"", 15_000, b"Decision: X"),
+    ];
+    let mut changed = stability_inputs();
+    changed.stability_raw = 60_000;
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                stability_frame(100, stability_inputs(), 100, lines.clone()),
+                // Carried from the hour-100 read.
+                stability_frame(101, stability_inputs(), 100, lines),
+                stability_frame(102, changed, 102, vec![]),
+                // Hour 103 is missing: the next hour starts a new segment.
+                stability_frame(104, stability_inputs(), 104, vec![]),
+            ],
+        )],
+    )
+    .unwrap();
+    let (result, warnings) = scan(
+        &replay,
+        1,
+        &["GER", "ITA"],
+        Some(101),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let germany = &result["GER"];
+    let runs: Vec<_> = germany
+        .stability
+        .iter()
+        .map(|run| {
+            (
+                run.first_hour,
+                run.last_hour,
+                run.value_raw.as_str(),
+                run.starts_segment,
+            )
+        })
+        .collect();
+    assert_eq!(
+        runs,
+        [
+            (100, 101, "79249", true),
+            (102, 102, "89249", false),
+            (104, 104, "79249", true)
+        ]
+    );
+    assert_eq!(germany.read_hours, [100, 102, 104]);
+    let breakdown = germany.breakdown.as_ref().unwrap();
+    assert_eq!((breakdown.hour, breakdown.read_hour), (101, 100));
+    assert_eq!(breakdown.language, "l_english");
+    assert_eq!(breakdown.stability.value_raw.as_deref(), Some("79249"));
+    assert!(breakdown.lines_available);
+    let factor = &breakdown.modifiers[0];
+    assert_eq!(factor.key, "stability_factor");
+    assert_eq!(factor.good, Some(true));
+    assert_eq!(factor.lines.len(), 2);
+    assert_eq!(factor.lines[0].identity, "idea_a");
+    assert_eq!(factor.lines[1].kind, "unpaired");
+    assert_eq!(factor.lines[1].text.as_deref(), Some("Decision: X"));
+    // 30000 recorded, 25000 in lines: the rest is shown, not hidden.
+    assert_eq!(factor.remainder_raw.as_deref(), Some("5000"));
+    assert!(result["ITA"].stability.is_empty());
+    // A breakdown at an hour whose lines came from another read says so.
+    let (result, warnings) =
+        scan(&replay, 1, &["GER"], Some(102), &AtomicBool::new(false)).unwrap();
+    let breakdown = result["GER"].breakdown.as_ref().unwrap();
+    assert!(breakdown.lines_available && breakdown.modifiers[0].lines.is_empty());
+    assert!(warnings.is_empty());
+}
+
+#[test]
+fn a_stability_breakdown_needs_the_same_country_identity_as_its_history() {
+    use crate::products::{
+        LoadContext, Product,
+        country_stability::{CountryStability, CountryStabilityParams},
+    };
+    let mut unlinked = stability_frame(101, stability_inputs(), 101, vec![]);
+    *unlinked.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(vec![]));
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                vec![
+                    stability_frame(100, stability_inputs(), 100, vec![]),
+                    unlinked,
+                ],
+            )],
+        )
+        .unwrap(),
+    );
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "stability".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let load = |hour| {
+        let params = CountryStabilityParams {
+            branch_id: "1".into(),
+            tags: vec!["GER".into()],
+            hour: Some(hour),
+        };
+        CountryStability::load(
+            &source,
+            &params,
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+    assert!(load(100).series[0].breakdown.is_some());
+    // CountryLinks no longer maps GER: the history leaves the hour out, and
+    // so does the breakdown.
+    assert!(load(101).series[0].breakdown.is_none());
+}

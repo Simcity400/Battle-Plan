@@ -5,6 +5,7 @@ pub mod cadence;
 pub mod codec;
 pub mod container;
 pub mod eta_derive;
+pub mod fixed_point;
 pub mod format;
 pub mod frame;
 pub mod identity;
@@ -17,7 +18,7 @@ pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
 /// The only recording version this build reads and writes.
-pub const FORMAT_VERSION: u16 = 51;
+pub const FORMAT_VERSION: u16 = 52;
 pub const KEYFRAME_INTERVAL: u32 = 720;
 
 #[cfg(test)]

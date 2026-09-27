@@ -1858,12 +1858,18 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     .take_ordinary_request(&country_snapshot, shared.base, state);
             let ordinary_bytes = ordinary_request.allocated_bytes();
             let ordinary_pending = queue!(acquisition::Job::Ordinary(ordinary_request));
+            // The stability family's store travels with the Slow job. A missing
+            // store only drops the fingerprint's early reads for this hour.
+            // SAFETY: only this callback takes and returns the store.
+            let stability_store =
+                unsafe { &mut *shared.slice_fingerprints[crate::slicing::STABILITY].get() }.take();
             let slow_pending = queue!(acquisition::Job::Slow(frame.extended.take_slow_request(
                 &country_snapshot,
                 shared.base,
                 state,
                 clock.hour,
-                force_full
+                force_full,
+                stability_store
             )));
             let mut supply_trains_pending: [Option<PendingAcquisition>; SUPPLY_PARTS] =
                 [const { None }; SUPPLY_PARTS];
@@ -2516,9 +2522,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 .extended
                 .restore_ordinary_request(ordinary_request, ordinary_failure);
             let (slow_request, _, slow_failure) = completed!(slow_pending, Slow);
-            frame
+            if let Some(store) = frame
                 .extended
-                .restore_slow_request(slow_request, slow_failure.is_none());
+                .restore_slow_request(slow_request, slow_failure.is_none())
+            {
+                // SAFETY: only this callback takes and returns the store.
+                unsafe {
+                    *shared.slice_fingerprints[crate::slicing::STABILITY].get() = Some(store)
+                };
+            }
             // Only a completed Slow job's hour is counted; the game thread
             // never waits for the status thread's copy.
             let failures = frame.extended.template_model_failures();

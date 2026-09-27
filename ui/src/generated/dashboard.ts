@@ -203,3 +203,87 @@ export type PoliticalPowerReply = { branchId: string,
  * Decimal places of every raw value in this reply.
  */
 decimals: number, series: Array<PoliticalPowerSeries>, warnings: Array<string>, };
+export type CountryStabilityParams = { branchId: string, tags: Array<string>,
+/**
+ * The hour whose breakdown to include; none for runs only.
+ */
+hour: number | null, };
+export type FormulaTerm = { term: string, valueRaw: string | null, };
+export type FormulaBreakdown = {
+/**
+ * The displayed value, fixed5.
+ */
+valueRaw: string | null, terms: Array<FormulaTerm>,
+/**
+ * Displayed minus the unclamped sum: the clamp's contribution.
+ */
+clampRaw: string | null, };
+export type BreakdownLine = {
+/**
+ * The child's position in the modifier tree (the tooltip's order).
+ */
+line: number,
+/**
+ * `unpaired`, `idea`, `countryLeader`, `ideology`, `advisor`, `static`,
+ * `staticScaled`, `dynamicModifier` or `dynamicModifierValues`.
+ */
+kind: string,
+/**
+ * Script identity (idea, advisor idea, ideology, static or dynamic
+ * modifier token); empty for a leader or an unpaired line.
+ */
+identity: string,
+/**
+ * Character id or dynamic modifier scope country; zero otherwise.
+ */
+identityId: number,
+/**
+ * Dynamic modifier scope state; zero otherwise.
+ */
+secondaryRaw: string, valueRaw: string,
+/**
+ * The recorded display text of an unpaired line, in `language`, as plain
+ * text (see [`display_text`]).
+ */
+text: string | null, };
+export type ModifierBreakdown = {
+/**
+ * The modifier's script name.
+ */
+key: string,
+/**
+ * The native key index; none when the game registers no such key.
+ */
+index: number | null,
+/**
+ * ModifierDefinitions' `good` flag (bit 1): only for good keys does
+ * every line equal its contribution to the total.
+ */
+good: boolean | null, totalRaw: string | null, lines: Array<BreakdownLine>,
+/**
+ * Total minus the lines, when it is not zero.
+ */
+remainderRaw: string | null, };
+export type StabilityBreakdown = { hour: number,
+/**
+ * The hour the inputs were read at.
+ */
+readHour: number,
+/**
+ * The game language of unpaired lines' text.
+ */
+language: string, stability: FormulaBreakdown, warSupport: FormulaBreakdown, maxCommandPower: FormulaBreakdown,
+/**
+ * False when the lines were not recorded by the same read.
+ */
+linesAvailable: boolean, modifiers: Array<ModifierBreakdown>, };
+export type CountryStabilitySeries = { tag: string, stability: Array<FixedRun>, warSupport: Array<FixedRun>, maxCommandPower: Array<FixedRun>,
+/**
+ * Hours the country's inputs were read at, ascending.
+ */
+readHours: Array<number>, breakdown: StabilityBreakdown | null, };
+export type CountryStabilityReply = { branchId: string,
+/**
+ * Decimal places of every raw value in this reply.
+ */
+decimals: number, series: Array<CountryStabilitySeries>, warnings: Array<string>, };

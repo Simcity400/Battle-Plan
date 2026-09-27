@@ -156,6 +156,8 @@ pub(crate) struct SlowRequest {
     pub hour: i32,
     pub force_full: bool,
     pub packs: Box<crate::extended::SlowPacks>,
+    /// The stability family's only fingerprint store, loaned for this hour.
+    pub stability_fingerprints: Option<Box<crate::slicing::SliceFingerprints>>,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SlowReport;
@@ -1039,6 +1041,7 @@ fn run_with_memory(
                 request.game_state,
                 request.hour,
                 request.force_full,
+                request.stability_fingerprints.as_deref_mut(),
             );
             Report::Slow(SlowReport)
         }

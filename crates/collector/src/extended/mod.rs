@@ -316,6 +316,7 @@ packs!(
     model_inputs,
     modifier_definitions,
     hired_advisors,
+    country_stability,
     new_divisions,
     weather
 );
@@ -337,6 +338,7 @@ impl Capacities {
         self.building_detection.raise_for_countries(slots);
         self.model_inputs.raise_for_countries(slots);
         self.hired_advisors.raise_for_countries(slots);
+        self.country_stability.raise_for_countries(slots);
     }
 
     /// Presize CountryIntel from the live dense record total.
@@ -361,6 +363,7 @@ impl Captured {
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         // A frame whose sliced job never runs must not report an older read.
         self.governance.reset_slice_selections(hour, force_full);
+        self.country_stability.prepare_hour(hour, force_full);
         self.air.prepare_hour(hour, force_full);
         self.fog.prepare_hour(hour, force_full);
         self.naval_history.prepare_hour(hour, force_full);
@@ -588,6 +591,7 @@ impl Captured {
             crate::slicing::RESEARCH => self.governance.research_selection(),
             crate::slicing::TECHNOLOGIES => self.governance.technology_selection(),
             crate::slicing::RELATIONS => self.intel.relations_selection(),
+            crate::slicing::STABILITY => self.country_stability.selection(),
             _ => unreachable!("unregistered sliced family {family}"),
         }
     }
@@ -959,6 +963,7 @@ impl Captured {
         state: usize,
         hour: i32,
         force_full: bool,
+        stability_fingerprints: Option<Box<crate::slicing::SliceFingerprints>>,
     ) -> crate::acquisition_jobs::SlowRequest {
         self.slow_ticks = None;
         let mut packs = self.slow_spare.take().expect("slow spare present");
@@ -971,21 +976,39 @@ impl Captured {
             hour,
             force_full,
             packs,
+            stability_fingerprints,
         }
     }
 
+    /// Returns the stability family's fingerprint store: forgotten if the job
+    /// failed, and with this hour's selection invalidated if a stability
+    /// table was not read completely, so its countries are read again at the
+    /// next hour.
     pub(crate) fn restore_slow_request(
         &mut self,
         request: crate::acquisition_jobs::SlowRequest,
         completed: bool,
-    ) {
+    ) -> Option<Box<crate::slicing::SliceFingerprints>> {
         let mut packs = request.packs;
+        let mut fingerprints = request.stability_fingerprints;
         if !completed {
             packs.fail(request.hour, request.force_full, "slow acquisition failed");
+            if let Some(fingerprints) = fingerprints.as_mut() {
+                fingerprints.forget();
+            }
+        }
+        if let Some(fingerprints) = fingerprints.as_mut()
+            && packs.country_stability.outcomes().iter().any(|outcome| {
+                !matches!(outcome, Outcome::Rows { .. })
+                    && !matches!(outcome, Outcome::Unavailable { reason } if *reason == replay::cadence::SKIPPED_REASON)
+            })
+        {
+            packs.country_stability.selection().invalidate(fingerprints);
         }
         self.slow_ticks = Some(packs.ticks);
         self.swap_slow(&mut packs);
         self.slow_spare = Some(packs);
+        fingerprints
     }
 
     fn swap_slow(&mut self, packs: &mut SlowPacks) {
@@ -1002,6 +1025,7 @@ impl Captured {
             &mut packs.modifier_definitions,
         );
         std::mem::swap(&mut self.hired_advisors, &mut packs.hired_advisors);
+        std::mem::swap(&mut self.country_stability, &mut packs.country_stability);
     }
 
     /// Loan the order census and the plans to the Orders job.
@@ -1733,6 +1757,16 @@ impl Captured {
                 modifier_definitions,
                 hired_advisors
             );
+            // No loaned fingerprint store: only the hour's slice is read.
+            let cost = self.country_stability.capture(
+                memory,
+                base,
+                game_state,
+                current_hour,
+                force_full,
+                None,
+            );
+            scatter(&country_stability::TABLES, cost, &mut ticks);
         }
         if let Some(done) = self.gated_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
@@ -2079,6 +2113,7 @@ pub(crate) struct SlowPacks {
     pub(crate) model_inputs: model_inputs::Captured,
     pub(crate) modifier_definitions: modifier_definitions::Captured,
     pub(crate) hired_advisors: hired_advisors::Captured,
+    pub(crate) country_stability: country_stability::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -2097,6 +2132,8 @@ impl SlowPacks {
         self.modifier_definitions
             .fail_capture(hour, force_full, reason);
         self.hired_advisors.fail_capture(hour, force_full, reason);
+        self.country_stability
+            .fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
@@ -2112,6 +2149,7 @@ impl SlowPacks {
             + self.model_inputs.allocated_bytes()
             + self.modifier_definitions.allocated_bytes()
             + self.hired_advisors.allocated_bytes()
+            + self.country_stability.allocated_bytes()
     }
 
     fn spare() -> Box<Self> {
@@ -2126,6 +2164,7 @@ impl SlowPacks {
             model_inputs: model_inputs::Captured::vacant(),
             modifier_definitions: modifier_definitions::Captured::vacant(),
             hired_advisors: hired_advisors::Captured::vacant(),
+            country_stability: country_stability::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         })
     }
@@ -2137,6 +2176,7 @@ impl SlowPacks {
         game_state: usize,
         hour: i32,
         force_full: bool,
+        stability_fingerprints: Option<&mut crate::slicing::SliceFingerprints>,
     ) {
         let mut ticks = [0; TABLE_COUNT];
         macro_rules! staggered {
@@ -2164,6 +2204,15 @@ impl SlowPacks {
             modifier_definitions,
             hired_advisors
         );
+        let cost = self.country_stability.capture(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            stability_fingerprints,
+        );
+        scatter(&country_stability::TABLES, cost, &mut ticks);
         self.ticks = ticks;
     }
 }
@@ -2524,7 +2573,7 @@ mod tests {
             assert_vacant(&captured);
 
             let slow_box = std::ptr::from_ref(&**captured.slow_spare.as_ref().unwrap());
-            let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false);
+            let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, None);
             assert_eq!(std::ptr::from_ref(&*request.packs), slow_box);
             assert_eq!(
                 captured.allocated_bytes() + request.packs.allocated_bytes(),
@@ -2907,7 +2956,8 @@ mod tests {
             captured.prepare_hour(hour, force_full);
             let bytes = captured.allocated_bytes();
             let mut orders = Orders::vacant();
-            let mut request = captured.take_slow_request(&countries, 11, 0x1000, hour, force_full);
+            let mut request =
+                captured.take_slow_request(&countries, 11, 0x1000, hour, force_full, None);
             request.packs.ticks.fill(17);
             captured.restore_slow_request(request, false);
             let mut request = captured.take_gated_request(11, 0x1000, hour, force_full);
@@ -4113,11 +4163,31 @@ mod tests {
     }
 
     #[test]
+    fn the_stability_store_travels_with_the_slow_job_and_always_returns() {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        for completed in [true, false] {
+            let store = Box::new(crate::slicing::SliceFingerprints::new());
+            let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, Some(store));
+            assert!(request.stability_fingerprints.is_some());
+            // Nothing was read: the unpublished read is invalidated or the
+            // failed job's store forgotten, and the store comes back either way.
+            assert!(captured.restore_slow_request(request, completed).is_some());
+            assert!(!matches!(
+                captured.country_stability.outcomes()[0],
+                Outcome::Rows { .. }
+            ));
+        }
+        let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, None);
+        assert!(captured.restore_slow_request(request, true).is_none());
+    }
+
+    #[test]
     fn modifier_header_verdict_travels_with_the_slow_pack_and_returns() {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
         captured.set_modifier_definitions_moved(true);
-        let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false);
+        let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, None);
         assert!(request.packs.modifier_definitions.header_changed);
         assert!(!captured.modifier_definitions.header_changed);
         captured.restore_slow_request(request, true);

@@ -48,9 +48,10 @@ pub(crate) struct SliceFamily {
 pub(crate) const RESEARCH: usize = 0;
 pub(crate) const TECHNOLOGIES: usize = 1;
 pub(crate) const RELATIONS: usize = 2;
+pub(crate) const STABILITY: usize = 3;
 
 /// Every sliced family. Index with the family constants above.
-pub(crate) const FAMILIES: [SliceFamily; 3] = [
+pub(crate) const FAMILIES: [SliceFamily; 4] = [
     SliceFamily {
         name: "research",
         owner: OwnerKind::Country,
@@ -79,6 +80,16 @@ pub(crate) const FAMILIES: [SliceFamily; 3] = [
         name: "relations",
         owner: OwnerKind::Country,
         tables: &[TableId::RelationOpinions, TableId::RelationTuples],
+    },
+    // Stability inputs and tree lines, read in the Slow job; the fingerprint
+    // is `engine::country_stability::fingerprint_country`.
+    SliceFamily {
+        name: "stability",
+        owner: OwnerKind::Country,
+        tables: &[
+            TableId::CountryStabilityInputs,
+            TableId::CountryStabilityLines,
+        ],
     },
 ];
 
@@ -497,5 +508,6 @@ mod tests {
         assert_eq!(FAMILIES[RESEARCH].owner, OwnerKind::Country);
         assert_eq!(FAMILIES[TECHNOLOGIES].name, "technologies");
         assert_eq!(FAMILIES[TECHNOLOGIES].owner, OwnerKind::Country);
+        assert_eq!(FAMILIES[STABILITY].name, "stability");
     }
 }
