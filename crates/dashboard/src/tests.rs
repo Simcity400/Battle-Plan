@@ -1983,6 +1983,227 @@ fn measures_reply_every_requested_country_and_warn_for_unrecorded_ones() {
     assert!(CountryMeasure::validate(&too_many).is_err());
 }
 
+/// GER (link 9001) holding the given ideas. `GER_schacht_idea` is an appointed
+/// advisor: like the game, it is in the appointed-advisor list, not the active ideas.
+fn idea_frame(hour: i32, ideas: &[&str]) -> DecodedFrame {
+    let mut frame = ownership_frame(1, hour, 44);
+    let advisor = |country, ordinal, character, idea: &str| replay::rows::HiredAdvisorRow {
+        country,
+        ordinal,
+        character,
+        idea: idea.as_bytes().to_vec(),
+        slot: b"political_advisor".to_vec(),
+    };
+    let mut hired = vec![advisor(44, 0, 9, "FRA_advisor")];
+    let mut rows: Vec<_> = ideas
+        .iter()
+        .filter(|token| {
+            let appointed = **token == "GER_schacht_idea";
+            if appointed {
+                hired.push(advisor(9001, 0, 7, token));
+            }
+            !appointed
+        })
+        .enumerate()
+        .map(|(ordinal, token)| replay::rows::ActiveIdeaRow {
+            country: 9001,
+            ordinal: ordinal as u32,
+            token: token.as_bytes().to_vec(),
+        })
+        // Another country's idea is never GER's.
+        .chain([replay::rows::ActiveIdeaRow {
+            country: 44,
+            ordinal: 0,
+            token: b"FRA_spirit".to_vec(),
+        }])
+        .collect();
+    rows.sort_by_key(|row| (row.country, row.ordinal));
+    hired.sort_by_key(|row| (row.country, row.ordinal));
+    *frame.tables[TableId::ActiveIdeas.index()] = TableView::Complete(TableRows::ActiveIdeas(rows));
+    *frame.tables[TableId::HiredAdvisors.index()] =
+        TableView::Complete(TableRows::HiredAdvisors(hired));
+    *frame.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![replay::rows::CharacterRow {
+            id: 7,
+            country: 9001,
+            token: b"GER_schacht".to_vec(),
+            ..Default::default()
+        }]));
+    frame
+}
+
+#[test]
+fn idea_history_spans_break_at_gaps_and_advisors_keep_their_recorded_role() {
+    use crate::products::idea_history::{IdeaCharacter, IdeaSpan, scan};
+    let span = |token: &str, first_hour, last_hour| IdeaSpan {
+        token: token.into(),
+        first_hour,
+        last_hour,
+        slot: None,
+        character: None,
+    };
+    // The recorded role goes with the advisor idea's span.
+    let advisor = |first_hour, last_hour| IdeaSpan {
+        slot: Some("political_advisor".into()),
+        character: Some(IdeaCharacter {
+            id: 7,
+            token: "GER_schacht".into(),
+        }),
+        ..span("GER_schacht_idea", first_hour, last_hour)
+    };
+    let frames = vec![
+        idea_frame(100, &["civilian_economy", "GER_spirit"]),
+        idea_frame(101, &["civilian_economy", "GER_spirit", "GER_schacht_idea"]),
+        idea_frame(
+            102,
+            &[
+                "partial_economic_mobilisation",
+                "GER_spirit",
+                "GER_schacht_idea",
+            ],
+        ),
+        // Hour 103 is missing: every span ends at 102.
+        idea_frame(104, &["partial_economic_mobilisation"]),
+    ];
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        scanned.spans,
+        [
+            span("GER_spirit", 100, 102),
+            span("civilian_economy", 100, 101),
+            advisor(101, 102),
+            span("partial_economic_mobilisation", 102, 102),
+            span("partial_economic_mobilisation", 104, 104),
+        ]
+    );
+    assert_eq!(
+        scanned.unobserved,
+        [crate::products::country_groups::HourSpan {
+            first_hour: 103,
+            last_hour: 103
+        }]
+    );
+    assert!(
+        scan(&replay, 1, "FRA", &AtomicBool::new(false))
+            .unwrap()
+            .spans
+            .iter()
+            .all(|span| span.token == "FRA_spirit" || span.token == "FRA_advisor")
+    );
+}
+
+#[test]
+fn ideas_join_content_for_category_slot_and_traits() {
+    use crate::products::idea_history::{Joined, categories, info};
+    let tags = installed_content::ideas::parse_tags(
+        b"idea_categories = { government = { slot = economy character_slot = political_advisor character_slot = political_advisor }           country = { type = national_spirit } }",
+    )
+    .unwrap();
+    let ideas = installed_content::ideas::parse_ideas(
+        b"ideas = { economy = { law = yes civilian_economy = { modifier = { consumer_goods_factor = 0.35 } } }           country = { GER_spirit = { modifier = { stability_factor = 0.1 } } } }",
+    )
+    .unwrap();
+    let content = installed_content::ideas::IdeaContent {
+        tags: installed_content::ideas::IdeaTags { categories: tags },
+        ideas: ideas
+            .into_iter()
+            .map(|idea| (idea.token.clone(), idea))
+            .collect(),
+    };
+    // The advisor's seat and traits come from its character's advisor role.
+    let characters = installed_content::characters::parse(
+        b"characters = { GER_schacht = { advisor = { slot = political_advisor idea_token = GER_schacht_idea traits = { captain_of_industry } } } }",
+    )
+    .unwrap();
+    let traits = std::collections::BTreeMap::new();
+    let localise = |key: &str| (key == "economy").then(|| "Economy".to_owned());
+    let joined = Joined {
+        ideas: &content,
+        characters: &characters,
+        traits: &traits,
+        localise: &localise,
+    };
+    let law = info(&joined, "civilian_economy", None);
+    assert_eq!(
+        (law.category.as_deref(), law.slot.as_deref(), law.law),
+        (Some("government"), Some("economy"), true)
+    );
+    assert_eq!(law.effects[0].value, Some(0.35));
+    let spirit = info(&joined, "GER_spirit", None);
+    assert_eq!(
+        (spirit.category.as_deref(), spirit.slot),
+        (Some("country"), None)
+    );
+    let advisor = info(&joined, "GER_schacht_idea", None);
+    assert_eq!(
+        (advisor.category.as_deref(), advisor.slot.as_deref()),
+        (Some("government"), Some("political_advisor"))
+    );
+    assert_eq!(advisor.traits[0].token, "captain_of_industry");
+    // Content has no such trait: its effects are unknown, not none.
+    assert!(!advisor.traits[0].known);
+    let unknown = info(&joined, "MOD_mystery", None);
+    assert_eq!((unknown.category, unknown.slot), (None, None));
+    // An advisor content cannot resolve is placed by the seat the recording gave it.
+    let recorded = info(&joined, "MOD_mystery", Some("political_advisor"));
+    assert_eq!(
+        (recorded.category.as_deref(), recorded.slot.as_deref()),
+        (Some("government"), Some("political_advisor"))
+    );
+    let listed = categories(&joined);
+    let government = &listed[0];
+    assert_eq!(
+        government
+            .slots
+            .iter()
+            .map(|slot| (slot.token.as_str(), slot.character, slot.seats))
+            .collect::<Vec<_>>(),
+        [("economy", false, 1), ("political_advisor", true, 2)]
+    );
+    assert_eq!(government.slots[0].name.as_deref(), Some("Economy"));
+}
+
+#[test]
+fn idea_history_marks_gaps_in_order_and_to_the_branch_end() {
+    use crate::products::{country_groups::HourSpan, idea_history::scan};
+    let mut incomplete = idea_frame(103, &["GER_spirit"]);
+    *incomplete.tables[TableId::ActiveIdeas.index()] = TableView::Unavailable {
+        reason: "fixture".into(),
+    };
+    // Without the appointed advisors an hour is not observed either.
+    let mut no_advisors = idea_frame(104, &["GER_spirit"]);
+    *no_advisors.tables[TableId::HiredAdvisors.index()] = TableView::Unavailable {
+        reason: "fixture".into(),
+    };
+    // Nor when the country exists but its identity cannot be read.
+    let mut unmapped = idea_frame(105, &["GER_spirit"]);
+    *unmapped.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(vec![]));
+    let frames = vec![
+        idea_frame(100, &["GER_spirit"]),
+        // Hours 101 and 102 are missing, 103's ideas and 104's advisors are incomplete.
+        incomplete,
+        no_advisors,
+        unmapped,
+        idea_frame(106, &["GER_spirit"]),
+    ];
+    let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    // The branch ends in a recorded gap: those hours are unobserved, not a removal.
+    replay.gaps.push(replay::branches::Gap {
+        branch: 1,
+        first_hour: 107,
+        last_hour: 109,
+        reason: "fixture".into(),
+    });
+    let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    let span = |first_hour, last_hour| HourSpan {
+        first_hour,
+        last_hour,
+    };
+    assert_eq!(scanned.unobserved, [span(101, 105), span(107, 109)]);
+}
+
 fn stability_inputs() -> replay::rows::CountryStabilityInputRow {
     replay::rows::CountryStabilityInputRow {
         country: 9001,

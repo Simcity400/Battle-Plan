@@ -288,3 +288,78 @@ export type MeasureReply = { branchId: string, measure: Measure,
  * Decimal places of every raw value in this reply.
  */
 decimals: number, series: Array<MeasureSeries>, warnings: Array<string>, };
+export type IdeaSpan = { token: string, firstHour: number, lastHour: number, slot: string | null, character: IdeaCharacter | null, };
+export type IdeaCharacter = {
+/**
+ * The recorded character id.
+ */
+id: number, token: string, };
+export type EffectLine = { key: string, value: number | null,
+/**
+ * The authored text of a value this reader does not evaluate.
+ */
+unsupported: string | null,
+/**
+ * Applied without showing in the game's own tooltip.
+ */
+hidden: boolean, };
+export type EffectGroup = { target: string | null,
+/**
+ * An equipment bonus that applies at once to existing equipment.
+ */
+instant: boolean, lines: Array<EffectLine>, };
+export type TraitEffects = { token: string,
+/**
+ * Content defines the trait. When it does not, its effects are unknown and
+ * the lists below are empty for that reason, not because it has none.
+ */
+known: boolean, name: string | null, lines: Array<EffectLine>, targeted: Array<EffectGroup>, equipment: Array<EffectGroup>, tooltips: Array<string>, };
+export type HolderArtwork = { token: string,
+/**
+ * The recorded character id, as on the span.
+ */
+character: number, artwork: Artwork, };
+export type IdeaInfo = { token: string,
+/**
+ * The idea category (`government`, `country`, a mod's own …); None when
+ * neither content nor the recording places it.
+ */
+category: string | null,
+/**
+ * The slot or character seat it fills; None for category-wide ideas such
+ * as national spirits.
+ */
+slot: string | null, law: boolean, designer: boolean, effects: Array<EffectLine>, targeted: Array<EffectGroup>, equipment: Array<EffectGroup>, research: Array<EffectLine>, traits: Array<TraitEffects>,
+/**
+ * Custom tooltip localisation keys the idea shows instead of values.
+ */
+tooltips: Array<string>, };
+export type SlotInfo = { token: string, name: string | null,
+/**
+ * A character seat (advisors) rather than an idea slot (laws, designers).
+ */
+character: boolean,
+/**
+ * How many seats of this slot the category has.
+ */
+seats: number, };
+export type CategoryInfo = { token: string, name: string | null,
+/**
+ * `type`, such as `national_spirit`.
+ */
+kind: string | null, hidden: boolean, politicsTab: boolean, slots: Array<SlotInfo>, };
+export type IdeaHistoryReply = { branchId: string, tag: string, spans: Array<IdeaSpan>, ideas: Array<IdeaInfo>, artwork: Array<Artwork>,
+/**
+ * Each recorded holder of an advisor idea with that character's own name
+ * and portrait, so a span shows its own holder; `artwork` has the latest.
+ */
+holders: Array<HolderArtwork>,
+/**
+ * Every category in content order, so widgets list mod categories too.
+ */
+categories: Array<CategoryInfo>,
+/**
+ * Hours the idea table was not observed for this country: a span ending or
+ * starting next to one is a gap, not a change.
+ */
+unobserved: Array<HourSpan>, warnings: Array<string>, };
