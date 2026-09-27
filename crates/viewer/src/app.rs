@@ -617,7 +617,7 @@ impl Viewer {
                 }
             }
         }
-        if !viewer.settings
+        if (!viewer.settings || viewer.options.window_dump)
             && let Some(path) = viewer.options.replay.clone()
         {
             viewer.open(path, &cc.egui_ctx, None);
@@ -1157,7 +1157,7 @@ impl Viewer {
         if self.dashboard_active {
             // Full-map loading may have started before the tab changed. Finish
             // it once and lend its verified content to dashboard maps.
-            self.poll();
+            self.poll(ctx);
         }
         if self.dashboard_active
             && let Some(dashboard) = &mut self.dashboard
@@ -1201,7 +1201,7 @@ impl Viewer {
         // A host can select files faster than their content can load. Retain
         // one pending path and finish the active loader before starting it.
         // Each pending seek is tied to its requested file, never the old map.
-        self.poll();
+        self.poll(ctx);
         if self.loading.is_none()
             && let Some(request) = self.embedded_open.take()
         {
@@ -1486,13 +1486,13 @@ impl Viewer {
         let resolve = match self.config.resolve_options() {
             Ok(resolve) => resolve,
             Err(error) => {
-                self.error = Some(error.to_string());
+                self.failed_load(error.to_string(), ctx);
                 self.settings = true;
                 return;
             }
         };
         let Some((device, queue)) = self.gpu.clone() else {
-            self.error = Some("WGPU renderer is unavailable".to_owned());
+            self.failed_load("WGPU renderer is unavailable".to_owned(), ctx);
             return;
         };
         self.options.replay = Some(path.clone());
@@ -1662,7 +1662,26 @@ impl Viewer {
         }
     }
 
-    fn poll(&mut self) {
+    /// A `--window-dump` waits for this load, so its failure ends the capture
+    /// and the process; run_native hands the message to main, which exits 1.
+    /// Other captures belong to the map on screen and stay armed.
+    fn failed_load(&mut self, error: String, ctx: &egui::Context) {
+        if let Some(capture) = self.capture.take_if(|capture| capture.exit) {
+            let message = format!(
+                "Capture {} failed: replay could not be loaded: {error}",
+                capture.path.display()
+            );
+            *self
+                .failure
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(message.clone());
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.capture_note = Some(message);
+        }
+        self.error = Some(error);
+    }
+
+    fn poll(&mut self, ctx: &egui::Context) {
         let result = self.loading.as_ref().map(|receiver| receiver.try_recv());
         // An older loader may finish between logic and UI. Do not briefly
         // display or announce its replay after the host selected another.
@@ -1717,12 +1736,15 @@ impl Viewer {
                 }
             }
             Some(Ok(Err(error))) => {
-                self.error = Some(error);
                 self.loading = None;
+                self.failed_load(error, ctx);
             }
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
-                self.error = Some("Replay loader stopped before returning a result".into());
                 self.loading = None;
+                self.failed_load(
+                    "Replay loader stopped before returning a result".into(),
+                    ctx,
+                );
             }
             _ => {}
         }
@@ -3330,7 +3352,7 @@ impl eframe::App for Viewer {
             Duration::ZERO
         };
         self.laps = Some(Laps::new(waited));
-        self.poll();
+        self.poll(ui.ctx());
         self.lap("poll");
         // capture: F12 writes the map target as it stands, at its own pixel
         // size, through the readback `--dump` uses. It is the only way to score
@@ -3936,10 +3958,75 @@ mod tests {
         let (send, receive) = mpsc::channel();
         viewer.loading = Some(receive);
         send.send(Err("obsolete load failure".into())).unwrap();
-        viewer.poll();
+        viewer.poll(&egui::Context::default());
         assert!(viewer.loading.is_none());
         assert!(viewer.error.is_none());
         assert!(viewer.options.replay.is_none());
+    }
+
+    #[test]
+    fn failed_replay_load_ends_a_window_dump_and_keeps_an_interactive_capture() {
+        for disconnected in [false, true] {
+            for window_dump in [false, true] {
+                let failure = Arc::new(Mutex::new(None));
+                let mut viewer = Viewer::create(
+                    Config::default(),
+                    Options {
+                        replay: Some("broken.battleplan".into()),
+                        out: Some("capture.png".into()),
+                        window_dump,
+                        ..Default::default()
+                    },
+                    None,
+                    Arc::clone(&failure),
+                    None,
+                    None,
+                );
+                if !window_dump {
+                    viewer.capture = Some(Capture {
+                        path: "window-capture-1.png".into(),
+                        remaining: 0,
+                        pinned: None,
+                        exit: false,
+                        time: None,
+                        step: 0.0,
+                        frames: 1,
+                        index: 0,
+                    });
+                }
+                let (send, receive) = mpsc::channel();
+                viewer.loading = Some(receive);
+                let expected = if disconnected {
+                    "Replay loader stopped before returning a result"
+                } else {
+                    send.send(Err("unsupported replay format".into())).unwrap();
+                    "unsupported replay format"
+                };
+                drop(send);
+                let ctx = egui::Context::default();
+                let mut output = ctx.run_ui(Default::default(), |ui| viewer.poll(ui.ctx()));
+                output.textures_delta.clear();
+                assert!(viewer.loading.is_none());
+                assert_eq!(viewer.capture.is_some(), !window_dump);
+                assert_eq!(viewer.error.as_deref(), Some(expected));
+                let closes = output.viewport_output.values().any(|viewport| {
+                    viewport
+                        .commands
+                        .iter()
+                        .any(|command| matches!(command, egui::ViewportCommand::Close))
+                });
+                assert_eq!(closes, window_dump);
+                let reported = failure.lock().unwrap();
+                if window_dump {
+                    let message = reported.as_ref().unwrap();
+                    assert!(message.contains("capture.png"));
+                    assert!(message.contains("replay could not be loaded"));
+                    assert!(message.contains(expected));
+                } else {
+                    assert!(reported.is_none());
+                }
+            }
+        }
     }
 
     #[test]

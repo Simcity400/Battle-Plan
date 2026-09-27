@@ -134,6 +134,99 @@ pub fn size(items: &[Item]) -> io::Result<Option<(Length, Length)>> {
     pair(items, b"size", b"width", b"height")
 }
 
+/// A size independent of its parent, for map-icon windows. CSize::evaluate
+/// (1416B9BE0) applies each minimum before its maximum, then preserves aspect
+/// if requested. CSize::construct (1422EE9F0) leaves both bounds unspecified;
+/// CSize::parse (1422EF100 / 1422EFE10) permits a bound on just one axis.
+/// Parent-dependent lengths are refused instead of using a guessed viewport.
+pub fn fixed_size(items: &[Item]) -> io::Result<Option<[i32; 2]>> {
+    let Some((width, height)) = size(items)? else {
+        return Ok(None);
+    };
+    let fixed = |length: Length, what: &str| match length {
+        Length::Pixels(value) if value >= 0 => Ok(value),
+        _ => Err(invalid(format!(
+            "{what} depends on the parent size or position"
+        ))),
+    };
+    let original = [fixed(width, "size width")?, fixed(height, "size height")?];
+    let fields = last(items, b"size")
+        .and_then(Value::items)
+        .unwrap_or_default();
+    let bounds = |key: &[u8]| -> io::Result<[Option<i32>; 2]> {
+        let mut result = [None; 2];
+        for item in fields
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(key))
+        {
+            let what = format!("size {}", String::from_utf8_lossy(key));
+            let fields = crate::fields::block(&item.value, &what)?;
+            for (axis, name) in [b"width".as_slice(), b"height"].into_iter().enumerate() {
+                if let Some(value) = last(fields, name) {
+                    result[axis] = Some(fixed(Length::parse(value, &what)?, &what)?);
+                }
+            }
+        }
+        Ok(result)
+    };
+    let min = bounds(b"min")?;
+    let max = bounds(b"max")?;
+    let mut result = original;
+    for axis in 0..2 {
+        if let Some(min) = min[axis] {
+            result[axis] = result[axis].max(min);
+        }
+        if let Some(max) = max[axis] {
+            result[axis] = result[axis].min(max);
+        }
+    }
+    let preserve = last(fields, b"preserve_aspect_ratio")
+        .map(|value| crate::fields::boolean(value, "size preserve_aspect_ratio"))
+        .transpose()?
+        .unwrap_or(false);
+    if preserve && original.into_iter().chain(result).all(|value| value > 0) {
+        // 1416B9F89 / 1416B9F9D: add 0.5f, floorf, then CVTTSS2SI.
+        // Refuse an out-of-range aspect result rather than saturating it.
+        let rounded = |value: f32| -> io::Result<i32> {
+            let value = (value + 0.5).floor();
+            if value >= -(i32::MIN as f32) {
+                return Err(invalid(
+                    "size aspect-ratio result exceeds the native integer range",
+                ));
+            }
+            Ok(value as i32)
+        };
+        let ratio = original[0] as f32 / original[1] as f32;
+        let actual = result[0] as f32 / result[1] as f32;
+        if actual > ratio {
+            if min[0] == Some(result[0]) {
+                result[1] = rounded(result[0] as f32 / ratio)?;
+                if let Some(max) = max[1] {
+                    result[1] = result[1].min(max);
+                }
+            } else {
+                result[0] = rounded(result[1] as f32 * ratio)?;
+                if let Some(min) = min[0] {
+                    result[0] = result[0].max(min);
+                }
+            }
+        } else if actual < ratio {
+            if min[1] == Some(result[1]) {
+                result[0] = rounded(result[1] as f32 * ratio)?;
+                if let Some(max) = max[0] {
+                    result[0] = result[0].min(max);
+                }
+            } else {
+                result[1] = rounded(result[0] as f32 / ratio)?;
+                if let Some(min) = min[1] {
+                    result[1] = result[1].max(min);
+                }
+            }
+        }
+    }
+    Ok(Some(result))
+}
+
 // counters
 /// `slotsize = { width = .. height = .. }`, a `gridBoxType`'s cell step.
 pub fn slot_size(items: &[Item]) -> io::Result<Option<(Length, Length)>> {
@@ -196,6 +289,68 @@ guiTypes = {
 
     fn document() -> Document {
         parser::parse(GUI).unwrap()
+    }
+
+    #[test]
+    fn fixed_sizes_apply_partial_minima_then_maxima() {
+        for (bounds, expected) in [
+            ("", [20, 30]),
+            ("min={width=25}", [25, 30]),
+            ("max={height=15}", [20, 15]),
+            (
+                "min={width=40 height=50} max={width=25 height=35}",
+                [25, 35],
+            ),
+            ("min={width=40} min={height=50}", [40, 50]),
+            ("max={width=0 height=0}", [0, 0]),
+        ] {
+            let document =
+                parser::parse(format!("size={{width=20 height=30 {bounds}}}").as_bytes()).unwrap();
+            assert_eq!(
+                fixed_size(&document.items).unwrap(),
+                Some(expected),
+                "{bounds}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_sizes_preserve_aspect_after_bounds_using_native_ties() {
+        for (bounds, expected) in [
+            ("min={width=40}", [40, 20]),
+            ("min={height=20}", [40, 20]),
+            ("max={width=15}", [15, 8]),
+            ("max={height=6}", [12, 6]),
+            ("min={width=40} max={height=15}", [40, 15]),
+            ("min={height=20} max={width=30}", [30, 20]),
+        ] {
+            let document = parser::parse(
+                format!("size={{width=20 height=10 preserve_aspect_ratio=yes {bounds}}}")
+                    .as_bytes(),
+            )
+            .unwrap();
+            assert_eq!(
+                fixed_size(&document.items).unwrap(),
+                Some(expected),
+                "{bounds}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_sizes_refuse_parent_dependent_or_malformed_bounds() {
+        for fields in [
+            "width=100% height=20",
+            "width=-1 height=20",
+            "width=20 height=30 min={width=100%}",
+            "width=20 height=30 max={height=-1}",
+            "width=20 height=30 min=no",
+            "width=20 height=30 max={width=no}",
+            "width=20 height=30 preserve_aspect_ratio=maybe",
+        ] {
+            let document = parser::parse(format!("size={{{fields}}}").as_bytes()).unwrap();
+            assert!(fixed_size(&document.items).is_err(), "{fields}");
+        }
     }
 
     #[test]

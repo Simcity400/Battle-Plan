@@ -10,7 +10,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
         r.compared("RailwayGunCounterInputs", validate(frame)?);
         compare_saved(frame, save, r)?;
         r.limitation(
-            "The save omits naval transfer, exile, retreat, the CUnit combat vector (its count, the first combat's side and province, and the attacking byte), the assignee pointer, the stat definition and its maximum strength, the received-supply ratio, the railway building level at the gun, the movement target and the alternate route; its combat list is the gun's own reference array, compared by its stored count (+0x42C); compare the rest against paused memory at the sampled hour",
+            "The save omits naval transfer, exile, retreat, the CUnit combat vector (its count, the first combat's side and province, and the attacking byte), the assignee pointer, the stat definition and its maximum strength, the received-supply ratio and the railway building level at the gun; its combat list is the gun's own reference array, compared by its stored count (+0x42C); compare the rest against paused memory at the sampled hour",
             "RailwayGunCounterInputs live-only operands",
         );
         Ok(())
@@ -187,6 +187,20 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             row.ordinary_path.as_slice(),
             saved.path.as_slice(),
         );
+        // CUnit::Serialize@140BF7010 writes primary+0x1E8 as support_attack
+        // (0x2EDA) iff nonnull, and primary+0x220 as full_path (0x362C) iff nonempty.
+        check(
+            report,
+            &format!("{label}.target"),
+            row.target,
+            saved.support_attack.unwrap_or(0),
+        );
+        check(
+            report,
+            &format!("{label}.alternate_path"),
+            row.alternate_path.as_slice(),
+            saved.full_path.as_slice(),
+        );
         check(
             report,
             &format!("{label}.strategic_redeployment"),
@@ -286,6 +300,8 @@ mod tests {
             expeditionary_owner: None,
             province: Some(2),
             path: vec![],
+            support_attack: None,
+            full_path: vec![u32::MAX],
             strategic_redeployment: false,
             strength: Decimal::parse(b"0").unwrap(),
             combats: vec![],
@@ -347,6 +363,36 @@ mod tests {
             reason: "synthetic gap".into(),
         };
         assert!(validate(&frame).is_err());
+    }
+
+    #[test]
+    fn saved_target_and_alternate_route_detect_changes_and_omissions() {
+        let differences = |frame: &DecodedFrame, gun: save::RailwayGun| {
+            let (_, mut save, _, _) = super::super::tests::fixture();
+            save.railway_guns.insert(GUN, gun);
+            let mut report = Report::default();
+            compare_saved(frame, &save, &mut report).unwrap();
+            report.differences
+        };
+        let routed = |target, route: Vec<u32>| save::RailwayGun {
+            support_attack: target,
+            full_path: route,
+            ..saved_gun()
+        };
+        let moving = with(|row| {
+            row.target = 2;
+            row.alternate_path = vec![2, 1, 2];
+        });
+        assert!(differences(&moving, routed(Some(2), vec![2, 1, 2])).is_empty());
+        for route in [vec![2, 2, 1], vec![]] {
+            let found = differences(&moving, routed(None, route));
+            assert_eq!(found.len(), 2, "{found:?}");
+            assert!(found[0].contains("target"));
+            assert!(found[1].contains("alternate_path"));
+        }
+        // The writer omits a null target and an empty route.
+        let idle = with(|row| row.alternate_path.clear());
+        assert!(differences(&idle, routed(None, vec![])).is_empty());
     }
 
     #[test]

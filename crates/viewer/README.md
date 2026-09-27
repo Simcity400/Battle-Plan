@@ -89,7 +89,7 @@ Compare the same recorded hour, branch, perspective, camera and relevant game se
 
 For pass isolation, `--dump ... --layers trees` **omits** trees; it does not select only trees. `--counters-json <file>` exports the submitted plates. Omission footprints show where a pass changes the image, not which pass caused all error in those pixels.
 
-`--window-dump` checks the windowed path; its `--animation-time`, `--animation-step` and `--window-frames` options select a repeatable sequence. For headless dumps, `--presentation-time` and `--map-time` set separate clocks that otherwise start at zero; they do not recover native capture times. Match output resolution, upscale and exclusions before comparing. See [main.rs](src/main.rs) or `--help` for accepted combinations.
+`--window-dump` checks the windowed path and exits 1 if the replay fails to load; its `--animation-time`, `--animation-step` and `--window-frames` options select a repeatable sequence. For headless dumps, `--presentation-time` and `--map-time` set separate clocks that otherwise start at zero; they do not recover native capture times. Match output resolution, upscale and exclusions before comparing. See [main.rs](src/main.rs) or `--help` for accepted combinations.
 
 Performance profiling uses environment variables. None of them costs anything when it is unset.
 
