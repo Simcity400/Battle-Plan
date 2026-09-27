@@ -503,6 +503,11 @@ fn run(module: HMODULE) -> Result<(), String> {
     let spool_shared = Arc::clone(&shared);
     let spool_thread_id = Arc::clone(&spool_id);
     let spool_status = status_path.clone();
+    // Owned here and finished only after the spool thread has returned and
+    // callbacks are quiescent; the spool thread gets a hand-over handle.
+    let mut status_writer =
+        crate::status_writer::StatusWriter::start(write_status).map_err(|e| e.to_string())?;
+    let spool_writer = status_writer.handle();
     let session_id = session.id;
     let spool = std::thread::Builder::new()
         .name("hoi4-spool".into())
@@ -515,6 +520,7 @@ fn run(module: HMODULE) -> Result<(), String> {
                 processor,
                 &spool_status,
                 sizing,
+                spool_writer,
             )
         })
         .map_err(|e| e.to_string())?;
@@ -656,7 +662,20 @@ fn run(module: HMODULE) -> Result<(), String> {
         .join()
         .map_err(|_| "spool thread panicked".to_string())
         .and_then(|result| result);
-    let spool_warning = spool_outcome.as_ref().ok().cloned().flatten();
+    let mut spool_warning = spool_outcome.as_ref().ok().cloned().flatten();
+    // The spool thread has returned and every callback is quiescent: waiting
+    // on status I/O here blocks no game thread. The last spool status is on
+    // disk (or its failure is known) before it is read below.
+    status_writer.finish();
+    if let Some(error) = status_writer.take_error() {
+        // The loader still publishes the authoritative detached status. Keep
+        // the diagnostic so successful terminal publication reports recovery.
+        let error = format!("cannot publish spool status: {error}");
+        spool_warning = Some(match spool_warning {
+            Some(warning) => format!("{warning}; {error}"),
+            None => error,
+        });
+    }
     let mut spool_result = spool_outcome.map(|_| ());
     if let Err(error) = acquisition_outcome {
         add_terminal_error(&mut spool_result, error);
@@ -1062,6 +1081,10 @@ fn spool_loop(
     mut processor: Processor,
     status_path: &Path,
     sizing: crate::country_scale::Sizing,
+    // Status and content files are written on the loader's writer thread:
+    // this thread only hands snapshots over and never waits on status I/O,
+    // nor joins that thread (#94).
+    writer: crate::status_writer::StatusHandle,
 ) -> Result<Option<String>, String> {
     let mut capacities = sizing.core;
     let mut map_capacities = sizing.map;
@@ -1130,11 +1153,7 @@ fn spool_loop(
                 );
                 let diagnostic =
                     roster.diagnostics(&config.expected_mounts, &session.identity.verification);
-                if let Err(error) =
-                    write_status(&config.output_dir.join("content.json"), &diagnostic)
-                {
-                    last_warning = Some(format!("cannot write content observation: {error}"));
-                }
+                writer.publish(&config.output_dir.join("content.json"), diagnostic);
                 processor.set_verified_session(session.clone());
             }
             // Campaign directories can still fail to open. Keep the buffer and
@@ -1155,9 +1174,9 @@ fn spool_loop(
                     ));
                 }
                 last_warning = Some(error.to_string());
-                let _ = write_status(
+                writer.publish(
                     status_path,
-                    &json!({
+                    json!({
                         "state":"campaign spool unavailable", "session":session.id,
                         "warning":last_warning, "drain_complete":false,
                         "dropped_frames":shared.dropped.load(Ordering::Relaxed),
@@ -1301,6 +1320,9 @@ fn spool_loop(
         {
             refresh_requests.poll(&config.output_dir, shared);
             let status_started = sampling::qpc();
+            if let Some(error) = writer.take_error() {
+                last_warning = Some(error);
+            }
             let mut status = processor.status();
             status["state"] = json!(if shared.recording.load(Ordering::Acquire) {
                 "recording"
@@ -1318,9 +1340,8 @@ fn spool_loop(
             }
             add_decode_status(&mut status);
             work.add_status(&mut status, shared.frequency);
-            if let Err(error) = write_status(status_path, &status) {
-                last_warning = Some(error.to_string());
-            }
+            status["status_writer"] = writer.json();
+            writer.publish_measured(status_path, status, processor.spool_directories());
             work.status_update
                 .record_ticks(sampling::qpc() - status_started, shared.frequency);
             reported = Instant::now();
@@ -1378,14 +1399,12 @@ fn spool_loop(
             }
             add_decode_status(&mut status);
             work.add_status(&mut status, shared.frequency);
-            if let Err(error) = write_status(status_path, &status) {
-                // The loader still publishes the authoritative detached
-                // status after joining us. Retain this diagnostic in memory
-                // so successful terminal publication can report recovery.
-                last_warning = Some(format!("cannot publish final spool status: {error}"));
-            }
+            status["status_writer"] = writer.json();
+            writer.publish_measured(status_path, status, processor.spool_directories());
             work.status_update
                 .record_ticks(sampling::qpc() - status_started, shared.frequency);
+            // The loader finishes the writer after joining this thread and
+            // reads this status then; a failed write becomes its warning.
             break;
         }
         std::thread::sleep(Duration::from_millis(2));

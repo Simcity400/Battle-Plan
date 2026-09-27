@@ -1709,19 +1709,20 @@ impl Processor {
         std::mem::take(&mut self.retry_full)
     }
 
+    /// The campaign directories whose `spool.*` files `status.json` reports
+    /// as `spool_bytes`. The status writer measures them off this thread.
+    pub fn spool_directories(&self) -> Vec<std::path::PathBuf> {
+        self.campaigns
+            .values()
+            .map(|campaign| campaign.directory.clone())
+            .collect()
+    }
+
+    /// Status without file-system I/O; `spool_bytes` is added by the status
+    /// writer (`status_writer::StatusHandle::publish_measured`).
     pub fn status(&self) -> Value {
         let stats = &self.stats;
         let callback = stats.callback.percentiles();
-        let spool_bytes: u64 = self
-            .campaigns
-            .values()
-            .filter_map(|campaign| fs::read_dir(&campaign.directory).ok())
-            .flatten()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with("spool."))
-            .filter_map(|entry| entry.metadata().ok())
-            .map(|metadata| metadata.len())
-            .sum();
         // Per-family copy-only mirrors, built outside the status `json!` so
         // the macro stays under its recursion limit as families move over.
         let research_walk_ns = [
@@ -1869,7 +1870,7 @@ impl Processor {
             "hours_per_second": if stats.interval_qpc == 0 { 0.0 } else {
                 stats.interval_hours as f64 * self.session.qpc_frequency as f64 / stats.interval_qpc as f64
             },
-            "spool_bytes": spool_bytes, "dropped_frames": stats.dropped_frames,
+            "dropped_frames": stats.dropped_frames,
             "truncated_tables": stats.truncated_tables,
             "shared_read_groups": crate::extended::read_groups().into_iter().map(|(name, anchor, members)| {
                 // Game-thread copy-only for moved families: `table_ns` for

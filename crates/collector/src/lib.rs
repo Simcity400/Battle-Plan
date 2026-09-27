@@ -39,6 +39,7 @@ mod sampling;
 mod slicing;
 mod snapshot_plan;
 mod spooling;
+mod status_writer;
 mod table_capture;
 
 use std::ffi::c_void;
