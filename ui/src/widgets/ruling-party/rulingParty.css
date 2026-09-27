@@ -1,0 +1,2 @@
+.ruling-party { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0 var(--space-2); }
+.ruling-party-chart { flex: 1; min-height: 0; }

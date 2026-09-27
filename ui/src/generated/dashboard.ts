@@ -367,3 +367,28 @@ categories: Array<CategoryInfo>,
  * starting next to one is a gap, not a change.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type PartySeries = {
+/**
+ * The party's ideology group token.
+ */
+token: string, runs: Array<FixedRun>, };
+export type RulingRun = { token: string, firstHour: number, lastHour: number,
+/**
+ * Follows a gap or a change of country identity rather than the previous run,
+ * so the change between them is not a change of government.
+ */
+startsSegment: boolean, };
+export type IdeologyInfo = { token: string, name: string | null,
+/**
+ * sRGB bytes; null when content gives no usable colour.
+ */
+color: [number, number, number] | null, };
+export type PartyHistoryReply = { branchId: string, tag: string, decimals: number, parties: Array<PartySeries>, ruling: Array<RulingRun>,
+/**
+ * Hours an election was first seen held.
+ */
+elections: Array<number>,
+/**
+ * Every ideology group in content order, for colours, names and legend order.
+ */
+ideologies: Array<IdeologyInfo>, unobserved: Array<HourSpan>, warnings: Array<string>, };

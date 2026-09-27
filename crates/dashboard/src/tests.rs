@@ -2207,6 +2207,98 @@ fn idea_history_marks_gaps_in_order_and_to_the_branch_end() {
     assert_eq!(scanned.unobserved, [span(101, 105), span(107, 109)]);
 }
 
+/// GER (link 9001) with two parties at the given popularities (raw), one ruling,
+/// and its last election hour.
+fn party_frame(
+    hour: i32,
+    fascism: i64,
+    democratic: i64,
+    ruling: &str,
+    election: i32,
+) -> DecodedFrame {
+    let mut frame = ownership_frame(1, hour, 44);
+    let party = |id: u32, token: &str, popularity: i64| replay::rows::PoliticalPartyRow {
+        country: 9001,
+        id,
+        popularity,
+        is_ruling: u8::from(token == ruling),
+        token: token.as_bytes().to_vec(),
+    };
+    let mut parties = vec![
+        party(1, "democratic", democratic),
+        party(2, "fascism", fascism),
+        // Another country's party is never GER's.
+        replay::rows::PoliticalPartyRow {
+            country: 44,
+            id: 1,
+            popularity: 1,
+            is_ruling: 1,
+            token: b"democratic".to_vec(),
+        },
+    ];
+    parties.sort_by_key(|row| (row.country, row.id));
+    *frame.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(parties));
+    *frame.tables[TableId::Politics.index()] =
+        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+            country: 9001,
+            last_election: election,
+            ..Default::default()
+        }]));
+    frame
+}
+
+#[test]
+fn party_history_follows_popularity_ruling_changes_and_elections() {
+    use crate::products::party_history::{RulingRun, scan};
+    let frames = vec![
+        party_frame(100, 40_00000, 35_00000, "fascism", 10),
+        party_frame(101, 40_00000, 35_00000, "fascism", 10),
+        party_frame(102, 45_00000, 30_00000, "fascism", 10),
+        // Hour 103 is missing; at 104 an election was held and the democrats rule.
+        party_frame(104, 20_00000, 60_00000, "democratic", 104),
+    ];
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    let fascism = &scanned.parties["fascism"];
+    assert_eq!(
+        fascism
+            .runs
+            .iter()
+            .map(|run| (
+                run.first_hour,
+                run.last_hour,
+                run.value_raw.as_str(),
+                run.starts_segment
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (100, 101, "4000000", true),
+            (102, 102, "4500000", false),
+            (104, 104, "2000000", true)
+        ]
+    );
+    let ruling = |token: &str, first_hour, last_hour| RulingRun {
+        token: token.into(),
+        first_hour,
+        last_hour,
+        starts_segment: true,
+    };
+    assert_eq!(
+        scanned.ruling,
+        [ruling("fascism", 100, 102), ruling("democratic", 104, 104)]
+    );
+
+    assert_eq!(scanned.elections, [104]);
+    assert_eq!(
+        scanned.unobserved,
+        [crate::products::country_groups::HourSpan {
+            first_hour: 103,
+            last_hour: 103
+        }]
+    );
+}
+
 fn stability_inputs() -> replay::rows::CountryStabilityInputRow {
     replay::rows::CountryStabilityInputRow {
         country: 9001,
