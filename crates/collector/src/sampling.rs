@@ -1269,7 +1269,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if !continuous || recovery {
                 crate::portrait_changes::invalidate();
                 crate::advisor_changes::invalidate();
-                extended::intel::forget_relation_authentications();
+                crate::opinion_changes::invalidate();
+                extended::intel::forget_relation_opinions();
             }
             frame.extended.prepare_hour(clock.hour, force_full);
             let state = clock.game_state as usize;

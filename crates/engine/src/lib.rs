@@ -617,6 +617,7 @@ pub mod operation_token_map;
 pub mod operation_token_target_entry;
 pub mod operative_action;
 pub mod operative_action_implementation;
+pub mod opinion_mutations;
 pub mod output_view_wrapper_layout;
 pub mod overlap_geometry;
 pub mod particle_atlas_row_layout;

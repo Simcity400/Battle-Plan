@@ -26,6 +26,7 @@ mod history;
 mod hook;
 mod map_capture;
 mod map_spool;
+mod opinion_changes;
 mod portrait_changes;
 mod projection;
 mod raw;

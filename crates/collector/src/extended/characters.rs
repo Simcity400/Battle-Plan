@@ -2175,16 +2175,16 @@ impl CharactersJob {
             || self.source_bindings.as_ref().is_some_and(|plan| plan.overflowed)
             || self.advisor_dynamic.as_ref().is_some_and(|job| job.grow_for_next())
             || self.role_census.as_ref().is_some_and(|census| census.needs_growth())
-            || self.visits_required() > self.census_visited.capacity()
+            || self.visits_required(census::live_len()) > self.census_visited.capacity()
     }
 
     /// Visits the next role pass may need: its recorded demand, and every
-    /// occurrence of the live census.
-    fn visits_required(&self) -> usize {
+    /// occurrence of the live census (`live`).
+    fn visits_required(&self, live: usize) -> usize {
         if self.part == 0 {
             return 0;
         }
-        self.census_required.max(census::live_len())
+        self.census_required.max(live)
     }
 
     fn overflowed(&self) -> bool {
@@ -2208,7 +2208,7 @@ impl CharactersJob {
             census.grow();
         }
         self.census_visited
-            .reserve(self.visits_required().saturating_sub(self.census_visited.len()));
+            .reserve(self.visits_required(census::live_len()).saturating_sub(self.census_visited.len()));
         self.update_census_charge();
         if let Some(cache) = &mut self.advisor_cache { cache.grow(); }
         self.log.grow();

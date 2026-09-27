@@ -9,7 +9,9 @@ publish.workspace = true
 crate-type = ["cdylib"]
 
 [features]
-default = ["portrait_changes", "advisor_changes"]
+# `opinion_verify` stays on by default until the opinion hooks' burn-in passes
+# (owner rule: verify stays on during burn-in).
+default = ["portrait_changes", "advisor_changes", "opinion_changes", "opinion_verify"]
 advisor_changes = []
 # Bounded per-section wall/cycle measurements for diagnosing slow captures.
 advisor_profile = ["advisor_changes"]
@@ -18,6 +20,10 @@ callback_profile = []
 # Diagnostic acquisition checks every proposed advisor cache hit.
 advisor_verify = ["advisor_changes"]
 portrait_changes = []
+# Relation opinion writer hooks: observed relations refreshes read only the statuses a writer changed.
+opinion_changes = []
+# Every observed opinion refresh is compared with one that reads every status of its slice. On by default during burn-in.
+opinion_verify = ["opinion_changes"]
 # Diagnostic capture reads all entries and checks every proposed cache hit.
 portrait_verify = ["portrait_changes"]
 

@@ -841,7 +841,8 @@ impl Captured {
                 &mut self.relation_tuples.rows,
                 [active[13], active[14]],
                 &mut self.relation_resolver,
-                &mut crelation_status::Authentication::default(),
+                &mut crelation_status::Baseline::default(),
+                None,
                 |owner| self.relations_selection.contains(owner),
             );
             if active[13] {
@@ -1640,76 +1641,145 @@ fn pointer(memory: &impl Memory, root: usize, offset: usize) -> Result<usize, &'
 //
 // The worker runs the typed walk (`crelation_status::walk_with`) into the
 // job's own rows; the decode worker copies them into the pack. One shared
-// store keeps the walk's status authentications between refreshes, so a warm
-// refresh reads each status's opinion alone; `forget_relation_authentications`
-// drops them wherever the game state may have been rebuilt.
+// store keeps the opinion baseline between refreshes, so a refresh that
+// observed every opinion write since the last one (`crate::opinion_changes`)
+// reads only the statuses a writer changed.
 // ===========================================================================
 
-/// The status authentications every relations job shares. The store holds one
-/// entry per status (12 bytes: 27 MB at 1,500 countries), so pooled jobs
-/// borrow the one store rather than each keeping their own. A job takes it at
-/// its refresh and returns it, grown off the game thread, when decode releases
-/// the job. A refresh that finds it lent authenticates every status, which
-/// yields the same rows.
-struct SharedAuthentication {
-    auth: crelation_status::Authentication,
-    epoch: u64,
+/// Drains the opinion writes observed since `consumed`: see
+/// [`crate::opinion_changes::drain`].
+type Drain = fn(&mut u64, &mut [crelation_status::Mark], &mut usize) -> Option<(u64, Option<usize>)>;
+
+/// The opinion baseline every relations job shares. Pooled jobs borrow the one
+/// store: a job takes it at its refresh and returns it, grown off the game
+/// thread, when decode releases the job. A refresh that finds it lent reads
+/// every status, which yields the same rows.
+struct SharedOpinions {
+    baseline: crelation_status::Baseline,
+    /// The baseline's counts last reported to `opinion_changes`.
+    reported: crelation_status::BaselineCounts,
+    /// The opinion-write log position this baseline has accounted for.
+    consumed: u64,
+    /// Each mark is a status and its owning diplomacy, so a mark waits for
+    /// its owner's slice.
+    marks: Vec<crelation_status::Mark>,
+    required_marks: usize,
+    /// Rows of the verify walk.
+    verify: Vec<crelation_status::OpinionRow>,
+    required_verify: usize,
+    drain: Drain,
+    /// Verify mode: where a comparison's result goes.
+    report: Option<fn(Option<bool>)>,
     charge: crate::raw_memory::Charge,
 }
 
-enum AuthenticationSlot {
-    Unmade,
-    Home(SharedAuthentication),
-    Lent,
+impl SharedOpinions {
+    fn new() -> Self {
+        Self {
+            baseline: crelation_status::Baseline::default(),
+            reported: crelation_status::BaselineCounts::default(),
+            // Marks appended before this store existed are no one's demand.
+            consumed: default_cursor(),
+            marks: Vec::new(),
+            required_marks: 0,
+            verify: Vec::new(),
+            required_verify: 0,
+            drain: default_drain(),
+            report: crate::opinion_changes::verify()
+                .then_some(crate::opinion_changes::verified as fn(Option<bool>)),
+            charge: crate::raw_memory::Charge::default(),
+        }
+    }
+
+    /// Off the game thread.
+    fn grow(&mut self) {
+        fn fit<T: Default + Clone>(vector: &mut Vec<T>, required: usize) {
+            if required > vector.len() {
+                let len = required.saturating_add(required / 4);
+                if vector.try_reserve_exact(len - vector.len()).is_ok() {
+                    vector.resize(len, T::default());
+                }
+            }
+        }
+        // Room for the marks the last drain saw, in the baseline as well as
+        // here, so they are not refused twice.
+        self.baseline.reserve_marks(self.required_marks);
+        fit(
+            &mut self.marks,
+            self.required_marks
+                .max(crelation_status::Baseline::MIN_MARKS),
+        );
+        fit(&mut self.verify, self.required_verify);
+        self.charge.set(crate::raw_memory::Capacity {
+            payload_vectors: (self.baseline.allocated_bytes()
+                + self.marks.capacity() * size_of::<crelation_status::Mark>()
+                + self.verify.capacity() * size_of::<crelation_status::OpinionRow>())
+                as u64,
+            ..Default::default()
+        });
+    }
 }
 
-type AuthenticationStore = std::sync::Mutex<AuthenticationSlot>;
-
-#[cfg_attr(test, allow(dead_code))]
-static RELATION_AUTHENTICATION: AuthenticationStore =
-    std::sync::Mutex::new(AuthenticationSlot::Unmade);
-
-/// `[broken proofs, refreshes that found the store lent]` since attach.
-static RELATION_AUTHENTICATION_COUNTS: [std::sync::atomic::AtomicU64; 2] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
-
-pub(crate) fn relation_authentication_diagnostics() -> serde_json::Value {
-    use std::sync::atomic::Ordering::Relaxed;
-    serde_json::json!({
-        "broken_proofs": RELATION_AUTHENTICATION_COUNTS[0].load(Relaxed),
-        "store_lent": RELATION_AUTHENTICATION_COUNTS[1].load(Relaxed),
-    })
-}
-
-/// Tests keep a private store per job, so parallel tests never share one.
+/// Tests never observe the process's native writers.
 #[cfg(not(test))]
-fn default_authentication_store() -> &'static AuthenticationStore {
-    &RELATION_AUTHENTICATION
+fn default_cursor() -> u64 {
+    crate::opinion_changes::cursor()
 }
 
 #[cfg(test)]
-fn default_authentication_store() -> &'static AuthenticationStore {
-    Box::leak(Box::new(std::sync::Mutex::new(AuthenticationSlot::Unmade)))
+fn default_cursor() -> u64 {
+    0
+}
+
+#[cfg(not(test))]
+fn default_drain() -> Drain {
+    crate::opinion_changes::drain
+}
+
+#[cfg(test)]
+fn default_drain() -> Drain {
+    |_, _, _| None
+}
+
+// The slot is a static: boxing the store would allocate on its first
+// borrow, which happens in the callback.
+#[allow(clippy::large_enum_variant)]
+enum OpinionSlot {
+    Unmade,
+    Home(SharedOpinions),
+    Lent,
+}
+
+type OpinionStore = std::sync::Mutex<OpinionSlot>;
+
+#[cfg_attr(test, allow(dead_code))]
+static RELATION_OPINIONS: OpinionStore = std::sync::Mutex::new(OpinionSlot::Unmade);
+
+/// Tests keep a private store per job, so parallel tests never share one.
+#[cfg(not(test))]
+fn default_opinion_store() -> &'static OpinionStore {
+    &RELATION_OPINIONS
+}
+
+#[cfg(test)]
+fn default_opinion_store() -> &'static OpinionStore {
+    Box::leak(Box::new(std::sync::Mutex::new(OpinionSlot::Unmade)))
 }
 
 /// A borrowed store, returned to its slot when dropped.
-struct LentAuthentication {
-    store: &'static AuthenticationStore,
-    shared: Option<SharedAuthentication>,
+struct LentOpinions {
+    store: &'static OpinionStore,
+    shared: Option<SharedOpinions>,
 }
 
-impl LentAuthentication {
+impl LentOpinions {
     /// Never blocks and never allocates: the callback may call it.
-    fn borrow(store: &'static AuthenticationStore) -> Option<Self> {
+    fn borrow(store: &'static OpinionStore) -> Option<Self> {
         let mut slot = store.try_lock().ok()?;
-        let shared = match std::mem::replace(&mut *slot, AuthenticationSlot::Lent) {
-            AuthenticationSlot::Unmade => SharedAuthentication {
-                auth: crelation_status::Authentication::default(),
-                epoch: 0,
-                charge: crate::raw_memory::Charge::default(),
-            },
-            AuthenticationSlot::Home(shared) => shared,
-            AuthenticationSlot::Lent => return None,
+        let shared = match std::mem::replace(&mut *slot, OpinionSlot::Lent) {
+            OpinionSlot::Unmade => SharedOpinions::new(),
+            OpinionSlot::Home(shared) => shared,
+            OpinionSlot::Lent => return None,
         };
         Some(Self {
             store,
@@ -1717,27 +1787,27 @@ impl LentAuthentication {
         })
     }
 
-    fn shared(&mut self) -> &mut SharedAuthentication {
+    fn shared(&mut self) -> &mut SharedOpinions {
         self.shared.as_mut().expect("present until dropped")
     }
 }
 
-impl Drop for LentAuthentication {
+impl Drop for LentOpinions {
     fn drop(&mut self) {
         if let Some(shared) = self.shared.take()
             && let Ok(mut slot) = self.store.lock()
         {
-            *slot = AuthenticationSlot::Home(shared);
+            *slot = OpinionSlot::Home(shared);
         }
     }
 }
 
-/// Bumped on every load, gap or recovery; a job whose authentications carry
-/// an older value forgets them before walking.
+/// Bumped on every load, gap or recovery; a baseline recorded under an older
+/// value is not replayed.
 static RELATION_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The world may have been rebuilt: no stored authentication may be reused.
-pub(crate) fn forget_relation_authentications() {
+/// The world may have been rebuilt: no recorded opinion may be replayed.
+pub(crate) fn forget_relation_opinions() {
     RELATION_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -1755,11 +1825,11 @@ pub(crate) struct RelationsJob {
     pub tuples: Vec<crelation_status::TupleRow>,
     walk: Option<crelation_status::Walk>,
     resolver: crelation_status::Resolver,
-    /// Where this job borrows its status authentications.
-    store: Option<&'static AuthenticationStore>,
+    /// Where this job borrows the opinion baseline.
+    store: Option<&'static OpinionStore>,
     /// The shared store while this job holds it, from its refresh until decode
     /// releases the job.
-    auth: Option<LentAuthentication>,
+    shared: Option<LentOpinions>,
     /// Rows the last refresh needed, `[opinions, tuples]`.
     required: [usize; 2],
     overflowed: bool,
@@ -1795,7 +1865,7 @@ impl RelationsJob {
         job
     }
 
-    /// Reset the payload, retaining storage and authentications.
+    /// Reset the payload, retaining storage.
     pub fn clear(&mut self) {
         self.active = [false; 2];
         self.walk = None;
@@ -1822,16 +1892,9 @@ impl RelationsJob {
 
     /// Off the game thread: grow the shared store to what this job's refresh
     /// observed and hand it back for the next job.
-    pub fn return_authentication(&mut self) {
-        if let Some(mut lent) = self.auth.take() {
-            let shared = lent.shared();
-            if shared.auth.required() > shared.auth.capacity() {
-                shared.auth.grow();
-                shared.charge.set(crate::raw_memory::Capacity {
-                    payload_vectors: shared.auth.allocated_bytes() as u64,
-                    ..Default::default()
-                });
-            }
+    pub fn return_opinions(&mut self) {
+        if let Some(mut lent) = self.shared.take() {
+            lent.shared().grow();
         }
     }
 
@@ -1885,6 +1948,51 @@ pub(crate) struct RelationsCopyContext {
     pub epoch: u64,
 }
 
+/// Verify mode: compare an observed walk's opinions with a walk that reads
+/// every status of the same owner slice. A difference poisons the
+/// observation for the rest of the attachment and the reference rows are
+/// kept.
+fn verify_opinions(
+    memory: &impl Memory,
+    ctx: RelationsCopyContext,
+    shared: &mut SharedOpinions,
+    resolver: &mut crelation_status::Resolver,
+    rows: &mut [crelation_status::OpinionRow],
+    outcome: Outcome,
+    select: impl Fn(u32) -> bool,
+) -> Outcome {
+    let Some(report) = shared.report else {
+        return outcome;
+    };
+    shared.required_verify = rows.len();
+    let Some(reference) = shared.verify.get_mut(..rows.len()) else {
+        report(None);
+        return outcome;
+    };
+    let expected = crelation_status::walk_with(
+        memory,
+        ctx.base,
+        ctx.game_state,
+        reference,
+        &mut [],
+        [true, false],
+        resolver,
+        &mut crelation_status::Baseline::default(),
+        None,
+        select,
+    )
+    .opinions;
+    let len = expected.len();
+    let agrees = expected == outcome && reference[..len] == rows[..len];
+    report(Some(agrees));
+    if agrees {
+        return outcome;
+    }
+    shared.baseline.clear();
+    rows[..len].copy_from_slice(&reference[..len]);
+    expected
+}
+
 /// The relations walk on the worker, into the job's rows. Rows and outcomes
 /// equal a walk into the pack's own buffers: each table is walked into at
 /// most the pack's capacity, and a job shorter than that which truncates
@@ -1934,26 +2042,10 @@ pub(crate) fn copy_relations_refresh(
             ..Default::default()
         };
     }
-    if job.auth.is_none() {
-        let store = *job.store.get_or_insert_with(default_authentication_store);
-        job.auth = LentAuthentication::borrow(store);
+    if job.shared.is_none() {
+        let store = *job.store.get_or_insert_with(default_opinion_store);
+        job.shared = LentOpinions::borrow(store);
     }
-    // Lent to another job: authenticate every status, as after a load.
-    let mut unstored = crelation_status::Authentication::default();
-    let auth = match &mut job.auth {
-        Some(lent) => {
-            let shared = lent.shared();
-            if shared.epoch != ctx.epoch {
-                shared.auth.clear();
-                shared.epoch = ctx.epoch;
-            }
-            &mut shared.auth
-        }
-        None => {
-            RELATION_AUTHENTICATION_COUNTS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            &mut unstored
-        }
-    };
     let anchor = usize::from(ctx.active[1]);
     let _reads = read_accounting::table(TABLES[13 + anchor]);
     let started = qpc();
@@ -1964,10 +2056,64 @@ pub(crate) fn copy_relations_refresh(
     if let (Some(selection), Some(fingerprints)) = (&mut job.selection, &mut job.fingerprints) {
         scan_relation_owners(memory, ctx.base, ctx.game_state, selection, fingerprints);
     }
+    // Lent to another job: read every status, as after a load.
+    let mut unshared = crelation_status::Baseline::default();
+    let (baseline, observation) = match &mut job.shared {
+        Some(lent) => {
+            let SharedOpinions {
+                baseline,
+                consumed,
+                marks,
+                required_marks,
+                drain,
+                report,
+                verify,
+                required_verify,
+                ..
+            } = lent.shared();
+            // Only opinion refreshes account for the log.
+            let mut pending = 0;
+            let drained = if ctx.active[0] {
+                drain(consumed, marks.as_mut_slice(), &mut pending)
+            } else {
+                None
+            };
+            // Marks from before the baseline's epoch (a load's, say) are
+            // never replayed: they are no demand for storage.
+            if drained.is_some_and(|(epoch, _)| {
+                baseline.token() == Some((epoch, ctx.epoch))
+            }) {
+                *required_marks = pending;
+            }
+            // Verify mode publishes no replay it cannot compare: until its
+            // storage holds this job's rows, the observation hands over no
+            // marks, so the walk reads every selected owner in full.
+            let verifiable = report.is_none() || verify.len() >= lens[0];
+            if report.is_some() {
+                *required_verify = (*required_verify).max(lens[0]);
+            }
+            let observation =
+                drained.map(|(epoch, count)| crelation_status::Observation {
+                    token: (epoch, ctx.epoch),
+                    marks: count
+                        .filter(|_| verifiable)
+                        .map(|count| &marks[..count]),
+                });
+            (baseline, observation)
+        }
+        None => {
+            crate::opinion_changes::store_lent();
+            (&mut unshared, None)
+        }
+    };
     // Without a loaned selection (a test harness) every owner is read, as on
     // a full hour: the pack's placeholder selection is a full one.
     let selection = job.selection.as_ref();
-    let walk = crelation_status::walk_with(
+    let select = |owner| selection.is_none_or(|selection| selection.contains(owner));
+    // Verify only walks that replayed an owner: a walk that read every
+    // selected owner in full has nothing to compare.
+    let replayed = baseline.counts().reused_owners;
+    let mut walk = crelation_status::walk_with(
         memory,
         ctx.base,
         ctx.game_state,
@@ -1975,12 +2121,25 @@ pub(crate) fn copy_relations_refresh(
         &mut job.tuples[..lens[1]],
         ctx.active,
         &mut job.resolver,
-        auth,
-        |owner| selection.is_none_or(|selection| selection.contains(owner)),
+        baseline,
+        observation,
+        select,
     );
-    let broken = auth.take_broken_proofs();
-    if broken != 0 {
-        RELATION_AUTHENTICATION_COUNTS[0].fetch_add(broken, std::sync::atomic::Ordering::Relaxed);
+    let replayed = baseline.counts().reused_owners != replayed;
+    if let Some(lent) = &mut job.shared {
+        let shared = lent.shared();
+        crate::opinion_changes::record(shared.baseline.counts(), &mut shared.reported);
+        if replayed && shared.report.is_some() {
+            walk.opinions = verify_opinions(
+                memory,
+                ctx,
+                shared,
+                &mut job.resolver,
+                &mut job.opinions[..lens[0]],
+                walk.opinions,
+                select,
+            );
+        }
     }
     let mut copy_ticks = [0; 2];
     copy_ticks[anchor] = elapsed(started);
@@ -2879,11 +3038,11 @@ mod tests {
         assert!(grown > initial);
         assert_eq!(grown, expected(&job));
         // The shared store grows as the job returns it, on its own charge.
-        job.return_authentication();
-        let mut lent = LentAuthentication::borrow(job.store.unwrap()).unwrap();
-        let auth = &lent.shared().auth;
-        assert!(auth.capacity()[1] > 0);
-        assert_eq!(auth.capacity(), auth.required());
+        job.return_opinions();
+        let mut lent = LentOpinions::borrow(job.store.unwrap()).unwrap();
+        let baseline = &lent.shared().baseline;
+        assert!(baseline.allocated_bytes() > 0);
+        assert!(!baseline.needs_growth());
         drop(lent);
         job.clear();
         assert_eq!(LOCAL.snapshot().current.payload_vectors, grown);
@@ -4322,29 +4481,79 @@ mod tests {
         assert_eq!(intel.relation_opinions.outcome, direct.opinion_outcome);
     }
 
-    /// Pooled jobs share one authentication store. A refresh that finds it
-    /// lent authenticates every status and yields the same rows; the store
-    /// comes home, grown, when decode releases the job holding it.
-    #[test]
-    fn relations_jobs_share_one_authentication_store() {
-        let bytes = relations_kit::opinionated_fixture();
-        let store: &'static AuthenticationStore =
-            Box::leak(Box::new(std::sync::Mutex::new(AuthenticationSlot::Unmade)));
-        let [mut first, mut second] = [(); 2].map(|()| RelationsJob {
-            store: Some(store),
-            ..RelationsJob::new()
-        });
-        let ctx = RelationsCopyContext {
+    thread_local! {
+        static MARKS: std::cell::RefCell<Vec<crelation_status::Mark>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Observes this thread's `MARKS` as every opinion write since the last
+    /// drain, under one epoch.
+    fn test_drain(
+        _: &mut u64,
+        output: &mut [crelation_status::Mark],
+        required: &mut usize,
+    ) -> Option<(u64, Option<usize>)> {
+        MARKS.with_borrow_mut(|marks| {
+            *required = marks.len();
+            let fits = marks.len() <= output.len();
+            if fits {
+                output[..marks.len()].copy_from_slice(marks);
+            }
+            let count = fits.then_some(marks.len());
+            marks.clear();
+            Some((1, count))
+        })
+    }
+
+    fn observed_store(verify: bool) -> &'static OpinionStore {
+        let mut shared = SharedOpinions::new();
+        shared.drain = test_drain;
+        shared.marks = vec![crelation_status::Mark::default(); 8];
+        shared.report =
+            verify.then_some(crate::opinion_changes::verified as fn(Option<bool>));
+        Box::leak(Box::new(std::sync::Mutex::new(OpinionSlot::Home(shared))))
+    }
+
+    fn relations_ctx(epoch: u64) -> RelationsCopyContext {
+        RelationsCopyContext {
             base: relations_kit::BASE,
             game_state: relations_kit::GS,
             active: [true; 2],
             opinion_cap: 16,
             tuple_cap: 16,
-            epoch: 0,
-        };
+            epoch,
+        }
+    }
+
+    /// One refresh released as decode releases it; its opinion outcome and rows.
+    fn observed_refresh(
+        bytes: &[u8],
+        job: &mut RelationsJob,
+        epoch: u64,
+    ) -> (Outcome, Vec<crelation_status::OpinionRow>) {
+        let report = copy_relations_refresh(&relations_kit::memory(bytes), relations_ctx(epoch), job);
+        assert!(report.raw_ok);
+        if job.grow_for_next() {
+            job.grow();
+        }
+        job.return_opinions();
+        let outcome = job.walk.unwrap().opinions;
+        (outcome, job.opinions[..outcome.len()].to_vec())
+    }
+
+    /// Pooled jobs share one opinion store. A refresh that finds it lent
+    /// reads every status and yields the same rows; the store comes home,
+    /// grown, when decode releases the job holding it.
+    #[test]
+    fn relations_jobs_share_one_opinion_store() {
+        let bytes = relations_kit::opinionated_fixture();
+        let store = observed_store(false);
+        let [mut first, mut second] = [(); 2].map(|()| RelationsJob {
+            store: Some(store),
+            ..RelationsJob::new()
+        });
         let memory = relations_kit::memory(&bytes);
         let run = |job: &mut RelationsJob| {
-            assert!(copy_relations_refresh(&memory, ctx, job).raw_ok);
+            assert!(copy_relations_refresh(&memory, relations_ctx(0), job).raw_ok);
             (
                 job.walk.unwrap(),
                 job.opinions[..2].to_vec(),
@@ -4352,20 +4561,28 @@ mod tests {
             )
         };
         let rows = run(&mut first);
-        assert!(first.auth.is_some());
+        assert!(first.shared.is_some());
         // Lent: the second job walks without it, to the same rows.
         assert_eq!(run(&mut second), rows);
-        assert!(second.auth.is_none());
-        first.return_authentication();
-        // Home and grown: the next refresh reads each opinion alone.
-        let mut lent = LentAuthentication::borrow(store).unwrap();
-        let auth = &mut lent.shared().auth;
-        assert!(auth.capacity()[1] > 0);
+        assert!(second.shared.is_none());
+        first.return_opinions();
+        let mut lent = LentOpinions::borrow(store).unwrap();
+        assert!(lent.shared().baseline.allocated_bytes() > 0);
         drop(lent);
+        // Home and grown: the first job's refresh sized the owners; two more,
+        // each returned so the store grows, size and record their rows. The
+        // next replays, so an unobserved change to an unmarked status is not
+        // read.
         let mut cleared = bytes.clone();
         relations_kit::p64(&mut cleared, relations_kit::status(0, 2), 0);
-        assert!(copy_relations_refresh(&memory, ctx, &mut second).raw_ok);
-        assert!(copy_relations_refresh(&relations_kit::memory(&cleared), ctx, &mut second).raw_ok);
+        for _ in 0..2 {
+            assert!(copy_relations_refresh(&memory, relations_ctx(0), &mut second).raw_ok);
+            second.return_opinions();
+        }
+        assert!(
+            copy_relations_refresh(&relations_kit::memory(&cleared), relations_ctx(0), &mut second)
+                .raw_ok
+        );
         assert_eq!(second.walk.unwrap().opinions, rows.0.opinions);
     }
 
@@ -4578,44 +4795,86 @@ mod tests {
         assert_eq!(owners, slice(27));
     }
 
-    /// A job reuses its status authentications until the epoch moves (a
-    /// load, gap or recovery), and then authenticates every status again.
+    /// A baseline is replayed until the epoch moves (a load, gap or
+    /// recovery), and then every status is read again.
     #[test]
-    fn relation_authentications_last_until_the_epoch_moves() {
+    fn relation_baselines_last_until_the_epoch_moves() {
         let bytes = relations_kit::opinionated_fixture();
-        let mut job = RelationsJob::new();
-        let run = |bytes: &[u8], job: &mut RelationsJob, epoch| {
-            let ctx = RelationsCopyContext {
-                base: relations_kit::BASE,
-                game_state: relations_kit::GS,
-                active: [true; 2],
-                opinion_cap: 16,
-                tuple_cap: 16,
-                epoch,
-            };
-            let report = copy_relations_refresh(&relations_kit::memory(bytes), ctx, job);
-            if job.grow_for_next() {
-                job.grow();
-            }
-            // As decode does when it releases the job.
-            job.return_authentication();
-            (report.raw_ok, job.walk.unwrap().opinions)
+        let mut job = RelationsJob {
+            store: Some(observed_store(false)),
+            ..RelationsJob::new()
         };
-        for _ in 0..2 {
-            assert_eq!(run(&bytes, &mut job, 1), (true, Outcome::Rows { len: 2 }));
+        // Owners, then their rows, get storage; the third refresh records.
+        for _ in 0..3 {
+            assert_eq!(observed_refresh(&bytes, &mut job, 1).0, Outcome::Rows { len: 2 });
         }
         let mut moved = bytes.clone();
         relations_kit::p64(&mut moved, relations_kit::status(0, 2), 0);
-        assert_eq!(run(&moved, &mut job, 1), (true, Outcome::Rows { len: 2 }));
+        assert_eq!(observed_refresh(&moved, &mut job, 1).0, Outcome::Rows { len: 2 });
         assert_eq!(
-            run(&moved, &mut job, 2),
-            (
-                true,
-                Outcome::Unavailable {
-                    reason: "relation status vtable mismatch"
-                }
-            )
+            observed_refresh(&moved, &mut job, 2).0,
+            Outcome::Unavailable {
+                reason: "relation status vtable mismatch"
+            }
         );
+    }
+
+    /// Observed refreshes re-read the marked statuses; verify mode compares
+    /// each replay with a walk of every status and keeps the reference rows
+    /// when an unobserved write made them differ.
+    #[test]
+    fn observed_refreshes_read_marked_statuses_and_verify_catches_a_missed_write() {
+        let _lock = crate::opinion_changes::test_lock();
+        crate::opinion_changes::observe_for_test(true);
+        let verified = || {
+            let status = crate::opinion_changes::status();
+            ["unverified_refreshes", "verified_refreshes", "mismatches"]
+                .map(|key| status[key].as_u64().unwrap())
+        };
+        let before = verified();
+        let mut bytes = relations_kit::opinionated_fixture();
+        let mut job = RelationsJob {
+            store: Some(observed_store(true)),
+            ..RelationsJob::new()
+        };
+        let opinion = |owner, target| relations_kit::status(owner, target) + crelation_status::OPINION;
+        let initial = observed_refresh(&bytes, &mut job, 1);
+        assert_eq!(initial.0, Outcome::Rows { len: 2 });
+        // Records, then replays (the first replay sizes the verify rows).
+        for _ in 0..3 {
+            assert_eq!(observed_refresh(&bytes, &mut job, 1), initial);
+        }
+        // A marked write is read.
+        relations_kit::p32(&mut bytes, opinion(1, 3), 61);
+        MARKS.with_borrow_mut(|marks| {
+            marks.push(crelation_status::Mark {
+                status: relations_kit::status(1, 3),
+                diplomacy: relations_kit::DIPLOMACY[1],
+            })
+        });
+        let marked = observed_refresh(&bytes, &mut job, 1);
+        assert_eq!(marked.1[1].opinion, 61);
+        // An unmarked write is caught by verify, which keeps the reference.
+        relations_kit::p32(&mut bytes, opinion(1, 3), 62);
+        let missed = observed_refresh(&bytes, &mut job, 1);
+        assert_eq!(missed.1[1].opinion, 62);
+        let delta = |now: [u64; 3]| std::array::from_fn(|index| now[index] - before[index]);
+        // Never unverified (until the verify rows existed the walks read in
+        // full), agreed three times, then disagreed.
+        assert_eq!(delta(verified()), [0, 3, 1]);
+        // The mismatch poisoned the real observation: a drain now observes
+        // nothing, so every refresh reads every status.
+        let (mut consumed, mut output, mut required) =
+            (0, [crelation_status::Mark::default(); 4], 0);
+        assert_eq!(
+            crate::opinion_changes::drain(&mut consumed, &mut output, &mut required),
+            None
+        );
+        assert_eq!(crate::opinion_changes::status()["poisoned"], true);
+        // The baseline was dropped: the next refresh reads every status.
+        assert_eq!(observed_refresh(&bytes, &mut job, 1), missed);
+        assert_eq!(delta(verified()), [0, 3, 1]);
+        crate::opinion_changes::observe_for_test(false);
     }
 
     #[test]

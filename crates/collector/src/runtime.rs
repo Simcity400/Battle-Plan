@@ -467,6 +467,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
     let mut portrait_hooks = unsafe { crate::portrait_changes::Hooks::new(&memory, base) }?;
     let mut advisor_hooks = unsafe { crate::advisor_changes::Hooks::new(&memory, base) }?;
+    let mut opinion_hooks = unsafe { crate::opinion_changes::Hooks::new(&memory, base) }?;
     // Size every country-proportional buffer from the live registry before
     // the hook exists. At the main menu the registry may still be empty; the
     // spool thread then raises capacities as soon as a save fills it.
@@ -532,6 +533,13 @@ fn run(module: HMODULE) -> Result<(), String> {
             })
             .and_then(|ready| {
                 if ready {
+                    opinion_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
                     hook.set_enabled(true)
                 } else {
                     Ok(false)
@@ -584,6 +592,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     ];
     ranges.extend(portrait_hooks.executable_ranges());
     ranges.extend(advisor_hooks.executable_ranges());
+    ranges.extend(opinion_hooks.executable_ranges());
     while spool_id.load(Ordering::Acquire) == 0 {
         std::thread::yield_now();
     }
@@ -600,6 +609,18 @@ fn run(module: HMODULE) -> Result<(), String> {
                 let _ = fs::write(
                     dll_path.with_file_name("collector.error.txt"),
                     format!("portrait hook detach pending: {result:?}"),
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    loop {
+        match opinion_hooks.set_enabled(false) {
+            Ok(true) => break,
+            result => {
+                let _ = fs::write(
+                    dll_path.with_file_name("collector.error.txt"),
+                    format!("opinion hook detach pending: {result:?}"),
                 );
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -660,6 +681,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     drop(hook);
     drop(portrait_hooks);
     drop(advisor_hooks);
+    drop(opinion_hooks);
     drop(shared);
     if let Some(error) = installation_error {
         add_terminal_error(&mut spool_result, error);
@@ -780,6 +802,7 @@ fn add_decode_status(status: &mut Value) {
     status["decode_work"] = decode::calibration_json();
     status["portrait_changes"] = crate::portrait_changes::status();
     status["advisor_changes"] = crate::advisor_changes::status();
+    status["opinion_changes"] = crate::opinion_changes::status();
     #[cfg(feature = "callback_profile")]
     {
         status["callback_profile"] = crate::callback_profile::status();
@@ -913,6 +936,7 @@ fn wait_quiet(
         } else if ACTIVE.load(Ordering::SeqCst) != 0
             || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
             || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
+            || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
         {
             Ok(false)
         } else {
@@ -921,6 +945,7 @@ fn wait_quiet(
                     if ACTIVE.load(Ordering::SeqCst) != 0
                         || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
                         || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
+                        || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
                     {
                         Ok(false)
                     } else {

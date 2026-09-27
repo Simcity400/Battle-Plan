@@ -662,7 +662,7 @@ pub fn recycle_relations_job(job: RelationsJob) {
 }
 
 fn release_relations_job(mut job: RelationsJob) {
-    job.return_authentication();
+    job.return_opinions();
     if !job.is_allocated() {
         return;
     }
@@ -2675,7 +2675,6 @@ impl Calibration {
             "scope": "decode worker totals since attach; monotonic counters except live capacity fields",
             "raw_growth": crate::raw::growth_diagnostics(),
             "raw_indexes": crate::raw::index_diagnostics(),
-            "relation_authentications": crate::extended::intel::relation_authentication_diagnostics(),
             "read_plans": crate::raw::read_plan_diagnostics(),
             "raw_memory": crate::raw_memory::diagnostics(),
 

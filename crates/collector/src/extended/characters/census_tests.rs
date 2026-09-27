@@ -932,3 +932,23 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
     assert_eq!(cache.counts.mismatches, 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
 }
+
+/// Role jobs size their visit lists from the live census length, published
+/// by each role census the roster job acquires; the roster job needs none.
+#[test]
+fn visit_lists_follow_the_live_census_length() {
+    let world = small();
+    let owner = roster(&world);
+    assert!(owner.role_census().is_some());
+    // Published by the acquisition (other tests may publish concurrently).
+    assert!(census::live_len() > 0);
+    let mut job = CharactersJob::new_part(1);
+    job.census_visited = Vec::new();
+    assert_eq!(job.visits_required(105), 105);
+    job.census_required = 109;
+    assert_eq!(job.visits_required(105), 109);
+    assert_eq!(CharactersJob::new_part(0).visits_required(105), 0);
+    // Growth reserves at least the recorded demand.
+    job.grow();
+    assert!(job.census_visited.capacity() >= 109);
+}
