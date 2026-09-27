@@ -1,0 +1,934 @@
+//! Country-scale synthetic rosters for the role-census equivalence tests and
+//! the role capture cost test. Memory is procedural: every read renders only
+//! the requested window, so 5,000-country rosters need no large allocation.
+
+use super::*;
+use engine::{
+    cgame_state, character_advisor_node, character_leader_node, cunit_leader_trait, msvc_tree_node,
+};
+use std::cell::Cell;
+
+pub(super) const MODULE: usize = 0x7ff6_0000_0000;
+pub(super) const GAME_STATE: usize = 0x1_0000_0000;
+const MANAGER: usize = 0x1_0001_0000;
+const HISTORICAL: usize = 0x2_0000_0000;
+const DYNAMIC: usize = 0x3_0000_0000;
+const CHARACTER: usize = 0x4_0000_0000;
+const LEADER_HEAD: usize = 0x5_0000_0000;
+const LEADER_NODE: usize = 0x6_0000_0000;
+const LEADER_ROLE: usize = 0x7_0000_0000;
+const ADVISOR_HEAD: usize = 0x8_0000_0000;
+const ADVISOR_NODE: usize = 0x9_0000_0000;
+const ADVISOR_ROLE: usize = 0xa_0000_0000;
+const UNIT: usize = 0xb_0000_0000;
+const TRAITS: usize = 0xc_0000_0000;
+const EXPERIENCE: usize = 0xd_0000_0000;
+const DEFINITION: usize = 0xe_0000_0000;
+
+/// `(region, stride)` of each procedural object family.
+const STRIDES: [(usize, usize); 11] = [
+    (CHARACTER, 0x100),
+    (LEADER_HEAD, 0x40),
+    (LEADER_NODE, 0x40),
+    (LEADER_ROLE, 0x20),
+    (ADVISOR_HEAD, 0x40),
+    (ADVISOR_NODE, 0x60),
+    (ADVISOR_ROLE, 0x100),
+    (UNIT, 0x1000),
+    (TRAITS, 0x40),
+    (EXPERIENCE, 0x100),
+    (DEFINITION, 0x1000),
+];
+
+/// A roster of `characters` with realistic role densities: roughly one
+/// country-leader role per five characters, one advisor per forty and one unit
+/// leader per four, each leader holding one or two traits and four or five
+/// trait-experience entries over a few hundred shared definitions.
+#[derive(Clone)]
+pub(super) struct World {
+    pub characters: usize,
+    pub historical: usize,
+    pub definitions: usize,
+    /// Roster slot to character index; `None` is the identity roster.
+    pub roster: Option<Vec<usize>>,
+    /// Exact byte overrides applied after rendering.
+    pub patches: Vec<(usize, Vec<u8>)>,
+    /// Every read overlapping one of these addresses fails.
+    pub faults: Vec<usize>,
+    /// Every eighth leader-role character also holds an advisor role.
+    pub dual: bool,
+}
+
+impl World {
+    pub fn new(characters: usize) -> Self {
+        Self {
+            characters,
+            historical: characters - characters / 7,
+            definitions: 300,
+            roster: None,
+            patches: Vec::new(),
+            faults: Vec::new(),
+            dual: false,
+        }
+    }
+
+    pub fn countries(countries: usize) -> Self {
+        Self::new(countries * 31)
+    }
+
+    pub fn character(index: usize) -> usize {
+        CHARACTER + index * 0x100
+    }
+
+    pub fn leader(index: usize) -> bool {
+        index.is_multiple_of(5)
+    }
+
+    pub fn advisor(&self, index: usize) -> bool {
+        index % 40 == 3 || (self.dual && index.is_multiple_of(40))
+    }
+
+    pub fn unit(index: usize) -> Option<usize> {
+        (index % 4 == 1).then_some(UNIT + index * 0x1000)
+    }
+
+    pub fn leader_head(index: usize) -> usize {
+        LEADER_HEAD + index * 0x40
+    }
+
+    pub fn advisor_head(index: usize) -> usize {
+        ADVISOR_HEAD + index * 0x40
+    }
+
+    fn traits(index: usize) -> usize {
+        1 + (index / 4) % 2
+    }
+
+    fn experience(index: usize) -> usize {
+        4 + index % 2
+    }
+
+    fn slots(&self) -> usize {
+        self.roster.as_ref().map_or(self.characters, Vec::len)
+    }
+
+    fn slot(&self, slot: usize) -> usize {
+        self.roster.as_ref().map_or(slot, |roster| roster[slot])
+    }
+
+    pub fn patch(&mut self, address: usize, bytes: &[u8]) {
+        self.patches.push((address, bytes.to_vec()));
+    }
+
+    fn render(&self, address: usize, out: &mut [u8]) -> bool {
+        out.fill(0);
+        let Some(end) = address.checked_add(out.len()) else {
+            return false;
+        };
+        let mut window = Window { start: address, out };
+        if (GAME_STATE..GAME_STATE + 0x1000).contains(&address) {
+            if end > GAME_STATE + 0x1000 {
+                return false;
+            }
+            window.pointer(GAME_STATE + cgame_state::CHARACTER_MANAGER, MANAGER);
+            return true;
+        }
+        if (MANAGER..MANAGER + 0x100).contains(&address) {
+            if end > MANAGER + 0x100 {
+                return false;
+            }
+            window.put(MANAGER, &((MODULE + ccharacter_manager::VTABLE_RVA) as u64).to_le_bytes());
+            let historical = self.historical.min(self.slots());
+            window.array(MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS, HISTORICAL, historical);
+            window.array(
+                MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS,
+                DYNAMIC,
+                self.slots() - historical,
+            );
+            return true;
+        }
+        let historical = self.historical.min(self.slots());
+        for (region, first, count) in [
+            (HISTORICAL, 0, historical),
+            (DYNAMIC, historical, self.slots() - historical),
+        ] {
+            if address >> 32 == region >> 32 {
+                // Pointer vectors are read in whole pages.
+                if end > region + count * 8 {
+                    return false;
+                }
+                for slot in (address - region) / 8..(end - region).div_ceil(8) {
+                    window.pointer(region + slot * 8, Self::character(self.slot(first + slot)));
+                }
+                return true;
+            }
+        }
+        let Some(&(region, stride)) = STRIDES
+            .iter()
+            .find(|(region, _)| address >> 32 == region >> 32)
+        else {
+            return false;
+        };
+        let index = (address - region) / stride;
+        let object = region + index * stride;
+        if end > object + stride {
+            return false;
+        }
+        match region {
+            _ if index >= self.characters => return false,
+            CHARACTER => self.render_character(&mut window, index, object),
+            LEADER_HEAD => {
+                let target = if Self::leader(index) { LEADER_NODE + index * 0x40 } else { object };
+                window.node(object, target, 1);
+            }
+            LEADER_NODE if Self::leader(index) => {
+                window.node(object, Self::leader_head(index), 0);
+                window.put(object + character_leader_node::IDEOLOGY, &((index % 7) as i32).to_le_bytes());
+                window.pointer(object + character_leader_node::LEADER, LEADER_ROLE + index * 0x20);
+            }
+            LEADER_ROLE if Self::leader(index) => {
+                window.put(object, &((MODULE + ccountry_leader::VTABLE_RVA) as u64).to_le_bytes());
+                window.pointer(object + ccountry_leader::CHARACTER, Self::character(index));
+            }
+            ADVISOR_HEAD => {
+                let target = if self.advisor(index) { ADVISOR_NODE + index * 0x60 } else { object };
+                window.node(object, target, 1);
+            }
+            ADVISOR_NODE if self.advisor(index) => {
+                window.node(object, Self::advisor_head(index), 0);
+                window.literal(object + character_advisor_node::KEY, b"advisor_key");
+                window.put(object + character_advisor_node::KEY_HASH, &(index as u32).to_le_bytes());
+                window.pointer(object + character_advisor_node::ADVISOR, ADVISOR_ROLE + index * 0x100);
+            }
+            ADVISOR_ROLE if self.advisor(index) => {
+                window.put(object, &((MODULE + cadvisor::VTABLE_RVA) as u64).to_le_bytes());
+                window.pointer(object + cadvisor::CHARACTER, Self::character(index));
+                window.literal(object + cadvisor::IDEA_TOKEN, b"idea");
+                window.literal(object + cadvisor::SLOT, b"political");
+            }
+            UNIT if Self::unit(index).is_some() => self.render_unit(&mut window, index, object),
+            TRAITS if Self::unit(index).is_some() => {
+                for ordinal in 0..Self::traits(index) {
+                    let definition = self.definition(index + ordinal);
+                    window.pointer(object + ordinal * 8, definition);
+                }
+            }
+            EXPERIENCE if Self::unit(index).is_some() => {
+                for ordinal in 0..Self::experience(index) {
+                    let entry = object + ordinal * 16;
+                    window.pointer(entry, self.definition(index * 3 + ordinal));
+                    window.put(entry + 8, &((index * 100 + ordinal) as i64).to_le_bytes());
+                }
+            }
+            DEFINITION if index < self.definitions => {
+                window.put(object, &((MODULE + cunit_leader_trait::VTABLE_RVA) as u64).to_le_bytes());
+                window.put(object + cunit_leader_trait::TOKEN_ID, &(index as i32 + 7).to_le_bytes());
+                window.put(object + cunit_leader_trait::ORDINAL, &(index as i32).to_le_bytes());
+                window.literal(object + cunit_leader_trait::TOKEN, b"trait");
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn definition(&self, index: usize) -> usize {
+        DEFINITION + (index % self.definitions) * 0x1000
+    }
+
+    fn render_character(&self, window: &mut Window<'_>, index: usize, object: usize) {
+        window.put(object, &((MODULE + ccharacter::VTABLE_RVA) as u64).to_le_bytes());
+        window.put(object + ccharacter::TYPE, &ccharacter::REFERENCE_TYPE.to_le_bytes());
+        window.put(object + ccharacter::ID, &(1_000_000 + index as u32).to_le_bytes());
+        window.put(object + ccharacter::NAME_TOKEN_ID, &(index as i32).to_le_bytes());
+        window.literal(object + ccharacter::NAME, b"name");
+        window.literal(object + ccharacter::TOKEN, b"token");
+        window.put(object + ccharacter::COUNTRY, &(1 + index as u32 / 31).to_le_bytes());
+        window.pointer(object + ccharacter::LEADER_MAP_HEAD, Self::leader_head(index));
+        window.put(
+            object + ccharacter::LEADER_MAP_SIZE,
+            &u64::from(Self::leader(index)).to_le_bytes(),
+        );
+        if let Some(unit) = Self::unit(index) {
+            window.pointer(object + ccharacter::UNIT_LEADER, unit);
+        }
+        window.pointer(object + ccharacter::ADVISOR_MAP_HEAD, Self::advisor_head(index));
+        window.put(
+            object + ccharacter::ADVISOR_MAP_SIZE,
+            &u64::from(self.advisor(index)).to_le_bytes(),
+        );
+    }
+
+    fn render_unit(&self, window: &mut Window<'_>, index: usize, object: usize) {
+        let vtable = [cunit_leader::VTABLE_RVA, carmy_leader::VTABLE_RVA, cnavy_leader::VTABLE_RVA]
+            [(index / 4) % 3];
+        window.put(object, &((MODULE + vtable) as u64).to_le_bytes());
+        window.put(object + cunit_leader::TYPE, &cunit_leader::REFERENCE_TYPE.to_le_bytes());
+        window.put(object + cunit_leader::ID, &(2_000_000 + index as u32).to_le_bytes());
+        window.literal(object + cunit_leader::TOKEN, b"leader");
+        window.literal(object + cunit_leader::NAME, b"inherited");
+        window.array(object + cunit_leader::TRAIT_DATA, TRAITS + index * 0x40, Self::traits(index));
+        window.array(
+            object + cunit_leader::TRAIT_EXPERIENCE_DATA,
+            EXPERIENCE + index * 0x100,
+            Self::experience(index),
+        );
+        window.put(object + cunit_leader::EXPERIENCE, &(index as i64 * 1000).to_le_bytes());
+        window.put(object + cunit_leader::CATEGORY, &((index % 3) as i32).to_le_bytes());
+        window.put(object + cunit_leader::CHARACTER_TYPE, &ccharacter::REFERENCE_TYPE.to_le_bytes());
+        window.put(object + cunit_leader::CHARACTER_ID, &(1_000_000 + index as u32).to_le_bytes());
+        for (ordinal, offset) in [carmy_leader::ATTACK, carmy_leader::DEFENSE].into_iter().enumerate() {
+            window.put(object + offset, &(ordinal as i32 + 1).to_le_bytes());
+        }
+    }
+}
+
+struct Window<'a> {
+    start: usize,
+    out: &'a mut [u8],
+}
+
+impl Window<'_> {
+    fn put(&mut self, at: usize, bytes: &[u8]) {
+        let end = self.start + self.out.len();
+        let from = at.max(self.start);
+        let to = (at + bytes.len()).min(end);
+        if from < to {
+            self.out[from - self.start..to - self.start]
+                .copy_from_slice(&bytes[from - at..to - at]);
+        }
+    }
+
+    fn pointer(&mut self, at: usize, target: usize) {
+        self.put(at, &(target as u64).to_le_bytes());
+    }
+
+    fn array(&mut self, at: usize, data: usize, count: usize) {
+        self.pointer(at, data);
+        self.put(at + 8, &(count as u32).to_le_bytes());
+        self.put(at + 12, &(count as u32).to_le_bytes());
+    }
+
+    fn literal(&mut self, at: usize, value: &[u8]) {
+        self.put(at, value);
+        self.put(at + 16, &(value.len() as u64).to_le_bytes());
+        self.put(at + 24, &15_u64.to_le_bytes());
+    }
+
+    /// A single-node tree link set: every link names `target`.
+    fn node(&mut self, at: usize, target: usize, nil: u8) {
+        for link in [msvc_tree_node::LEFT, msvc_tree_node::PARENT, msvc_tree_node::RIGHT] {
+            self.pointer(at + link, target);
+        }
+        self.put(at + msvc_tree_node::COLOR, &[1, nil]);
+    }
+}
+
+impl Memory for World {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        let Some(end) = address.checked_add(destination.len()) else {
+            return false;
+        };
+        if self.faults.iter().any(|&fault| (address..end).contains(&fault)) {
+            return false;
+        }
+        if !self.render(address, destination) {
+            return false;
+        }
+        for (at, bytes) in &self.patches {
+            let from = (*at).max(address);
+            let to = (at + bytes.len()).min(end);
+            if from < to {
+                destination[from - address..to - address].copy_from_slice(&bytes[from - at..to - at]);
+            }
+        }
+        true
+    }
+}
+
+/// Counts guarded calls as `LiveMemory` issues them: one per copy, scattered
+/// batch, record gather and prepared read plan.
+pub(super) struct Counting<'a> {
+    pub inner: &'a World,
+    pub calls: Cell<usize>,
+    /// Bytes the guarded calls copied successfully.
+    pub bytes: Cell<usize>,
+}
+
+impl<'a> Counting<'a> {
+    pub fn new(inner: &'a World) -> Self {
+        Self {
+            inner,
+            calls: Cell::new(0),
+            bytes: Cell::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.calls.set(0);
+        self.bytes.set(0);
+    }
+
+    fn count(&self, bytes: usize) {
+        self.calls.set(self.calls.get() + 1);
+        self.bytes.set(self.bytes.get() + bytes);
+    }
+}
+
+impl Memory for Counting<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        let ok = self.inner.copy(address, destination);
+        self.count(if ok { destination.len() } else { 0 });
+        ok
+    }
+
+    fn copy_scattered<const M: usize>(
+        &self,
+        addresses: [usize; M],
+        destinations: &mut [&mut [u8]; M],
+    ) -> usize {
+        let completed = self.inner.copy_scattered(addresses, destinations);
+        self.count(destinations[..completed].iter().map(|span| span.len()).sum());
+        completed
+    }
+
+    fn copy_scattered_prefetched<const M: usize>(
+        &self,
+        addresses: [usize; M],
+        destinations: &mut [&mut [u8]; M],
+    ) -> usize {
+        let completed = self.inner.copy_scattered_prefetched(addresses, destinations);
+        self.count(destinations[..completed].iter().map(|span| span.len()).sum());
+        completed
+    }
+
+    fn copy_records(
+        &self,
+        sources: engine::memory::RecordSources<'_>,
+        layout: &engine::memory::RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        let completed = self.inner.copy_records(sources, layout, destination);
+        self.count(layout.completed_bytes(completed));
+        completed
+    }
+
+    fn execute_read_plan(
+        &self,
+        plan: &engine::read_plan::PreparedPlan,
+        destination: &mut [u8],
+    ) -> Option<engine::read_plan::Outcome> {
+        use engine::read_plan::Outcome as Plan;
+        let outcome = self.inner.execute_read_plan(plan, destination);
+        let completed = match outcome {
+            Some(Plan::Complete) => plan.reads().len(),
+            Some(Plan::ControlChanged { completed_reads } | Plan::ReadFailed { completed_reads }) => {
+                completed_reads
+            }
+            None => 0,
+        };
+        self.count(plan.reads()[..completed].iter().map(|read| read.len).sum());
+        outcome
+    }
+}
+
+pub(super) struct Quiet;
+
+impl advisors::Changes for Quiet {
+    fn quiet(&self) -> Option<(u64, u64)> {
+        Some((0, 0))
+    }
+    fn revision(&self, _map: usize) -> Option<(u64, u64)> {
+        Some((0, 0))
+    }
+    fn verify(&self) -> bool {
+        false
+    }
+}
+
+/// Pooled capacities that hold a 5,000-country roster without truncation.
+pub(super) fn capacities() -> Capacities {
+    Capacities {
+        rows: [1 << 18, 1 << 16, 1 << 13, 1 << 16, 1 << 17, 1 << 18],
+        bytes: [1 << 23, 0, 1 << 20, 1 << 21, 1 << 20, 1 << 21],
+    }
+}
+
+pub(super) fn context(active: [bool; 6]) -> CharactersCopyContext {
+    let capacities = capacities();
+    CharactersCopyContext {
+        base: MODULE,
+        game_state: GAME_STATE,
+        active,
+        trait_rows: [capacities.rows[4], capacities.rows[5]],
+        trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+    }
+}
+
+/// Grow a job until its staging holds the whole capture, as recycling does.
+fn settle(
+    memory: &impl Memory,
+    active: [bool; 6],
+    job: &mut CharactersJob,
+    roles: Roles<&census::RoleCensus>,
+) {
+    for _ in 0..16 {
+        let report = copy_characters(memory, context(active), job, roles);
+        let grow = job.grow_for_next();
+        if grow {
+            job.grow();
+        }
+        job.prepare_read_plans();
+        job.clear();
+        if report.raw_ok && !grow {
+            return;
+        }
+    }
+    panic!("character staging did not settle");
+}
+
+fn best_of_five(
+    mut run: impl FnMut() -> (usize, std::time::Duration),
+) -> (usize, std::time::Duration) {
+    let mut best = std::time::Duration::MAX;
+    let mut calls = 0;
+    for _ in 0..5 {
+        let (count, elapsed) = run();
+        calls = count;
+        best = best.min(elapsed);
+    }
+    (calls, best)
+}
+
+fn decode(job: &CharactersJob) -> Captured {
+    let mut captured = Captured::with_capacities(&capacities());
+    captured.decode_characters_payload(MODULE, job, &mut [0; 6]);
+    captured
+}
+
+/// The typed walk of one part's tables against live memory.
+fn typed(memory: &impl Memory, part: usize) -> Captured {
+    let mut captured = Captured::with_capacities(&capacities());
+    let results = walk_family(
+        memory,
+        MODULE,
+        GAME_STATE,
+        captured.family().select(PART_MASKS[part]),
+        None,
+    );
+    captured.install_family(PART_MASKS[part], results);
+    captured.fail_character_tables(PART_MASKS[part].map(|active| !active), replay::cadence::SKIPPED_REASON);
+    captured
+}
+
+/// The roster job's payload after a role-hour pass.
+fn roster(memory: &impl Memory) -> CharactersJob {
+    let mut job = CharactersJob::new_part(0);
+    settle(memory, PART_MASKS[0], &mut job, Roles::Gather);
+    let report = copy_characters(memory, context(PART_MASKS[0]), &mut job, Roles::Gather);
+    assert!(report.raw_ok && !report.plan_failed);
+    job
+}
+
+/// One role job's decoded payload.
+fn role(memory: &impl Memory, part: usize, roles: Roles<&census::RoleCensus>) -> (Captured, bool) {
+    let mut job = CharactersJob::new_part(part);
+    settle(memory, PART_MASKS[part], &mut job, roles);
+    let report = copy_characters(memory, context(PART_MASKS[part]), &mut job, roles);
+    assert!(report.raw_ok && !report.plan_failed);
+    (decode(&job), job.census_capture)
+}
+
+/// A census-loaned role job decodes exactly the independent roster walk's
+/// outcomes, rows, arenas and demand, and the typed walk's. Returns whether
+/// the loan was admitted and used.
+fn assert_part(memory: &impl Memory, part: usize, loan: Option<&census::RoleCensus>) -> bool {
+    let (independent, walked) = role(memory, part, Roles::Independent);
+    assert!(!walked);
+    let roles = loan.map_or(Roles::Independent, Roles::Borrow);
+    let (loaned, used) = role(memory, part, roles);
+    characters_test_kit::assert_matches_direct(&loaned, &independent);
+    characters_test_kit::assert_matches_direct(&loaned, &typed(memory, part));
+    used || part == 2
+}
+
+/// Decoded tables of one payload, checked against the fixture's role counts.
+fn check(world: &World, captured: &Captured, active: [bool; 6]) {
+    let outcomes = captured.outcomes();
+    let n = world.characters;
+    let expected = [
+        n,
+        (0..n).filter(|&i| World::leader(i)).count(),
+        (0..n).filter(|&i| world.advisor(i)).count(),
+        (0..n).filter(|&i| World::unit(i).is_some()).count(),
+    ];
+    for (table, &len) in expected.iter().enumerate() {
+        if active[table] {
+            assert_eq!(outcomes[table], Outcome::Rows { len }, "table {table}");
+        }
+    }
+    for table in [4, 5] {
+        if active[table] {
+            assert!(
+                matches!(outcomes[table], Outcome::Rows { len } if len > 0),
+                "table {table}: {:?}",
+                outcomes[table]
+            );
+        }
+    }
+}
+
+fn advisor_cache(world: &World, loan: Option<census::Admitted<'_>>) -> advisors::Cache {
+    let ctx = context(PART_MASKS[2]);
+    let mut cache = advisors::Cache::new();
+    for _ in 0..4 {
+        cache.capture(world, ctx, &Quiet, loan);
+        if cache.needs_growth() {
+            cache.grow();
+        }
+        cache.prepare();
+    }
+    cache
+}
+
+fn decode_cache(cache: &advisors::Cache) -> Captured {
+    let mut captured = Captured::with_capacities(&capacities());
+    captured.fail_character_tables(PART_MASKS[2].map(|active| !active), replay::cadence::SKIPPED_REASON);
+    cache.decode(&mut captured);
+    captured
+}
+
+struct Unwatched;
+
+impl advisors::Changes for Unwatched {
+    fn quiet(&self) -> Option<(u64, u64)> {
+        None
+    }
+    fn revision(&self, _map: usize) -> Option<(u64, u64)> {
+        None
+    }
+    fn verify(&self) -> bool {
+        false
+    }
+}
+
+/// Prints guarded calls and the best of five capture times per character
+/// part, independently and with the census loan; run with `--release
+/// --nocapture` to measure. Each loaned result equals the independent one.
+#[test]
+fn role_capture_cost_scales_with_roles_not_roster() {
+    for countries in [440, 1_500, 5_000] {
+        let world = World::countries(countries);
+        let memory = Counting::new(&world);
+        let characters = world.characters;
+        let leaders = (0..characters).filter(|&i| World::leader(i)).count();
+        let units = (0..characters).filter(|&i| World::unit(i).is_some()).count();
+        let report = |part: &str, variant: &str, (calls, time): (usize, std::time::Duration)| {
+            let bytes = memory.bytes.get();
+            println!(
+                "{countries} countries, {characters} characters, {part}, {variant}: {calls} calls, {bytes} bytes, {time:?}"
+            );
+            calls
+        };
+        // Warm keeps the retained prepared plan; cold retires it before each run.
+        let measure = |part: usize, roles: Roles<&census::RoleCensus>, retire: bool| {
+            let active = PART_MASKS[part];
+            let mut job = CharactersJob::new_part(part);
+            settle(&world, active, &mut job, roles);
+            if retire {
+                job.log.invalidate_read_plan();
+                job.prepare_read_plans();
+            }
+            best_of_five(|| {
+                memory.reset();
+                let begin = std::time::Instant::now();
+                let report = copy_characters(&memory, context(active), &mut job, roles);
+                let elapsed = begin.elapsed();
+                assert!(report.raw_ok);
+                let calls = memory.calls.get();
+                if retire {
+                    job.log.invalidate_read_plan();
+                }
+                job.prepare_read_plans();
+                job.clear();
+                (calls, elapsed)
+            })
+        };
+        for (variant, roles) in [("independent", Roles::Independent), ("with role census", Roles::Gather)] {
+            report("part 0", &format!("{variant} cold"), measure(0, roles, true));
+            report("part 0", &format!("{variant} warm"), measure(0, roles, false));
+        }
+        let owner = roster(&world);
+        let loan = owner.role_census().expect("admitted role census");
+        for part in [1, 3] {
+            let mut job = CharactersJob::new_part(part);
+            settle(&world, PART_MASKS[part], &mut job, Roles::Borrow(&loan));
+            copy_characters(&world, context(PART_MASKS[part]), &mut job, Roles::Borrow(&loan));
+            assert!(job.census_capture);
+            let loaned = decode(&job);
+            check(&world, &loaned, PART_MASKS[part]);
+            let (independent, _) = role(&world, part, Roles::Independent);
+            characters_test_kit::assert_matches_direct(&loaned, &independent);
+            let name = format!("part {part}");
+            report(&name, "independent cold", measure(part, Roles::Independent, true));
+            report(&name, "independent warm", measure(part, Roles::Independent, false));
+            let calls = report(&name, "census", measure(part, Roles::Borrow(&loan), false));
+            let bound = if part == 1 { 6 * leaders } else { 16 * units };
+            assert!(calls <= bound + characters / 64 + 400, "{calls} guarded calls");
+        }
+        let ctx = context(PART_MASKS[2]);
+        let admitted = loan.admitted(MODULE, GAME_STATE);
+        let expected = (0..characters).filter(|&i| world.advisor(i)).count();
+        for (variant, source) in [("roster", None), ("census", admitted)] {
+            let mut cache = advisor_cache(&world, source);
+            let mut measure = |observer: &dyn advisors::Changes| {
+                best_of_five(|| {
+                    memory.reset();
+                    let begin = std::time::Instant::now();
+                    cache.capture(&memory, ctx, observer, source);
+                    let elapsed = begin.elapsed();
+                    assert_eq!(cache.result.outcome, Outcome::Rows { len: expected });
+                    cache.prepare();
+                    (memory.calls.get(), elapsed)
+                })
+            };
+            report("part 2 (advisor cache)", &format!("{variant} quiet"), measure(&Quiet));
+            let calls = report("part 2 (advisor cache)", &format!("{variant} unwatched"), measure(&Unwatched));
+            if source.is_some() {
+                assert!(calls <= 8 * expected + characters / 64 + 8, "{calls} guarded calls");
+            }
+        }
+        characters_test_kit::assert_matches_direct(
+            &decode_cache(&advisor_cache(&world, admitted)),
+            &decode_cache(&advisor_cache(&world, None)),
+        );
+    }
+}
+
+/// A small roster with every role shape: aliases, dual roles, heads inside
+/// the character view, and the historical/generated split.
+fn small() -> World {
+    let mut world = World::new(300);
+    world.dual = true;
+    world
+}
+
+#[test]
+fn census_roles_match_the_independent_walk_on_every_roster_shape() {
+    let mut shapes = vec![small()];
+    let mut aliases = small();
+    aliases.roster = Some((0..300).chain([0, 5, 5, 43, 40, 299, 1]).collect());
+    shapes.push(aliases);
+    let mut generated = small();
+    generated.historical = 0;
+    shapes.push(generated);
+    for world in &shapes {
+        let owner = roster(world);
+        let loan = owner.role_census().expect("admitted role census");
+        for part in 1..PARTS {
+            assert!(assert_part(world, part, Some(&loan)), "part {part} used the loan");
+        }
+    }
+}
+
+#[test]
+fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
+    let base = small();
+    let character = |index: usize| World::character(index);
+    let leader_head = World::leader_head;
+    let advisor_head = World::advisor_head;
+    // Faults the roster job never reads, so the loan stays admitted.
+    let mut faults = vec![
+        leader_head(1),
+        leader_head(0) + msvc_tree_node::NIL,
+        advisor_head(3),
+        advisor_head(40),
+        LEADER_NODE + 5 * 0x40 + msvc_tree_node::RIGHT,
+        LEADER_NODE + 10 * 0x40 + character_leader_node::IDEOLOGY,
+        LEADER_ROLE + 15 * 0x20,
+        ADVISOR_NODE + 43 * 0x60 + character_advisor_node::KEY_HASH,
+        ADVISOR_ROLE + 3 * 0x100 + cadvisor::SLOT,
+        UNIT + 5 * 0x1000 + cunit_leader::TRAIT_DATA,
+        UNIT + 9 * 0x1000 + cunit_leader::TRAIT_EXPERIENCE_DATA,
+        TRAITS + 13 * 0x40,
+        EXPERIENCE + 17 * 0x100 + 16,
+        DEFINITION + 2 * 0x1000,
+    ];
+    faults.extend((0..300).step_by(37).map(leader_head));
+    for fault in faults {
+        let mut world = base.clone();
+        world.faults.push(fault);
+        let owner = roster(&world);
+        let loan = owner.role_census().expect("admitted role census");
+        for part in 1..PARTS {
+            assert!(assert_part(&world, part, Some(&loan)), "fault {fault:x}");
+        }
+    }
+    // Empty-map sentinels that fail after an exact read, and heads the
+    // character view owns, fail exactly as the independent walk does.
+    let broken = [
+        (leader_head(1) + msvc_tree_node::NIL, vec![0]),
+        (leader_head(2) + msvc_tree_node::LEFT, 0_u64.to_le_bytes().to_vec()),
+        (leader_head(6) + msvc_tree_node::RIGHT, (character(6) as u64).to_le_bytes().to_vec()),
+        (advisor_head(1) + msvc_tree_node::NIL, vec![0]),
+        (advisor_head(7) + msvc_tree_node::PARENT, 1_u64.to_le_bytes().to_vec()),
+        (character(4) + ccharacter::LEADER_MAP_HEAD, ((character(4) + 0x40) as u64).to_le_bytes().to_vec()),
+        (character(8) + ccharacter::ADVISOR_MAP_HEAD, ((character(8) + 0xb8) as u64).to_le_bytes().to_vec()),
+        (character(9) + ccharacter::LEADER_MAP_HEAD, 0_u64.to_le_bytes().to_vec()),
+        (character(11) + ccharacter::ADVISOR_MAP_SIZE, u64::MAX.to_le_bytes().to_vec()),
+        (character(12) + ccharacter::LEADER_MAP_SIZE, 2_u64.to_le_bytes().to_vec()),
+    ];
+    for (address, bytes) in broken {
+        let mut world = base.clone();
+        world.patch(address, &bytes);
+        let owner = roster(&world);
+        let loan = owner.role_census().expect("admitted role census");
+        for part in 1..PARTS {
+            assert!(assert_part(&world, part, Some(&loan)), "patch {address:x}");
+        }
+        let leaders = decode(&{
+            let mut job = CharactersJob::new_part(1);
+            copy_characters(&world, context(PART_MASKS[1]), &mut job, Roles::Borrow(&loan));
+            job
+        });
+        let advisors = role(&world, 2, Roles::Borrow(&loan)).0;
+        assert!(
+            [leaders.outcomes()[1], advisors.outcomes()[2]]
+                .iter()
+                .any(|outcome| matches!(outcome, Outcome::Unavailable { .. })),
+            "patch {address:x} should fail a role table"
+        );
+    }
+}
+
+#[test]
+fn census_is_refused_when_incomplete_unreadable_stale_or_still_loaned() {
+    let world = small();
+    // A widened field the roster job does not read fails only the gather.
+    for field in [ccharacter::ADVISOR_MAP_HEAD + 4, ccharacter::LEADER_MAP_SIZE, ccharacter::COUNTRY] {
+        let mut faulted = world.clone();
+        faulted.faults.push(World::character(77) + field);
+        let owner = roster(&faulted);
+        if field == ccharacter::COUNTRY {
+            assert!(owner.portrait_census().is_none());
+        }
+        assert!(owner.role_census().is_none(), "field {field:x}");
+        for part in 1..PARTS {
+            assert_part(&faulted, part, None);
+        }
+    }
+    // An incomplete portrait census or role storage publishes nothing, then
+    // grows off-thread to the observed roster.
+    let mut short = CharactersJob::new_part(0);
+    short.portrait_census = Some(Arc::new(ccharacter_manager::PortraitCensus::new(2)));
+    copy_characters(&world, context(PART_MASKS[0]), &mut short, Roles::Gather);
+    assert!(short.role_census().is_none());
+    let mut narrow = CharactersJob::new_part(0);
+    narrow.role_census = Some(Arc::new(census::RoleCensus::new(2)));
+    copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Gather);
+    assert!(narrow.portrait_census().is_some());
+    assert!(narrow.role_census().is_none());
+    assert!(narrow.grow_for_next());
+    narrow.grow();
+    narrow.prepare_read_plans();
+    narrow.clear();
+    copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Gather);
+    let loan = narrow.role_census().expect("grown role census");
+    // Another game state cannot use it.
+    let other = CharactersCopyContext { game_state: GAME_STATE + 8, ..context(PART_MASKS[1]) };
+    let mut job = CharactersJob::new_part(1);
+    copy_characters(&world, other, &mut job, Roles::Borrow(&loan));
+    assert!(!job.census_capture);
+    // Hours without role jobs gather nothing; a retained loan blocks the
+    // next gather without waiting, and the returned loan admits it again.
+    copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Independent);
+    assert!(narrow.role_census().is_none());
+    copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Gather);
+    assert!(narrow.role_census().is_none());
+    drop(loan);
+    copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Gather);
+    assert!(narrow.role_census().is_some());
+}
+
+#[test]
+fn exhausted_census_storage_falls_back_and_grows_to_the_whole_demand() {
+    let world = small();
+    let owner = roster(&world);
+    let loan = owner.role_census().unwrap();
+    for part in [1, 3] {
+        let mut job = CharactersJob::new_part(part);
+        job.census_visited = Vec::with_capacity(3);
+        let report = copy_characters(&world, context(PART_MASKS[part]), &mut job, Roles::Borrow(&loan));
+        assert!(!report.raw_ok && !report.plan_failed, "part {part}");
+        assert!(job.grow_for_next());
+        job.grow();
+        job.prepare_read_plans();
+        job.clear();
+        let report = copy_characters(&world, context(PART_MASKS[part]), &mut job, Roles::Borrow(&loan));
+        assert!(report.raw_ok, "part {part} after growth");
+        characters_test_kit::assert_matches_direct(&decode(&job), &typed(&world, part));
+    }
+}
+
+#[test]
+fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
+    let mut world = small();
+    let ctx = context(PART_MASKS[2]);
+    let fresh = |world: &World| typed(world, 2);
+    let owner = roster(&world);
+    let loan = owner.role_census().unwrap();
+    let mut cache = advisors::Cache::new();
+    cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    assert_eq!(cache.counts.planned, 0);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    cache.prepare();
+    // A quiet, unchanged census certifies both sections in one execution each.
+    let counting = Counting::new(&world);
+    cache.capture(&counting, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    assert_eq!((cache.counts.planned, counting.calls.get()), (2, 2));
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    cache.prepare();
+    // A changed country comes from the current census, never the entry.
+    drop(loan);
+    world.patch(World::character(3) + ccharacter::COUNTRY, &99_u32.to_le_bytes());
+    let owner = roster(&world);
+    let loan = owner.role_census().unwrap();
+    cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    assert_eq!(cache.counts.planned, 2);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    cache.prepare();
+    // A changed sentinel stops the plan and is walked again from its prefix.
+    world.patch(World::advisor_head(43) + msvc_tree_node::COLOR, &[0]);
+    let owner = roster(&world);
+    let loan = owner.role_census().unwrap();
+    cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    assert_eq!(cache.counts.planned, 1);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    cache.prepare();
+    // Roster and census passes never certify each other's plans.
+    cache.capture(&world, ctx, &Quiet, None);
+    assert_eq!(cache.counts.planned, 0);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    cache.prepare();
+    cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    assert_eq!(cache.counts.planned, 0);
+    assert!(cache.counts.reused > 0);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    // Verification reads every proposed hit and finds none stale.
+    struct Verify;
+    impl advisors::Changes for Verify {
+        fn quiet(&self) -> Option<(u64, u64)> {
+            Some((0, 0))
+        }
+        fn revision(&self, _map: usize) -> Option<(u64, u64)> {
+            Some((0, 0))
+        }
+        fn verify(&self) -> bool {
+            true
+        }
+    }
+    cache.prepare();
+    cache.capture(&world, ctx, &Verify, loan.admitted(MODULE, GAME_STATE));
+    assert!(cache.counts.verified > 0);
+    assert_eq!(cache.counts.mismatches, 0);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+}

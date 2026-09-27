@@ -2,6 +2,9 @@
 //! arenas; sorting, duplicate checks and owned replay strings run off-thread.
 
 pub(crate) mod advisors;
+pub(crate) mod census;
+#[cfg(test)]
+mod census_tests;
 
 use crate::{
     read_accounting,
@@ -845,27 +848,179 @@ impl Family<'_> {
     }
 }
 
-fn walk_family(
-    memory: &impl Memory,
+impl Family<'_> {
+    fn alive(&self) -> bool {
+        self.characters.active()
+            || self.leaders.active()
+            || self.advisors.active()
+            || self.units.active()
+            || self.traits.active()
+            || self.experience.active()
+    }
+
+    /// Domains a character view must copy: names, leader map, unit, advisors.
+    fn required(&self) -> [bool; 4] {
+        [
+            self.characters.active(),
+            self.leaders.active(),
+            self.units.active() || self.traits.active() || self.experience.active(),
+            self.advisors.active(),
+        ]
+    }
+
+    fn fail(&mut self, reason: &'static str) {
+        self.characters.fail(reason);
+        self.leaders.fail(reason);
+        self.advisors.fail(reason);
+        self.units.fail(reason);
+        self.traits.fail(reason);
+        self.experience.fail(reason);
+    }
+
+    fn results(&self) -> [ReadResult; 6] {
+        [
+            self.characters.result(),
+            self.leaders.result(),
+            self.advisors.result(),
+            self.units.result(),
+            self.traits.result(),
+            self.experience.result(),
+        ]
+    }
+
+    /// Every table's rows for one roster occurrence.
+    fn visit<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        view: ccharacter::View<'_, M>,
+        owned_traits: Option<&TraitCapture>,
+        trait_cursors: &mut [usize; 2],
+    ) {
+        let (character_pointer, character_id) = view.reference();
+        match view.entry() {
+            Ok(character) => {
+                self.characters.append(
+                    |rows, bytes| ccharacter::walk_entry(&view, character, rows, bytes).into(),
+                    |row, offset| {
+                        relocate(&mut row.name_start, offset)
+                            && relocate(&mut row.token_start, offset)
+                    },
+                );
+                self.leaders.append(
+                    |rows, _| {
+                        ReadResult::rows(ccountry_leader::walk_entry(&view, base, character, rows))
+                    },
+                    |_, _| true,
+                );
+                self.advisors.append(
+                    |rows, bytes| cadvisor::walk_entry(&view, base, character, rows, bytes).into(),
+                    |row, offset| {
+                        relocate(&mut row.key_start, offset)
+                            && relocate(&mut row.idea_start, offset)
+                            && relocate(&mut row.slot_start, offset)
+                    },
+                );
+            }
+            Err(reason) => {
+                self.characters.fail(reason);
+                self.leaders.fail(reason);
+                self.advisors.fail(reason);
+            }
+        }
+        let Family {
+            units,
+            traits,
+            experience,
+            ..
+        } = self;
+        if !units.active() && !traits.active() && !experience.active() {
+            return;
+        }
+        let pointer = character_pointer
+            .checked_add(ccharacter::UNIT_LEADER)
+            .and_then(|address| read::<u64>(&view, address))
+            .and_then(|pointer| usize::try_from(pointer).ok());
+        let Some(pointer) = pointer else {
+            units.fail("character unit leader pointer unreadable");
+            traits.fail("character unit leader pointer unreadable");
+            experience.fail("character unit leader pointer unreadable");
+            return;
+        };
+        if pointer == 0 {
+            return;
+        }
+        let previous_len = units.len;
+        units.append(
+            |rows, bytes| read_unit(memory, base, pointer, character_id, rows, bytes),
+            |row, offset| {
+                relocate(&mut row.text_a_start, offset) && relocate(&mut row.text_b_start, offset)
+            },
+        );
+        // Reuse the authenticated scalar header on the normal path. The
+        // trait vectors retain independent availability when scalar capacity
+        // or a skill/text fault requires reading only the parent's identity.
+        let identity = if traits.active() || experience.active() {
+            Some(if units.len > previous_len {
+                Ok(units.rows[previous_len].native.id)
+            } else {
+                unit_identity(memory, pointer, character_id)
+            })
+        } else {
+            None
+        };
+        match identity {
+            Some(Ok(id)) => {
+                traits.append(
+                    |rows, bytes| {
+                        if let Some(owned) = owned_traits {
+                            owned.project(0, &mut trait_cursors[0], pointer, id, rows, bytes, |row, _| row)
+                        } else {
+                            cunit_leader::walk_traits(memory, base, pointer, id, rows, bytes).into()
+                        }
+                    },
+                    |row, offset| relocate(&mut row.token_start, offset),
+                );
+                experience.append(
+                    |rows, bytes| {
+                        if let Some(owned) = owned_traits {
+                            owned.project(
+                                1,
+                                &mut trait_cursors[1],
+                                pointer,
+                                id,
+                                rows,
+                                bytes,
+                                |trait_row, experience| cunit_leader::TraitExperienceRow {
+                                    trait_row,
+                                    experience,
+                                },
+                            )
+                        } else {
+                            cunit_leader::walk_trait_experience(memory, base, pointer, id, rows, bytes)
+                                .into()
+                        }
+                    },
+                    |row, offset| relocate(&mut row.trait_row.token_start, offset),
+                );
+            }
+            Some(Err(reason)) => {
+                traits.fail(reason);
+                experience.fail(reason);
+            }
+            None => {}
+        }
+    }
+}
+
+fn walk_family<M: Memory>(
+    memory: &M,
     base: usize,
     game_state: usize,
-    family: Family<'_>,
+    mut family: Family<'_>,
     owned_traits: Option<&TraitCapture>,
 ) -> [ReadResult; 6] {
-    let Family {
-        mut characters,
-        mut leaders,
-        mut advisors,
-        mut units,
-        mut traits,
-        mut experience,
-    } = family;
-    let required = [
-        characters.active(),
-        leaders.active(),
-        units.active() || traits.active() || experience.active(),
-        advisors.active(),
-    ];
+    let required = family.required();
     let mut trait_cursors = [0; 2];
     let result = (|| {
         if !required.into_iter().any(|active| active) {
@@ -875,16 +1030,7 @@ fn walk_family(
         let mut cursor = roster.cursor();
         // Capture and owned decoding retain the same fixed-page protocol.
         let mut page = ccharacter_manager::ViewPage::default();
-        loop {
-            if !characters.active()
-                && !leaders.active()
-                && !advisors.active()
-                && !units.active()
-                && !traits.active()
-                && !experience.active()
-            {
-                break;
-            }
+        while family.alive() {
             let next = loop {
                 if let Some(view) = page.next() {
                     break Some(view?);
@@ -896,148 +1042,44 @@ fn walk_family(
             let Some(view) = next else {
                 break;
             };
-            let (character_pointer, character_id) = view.reference();
-            match view.entry() {
-                Ok(character) => {
-                    characters.append(
-                        |rows, bytes| ccharacter::walk_entry(&view, character, rows, bytes).into(),
-                        |row, offset| {
-                            relocate(&mut row.name_start, offset)
-                                && relocate(&mut row.token_start, offset)
-                        },
-                    );
-                    leaders.append(
-                        |rows, _| {
-                            ReadResult::rows(ccountry_leader::walk_entry(
-                                &view, base, character, rows,
-                            ))
-                        },
-                        |_, _| true,
-                    );
-                    advisors.append(
-                        |rows, bytes| {
-                            cadvisor::walk_entry(&view, base, character, rows, bytes).into()
-                        },
-                        |row, offset| {
-                            relocate(&mut row.key_start, offset)
-                                && relocate(&mut row.idea_start, offset)
-                                && relocate(&mut row.slot_start, offset)
-                        },
-                    );
-                }
-                Err(reason) => {
-                    characters.fail(reason);
-                    leaders.fail(reason);
-                    advisors.fail(reason);
-                }
-            }
-            if !units.active() && !traits.active() && !experience.active() {
-                continue;
-            }
-            let pointer = character_pointer
-                .checked_add(ccharacter::UNIT_LEADER)
-                .and_then(|address| read::<u64>(&view, address))
-                .and_then(|pointer| usize::try_from(pointer).ok());
-            let Some(pointer) = pointer else {
-                units.fail("character unit leader pointer unreadable");
-                traits.fail("character unit leader pointer unreadable");
-                experience.fail("character unit leader pointer unreadable");
-                continue;
-            };
-            if pointer == 0 {
-                continue;
-            }
-            let previous_len = units.len;
-            units.append(
-                |rows, bytes| read_unit(memory, base, pointer, character_id, rows, bytes),
-                |row, offset| {
-                    relocate(&mut row.text_a_start, offset)
-                        && relocate(&mut row.text_b_start, offset)
-                },
-            );
-            // Reuse the authenticated scalar header on the normal path. The
-            // trait vectors retain independent availability when scalar capacity
-            // or a skill/text fault requires reading only the parent's identity.
-            let identity = if traits.active() || experience.active() {
-                Some(if units.len > previous_len {
-                    Ok(units.rows[previous_len].native.id)
-                } else {
-                    unit_identity(memory, pointer, character_id)
-                })
-            } else {
-                None
-            };
-            match identity {
-                Some(Ok(id)) => {
-                    traits.append(
-                        |rows, bytes| {
-                            if let Some(owned) = owned_traits {
-                                owned.project(
-                                    0,
-                                    &mut trait_cursors[0],
-                                    pointer,
-                                    id,
-                                    rows,
-                                    bytes,
-                                    |row, _| row,
-                                )
-                            } else {
-                                cunit_leader::walk_traits(memory, base, pointer, id, rows, bytes)
-                                    .into()
-                            }
-                        },
-                        |row, offset| relocate(&mut row.token_start, offset),
-                    );
-                    experience.append(
-                        |rows, bytes| {
-                            if let Some(owned) = owned_traits {
-                                owned.project(
-                                    1,
-                                    &mut trait_cursors[1],
-                                    pointer,
-                                    id,
-                                    rows,
-                                    bytes,
-                                    |trait_row, experience| cunit_leader::TraitExperienceRow {
-                                        trait_row,
-                                        experience,
-                                    },
-                                )
-                            } else {
-                                cunit_leader::walk_trait_experience(
-                                    memory, base, pointer, id, rows, bytes,
-                                )
-                                .into()
-                            }
-                        },
-                        |row, offset| relocate(&mut row.trait_row.token_start, offset),
-                    );
-                }
-                Some(Err(reason)) => {
-                    traits.fail(reason);
-                    experience.fail(reason);
-                }
-                None => {}
-            }
+            family.visit(memory, base, view, owned_traits, &mut trait_cursors);
         }
         Ok::<_, &'static str>(())
     })();
     if let Err(reason) = result {
-        characters.fail(reason);
-        leaders.fail(reason);
-        advisors.fail(reason);
-        units.fail(reason);
-        traits.fail(reason);
-        experience.fail(reason);
+        family.fail(reason);
     }
-    [
-        characters.result(),
-        leaders.result(),
-        advisors.result(),
-        units.result(),
-        traits.result(),
-        experience.result(),
-    ]
+    family.results()
+}
+
+/// `walk_family` over the occurrences a census-loaned acquisition visited.
+/// Each view holds the same authenticated fields `View::read` would copy;
+/// omitted occurrences produce no rows and read nothing in the typed walk.
+fn walk_census<M: Memory>(
+    memory: &M,
+    base: usize,
+    mut family: Family<'_>,
+    owned_traits: Option<&TraitCapture>,
+    visited: &[census::Occurrence],
+    historical: usize,
+) -> [ReadResult; 6] {
+    let required = family.required();
+    debug_assert!(!required[0], "the role census holds no character names");
+    let mut trait_cursors = [0; 2];
+    for occurrence in visited {
+        if !family.alive() {
+            break;
+        }
+        let identity = occurrence.identity(historical);
+        match ccharacter::View::acquired(memory, base, identity, occurrence.fields(required)) {
+            Ok(view) => family.visit(memory, base, view, owned_traits, &mut trait_cursors),
+            Err(reason) => {
+                family.fail(reason);
+                break;
+            }
+        }
+    }
+    family.results()
 }
 
 fn unit_identity(
@@ -1890,6 +1932,18 @@ pub(crate) struct CharactersJob {
     advisor_cache: Option<advisors::Cache>,
     advisor_section_complete: bool,
     census_charge: crate::raw_memory::Charge,
+    // The roster job gathers the role census on role hours. It persists
+    // like the portrait census; the flag admits only this pass's gather.
+    role_census: Option<Arc<census::RoleCensus>>,
+    role_census_current: bool,
+    /// Historical roster length of the retained portrait census, or of the
+    /// loaned census this payload was acquired from.
+    census_historical: usize,
+    /// A role payload acquired from a loaned census, the occurrences its
+    /// decode visits, and the demand recorded when that storage ran out.
+    census_capture: bool,
+    census_visited: Vec<census::Occurrence>,
+    census_required: usize,
 }
 
 /// Auxiliary bindings whose selecting character/unit bytes are controls in the
@@ -2020,9 +2074,16 @@ impl CharactersJob {
         let trace_capacity = spans.min(1 << 18);
         log.initialize_scattered_read_plan(trace_capacity, trace_capacity, bytes.min(4 << 20));
         let census = (part == 0).then(|| ccharacter_manager::PortraitCensus::new(ccharacter_manager::PortraitCensus::INITIAL_CAPACITY));
+        let role_census = (part == 0).then(|| census::RoleCensus::new(census::RoleCensus::INITIAL_CAPACITY));
+        // A pass visits at most every census occurrence, so the list is seeded
+        // at the live census length (none before the first census) and
+        // follows it off-thread.
+        let census_visited = Vec::with_capacity(if part == 0 { 0 } else { census::live_len() });
         let mut census_charge = crate::raw_memory::Charge::default();
         census_charge.set(crate::raw_memory::Capacity {
-            auxiliary_vectors: census.as_ref().map_or(0, |census| census.allocated_bytes() as u64),
+            auxiliary_vectors: census.as_ref().map_or(0, |census| census.allocated_bytes() as u64)
+                + role_census.as_ref().map_or(0, |census| census.allocated_bytes() as u64)
+                + crate::raw_memory::vector_bytes(&census_visited),
             ..Default::default()
         });
         Self {
@@ -2042,6 +2103,12 @@ impl CharactersJob {
             advisor_cache: None,
             advisor_section_complete: false,
             census_charge,
+            role_census: role_census.map(Arc::new),
+            role_census_current: false,
+            census_historical: 0,
+            census_capture: false,
+            census_visited,
+            census_required: 0,
         }
     }
 
@@ -2074,6 +2141,10 @@ impl CharactersJob {
         self.advisor_demand = AdvisorDemand::default();
         self.skills.fill(SkillCopy::default());
         self.census_current = false;
+        self.role_census_current = false;
+        self.census_capture = false;
+        self.census_visited.clear();
+        self.census_required = 0;
         self.advisor_section_complete = false;
         self.advisor_roots.clear();
         if let Some(dynamic) = &mut self.advisor_dynamic { dynamic.clear(); }
@@ -2083,17 +2154,43 @@ impl CharactersJob {
         self.census_current.then(|| self.portrait_census.as_ref().map(Arc::clone)).flatten()
     }
 
+    /// This pass's role census; role jobs return the loan at their join.
+    pub(crate) fn role_census(&self) -> Option<Arc<census::RoleCensus>> {
+        self.role_census_current.then(|| self.role_census.as_ref().map(Arc::clone)).flatten()
+    }
+
+    fn update_census_charge(&mut self) {
+        self.census_charge.set(crate::raw_memory::Capacity {
+            auxiliary_vectors: self.portrait_census.as_ref().map_or(0, |census| census.allocated_bytes() as u64)
+                + self.role_census.as_ref().map_or(0, |census| census.allocated_bytes() as u64)
+                + crate::raw_memory::vector_bytes(&self.census_visited),
+            ..Default::default()
+        });
+    }
+
     pub fn grow_for_next(&self) -> bool {
         self.advisor_cache.as_ref().is_some_and(advisors::Cache::needs_growth)
             || self.log.grow_for_next() || self.traits.grow_for_next()
             || self.portrait_census.as_ref().is_some_and(|census| census.needs_growth())
             || self.source_bindings.as_ref().is_some_and(|plan| plan.overflowed)
             || self.advisor_dynamic.as_ref().is_some_and(|job| job.grow_for_next())
+            || self.role_census.as_ref().is_some_and(|census| census.needs_growth())
+            || self.visits_required() > self.census_visited.capacity()
+    }
+
+    /// Visits the next role pass may need: its recorded demand, and every
+    /// occurrence of the live census.
+    fn visits_required(&self) -> usize {
+        if self.part == 0 {
+            return 0;
+        }
+        self.census_required.max(census::live_len())
     }
 
     fn overflowed(&self) -> bool {
         self.log.overflowed || self.traits.overflowed() || self.advisor_roots.overflowed
             || self.advisor_dynamic.as_ref().is_some_and(|job| job.overflowed())
+            || self.census_required > self.census_visited.capacity()
     }
 
     pub fn grow(&mut self) {
@@ -2104,12 +2201,15 @@ impl CharactersJob {
             && census.needs_growth()
         {
             census.grow();
-            self.census_charge.set(crate::raw_memory::Capacity {
-                auxiliary_vectors: census.allocated_bytes() as u64,
-                ..Default::default()
-            });
             self.log.invalidate_read_plan();
         }
+        // Role loans also return before recycle.
+        if let Some(census) = self.role_census.as_mut().and_then(Arc::get_mut) {
+            census.grow();
+        }
+        self.census_visited
+            .reserve(self.visits_required().saturating_sub(self.census_visited.len()));
+        self.update_census_charge();
         if let Some(cache) = &mut self.advisor_cache { cache.grow(); }
         self.log.grow();
         self.traits.grow();
@@ -2183,6 +2283,7 @@ struct Dead {
 
 /// Successful view fields remain in the current capture's append-only raw
 /// arena. Each roster occurrence owns its offsets; aliases never share them.
+#[derive(Clone, Copy)]
 struct ViewCopy {
     starts: [u32; 7],
     unit_id: Option<u32>,
@@ -2500,6 +2601,17 @@ enum TreeFate {
     Dead,
 }
 
+/// How a map's sentinel observation is acquired.
+#[derive(Clone, Copy)]
+enum Sentinel<'a> {
+    /// Read it now.
+    Read,
+    /// A batch already gathered it; `None` is that read's failure.
+    Gathered(Option<&'a [u8]>),
+    /// It lies inside the character view, which fails it without a read.
+    Owned,
+}
+
 /// Mirror of `RoleTree::read`: sentinel plus size/coherence parses.
 fn tree_read(
     job: &mut CharactersJob,
@@ -2507,20 +2619,34 @@ fn tree_read(
     head: u64,
     count: u64,
     mask: u32,
+    source: Sentinel<'_>,
 ) -> Result<TreeWalk, TreeFate> {
     let head = usize::try_from(head)
         .ok()
         .filter(|&pointer| pointer != 0)
         .ok_or_else(|| job.fate())?;
     let count = u32::try_from(count).map_err(|_| job.fate())?;
-    let start = job
-        .log
-        .take(memory, head, 26, mask)
-        .ok_or_else(|| job.fate())?;
-    let mut sentinel = [0u8; 26];
-    sentinel.copy_from_slice(&job.log.bytes[start..start + 26]);
+    let start = match source {
+        Sentinel::Read => job.log.take(memory, head, census::SENTINEL, mask),
+        Sentinel::Gathered(observed) => job.log.record(head, census::SENTINEL, observed, mask),
+        Sentinel::Owned => return Err(TreeFate::Dead),
+    }
+    .ok_or_else(|| job.fate())?;
+    let mut sentinel = [0u8; census::SENTINEL];
+    sentinel.copy_from_slice(&job.log.bytes[start..start + census::SENTINEL]);
+    let next = tree_sentinel(head, count, &sentinel).ok_or(TreeFate::Dead)?;
+    Ok(TreeWalk {
+        head,
+        next,
+        remaining: count,
+        count,
+    })
+}
+
+/// `RoleTree::read`'s checks on an acquired sentinel; returns the first node.
+fn tree_sentinel(head: usize, count: u32, sentinel: &[u8]) -> Option<usize> {
     if sentinel[msvc_tree_node::NIL] != 1 {
-        return Err(TreeFate::Dead);
+        return None;
     }
     let link = |offset: usize| {
         usize::try_from(u64::from_le_bytes(
@@ -2528,22 +2654,16 @@ fn tree_read(
         ))
         .ok()
         .filter(|&pointer| pointer != 0)
-        .ok_or(TreeFate::Dead)
     };
     let next = link(msvc_tree_node::LEFT)?;
     if (count == 0) != (next == head) {
-        return Err(TreeFate::Dead);
+        return None;
     }
     if count == 0 && (link(msvc_tree_node::PARENT)? != head || link(msvc_tree_node::RIGHT)? != head)
     {
-        return Err(TreeFate::Dead);
+        return None;
     }
-    Ok(TreeWalk {
-        head,
-        next,
-        remaining: count,
-        count,
-    })
+    Some(next)
 }
 
 fn tree_link(
@@ -2771,8 +2891,9 @@ fn copy_leaders(
     job: &mut CharactersJob,
     memory: &impl Memory,
     base: usize,
-    view: &ViewCopy,
+    header: impl FnOnce(&CharactersJob) -> [u8; 16],
     pointer: usize,
+    sentinel: Sentinel<'_>,
     dead: &mut Dead,
 ) -> bool {
     if dead.leaders {
@@ -2785,10 +2906,10 @@ fn copy_leaders(
             return true;
         }
     };
-    let header = view.field(job, 4);
+    let header = header(job);
     let head = u64::from_le_bytes(header[..8].try_into().unwrap());
     let count = u64::from_le_bytes(header[8..16].try_into().unwrap());
-    let mut walk = match tree_read(job, memory, head, count, MASK_LEADERS) {
+    let mut walk = match tree_read(job, memory, head, count, MASK_LEADERS, sentinel) {
         Ok(walk) => walk,
         Err(TreeFate::Abort) => return false,
         Err(TreeFate::Dead) => {
@@ -2901,7 +3022,7 @@ fn copy_advisors(
     let header = view.field(job, 6);
     let head = u64::from_le_bytes(header[..8].try_into().unwrap());
     let count = u64::from_le_bytes(header[8..16].try_into().unwrap());
-    let mut walk = match tree_read(job, memory, head, count, MASK_ADVISORS) {
+    let mut walk = match tree_read(job, memory, head, count, MASK_ADVISORS, Sentinel::Read) {
         Ok(walk) => walk,
         Err(TreeFate::Abort) => return false,
         Err(TreeFate::Dead) => {
@@ -3050,13 +3171,11 @@ fn copy_unit(
     job: &mut CharactersJob,
     memory: &impl Memory,
     base: usize,
-    view: &mut ViewCopy,
-    _pointer: usize,
+    unit: Option<usize>,
+    character_id: impl FnOnce(&CharactersJob) -> u32,
+    unit_id: &mut Option<u32>,
     dead: &mut Dead,
 ) -> bool {
-    let unit = usize::try_from(u64::from_le_bytes(view.field(job, 5).try_into().unwrap()))
-        .ok()
-        .filter(|&unit| unit != 0);
     let Some(unit) = unit else {
         // Null role pointers are handled by the caller: no rows, no reads.
         return true;
@@ -3084,7 +3203,7 @@ fn copy_unit(
         &mut dead.units,
     );
     let parsed = identity.and_then(|start| parse_unit_identity(job, base, start));
-    view.unit_id = parsed.map(|(_, id)| id);
+    *unit_id = parsed.map(|(_, id)| id);
     if identity.is_some() && parsed.is_none() {
         dead.units = true;
     }
@@ -3116,11 +3235,7 @@ fn copy_unit(
         {
             // These are independent registries: a leader's id is not the
             // id of the character whose role points to it.
-            let character_id = u32::from_le_bytes(
-                view.field(job, 0)[ccharacter::ID..ccharacter::ID + 4]
-                    .try_into()
-                    .unwrap(),
-            );
+            let character_id = character_id(job);
             if pool_u32(job, backlink) != ccharacter::REFERENCE_TYPE
                 || pool_u32(job, backlink + 4) != character_id
             {
@@ -3174,7 +3289,7 @@ fn copy_unit(
         if dead.units
             && let Some(first) = first
         {
-            view.unit_id = Some(pool_u32(job, first + 4));
+            *unit_id = Some(pool_u32(job, first + 4));
         }
     }
     true
@@ -3373,53 +3488,69 @@ fn copy_character_body(
     if job.log.overflowed {
         return false;
     }
-    if !copy_leaders(job, memory, base, view, pointer, dead) {
+    let fields = *view;
+    let header = |job: &CharactersJob| fields.field(job, 4).try_into().unwrap();
+    if !copy_leaders(job, memory, base, header, pointer, Sentinel::Read, dead) {
         return false;
     }
     if !copy_advisors(job, memory, base, view, pointer, dead) {
         return false;
     }
-    if !copy_unit(job, memory, base, view, pointer, dead) {
+    let unit = view_unit(job, view);
+    let character_id = |job: &CharactersJob| {
+        u32::from_le_bytes(fields.field(job, 0)[ccharacter::ID..ccharacter::ID + 4].try_into().unwrap())
+    };
+    if !copy_unit(job, memory, base, unit, character_id, &mut view.unit_id, dead) {
         return false;
     }
     // Trait vectors share the unit leader pointer resolved view-locally
     // above; a null role skips them silently like the typed walk.
-    let unit = usize::try_from(u64::from_le_bytes(view.field(job, 5).try_into().unwrap()))
-        .ok()
-        .filter(|&unit| unit != 0);
-    if let Some(unit) = unit {
-        if !copy_trait_vector(
-            job,
-            memory,
-            base,
-            TraitVectorCopy {
-                unit,
-                leader_id: view.unit_id.unwrap_or(id),
-                array_offset: cunit_leader::TRAIT_DATA,
-                stride: 8,
-                has_experience: false,
-            },
-            &mut dead.traits,
-        ) {
-            return false;
-        }
-        if !copy_trait_vector(
-            job,
-            memory,
-            base,
-            TraitVectorCopy {
-                unit,
-                leader_id: view.unit_id.unwrap_or(id),
-                array_offset: cunit_leader::TRAIT_EXPERIENCE_DATA,
-                stride: unit_leader_trait_experience_entry::STRIDE,
-                has_experience: true,
-            },
-            &mut dead.experience,
-        ) {
-            return false;
-        }
+    match view_unit(job, view) {
+        Some(unit) => copy_trait_vectors(job, memory, base, unit, view.unit_id.unwrap_or(id), dead),
+        None => true,
     }
-    true
+}
+
+fn view_unit(job: &CharactersJob, view: &ViewCopy) -> Option<usize> {
+    usize::try_from(u64::from_le_bytes(view.field(job, 5).try_into().unwrap()))
+        .ok()
+        .filter(|&unit| unit != 0)
+}
+
+/// Both trait vectors of one unit leader, in the typed walk's order.
+fn copy_trait_vectors(
+    job: &mut CharactersJob,
+    memory: &impl Memory,
+    base: usize,
+    unit: usize,
+    leader_id: u32,
+    dead: &mut Dead,
+) -> bool {
+    copy_trait_vector(
+        job,
+        memory,
+        base,
+        TraitVectorCopy {
+            unit,
+            leader_id,
+            array_offset: cunit_leader::TRAIT_DATA,
+            stride: 8,
+            has_experience: false,
+        },
+        &mut dead.traits,
+    ) && copy_trait_vector(
+        job,
+        memory,
+        base,
+        TraitVectorCopy {
+            unit,
+            leader_id,
+            array_offset: cunit_leader::TRAIT_EXPERIENCE_DATA,
+            stride: unit_leader_trait_experience_entry::STRIDE,
+            has_experience: true,
+        },
+        &mut dead.experience,
+    )
 }
 
 /// Mirror of the roster census plus the cursor's 32-entry page loop. Page and
@@ -3435,6 +3566,7 @@ fn copy_pass(memory: &impl Memory, context: CharactersCopyContext, job: &mut Cha
     job.traits.begin(context);
     job.game_state = context.game_state;
     job.census_current = false;
+    job.role_census_current = false;
     job.advisor_section_complete = false;
     // Each table owner retains its own raw program. Parts beyond the core
     // also preserve capacity demand and freshly reacquire bound trait sources.
@@ -3516,6 +3648,7 @@ fn copy_roster(memory: &impl Memory, base: usize, game_state: usize, job: &mut C
     // Demand the whole native roster even if staging stops this pass early.
     if let Some(census) = census.as_mut() {
         census.expect(arrays[0].count as usize + arrays[1].count as usize);
+        job.census_historical = arrays[0].count as usize;
     }
     copy_roster_entries(memory, base, game_state, job, census, arrays, &mut dead);
 }
@@ -3652,14 +3785,47 @@ fn copy_roster_entries(memory: &impl Memory, base: usize, game_state: usize,
     }
 }
 
-/// Raw acquisition of the current scheduled family with exclusively owned jobs.
-/// Copies one current payload and returns its acquisition costs.
-/// On staging overflow the caller takes the existing
-/// typed fallback and enqueues no payload.
+/// How one character job relates to this callback's role census.
+#[derive(Clone, Copy)]
+pub(crate) enum Roles<C> {
+    /// Walk the roster independently.
+    Independent,
+    /// The roster job also gathers the role census for this hour's role jobs.
+    Gather,
+    /// A role job borrows the roster job's census; without an admitted
+    /// census it walks the roster independently.
+    Borrow(C),
+}
+
+impl Roles<Arc<census::RoleCensus>> {
+    pub(crate) fn as_deref(&self) -> Roles<&census::RoleCensus> {
+        match self {
+            Self::Independent => Roles::Independent,
+            Self::Gather => Roles::Gather,
+            Self::Borrow(census) => Roles::Borrow(census),
+        }
+    }
+}
+
+/// Independent acquisition, as tests and non-role hours use it.
+#[cfg(test)]
 pub(crate) fn copy_characters_refresh(
     memory: &impl Memory,
     ctx: CharactersCopyContext,
     job: &mut CharactersJob,
+) -> CharactersCopyReport {
+    copy_characters(memory, ctx, job, Roles::Independent)
+}
+
+/// Raw acquisition of the current scheduled family with exclusively owned jobs.
+/// Copies one current payload and returns its acquisition costs.
+/// On staging overflow the caller takes the existing
+/// typed fallback and enqueues no payload.
+pub(crate) fn copy_characters(
+    memory: &impl Memory,
+    ctx: CharactersCopyContext,
+    job: &mut CharactersJob,
+    roles: Roles<&census::RoleCensus>,
 ) -> CharactersCopyReport {
     if !ctx.active.iter().any(|&active| active) {
         job.clear();
@@ -3670,17 +3836,27 @@ pub(crate) fn copy_characters_refresh(
     }
     let started = qpc();
     let wall_started = std::time::Instant::now();
+    let loaned = match roles {
+        Roles::Borrow(census) => census.admitted(ctx.base, ctx.game_state),
+        _ => None,
+    };
     if job.advisor_cache.is_some() {
         job.clear();
         job.active = ctx.active;
         job.game_state = ctx.game_state;
         let cache = job.advisor_cache.as_mut().unwrap();
-        cache.capture(memory, ctx, &crate::advisor_changes::Observer);
+        cache.capture(memory, ctx, &crate::advisor_changes::Observer, loaned);
         crate::advisor_changes::record(cache.counts);
     } else if job.advisor_dynamic.is_some() {
+        // The feature-gated section reader keeps its independent roster walk.
         copy_advisor_sections(memory, ctx, job);
+    } else if let Some(census) = loaned.filter(|_| census_part(ctx.active)) {
+        copy_census(memory, ctx, job, census);
     } else {
         copy_pass(memory, ctx, job, None);
+        if matches!(roles, Roles::Gather) {
+            gather_role_census(memory, ctx, job);
+        }
     }
     let total_ns = wall_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
     use std::sync::atomic::Ordering::Relaxed;
@@ -3705,6 +3881,210 @@ pub(crate) fn copy_characters_refresh(
         plan_failed,
         copy_ticks,
         raw_bytes,
+    }
+}
+
+/// Role jobs that take their roster from a loaned census: country-leader
+/// roles alone, or unit-leader traits and experience alone.
+fn census_part(active: [bool; 6]) -> bool {
+    let leaders = active[1] && !active[4] && !active[5];
+    let traits = !active[1] && (active[4] || active[5]);
+    !active[0] && !active[2] && !active[3] && (leaders || traits)
+}
+
+/// On role hours the roster job gathers the role fields of its complete,
+/// freshly certified census in one guarded call. Its reads are the roster
+/// job's; a retained loan disables sharing without waiting or allocating.
+fn gather_role_census(memory: &impl Memory, ctx: CharactersCopyContext, job: &mut CharactersJob) {
+    if !job.census_current {
+        return;
+    }
+    let _reads = read_accounting::table(TABLES[anchor(ctx.active)]);
+    let scope = (ctx.base, ctx.game_state);
+    let rows = job.portrait_census.as_ref().and_then(|census| census.rows(ctx.base, ctx.game_state));
+    if let (Some(rows), Some(roles)) = (rows, job.role_census.as_mut().and_then(Arc::get_mut)) {
+        job.role_census_current = roles.acquire(memory, scope, rows, job.census_historical);
+        if job.role_census_current {
+            job.log.raw_bytes[0] += (rows.len() * (census::ROW - 4)) as u64;
+        }
+    }
+}
+
+/// A role job's acquisition from the loaned census: the independent walk's
+/// reads and failure order from each occurrence's map header or unit pointer
+/// on, without the roster, pointer pages or character views.
+fn copy_census(
+    memory: &impl Memory,
+    context: CharactersCopyContext,
+    job: &mut CharactersJob,
+    census: census::Admitted<'_>,
+) {
+    let _reads = read_accounting::table(TABLES[anchor(context.active)]);
+    job.log.clear();
+    job.advisor_demand = AdvisorDemand::default();
+    job.skills.fill(SkillCopy::default());
+    job.active = context.active;
+    job.traits.begin(context);
+    job.game_state = context.game_state;
+    job.census_current = false;
+    job.role_census_current = false;
+    job.advisor_section_complete = false;
+    job.census_capture = true;
+    job.census_visited.clear();
+    job.census_required = 0;
+    job.census_historical = census.historical;
+    let mut dead = Dead {
+        characters: true,
+        leaders: !context.active[1],
+        advisors: true,
+        units: true,
+        traits: !context.active[4],
+        experience: !context.active[5],
+    };
+    // Trait-source bindings belong to the independent walk's prepared program.
+    let bindings = job.source_bindings.take();
+    if context.active[1] {
+        copy_census_leaders(job, memory, context.base, census, &mut dead);
+    } else {
+        copy_census_units(job, memory, context.base, census, &mut dead);
+    }
+    job.source_bindings = bindings;
+    job.traits.finish();
+}
+
+/// Retain one occurrence for decode. Exhausted storage records the demand of
+/// every remaining occurrence that could need one and stops the acquisition.
+fn visit_census(
+    job: &mut CharactersJob,
+    census: census::Admitted<'_>,
+    index: usize,
+    needs: impl Fn(census::Occurrence) -> bool,
+) -> bool {
+    if job.census_visited.len() < job.census_visited.capacity() {
+        job.census_visited.push(census.occurrence(index));
+        return true;
+    }
+    let remaining = (index..census.len()).filter(|&index| needs(census.occurrence(index))).count();
+    job.census_required = job.census_visited.len() + remaining.max(1);
+    false
+}
+
+/// Leader-map sentinels are gathered in batches ahead of their maps. An empty
+/// map whose sentinel passes produces no row and no decode read, so neither
+/// its occurrence nor its sentinel is retained; every other occurrence records
+/// exactly the independent walk's observations.
+fn copy_census_leaders(
+    job: &mut CharactersJob,
+    memory: &impl Memory,
+    base: usize,
+    census: census::Admitted<'_>,
+    dead: &mut Dead,
+) {
+    use census::{SENTINEL, SENTINEL_BATCH};
+    let needs = |occurrence: census::Occurrence| {
+        census::map_head(occurrence.leaders()).is_none_or(|(_, count)| count != 0)
+    };
+    let omissible = base.checked_add(ccountry_leader::VTABLE_RVA).is_some();
+    let mut heads = [0; SENTINEL_BATCH];
+    let mut sentinels = [0; SENTINEL_BATCH * SENTINEL];
+    let mut next = 0;
+    while next < census.len() && !dead.leaders {
+        // A header that fails before its sentinel read, or whose sentinel
+        // lies inside the character view, ends the batch.
+        let mut staged = 0;
+        while staged < SENTINEL_BATCH && next + staged < census.len() {
+            let occurrence = census.occurrence(next + staged);
+            match census::map_head(occurrence.leaders()) {
+                Some((head, _)) if !census::inside_view(occurrence.pointer, head, SENTINEL) => {
+                    heads[staged] = head;
+                }
+                _ => break,
+            }
+            staged += 1;
+        }
+        let completed = census::gather_sentinels(memory, &heads[..staged], &mut sentinels);
+        job.log.raw_bytes[1] += (completed * SENTINEL) as u64;
+        let end = if staged == SENTINEL_BATCH {
+            next + staged
+        } else {
+            census.len().min(next + staged + 1)
+        };
+        for index in next..end {
+            if dead.leaders {
+                return;
+            }
+            let occurrence = census.occurrence(index);
+            let header = occurrence.leaders();
+            let slot = index - next;
+            let gathered = &sentinels[slot * SENTINEL..][..SENTINEL];
+            let sentinel = if slot < staged {
+                Sentinel::Gathered((slot < completed).then_some(gathered))
+            } else if census::map_head(header).is_some() {
+                Sentinel::Owned
+            } else {
+                Sentinel::Read
+            };
+            if omissible
+                && let Sentinel::Gathered(Some(bytes)) = sentinel
+                && let Some((head, 0)) = census::map_head(header)
+                && tree_sentinel(head, 0, bytes).is_some()
+            {
+                continue;
+            }
+            if !visit_census(job, census, index, needs)
+                || !copy_leaders(job, memory, base, |_| header, occurrence.pointer, sentinel, dead)
+            {
+                return;
+            }
+        }
+        next = end;
+    }
+}
+
+/// Unit leaders in roster order, from each occurrence's unit pointer on.
+fn copy_census_units(
+    job: &mut CharactersJob,
+    memory: &impl Memory,
+    base: usize,
+    census: census::Admitted<'_>,
+    dead: &mut Dead,
+) {
+    /// Occurrences ahead whose leader lines are hinted.
+    const LOOKAHEAD: usize = 16;
+    let unit = |occurrence: census::Occurrence| {
+        usize::try_from(u64::from_le_bytes(occurrence.unit()))
+            .ok()
+            .filter(|&unit| unit != 0)
+    };
+    let needs = |occurrence: census::Occurrence| unit(occurrence).is_some();
+    for index in 0..census.len() {
+        if dead.traits && dead.experience {
+            return;
+        }
+        if let Some(ahead) = (index + LOOKAHEAD < census.len())
+            .then(|| unit(census.occurrence(index + LOOKAHEAD)))
+            .flatten()
+        {
+            for offset in [0, cunit_leader::TRAIT_DATA, cunit_leader::TRAIT_EXPERIENCE_DATA] {
+                if let Some(address) = ahead.checked_add(offset) {
+                    memory.prefetch(address, 16);
+                }
+            }
+        }
+        let occurrence = census.occurrence(index);
+        let Some(pointer) = unit(occurrence) else {
+            continue;
+        };
+        if !visit_census(job, census, index, needs) {
+            return;
+        }
+        let id = occurrence.id();
+        let mut unit_id = None;
+        if !copy_unit(job, memory, base, Some(pointer), |_| id, &mut unit_id, dead)
+            || !copy_trait_vectors(job, memory, base, pointer, unit_id.unwrap_or(id), dead)
+        {
+            return;
+        }
     }
 }
 
@@ -3902,7 +4282,11 @@ impl Captured {
         if let Some(reason) = advisor_failure {
             family.advisors.fail(reason);
         }
-        let results = walk_family(&recorded, base, job.game_state, family, Some(&job.traits));
+        let results = if job.census_capture {
+            walk_census(&recorded, base, family, Some(&job.traits), &job.census_visited, job.census_historical)
+        } else {
+            walk_family(&recorded, base, job.game_state, family, Some(&job.traits))
+        };
         self.install_family(job.active, results);
         decode_ticks[anchor(job.active)] += elapsed(started);
         for (raw, active) in self.raw_active.iter_mut().zip(job.active) {

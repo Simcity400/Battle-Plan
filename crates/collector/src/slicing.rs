@@ -47,9 +47,10 @@ pub(crate) struct SliceFamily {
 
 pub(crate) const RESEARCH: usize = 0;
 pub(crate) const TECHNOLOGIES: usize = 1;
+pub(crate) const RELATIONS: usize = 2;
 
 /// Every sliced family. Index with the family constants above.
-pub(crate) const FAMILIES: [SliceFamily; 2] = [
+pub(crate) const FAMILIES: [SliceFamily; 3] = [
     SliceFamily {
         name: "research",
         owner: OwnerKind::Country,
@@ -69,6 +70,15 @@ pub(crate) const FAMILIES: [SliceFamily; 2] = [
             TableId::ResearchTechnologies,
             TableId::TechnologyDefinitions,
         ],
+    },
+    // Relations are read once a day, one owner slice per hour (owner rule),
+    // with no change fingerprint: an opinion or relation changed by an event
+    // waits for its owner's slice. A constant fingerprint reads new owners
+    // and unpublished reads at the next hour.
+    SliceFamily {
+        name: "relations",
+        owner: OwnerKind::Country,
+        tables: &[TableId::RelationOpinions, TableId::RelationTuples],
     },
 ];
 

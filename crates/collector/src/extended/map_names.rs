@@ -169,7 +169,7 @@ mod tests {
             let [Outcome::Unavailable { reason }] = capture.outcomes() else {
                 panic!("unreadable names must fail at hour {hour}");
             };
-            if !force && hour.rem_euclid(4) != 3 {
+            if !force && hour.rem_euclid(24) != 1 {
                 assert_eq!(reads.finish(), crate::read_accounting::ZERO);
                 assert_eq!(reason, replay::cadence::SKIPPED_REASON);
                 continue;
@@ -211,11 +211,11 @@ mod tests {
         put(&mut bytes, PROVINCE + cprovince::ID, &1_u32.to_le_bytes());
         let mut capture = Captured::with_capacities(&Capacities::default());
         for (hour, value, expected) in [
-            (3, &b"Original"[..], Some(&b"Original"[..])),
-            (4, &b"Renamed"[..], None),
-            (7, &b"Renamed"[..], Some(&b"Renamed"[..])),
-            (8, &b""[..], None),
-            (11, &b""[..], Some(&b""[..])),
+            (1, &b"Original"[..], Some(&b"Original"[..])),
+            (2, &b"Renamed"[..], None),
+            (25, &b"Renamed"[..], Some(&b"Renamed"[..])),
+            (26, &b""[..], None),
+            (49, &b""[..], Some(&b""[..])),
         ] {
             name(&mut bytes, value);
             capture.capture(

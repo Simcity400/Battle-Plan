@@ -260,6 +260,8 @@ pub(crate) struct IntelRequest {
 pub(crate) struct CharactersRequest {
     pub context: characters::CharactersCopyContext,
     pub payload: characters::CharactersJob,
+    /// A role job's census loan returns with the request at its join.
+    pub roles: characters::Roles<Arc<characters::census::RoleCensus>>,
 }
 pub(crate) type RelationsRequest = RawRequest<intel::RelationsJob, intel::RelationsCopyContext>;
 pub(crate) type AirWingRequest = RawRequest<air::AirWingJob, air::AirWingCopyContext>;
@@ -508,21 +510,21 @@ impl Role {
             | Self::Lexical
             | Self::Session
             | Self::Players => 2,
-            // The roster supplies portraits. Start its independent role jobs early
-            // too, so their long pointer walks overlap later map/pack dispatch.
-            Self::Characters
-            | Self::CountryLeaderRoles
-            | Self::AdvisorRoles
-            | Self::CharacterTraits
-            | Self::Naval => 3,
+            // The roster supplies portraits and the role census.
+            Self::Characters | Self::Naval => 3,
             Self::Orders
             | Self::Provinces
             | Self::States
             | Self::Countries
             | Self::Wars
             | Self::Factions => 4,
+            // Role jobs borrow the roster's census and are joined after the
+            // portrait shares, before the typed fallback.
             Self::SupplyTrains
             | Self::CharacterPortraits
+            | Self::CountryLeaderRoles
+            | Self::AdvisorRoles
+            | Self::CharacterTraits
             | Self::ProvinceUnitOrder
             | Self::Relations
             | Self::Ordinary
@@ -839,10 +841,11 @@ fn run_with_memory(
     let role = job.role();
     let _reads = crate::read_accounting::table(role.read_anchor());
     let report = match job {
-        Job::Characters(request) => Report::Characters(characters::copy_characters_refresh(
+        Job::Characters(request) => Report::Characters(characters::copy_characters(
             memory,
             request.context,
             &mut request.payload,
+            request.roles.as_deref(),
         )),
         Job::Relations(request) => {
             let cached = request.countries.view(memory);
@@ -1824,6 +1827,7 @@ mod tests {
                 active: [true; 6],
             },
             payload: Default::default(),
+            roles: characters::Roles::Independent,
         }));
         // SAFETY: these runners do not access native memory and both jobs are drained.
         let world_ticket = unsafe { batch.submit(&mut world) }.unwrap();
@@ -1926,6 +1930,96 @@ mod tests {
                 expected[TableId::Provinces.index()] += reads;
                 assert_eq!(capture.finish(), expected);
             }
+        }
+    }
+
+    /// A relations job carries its hour's owner slice and the family's
+    /// fingerprint store. Accepted or rejected and run inline, it runs once
+    /// and brings both back with its payload; the join returns them to the
+    /// pack, the store for the next hour and the slice read again because
+    /// the walk (here unreadable) was not published whole. The report itself
+    /// is whole, so decode publishes the tables' unavailable outcome.
+    #[test]
+    fn a_rejected_relations_job_runs_inline_once_and_returns_its_slice() {
+        use crate::slicing::{SliceFingerprints, SliceSelection};
+        for workers in [0, 1] {
+            let pool = Pool::start(workers, WORKER_ONLY_JOBS + 1).unwrap();
+            let make = || {
+                let mut selection = SliceSelection::new(true);
+                selection.reset(5, false);
+                Job::Relations(RawRequest {
+                    countries: empty_country_snapshot(),
+                    // An unreadable game state: the census and the walk fail
+                    // before any pointer can be followed.
+                    context: intel::RelationsCopyContext {
+                        base: 0,
+                        game_state: usize::MAX,
+                        active: [true; 2],
+                        opinion_cap: 4,
+                        tuple_cap: 4,
+                        epoch: 0,
+                    },
+                    payload: {
+                        let mut job = intel::RelationsJob::new();
+                        job.selection = Some(selection);
+                        job.fingerprints = Some(Box::new(SliceFingerprints::new()));
+                        job
+                    },
+                })
+            };
+            let mut accepted = Some(make());
+            let mut retained = Some(make());
+            let store = |job: &Job| match job {
+                Job::Relations(request) => {
+                    request.payload.fingerprints.as_deref().unwrap() as *const SliceFingerprints
+                }
+                _ => unreachable!(),
+            };
+            let stores = [
+                store(accepted.as_ref().unwrap()),
+                store(retained.as_ref().unwrap()),
+            ];
+            let mut batch = Batch::new(&pool);
+            // SAFETY: the walks fail on the unreadable game state; Batch
+            // drains every accepted job before this frame ends.
+            let ticket = unsafe { batch.submit(&mut accepted) }.unwrap();
+            assert_eq!(
+                unsafe { batch.submit(&mut retained) },
+                Err(SubmitError::Full)
+            );
+            let inline = unsafe { batch.run_inline(retained.take().unwrap()) };
+            for (completed, store) in [
+                (inline, stores[1]),
+                (batch.finish(ticket).unwrap(), stores[0]),
+            ] {
+                let Job::Relations(request) = completed.request else {
+                    panic!("relations request routing changed");
+                };
+                let Ok(Report::Relations(report)) = completed.report else {
+                    panic!("relations report routing changed");
+                };
+                assert!(!request.payload.published());
+                let mut pack = intel::Captured::vacant();
+                let (fingerprints, payload) = pack.join_relations(request.payload, report, None);
+                // The job's own store comes back, and its slice is the pack's.
+                assert_eq!(
+                    fingerprints
+                        .as_deref()
+                        .map(|store| store as *const SliceFingerprints),
+                    Some(store)
+                );
+                let Ok(job) = payload else {
+                    panic!("a whole report goes to decode")
+                };
+                assert!(job.selection.is_none() && job.fingerprints.is_none());
+                assert!(pack.relations_raw_mode, "no typed fallback read");
+            }
+            let counts = pool.calibration().roles[Role::Relations as usize].counters;
+            assert_eq!(counts.accepted, 1);
+            assert_eq!(counts.completed, 1);
+            assert_eq!(counts.rejected, 1);
+            assert_eq!(counts.inline_completed, 1);
+            drop(batch);
         }
     }
 

@@ -1099,8 +1099,8 @@ impl SliceWork {
     }
 }
 
-/// A daily or four-hourly table that truncated waits for its slot otherwise; a
-/// static table that failed would wait for the next full hour.
+/// A daily table that truncated waits for its slot otherwise; a static table
+/// that failed would wait for the next full hour.
 fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
     TableId::ALL.into_iter().any(|table| {
         let input = &tables[table.index()];
@@ -1109,7 +1109,7 @@ fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
                 input,
                 TableInput::Sampled(TableView::Complete(_)) | TableInput::SharedComplete(_)
             ) && !matches!(input, TableInput::Sampled(TableView::Unavailable { reason }) if reason == replay::cadence::SKIPPED_REASON),
-            replay::cadence::Cadence::FourHourly(_) | replay::cadence::Cadence::Daily(_) => {
+            replay::cadence::Cadence::Daily(_) => {
                 matches!(input, TableInput::Sampled(TableView::Truncated { .. }))
             }
             // A failed, truncated or dropped slice read is read again at the

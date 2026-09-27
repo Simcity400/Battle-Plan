@@ -3,6 +3,7 @@
 //! to the ordinary reader, including its failed read; it never retries memory.
 use engine::{
     Memory,
+    memory::{RecordLayout, RecordSources},
     read_plan::{Control, Hint, Outcome, PreparedPlan, Read},
 };
 use std::cell::{Cell, Ref, RefCell};
@@ -324,6 +325,59 @@ impl<M: Memory> Memory for Observed<'_, M> {
             let mut trace = self.plan.trace.borrow_mut();
             for index in 0..N.min(completed + 1) {
                 trace.record(addresses[index], outputs[index], index < completed);
+            }
+        }
+        completed
+    }
+
+    /// One gather outside a stopped prefix; inside it, one observation at a
+    /// time in row-major order, like `copy_scattered`.
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        let fields = layout.fields();
+        let Some(count) = sources.len().checked_mul(fields.len()).filter(|_| {
+            sources
+                .len()
+                .checked_mul(layout.stride())
+                .is_some_and(|len| len <= destination.len())
+        }) else {
+            return 0;
+        };
+        let field = |index: usize| {
+            let row = index / fields.len();
+            let field = fields[index % fields.len()];
+            let address = sources
+                .pointer(row)
+                .filter(|&pointer| pointer != 0)
+                .and_then(|pointer| pointer.checked_add(field.source_offset))
+                .filter(|&address| address.checked_add(field.len).is_some());
+            let start = row * layout.stride() + field.destination_offset;
+            (address, start..start + field.len)
+        };
+        if self.plan.blocked.get()
+            || (self.plan.tracking.get() && self.plan.cursor.get() < self.plan.prefix)
+        {
+            for index in 0..count {
+                let (address, range) = field(index);
+                if range.is_empty() {
+                    continue;
+                }
+                if !address.is_some_and(|address| self.copy(address, &mut destination[range])) {
+                    return index;
+                }
+            }
+            return count;
+        }
+        let completed = self.memory.copy_records(sources, layout, destination);
+        if self.plan.tracking.get() {
+            let mut trace = self.plan.trace.borrow_mut();
+            for index in 0..count.min(completed + 1) {
+                let (address, range) = field(index);
+                trace.record(address.unwrap_or(0), &destination[range], index < completed);
             }
         }
         completed

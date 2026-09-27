@@ -15,8 +15,8 @@
 //! hour reads every roster and replaces the table.
 
 use crate::rows::{
-    ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow,
-    SliceReadRow, TableId, TableRows,
+    RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow, ResearchInputRow,
+    ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, TableId, TableRows,
 };
 use std::io;
 
@@ -41,6 +41,16 @@ sliced_by_country!(
     ResearchTechnologyRow
 );
 
+/// A relation row belongs to the country whose relation status holds it.
+macro_rules! sliced_by_owner_country {
+    ($($row:ty),+) => {$(
+        impl SlicedRow for $row {
+            fn owner(&self) -> u32 { self.owner_country }
+        }
+    )+};
+}
+sliced_by_owner_country!(RelationOpinionRow, RelationTupleRow);
+
 macro_rules! dispatch {
     ($previous:expr, $fresh:expr, |$old:ident, $new:ident| $body:expr) => {
         match ($previous, $fresh) {
@@ -55,6 +65,12 @@ macro_rules! dispatch {
             }
             (TableRows::ResearchModifiers($old), TableRows::ResearchModifiers($new)) => {
                 Ok(TableRows::ResearchModifiers($body?))
+            }
+            (TableRows::RelationOpinions($old), TableRows::RelationOpinions($new)) => {
+                Ok(TableRows::RelationOpinions($body?))
+            }
+            (TableRows::RelationTuples($old), TableRows::RelationTuples($new)) => {
+                Ok(TableRows::RelationTuples($body?))
             }
             (previous, fresh) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -186,6 +202,8 @@ pub fn owners(rows: &TableRows) -> Vec<u32> {
         TableRows::ResearchInputs(rows) => collect(rows),
         TableRows::ResearchAppliedBonuses(rows) => collect(rows),
         TableRows::ResearchModifiers(rows) => collect(rows),
+        TableRows::RelationOpinions(rows) => collect(rows),
+        TableRows::RelationTuples(rows) => collect(rows),
         _ => Vec::new(),
     }
 }

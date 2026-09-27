@@ -792,6 +792,63 @@ impl<const N: usize> RawLog<N> {
         Some(start)
     }
 
+    /// Record one observation that a batched gather already made, exactly as
+    /// `take` would have recorded reading it now: `None` is that read's
+    /// failure. The span, its fault mask and capacity demand follow `take`'s
+    /// order; only reads the replay consumes need recording. The gather
+    /// charges its own raw bytes. Unplanned acquisition only.
+    pub fn record(
+        &mut self,
+        addr: usize,
+        len: usize,
+        observed: Option<&[u8]>,
+        mask: u32,
+    ) -> Option<usize> {
+        debug_assert!(observed.is_none_or(|bytes| bytes.len() == len));
+        if !self.allow_unplanned_operation() || self.overflowed {
+            return None;
+        }
+        if len == 0 {
+            return Some(self.bytes.len());
+        }
+        let Ok(len32) = u32::try_from(len) else {
+            self.overflowed = true;
+            return None;
+        };
+        if addr == 0 || addr.checked_add(len).is_none() || !is_canonical_range(addr, len) {
+            self.note_fail(addr, len32, mask);
+            return None;
+        }
+        if self.spans.len() == self.spans.capacity()
+            || self
+                .bytes
+                .len()
+                .checked_add(len)
+                .is_none_or(|end| end > self.bytes.capacity() || end > u32::MAX as usize)
+        {
+            self.span_exhausted = self.spans.len() == self.spans.capacity();
+            self.required_bytes = self.bytes.len().saturating_add(len);
+            self.overflowed = true;
+            return None;
+        }
+        let Some(bytes) = observed else {
+            self.note_fail(addr, len32, mask);
+            return None;
+        };
+        let start = self.bytes.len();
+        self.bytes.storage[start..start + len].copy_from_slice(bytes);
+        self.bytes.used = start + len;
+        self.spans.push(Span {
+            addr,
+            len: len32,
+            ok: true,
+            mask,
+            start: start as u32,
+            bulk: false,
+        });
+        Some(start)
+    }
+
     /// Stage independent fields with one guarded call, retaining the exact
     /// successful prefix and first failure. Each field keeps its table mask.
     #[inline(always)]

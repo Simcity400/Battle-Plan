@@ -662,7 +662,8 @@ pub fn recycle_relations_job(job: RelationsJob) {
 }
 
 fn release_relations_job(mut job: RelationsJob) {
-    if job.countries.capacity() == 0 {
+    job.return_authentication();
+    if !job.is_allocated() {
         return;
     }
     if job.grow_for_next() {
@@ -1908,11 +1909,10 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
-        frame.extended.relations_pilot().decode_relations_payload(
-            shared.base,
-            payload,
-            &mut decode_ticks,
-        );
+        frame
+            .extended
+            .relations_pilot()
+            .decode_relations_payload(payload, &mut decode_ticks);
         for (total, ticks) in RELATIONS_DECODE_NS.iter().zip(decode_ticks) {
             if ticks != 0 {
                 total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
@@ -2675,6 +2675,7 @@ impl Calibration {
             "scope": "decode worker totals since attach; monotonic counters except live capacity fields",
             "raw_growth": crate::raw::growth_diagnostics(),
             "raw_indexes": crate::raw::index_diagnostics(),
+            "relation_authentications": crate::extended::intel::relation_authentication_diagnostics(),
             "read_plans": crate::raw::read_plan_diagnostics(),
             "raw_memory": crate::raw_memory::diagnostics(),
 
@@ -3582,12 +3583,12 @@ mod tests {
     }
 
     #[test]
-    fn relations_gate_is_four_hourly_slot_1_and_force_full() {
+    fn relations_gate_admits_every_hour_for_its_owner_slice() {
         for hour in -48..48i32 {
-            let refresh = hour.rem_euclid(4) == 1;
-            assert_eq!(relations_refresh_hour(hour, false), refresh, "hour {hour}");
+            assert!(relations_refresh_hour(hour, false), "hour {hour}");
             for table in RELATIONS {
-                assert_eq!(replay::cadence::should_walk(table, hour, false), refresh);
+                assert!(replay::cadence::is_sliced(table));
+                assert!(replay::cadence::should_walk(table, hour, false));
             }
             assert!(relations_refresh_hour(hour, true), "forced hour {hour}");
         }
@@ -3928,6 +3929,7 @@ mod tests {
                     active: [opinions_active, true],
                     opinion_cap,
                     tuple_cap,
+                    epoch: 0,
                 },
                 &mut payload,
             );
@@ -4928,10 +4930,8 @@ mod tests {
         // force-full hour stages every family at once. These are seed-shape
         // assertions, not an aggregate memory bound or a growth limit.
         let relations = RelationsJob::new();
-        assert!(relations.slot_pool.capacity() >= 8639 * 512);
-        assert!(relations.tuples.capacity() >= 1512 * 4);
-        assert!(relations.countries.capacity() >= 439);
-        assert!(relations.metas.capacity() >= 439);
+        assert!(relations.opinions.len() >= 8639);
+        assert!(relations.tuples.len() >= 1512);
         let characters = CharactersJob::new();
         assert!(characters.log.spans.capacity() >= 300_000);
         assert!(characters.log.bytes.capacity() >= 10 << 20);

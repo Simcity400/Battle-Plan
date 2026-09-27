@@ -41,7 +41,7 @@ const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
 const CHARACTER_PARTS: usize = extended::characters::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
-pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first, slot-hour Variants); 1 division inputs copy + divisions/intel dispatch + character parts, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/variants/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
+pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first, slot-hour Variants); 1 division inputs copy + divisions/intel dispatch + character roster, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated/character role dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/variants/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
 pub const INITIAL_CAPACITIES: [usize; 9] = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
 
 /// Countries has one row per canonical slot and CountryLinks one per raw
@@ -1269,6 +1269,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if !continuous || recovery {
                 crate::portrait_changes::invalidate();
                 crate::advisor_changes::invalidate();
+                extended::intel::forget_relation_authentications();
             }
             frame.extended.prepare_hour(clock.hour, force_full);
             let state = clock.game_state as usize;
@@ -1466,6 +1467,17 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     payload,
                 }))
             };
+            // The relations context, activity and owner slice come from the
+            // real Intel pack: IntelResidual borrows it from here to its join,
+            // leaving a vacant placeholder with no rows and no selection.
+            let (relations_ctx, mut relations_selection) =
+                frame.extended.relations_pilot().begin_relations(
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    relations_refresh,
+                );
             let intel_residual_pending = queue!(acquisition::Job::IntelResidual(
                 frame.extended.take_intel_residual_request(
                     &country_snapshot,
@@ -1786,36 +1798,40 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 .set_character_activity(characters_ctx.active);
             let mut characters_pending: [Option<PendingAcquisition>; CHARACTER_PARTS] =
                 [const { None }; CHARACTER_PARTS];
-            for (part, pending) in characters_pending.iter_mut().enumerate() {
-                let active = std::array::from_fn(|index| {
+            let character_part = |part: usize| -> [bool; 6] {
+                std::array::from_fn(|index| {
                     characters_ctx.active[index] && extended::characters::PART_MASKS[part][index]
-                });
-                if characters_refresh && active.iter().any(|&value| value) {
-                    *pending = Some(queue!(acquisition::Job::Characters(
-                        acquisition::CharactersRequest {
-                            context: extended::characters::CharactersCopyContext {
-                                active,
-                                ..characters_ctx
-                            },
-                            payload: decode::acquire_characters_job(part),
-                        }
-                    )));
-                }
-            }
-            let relations_ctx = extended::intel::RelationsCopyContext {
-                base: shared.base,
-                game_state: state,
-                opinion_cap: frame.extended.relations_pilot().opinion_rows_cap(),
-                tuple_cap: frame.extended.relations_pilot().tuple_rows_cap(),
-                active: decode::RELATIONS
-                    .map(|table| replay::cadence::should_walk(table, clock.hour, force_full)),
+                })
             };
-            frame
-                .extended
-                .relations_pilot()
-                .set_relation_activity(relations_ctx.active);
+            // The roster job gathers the role census only when a role job runs.
+            let role_hour =
+                (1..CHARACTER_PARTS).any(|part| character_part(part).iter().any(|&value| value));
+            let roster_active = character_part(0);
+            if characters_refresh && roster_active.iter().any(|&value| value) {
+                characters_pending[0] = Some(queue!(acquisition::Job::Characters(
+                    acquisition::CharactersRequest {
+                        context: extended::characters::CharactersCopyContext {
+                            active: roster_active,
+                            ..characters_ctx
+                        },
+                        payload: decode::acquire_characters_job(0),
+                        roles: if role_hour {
+                            extended::characters::Roles::Gather
+                        } else {
+                            extended::characters::Roles::Independent
+                        },
+                    }
+                )));
+            }
             let relations_pending = if relations_refresh {
-                let payload = decode::acquire_relations_job();
+                let mut payload = decode::acquire_relations_job();
+                // The hour's owner slice and the family's store go with the
+                // job and come back at its join. The slice was taken from the
+                // real Intel pack before IntelResidual borrowed it.
+                payload.selection = relations_selection.take();
+                // SAFETY: only this callback takes and returns the store.
+                payload.fingerprints =
+                    Some(unsafe { take_slice_store(shared, crate::slicing::RELATIONS) });
                 Some(queue!(acquisition::Job::Relations(
                     acquisition::RawRequest {
                         countries: Arc::clone(&country_snapshot),
@@ -2213,6 +2229,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     let part = $part;
                     if let Some(pending) = characters_pending[part].take() {
                         let (request, report, failure) = completed!(pending, Characters);
+                        // Return any census loan before the roster job can recycle.
+                        drop(request.roles);
                         characters_report[part] = report;
                         let failure = failure.or(report
                             .plan_failed
@@ -2254,6 +2272,32 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 clock.hour,
                 force_full
             )));
+            // Role jobs borrow the roster's census like the portrait shares;
+            // without one they walk the roster independently.
+            let role_census = characters_payload[0]
+                .as_ref()
+                .and_then(|job| job.role_census());
+            for (part, pending) in characters_pending.iter_mut().enumerate().skip(1) {
+                let active = character_part(part);
+                if characters_refresh && active.iter().any(|&value| value) {
+                    *pending = Some(queue!(acquisition::Job::Characters(
+                        acquisition::CharactersRequest {
+                            context: extended::characters::CharactersCopyContext {
+                                active,
+                                ..characters_ctx
+                            },
+                            payload: decode::acquire_characters_job(part),
+                            roles: role_census.as_ref().map_or(
+                                extended::characters::Roles::Independent,
+                                |census| {
+                                    extended::characters::Roles::Borrow(Arc::clone(census))
+                                },
+                            ),
+                        }
+                    )));
+                }
+            }
+            drop(role_census);
             let (naval_request, report, naval_failure) = completed!(naval_pending, Naval);
             naval_report = report;
             if naval_report.raw_ok {
@@ -2429,14 +2473,22 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             let mut relations_failure = None;
             if let Some(pending) = relations_pending {
                 let (request, report, failure) = completed!(pending, Relations);
+                let (fingerprints, payload) = frame.extended.relations_pilot().join_relations(
+                    request.payload,
+                    report,
+                    failure,
+                );
+                if fingerprints.is_some() {
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe {
+                        *shared.slice_fingerprints[crate::slicing::RELATIONS].get() = fingerprints
+                    };
+                }
                 relations_report = report;
                 relations_failure = failure;
-                frame.extended.relations_pilot().relations_raw_mode =
-                    report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    relations_payload = Some(request.payload);
-                } else {
-                    decode::recycle_relations_job(request.payload);
+                match payload {
+                    Ok(payload) => relations_payload = Some(payload),
+                    Err(payload) => decode::recycle_relations_job(payload),
                 }
             }
             let (ordinary_request, _, ordinary_failure) = completed!(ordinary_pending, Ordinary);
@@ -2551,9 +2603,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             unsafe {
                 *shared.slice_fingerprints[crate::slicing::RESEARCH].get() = Some(fingerprints)
             };
-            // Only the core roster feeds portraits. Independent role and
-            // trait jobs need their verdicts here, before the typed fallback;
-            // they must not delay dispatch of unrelated map/gated/late work.
+            // Role and trait jobs need their verdicts here, before the typed
+            // fallback; they must not delay dispatch of unrelated map/gated/late work.
             for part in 1..CHARACTER_PARTS {
                 join_characters!(part);
             }
@@ -5055,7 +5106,6 @@ mod tests {
                     let expected = match cadence(table) {
                         // A sliced table reads one owner slice every hour.
                         Cadence::Hourly | Cadence::Sliced => true,
-                        Cadence::FourHourly(s) => s as i32 == hour.rem_euclid(4),
                         Cadence::Daily(s) => s as i32 == slot,
                         Cadence::Static => false,
                     };
@@ -5072,7 +5122,6 @@ mod tests {
             for table in TableId::ALL {
                 let expected = match cadence(table) {
                     Cadence::Hourly | Cadence::Sliced => 24,
-                    Cadence::FourHourly(_) => 6,
                     Cadence::Daily(_) => 1,
                     Cadence::Static => 0,
                 };

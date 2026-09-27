@@ -584,6 +584,7 @@ impl Captured {
         match family {
             crate::slicing::RESEARCH => self.governance.research_selection(),
             crate::slicing::TECHNOLOGIES => self.governance.technology_selection(),
+            crate::slicing::RELATIONS => self.intel.relations_selection(),
             _ => unreachable!("unregistered sliced family {family}"),
         }
     }

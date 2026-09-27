@@ -55,6 +55,9 @@ impl Owned {
 struct Section {
     plan: crate::snapshot_plan::SnapshotPlan,
     geometry: (usize, u32),
+    /// Entries and plan come from a loaned census, whose plan traces only
+    /// sentinels; roster passes trace the roster, views and sentinels.
+    census: bool,
     #[cfg(feature = "advisor_profile")]
     diagnostic: [u64; 5],
     current: Owned,
@@ -73,6 +76,7 @@ impl Section {
         let mut cache = Self {
             plan: crate::snapshot_plan::SnapshotPlan::new(characters * 6, characters * 96),
             geometry: (0, 0),
+            census: false,
             #[cfg(feature = "advisor_profile")]
             diagnostic: [0; 5],
             current: Owned::new(rows, bytes, characters),
@@ -145,6 +149,12 @@ impl Section {
         }
     }
     fn prepare(&mut self) {
+        if self.census {
+            // Census passes read no country; certification applies the census's.
+            self.plan.prepare();
+            self.update_charge();
+            return;
+        }
         // Country is a result value, never a selecting pointer or a validation
         // predicate. Bind its exact read occurrence to the matching character;
         // the remaining observations retain equality controls.
@@ -184,33 +194,41 @@ impl Section {
     ) {
         let roster =
             ccharacter_manager::Roster::read(memory, context.base, context.game_state).unwrap();
-        self.capture_section(
-            memory,
-            context,
-            observer,
-            roster,
-            (0, roster.count()),
-            false,
-        );
+        let geometry = (0, roster.count());
+        self.capture_section(memory, context, observer, Source::Roster { roster, geometry }, false);
     }
     fn capture_section(
         &mut self,
         memory: &impl Memory,
         context: CharactersCopyContext,
         observer: &dyn Changes,
-        roster: ccharacter_manager::Roster,
-        geometry: (usize, u32),
+        source: Source<'_>,
         count_only: bool,
     ) {
         let scope = (context.base, context.game_state);
         let before = observer.quiet();
         let counted = Counted::new(memory);
+        let same_source = || match &source {
+            Source::Roster { geometry, .. } => !self.census && self.geometry == *geometry,
+            // The census plan traces only sentinels: every occurrence, identity
+            // and map header must repeat the ones these entries were built from.
+            Source::Census { roles, range } => {
+                self.census
+                    && self.current.entries.len() == range.len()
+                    && self.current.entries.iter().zip(range.clone()).all(|(entry, index)| {
+                        let occurrence = roles.occurrence(index);
+                        entry.pointer == occurrence.pointer
+                            && entry.id == occurrence.id()
+                            && entry.header == occurrence.advisors()
+                    })
+            }
+        };
         let certified = self.valid
             && self.scope == scope
-            && self.geometry == geometry
             && !count_only
             && !observer.verify()
             && before.is_some()
+            && same_source()
             && (self.observation == before
                 || self.current.entries.iter().all(|entry| {
                     entry.revision.is_some()
@@ -231,26 +249,34 @@ impl Section {
                 });
                 self.plan.invalidate();
             } else {
-                for entry in &self.current.entries {
-                    if let Some(offset) = entry.country_offset {
-                        let Some(bytes) = self.plan.completed_bytes(offset, 4) else {
-                            self.valid = false;
-                            self.result = ReadResult::rows(Outcome::Unavailable {
-                                reason: "advisor country binding unavailable",
-                            });
-                            self.plan.invalidate();
-                            return;
-                        };
-                        let country = u32::from_le_bytes(bytes.try_into().unwrap());
-                        let rows = &mut self.current.rows[entry.rows.clone()];
-                        // Every role in this occurrence has the same country.
-                        // Avoid making unchanged row cache lines writable on
-                        // each validation pass (decode may have read them on
-                        // another core since the previous acquisition).
-                        if rows.first().is_some_and(|row| row.country != country) {
-                            for row in rows {
-                                row.country = country;
-                            }
+                for (position, entry) in self.current.entries.iter().enumerate() {
+                    let country = match &source {
+                        Source::Census { roles, range } => {
+                            u32::from_le_bytes(roles.occurrence(range.start + position).country())
+                        }
+                        Source::Roster { .. } => {
+                            let Some(offset) = entry.country_offset else {
+                                continue;
+                            };
+                            let Some(bytes) = self.plan.completed_bytes(offset, 4) else {
+                                self.valid = false;
+                                self.result = ReadResult::rows(Outcome::Unavailable {
+                                    reason: "advisor country binding unavailable",
+                                });
+                                self.plan.invalidate();
+                                return;
+                            };
+                            u32::from_le_bytes(bytes.try_into().unwrap())
+                        }
+                    };
+                    let rows = &mut self.current.rows[entry.rows.clone()];
+                    // Every role in this occurrence has the same country.
+                    // Avoid making unchanged row cache lines writable on
+                    // each validation pass (decode may have read them on
+                    // another core since the previous acquisition).
+                    if rows.first().is_some_and(|row| row.country != country) {
+                        for row in rows {
+                            row.country = country;
                         }
                     }
                 }
@@ -261,7 +287,11 @@ impl Section {
             }
             return;
         }
-        self.geometry = geometry;
+        self.geometry = match &source {
+            Source::Roster { geometry, .. } => *geometry,
+            Source::Census { .. } => (0, 0),
+        };
+        self.census = matches!(source, Source::Census { .. });
         std::mem::swap(&mut self.current, &mut self.previous);
         self.current.entries.clear();
         self.counts = Counts::default();
@@ -271,7 +301,7 @@ impl Section {
         let observed = self.plan.view(&counted);
         let prefetched = Prefetched {
             memory: &observed,
-            geometry,
+            geometry: self.geometry,
         };
         let memory = &prefetched;
         let mut batch = if count_only {
@@ -279,133 +309,202 @@ impl Section {
         } else {
             Batch::new(&mut self.current.rows, &mut self.current.bytes)
         };
-        self.characters = roster.count() as usize;
+        self.characters = match &source {
+            Source::Roster { roster, .. } => roster.count() as usize,
+            Source::Census { range, .. } => range.len(),
+        };
         let result = (|| {
-            let mut cursor = roster.cursor();
-            let mut page = ccharacter_manager::ViewPage::default();
             let mut index = 0;
-            while batch.active() {
-                let view = loop {
-                    if let Some(view) = page.next() {
-                        break Some(view?);
-                    }
-                    if !cursor.refill_page(memory, &mut page, [false, false, false, true])? {
-                        break None;
-                    }
-                };
-                let Some(view) = view else {
-                    break;
-                };
-                let character = view.entry()?;
-                let map = cadvisor::MapView::read(&view, character.pointer)?;
-                let previous = self.previous.entries.get(index);
-                // A quiet whole-domain revision avoids one hash-table lookup
-                // per unchanged character. Identity/controls remain fresh.
-                let revision = if reuse
-                    && self.observation == before
-                    && previous.is_some_and(|entry| {
-                        entry.pointer == character.pointer
-                            && entry.id == character.id
-                            && entry.revision.is_some()
-                    }) {
-                    previous.unwrap().revision
-                } else {
-                    observer.revision(character.pointer + ccharacter::ADVISOR_MAP_HEAD)
-                };
-                let hit = reuse
-                    && batch.unread == 0
-                    && previous.is_some_and(|entry| {
-                        entry.pointer == character.pointer
-                            && entry.id == character.id
-                            && entry.header == map.header
-                            && entry.sentinel == map.sentinel
-                            && revision.is_some()
-                            && entry.revision == revision
-                            && entry.rows.len() <= batch.rows.len() - batch.len
-                            && entry.bytes.len() <= batch.bytes.len() - batch.bytes_len
-                    });
-                let row_start = batch.len;
-                let byte_start = batch.bytes_len;
-                if hit && !observer.verify() {
-                    let entry = previous.unwrap();
-                    let rows = entry.rows.len();
-                    let bytes = entry.bytes.len();
-                    batch.bytes[byte_start..byte_start + bytes]
-                        .copy_from_slice(&self.previous.bytes[entry.bytes.clone()]);
-                    for (target, source) in batch.rows[row_start..row_start + rows]
-                        .iter_mut()
-                        .zip(&self.previous.rows[entry.rows.clone()])
-                    {
-                        *target = *source;
-                        target.country = character.country;
-                        target.key_start = source.key_start - entry.bytes.start + byte_start;
-                        target.idea_start = source.idea_start - entry.bytes.start + byte_start;
-                        target.slot_start = source.slot_start - entry.bytes.start + byte_start;
-                    }
-                    batch.len += rows;
-                    batch.bytes_len += bytes;
-                    batch.required_bytes = batch
-                        .required_bytes
-                        .checked_add(bytes)
-                        .ok_or("character byte count overflow")?;
-                    self.counts.reused += 1;
-                    self.counts.roles += rows as u64;
-                } else {
-                    batch.append(
-                        |rows, bytes| {
-                            // Role payloads cannot select another character's
-                            // controls. Their future reuse is certified by the
-                            // watched revision, never by these omitted reads.
-                            let _payload = self.plan.untracked_reads();
-                            cadvisor::walk_entry(&map, context.base, character, rows, bytes).into()
-                        },
-                        |row, offset| {
-                            relocate(&mut row.key_start, offset)
-                                && relocate(&mut row.idea_start, offset)
-                                && relocate(&mut row.slot_start, offset)
-                        },
-                    );
-                    self.counts.read += 1;
-                    if hit {
-                        self.counts.verified += 1;
-                        let old = previous.unwrap();
-                        let same = batch.failure.is_none()
-                            && batch.unread == 0
-                            && batch.len - row_start == old.rows.len()
-                            && batch.bytes[byte_start..batch.bytes_len]
-                                == self.previous.bytes[old.bytes.clone()]
-                            && batch.rows[row_start..batch.len]
-                                .iter()
-                                .zip(&self.previous.rows[old.rows.clone()])
-                                .all(|(new, old_row)| {
-                                    let mut old_row = *old_row;
-                                    old_row.country = character.country;
-                                    old_row.key_start =
-                                        old_row.key_start - old.bytes.start + byte_start;
-                                    old_row.idea_start =
-                                        old_row.idea_start - old.bytes.start + byte_start;
-                                    old_row.slot_start =
-                                        old_row.slot_start - old.bytes.start + byte_start;
-                                    *new == old_row
-                                });
-                        if !same {
-                            self.counts.mismatches += 1;
+            // One occurrence: fresh revision, owned reuse or a fresh walk.
+            macro_rules! observe {
+                ($character:expr, $map:expr) => {{
+                    let character = $character;
+                    let map = $map;
+                    let previous = self.previous.entries.get(index);
+                    // A quiet whole-domain revision avoids one hash-table lookup
+                    // per unchanged character. Identity/controls remain fresh.
+                    let revision = if reuse
+                        && self.observation == before
+                        && previous.is_some_and(|entry| {
+                            entry.pointer == character.pointer
+                                && entry.id == character.id
+                                && entry.revision.is_some()
+                        }) {
+                        previous.unwrap().revision
+                    } else {
+                        observer.revision(character.pointer + ccharacter::ADVISOR_MAP_HEAD)
+                    };
+                    let hit = reuse
+                        && batch.unread == 0
+                        && previous.is_some_and(|entry| {
+                            entry.pointer == character.pointer
+                                && entry.id == character.id
+                                && entry.header == map.header
+                                && entry.sentinel == map.sentinel
+                                && revision.is_some()
+                                && entry.revision == revision
+                                && entry.rows.len() <= batch.rows.len() - batch.len
+                                && entry.bytes.len() <= batch.bytes.len() - batch.bytes_len
+                        });
+                    let row_start = batch.len;
+                    let byte_start = batch.bytes_len;
+                    if hit && !observer.verify() {
+                        let entry = previous.unwrap();
+                        let rows = entry.rows.len();
+                        let bytes = entry.bytes.len();
+                        batch.bytes[byte_start..byte_start + bytes]
+                            .copy_from_slice(&self.previous.bytes[entry.bytes.clone()]);
+                        for (target, source) in batch.rows[row_start..row_start + rows]
+                            .iter_mut()
+                            .zip(&self.previous.rows[entry.rows.clone()])
+                        {
+                            *target = *source;
+                            target.country = character.country;
+                            target.key_start = source.key_start - entry.bytes.start + byte_start;
+                            target.idea_start = source.idea_start - entry.bytes.start + byte_start;
+                            target.slot_start = source.slot_start - entry.bytes.start + byte_start;
+                        }
+                        batch.len += rows;
+                        batch.bytes_len += bytes;
+                        batch.required_bytes = batch
+                            .required_bytes
+                            .checked_add(bytes)
+                            .ok_or("character byte count overflow")?;
+                        self.counts.reused += 1;
+                        self.counts.roles += rows as u64;
+                    } else {
+                        batch.append(
+                            |rows, bytes| {
+                                // Role payloads cannot select another character's
+                                // controls. Their future reuse is certified by the
+                                // watched revision, never by these omitted reads.
+                                let _payload = self.plan.untracked_reads();
+                                cadvisor::walk_entry(&map, context.base, character, rows, bytes).into()
+                            },
+                            |row, offset| {
+                                relocate(&mut row.key_start, offset)
+                                    && relocate(&mut row.idea_start, offset)
+                                    && relocate(&mut row.slot_start, offset)
+                            },
+                        );
+                        self.counts.read += 1;
+                        if hit {
+                            self.counts.verified += 1;
+                            let old = previous.unwrap();
+                            let same = batch.failure.is_none()
+                                && batch.unread == 0
+                                && batch.len - row_start == old.rows.len()
+                                && batch.bytes[byte_start..batch.bytes_len]
+                                    == self.previous.bytes[old.bytes.clone()]
+                                && batch.rows[row_start..batch.len]
+                                    .iter()
+                                    .zip(&self.previous.rows[old.rows.clone()])
+                                    .all(|(new, old_row)| {
+                                        let mut old_row = *old_row;
+                                        old_row.country = character.country;
+                                        old_row.key_start =
+                                            old_row.key_start - old.bytes.start + byte_start;
+                                        old_row.idea_start =
+                                            old_row.idea_start - old.bytes.start + byte_start;
+                                        old_row.slot_start =
+                                            old_row.slot_start - old.bytes.start + byte_start;
+                                        *new == old_row
+                                    });
+                            if !same {
+                                self.counts.mismatches += 1;
+                            }
                         }
                     }
+                    if self.current.entries.len() < self.current.entries.capacity() {
+                        self.current.entries.push(Entry {
+                            pointer: character.pointer,
+                            id: character.id,
+                            country_offset: None,
+                            header: map.header,
+                            sentinel: map.sentinel,
+                            revision,
+                            rows: row_start..batch.len,
+                            bytes: byte_start..batch.bytes_len,
+                        });
+                    }
+                    index += 1;
+                }};
+            }
+            match source {
+                Source::Roster { roster, .. } => {
+                    let mut cursor = roster.cursor();
+                    let mut page = ccharacter_manager::ViewPage::default();
+                    while batch.active() {
+                        let view = loop {
+                            if let Some(view) = page.next() {
+                                break Some(view?);
+                            }
+                            if !cursor.refill_page(memory, &mut page, [false, false, false, true])? {
+                                break None;
+                            }
+                        };
+                        let Some(view) = view else {
+                            break;
+                        };
+                        let character = view.entry()?;
+                        observe!(character, cadvisor::MapView::read(&view, character.pointer)?);
+                    }
                 }
-                if self.current.entries.len() < self.current.entries.capacity() {
-                    self.current.entries.push(Entry {
-                        pointer: character.pointer,
-                        id: character.id,
-                        country_offset: None,
-                        header: map.header,
-                        sentinel: map.sentinel,
-                        revision,
-                        rows: row_start..batch.len,
-                        bytes: byte_start..batch.bytes_len,
-                    });
+                Source::Census { roles, range } => {
+                    use census::{SENTINEL, SENTINEL_BATCH};
+                    let mut heads = [0; SENTINEL_BATCH];
+                    let mut sentinels = [0; SENTINEL_BATCH * SENTINEL];
+                    let mut next = range.start;
+                    while next < range.end && batch.active() {
+                        // Sentinels are gathered ahead of their maps. A header that
+                        // fails before its sentinel read, or whose sentinel lies
+                        // inside the character view, ends the batch.
+                        let mut staged = 0;
+                        while staged < SENTINEL_BATCH && next + staged < range.end {
+                            let occurrence = roles.occurrence(next + staged);
+                            match census::map_head(occurrence.advisors()) {
+                                Some((head, _))
+                                    if !census::inside_view(occurrence.pointer, head, SENTINEL) =>
+                                {
+                                    heads[staged] = head;
+                                }
+                                _ => break,
+                            }
+                            staged += 1;
+                        }
+                        let completed =
+                            census::gather_sentinels(&observed, &heads[..staged], &mut sentinels);
+                        let end = if staged == SENTINEL_BATCH {
+                            next + staged
+                        } else {
+                            range.end.min(next + staged + 1)
+                        };
+                        for position in next..end {
+                            if !batch.active() {
+                                break;
+                            }
+                            let occurrence = roles.occurrence(position);
+                            let view = ccharacter::View::acquired(
+                                memory,
+                                context.base,
+                                occurrence.identity(roles.historical),
+                                occurrence.fields([false, false, false, true]),
+                            )?;
+                            let character = view.entry()?;
+                            let slot = position - next;
+                            let map = if slot < staged {
+                                let gathered = (slot < completed).then(|| {
+                                    sentinels[slot * SENTINEL..][..SENTINEL].try_into().unwrap()
+                                });
+                                cadvisor::MapView::with_sentinel(&view, character.pointer, |_| gathered)?
+                            } else {
+                                cadvisor::MapView::read(&view, character.pointer)?
+                            };
+                            observe!(character, map);
+                        }
+                        next = end;
+                    }
                 }
-                index += 1;
             }
             Ok::<_, &'static str>(())
         })();
@@ -445,6 +544,20 @@ impl Section {
     }
 }
 
+/// Where a section's occurrences come from.
+enum Source<'a> {
+    /// One roster vector, read with its character views.
+    Roster {
+        roster: ccharacter_manager::Roster,
+        geometry: (usize, u32),
+    },
+    /// Occurrences of the roster job's census loaned in this callback.
+    Census {
+        roles: census::Admitted<'a>,
+        range: std::ops::Range<usize>,
+    },
+}
+
 /// Independent historical/generated certificates keep generated roster growth
 /// from invalidating the large historical pass. Roots are acquired once first.
 #[derive(Debug)]
@@ -479,11 +592,14 @@ impl Cache {
             section.prepare();
         }
     }
+    /// A loaned census supplies each section's occurrences, identities,
+    /// countries and map headers; sentinels and role payloads stay fresh.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
         context: CharactersCopyContext,
         observer: &dyn Changes,
+        loaned: Option<census::Admitted<'_>>,
     ) {
         self.counts = Counts::default();
         self.raw_bytes = 0;
@@ -495,21 +611,24 @@ impl Cache {
         #[cfg(feature = "advisor_profile")]
         let mut measurement_iter = measurements.iter_mut();
         let result = (|| {
-            let roster =
-                ccharacter_manager::Roster::read(&counted, context.base, context.game_state)?;
+            let sources = match loaned {
+                Some(roles) => [
+                    Source::Census { roles, range: 0..roles.historical },
+                    Source::Census { roles, range: roles.historical..roles.len() },
+                ],
+                None => ccharacter_manager::Roster::read(&counted, context.base, context.game_state)?
+                    .sections()
+                    .map(|(array, roster)| Source::Roster {
+                        roster,
+                        geometry: (array.data, array.count),
+                    }),
+            };
             let mut len = 0;
             let mut unread = 0_u32;
-            for (section, (array, roster)) in self.sections.iter_mut().zip(roster.sections()) {
+            for (section, source) in self.sections.iter_mut().zip(sources) {
                 #[cfg(feature = "advisor_profile")]
                 let stamp = profile::Stamp::start();
-                section.capture_section(
-                    memory,
-                    context,
-                    observer,
-                    roster,
-                    (array.data, array.count),
-                    unread != 0,
-                );
+                section.capture_section(memory, context, observer, source, unread != 0);
                 #[cfg(feature = "advisor_profile")]
                 {
                     let elapsed = stamp.finish();
@@ -773,6 +892,17 @@ impl<M: Memory> Memory for Counted<'_, M> {
         );
         copied
     }
+    fn copy_records(
+        &self,
+        sources: engine::memory::RecordSources<'_>,
+        layout: &engine::memory::RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        let copied = self.memory.copy_records(sources, layout, destination);
+        self.bytes
+            .set(self.bytes.get() + layout.completed_bytes(copied) as u64);
+        copied
+    }
 }
 
 #[cfg(test)]
@@ -878,17 +1008,17 @@ mod tests {
         let bytes = super::super::tests::section_fixture();
         let mut observer = Observer::new();
         let mut cache = Cache::new();
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         assert_eq!(cache.counts.read, 2);
         cache.prepare();
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         assert_eq!(cache.counts.planned, 2);
         assert_outer_fresh(&cache, &bytes);
         observer.enabled = false;
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         cache.prepare();
         observer.enabled = true;
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         assert_eq!(cache.counts.planned, 0);
         assert_outer_fresh(&cache, &bytes);
     }
@@ -910,7 +1040,7 @@ mod tests {
         let mut cache = Cache::new();
         for idea in [b"first".as_slice(), b"second", b"third"] {
             literal(&mut bytes, kit::ADV_ROLE + cadvisor::IDEA_TOKEN, idea);
-            cache.capture(&kit::memory(&bytes), context(), &Unwatched);
+            cache.capture(&kit::memory(&bytes), context(), &Unwatched, None);
             assert_eq!(cache.counts.planned, 0);
             assert_eq!(cache.counts.read, 2);
             assert_outer_fresh(&cache, &bytes);
@@ -919,7 +1049,7 @@ mod tests {
     }
     fn warm(cache: &mut Cache, bytes: &[u8], observer: &Observer) {
         for _ in 0..3 {
-            cache.capture(&kit::memory(bytes), context(), observer);
+            cache.capture(&kit::memory(bytes), context(), observer, None);
             assert_outer_fresh(cache, bytes);
             cache.prepare();
         }
@@ -939,7 +1069,7 @@ mod tests {
             2,
         );
         pointer(&mut bytes, 0x8808, 0x2300);
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         assert_eq!(cache.sections[0].counts.planned, 1);
         assert_eq!(cache.sections[1].counts.planned, 0);
         assert_outer_fresh(&cache, &bytes);
@@ -949,23 +1079,23 @@ mod tests {
             CHARACTERS[0] + ccharacter::COUNTRY,
             99_u32.to_le_bytes(),
         );
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         assert_eq!(cache.sections[0].counts.planned, 1);
         assert_eq!(cache.sections[1].counts.planned, 1);
         assert_outer_fresh(&cache, &bytes);
         warm(&mut cache, &bytes, &observer);
         literal(&mut bytes, kit::ADV_ROLE + cadvisor::IDEA_TOKEN, b"changed");
         observer.change(CHARACTERS[0]);
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         assert_eq!(cache.sections[0].counts.read, 1);
         assert_eq!(cache.sections[1].counts.planned, 1);
         assert_outer_fresh(&cache, &bytes);
         pointer(&mut bytes, 0x8800, CHARACTERS[0]);
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         assert_outer_fresh(&cache, &bytes);
         warm(&mut cache, &bytes, &observer);
         observer.epoch += 1;
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         assert_eq!(cache.counts.reused, 0);
         assert_outer_fresh(&cache, &bytes);
     }
@@ -977,7 +1107,7 @@ mod tests {
         let mut cache = Cache::new();
         warm(&mut cache, &bytes, &observer);
         let trace = WaveMemory::new(&bytes, None);
-        cache.capture(&trace, context(), &observer);
+        cache.capture(&trace, context(), &observer, None);
         assert_eq!(cache.counts.planned, 2);
         let faults: std::collections::BTreeSet<_> = trace
             .reads
@@ -988,7 +1118,7 @@ mod tests {
         for fault in faults {
             warm(&mut cache, &bytes, &observer);
             let source = WaveMemory::new(&bytes, Some(fault));
-            cache.capture(&source, context(), &observer);
+            cache.capture(&source, context(), &observer, None);
             assert!(
                 matches!(cache.result.outcome, Outcome::Unavailable { .. }),
                 "{fault:x}"
@@ -1021,7 +1151,7 @@ mod tests {
             let mut cache = Cache::new();
             warm(&mut cache, &original, &observer);
             let baseline = WaveMemory::new(&original, None);
-            cache.capture(&baseline, context(), &observer);
+            cache.capture(&baseline, context(), &observer, None);
             assert_eq!(cache.sections[0].counts.planned, 1);
             let expected_reads = baseline.reads.borrow().clone();
             let country_index = expected_reads
@@ -1044,7 +1174,7 @@ mod tests {
             // invalidating the map. The alternate case partially copies and fails.
             bytes[sentinel - ADDRESS + engine::msvc_tree_node::COLOR] ^= 1;
             let source = WaveMemory::new(&bytes, fault.then_some(sentinel));
-            cache.capture(&source, context(), &observer);
+            cache.capture(&source, context(), &observer, None);
             assert_eq!(cache.sections[0].counts.planned, 0);
             let reads = source.reads.borrow();
             assert_eq!(reads[..=stop_index], expected_reads[..=stop_index]);
@@ -1112,7 +1242,7 @@ mod tests {
         let mut cache = Cache::new();
         warm(&mut cache, &bytes, &observer);
         let baseline = WaveMemory::new(&bytes, None);
-        cache.capture(&baseline, context(), &observer);
+        cache.capture(&baseline, context(), &observer, None);
         let expected_reads = baseline.reads.borrow().clone();
         let country_read = (ADDRESS + CHARACTERS[0] + ccharacter::COUNTRY, 4);
         assert_eq!(
@@ -1125,7 +1255,7 @@ mod tests {
 
         for countries in [[11, 22, 33], [44, 55, 66]] {
             let source = Countries::new(&bytes, countries);
-            cache.capture(&source, context(), &observer);
+            cache.capture(&source, context(), &observer, None);
             assert_eq!(cache.sections[0].counts.planned, 1);
             assert_eq!(cache.counts.read, 0);
             assert_eq!(source.next.get(), 3);
@@ -1172,7 +1302,7 @@ mod tests {
         let observer = Observer::new();
         let mut cache = Cache::new();
         cache.sections[0] = Section::with_capacity(0, 0, 8);
-        cache.capture(&kit::memory(&bytes), context(), &observer);
+        cache.capture(&kit::memory(&bytes), context(), &observer, None);
         assert!(matches!(
             cache.result.outcome,
             Outcome::Truncated {
@@ -1183,7 +1313,7 @@ mod tests {
         assert_eq!(cache.sections[1].result.outcome.len(), 0);
         for _ in 0..3 {
             cache.grow();
-            cache.capture(&kit::memory(&bytes), context(), &observer);
+            cache.capture(&kit::memory(&bytes), context(), &observer, None);
         }
         assert_outer_fresh(&cache, &bytes);
         warm(&mut cache, &bytes, &observer);

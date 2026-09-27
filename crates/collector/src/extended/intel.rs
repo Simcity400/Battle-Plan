@@ -5,6 +5,7 @@ use crate::{
     raw::RawLog,
     read_accounting,
     sampling::qpc,
+    slicing::{SliceFingerprints, SliceSelection},
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_vec},
 };
@@ -283,12 +284,6 @@ pub struct Captured {
     incoming_actions: CaptureRows<incoming_diplomatic_action_queue::Row>,
     relation_opinions: CaptureRows<crelation_status::OpinionRow>,
     relation_tuples: CaptureRows<crelation_status::TupleRow>,
-    /// Decode-only scratch, rebuilt from the current frozen census. Entries
-    /// are first country indices, never pointers retained from an earlier job.
-    relation_country_index: Vec<usize>,
-    /// Decode-only scratch: implicit (unstaged) matrix indices whose own
-    /// target check fails, in ascending order, rebuilt for every payload.
-    relation_implicit_faults: Vec<(u32, &'static str)>,
     /// Dense country authentication cells for the typed relation walk, sized
     /// by `grow` from the census and link headers the last walk observed.
     relation_resolver: crelation_status::Resolver,
@@ -305,12 +300,15 @@ pub struct Captured {
     variable_names: Arena<u8>,
     tokens: Arena<u32>,
     flag_scratch: Vec<cscript_flag::Row>,
-    /// Raw-copy split gate for the relations family. Set by the game
-    /// thread on refresh hours with a valid raw payload; `capture` then skips
-    /// the typed relations walks and the decode worker fills these rows before
-    /// the ready handoff. Preserved across `reset` (set per refresh, cleared
+    /// Worker-payload gate for the relations family. Set by the game thread
+    /// on refresh hours with a valid payload; `capture` then skips the typed
+    /// relations walk and the decode worker installs these rows before the
+    /// ready handoff. Preserved across `reset` (set per refresh, cleared
     /// by the worker after decode).
     pub(crate) relations_raw_mode: bool,
+    /// Which owners this hour's relation rows cover (`slicing::RELATIONS`).
+    /// Loaned to the relations job from dispatch to its join.
+    relations_selection: SliceSelection,
     /// Raw-copy split gate for the hourly capitulation table (local index 0).
     /// Set by the game thread every hour with a valid raw payload; `capture`
     /// then skips the typed capitulation walk and the decode worker fills
@@ -379,8 +377,6 @@ impl Captured {
             incoming_actions: CaptureRows::new(capacity.rows[12]),
             relation_opinions: CaptureRows::new(capacity.rows[13]),
             relation_tuples: CaptureRows::new(capacity.rows[14]),
-            relation_country_index: Vec::new(),
-            relation_implicit_faults: Vec::new(),
             relation_resolver: crelation_status::Resolver::default(),
             subject_snapshot: cwar_relation::OwnedSnapshotScratch::default(),
             country_intel,
@@ -392,9 +388,106 @@ impl Captured {
             tokens: Arena::new(capacity.tokens),
             flag_scratch: vec![cscript_flag::Row::default(); capacity.rows[7]],
             relations_raw_mode: false,
+            relations_selection: SliceSelection::new(capacity.rows[13] != 0),
             relation_active: [false; 2],
             capitulation_raw_mode: false,
         }
+    }
+
+    /// The owners whose relation rows this frame's read replaced.
+    pub(crate) fn relations_selection(&self) -> &SliceSelection {
+        &self.relations_selection
+    }
+
+    /// Start this hour's relations read and loan its selection to the job.
+    /// Allocation-free: the pack keeps a placeholder until the join.
+    pub(crate) fn take_relations_selection(
+        &mut self,
+        hour: i32,
+        force_full: bool,
+    ) -> SliceSelection {
+        self.relations_selection.reset(hour, force_full);
+        std::mem::replace(&mut self.relations_selection, SliceSelection::new(false))
+    }
+
+    /// Return the job's selection at its join, before any view or publication.
+    pub(crate) fn restore_relations_selection(&mut self, selection: SliceSelection) {
+        self.relations_selection = selection;
+    }
+
+    /// Before IntelResidual borrows this pack: the relations job's context
+    /// (row capacities, activity) and, on a refresh hour, this hour's owner
+    /// slice. During the loan the frame holds a vacant placeholder with no rows
+    /// and no selection storage, so this must run first.
+    pub(crate) fn begin_relations(
+        &mut self,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        refresh: bool,
+    ) -> (RelationsCopyContext, Option<SliceSelection>) {
+        let context = RelationsCopyContext {
+            base,
+            game_state,
+            opinion_cap: self.opinion_rows_cap(),
+            tuple_cap: self.tuple_rows_cap(),
+            active: [TABLES[13], TABLES[14]]
+                .map(|table| replay::cadence::should_walk(table, hour, force_full)),
+            epoch: relation_epoch(),
+        };
+        self.set_relation_activity(context.active);
+        let selection = refresh.then(|| self.take_relations_selection(hour, force_full));
+        (context, selection)
+    }
+
+    /// The relations join as `acquire` runs it, after IntelResidual returned
+    /// this pack: take back the slice and return the store (`end_relations`)
+    /// and set the raw-mode gate. `Ok` is a payload to publish. `Err` is one
+    /// to recycle: after a short payload the typed fallback reads the tables
+    /// from the returned slice; after a failure (a panicked or stopped job)
+    /// the gate keeps the typed capture off them, and
+    /// `fail_relations_capture` publishes them unavailable with no further
+    /// native read.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn join_relations(
+        &mut self,
+        mut job: RelationsJob,
+        report: RelationsCopyReport,
+        failure: Option<&'static str>,
+    ) -> (
+        Option<Box<SliceFingerprints>>,
+        Result<RelationsJob, RelationsJob>,
+    ) {
+        // A read not published whole (failed, truncated or left to the typed
+        // fallback) is read again at the next hour.
+        let published = report.raw_ok && failure.is_none() && job.published();
+        let fingerprints = self.end_relations(&mut job, published);
+        self.relations_raw_mode = report.raw_ok || failure.is_some();
+        let payload = if report.raw_ok && failure.is_none() {
+            Ok(job)
+        } else {
+            Err(job)
+        };
+        (fingerprints, payload)
+    }
+
+    /// At the relations join, after IntelResidual returned this pack: take
+    /// back the job's owner slice and return its fingerprint store. A read not
+    /// `published` whole is read again at the next hour.
+    pub(crate) fn end_relations(
+        &mut self,
+        job: &mut RelationsJob,
+        published: bool,
+    ) -> Option<Box<SliceFingerprints>> {
+        let mut fingerprints = job.fingerprints.take();
+        if let Some(selection) = job.selection.take() {
+            if !published && let Some(fingerprints) = fingerprints.as_deref_mut() {
+                selection.invalidate(fingerprints);
+            }
+            self.restore_relations_selection(selection);
+        }
+        fingerprints
     }
 
     pub fn reset(&mut self) {
@@ -442,8 +535,6 @@ impl Captured {
             + self.incoming_actions.allocated_bytes()
             + self.relation_opinions.allocated_bytes()
             + self.relation_tuples.allocated_bytes()
-            + self.relation_country_index.capacity() * size_of::<usize>()
-            + self.relation_implicit_faults.capacity() * size_of::<(u32, &'static str)>()
             + self.relation_resolver.allocated_bytes()
             + self.subject_snapshot.allocated_bytes()
             + self.subject_names.allocated_bytes()
@@ -750,6 +841,8 @@ impl Captured {
                 &mut self.relation_tuples.rows,
                 [active[13], active[14]],
                 &mut self.relation_resolver,
+                &mut crelation_status::Authentication::default(),
+                |owner| self.relations_selection.contains(owner),
             );
             if active[13] {
                 self.relation_opinions.outcome =
@@ -1543,238 +1636,228 @@ fn pointer(memory: &impl Memory, root: usize, offset: usize) -> Result<usize, &'
 }
 
 // ===========================================================================
-// Relations copy/decode split (family 1: opinions + tuples).
+// Relations job (RelationOpinions, RelationTuples).
 //
-// Acquisition (`copy_relations_refresh`): raw copies only. It uses
-// the factored engine `copy_*` helpers (`copy_slots`, `copy_auth`,
-// `copy_rest`) plus plain roster-structure reads (country enumeration,
-// diplomacy pointers, matrix/serializable headers, pointer pages) to discover
-// what to copy. No vtable, backlink, target, type, ownership or ordering
-// validation happens here; discovery interprets only already-copied bytes to
-// find the next spans (serializable headers for vector bounds, auth bytes
-// best-effort for rest-copy gating). Every span is recorded with its success
-// flag, so decode reproduces identical faults with no live access. Rest bytes
-// are copied for every serializable element (including skipped war/subject);
-// decode ignores rest for skipped elements exactly like the typed walk, which
-// never reads them.
-//
-// Decode worker (`Captured::decode_relations_payload`): replays the same
-// validations as `crelation_status::walk` through the factored `decode_*`
-// helpers (`decode_slot`, `decode_auth`, `decode_rest`,
-// `Array::from_header`) into the identical typed rows and outcomes.
-// Unavailable outcomes discard rows exactly like the typed walk, so any
-// recorded fault short-circuits to the same reason.
-//
+// The worker runs the typed walk (`crelation_status::walk_with`) into the
+// job's own rows; the decode worker copies them into the pack. One shared
+// store keeps the walk's status authentications between refreshes, so a warm
+// refresh reads each status's opinion alone; `forget_relation_authentications`
+// drops them wherever the game state may have been rebuilt.
 // ===========================================================================
 
-/// Frozen country identity for decode-side resolution without live access.
-/// Built once per pass from the game-thread country enumeration, which the
-/// typed walk also performs; decode looks up targets/endpoints by raw id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CountrySnap {
-    pub slot: u32,
-    pub pointer: usize,
-    pub id: u32,
-    pub canonical_slot: u32,
+/// The status authentications every relations job shares. The store holds one
+/// entry per status (12 bytes: 27 MB at 1,500 countries), so pooled jobs
+/// borrow the one store rather than each keeping their own. A job takes it at
+/// its refresh and returns it, grown off the game thread, when decode releases
+/// the job. A refresh that finds it lent authenticates every status, which
+/// yields the same rows.
+struct SharedAuthentication {
+    auth: crelation_status::Authentication,
+    epoch: u64,
+    charge: crate::raw_memory::Charge,
 }
 
-/// Exact completion of one tuple's auth fields. Semantic errors stay in the
-/// complete auth bytes and are interpreted in chunk order by the decoder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum TupleAuthRead {
-    Complete,
-    AddressOverflow,
-    VtableUnreadable,
-    TypeUnreadable,
+enum AuthenticationSlot {
+    Unmade,
+    Home(SharedAuthentication),
+    Lent,
 }
 
-impl TupleAuthRead {
-    fn reason(self) -> Option<&'static str> {
-        match self {
-            Self::Complete => None,
-            Self::AddressOverflow => Some("relation field address overflow"),
-            Self::VtableUnreadable => Some("relation vtable unreadable"),
-            Self::TypeUnreadable => Some("relation type word unreadable"),
+type AuthenticationStore = std::sync::Mutex<AuthenticationSlot>;
+
+#[cfg_attr(test, allow(dead_code))]
+static RELATION_AUTHENTICATION: AuthenticationStore =
+    std::sync::Mutex::new(AuthenticationSlot::Unmade);
+
+/// `[broken proofs, refreshes that found the store lent]` since attach.
+static RELATION_AUTHENTICATION_COUNTS: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
+pub(crate) fn relation_authentication_diagnostics() -> serde_json::Value {
+    use std::sync::atomic::Ordering::Relaxed;
+    serde_json::json!({
+        "broken_proofs": RELATION_AUTHENTICATION_COUNTS[0].load(Relaxed),
+        "store_lent": RELATION_AUTHENTICATION_COUNTS[1].load(Relaxed),
+    })
+}
+
+/// Tests keep a private store per job, so parallel tests never share one.
+#[cfg(not(test))]
+fn default_authentication_store() -> &'static AuthenticationStore {
+    &RELATION_AUTHENTICATION
+}
+
+#[cfg(test)]
+fn default_authentication_store() -> &'static AuthenticationStore {
+    Box::leak(Box::new(std::sync::Mutex::new(AuthenticationSlot::Unmade)))
+}
+
+/// A borrowed store, returned to its slot when dropped.
+struct LentAuthentication {
+    store: &'static AuthenticationStore,
+    shared: Option<SharedAuthentication>,
+}
+
+impl LentAuthentication {
+    /// Never blocks and never allocates: the callback may call it.
+    fn borrow(store: &'static AuthenticationStore) -> Option<Self> {
+        let mut slot = store.try_lock().ok()?;
+        let shared = match std::mem::replace(&mut *slot, AuthenticationSlot::Lent) {
+            AuthenticationSlot::Unmade => SharedAuthentication {
+                auth: crelation_status::Authentication::default(),
+                epoch: 0,
+                charge: crate::raw_memory::Charge::default(),
+            },
+            AuthenticationSlot::Home(shared) => shared,
+            AuthenticationSlot::Lent => return None,
+        };
+        Some(Self {
+            store,
+            shared: Some(shared),
+        })
+    }
+
+    fn shared(&mut self) -> &mut SharedAuthentication {
+        self.shared.as_mut().expect("present until dropped")
+    }
+}
+
+impl Drop for LentAuthentication {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.take()
+            && let Ok(mut slot) = self.store.lock()
+        {
+            *slot = AuthenticationSlot::Home(shared);
         }
     }
 }
 
-/// Exact completion of one tuple's rest fields. Only complete records may
-/// supply decoded endpoints or rows; the failing field retains its own reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum TupleRestRead {
-    Complete,
-    NotRequested,
-    AddressOverflow,
-    FirstCountryUnreadable,
-    SecondCountryUnreadable,
-    StartHourUnreadable,
-    EndHourUnreadable,
-    CancelUnreadable,
-    RetiredUnreadable,
+/// Bumped on every load, gap or recovery; a job whose authentications carry
+/// an older value forgets them before walking.
+static RELATION_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The world may have been rebuilt: no stored authentication may be reused.
+pub(crate) fn forget_relation_authentications() {
+    RELATION_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-impl TupleRestRead {
-    fn reason(self) -> Option<&'static str> {
-        match self {
-            Self::Complete => None,
-            Self::NotRequested | Self::FirstCountryUnreadable => {
-                Some("relation first country unreadable")
-            }
-            Self::AddressOverflow => Some("relation field address overflow"),
-            Self::SecondCountryUnreadable => Some("relation second country unreadable"),
-            Self::StartHourUnreadable => Some("relation start hour unreadable"),
-            Self::EndHourUnreadable => Some("relation end hour unreadable"),
-            Self::CancelUnreadable => Some("relation cancel byte unreadable"),
-            Self::RetiredUnreadable => Some("relation retired byte unreadable"),
-        }
-    }
+pub(crate) fn relation_epoch() -> u64 {
+    RELATION_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// One serializable relation element in walk order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TupleOcc {
-    pub owner_id: u32,
-    pub owner_canonical: u32,
-    pub target_country: u32,
-    pub ordinal: u32,
-    pub auth: [u8; crelation_status::TUPLE_AUTH_BYTES],
-    pub auth_read: TupleAuthRead,
-    pub rest: [u8; crelation_status::TUPLE_REST_BYTES],
-    pub rest_read: TupleRestRead,
-}
-
-/// Fixed-size per-owner copy metadata. Blobs live in the job-level pools
-/// addressed by the start/len ranges below.
-#[derive(Debug, Default)]
-pub(crate) struct OwnerMeta {
-    pub owner_id: u32,
-    pub owner_canonical: u32,
-    pub owner_pointer: usize,
-    pub diplomacy_vtable: [u8; 8],
-    pub diplomacy_backlink: [u8; 8],
-    pub diplomacy_scattered: usize,
-    pub diplomacy_err: Option<&'static str>,
-    pub matrix_header: [u8; 16],
-    pub matrix_header_ok: bool,
-    pub matrix_err: Option<&'static str>,
-    /// Staged slot records: byte range in `slot_pool` and the parallel range
-    /// of their matrix indices in `slot_indices`.
-    pub slot_start: usize,
-    pub slot_len: usize,
-    pub index_start: usize,
-    pub index_len: usize,
-    /// Matrix slots 1..=slot_count were copied; unstaged ones are implicit.
-    pub slot_count: u32,
-    pub tuple_start: usize,
-    pub tuple_len: usize,
-}
-
-/// One refresh of raw relations payload. Flat pools keep every per-item struct
-/// fixed-size so `clear` recycles capacities and the steady state allocates
-/// on neither thread; growth happens on the decode side only (see
-/// `crate::decode::recycle_relations_job`).
-#[derive(Debug, Default)]
+/// One relations refresh: its rows, outcomes and the walk's retained storage.
+/// Storage grows only off the game thread (`crate::decode`); a refresh that
+/// needs more rows than the job holds reports it and takes the typed fallback.
+#[derive(Default)]
 pub(crate) struct RelationsJob {
     pub active: [bool; 2],
-    pub countries: Vec<CountrySnap>,
-    pub links: Vec<Result<Option<u32>, &'static str>>,
-    pub highest_slot: u32,
-    pub metas: Vec<OwnerMeta>,
-    /// Initialized backing storage retained across refreshes. Only the current
-    /// `slot_used` prefix belongs to this payload; inactive spans are ignored.
-    /// It holds only staged (non-implicit) slots plus one batch of gather room.
-    pub slot_pool: Vec<u8>,
-    pub slot_used: usize,
-    /// Matrix index of each staged record, in staging order.
-    pub slot_indices: Vec<u32>,
-    pub tuples: Vec<TupleOcc>,
-    pub reader_err: Option<&'static str>,
-    pub country_err: Option<&'static str>,
-    pub top_err: Option<&'static str>,
-    pub unread_opinions: u32,
-    pub unread_tuples: u32,
-    pub overflowed: bool,
+    pub opinions: Vec<crelation_status::OpinionRow>,
+    pub tuples: Vec<crelation_status::TupleRow>,
+    walk: Option<crelation_status::Walk>,
+    resolver: crelation_status::Resolver,
+    /// Where this job borrows its status authentications.
+    store: Option<&'static AuthenticationStore>,
+    /// The shared store while this job holds it, from its refresh until decode
+    /// releases the job.
+    auth: Option<LentAuthentication>,
+    /// Rows the last refresh needed, `[opinions, tuples]`.
+    required: [usize; 2],
+    overflowed: bool,
     capacity_charge: crate::raw_memory::Charge,
+    /// The pack's owner selection for this hour, loaned from dispatch to the
+    /// join (`Captured::take_relations_selection`).
+    pub(crate) selection: Option<SliceSelection>,
+    /// The relations family's fingerprint store, loaned with the selection.
+    pub(crate) fingerprints: Option<Box<SliceFingerprints>>,
+}
+
+impl std::fmt::Debug for RelationsJob {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RelationsJob")
+            .field("active", &self.active)
+            .field("walk", &self.walk)
+            .field("overflowed", &self.overflowed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RelationsJob {
+    /// Seeded for a late campaign at the vanilla country count (8,639
+    /// opinions and 1,512 tuples); growth follows each refresh.
     pub fn new() -> Self {
         let mut job = Self {
-            active: [true; 2],
-            countries: Vec::with_capacity(512),
-            links: Vec::with_capacity(512),
-            highest_slot: 0,
-            metas: Vec::with_capacity(512),
-            slot_pool: vec![0; 8 << 20],
-            slot_used: 0,
-            slot_indices: Vec::with_capacity((8 << 20) / crelation_status::RECORD_BYTES),
-            tuples: Vec::with_capacity(8192),
-            reader_err: None,
-            country_err: None,
-            top_err: None,
-            unread_opinions: 0,
-            unread_tuples: 0,
-            overflowed: false,
-            capacity_charge: crate::raw_memory::Charge::default(),
+            opinions: vec![crelation_status::OpinionRow::default(); 16_384],
+            tuples: vec![crelation_status::TupleRow::default(); 4_096],
+            ..Self::default()
         };
         job.update_capacity_charge();
         job
     }
 
-    /// Reset payload lengths, retaining initialized slot storage and capacities.
-    /// No allocation or clearing of bytes that the next slot gather overwrites.
+    /// Reset the payload, retaining storage and authentications.
     pub fn clear(&mut self) {
         self.active = [false; 2];
-        self.countries.clear();
-        self.links.clear();
-        self.highest_slot = 0;
-        self.metas.clear();
-        self.slot_used = 0;
-        self.slot_indices.clear();
-        self.tuples.clear();
-        self.reader_err = None;
-        self.country_err = None;
-        self.top_err = None;
-        self.unread_opinions = 0;
-        self.unread_tuples = 0;
+        self.walk = None;
         self.overflowed = false;
     }
 
-    pub fn grow_for_next(&self) -> bool {
-        self.overflowed
+    /// Whether the refresh's walk published both tables whole: rows, not a
+    /// failure or truncation.
+    pub(crate) fn published(&self) -> bool {
+        self.walk.is_some_and(|walk| {
+            matches!(walk.opinions, Outcome::Rows { .. })
+                && matches!(walk.tuples, Outcome::Rows { .. })
+        })
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed refreshes fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
-    pub fn grow(&mut self) {
-        fn double<T>(rows: &mut Vec<T>) {
-            crate::raw::double_capacity(rows);
+    /// Whether this is pooled storage rather than a vacant placeholder.
+    pub fn is_allocated(&self) -> bool {
+        !self.opinions.is_empty()
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.overflowed || self.resolver.required() > self.resolver.capacity()
+    }
+
+    /// Off the game thread: grow the shared store to what this job's refresh
+    /// observed and hand it back for the next job.
+    pub fn return_authentication(&mut self) {
+        if let Some(mut lent) = self.auth.take() {
+            let shared = lent.shared();
+            if shared.auth.required() > shared.auth.capacity() {
+                shared.auth.grow();
+                shared.charge.set(crate::raw_memory::Capacity {
+                    payload_vectors: shared.auth.allocated_bytes() as u64,
+                    ..Default::default()
+                });
+            }
         }
-        double(&mut self.countries);
-        double(&mut self.links);
-        double(&mut self.metas);
-        double(&mut self.slot_pool);
-        self.slot_pool.resize(self.slot_pool.capacity(), 0);
-        let records = self.slot_pool.len() / crelation_status::RECORD_BYTES;
-        self.slot_indices
-            .reserve_exact(records.saturating_sub(self.slot_indices.len()));
-        double(&mut self.tuples);
+    }
+
+    /// Off the game thread: grow rows to the last refresh's demand (with
+    /// headroom) and the walk's storage to what it observed.
+    pub fn grow(&mut self) {
+        fn fit<T: Default + Clone>(rows: &mut Vec<T>, required: usize) {
+            if required > rows.len() {
+                let len = required.saturating_add(required / 4);
+                if rows.try_reserve_exact(len - rows.len()).is_ok() {
+                    rows.resize(len, T::default());
+                }
+            }
+        }
+        fit(&mut self.opinions, self.required[0]);
+        fit(&mut self.tuples, self.required[1]);
+        self.resolver.grow();
         self.update_capacity_charge();
     }
 
     fn update_capacity_charge(&mut self) {
         use crate::raw_memory::{Capacity, vector_bytes};
         self.capacity_charge.set(Capacity {
-            payload_vectors: vector_bytes(&self.countries)
-                + vector_bytes(&self.links)
-                + vector_bytes(&self.metas)
-                + vector_bytes(&self.slot_pool)
-                + vector_bytes(&self.slot_indices)
-                + vector_bytes(&self.tuples),
+            payload_vectors: vector_bytes(&self.opinions)
+                + vector_bytes(&self.tuples)
+                + self.resolver.allocated_bytes() as u64,
             ..Default::default()
         });
     }
@@ -1782,10 +1865,11 @@ impl RelationsJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct RelationsCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
+    /// False when the job's rows were too short: the caller takes the typed
+    /// fallback and enqueues no payload.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 2],
+    /// Row bytes handed to decode.
     pub raw_bytes: [u64; 2],
 }
 
@@ -1797,691 +1881,130 @@ pub(crate) struct RelationsCopyContext {
     pub active: [bool; 2],
     pub opinion_cap: usize,
     pub tuple_cap: usize,
+    /// `relation_epoch` at dispatch.
+    pub epoch: u64,
 }
 
-#[derive(Debug, Default)]
-struct RelationsTallies {
-    ticks: [u64; 2],
-    bytes: [u64; 2],
-}
-
-fn relations_fit_len(used: usize, capacity: usize, need: usize) -> bool {
-    need <= capacity.saturating_sub(used)
-}
-
-/// True when decode can reconstruct this matrix slot exactly without its
-/// bytes: the status vtable, a raw target equal to the matrix index, and, for
-/// each active table, a zero opinion or an empty valid serializable vector.
-/// Such a slot produces no row, and its only remaining check (resolving the
-/// index as its own target) is owner-independent, so decode replays it from
-/// the frozen links. Every other slot, including any irregular or failing
-/// one, is staged with its complete copied bytes.
-fn implicit_relation_slot(
-    status_vtable: u64,
-    slot: u32,
-    record: &[u8; crelation_status::RECORD_BYTES],
-    active: [bool; 2],
-) -> bool {
-    let header: [u8; 16] = record[16..].try_into().unwrap();
-    u64::from_le_bytes(record[..8].try_into().unwrap()) == status_vtable
-        && u32::from_le_bytes(record[8..12].try_into().unwrap()) == slot
-        && (!active[0] || i32::from_le_bytes(record[12..16].try_into().unwrap()) == 0)
-        && (!active[1] || Array::from_header(header, 8).is_some_and(|array| array.count == 0))
-}
-
-/// Build once on the worker, bounded by the highest authenticated census
-/// slot. `Reader::at` publishes only canonical slots inside the country table;
-/// raw links (including bad or unused aliases) never determine this allocation.
-/// Clearing every slot preserves first-match semantics across job reuse/churn.
-fn prepare_relation_country_index(index: &mut Vec<usize>, countries: &[CountrySnap]) {
-    let slots = countries
-        .iter()
-        .map(|country| country.canonical_slot as usize + 1)
-        .max()
-        .unwrap_or(0);
-    index.clear();
-    index.resize(slots, usize::MAX);
-    for (country_index, country) in countries.iter().enumerate() {
-        let first = &mut index[country.canonical_slot as usize];
-        if *first == usize::MAX {
-            *first = country_index;
-        }
-    }
-}
-
-/// The typed walk resolves every slot's raw target and requires it to be that
-/// slot. For an implicit slot the target is its own index, so the outcome is
-/// the same for every owner: one pass over the covered indices finds each
-/// implicit slot that would fail, with its exact reason.
-fn prepare_implicit_slot_faults(
-    faults: &mut Vec<(u32, &'static str)>,
-    job: &RelationsJob,
-    country_index: &[usize],
-) {
-    faults.clear();
-    let covered = job
-        .metas
-        .iter()
-        .map(|meta| meta.slot_count)
-        .max()
-        .unwrap_or(0);
-    for slot in 1..=covered {
-        match relations_lookup(job, country_index, slot) {
-            Ok(target) if target.canonical_slot == slot => {}
-            Ok(_) => faults.push((slot, "relation status target differs from matrix slot")),
-            Err(reason) => faults.push((slot, reason)),
-        }
-    }
-}
-
-fn relations_lookup(
-    job: &RelationsJob,
-    country_index: &[usize],
-    raw: u32,
-) -> Result<CountrySnap, &'static str> {
-    if raw == 0 {
-        return Err("country id is zero");
-    }
-    let canonical = job
-        .links
-        .get(raw as usize)
-        .copied()
-        .ok_or("country link unreadable or outside country table")??
-        .ok_or("country link unreadable or outside country table")?;
-    country_index
-        .get(canonical as usize)
-        .and_then(|&index| job.countries.get(index))
-        .copied()
-        .ok_or("country link resolves to null country")
-}
-
-fn copy_relations_pass(
-    memory: &impl Memory,
-    context: RelationsCopyContext,
-    job: &mut RelationsJob,
-) -> RelationsTallies {
-    let RelationsCopyContext {
-        base,
-        game_state,
-        active,
-        opinion_cap,
-        tuple_cap,
-    } = context;
-    job.clear();
-    job.active = active;
-    let mut tallies = RelationsTallies::default();
-    if !active.into_iter().any(|active| active) {
-        return tallies;
-    }
-    let anchor = usize::from(active[1]);
-    let _reads = read_accounting::table(TABLES[13 + anchor]);
-    let fields = crelation_status::slot_fields(active);
-    let slot_bytes = fields.iter().map(|field| field.len).sum::<usize>();
-    let status_vtable = match base.checked_add(crelation_status::VTABLE_RVA) {
-        Some(address) => address as u64,
-        None => {
-            job.top_err = Some("module address overflow");
-            return tallies;
-        }
-    };
-    let countries = match ccountry::Reader::new(memory, base, game_state) {
-        Err(reason) => {
-            job.reader_err = Some(reason);
-            return tallies;
-        }
-        Ok(countries) => countries,
-    };
-    let count = countries.count();
-    // Highest-slot census mirrors the typed walk: enumeration faults abort
-    // the whole pass with the identical reason.
-    let mut highest_slot = 0u32;
-    for slot in 1..count {
-        let started = qpc();
-        match countries.at(slot) {
-            Err(reason) => {
-                job.country_err = Some(reason);
-                tallies.ticks[anchor] += elapsed(started);
-                return tallies;
-            }
-            Ok(Some(country)) => {
-                highest_slot = slot;
-                if job.countries.len() == job.countries.capacity() {
-                    job.overflowed = true;
-                    return tallies;
-                }
-                job.countries.push(CountrySnap {
-                    slot,
-                    pointer: country.pointer,
-                    id: country.id,
-                    canonical_slot: country.canonical_slot,
-                });
-            }
-            Ok(None) => {}
-        }
-        tallies.ticks[anchor] += elapsed(started);
-    }
-    job.highest_slot = highest_slot;
-    // Raw references are link-table indices, not the object's current id.
-    // Retain every link result independently: a bad unused alias must not
-    // invalidate otherwise readable relations.
-    if let Some(links) = game_state
-        .checked_add(cgame_state::COUNTRY_LINKS)
-        .and_then(|p| Array::read(memory, p, 4))
-    {
-        for raw in 0..links.count {
-            if job.links.len() == job.links.capacity() {
-                job.overflowed = true;
-                return tallies;
-            }
-            job.links.push(countries.link(raw));
-        }
-    }
-    if job.countries.is_empty() {
-        job.top_err = Some("country table has no readable countries");
-        return tallies;
-    }
-    let mut opinion_recorded = 0usize;
-    let mut tuple_recorded = 0usize;
-    let mut unread_opinions = 0u32;
-    let mut unread_tuples = 0u32;
-    // Each successful page read and pointer conversion overwrites its entire
-    // used prefix. A short read exits before either scratch prefix is used.
-    let mut page = [0u8; crelation_status::BATCH * 8];
-    let mut pointers = [0usize; crelation_status::BATCH];
-    // Borrow the frozen country list by index (no allocation, no live reads
-    // after enumeration); entries are `Copy`.
-    let country_len = job.countries.len();
-    for ci in 0..country_len {
-        let entry = job.countries[ci];
-        let started = qpc();
-        if job.metas.len() == job.metas.capacity() {
-            job.overflowed = true;
-            return tallies;
-        }
-        let mut meta = OwnerMeta {
-            owner_id: entry.id,
-            owner_canonical: entry.canonical_slot,
-            owner_pointer: entry.pointer,
-            ..OwnerMeta::default()
-        };
-        // Diplomacy pointer discovery mirrors `diplomacy_root` up to the
-        // vtable/backlink identity spans; those spans decode off-thread.
-        let diplomacy = match entry
-            .pointer
-            .checked_add(ccountry::DIPLOMACY_STATUS)
-            .and_then(|address| read::<u64>(memory, address))
-            .and_then(|value| usize::try_from(value).ok())
-        {
-            None => {
-                meta.diplomacy_err = Some("country diplomacy unreadable");
-                job.metas.push(meta);
-                tallies.ticks[anchor] += elapsed(started);
-                break;
-            }
-            Some(0) => {
-                meta.diplomacy_err = Some("country diplomacy is null");
-                job.metas.push(meta);
-                tallies.ticks[anchor] += elapsed(started);
-                break;
-            }
-            Some(pointer) => pointer,
-        };
-        // Identity and matrix metadata are independent observations. Keep their
-        // order and failure positions while entering the guarded copier once.
-        let header_addr = diplomacy.checked_add(cdiplomacy_status::RELATIONS);
-        let header_len = if header_addr.is_some() { 16 } else { 0 };
-        let scattered = memory.copy_scattered_prefetched(
-            [
-                diplomacy,
-                diplomacy.saturating_add(cdiplomacy_status::COUNTRY),
-                header_addr.unwrap_or(0),
-            ],
-            &mut [
-                &mut meta.diplomacy_vtable,
-                &mut meta.diplomacy_backlink,
-                &mut meta.matrix_header[..header_len],
-            ],
-        );
-        meta.diplomacy_scattered = scattered.min(2);
-        tallies.bytes[anchor] += 16;
-        if scattered < 2 {
-            meta.diplomacy_err = Some("country diplomacy unreadable");
-            job.metas.push(meta);
-            tallies.ticks[anchor] += elapsed(started);
-            break;
-        }
-        if header_addr.is_none() || scattered != 3 {
-            meta.matrix_err = Some("relation matrix unreadable or invalid");
-            job.metas.push(meta);
-            tallies.ticks[anchor] += elapsed(started);
-            break;
-        }
-        meta.matrix_header_ok = true;
-        tallies.bytes[anchor] += 16;
-        let matrix = match Array::from_header(meta.matrix_header, 8) {
-            Some(matrix) => matrix,
-            None => {
-                meta.matrix_err = Some("relation matrix unreadable or invalid");
-                job.metas.push(meta);
-                tallies.ticks[anchor] += elapsed(started);
-                break;
-            }
-        };
-        if matrix.count <= highest_slot {
-            meta.matrix_err = Some("relation matrix does not cover country ordinals");
-            job.metas.push(meta);
-            tallies.ticks[anchor] += elapsed(started);
-            break;
-        }
-        meta.slot_start = job.slot_used;
-        meta.index_start = job.slot_indices.len();
-        meta.tuple_start = job.tuples.len();
-        let mut index = 1u32;
-        let mut covered = 0u32;
-        let mut failed = false;
-        while index < matrix.count && !failed {
-            let len = (matrix.count - index).min(crelation_status::BATCH as u32) as usize;
-            let page_addr = match matrix.element(index, 8) {
-                Some(address) => address,
-                None => {
-                    meta.matrix_err = Some("relation matrix pointer address overflow");
-                    break;
-                }
-            };
-            if !read_slice(memory, page_addr, &mut page[..len * 8]) {
-                meta.matrix_err = Some("relation matrix pointer batch unreadable");
-                break;
-            }
-            for (slot, chunk) in pointers[..len]
-                .iter_mut()
-                .zip(page[..len * 8].chunks_exact(8))
-            {
-                match usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap())) {
-                    Err(_) => {
-                        meta.matrix_err = Some("relation matrix pointer overflow");
-                        failed = true;
-                        break;
-                    }
-                    Ok(0) => {
-                        meta.matrix_err = Some("null relation matrix entry");
-                        failed = true;
-                        break;
-                    }
-                    Ok(pointer) => {
-                        *slot = pointer;
-                        // The whole pointer page is already copied. Hint only
-                        // the exact fields the following gather will read;
-                        // actual reads, validation and fault order stay there.
-                        engine::prefetch::fields(pointer, fields);
-                    }
-                }
-            }
-            if failed {
-                break;
-            }
-            // A whole batch is gathered in place before it is filtered, so
-            // both pools need room for every slot of the batch.
-            if !relations_fit_len(
-                job.slot_used,
-                job.slot_pool.len(),
-                len * crelation_status::RECORD_BYTES,
-            ) || !relations_fit_len(
-                job.slot_indices.len(),
-                job.slot_indices.capacity(),
-                len,
-            ) {
-                job.overflowed = true;
-                return tallies;
-            }
-            let slot_base = job.slot_used;
-            let copied = crelation_status::copy_slots(
-                memory,
-                &pointers[..len],
-                &mut job.slot_pool[slot_base..slot_base + len * crelation_status::RECORD_BYTES],
-                active,
-            );
-            tallies.bytes[anchor] += (len * slot_bytes) as u64;
-            if copied < len * fields.len() {
-                meta.matrix_err = Some("relation matrix slot fields unreadable");
-                // The owner's recorded fault decides both tables before any
-                // slot is decoded, so nothing from this batch is staged.
-                break;
-            }
-            // Tuple census per slot, in native vector order. Serializable
-            // headers come from already-copied slot bytes (discovery only).
-            // Each slot is then staged only when decode cannot reconstruct it
-            // exactly (see `implicit_relation_slot`), so staging grows with
-            // the rows and irregular slots, not with the square of the census.
-            let mut staged = 0usize;
-            for offset in 0..len {
-                let slot = index + offset as u32;
-                covered = slot;
-                let at = slot_base + offset * crelation_status::RECORD_BYTES;
-                let record: [u8; crelation_status::RECORD_BYTES] = job.slot_pool
-                    [at..at + crelation_status::RECORD_BYTES]
-                    .try_into()
-                    .unwrap();
-                let serializable = if active[1] {
-                    let header: [u8; 16] = record[16..].try_into().unwrap();
-                    match Array::from_header(header, 8) {
-                        Some(array) => array,
-                        None => {
-                            meta.matrix_err = Some("serializable relation vector invalid");
-                            failed = true;
-                            break;
-                        }
-                    }
-                } else {
-                    Array { data: 0, count: 0 }
-                };
-                // Opinion capacity accounting mirrors `push_opinion`: the
-                // opinion filter itself decodes off-thread, so count slots
-                // with nonzero opinions here from already-copied bytes.
-                let opinion = i32::from_le_bytes(record[12..16].try_into().unwrap());
-                if active[0] && opinion != 0 {
-                    if opinion_recorded == opinion_cap {
-                        match unread_opinions.checked_add(1) {
-                            Some(next) => unread_opinions = next,
-                            None => {
-                                meta.matrix_err =
-                                    Some("relation opinion unread row count overflow");
-                                failed = true;
-                                break;
-                            }
-                        }
-                    } else {
-                        opinion_recorded += 1;
-                    }
-                }
-                // Stage before the tuple census: a tuple fault stays local to
-                // this slot, so decode must reach this record in matrix order.
-                if !implicit_relation_slot(status_vtable, slot, &record, active) {
-                    let to = slot_base + staged * crelation_status::RECORD_BYTES;
-                    job.slot_pool
-                        .copy_within(at..at + crelation_status::RECORD_BYTES, to);
-                    job.slot_indices.push(slot);
-                    staged += 1;
-                }
-                if active[1]
-                    && !copy_slot_tuples(
-                        memory,
-                        base,
-                        serializable,
-                        entry.id,
-                        entry.canonical_slot,
-                        u32::from_le_bytes(record[8..12].try_into().unwrap()),
-                        tuple_cap,
-                        &mut tuple_recorded,
-                        &mut unread_tuples,
-                        job,
-                        &mut meta.matrix_err,
-                        &mut tallies,
-                    )
-                {
-                    failed = true;
-                    break;
-                }
-                if job.overflowed {
-                    return tallies;
-                }
-                if meta.matrix_err.is_some() {
-                    failed = true;
-                    break;
-                }
-            }
-            job.slot_used = slot_base + staged * crelation_status::RECORD_BYTES;
-            index += len as u32;
-        }
-        meta.slot_count = covered;
-        meta.slot_len = job.slot_used - meta.slot_start;
-        meta.index_len = job.slot_indices.len() - meta.index_start;
-        meta.tuple_len = job.tuples.len() - meta.tuple_start;
-        tallies.ticks[anchor] += elapsed(started);
-        let terminal = failed || meta.matrix_err.is_some();
-        job.metas.push(meta);
-        if terminal {
-            // A retained terminal owner decides every active partition. Later
-            // admission must not discard that failure and retry live memory.
-            break;
-        }
-    }
-    job.unread_opinions = unread_opinions;
-    job.unread_tuples = unread_tuples;
-    tallies
-}
-
-#[allow(clippy::too_many_arguments)]
-fn copy_slot_tuples(
+/// The relations walk on the worker, into the job's rows. Rows and outcomes
+/// equal a walk into the pack's own buffers: each table is walked into at
+/// most the pack's capacity, and a job shorter than that which truncates
+/// reports `raw_ok: false` instead.
+/// Scan every live country into this hour's relations selection with a
+/// constant fingerprint: only new owners and unpublished reads join the
+/// hour's slice. The census reads go through the callback's cached country
+/// view. An incomplete census keeps every held owner live.
+fn scan_relation_owners(
     memory: &impl Memory,
     base: usize,
-    serializable: Array,
-    owner_id: u32,
-    owner_canonical: u32,
-    target_country: u32,
-    tuple_cap: usize,
-    tuple_recorded: &mut usize,
-    unread_tuples: &mut u32,
-    job: &mut RelationsJob,
-    meta_err: &mut Option<&'static str>,
-    tallies: &mut RelationsTallies,
-) -> bool {
-    let mut first = 0u32;
-    while first < serializable.count {
-        let chunk = (serializable.count - first).min(crelation_status::BATCH as u32) as usize;
-        // Decline an unprovisioned chunk before observing its pointer, auth or
-        // rest bytes. Once a native fault is observed, retaining its full auth
-        // chunk and exact failure sentinel must never trigger a live fallback.
-        if !relations_fit_len(job.tuples.len(), job.tuples.capacity(), chunk) {
-            job.overflowed = true;
-            return false;
-        }
-        let first_address = match serializable.element(first, 8) {
-            Some(address) => address,
-            None => {
-                *meta_err = Some("serializable relation entry unreadable");
-                return false;
-            }
-        };
-        let mut pointer_bytes = [0u8; crelation_status::BATCH * 8];
-        if !read_slice(memory, first_address, &mut pointer_bytes[..chunk * 8]) {
-            *meta_err = Some("serializable relation entry unreadable");
-            return false;
-        }
-        let mut pointers = [0usize; crelation_status::BATCH];
-        for (slot, chunk_bytes) in pointers[..chunk]
-            .iter_mut()
-            .zip(pointer_bytes[..chunk * 8].chunks_exact(8))
-        {
-            match usize::try_from(u64::from_le_bytes(chunk_bytes.try_into().unwrap())) {
-                Err(_) => {
-                    *meta_err = Some("serializable relation entry unreadable");
-                    return false;
-                }
-                Ok(0) => {
-                    *meta_err = Some("null serializable relation entry");
-                    return false;
-                }
-                Ok(pointer) => *slot = pointer,
-            }
-        }
-        // Auth spans first, exactly like the walk: a short gather attributes
-        // the identical field-level fault before any rest copy runs.
-        let mut auth_records = [0u8; crelation_status::BATCH * crelation_status::TUPLE_AUTH_BYTES];
-        let auth_copied = crelation_status::copy_auth(
-            memory,
-            &pointers[..chunk],
-            &mut auth_records[..chunk * crelation_status::TUPLE_AUTH_BYTES],
-        );
-        tallies.bytes[1] += (chunk * crelation_status::TUPLE_AUTH_BYTES) as u64;
-        // The typed reader interprets each completed auth row before a later
-        // short-gather fault. Retain the exact terminal occurrence so decode
-        // can keep that precedence without consulting any rest in this chunk.
-        let mut live_pointers = [0usize; crelation_status::BATCH];
-        let mut live_source = [0usize; crelation_status::BATCH];
-        let mut live_len = 0usize;
-        let mut failed_auth: Option<(usize, TupleAuthRead)> = None;
-        for index in 0..chunk {
-            if auth_copied < (index + 1) * crelation_status::TUPLE_AUTH_FIELDS.len() {
-                let failed = auth_copied % crelation_status::TUPLE_AUTH_FIELDS.len();
-                let pointer = pointers[auth_copied / crelation_status::TUPLE_AUTH_FIELDS.len()];
-                let field = &crelation_status::TUPLE_AUTH_FIELDS[failed];
-                let status = if pointer
-                    .checked_add(field.source_offset)
-                    .and_then(|address| address.checked_add(field.len))
-                    .is_none()
-                {
-                    TupleAuthRead::AddressOverflow
-                } else if failed == 0 {
-                    TupleAuthRead::VtableUnreadable
-                } else {
-                    TupleAuthRead::TypeUnreadable
-                };
-                failed_auth = Some((index, status));
-                break;
-            }
-            let auth: &[u8; crelation_status::TUPLE_AUTH_BYTES] = auth_records[index
-                * crelation_status::TUPLE_AUTH_BYTES
-                ..(index + 1) * crelation_status::TUPLE_AUTH_BYTES]
-                .try_into()
-                .unwrap();
-            match crelation_status::decode_auth(base, auth) {
-                Err(_) => {
-                    // The complete invalid blob itself supplies the decode error.
-                    failed_auth = Some((index, TupleAuthRead::Complete));
-                    break;
-                }
-                Ok(decoded) if decoded.skipped => {}
-                Ok(_) => {
-                    live_pointers[live_len] = pointers[index];
-                    live_source[live_len] = index;
-                    live_len += 1;
+    game_state: usize,
+    selection: &mut SliceSelection,
+    fingerprints: &mut SliceFingerprints,
+) {
+    let scan = qpc();
+    let mut census = true;
+    match ccountry::Reader::new(memory, base, game_state) {
+        Err(_) => census = false,
+        Ok(countries) => {
+            for slot in 1..countries.count() {
+                match countries.at(slot) {
+                    Ok(Some(country)) => selection.scan(fingerprints, country.id, Some(0)),
+                    Ok(None) => {}
+                    Err(_) => census = false,
                 }
             }
         }
-        // The entire auth chunk must succeed before any rest is requested.
-        // Skipped elements and a terminal auth chunk carry unread rest bytes;
-        // decode authenticates the whole chunk before consulting those bytes.
-        let mut rest_records = [0u8; crelation_status::BATCH * crelation_status::TUPLE_REST_BYTES];
-        let mut failed_rest = None;
-        let rest_copied = if failed_auth.is_none() && live_len > 0 {
-            let copied = crelation_status::copy_rest(
-                memory,
-                &live_pointers[..live_len],
-                &mut rest_records[..live_len * crelation_status::TUPLE_REST_BYTES],
-            );
-            tallies.bytes[1] += (live_len * crelation_status::TUPLE_REST_BYTES) as u64;
-            if copied < live_len * crelation_status::TUPLE_REST_FIELDS.len() {
-                let failed = copied % crelation_status::TUPLE_REST_FIELDS.len();
-                let pointer = live_pointers[copied / crelation_status::TUPLE_REST_FIELDS.len()];
-                let field = &crelation_status::TUPLE_REST_FIELDS[failed];
-                let status = if pointer
-                    .checked_add(field.source_offset)
-                    .and_then(|address| address.checked_add(field.len))
-                    .is_none()
-                {
-                    TupleRestRead::AddressOverflow
-                } else {
-                    match failed {
-                        0 => TupleRestRead::FirstCountryUnreadable,
-                        1 => TupleRestRead::SecondCountryUnreadable,
-                        2 => TupleRestRead::StartHourUnreadable,
-                        3 => TupleRestRead::EndHourUnreadable,
-                        4 => TupleRestRead::CancelUnreadable,
-                        _ => TupleRestRead::RetiredUnreadable,
-                    }
-                };
-                failed_rest = Some((copied / crelation_status::TUPLE_REST_FIELDS.len(), status));
-            }
-            copied
-        } else {
-            0
-        };
-        let complete_rest = rest_copied / crelation_status::TUPLE_REST_FIELDS.len();
-        let mut live_cursor = 0usize;
-        let staged = failed_auth.map_or(chunk, |(index, _)| index + 1);
-        for index in 0..staged {
-            let auth: [u8; crelation_status::TUPLE_AUTH_BYTES] = auth_records[index
-                * crelation_status::TUPLE_AUTH_BYTES
-                ..(index + 1) * crelation_status::TUPLE_AUTH_BYTES]
-                .try_into()
-                .unwrap();
-            // Rest failures retain every auth occurrence for the decoder's
-            // complete-chunk auth pass, but publish only complete earlier rest
-            // records. The exact failed live record owns the fault sentinel.
-            let live = failed_auth.is_none()
-                && live_source[..live_len].get(live_cursor) == Some(&index);
-            let emitted = live && live_cursor < complete_rest;
-            let rest_read = if emitted {
-                TupleRestRead::Complete
-            } else if live {
-                failed_rest
-                    .filter(|(failed, _)| *failed == live_cursor)
-                    .map_or(TupleRestRead::NotRequested, |(_, status)| status)
-            } else {
-                TupleRestRead::NotRequested
-            };
-            let rest = if emitted {
-                rest_records[live_cursor * crelation_status::TUPLE_REST_BYTES
-                    ..(live_cursor + 1) * crelation_status::TUPLE_REST_BYTES]
-                    .try_into()
-                    .unwrap()
-            } else {
-                [0; crelation_status::TUPLE_REST_BYTES]
-            };
-            live_cursor += usize::from(live);
-            job.tuples.push(TupleOcc {
-                owner_id,
-                owner_canonical,
-                target_country,
-                ordinal: first + index as u32,
-                auth,
-                auth_read: failed_auth
-                    .filter(|(failed, _)| *failed == index)
-                    .map_or(TupleAuthRead::Complete, |(_, status)| status),
-                rest,
-                rest_read,
-            });
-            // Only complete live rest records before a failed field can
-            // consume an output row or unread count. Skipped and failed records
-            // never advance that count; decode retains endpoint validation.
-            if emitted {
-                if *tuple_recorded == tuple_cap {
-                    match unread_tuples.checked_add(1) {
-                        Some(next) => *unread_tuples = next,
-                        None => {
-                            *meta_err = Some("relation tuple unread row count overflow");
-                            return false;
-                        }
-                    }
-                } else {
-                    *tuple_recorded += 1;
-                }
-            }
-        }
-        if failed_auth.is_some() || failed_rest.is_some() {
-            // Keep the terminal occurrence local to its original slot/chunk.
-            // An owner-wide error would outrank earlier decoded slot or endpoint
-            // failures. No later chunk or slot is requested after this failure.
-            return false;
-        }
-        first += chunk as u32;
     }
-    true
+    fingerprints.finish_scan();
+    if census {
+        selection.finish_census(fingerprints);
+    }
+    selection.scan_ticks = elapsed(scan);
 }
 
-/// Raw acquisition for a relations refresh with exclusively owned jobs.
-/// Captures one current payload and returns copy-only costs. Staging overflow
-/// retains the existing typed fallback and enqueues no payload.
 pub(crate) fn copy_relations_refresh(
     memory: &impl Memory,
     ctx: RelationsCopyContext,
     job: &mut RelationsJob,
 ) -> RelationsCopyReport {
-    let tallies = copy_relations_pass(memory, ctx, job);
+    job.clear();
+    job.active = ctx.active;
+    if !ctx.active.into_iter().any(|active| active) {
+        return RelationsCopyReport {
+            raw_ok: true,
+            ..Default::default()
+        };
+    }
+    if job.auth.is_none() {
+        let store = *job.store.get_or_insert_with(default_authentication_store);
+        job.auth = LentAuthentication::borrow(store);
+    }
+    // Lent to another job: authenticate every status, as after a load.
+    let mut unstored = crelation_status::Authentication::default();
+    let auth = match &mut job.auth {
+        Some(lent) => {
+            let shared = lent.shared();
+            if shared.epoch != ctx.epoch {
+                shared.auth.clear();
+                shared.epoch = ctx.epoch;
+            }
+            &mut shared.auth
+        }
+        None => {
+            RELATION_AUTHENTICATION_COUNTS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            &mut unstored
+        }
+    };
+    let anchor = usize::from(ctx.active[1]);
+    let _reads = read_accounting::table(TABLES[13 + anchor]);
+    let started = qpc();
+    let lens = [
+        job.opinions.len().min(ctx.opinion_cap),
+        job.tuples.len().min(ctx.tuple_cap),
+    ];
+    if let (Some(selection), Some(fingerprints)) = (&mut job.selection, &mut job.fingerprints) {
+        scan_relation_owners(memory, ctx.base, ctx.game_state, selection, fingerprints);
+    }
+    // Without a loaned selection (a test harness) every owner is read, as on
+    // a full hour: the pack's placeholder selection is a full one.
+    let selection = job.selection.as_ref();
+    let walk = crelation_status::walk_with(
+        memory,
+        ctx.base,
+        ctx.game_state,
+        &mut job.opinions[..lens[0]],
+        &mut job.tuples[..lens[1]],
+        ctx.active,
+        &mut job.resolver,
+        auth,
+        |owner| selection.is_none_or(|selection| selection.contains(owner)),
+    );
+    let broken = auth.take_broken_proofs();
+    if broken != 0 {
+        RELATION_AUTHENTICATION_COUNTS[0].fetch_add(broken, std::sync::atomic::Ordering::Relaxed);
+    }
+    let mut copy_ticks = [0; 2];
+    copy_ticks[anchor] = elapsed(started);
+    // A truncation the pack's capacity would have held needs a longer job.
+    let short = |outcome: Outcome, len: usize, cap: usize| match outcome {
+        Outcome::Truncated { unread_rows, .. } if len < cap => {
+            Some(len.saturating_add(unread_rows as usize))
+        }
+        _ => None,
+    };
+    let demand = [
+        short(walk.opinions, lens[0], ctx.opinion_cap),
+        short(walk.tuples, lens[1], ctx.tuple_cap),
+    ];
+    job.overflowed = demand.iter().any(Option::is_some);
+    job.required = std::array::from_fn(|table| demand[table].unwrap_or(0));
+    job.walk = Some(walk);
     RelationsCopyReport {
         raw_ok: !job.overflowed,
-        copy_ticks: tallies.ticks,
-        raw_bytes: tallies.bytes,
+        copy_ticks,
+        raw_bytes: [
+            (walk.opinions.len() * size_of::<crelation_status::OpinionRow>()) as u64,
+            (walk.tuples.len() * size_of::<crelation_status::TupleRow>()) as u64,
+        ],
     }
 }
 
@@ -2515,449 +2038,64 @@ impl Captured {
         self.relations_raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a raw refresh payload into the pooled
-    /// typed rows. Outcomes match the typed walk exactly. Clears
+    /// Installs a refresh's rows and outcomes into the pack. Clears
     /// `relations_raw_mode` so the next capture starts clean.
     pub(crate) fn decode_relations_payload(
         &mut self,
-        base: usize,
         job: &RelationsJob,
         decode_ticks: &mut [u64; 2],
     ) {
         self.relation_active = job.active;
-        if !job.active.into_iter().any(|active| active) {
+        let Some(walk) = job.walk.filter(|_| job.active.into_iter().any(|active| active)) else {
             self.fail_relations_capture(job.active, replay::cadence::SKIPPED_REASON);
             return;
-        }
-        let anchor = usize::from(job.active[1]);
-        let started = qpc();
-        let status_vtable = match base.checked_add(crelation_status::VTABLE_RVA) {
-            Some(address) => address as u64,
-            None => {
-                self.fail_relations_capture(job.active, "module address overflow");
-                decode_ticks[anchor] += elapsed(started);
-                return;
-            }
         };
-        let mut opinions_total = Outcome::Rows { len: 0 };
-        let mut tuples_total = Outcome::Rows { len: 0 };
-        let mut opinion_len = 0usize;
-        let mut tuple_len = 0usize;
-        // Skipped-element tuple reservations made by the copy are released
-        // here: decode counts only emitted rows against the typed capacity,
-        // so truncation accounting matches the walk exactly.
-        let mut tuple_reserved_released = 0usize;
-        if job.reader_err.is_none() && job.country_err.is_none() && job.top_err.is_none() {
-            prepare_relation_country_index(&mut self.relation_country_index, &job.countries);
-            prepare_implicit_slot_faults(
-                &mut self.relation_implicit_faults,
-                job,
-                &self.relation_country_index,
-            );
-            for meta in &job.metas {
-                let (opinion_outcome, tuple_outcome) = decode_owner_relations(
-                    base,
-                    status_vtable,
-                    meta,
-                    job,
-                    &self.relation_country_index,
-                    &self.relation_implicit_faults,
-                    &mut self.relation_opinions.rows[opinion_len..],
-                    &mut self.relation_tuples.rows[tuple_len..],
-                    &mut tuple_reserved_released,
-                );
-                append_relations(&mut opinions_total, opinion_outcome);
-                append_relations(&mut tuples_total, tuple_outcome);
-                opinion_len = opinions_total.len();
-                tuple_len = tuples_total.len();
-                if matches!(
-                    opinions_total,
-                    Outcome::Unavailable { .. } | Outcome::Truncated { .. }
-                ) && matches!(
-                    tuples_total,
-                    Outcome::Unavailable { .. } | Outcome::Truncated { .. }
-                ) {
-                    // Both partitions already decided; remaining owners cannot
-                    // change either outcome, mirroring the walk's early return.
-                }
-            }
-        }
-        decode_ticks[anchor] += elapsed(started);
         let started = qpc();
-        if let Some(reason) = job.reader_err {
-            opinions_total = Outcome::Unavailable { reason };
-            tuples_total = Outcome::Unavailable { reason };
-        } else if let Some(reason) = job.country_err {
-            opinions_total = Outcome::Unavailable { reason };
-            tuples_total = Outcome::Unavailable { reason };
-        } else if let Some(reason) = job.top_err {
-            opinions_total = Outcome::Unavailable { reason };
-            tuples_total = Outcome::Unavailable { reason };
-        }
-        // Reconcile copy-time capacity reservations with decoded rows: skipped
-        // war/subject elements never consumed typed rows, so unread counts
-        // computed against every element over-count. Recompute truncation
-        // from decoded lengths exactly like the walk's counters would.
-        let _ = tuple_reserved_released;
         let skipped = Outcome::Unavailable {
             reason: replay::cadence::SKIPPED_REASON,
         };
-        self.relation_opinions.outcome = if job.active[0] {
-            opinions_total
-        } else {
-            skipped
-        };
-        self.relation_tuples.outcome = if job.active[1] { tuples_total } else { skipped };
-        decode_ticks[anchor] += elapsed(started);
+        install(
+            job.active[0],
+            walk.opinions,
+            &job.opinions,
+            &mut self.relation_opinions,
+            skipped,
+        );
+        install(
+            job.active[1],
+            walk.tuples,
+            &job.tuples,
+            &mut self.relation_tuples,
+            skipped,
+        );
+        decode_ticks[usize::from(job.active[1])] += elapsed(started);
         self.relations_raw_mode = false;
     }
 }
 
-/// Decode one owner's matrix slots + tuple occs into the typed row slices.
-/// Returns per-owner (opinions, tuples) outcomes to append; row slices are
-/// filled in walk order with identical ordinals and skip semantics.
-#[allow(clippy::too_many_arguments)]
-fn decode_owner_relations(
-    base: usize,
-    status_vtable: u64,
-    meta: &OwnerMeta,
-    job: &RelationsJob,
-    country_index: &[usize],
-    implicit_faults: &[(u32, &'static str)],
-    opinions: &mut [crelation_status::OpinionRow],
-    tuples: &mut [crelation_status::TupleRow],
-    _released: &mut usize,
-) -> (Outcome, Outcome) {
-    if let Some(reason) = meta.diplomacy_err {
-        let unavailable = Outcome::Unavailable { reason };
-        return (unavailable, unavailable);
+/// Copies one table's rows, which the refresh walked into at most `rows`'s
+/// capacity.
+fn install<R: Copy>(
+    active: bool,
+    outcome: Outcome,
+    source: &[R],
+    rows: &mut CaptureRows<R>,
+    skipped: Outcome,
+) {
+    if !active {
+        rows.outcome = skipped;
+        return;
     }
-    // Diplomacy identity spans decode with the identical faults as
-    // `diplomacy_root`: scattered copy first, then vtable, then backlink.
-    if meta.diplomacy_scattered != 2 {
-        let unavailable = Outcome::Unavailable {
-            reason: "country diplomacy unreadable",
-        };
-        return (unavailable, unavailable);
-    }
-    let expected_diplomacy = match base.checked_add(cdiplomacy_status::VTABLE_RVA) {
-        Some(address) => address as u64,
-        None => {
-            let unavailable = Outcome::Unavailable {
-                reason: "module address overflow",
-            };
-            return (unavailable, unavailable);
+    let len = outcome.len();
+    rows.outcome = match (source.get(..len), rows.rows.get_mut(..len)) {
+        (Some(source), Some(destination)) => {
+            destination.copy_from_slice(source);
+            outcome
         }
+        _ => Outcome::Unavailable {
+            reason: "relation rows exceed their buffer",
+        },
     };
-    if u64::from_le_bytes(meta.diplomacy_vtable) != expected_diplomacy {
-        let unavailable = Outcome::Unavailable {
-            reason: "diplomacy vtable mismatch",
-        };
-        return (unavailable, unavailable);
-    }
-    if u64::from_le_bytes(meta.diplomacy_backlink) != meta.owner_pointer as u64 {
-        let unavailable = Outcome::Unavailable {
-            reason: "diplomacy country mismatch",
-        };
-        return (unavailable, unavailable);
-    }
-    if let Some(reason) = meta.matrix_err {
-        // Matrix/serializable structural faults fail both tables together,
-        // exactly like the typed walk's single `Walk` error.
-        let unavailable = Outcome::Unavailable { reason };
-        return (unavailable, unavailable);
-    }
-    if !meta.matrix_header_ok {
-        let unavailable = Outcome::Unavailable {
-            reason: "relation matrix unreadable or invalid",
-        };
-        return (unavailable, unavailable);
-    }
-    let matrix = match Array::from_header(meta.matrix_header, 8) {
-        Some(matrix) => matrix,
-        None => {
-            let unavailable = Outcome::Unavailable {
-                reason: "relation matrix unreadable or invalid",
-            };
-            return (unavailable, unavailable);
-        }
-    };
-    if matrix.count <= job.highest_slot {
-        let unavailable = Outcome::Unavailable {
-            reason: "relation matrix does not cover country ordinals",
-        };
-        return (unavailable, unavailable);
-    }
-    let slots = match job
-        .slot_pool
-        .get(..job.slot_used)
-        .and_then(|slots| slots.get(meta.slot_start..meta.slot_start + meta.slot_len))
-    {
-        Some(slots) => slots,
-        None => {
-            let unavailable = Outcome::Unavailable {
-                reason: "relation matrix slot fields unreadable",
-            };
-            return (unavailable, unavailable);
-        }
-    };
-    let occs = match job
-        .tuples
-        .get(meta.tuple_start..meta.tuple_start + meta.tuple_len)
-    {
-        Some(occs) => occs,
-        None => {
-            let unavailable = Outcome::Unavailable {
-                reason: "serializable relation entry unreadable",
-            };
-            return (unavailable, unavailable);
-        }
-    };
-    let indices = match job
-        .slot_indices
-        .get(meta.index_start..meta.index_start + meta.index_len)
-    {
-        Some(indices) if indices.len() * crelation_status::RECORD_BYTES == slots.len() => indices,
-        _ => {
-            let unavailable = Outcome::Unavailable {
-                reason: "relation matrix slot fields unreadable",
-            };
-            return (unavailable, unavailable);
-        }
-    };
-    let mut opinion_len = 0usize;
-    let mut opinion_unread = 0u32;
-    let mut tuple_len = 0usize;
-    let mut tuple_unread = 0u32;
-    let mut occ_index = 0usize;
-    // Staged and implicit slots merge in matrix order, so the first failing
-    // slot of either kind decides this owner exactly as in the typed walk.
-    // Implicit slots produce no row; only their owner-independent target
-    // fault can matter. Tuple occs are grouped per staged slot in vector
-    // order and consumed in the order the copy recorded them.
-    let mut faults = implicit_faults.iter().copied().peekable();
-    let mut previous = 0u32;
-    for (slot_bytes, &slot_index) in slots
-        .chunks_exact(crelation_status::RECORD_BYTES)
-        .zip(indices)
-    {
-        if slot_index <= previous || slot_index > meta.slot_count {
-            let unavailable = Outcome::Unavailable {
-                reason: "relation matrix slot fields unreadable",
-            };
-            return (unavailable, unavailable);
-        }
-        previous = slot_index;
-        while let Some(&(fault, reason)) = faults.peek() {
-            if fault > slot_index {
-                break;
-            }
-            faults.next();
-            if fault < slot_index {
-                let unavailable = Outcome::Unavailable { reason };
-                return (unavailable, unavailable);
-            }
-        }
-        let record: &[u8; crelation_status::RECORD_BYTES] = match slot_bytes.try_into() {
-            Ok(record) => record,
-            Err(_) => {
-                let unavailable = Outcome::Unavailable {
-                    reason: "relation matrix slot fields unreadable",
-                };
-                return (unavailable, unavailable);
-            }
-        };
-        let decoded = match crelation_status::decode_slot(status_vtable, record) {
-            Ok(decoded) => decoded,
-            Err(reason) => {
-                let unavailable = Outcome::Unavailable { reason };
-                return (unavailable, unavailable);
-            }
-        };
-        let target = match relations_lookup(job, country_index, decoded.target_country) {
-            Ok(target) => target,
-            Err(reason) => {
-                let unavailable = Outcome::Unavailable { reason };
-                return (unavailable, unavailable);
-            }
-        };
-        // The staged matrix index mirrors the walk's `index + offset` census.
-        if target.canonical_slot != slot_index {
-            let unavailable = Outcome::Unavailable {
-                reason: "relation status target differs from matrix slot",
-            };
-            return (unavailable, unavailable);
-        }
-        if job.active[0] && decoded.opinion != 0 {
-            if opinion_len == opinions.len() {
-                opinion_unread = opinion_unread.saturating_add(1);
-            } else if let Some(slot) = opinions.get_mut(opinion_len) {
-                *slot = crelation_status::OpinionRow {
-                    owner_country: meta.owner_id,
-                    target_country: decoded.target_country,
-                    opinion: decoded.opinion,
-                };
-                opinion_len += 1;
-            }
-        }
-        if !job.active[1] {
-            continue;
-        }
-        let serializable = match Array::from_header(decoded.serializable_header, 8) {
-            Some(array) => array,
-            None => {
-                let unavailable = Outcome::Unavailable {
-                    reason: "serializable relation vector invalid",
-                };
-                return (unavailable, unavailable);
-            }
-        };
-        let mut first = 0u32;
-        while first < serializable.count {
-            let chunk = (serializable.count - first).min(crelation_status::BATCH as u32) as usize;
-            let mut auth = [(0_u32, false); crelation_status::BATCH];
-            // Match read_tuples: authenticate the complete owned chunk before
-            // any endpoint/rest interpretation. A terminal occurrence can end
-            // this prefix early and retains its exact native or semantic error.
-            for (offset, decoded_auth) in auth[..chunk].iter_mut().enumerate() {
-                let ordinal = first + offset as u32;
-                let occ = match occs.get(occ_index + offset) {
-                    Some(occ) => occ,
-                    None => {
-                        let unavailable = Outcome::Unavailable {
-                            reason: "serializable relation entry unreadable",
-                        };
-                        return (unavailable, unavailable);
-                    }
-                };
-                if occ.ordinal != ordinal
-                    || occ.owner_id != meta.owner_id
-                    || occ.target_country != decoded.target_country
-                {
-                    let unavailable = Outcome::Unavailable {
-                        reason: "serializable relation entry unreadable",
-                    };
-                    return (unavailable, unavailable);
-                }
-                if let Some(reason) = occ.auth_read.reason() {
-                    let unavailable = Outcome::Unavailable { reason };
-                    return (unavailable, unavailable);
-                }
-                match crelation_status::decode_auth(base, &occ.auth) {
-                    Ok(value) => *decoded_auth = (value.type_id, value.skipped),
-                    Err(reason) => {
-                        let unavailable = Outcome::Unavailable { reason };
-                        return (unavailable, unavailable);
-                    }
-                }
-            }
-            for (offset, &(type_id, skipped)) in auth[..chunk].iter().enumerate() {
-                let ordinal = first + offset as u32;
-                let occ = &occs[occ_index + offset];
-                if skipped {
-                    continue;
-                }
-                if let Some(reason) = occ.rest_read.reason() {
-                    let unavailable = Outcome::Unavailable { reason };
-                    return (unavailable, unavailable);
-                }
-                let rest = crelation_status::decode_rest(&occ.rest);
-                let first = match relations_lookup(job, country_index, rest.first_country) {
-                    Ok(first) => first,
-                    Err(reason) => {
-                        let unavailable = Outcome::Unavailable { reason };
-                        return (unavailable, unavailable);
-                    }
-                };
-                if first.canonical_slot != meta.owner_canonical {
-                    let unavailable = Outcome::Unavailable {
-                        reason: "serializable relation is not owned by its first endpoint",
-                    };
-                    return (unavailable, unavailable);
-                }
-                if let Err(reason) = relations_lookup(job, country_index, rest.second_country) {
-                    let unavailable = Outcome::Unavailable { reason };
-                    return (unavailable, unavailable);
-                }
-                if tuple_len == tuples.len() {
-                    tuple_unread = tuple_unread.saturating_add(1);
-                } else if let Some(slot) = tuples.get_mut(tuple_len) {
-                    *slot = crelation_status::TupleRow {
-                        owner_country: meta.owner_id,
-                        target_country: decoded.target_country,
-                        type_id,
-                        ordinal,
-                        first_country: rest.first_country,
-                        second_country: rest.second_country,
-                        start_hour: rest.start_hour,
-                        end_hour: rest.end_hour,
-                        cancel: rest.cancel,
-                        retired: rest.retired,
-                    };
-                    tuple_len += 1;
-                }
-            }
-            occ_index += chunk;
-            first += chunk as u32;
-        }
-    }
-    if let Some((fault, reason)) = faults.next()
-        && fault <= meta.slot_count
-    {
-        let unavailable = Outcome::Unavailable { reason };
-        return (unavailable, unavailable);
-    }
-    if occ_index != occs.len() {
-        let unavailable = Outcome::Unavailable {
-            reason: "serializable relation entry unreadable",
-        };
-        return (unavailable, unavailable);
-    }
-    let opinions = if opinion_unread == 0 {
-        Outcome::Rows { len: opinion_len }
-    } else {
-        Outcome::Truncated {
-            len: opinion_len,
-            unread_rows: opinion_unread,
-        }
-    };
-    let tuples = if tuple_unread == 0 {
-        Outcome::Rows { len: tuple_len }
-    } else {
-        Outcome::Truncated {
-            len: tuple_len,
-            unread_rows: tuple_unread,
-        }
-    };
-    (opinions, tuples)
-}
-
-fn append_relations(total: &mut Outcome, next: Outcome) {
-    match (*total, next) {
-        (Outcome::Unavailable { .. }, _) => {}
-        (_, Outcome::Unavailable { reason }) => *total = Outcome::Unavailable { reason },
-        (first, second) => {
-            let missing = |o| {
-                if let Outcome::Truncated { unread_rows, .. } = o {
-                    unread_rows
-                } else {
-                    0_u32
-                }
-            };
-            *total = match missing(first).checked_add(missing(second)) {
-                Some(0) => Outcome::Rows {
-                    len: first.len() + second.len(),
-                },
-                Some(unread_rows) => Outcome::Truncated {
-                    len: first.len() + second.len(),
-                    unread_rows,
-                },
-                None => Outcome::Unavailable {
-                    reason: "relations omitted row count overflow",
-                },
-            };
-        }
-    }
 }
 
 // ===========================================================================
@@ -3714,32 +2852,45 @@ mod tests {
     fn relations_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
         use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
         static LOCAL: Tracker = Tracker::new();
-        let mut job = RelationsJob::default();
-        job.countries.reserve_exact(3);
-        job.links.reserve_exact(3);
-        job.metas.reserve_exact(3);
-        job.slot_pool.reserve_exact(3);
-        job.tuples.reserve_exact(3);
+        let mut job = RelationsJob::new();
         job.capacity_charge = Charge::empty_on(&LOCAL);
         job.update_capacity_charge();
         let expected = |job: &RelationsJob| {
-            vector_bytes(&job.countries)
-                + vector_bytes(&job.links)
-                + vector_bytes(&job.metas)
-                + vector_bytes(&job.slot_pool)
+            vector_bytes(&job.opinions)
                 + vector_bytes(&job.tuples)
+                + job.resolver.allocated_bytes() as u64
         };
         let initial = LOCAL.snapshot().current.payload_vectors;
         assert_eq!(initial, expected(&job));
+        // A refresh records its demand; growth follows it off the capture.
+        let bytes = relations_kit::opinionated_fixture();
+        let ctx = RelationsCopyContext {
+            base: relations_kit::BASE,
+            game_state: relations_kit::GS,
+            active: [true; 2],
+            opinion_cap: 16,
+            tuple_cap: 16,
+            epoch: 0,
+        };
+        assert!(copy_relations_refresh(&relations_kit::memory(&bytes), ctx, &mut job).raw_ok);
+        assert!(job.grow_for_next());
         job.grow();
         let grown = LOCAL.snapshot().current.payload_vectors;
         assert!(grown > initial);
         assert_eq!(grown, expected(&job));
+        // The shared store grows as the job returns it, on its own charge.
+        job.return_authentication();
+        let mut lent = LentAuthentication::borrow(job.store.unwrap()).unwrap();
+        let auth = &lent.shared().auth;
+        assert!(auth.capacity()[1] > 0);
+        assert_eq!(auth.capacity(), auth.required());
+        drop(lent);
         job.clear();
         assert_eq!(LOCAL.snapshot().current.payload_vectors, grown);
         drop(job);
         assert_eq!(LOCAL.snapshot().current, Capacity::default());
     }
+
     use engine::memory::SliceMemory;
     use replay::rows::TableSchema;
 
@@ -4492,7 +3643,7 @@ mod tests {
         ));
     }
 
-    /// Shared synthetic address space for the relations copy/decode harness.
+    /// Shared synthetic address space for the relations job harness.
     /// Three countries in slots 1..3, each with a complete four-slot matrix;
     /// slot zero is the reserved sentinel the walk never reaches.
     pub(crate) mod relations_test_kit {
@@ -4524,6 +3675,16 @@ mod tests {
         }
         pub(crate) fn status(owner: usize, target: usize) -> usize {
             0x10000 + owner * 0x4000 + target * 0x1000
+        }
+        /// The owned-relation vector of owner index `owner`.
+        pub(crate) fn own(bytes: &mut [u8], owner: usize, relations: &[usize]) {
+            let relations: Vec<u64> = relations.iter().map(|&r| r as u64).collect();
+            array(
+                bytes,
+                DIPLOMACY[owner] + cdiplomacy_status::OWNED_RELATIONS,
+                0x3400 + owner * 0x40,
+                &relations,
+            );
         }
         pub(crate) fn matrix_data(owner: usize) -> usize {
             0x3200 + owner * 0x40
@@ -4668,7 +3829,7 @@ mod tests {
             (outcome, kept)
         }
 
-        /// Split path under test: raw copy on `memory`, decode into `intel`.
+        /// Job path under test: the worker walk on `memory`, installed into `intel`.
         pub(crate) fn split(
             memory: &impl Memory,
             intel: &mut Captured,
@@ -4680,10 +3841,11 @@ mod tests {
                 active: [true; 2],
                 opinion_cap: intel.opinion_rows_cap(),
                 tuple_cap: intel.tuple_rows_cap(),
+                epoch: 0,
             };
             let report = copy_relations_refresh(memory, ctx, &mut job);
             assert!(report.raw_ok);
-            intel.decode_relations_payload(BASE, &job, &mut [0; 2]);
+            intel.decode_relations_payload(&job, &mut [0; 2]);
             (report, job)
         }
 
@@ -4746,300 +3908,14 @@ mod tests {
                 serializable_data(0, 3),
                 &[RELATION[0] as u64, RELATION[1] as u64],
             );
+            for owner in [0, 2] {
+                own(&mut bytes, owner, &RELATION);
+            }
             bytes
         }
     }
 
     use relations_test_kit as relations_kit;
-
-    fn linear_relation_lookup(job: &RelationsJob, raw: u32) -> Result<CountrySnap, &'static str> {
-        if raw == 0 {
-            return Err("country id is zero");
-        }
-        let canonical = job
-            .links
-            .get(raw as usize)
-            .copied()
-            .ok_or("country link unreadable or outside country table")??
-            .ok_or("country link unreadable or outside country table")?;
-        job.countries
-            .iter()
-            .find(|entry| entry.canonical_slot == canonical)
-            .copied()
-            .ok_or("country link resolves to null country")
-    }
-
-    #[test]
-    fn relations_country_index_keeps_first_duplicate_and_native_identity() {
-        let first = CountrySnap {
-            slot: 3,
-            pointer: 0x1234,
-            id: 19,
-            canonical_slot: 3,
-        };
-        let second = CountrySnap {
-            slot: 1,
-            pointer: 0x5678,
-            id: 7,
-            canonical_slot: 1,
-        };
-        let job = RelationsJob {
-            countries: vec![
-                first,
-                second,
-                CountrySnap {
-                    pointer: 0x9999,
-                    ..first
-                },
-            ],
-            links: vec![Ok(Some(3)), Ok(Some(3)), Ok(Some(1)), Ok(Some(3))],
-            ..RelationsJob::default()
-        };
-        let mut index = Vec::new();
-        prepare_relation_country_index(&mut index, &job.countries);
-        assert_eq!(index, [usize::MAX, 1, usize::MAX, 0]);
-        assert_eq!(relations_lookup(&job, &index, 1), Ok(first));
-        assert_eq!(relations_lookup(&job, &index, 2), Ok(second));
-        assert_eq!(relations_lookup(&job, &index, 3), Ok(first));
-        for raw in [0, 1, 2, 3, 4, u32::MAX] {
-            assert_eq!(
-                relations_lookup(&job, &index, raw),
-                linear_relation_lookup(&job, raw)
-            );
-        }
-    }
-
-    #[test]
-    fn relations_country_index_preserves_link_faults_missing_slots_and_zero_precedence() {
-        let country = CountrySnap {
-            slot: 2,
-            pointer: 0x1234,
-            id: 20,
-            canonical_slot: 2,
-        };
-        let job = RelationsJob {
-            countries: vec![country],
-            links: vec![
-                Err("sentinel fault must not replace zero-id error"),
-                Ok(Some(2)),
-                Err("recorded link fault"),
-                Ok(None),
-                Ok(Some(1)),
-                Ok(Some(u32::MAX)),
-            ],
-            ..RelationsJob::default()
-        };
-        let mut index = Vec::new();
-        prepare_relation_country_index(&mut index, &job.countries);
-        // Neither the highest raw alias nor a missing canonical target sizes
-        // the index: only the authenticated frozen countries do.
-        assert_eq!(index.len(), 3);
-        for raw in [0, 1, 2, 3, 4, 5, 6, u32::MAX] {
-            assert_eq!(
-                relations_lookup(&job, &index, raw),
-                linear_relation_lookup(&job, raw)
-            );
-        }
-        assert_eq!(relations_lookup(&job, &index, 0), Err("country id is zero"));
-        assert_eq!(
-            relations_lookup(&job, &index, 2),
-            Err("recorded link fault")
-        );
-        assert_eq!(
-            relations_lookup(&job, &index, 3),
-            Err("country link unreadable or outside country table")
-        );
-        assert_eq!(
-            relations_lookup(&job, &index, 4),
-            Err("country link resolves to null country")
-        );
-    }
-
-    #[test]
-    fn relations_country_index_rebuilds_current_job_without_accumulating_slots() {
-        let mut job = RelationsJob::default();
-        job.countries.push(CountrySnap {
-            slot: 63,
-            pointer: 0x1000,
-            id: 63,
-            canonical_slot: 63,
-        });
-        let mut index = Vec::new();
-        prepare_relation_country_index(&mut index, &job.countries);
-        let capacity = index.capacity();
-        for generation in 0..128 {
-            job.clear();
-            let canonical = generation % 63 + 1;
-            let current = CountrySnap {
-                slot: canonical,
-                pointer: 0x2000 + generation as usize * 16,
-                id: 1000 + generation,
-                canonical_slot: canonical,
-            };
-            job.countries.extend([
-                current,
-                CountrySnap {
-                    pointer: 0xffff,
-                    ..current
-                },
-            ]);
-            job.links.extend([
-                Ok(None),
-                Ok(Some(canonical)),
-                Ok(Some(63)),
-                Err("current fault"),
-            ]);
-            prepare_relation_country_index(&mut index, &job.countries);
-            assert_eq!(index.len(), canonical as usize + 1);
-            assert_eq!(index.capacity(), capacity);
-            assert_eq!(relations_lookup(&job, &index, 1), Ok(current));
-            for raw in [0, 1, 2, 3, 4, u32::MAX] {
-                assert_eq!(
-                    relations_lookup(&job, &index, raw),
-                    linear_relation_lookup(&job, raw)
-                );
-            }
-        }
-        job.clear();
-        job.links.push(Ok(Some(1)));
-        prepare_relation_country_index(&mut index, &job.countries);
-        assert!(index.is_empty());
-        assert_eq!(index.capacity(), capacity);
-    }
-
-    #[test]
-    fn relations_country_index_reused_decode_matches_typed_and_accounts_scratch() {
-        let mut bytes = relations_kit::opinionated_fixture();
-        let mut intel = relations_kit::intel_captured(16, 16);
-        let allocated = intel.allocated_bytes();
-        let mut job = RelationsJob::new();
-        let storage = (job.slot_pool.as_ptr(), job.slot_pool.len());
-        let context = RelationsCopyContext {
-            base: relations_kit::BASE,
-            game_state: relations_kit::GS,
-            active: [true; 2],
-            opinion_cap: 16,
-            tuple_cap: 16,
-        };
-        for generation in 0..3 {
-            // Removing country 3 leaves referenced endpoints unresolved; the
-            // following refresh restores it. No old index may survive either.
-            relations_kit::p64(
-                &mut bytes,
-                0x3000 + 3 * 8,
-                if generation == 1 {
-                    0
-                } else {
-                    relations_kit::COUNTRIES[2] as u64
-                },
-            );
-            let memory = relations_kit::memory(&bytes);
-            let direct = relations_kit::direct(&memory, 16, 16);
-            let report = copy_relations_refresh(&memory, context, &mut job);
-            assert!(report.raw_ok);
-            assert_eq!((job.slot_pool.as_ptr(), job.slot_pool.len()), storage);
-            // Of the 9 (or, without country 3, 6) copied matrix slots only the
-            // two opinions and the tuple slot are staged; every other slot is
-            // implicit and reconstructed by decode.
-            assert_eq!(job.slot_indices, [2, 3, 3]);
-            assert_eq!(job.slot_used, 3 * crelation_status::RECORD_BYTES);
-            if generation == 0 {
-                assert!(intel.relation_country_index.is_empty());
-                assert_eq!(intel.allocated_bytes(), allocated);
-            }
-            intel.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
-            relations_kit::assert_matches_direct(&intel, &direct);
-            // Without country 3 its implicit slot fails with the typed reason.
-            assert_eq!(
-                intel.relation_implicit_faults,
-                if generation == 1 {
-                    vec![(3, "country link resolves to null country")]
-                } else {
-                    Vec::new()
-                }
-            );
-            assert_eq!(
-                intel.allocated_bytes() - allocated,
-                intel.relation_country_index.capacity() * size_of::<usize>()
-                    + intel.relation_implicit_faults.capacity()
-                        * size_of::<(u32, &'static str)>()
-            );
-            // The index must be reconstructed, even when a pooled payload's
-            // country ordering changes without its length changing.
-            job.countries.reverse();
-            intel.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
-            relations_kit::assert_matches_direct(&intel, &direct);
-        }
-    }
-
-    #[test]
-    fn relations_slot_storage_grows_off_capture_and_discards_short_gather_bytes() {
-        struct ShortSlot<'a> {
-            memory: SliceMemory<'a>,
-        }
-        impl Memory for ShortSlot<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == relations_kit::status(0, 2) + crelation_status::OPINION
-                    && output.len() == 4
-                {
-                    let _ = self.memory.copy(address, &mut output[..2]);
-                    return false;
-                }
-                self.memory.copy(address, output)
-            }
-        }
-        let bytes = relations_kit::opinionated_fixture();
-        let memory = relations_kit::memory(&bytes);
-        let mut job = RelationsJob::new();
-        job.slot_pool = vec![0xa5; 5 * crelation_status::RECORD_BYTES];
-        job.update_capacity_charge();
-        let context = RelationsCopyContext {
-            base: relations_kit::BASE,
-            game_state: relations_kit::GS,
-            active: [true; 2],
-            opinion_cap: 16,
-            tuple_cap: 16,
-        };
-        // A failed page reservation leaves allocation and initialized storage
-        // unchanged. Only the explicit off-capture grow can add room. Each
-        // batch needs gather room for all its slots before filtering: owners
-        // one and two stage three slots in total, and owner three's batch no
-        // longer fits in five records.
-        let storage = (job.slot_pool.as_ptr(), job.slot_pool.len());
-        assert!(!copy_relations_refresh(&memory, context, &mut job).raw_ok);
-        assert_eq!((job.slot_pool.as_ptr(), job.slot_pool.len()), storage);
-        assert_eq!(job.slot_used, 3 * crelation_status::RECORD_BYTES);
-        assert_eq!(job.slot_indices, [2, 3, 3]);
-        job.grow();
-        let storage = (job.slot_pool.as_ptr(), job.slot_pool.len());
-        let mut captured = relations_kit::intel_captured(16, 16);
-        assert!(copy_relations_refresh(&memory, context, &mut job).raw_ok);
-        captured.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
-        relations_kit::assert_matches_direct(&captured, &relations_kit::direct(&memory, 16, 16));
-
-        // The owner's recorded short gather decides both tables, so no slot of
-        // the failed batch, complete or not, is staged.
-        let short = ShortSlot { memory };
-        assert!(copy_relations_refresh(&short, context, &mut job).raw_ok);
-        assert_eq!(job.metas[0].slot_len, 0);
-        assert_eq!(job.slot_used, 0);
-        assert!(job.slot_indices.is_empty());
-        assert_eq!(job.metas.len(), 1);
-        job.slot_pool[job.slot_used..].fill(0xff);
-        captured.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
-        relations_kit::assert_matches_direct(&captured, &relations_kit::direct(&short, 16, 16));
-
-        // All scheduled bytes are replaced after the short gather; poisoned
-        // inactive storage cannot become an opinion, tuple or error.
-        assert!(copy_relations_refresh(&short.memory, context, &mut job).raw_ok);
-        assert_eq!(job.slot_used, 3 * crelation_status::RECORD_BYTES);
-        assert_eq!((job.slot_pool.as_ptr(), job.slot_pool.len()), storage);
-        captured.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
-        relations_kit::assert_matches_direct(
-            &captured,
-            &relations_kit::direct(&short.memory, 16, 16),
-        );
-    }
 
     #[test]
     fn staged_relations_skip_the_game_thread_typed_walk() {
@@ -5071,7 +3947,7 @@ mod tests {
     }
 
     #[test]
-    fn relations_copy_decode_matches_typed_rows_including_skips_and_ordinals() {
+    fn relations_job_matches_typed_rows_including_skips_and_ordinals() {
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
         let direct = relations_kit::direct(&memory, 16, 16);
@@ -5099,134 +3975,14 @@ mod tests {
         assert!(counts[TABLES[14].index()].bytes > 0);
         assert_eq!(counts, expected_counts);
         assert!(report.raw_ok);
-        assert!(report.raw_ok);
-        assert_eq!(report.raw_bytes[0], 0);
-        assert!(report.raw_bytes[1] > 0);
+        assert_eq!(
+            report.raw_bytes,
+            [
+                2 * size_of::<crelation_status::OpinionRow>() as u64,
+                2 * size_of::<crelation_status::TupleRow>() as u64
+            ]
+        );
         relations_kit::assert_matches_direct(&intel, &direct);
-    }
-
-    #[test]
-    fn relation_owner_gather_preserves_every_header_fault_and_saves_one_guard() {
-        use std::cell::{Cell, RefCell};
-        let owner = relations_kit::DIPLOMACY[0];
-        let fields = [
-            (owner, 8),
-            (owner + cdiplomacy_status::COUNTRY, 8),
-            (owner + cdiplomacy_status::RELATIONS, 16),
-        ];
-        struct Headers<'a> {
-            source: SliceMemory<'a>,
-            fields: [(usize, usize); 3],
-            fault: Option<usize>,
-            reads: RefCell<Vec<(usize, usize)>>,
-            guards: Cell<usize>,
-        }
-        impl Headers<'_> {
-            fn span(&self, address: usize, output: &mut [u8]) -> bool {
-                if self.fields.contains(&(address, output.len())) {
-                    self.reads.borrow_mut().push((address, output.len()));
-                }
-                if let Some(fault) = self.fault
-                    && address <= fault
-                    && fault - address < output.len()
-                {
-                    let prefix = fault - address;
-                    let _ = self.source.copy(address, &mut output[..prefix]);
-                    return false;
-                }
-                self.source.copy(address, output)
-            }
-        }
-        impl Memory for Headers<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if self.fields.contains(&(address, output.len())) {
-                    self.guards.set(self.guards.get() + 1);
-                }
-                self.span(address, output)
-            }
-            fn copy_scattered<const M: usize>(
-                &self,
-                addresses: [usize; M],
-                outputs: &mut [&mut [u8]; M],
-            ) -> usize {
-                if addresses
-                    .iter()
-                    .zip(outputs.iter())
-                    .any(|(&address, output)| self.fields.contains(&(address, output.len())))
-                {
-                    self.guards.set(self.guards.get() + 1);
-                }
-                for (index, (address, output)) in addresses.into_iter().zip(outputs).enumerate() {
-                    if !output.is_empty() && !self.span(address, output) {
-                        return index;
-                    }
-                }
-                M
-            }
-        }
-        let bytes = relations_kit::opinionated_fixture();
-        for fault in std::iter::once(None).chain(
-            fields
-                .into_iter()
-                .flat_map(|(address, len)| (address..address + len).map(Some)),
-        ) {
-            let memory = || Headers {
-                source: relations_kit::memory(&bytes),
-                fields,
-                fault,
-                reads: RefCell::new(Vec::new()),
-                guards: Cell::new(0),
-            };
-            let direct_memory = memory();
-            let direct = relations_kit::direct(&direct_memory, 16, 16);
-            let source = memory();
-            let mut captured = relations_kit::intel_captured(16, 16);
-            let (report, _) = relations_kit::split(&source, &mut captured);
-            assert!(report.raw_ok);
-            assert_eq!(*source.reads.borrow(), *direct_memory.reads.borrow());
-            assert_eq!(source.guards.get(), 1);
-            // The old raw path already grouped the two identity fields. The
-            // typed walker uses separate scalar identity reads, so it is the
-            // row oracle, not the two-guard acquisition reference.
-            let previous = memory();
-            let (mut vtable, mut backlink, mut header) = ([0; 8], [0; 8], [0; 16]);
-            let identity = previous.copy_scattered_prefetched(
-                [fields[0].0, fields[1].0],
-                &mut [&mut vtable, &mut backlink],
-            );
-            let previous_error = if identity != 2 {
-                Some("country diplomacy unreadable")
-            } else if !previous.copy(fields[2].0, &mut header) {
-                Some("relation matrix unreadable or invalid")
-            } else {
-                None
-            };
-            assert_eq!(*source.reads.borrow(), *previous.reads.borrow());
-            assert_eq!(previous.guards.get(), 1 + usize::from(identity == 2));
-            assert_eq!(
-                direct_memory.guards.get(),
-                direct_memory.reads.borrow().len()
-            );
-            if let Some(reason) = previous_error {
-                // Raw identity read faults have always used this reason;
-                // the typed reader calls them vtable/backlink mismatches.
-                assert_eq!(
-                    captured.relation_opinions.outcome,
-                    Outcome::Unavailable { reason }
-                );
-                assert_eq!(
-                    captured.relation_tuples.outcome,
-                    Outcome::Unavailable { reason }
-                );
-                assert!(matches!(
-                    direct.opinion_outcome,
-                    Outcome::Unavailable { .. }
-                ));
-                assert!(matches!(direct.tuple_outcome, Outcome::Unavailable { .. }));
-            } else {
-                relations_kit::assert_matches_direct(&captured, &direct);
-            }
-        }
     }
 
     #[test]
@@ -5280,13 +4036,14 @@ mod tests {
                         active,
                         opinion_cap,
                         tuple_cap,
+                        epoch: 0,
                     },
                     &mut job,
                 );
                 assert!(report.raw_ok, "hour={hour} fault={fault}");
                 let mut captured = relations_kit::intel_captured(opinion_cap, tuple_cap);
                 let mut ticks = [0; 2];
-                captured.decode_relations_payload(relations_kit::BASE, &job, &mut ticks);
+                captured.decode_relations_payload(&job, &mut ticks);
                 let skipped = Outcome::Unavailable {
                     reason: replay::cadence::SKIPPED_REASON,
                 };
@@ -5335,7 +4092,7 @@ mod tests {
     }
 
     #[test]
-    fn relations_copy_decode_matches_truncation_with_exact_missing_counts() {
+    fn relations_job_matches_truncation_with_exact_missing_counts() {
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
         let direct = relations_kit::direct(&memory, 1, 1);
@@ -5360,13 +4117,9 @@ mod tests {
 
     #[test]
     fn relations_truncation_matrix_matches_direct_with_skipped_boundary() {
-        // B3: zero/one/exact/ample tuple caps run typed AND copy-decode
-        // against the SAME memory with the SAME pooled caps, asserting
-        // identical outcome (incl. unread_rows) and identical rows. The
-        // opinionated fixture interleaves war/subject (skipped) with
-        // emitted tuples; caps that fill before a skipped vs before an
-        // emitted element must agree on unread_rows because skipped
-        // reservations are released identically on both paths.
+        // Zero, one, exact and ample caps: the job walks into at most the
+        // pack's capacity, so its outcome (unread_rows included) and rows
+        // equal a typed walk into the pack's own buffers.
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
         for (opinion_cap, tuple_cap) in [(0, 0), (1, 1), (2, 2), (64, 64)] {
@@ -5378,640 +4131,7 @@ mod tests {
     }
 
     #[test]
-    fn relations_tuple_auth_tail_preserves_fault_precedence_capacity_and_gates() {
-        use engine::{crelation, csubject_relation, cwar_relation};
-        use std::cell::RefCell;
-
-        struct TupleReads<'a> {
-            memory: SliceMemory<'a>,
-            fault: Option<usize>,
-            reads: RefCell<Vec<(usize, usize)>>,
-        }
-
-        impl Memory for TupleReads<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.reads.borrow_mut().push((address, output.len()));
-                if self
-                    .fault
-                    .is_some_and(|fault| address <= fault && fault < address + output.len())
-                {
-                    let prefix = output.len().min(3);
-                    output[..prefix].fill(0xa5);
-                    return false;
-                }
-                self.memory.copy(address, output)
-            }
-        }
-
-        fn rest_address(address: usize) -> bool {
-            relations_kit::RELATION.iter().any(|pointer| {
-                crelation_status::TUPLE_REST_FIELDS
-                    .iter()
-                    .any(|field| address == pointer + field.source_offset)
-            })
-        }
-
-        fn tuple_reads(memory: &TupleReads<'_>) -> Vec<(usize, usize)> {
-            memory
-                .reads
-                .borrow()
-                .iter()
-                .copied()
-                .filter(|(address, _)| {
-                    *address == relations_kit::serializable_data(0, 3)
-                        || relations_kit::RELATION.iter().any(|pointer| {
-                            crelation_status::TUPLE_AUTH_FIELDS
-                                .iter()
-                                .chain(crelation_status::TUPLE_REST_FIELDS.iter())
-                                .any(|field| *address == pointer + field.source_offset)
-                        })
-                })
-                .collect()
-        }
-
-        fn check(
-            bytes: &[u8],
-            fault: Option<(usize, bool)>,
-            reason: Option<&'static str>,
-            case: &str,
-        ) {
-            // Reuse staging across capacities and gates to exercise its reset too.
-            let mut job = RelationsJob::new();
-            for cap in [0, 1, 16] {
-                for active in [[true, true], [false, true], [true, false]] {
-                    let context = format!("{case}, cap={cap}, active={active:?}");
-                    let make_memory = || TupleReads {
-                        memory: relations_kit::memory(bytes),
-                        fault: fault.map(|(address, _)| address),
-                        reads: RefCell::new(Vec::new()),
-                    };
-                    let typed_memory = make_memory();
-                    let mut opinions = vec![crelation_status::OpinionRow::default(); cap];
-                    let mut tuples = vec![crelation_status::TupleRow::default(); cap];
-                    let typed = crelation_status::walk(
-                        &typed_memory,
-                        relations_kit::BASE,
-                        relations_kit::GS,
-                        &mut opinions,
-                        &mut tuples,
-                        active,
-                    );
-                    for (enabled, outcome) in active.into_iter().zip([typed.opinions, typed.tuples]) {
-                        if enabled {
-                            if let Some(reason) = reason.filter(|_| active[1]) {
-                                assert_eq!(outcome, Outcome::Unavailable { reason }, "{context}");
-                            } else {
-                                assert!(
-                                    matches!(outcome, Outcome::Rows { .. } | Outcome::Truncated { .. }),
-                                    "{context}: {outcome:?}"
-                                );
-                            }
-                        }
-                    }
-                    let raw_memory = make_memory();
-                    let report = copy_relations_refresh(
-                        &raw_memory,
-                        RelationsCopyContext {
-                            base: relations_kit::BASE,
-                            game_state: relations_kit::GS,
-                            active,
-                            opinion_cap: cap,
-                            tuple_cap: cap,
-                        },
-                        &mut job,
-                    );
-                    assert!(report.raw_ok, "{context}");
-                    let mut captured = relations_kit::intel_captured(cap, cap);
-                    let mut ticks = [0; 2];
-                    captured.decode_relations_payload(relations_kit::BASE, &job, &mut ticks);
-                    let skipped = Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON,
-                    };
-                    assert_eq!(
-                        captured.relation_opinions.outcome,
-                        if active[0] { typed.opinions } else { skipped },
-                        "{context}"
-                    );
-                    assert_eq!(
-                        captured.relation_tuples.outcome,
-                        if active[1] { typed.tuples } else { skipped },
-                        "{context}"
-                    );
-                    assert_eq!(
-                        &captured.relation_opinions.rows[..typed.opinions.len()],
-                        &opinions[..typed.opinions.len()],
-                        "{context}"
-                    );
-                    assert_eq!(
-                        &captured.relation_tuples.rows[..typed.tuples.len()],
-                        &tuples[..typed.tuples.len()],
-                        "{context}"
-                    );
-                    assert_eq!(captured.relation_activity(), active, "{context}");
-
-                    // Country and matrix acquisition differ; tuple reads must not.
-                    let typed_reads = tuple_reads(&typed_memory);
-                    let raw_reads = tuple_reads(&raw_memory);
-                    assert_eq!(raw_reads, typed_reads, "{context}");
-                    if active[1] {
-                        if matches!(
-                            reason,
-                            Some("serializable relation has an unclassified vtable")
-                                | Some("relation type word differs from its class")
-                        ) {
-                            assert!(
-                                typed_reads.iter().all(|&(address, _)| !rest_address(address)),
-                                "{context}: invalid chunk auth must precede every rest read"
-                            );
-                        }
-                    } else {
-                        assert!(typed_reads.is_empty(), "{context}");
-                        assert_eq!(report.raw_bytes[1], 0, "{context}");
-                        assert_eq!(report.copy_ticks[1], 0, "{context}");
-                        assert_eq!(ticks[1], 0, "{context}");
-                    }
-                    if let Some((fault, attempted)) = fault {
-                        for reads in [&typed_reads, &raw_reads] {
-                            assert_eq!(
-                                reads.iter().any(|&(address, len)| address <= fault && fault < address + len),
-                                active[1] && attempted,
-                                "{context}: fault attempt"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        fn invalidate(bytes: &mut [u8], index: usize, vtable: bool) -> &'static str {
-            let pointer = relations_kit::RELATION[index];
-            if vtable {
-                relations_kit::p64(bytes, pointer, 0x1234);
-                "serializable relation has an unclassified vtable"
-            } else {
-                relations_kit::p32(bytes, pointer + crelation::TYPE_ID, u32::MAX);
-                "relation type word differs from its class"
-            }
-        }
-
-        for (case, index, skipped) in [
-            ("first", 0, None),
-            ("tail", 1, None),
-            ("war prefix", 1, Some((cwar_relation::VTABLE_RVA, cwar_relation::TYPE))),
-            ("subject prefix", 1, Some((csubject_relation::VTABLE_RVA, csubject_relation::TYPE_VALUE))),
-        ] {
-            let mut valid = relations_kit::opinionated_fixture();
-            if let Some((vtable, type_id)) = skipped {
-                relations_kit::relation(&mut valid, relations_kit::RELATION[0], vtable, type_id, 1, 3);
-            }
-            // Valid controls exercise retained fields, ordinal 1 after a skipped
-            // predecessor, and exact truncation counts, not just empty error rows.
-            check(&valid, None, None, &format!("{case} valid"));
-            for vtable in [true, false] {
-                let mut bytes = valid.clone();
-                let reason = invalidate(&mut bytes, index, vtable);
-                check(&bytes, None, Some(reason), &format!("{case}, vtable={vtable}"));
-            }
-        }
-
-        let valid = relations_kit::opinionated_fixture();
-        let first_rest = relations_kit::RELATION[0] + crelation::FIRST_COUNTRY;
-        for (fault, reason) in [
-            (first_rest, "relation first country unreadable"),
-            (relations_kit::RELATION[1], "relation vtable unreadable"),
-            (relations_kit::RELATION[1] + crelation::TYPE_ID, "relation type word unreadable"),
-        ] {
-            check(&valid, Some((fault, true)), Some(reason), "read fault control");
-        }
-        for vtable in [true, false] {
-            let mut bytes = valid.clone();
-            let reason = invalidate(&mut bytes, 1, vtable);
-            check(&bytes, Some((first_rest, false)), Some(reason), "later auth beats earlier rest read fault");
-            relations_kit::p32(&mut bytes, first_rest, 0);
-            check(&bytes, None, Some(reason), "later auth beats earlier endpoint error");
-
-            let mut bytes = valid.clone();
-            let reason = invalidate(&mut bytes, 0, vtable);
-            for fault in [relations_kit::RELATION[1], relations_kit::RELATION[1] + crelation::TYPE_ID] {
-                check(&bytes, Some((fault, true)), Some(reason), "earlier complete auth beats later auth read fault");
-            }
-        }
-        let mut bytes = valid;
-        invalidate(&mut bytes, 0, true);
-        check(
-            &bytes,
-            Some((relations_kit::RELATION[0] + crelation::TYPE_ID, true)),
-            Some("relation type word unreadable"),
-            "same-element incomplete auth precedes vtable interpretation",
-        );
-
-        // Admit the complete auth chunk before touching any tuple bytes.
-        // Insufficient staging declines the optimization before a one-shot
-        // native fault could be consumed and then retried by the fallback.
-        let mut bytes = relations_kit::opinionated_fixture();
-        invalidate(&mut bytes, 1, true);
-        for capacity in [0, 1, 2] {
-            for active in [[true, true], [false, true], [true, false]] {
-                let memory = TupleReads {
-                    memory: relations_kit::memory(&bytes),
-                    fault: Some(first_rest),
-                    reads: RefCell::new(Vec::new()),
-                };
-                let mut job = RelationsJob::new();
-                job.tuples = Vec::with_capacity(capacity);
-                let storage = (job.tuples.as_ptr(), job.tuples.capacity());
-                let report = copy_relations_refresh(
-                    &memory,
-                    RelationsCopyContext {
-                        base: relations_kit::BASE,
-                        game_state: relations_kit::GS,
-                        active,
-                        opinion_cap: 16,
-                        tuple_cap: 16,
-                    },
-                    &mut job,
-                );
-                assert_eq!(
-                    report.raw_ok,
-                    !active[1] || capacity >= 2,
-                    "capacity={capacity}, active={active:?}"
-                );
-                assert_eq!(job.overflowed, active[1] && capacity < 2);
-                assert_eq!((job.tuples.as_ptr(), job.tuples.capacity()), storage);
-                if active[1] && capacity < 2 {
-                    assert!(job.tuples.is_empty());
-                    assert!(tuple_reads(&memory).is_empty());
-                }
-                assert!(
-                    tuple_reads(&memory)
-                        .iter()
-                        .all(|&(address, _)| !rest_address(address))
-                );
-                if active[1] && capacity >= 2 {
-                    assert_eq!(job.tuples.len(), 2);
-                    assert_eq!(job.tuples[1].ordinal, 1);
-                    assert_eq!(job.tuples[1].auth_read, TupleAuthRead::Complete);
-                    assert!(crelation_status::decode_auth(
-                        relations_kit::BASE,
-                        &job.tuples[1].auth,
-                    )
-                    .is_err());
-                }
-                if !active[1] {
-                    assert!(job.tuples.is_empty());
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn relations_tuple_rest_prefix_preserves_fault_precedence_and_staging_bounds() {
-        use engine::{crelation, csubject_relation, cwar_relation};
-        use std::cell::RefCell;
-
-        const REST: [(usize, &str, TupleRestRead); 6] = [
-            (crelation::FIRST_COUNTRY, "relation first country unreadable", TupleRestRead::FirstCountryUnreadable),
-            (crelation::SECOND_COUNTRY, "relation second country unreadable", TupleRestRead::SecondCountryUnreadable),
-            (crelation::START_HOUR, "relation start hour unreadable", TupleRestRead::StartHourUnreadable),
-            (crelation::END_HOUR, "relation end hour unreadable", TupleRestRead::EndHourUnreadable),
-            (crelation::CANCEL, "relation cancel byte unreadable", TupleRestRead::CancelUnreadable),
-            (crelation::RETIRED, "relation retired byte unreadable", TupleRestRead::RetiredUnreadable),
-        ];
-
-        struct TupleReads<'a> {
-            memory: SliceMemory<'a>,
-            fault: Option<usize>,
-            reads: RefCell<Vec<(usize, usize)>>,
-        }
-
-        impl Memory for TupleReads<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.reads.borrow_mut().push((address, output.len()));
-                if self
-                    .fault
-                    .is_some_and(|fault| address <= fault && fault < address + output.len())
-                {
-                    let prefix = output.len().min(3);
-                    output[..prefix].fill(0xa5);
-                    return false;
-                }
-                self.memory.copy(address, output)
-            }
-        }
-
-        fn tuple_reads(memory: &TupleReads<'_>) -> Vec<(usize, usize)> {
-            memory
-                .reads
-                .borrow()
-                .iter()
-                .copied()
-                .filter(|(address, _)| {
-                    *address == relations_kit::serializable_data(0, 3)
-                        || relations_kit::RELATION.iter().any(|pointer| {
-                            crelation_status::TUPLE_AUTH_FIELDS
-                                .iter()
-                                .chain(crelation_status::TUPLE_REST_FIELDS.iter())
-                                .any(|field| *address == pointer + field.source_offset)
-                        })
-                })
-                .collect()
-        }
-
-        fn check(
-            bytes: &[u8],
-            skipped: Option<usize>,
-            fault: Option<(usize, usize)>,
-            reason: Option<&'static str>,
-            case: &str,
-        ) {
-            let mut job = RelationsJob::new();
-            for staging in [0, 1, 2] {
-                job.tuples = Vec::with_capacity(staging);
-                // Assert actual allocator-visible capacity, not just the request.
-                assert_eq!(job.tuples.capacity(), staging);
-                job.update_capacity_charge();
-                for cap in [0, 1, 16] {
-                    let context = format!("{case}, cap={cap}, staging={staging}");
-                    let fault_address = fault.map(|(row, field)| relations_kit::RELATION[row] + REST[field].0);
-                    let make_memory = || TupleReads {
-                        memory: relations_kit::memory(bytes),
-                        fault: fault_address,
-                        reads: RefCell::new(Vec::new()),
-                    };
-                    let typed_memory = make_memory();
-                    let direct = relations_kit::direct(&typed_memory, cap, cap);
-                    if let Some(reason) = reason {
-                        assert_eq!(direct.opinion_outcome, Outcome::Unavailable { reason }, "{context}");
-                        assert_eq!(direct.tuple_outcome, Outcome::Unavailable { reason }, "{context}");
-                    } else {
-                        let available = 2 - usize::from(skipped.is_some());
-                        assert_eq!(
-                            direct.tuple_outcome,
-                            if cap < available {
-                                Outcome::Truncated { len: cap, unread_rows: (available - cap) as u32 }
-                            } else {
-                                Outcome::Rows { len: available }
-                            },
-                            "{context}"
-                        );
-                        assert_eq!(
-                            direct.tuple_rows.iter().map(|row| row.ordinal).collect::<Vec<_>>(),
-                            (0..2).filter(|index| Some(*index) != skipped).take(cap).map(|index| index as u32).collect::<Vec<_>>(),
-                            "{context}"
-                        );
-                        if let Some(row) = direct.tuple_rows.iter().find(|row| row.ordinal == 0) {
-                            assert_eq!((row.start_hour, row.end_hour, row.cancel, row.retired), (100, -5, 0x80, 0x02));
-                        }
-                    }
-                    let raw_memory = make_memory();
-                    let report = copy_relations_refresh(
-                        &raw_memory,
-                        RelationsCopyContext {
-                            base: relations_kit::BASE,
-                            game_state: relations_kit::GS,
-                            active: [true; 2],
-                            opinion_cap: cap,
-                            tuple_cap: cap,
-                        },
-                        &mut job,
-                    );
-                    assert_eq!(job.tuples.capacity(), staging, "{context}: capture grew staging");
-                    assert_eq!(report.raw_ok, staging == 2, "{context}");
-                    assert_eq!(job.overflowed, staging < 2, "{context}");
-                    assert_eq!(job.tuples.len(), if staging == 2 { 2 } else { 0 }, "{context}");
-
-                    let typed_reads = tuple_reads(&typed_memory);
-                    let raw_reads = tuple_reads(&raw_memory);
-                    if staging < 2 {
-                        // Refuse before touching any tuple pointer/auth/rest byte:
-                        // a caller fallback must receive a one-shot fault first.
-                        assert!(raw_reads.is_empty(), "{context}: read before admission");
-                        continue;
-                    }
-                    assert_eq!(raw_reads, typed_reads, "{context}: tuple read prefix");
-                    for (index, read) in raw_reads.iter().enumerate() {
-                        assert!(!raw_reads[..index].contains(read), "{context}: repeated tuple read {read:?}");
-                    }
-                    if let Some(address) = fault_address {
-                        assert_eq!(raw_reads.last(), Some(&(address, crelation_status::TUPLE_REST_FIELDS[fault.unwrap().1].len)), "{context}");
-                    }
-
-                    if report.raw_ok {
-                        // Both auth blobs remain available even when the first
-                        // rest row fails; decode still authenticates this chunk first.
-                        for (index, occ) in job.tuples.iter().enumerate() {
-                            assert_eq!(occ.ordinal, index as u32, "{context}");
-                            assert_eq!(occ.auth_read, TupleAuthRead::Complete, "{context}");
-                            let expected = if Some(index) == skipped {
-                                TupleRestRead::NotRequested
-                            } else if let Some((failed, field)) = fault {
-                                if index < failed {
-                                    TupleRestRead::Complete
-                                } else if index == failed {
-                                    REST[field].2
-                                } else {
-                                    TupleRestRead::NotRequested
-                                }
-                            } else {
-                                TupleRestRead::Complete
-                            };
-                            assert_eq!(occ.rest_read, expected, "{context}");
-                            if expected != TupleRestRead::Complete {
-                                assert_eq!(occ.rest, [0; crelation_status::TUPLE_REST_BYTES], "{context}: incomplete bytes retained");
-                            }
-                        }
-                        let mut captured = relations_kit::intel_captured(cap, cap);
-                        captured.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
-                        relations_kit::assert_matches_direct(&captured, &direct);
-                    }
-                    // Insufficient staging was refused above without consuming
-                    // tuple reads; only admitted payloads reach decode here.
-                }
-            }
-        }
-
-        let valid = relations_kit::opinionated_fixture();
-        check(&valid, None, None, None, "complete rest control");
-        for (field, _) in REST.iter().enumerate() {
-            for row in 0..2 {
-                check(&valid, None, Some((row, field)), Some(REST[field].1), "native rest fault control");
-            }
-            for (offset, value, reason) in [
-                (crelation::FIRST_COUNTRY, 0, "country id is zero"),
-                (crelation::FIRST_COUNTRY, 2, "serializable relation is not owned by its first endpoint"),
-                (crelation::SECOND_COUNTRY, 0, "country id is zero"),
-            ] {
-                let mut bytes = valid.clone();
-                relations_kit::p32(&mut bytes, relations_kit::RELATION[0] + offset, value);
-                check(&bytes, None, Some((1, field)), Some(reason), "earlier complete endpoint error beats later rest fault");
-            }
-            let mut bytes = valid.clone();
-            relations_kit::p32(&mut bytes, relations_kit::RELATION[0] + crelation::FIRST_COUNTRY, 0);
-            check(&bytes, None, Some((0, field)), Some(REST[field].1), "same-row incomplete rest precedes endpoint interpretation");
-        }
-        for (vtable, type_id) in [
-            (cwar_relation::VTABLE_RVA, cwar_relation::TYPE),
-            (csubject_relation::VTABLE_RVA, csubject_relation::TYPE_VALUE),
-        ] {
-            for skipped in 0..2 {
-                let mut bytes = valid.clone();
-                relations_kit::relation(&mut bytes, relations_kit::RELATION[skipped], vtable, type_id, 1, 3);
-                check(&bytes, Some(skipped), None, None, "skipped prefix or tail control");
-                for (field, _) in REST.iter().enumerate() {
-                    check(&bytes, Some(skipped), Some((1 - skipped, field)), Some(REST[field].1), "rest fault beside skipped prefix or tail");
-                }
-            }
-        }
-    }
-
-    // Compile-time proof on the tested target that the richer status preserves
-    // the previous occurrence size/alignment, including its unchanged auth status.
-    #[test]
-    fn relations_tuple_admission_preserves_one_shot_fault_through_caller_fallback() {
-        use engine::crelation;
-        use std::cell::{Cell, RefCell};
-
-        struct OneShot<'a> {
-            memory: SliceMemory<'a>,
-            fault: usize,
-            armed: Cell<bool>,
-            attempts: Cell<usize>,
-            reads: RefCell<Vec<(usize, usize)>>,
-        }
-
-        impl Memory for OneShot<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.reads.borrow_mut().push((address, output.len()));
-                if address <= self.fault && self.fault < address + output.len() {
-                    self.attempts.set(self.attempts.get() + 1);
-                    if self.armed.replace(false) {
-                        let prefix = output.len().min(3);
-                        output[..prefix].fill(0xa5);
-                        return false;
-                    }
-                }
-                self.memory.copy(address, output)
-            }
-        }
-
-        fn tuple_reads(memory: &OneShot<'_>) -> Vec<(usize, usize)> {
-            memory
-                .reads
-                .borrow()
-                .iter()
-                .copied()
-                .filter(|(address, _)| {
-                    *address == relations_kit::serializable_data(0, 3)
-                        || relations_kit::RELATION.iter().any(|pointer| {
-                            crelation_status::TUPLE_AUTH_FIELDS
-                                .iter()
-                                .chain(crelation_status::TUPLE_REST_FIELDS.iter())
-                                .any(|field| *address == pointer + field.source_offset)
-                        })
-                })
-                .collect()
-        }
-
-        let bytes = relations_kit::opinionated_fixture();
-        for row in 0..2 {
-            for (offset, reason) in [
-                (0, "relation vtable unreadable"),
-                (crelation::TYPE_ID, "relation type word unreadable"),
-                (crelation::FIRST_COUNTRY, "relation first country unreadable"),
-                (crelation::SECOND_COUNTRY, "relation second country unreadable"),
-                (crelation::START_HOUR, "relation start hour unreadable"),
-                (crelation::END_HOUR, "relation end hour unreadable"),
-                (crelation::CANCEL, "relation cancel byte unreadable"),
-                (crelation::RETIRED, "relation retired byte unreadable"),
-            ] {
-                let make_memory = || OneShot {
-                    memory: relations_kit::memory(&bytes),
-                    fault: relations_kit::RELATION[row] + offset,
-                    armed: Cell::new(true),
-                    attempts: Cell::new(0),
-                    reads: RefCell::new(Vec::new()),
-                };
-                let reference_memory = make_memory();
-                let direct = relations_kit::direct(&reference_memory, 16, 16);
-                assert_eq!(direct.opinion_outcome, Outcome::Unavailable { reason });
-                assert_eq!(direct.tuple_outcome, Outcome::Unavailable { reason });
-                assert_eq!(reference_memory.attempts.get(), 1);
-                let reference_reads = tuple_reads(&reference_memory);
-
-                for staging in [0, 1, 2] {
-                    let context = format!("row={row}, offset={offset:#x}, staging={staging}");
-                    let memory = make_memory();
-                    let mut job = RelationsJob::new();
-                    job.tuples = Vec::with_capacity(staging);
-                    // A captured fault in owner zero must finish the refresh.
-                    // Trying owner one would exhaust metadata and request fallback.
-                    job.metas = Vec::with_capacity(1);
-                    job.update_capacity_charge();
-                    assert_eq!((job.tuples.capacity(), job.metas.capacity()), (staging, 1));
-                    let report = copy_relations_refresh(
-                        &memory,
-                        RelationsCopyContext {
-                            base: relations_kit::BASE,
-                            game_state: relations_kit::GS,
-                            active: [true; 2],
-                            opinion_cap: 16,
-                            tuple_cap: 16,
-                        },
-                        &mut job,
-                    );
-                    assert_eq!(report.raw_ok, staging == 2, "{context}");
-                    assert_eq!(job.overflowed, staging < 2, "{context}");
-                    assert_eq!((job.tuples.capacity(), job.metas.capacity()), (staging, 1));
-
-                    if report.raw_ok {
-                        assert_eq!(job.metas.len(), 1, "{context}");
-                        assert_eq!(memory.attempts.get(), 1, "{context}");
-                        let mut captured = relations_kit::intel_captured(16, 16);
-                        captured.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
-                        relations_kit::assert_matches_direct(&captured, &direct);
-                    } else {
-                        assert!(job.tuples.is_empty(), "{context}");
-                        assert!(tuple_reads(&memory).is_empty(), "{context}: tuple read before admission");
-                        assert_eq!(memory.attempts.get(), 0, "{context}: consumed fault before fallback");
-                        // Emulate the real caller: only a refused raw payload takes
-                        // the typed fallback, on the SAME observation-bearing Memory.
-                        let fallback = relations_kit::direct(&memory, 16, 16);
-                        assert_eq!(fallback.opinion_outcome, direct.opinion_outcome, "{context}");
-                        assert_eq!(fallback.tuple_outcome, direct.tuple_outcome, "{context}");
-                        assert_eq!(fallback.opinion_rows, direct.opinion_rows, "{context}");
-                        assert_eq!(fallback.tuple_rows, direct.tuple_rows, "{context}");
-                    }
-                    assert_eq!(memory.attempts.get(), 1, "{context}: fault address retried");
-                    assert!(!memory.armed.get(), "{context}: fault was never observed");
-                    assert_eq!(tuple_reads(&memory), reference_reads, "{context}: tuple prefix differs");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn relations_tuple_rest_status_preserves_occurrence_layout() {
-        #[allow(dead_code)]
-        struct BeforeRestStatus {
-            owner_id: u32,
-            owner_canonical: u32,
-            target_country: u32,
-            ordinal: u32,
-            auth: [u8; crelation_status::TUPLE_AUTH_BYTES],
-            auth_read: TupleAuthRead,
-            rest: [u8; crelation_status::TUPLE_REST_BYTES],
-            rest_ok: bool,
-        }
-        const _: () = {
-            assert!(std::mem::size_of::<TupleRestRead>() == std::mem::size_of::<bool>());
-            assert!(std::mem::align_of::<TupleRestRead>() == std::mem::align_of::<bool>());
-            assert!(std::mem::size_of::<TupleOcc>() == std::mem::size_of::<BeforeRestStatus>());
-            assert!(std::mem::align_of::<TupleOcc>() == std::mem::align_of::<BeforeRestStatus>());
-        };
-    }
-
-    #[test]
-    fn relations_copy_decode_matches_faults_with_identical_reasons() {
+    fn relations_job_matches_faults_with_identical_reasons() {
         use engine::{csubject_relation, cwar_relation};
         let valid = relations_kit::opinionated_fixture();
         // Each mutation faults the whole family; both paths must agree on the
@@ -6154,6 +4274,18 @@ mod tests {
                 market as u64,
             ],
         );
+        for owner in [0, 2] {
+            relations_kit::own(
+                &mut bytes,
+                owner,
+                &[
+                    relations_kit::RELATION[0],
+                    relations_kit::RELATION[1],
+                    subject,
+                    market,
+                ],
+            );
+        }
         let memory = relations_kit::memory(&bytes);
         let direct = relations_kit::direct(&memory, 16, 16);
         assert_eq!(direct.tuple_outcome, Outcome::Rows { len: 2 });
@@ -6190,40 +4322,323 @@ mod tests {
         assert_eq!(intel.relation_opinions.outcome, direct.opinion_outcome);
     }
 
+    /// Pooled jobs share one authentication store. A refresh that finds it
+    /// lent authenticates every status and yields the same rows; the store
+    /// comes home, grown, when decode releases the job holding it.
     #[test]
-    fn relations_staging_overflow_reports_fallback_without_blocking() {
+    fn relations_jobs_share_one_authentication_store() {
+        let bytes = relations_kit::opinionated_fixture();
+        let store: &'static AuthenticationStore =
+            Box::leak(Box::new(std::sync::Mutex::new(AuthenticationSlot::Unmade)));
+        let [mut first, mut second] = [(); 2].map(|()| RelationsJob {
+            store: Some(store),
+            ..RelationsJob::new()
+        });
+        let ctx = RelationsCopyContext {
+            base: relations_kit::BASE,
+            game_state: relations_kit::GS,
+            active: [true; 2],
+            opinion_cap: 16,
+            tuple_cap: 16,
+            epoch: 0,
+        };
+        let memory = relations_kit::memory(&bytes);
+        let run = |job: &mut RelationsJob| {
+            assert!(copy_relations_refresh(&memory, ctx, job).raw_ok);
+            (
+                job.walk.unwrap(),
+                job.opinions[..2].to_vec(),
+                job.tuples[..2].to_vec(),
+            )
+        };
+        let rows = run(&mut first);
+        assert!(first.auth.is_some());
+        // Lent: the second job walks without it, to the same rows.
+        assert_eq!(run(&mut second), rows);
+        assert!(second.auth.is_none());
+        first.return_authentication();
+        // Home and grown: the next refresh reads each opinion alone.
+        let mut lent = LentAuthentication::borrow(store).unwrap();
+        let auth = &mut lent.shared().auth;
+        assert!(auth.capacity()[1] > 0);
+        drop(lent);
+        let mut cleared = bytes.clone();
+        relations_kit::p64(&mut cleared, relations_kit::status(0, 2), 0);
+        assert!(copy_relations_refresh(&memory, ctx, &mut second).raw_ok);
+        assert!(copy_relations_refresh(&relations_kit::memory(&cleared), ctx, &mut second).raw_ok);
+        assert_eq!(second.walk.unwrap().opinions, rows.0.opinions);
+    }
+
+    /// The relations dispatch runs across IntelResidual's loan of the pack, as
+    /// `acquire` runs it: the context and slice come from the real pack before
+    /// the loan, the join (`join_relations`) returns them to it, then the
+    /// typed capture and the failure path run as they do there. Published,
+    /// short (typed fallback, from the returned slice) and failed reads (no
+    /// typed read) all return the slice and the store; an unpublished read is
+    /// read again at the next hour. Rejected-inline execution is covered in
+    /// `acquisition_jobs`.
+    #[test]
+    fn relations_dispatch_spans_the_intel_loan_and_returns_its_slice() {
+        let bytes = relations_kit::opinionated_fixture();
+        let memory = relations_kit::memory(&bytes);
+        let mut pack = relations_kit::intel_captured(16, 16);
+        let mut store = Some(Box::new(SliceFingerprints::new()));
+        // One hour: begin before the loan, walk while it is out, then the
+        // join, the typed capture and the failure path. Returns the owners
+        // the hour's published rows came from, and whether they were
+        // published by the job itself.
+        let hour = |pack: &mut Captured,
+                        store: &mut Option<Box<SliceFingerprints>>,
+                        hour: i32,
+                        rows: usize,
+                        // A panicked (walked) or stopped (never walked) job.
+                        failure: Option<(&'static str, bool)>| {
+            let (context, selection) = pack.begin_relations(
+                relations_kit::BASE,
+                relations_kit::GS,
+                hour,
+                false,
+                true,
+            );
+            assert_eq!((context.opinion_cap, context.tuple_cap), (16, 16));
+            assert_eq!(pack.relation_activity(), [true; 2]);
+            let loaned = std::mem::replace(pack, Captured::vacant());
+            // What the old dispatch order read: the placeholder has nothing.
+            assert_eq!((pack.opinion_rows_cap(), pack.tuple_rows_cap()), (0, 0));
+            let mut job = RelationsJob {
+                opinions: vec![crelation_status::OpinionRow::default(); rows],
+                tuples: vec![crelation_status::TupleRow::default(); rows],
+                selection,
+                fingerprints: store.take(),
+                ..RelationsJob::default()
+            };
+            let report = match failure {
+                None => copy_relations_refresh(&memory, context, &mut job),
+                Some((_, walked)) => {
+                    if walked {
+                        copy_relations_refresh(&memory, context, &mut job);
+                    }
+                    // `completed!` maps a failed completion to the default
+                    // report, as `acquire` sees it.
+                    RelationsCopyReport::default()
+                }
+            };
+            *pack = loaned;
+            let failure = failure.map(|(reason, _)| reason);
+            let published = report.raw_ok && failure.is_none() && job.published();
+            let (fingerprints, payload) = pack.join_relations(job, report, failure);
+            *store = fingerprints;
+            assert!(store.is_some(), "the store comes back at hour {hour}");
+            // The typed capture, as `acquire` runs it after the joins. It
+            // resets the relation outcomes to UNCAPTURED; one it walked would
+            // hold this fixture's rows.
+            pack.capture_delegated(
+                &memory,
+                CaptureContext {
+                    base: relations_kit::BASE,
+                    game_state: relations_kit::GS,
+                    hour,
+                    force_full: false,
+                },
+            );
+            let rows = |rows: &[crelation_status::OpinionRow], outcome: Outcome| {
+                rows[..outcome.len()]
+                    .iter()
+                    .map(|row| row.owner_country)
+                    .collect::<std::collections::BTreeSet<u32>>()
+            };
+            let owners = match payload {
+                Ok(job) => {
+                    assert!(job.selection.is_none() && job.fingerprints.is_none());
+                    assert_eq!(pack.relation_opinions.outcome, UNCAPTURED, "no typed walk");
+                    rows(&job.opinions, job.walk.unwrap().opinions)
+                }
+                Err(job) => {
+                    assert!(job.selection.is_none() && job.fingerprints.is_none());
+                    if let Some(reason) = failure {
+                        // The raw-mode gate kept the typed capture off the
+                        // tables; the failure path publishes them unavailable.
+                        assert_eq!(pack.relation_opinions.outcome, UNCAPTURED, "no typed walk");
+                        assert_eq!(pack.relation_tuples.outcome, UNCAPTURED, "no typed walk");
+                        pack.fail_relations_capture(context.active, reason);
+                        for outcome in [pack.relation_opinions.outcome, pack.relation_tuples.outcome] {
+                            assert_eq!(outcome, Outcome::Unavailable { reason });
+                        }
+                        Default::default()
+                    } else {
+                        // The typed fallback read from the returned slice.
+                        let outcome = pack.relation_opinions.outcome;
+                        assert!(matches!(outcome, Outcome::Rows { .. }), "{outcome:?}");
+                        rows(&pack.relation_opinions.rows, outcome)
+                    }
+                }
+            };
+            (owners, published)
+        };
+        // First sight reads every owner; the slice then reads its own.
+        let (all, published) = hour(&mut pack, &mut store, 1, 16, None);
+        assert!(published && all.len() >= 2);
+        let slice = |hour: i32| {
+            all.iter()
+                .copied()
+                .filter(|&owner| replay::cadence::slice_of(owner) == hour.rem_euclid(24) as u32)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let one = *all.iter().next().unwrap();
+        let own = replay::cadence::slice_of(one) as i32 + 24;
+        assert_eq!(hour(&mut pack, &mut store, own, 16, None).0, slice(own));
+        // A short job falls back to the typed walk, which reads exactly this
+        // hour's slice from the returned selection. Not published by the job,
+        // so the next hour reads this slice again.
+        let (typed, published) = hour(&mut pack, &mut store, own + 24, 0, None);
+        assert!(!published);
+        assert_eq!(typed, slice(own));
+        assert_eq!(
+            hour(&mut pack, &mut store, own + 25, 16, None).0,
+            &slice(own) | &slice(own + 25)
+        );
+        // A panicked job (it walked) or a stopped one (it never walked)
+        // publishes nothing, reads nothing more, and is read again too.
+        let (failed, published) = hour(
+            &mut pack,
+            &mut store,
+            own + 48,
+            16,
+            Some(("acquisition worker panicked", true)),
+        );
+        assert!(!published && failed.is_empty());
+        assert_eq!(
+            hour(&mut pack, &mut store, own + 49, 16, None).0,
+            &slice(own) | &slice(own + 49)
+        );
+        let (failed, published) = hour(
+            &mut pack,
+            &mut store,
+            own + 72,
+            16,
+            Some(("acquisition job stopped", false)),
+        );
+        assert!(!published && failed.is_empty());
+        assert_eq!(
+            hour(&mut pack, &mut store, own + 73, 16, None).0,
+            &slice(own) | &slice(own + 73)
+        );
+        // The pack's own selection, with its storage, is back after each join.
+        assert!(pack.relations_selection().contains(one) || !slice(own + 49).contains(&one));
+    }
+
+    /// Relations are read once a day, one owner slice per hour: a first scan
+    /// reads every owner (each is new), a later hour reads only its slice,
+    /// and a read left unpublished is read again at the next hour.
+    #[test]
+    fn a_relations_job_reads_new_owners_then_only_its_hours_slice() {
+        let bytes = relations_kit::opinionated_fixture();
+        let memory = relations_kit::memory(&bytes);
+        let ctx = RelationsCopyContext {
+            base: relations_kit::BASE,
+            game_state: relations_kit::GS,
+            active: [true; 2],
+            opinion_cap: 16,
+            tuple_cap: 16,
+            epoch: 0,
+        };
+        let mut job = RelationsJob::new();
+        let mut store = Some(Box::new(SliceFingerprints::new()));
+        let mut read = |hour: i32, store: &mut Option<Box<SliceFingerprints>>| {
+            let mut selection = SliceSelection::new(true);
+            selection.reset(hour, false);
+            job.selection = Some(selection);
+            job.fingerprints = store.take();
+            assert!(copy_relations_refresh(&memory, ctx, &mut job).raw_ok);
+            *store = job.fingerprints.take();
+            let walk = job.walk.unwrap();
+            let owners: std::collections::BTreeSet<u32> = job.opinions[..walk.opinions.len()]
+                .iter()
+                .map(|row| row.owner_country)
+                .chain(job.tuples[..walk.tuples.len()].iter().map(|row| row.owner_country))
+                .collect();
+            (owners, job.selection.take().unwrap())
+        };
+        let (all, _) = read(1, &mut store);
+        assert!(all.len() >= 2, "{all:?}");
+        let slice = |hour: i32| {
+            all.iter()
+                .copied()
+                .filter(|&owner| replay::cadence::slice_of(owner) == hour.rem_euclid(24) as u32)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let (owners, unpublished) = read(25, &mut store);
+        assert!(!owners.is_empty());
+        assert_eq!(owners, slice(25));
+        // Unpublished: the next hour reads its own slice and this one again.
+        unpublished.invalidate(store.as_deref_mut().unwrap());
+        let (owners, _) = read(26, &mut store);
+        assert_eq!(owners, &slice(25) | &slice(26));
+        let (owners, _) = read(27, &mut store);
+        assert_eq!(owners, slice(27));
+    }
+
+    /// A job reuses its status authentications until the epoch moves (a
+    /// load, gap or recovery), and then authenticates every status again.
+    #[test]
+    fn relation_authentications_last_until_the_epoch_moves() {
+        let bytes = relations_kit::opinionated_fixture();
+        let mut job = RelationsJob::new();
+        let run = |bytes: &[u8], job: &mut RelationsJob, epoch| {
+            let ctx = RelationsCopyContext {
+                base: relations_kit::BASE,
+                game_state: relations_kit::GS,
+                active: [true; 2],
+                opinion_cap: 16,
+                tuple_cap: 16,
+                epoch,
+            };
+            let report = copy_relations_refresh(&relations_kit::memory(bytes), ctx, job);
+            if job.grow_for_next() {
+                job.grow();
+            }
+            // As decode does when it releases the job.
+            job.return_authentication();
+            (report.raw_ok, job.walk.unwrap().opinions)
+        };
+        for _ in 0..2 {
+            assert_eq!(run(&bytes, &mut job, 1), (true, Outcome::Rows { len: 2 }));
+        }
+        let mut moved = bytes.clone();
+        relations_kit::p64(&mut moved, relations_kit::status(0, 2), 0);
+        assert_eq!(run(&moved, &mut job, 1), (true, Outcome::Rows { len: 2 }));
+        assert_eq!(
+            run(&moved, &mut job, 2),
+            (
+                true,
+                Outcome::Unavailable {
+                    reason: "relation status vtable mismatch"
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn a_short_relations_job_takes_the_typed_fallback_and_grows() {
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
         let intel = relations_kit::intel_captured(16, 16);
-        // Zero-capacity staging cannot hold any copy: the report declines the
-        // payload so the caller falls back to the typed walk.
-        let mut tiny = RelationsJob {
-            active: [true; 2],
-            countries: Vec::new(),
-            links: Vec::new(),
-            highest_slot: 0,
-            metas: Vec::new(),
-            slot_pool: Vec::new(),
-            slot_used: 0,
-            slot_indices: Vec::new(),
-            tuples: Vec::new(),
-            reader_err: None,
-            country_err: None,
-            top_err: None,
-            unread_opinions: 0,
-            unread_tuples: 0,
-            overflowed: false,
-            capacity_charge: crate::raw_memory::Charge::default(),
-        };
+        // A job shorter than the pack's buffers cannot hold the rows: the
+        // report declines the payload so the caller falls back to the typed walk.
+        let mut tiny = RelationsJob::default();
         let ctx = RelationsCopyContext {
             base: relations_kit::BASE,
             game_state: relations_kit::GS,
             active: [true; 2],
             opinion_cap: intel.opinion_rows_cap(),
             tuple_cap: intel.tuple_rows_cap(),
+            epoch: 0,
         };
         let report = copy_relations_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
+        assert!(tiny.grow_for_next());
+        tiny.grow();
+        assert!(copy_relations_refresh(&memory, ctx, &mut tiny).raw_ok);
         // The typed path still reads the same fixture cleanly.
         let direct = relations_kit::direct(&memory, 16, 16);
         assert_eq!(direct.opinion_outcome, Outcome::Rows { len: 2 });

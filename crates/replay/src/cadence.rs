@@ -1,14 +1,18 @@
 //! Capture cadence. Single source of truth.
 //!
+//! There are three cadences (owner rule): Hourly, Daily and Static.
 //! Hourly: map inputs, character identities and unit leaders. Daily: panel
-//! data, including persistent character roles and traits, walked once per 24
-//! game-hours in a fixed slot so every hour costs about the same. Sliced: large
-//! per-owner tables refreshed one owner slice per hour, so each owner is
-//! read once per day and no hour reads the whole table; SliceReads holds the
-//! hour each owner's rows were read at (see [`crate::sliced`]). Static: data that cannot change after a save loads,
-//! walked only on a full hour (branch start, load, gap or an explicit refresh
-//! request). Off-slot hours record [`SKIPPED_REASON`] and the replay carries
-//! the last walk forward; keyframes re-encode the rows already held.
+//! data, including persistent character roles and traits, and slow map
+//! inputs such as relations, read once per 24 game-hours. A daily table is
+//! walked whole in a fixed slot ([`Cadence::Daily`]) or, when one walk would
+//! make its hour spike, spread over the day one owner slice per hour
+//! ([`Cadence::Sliced`]): each owner is still read once per day and no hour
+//! reads the whole table; SliceReads holds the hour each owner's rows were
+//! read at (see [`crate::sliced`]). Static: data that cannot change after a
+//! save loads, walked only on a full hour (branch start, load, gap or an
+//! explicit refresh request); a table that can change is Daily or Hourly.
+//! Off-slot hours record [`SKIPPED_REASON`] and the replay carries the last
+//! walk forward; keyframes re-encode the rows already held.
 
 use crate::rows::TableId;
 
@@ -21,12 +25,12 @@ pub const STATIC_LIMITATION: &str = "read once per branch; cannot change after t
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cadence {
     Hourly,
-    /// Map-visible but slow to change: every 4th hour, in the given slot.
-    FourHourly(u32),
+    /// Once per day, the whole table in the given slot.
     Daily(u32),
-    /// One owner slice per hour ([`slice_of`]); a full hour reads every slice.
-    /// Each owner's read hour is in SliceReads; the recorder merges each slice
-    /// into the previous complete table.
+    /// Daily, spread over the day: one owner slice per hour ([`slice_of`]);
+    /// a full hour reads every slice. Each owner's read hour is in
+    /// SliceReads; the recorder merges each slice into the previous complete
+    /// table.
     Sliced,
     Static,
 }
@@ -43,7 +47,7 @@ pub fn slice_active(owner: u32, hour: crate::Hour, force_full: bool) -> bool {
 }
 
 pub const fn cadence(table: TableId) -> Cadence {
-    use Cadence::{Daily, FourHourly, Sliced, Static};
+    use Cadence::{Daily, Sliced, Static};
     match table {
         // Research inputs change at least daily for every researching country;
         // a whole-table walk is the family's largest cost.
@@ -56,17 +60,20 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::ResearchTechnologies | TableId::TechnologyDefinitions => Sliced,
         // Cannot change after the save loads (the DLC set included).
         TableId::LexicalTokens | TableId::SimulationFeatures => Static,
-        // Relations feed the perspective.
-        TableId::RelationOpinions | TableId::RelationTuples => FourHourly(1),
+        // Relations feed the perspective. Daily (owner decision): an opinion
+        // or relation change made by an event can show up to a game day late.
+        // One walk of every owner would spike its hour at thousands of
+        // countries, so each owner's relations are read in its slice.
+        TableId::RelationOpinions | TableId::RelationTuples => Sliced,
         // Province names are live overrides: set_province_name and
-        // reset_province_name effects can change them after a save loads.
-        TableId::ProvinceNames => FourHourly(3),
+        // reset_province_name effects can change them after a save loads,
+        // so they are daily, not static; a rename can show up a day late.
+        TableId::ProvinceNames => Daily(1),
         // Daily slots: whole shared-source families stay together; a
         // definition table shares the slot of the census that reaches it.
         // Intel lanes change only in CGameState::DailyUpdate, which runs inside
         // the hourly update entered at hour 23; slot 0 is the first sample after it.
         TableId::CountryIntel => Daily(0),
-        // Slot 4: the relation tuples' four-hourly slot 1 is busy already.
         TableId::ProjectPrograms
         | TableId::Projects
         | TableId::ProjectHistory
@@ -177,7 +184,7 @@ pub const fn cadence(table: TableId) -> Cadence {
 pub const fn refresh_slot(table: TableId) -> Option<u32> {
     match cadence(table) {
         Cadence::Daily(slot) => Some(slot),
-        Cadence::Hourly | Cadence::FourHourly(_) | Cadence::Sliced | Cadence::Static => None,
+        Cadence::Hourly | Cadence::Sliced | Cadence::Static => None,
     }
 }
 
@@ -188,10 +195,7 @@ pub const fn is_sliced(table: TableId) -> bool {
 
 /// Not walked every hour; off-hours carry the last walk forward.
 pub const fn is_staggered(table: TableId) -> bool {
-    matches!(
-        cadence(table),
-        Cadence::FourHourly(_) | Cadence::Daily(_) | Cadence::Static
-    )
+    matches!(cadence(table), Cadence::Daily(_) | Cadence::Static)
 }
 
 pub fn is_refresh(table: TableId, hour: crate::Hour) -> bool {
@@ -203,7 +207,6 @@ impl Cadence {
         match self {
             // Every hour reads one slice.
             Cadence::Hourly | Cadence::Sliced => true,
-            Cadence::FourHourly(slot) => hour.rem_euclid(4) == slot as i32,
             Cadence::Daily(slot) => hour.rem_euclid(STAGGER_PERIOD) == slot as i32,
             Cadence::Static => false,
         }
@@ -226,11 +229,9 @@ impl Cadence {
             "H%24==15", "H%24==16", "H%24==17", "H%24==18", "H%24==19", "H%24==20", "H%24==21",
             "H%24==22", "H%24==23",
         ];
-        const FOUR: [&str; 4] = ["H%4==0", "H%4==1", "H%4==2", "H%4==3"];
         match self {
             Cadence::Hourly => "hourly",
             Cadence::Sliced => "one owner slice per hour, merged into the held table",
-            Cadence::FourHourly(slot) => FOUR[slot as usize],
             Cadence::Daily(slot) => DAILY[slot as usize],
             Cadence::Static => "static",
         }
@@ -248,7 +249,6 @@ mod tests {
                 let hits = (base..base + 24).filter(|h| is_refresh(table, *h)).count();
                 let expected = match cadence(table) {
                     Cadence::Hourly | Cadence::Sliced => 24,
-                    Cadence::FourHourly(_) => 6,
                     Cadence::Daily(_) => 1,
                     Cadence::Static => 0,
                 };
@@ -308,7 +308,7 @@ mod tests {
                 TableId::ProjectHistory,
                 TableId::ProjectBreakthroughs,
             ][..],
-            &[TableId::RelationOpinions, TableId::RelationTuples],
+            &[TableId::RelationOpinions, TableId::RelationTuples][..],
             &[
                 TableId::VariantDefinitions,
                 TableId::VariantModules,
@@ -321,14 +321,9 @@ mod tests {
             assert_ne!(shared, Cadence::Hourly);
             assert!(family.iter().all(|t| cadence(*t) == shared), "{family:?}");
         }
-        assert_eq!(cadence(TableId::RelationTuples), Cadence::FourHourly(1));
-        assert_eq!(refresh_text(TableId::RelationTuples), "H%4==1");
+        assert_eq!(cadence(TableId::RelationTuples), Cadence::Sliced);
         assert_eq!(refresh_slot(TableId::RelationTuples), None);
         assert_eq!(refresh_slot(TableId::Projects), Some(4));
-        // The daily project walk never lands on a relation hour.
-        let project_hour = refresh_slot(TableId::Projects).unwrap() as i32;
-        assert!(!is_refresh(TableId::RelationTuples, project_hour));
-        assert!(!is_refresh(TableId::RelationOpinions, project_hour));
         assert_eq!(cadence(TableId::LexicalTokens), Cadence::Static);
         assert_eq!(refresh_text(TableId::LexicalTokens), "static");
         assert!(is_staggered(TableId::LexicalTokens));
@@ -352,14 +347,22 @@ mod tests {
     }
 
     #[test]
-    fn province_name_changes_are_recaptured_at_the_next_four_hour_slot() {
-        assert_eq!(cadence(TableId::ProvinceNames), Cadence::FourHourly(3));
+    fn province_name_changes_are_recaptured_within_a_day() {
+        assert_eq!(cadence(TableId::ProvinceNames), Cadence::Daily(1));
         for changed_at in -24..24 {
-            let next_refresh = (changed_at + 1..=changed_at + 4)
+            let next_refresh = (changed_at + 1..=changed_at + 24)
                 .find(|hour| should_walk(TableId::ProvinceNames, *hour, false))
-                .expect("a changed override must be revisited within four game hours");
-            assert_eq!(next_refresh.rem_euclid(4), 3);
+                .expect("a changed override must be revisited within a game day");
+            assert_eq!(next_refresh.rem_euclid(24), 1);
             assert!(should_walk(TableId::ProvinceNames, changed_at, true));
+        }
+    }
+
+    #[test]
+    fn relations_are_read_once_a_day_one_owner_slice_per_hour() {
+        for table in [TableId::RelationOpinions, TableId::RelationTuples] {
+            assert!(is_sliced(table), "{table:?}");
+            assert!(!is_staggered(table), "{table:?}");
         }
     }
 }
