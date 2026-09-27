@@ -161,6 +161,12 @@ struct ShownHour {
     political_warnings: Vec<String>,
     /// The battle plan's refusals and missing inputs ([`map::orders::OrderReport::warnings`]).
     plan_warnings: Vec<String>,
+    /// The map buildings' refused type tokens
+    /// ([`map::map_buildings::MapBuildingSummary::warnings`]).
+    building_warnings: Vec<String>,
+    /// The unit models' omitted stacks by reason
+    /// ([`map::unit_models::ModelReport::warnings`]).
+    model_warnings: Vec<String>,
     political_summary: (usize, usize),
     political_build: Duration,
     limitations: map::tables::Limitations,
@@ -942,9 +948,11 @@ impl Viewer {
     /// gaps lead, because they are the part that changes with the hour; the
     /// persistent content limitations and the political layer's follow, in
     /// the order `--dump` prints them, so a capture beside a dump lists the
-    /// same lines in the same order. Names and labels are drawn later in the
-    /// frame, so theirs come from the last drawn frame, which is this hour's
-    /// after the first repaint. The Match game UI scale's note follows when
+    /// same lines in the same order. Names, labels, raid icons and counters
+    /// are drawn later in the frame, so theirs (with their refused tokens)
+    /// come from the last drawn frame, which is this hour's after the first
+    /// repaint. Every per-hour line is replaced with its hour, so a refusal
+    /// the next hour recovers from goes. The Match game UI scale's note follows when
     /// that scale is in use. The open battle window's gaps are not included:
     /// the frame adds them after it draws the window, and
     /// `report_map_details` adds them itself.
@@ -956,10 +964,18 @@ impl Viewer {
         warnings.extend(document.warnings.iter().cloned());
         warnings.extend(shown.political_warnings.iter().cloned());
         warnings.extend(shown.plan_warnings.iter().cloned());
+        warnings.extend(shown.building_warnings.iter().cloned());
+        warnings.extend(shown.model_warnings.iter().cloned());
         if let Some(placements) = &self.placements {
             warnings.extend(placements.warnings.iter().cloned());
         }
         warnings.extend(self.label_report.warnings());
+        // The overlay's refused tokens: the raid icons' as laid out for this
+        // camera, the counters' as last drawn.
+        if let Some(overlay) = &self.prepared_overlay {
+            warnings.extend(overlay.raid_report().warnings());
+        }
+        warnings.extend(self.counter_report.warnings());
         // A capture renders at the dump's scale, not Match game's.
         let pinned = self
             .capture
@@ -1612,6 +1628,7 @@ impl Viewer {
         // counters
         self.overlay = None;
         self.prepared_overlay = None;
+        self.counter_report = CounterReport::default();
         self.overlay_fraction = None;
         self.overlay_at = None;
         self.overlay_tables = None;
@@ -2362,6 +2379,8 @@ impl Viewer {
                     error: Some(error),
                     political_warnings: Vec::new(),
                     plan_warnings: Vec::new(),
+                    building_warnings: Vec::new(),
+                    model_warnings: Vec::new(),
                     political_summary: (0, 0),
                     political_build: Duration::ZERO,
                     limitations: Default::default(),
@@ -2376,6 +2395,7 @@ impl Viewer {
             borders,
             rails,
             buildings,
+            building_warnings,
             trains,
             aircraft,
             units,
@@ -2432,6 +2452,7 @@ impl Viewer {
         )?;
         dropper.drop_later(replaced);
         laps.lap("aircraft_upload");
+        let model_warnings = units.report.warnings();
         dropper.drop_later(self.unit_models.replace(units));
         self.unit_fraction = None;
         if uploaded
@@ -2513,6 +2534,8 @@ impl Viewer {
             error: None,
             political_warnings: political.layers.warnings().to_vec(),
             plan_warnings,
+            building_warnings,
+            model_warnings,
             political_summary: political.layers.summary(),
             political_build: political.layers.build,
             limitations,

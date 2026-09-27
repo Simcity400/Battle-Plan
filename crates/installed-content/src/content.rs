@@ -186,6 +186,12 @@ impl GatheredContent {
     }
 }
 
+/// A descriptor's `replace_path` as the overlay compares it: without trailing
+/// separators, then normalized like every layer path.
+fn replace_path(path: &str) -> io::Result<String> {
+    normalize_relative(path.trim_end_matches(['/', '\\']))
+}
+
 /// A coverage path uses `/`, retains case, and cannot escape its layer.
 pub fn normalize_relative(path: &str) -> io::Result<String> {
     let path = path.replace('\\', "/");
@@ -342,7 +348,7 @@ fn descriptor_layer(
             value
                 .scalar_str()
                 .ok_or_else(|| invalid("replace_path is not a UTF-8 scalar"))
-                .and_then(|path| normalize_relative(path.trim_end_matches(['/', '\\'])))
+                .and_then(replace_path)
         })
         .collect::<io::Result<Vec<_>>>()?;
     if !is_mod && !replace_paths.is_empty() {
@@ -582,6 +588,39 @@ impl ResolvedLayers {
             )?;
         }
         Ok(())
+    }
+
+    /// Folder layers for consumers' unit tests, in load order: each
+    /// `(root, replace_paths)` is inventoried and hashed as `gather` does and
+    /// overlaid on the ones before it, so reads verify and same-path files
+    /// and `replace_path` directories replace as they do for real content;
+    /// each replace path is normalized as a descriptor's is.
+    /// Only the `test-support` feature, which consumers enable from their
+    /// dev-dependencies, builds it.
+    #[cfg(feature = "test-support")]
+    pub fn from_folders(folders: &[(&Path, &[&str])]) -> io::Result<Self> {
+        let (mut cache, mut stats) = (HashCache::default(), HashStats::default());
+        let mut layers = Self::default();
+        for (index, (root, replace_paths)) in folders.iter().enumerate() {
+            let mut layer = ResolvedLayer {
+                id: format!("test{index}"),
+                source: LayerSource::Folder(root.to_path_buf()),
+                descriptor: None,
+                replace_paths: replace_paths
+                    .iter()
+                    .map(|path| replace_path(path))
+                    .collect::<io::Result<_>>()?,
+                files: BTreeMap::new(),
+                hashes: BTreeMap::new(),
+                archive_stamp: None,
+                descriptor_hash: None,
+            };
+            layer.inventory()?;
+            layer.hash(&mut cache, &mut stats)?;
+            layers.layers.push(layer);
+        }
+        layers.finish()?;
+        Ok(layers)
     }
 
     pub fn paths(&self) -> impl Iterator<Item = &str> {
@@ -2146,6 +2185,51 @@ mod tests {
             ["interface/w.gfx"]
         );
         assert!(layers.descriptor_paths("gfx", &["asset"]).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The test fixture's replace paths replace a whole directory the way a
+    /// descriptor's do, whatever trailing or Windows separators they carry.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn folder_fixtures_replace_directories_as_descriptors_do() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_installed_content_from_folders_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let (base, over) = (root.join("base"), root.join("over"));
+        for (dir, file) in [
+            (&base, "common/units/a.txt"),
+            (&base, "common/units/deep/b.txt"),
+            (&base, "common/other.txt"),
+            (&over, "common/units/c.txt"),
+        ] {
+            let path = dir.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, file).unwrap();
+        }
+        for replace in ["common/units", "common/units/", "common\\units\\"] {
+            let layers =
+                ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[replace][..])]).unwrap();
+            assert_eq!(
+                layers.paths().collect::<BTreeSet<_>>(),
+                BTreeSet::from(["common/other.txt", "common/units/c.txt"]),
+                "{replace}"
+            );
+            assert_eq!(
+                layers.read("common/units/c.txt").unwrap(),
+                b"common/units/c.txt"
+            );
+            assert_eq!(
+                layers.layers[1].replace_paths,
+                ["common/units"],
+                "{replace}"
+            );
+        }
+        // A path that could escape its layer is refused, as in a descriptor.
+        assert!(ResolvedLayers::from_folders(&[(&base, &["../common"][..])]).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 

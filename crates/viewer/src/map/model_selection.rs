@@ -27,10 +27,7 @@ use installed_content::{
 };
 use replay::{
     frame::DecodedFrame,
-    rows::{
-        DivisionEquipmentRow, DivisionTemplateIconRow, LexicalTokenRow, VariantDefinitionRow,
-        tables,
-    },
+    rows::{DivisionEquipmentRow, DivisionTemplateIconRow, VariantDefinitionRow, tables},
 };
 
 use super::tables::rows;
@@ -84,6 +81,8 @@ pub struct Content {
     module_categories: BTreeMap<String, u64>,
     /// The equipment keys by the lexer's token identity, built on first use.
     equipment_tokens: std::sync::OnceLock<TokenKeys>,
+    /// The sub-unit keys by the lexer's token identity, built on first use.
+    subunit_tokens: std::sync::OnceLock<TokenKeys>,
 }
 
 fn model_definition_source(path: &str) -> Option<(u8, &str)> {
@@ -98,6 +97,31 @@ fn model_definition_source(path: &str) -> Option<(u8, &str)> {
         let relative = lower.strip_prefix("common/units/")?;
         (!relative.contains('/')).then_some((0, path))
     }
+}
+
+/// Every authored sub-unit key, from the files [`Content::load`] reads sub-units
+/// from, once each.
+pub fn subunit_keys(layers: &ResolvedLayers) -> io::Result<BTreeSet<String>> {
+    let mut keys = BTreeSet::new();
+    for path in ordered_model_definition_paths(layers.paths()) {
+        if model_definition_source(path).is_none_or(|(kind, _)| kind != 0) {
+            continue;
+        }
+        let document = parser::parse(&layers.read(path)?)
+            .map_err(|error| invalid(format!("{path}: {error}")))?;
+        for root in document
+            .items
+            .iter()
+            .filter(|root| root.key.as_deref() == Some(b"sub_units"))
+        {
+            for item in root.value.items().unwrap_or_default() {
+                if let Some(key) = item.key.as_deref() {
+                    keys.insert(text(key)?.to_owned());
+                }
+            }
+        }
+    }
+    Ok(keys)
 }
 
 fn ordered_model_definition_paths<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
@@ -446,15 +470,32 @@ impl Content {
         let spelling = tokens
             .name(variant.equipment_token)
             .map_err(|reason| format!("variant {} equipment type: {reason}", variant.id))?;
+        self.equipment_tokens().resolve(spelling)?.ok_or_else(|| {
+            format!(
+                "variant {} equipment type {spelling} is not authored equipment",
+                variant.id
+            )
+        })
+    }
+
+    fn equipment_tokens(&self) -> &TokenKeys {
         self.equipment_tokens
             .get_or_init(|| TokenKeys::new(self.equipment.keys()))
-            .resolve(spelling)?
-            .ok_or_else(|| {
-                format!(
-                    "variant {} equipment type {spelling} is not authored equipment",
-                    variant.id
-                )
-            })
+    }
+
+    /// The authored sub-unit a recorded definition token names, under the
+    /// lexer's fold like [`Self::equipment_key`].
+    fn subunit_of_token(&self, tokens: TokenNames<'_>, token: u32) -> io::Result<&SubUnit> {
+        let spelling = tokens
+            .name(token)
+            .map_err(|reason| invalid(format!("sub-unit: {reason}")))?;
+        let key = self
+            .subunit_tokens
+            .get_or_init(|| TokenKeys::new(self.subunits.keys()))
+            .resolve(spelling)
+            .map_err(invalid)?
+            .ok_or_else(|| invalid(format!("missing authored sub-unit {spelling}")))?;
+        Ok(&self.subunits[key])
     }
 
     pub fn subunit(&self, key: &str) -> Option<&SubUnit> {
@@ -555,32 +596,9 @@ pub enum Definition {
     Local { country: u32, token: u32 },
 }
 
-/// The lexer dictionary, read in place: replay rows are in ascending key order,
-/// so a lookup is a binary search rather than a copy of every literal.
-#[derive(Clone, Copy, Debug)]
-pub struct Tokens<'a>(&'a [LexicalTokenRow]);
-
-impl<'a> Tokens<'a> {
-    /// Rows must be in ascending token order, as every replay table is.
-    pub fn new(rows: &'a [LexicalTokenRow]) -> Self {
-        Self(rows)
-    }
-
-    pub fn read(frame: &'a DecodedFrame) -> io::Result<Self> {
-        Ok(Self::new(rows::<tables::LexicalTokens>(frame)?.rows()))
-    }
-
-    pub fn get(self, token: u32) -> Option<&'a [u8]> {
-        self.0
-            .binary_search_by_key(&token, |row| row.token)
-            .ok()
-            .map(|index| self.0[index].literal.as_slice())
-    }
-}
-
 /// The hour's tables a template's definitions resolve through.
 pub struct Sources<'a> {
-    pub tokens: Tokens<'a>,
+    pub tokens: TokenNames<'a>,
     links: BTreeMap<u32, u32>,
     /// (canonical country, token) -> the override's (archetype token, amount).
     local: BTreeMap<(u32, u32), Vec<(u32, i64)>>,
@@ -589,7 +607,7 @@ pub struct Sources<'a> {
 
 impl<'a> Sources<'a> {
     pub fn read(frame: &'a DecodedFrame) -> io::Result<Self> {
-        let tokens = Tokens::read(frame)?;
+        let tokens = TokenNames::new(frame)?;
         let links: BTreeMap<u32, u32> = frame
             .complete::<tables::CountryLinks>()?
             .iter()
@@ -704,12 +722,23 @@ impl Content {
         let mut requirements = Vec::with_capacity(entries.len());
         let mut seen = BTreeSet::new();
         for &(archetype_token, amount_raw) in entries {
-            let literal = sources.tokens.get(archetype_token).ok_or_else(|| {
+            // The requirement names an equipment type by token, under the
+            // lexer's fold like a variant's.
+            let spelling = sources.tokens.name(archetype_token).map_err(|reason| {
                 invalid(format!(
-                    "local sub-unit {country}:{token} requirement token {archetype_token} is missing"
+                    "local sub-unit {country}:{token} requirement: {reason}"
                 ))
             })?;
-            let archetype = self.archetype(text(literal)?)?;
+            let key = self
+                .equipment_tokens()
+                .resolve(spelling)
+                .map_err(invalid)?
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "local sub-unit {country}:{token} requirement {spelling} is not authored equipment"
+                    ))
+                })?;
+            let archetype = self.archetype(key)?;
             if !seen.insert(archetype) {
                 return Err(invalid(format!(
                     "local sub-unit {country}:{token} repeats archetype {archetype}"
@@ -728,15 +757,7 @@ impl Content {
         local: u8,
         count: i32,
     ) -> io::Result<Group<'a>> {
-        let literal = sources
-            .tokens
-            .get(token)
-            .ok_or_else(|| invalid(format!("missing sub-unit token {token}")))?;
-        let key = text(literal)?;
-        let subunit = self
-            .subunits
-            .get(key)
-            .ok_or_else(|| invalid(format!("missing authored sub-unit {key}")))?;
+        let subunit = self.subunit_of_token(sources.tokens, token)?;
         let identity = sources.identity(template, token, local)?;
         Ok(Group {
             identity,
@@ -981,14 +1002,17 @@ fn category_name(name: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TemplateSubunit;
+    use replay::rows::{LexicalTokenRow, TemplateSubunit};
 
     fn content() -> Content {
+        content_with(b"")
+    }
+
+    /// [`content`] with `extra` read after it, as a later file would be.
+    fn content_with(extra: &[u8]) -> Content {
         let mut content = Content::default();
-        content
-            .read_document(
-                &parser::parse(
-                    br#"
+        for document in [
+            &br#"
             sub_units = {
                 infantry = { type = infantry need = { rifles = 100 } }
                 armor = { type = armor need = { tanks = 50 rifles = 20 } }
@@ -1002,11 +1026,13 @@ mod tests {
                 tanks_1 = { archetype = tanks }
                 tanks_2 = { archetype = tanks parent = tanks_1 visual_tech_level_addition = 2 }
             }
-        "#,
-                )
-                .unwrap(),
-            )
-            .unwrap();
+        "#[..],
+            extra,
+        ] {
+            content
+                .read_document(&parser::parse(document).unwrap())
+                .unwrap();
+        }
         content.canonicalize_requirements().unwrap();
         content
     }
@@ -1033,7 +1059,7 @@ mod tests {
             .into_boxed_slice(),
         );
         Sources {
-            tokens: Tokens(tokens),
+            tokens: TokenNames::from_rows(tokens, true),
             links: [(10, 7)].into(),
             local: local.iter().cloned().collect(),
             local_complete: true,
@@ -1454,6 +1480,135 @@ mod tests {
         // Two tokens resolving to one archetype cannot come from a native pool.
         let repeated = sources(&[((7, 1), vec![(4, 1), (6, 2)])]);
         assert!(content.template(&row((1, 1), &[]), &repeated).is_err());
+    }
+
+    #[test]
+    fn sub_unit_and_requirement_tokens_resolve_under_the_lexers_fold() {
+        let content = content();
+        // The hour spells each token as the lexer first saw it, which may
+        // differ in ASCII case from the authored key.
+        let rows: &'static [LexicalTokenRow] = Box::leak(Box::new([
+            LexicalTokenRow {
+                token: 1,
+                literal: b"Infantry".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 2,
+                literal: b"ARMOR".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 5,
+                literal: b"Tanks".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 8,
+                literal: b"trucks".to_vec(),
+            },
+        ]));
+        let folded = |local: &Overrides| Sources {
+            tokens: TokenNames::from_rows(rows, true),
+            ..sources(local)
+        };
+        let local = folded(&[((7, 1), vec![(5, 200_000)])]);
+        let template = content
+            .template(&row((1, 1), &[(2, 0, 1)]), &local)
+            .unwrap();
+        assert_eq!(template.groups[0].subunit.key, "armor");
+        let representative = template.representative.as_ref().unwrap();
+        assert_eq!(representative.subunit.key, "infantry");
+        assert_eq!(Template::first_requirement(representative), Some("tanks"));
+        // A spelling no authored key folds to, or an absent token, is refused.
+        let unknown = folded(&[((7, 1), vec![(8, 1)])]);
+        assert_eq!(
+            content
+                .template(&row((1, 1), &[]), &unknown)
+                .unwrap_err()
+                .to_string(),
+            "local sub-unit 7:1 requirement trucks is not authored equipment"
+        );
+        assert_eq!(
+            content
+                .template(&row((3, 0), &[]), &folded(&[]))
+                .unwrap_err()
+                .to_string(),
+            "sub-unit: token 3 is not in LexicalTokens"
+        );
+        // Two authored keys equal under the fold are refused by name, for a
+        // sub-unit token and for a requirement token alike.
+        let ambiguous = content_with(
+            br#"
+            sub_units = { ARMOR = { type = armor need = { tanks = 50 } } }
+            equipments = { TANKS = { is_archetype = yes type = armor } }
+        "#,
+        );
+        assert_eq!(
+            ambiguous
+                .template(&row((1, 0), &[(2, 0, 1)]), &folded(&[]))
+                .unwrap_err()
+                .to_string(),
+            "token ARMOR names several content keys: ARMOR, armor"
+        );
+        assert_eq!(
+            ambiguous
+                .template(&row((1, 1), &[]), &local)
+                .unwrap_err()
+                .to_string(),
+            "token Tanks names several content keys: TANKS, tanks"
+        );
+    }
+
+    /// `subunit_keys` reads the sub-units of the files directly under
+    /// `common/units` after same-path replacement, never a child directory's.
+    #[test]
+    fn sub_unit_keys_come_from_the_effective_direct_unit_files() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_viewer_subunit_keys_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let write = |layer: &str, path: &str, text: &str| {
+            let path = root.join(layer).join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "base",
+            "common/units/infantry.txt",
+            "sub_units = { infantry = { } replaced = { } }",
+        );
+        write(
+            "base",
+            "common/units/armor.txt",
+            "sub_units = { armor = { } }",
+        );
+        // Child directories hold equipment and unrelated data, not sub-units.
+        write(
+            "base",
+            "common/units/equipment/tanks.txt",
+            "sub_units = { equipment_child = { } } equipments = { tanks = { } }",
+        );
+        write(
+            "base",
+            "common/units/names_divisions/names.txt",
+            "sub_units = { names_child = { } }",
+        );
+        // The mod's file of the same path replaces the base's whole.
+        write(
+            "mod",
+            "common/units/infantry.txt",
+            "sub_units = { infantry = { } Railway_Gun = { } }",
+        );
+        let layers = ResolvedLayers::from_folders(&[
+            (&root.join("base"), &[][..]),
+            (&root.join("mod"), &[][..]),
+        ])
+        .unwrap();
+        assert_eq!(
+            subunit_keys(&layers).unwrap(),
+            BTreeSet::from(["Railway_Gun", "armor", "infantry"].map(str::to_owned))
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

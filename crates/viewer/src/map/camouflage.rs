@@ -20,10 +20,8 @@ use replay::{
     rows::{DivisionStatusRow, tables},
 };
 
-use super::{
-    model_selection::Tokens,
-    tables::{Available, core, rows},
-};
+use super::tables::{Available, core, rows};
+use crate::table_access::{TokenKeys, TokenNames};
 
 /// The only condition that is not a terrain name.
 const SNOW: &str = "snow";
@@ -37,6 +35,8 @@ struct Category {
 #[derive(Debug, Default)]
 pub struct Content {
     categories: BTreeMap<String, Category>,
+    /// The category keys by the lexer's token identity.
+    category_tokens: TokenKeys,
     show_at: i64,
     show_in_state: i64,
 }
@@ -91,6 +91,7 @@ impl Content {
             }
         }
         Ok(Self {
+            category_tokens: TokenKeys::new(categories.keys()),
             categories,
             show_at,
             show_in_state,
@@ -103,7 +104,7 @@ impl Content {
     fn suffix<'a>(
         &'a self,
         status: &DivisionStatusRow,
-        tokens: Tokens<'_>,
+        tokens: TokenNames<'_>,
         province: u32,
         state_provinces: &[u32],
         mut matches: impl FnMut(u32, &str) -> io::Result<bool>,
@@ -125,14 +126,21 @@ impl Content {
         if highest < maximum.wrapping_mul(self.show_at) / 100_000 {
             return Ok(None);
         }
-        let key = tokens
-            .get(token)
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .ok_or_else(|| invalid(format!("missing acclimatization category token {token}")))?;
-        let category = self
-            .categories
-            .get(key)
-            .ok_or_else(|| invalid(format!("missing authored acclimatization category {key}")))?;
+        // The division records the category by token: its spelling names the
+        // authored category equal to it under the lexer's fold.
+        let spelling = tokens
+            .name(token)
+            .map_err(|reason| invalid(format!("acclimatization category: {reason}")))?;
+        let key = self
+            .category_tokens
+            .resolve(spelling)
+            .map_err(invalid)?
+            .ok_or_else(|| {
+                invalid(format!(
+                    "missing authored acclimatization category {spelling}"
+                ))
+            })?;
+        let category = &self.categories[key];
         for condition in &category.forbid {
             if matches(province, condition)? {
                 return Ok(None);
@@ -236,7 +244,7 @@ impl<'a> Context<'a> {
     pub fn suffix<'b>(
         &self,
         content: &'b Content,
-        tokens: Tokens<'_>,
+        tokens: TokenNames<'_>,
         status: &DivisionStatusRow,
         province: u32,
     ) -> io::Result<Option<&'b str>> {
@@ -317,17 +325,61 @@ mod tests {
         }
     }
 
-    fn tokens() -> Tokens<'static> {
-        Tokens::new(Box::leak(Box::new([
-            replay::rows::LexicalTokenRow {
-                token: 1,
-                literal: b"cold".to_vec(),
-            },
-            replay::rows::LexicalTokenRow {
-                token: 2,
-                literal: b"hot".to_vec(),
-            },
-        ])))
+    fn tokens() -> TokenNames<'static> {
+        TokenNames::from_rows(
+            Box::leak(Box::new([
+                replay::rows::LexicalTokenRow {
+                    token: 1,
+                    literal: b"cold".to_vec(),
+                },
+                replay::rows::LexicalTokenRow {
+                    token: 2,
+                    literal: b"hot".to_vec(),
+                },
+                // A spelling that differs from its authored key in ASCII case.
+                replay::rows::LexicalTokenRow {
+                    token: 3,
+                    literal: b"COLD".to_vec(),
+                },
+            ])),
+            true,
+        )
+    }
+
+    #[test]
+    fn a_category_token_names_its_authored_key_under_the_lexers_fold() {
+        let content = content();
+        let snowy = |_: u32, condition: &str| Ok(condition == SNOW);
+        assert_eq!(
+            content
+                .suffix(&status(&[(3, 90)], 100), tokens(), 1, &[], snowy)
+                .unwrap(),
+            Some(SNOW)
+        );
+        assert_eq!(
+            content
+                .suffix(&status(&[(9, 90)], 100), tokens(), 1, &[], snowy)
+                .unwrap_err()
+                .to_string(),
+            "acclimatization category: token 9 is not in LexicalTokens"
+        );
+        // Two authored categories equal under the fold are refused by name.
+        let ambiguous = Content::parse(
+            br#"
+            cold = { change_camo_when = { snow } }
+            Cold = { change_camo_when = { snow } }
+        "#,
+            75_000,
+            50_000,
+        )
+        .unwrap();
+        assert_eq!(
+            ambiguous
+                .suffix(&status(&[(3, 90)], 100), tokens(), 1, &[], snowy)
+                .unwrap_err()
+                .to_string(),
+            "token COLD names several content keys: Cold, cold"
+        );
     }
 
     #[test]

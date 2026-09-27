@@ -58,6 +58,7 @@ pub fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Available<'_, T>
 /// returns for every key it rejects (empty, or starting with a digit or
 /// '-'), so it names no one key. A spelling that is not NUL-free UTF-8 names
 /// nothing here.
+#[derive(Clone, Copy, Debug)]
 pub struct TokenNames<'a> {
     /// The hour's rows, in token order.
     rows: &'a [LexicalTokenRow],
@@ -104,6 +105,46 @@ impl<'a> TokenNames<'a> {
         Self { rows, complete }
     }
 
+    /// Every token of the hour spelled as text, in token order.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &'a str)> + '_ {
+        self.rows.iter().filter_map(|row| {
+            let name = std::str::from_utf8(&row.literal).ok()?;
+            (row.token != 0 && !name.contains('\0')).then_some((row.token, name))
+        })
+    }
+
+    /// The token the lexer gives each key: the one spelled equal to it under
+    /// the lexer's fold (`TokenKeys`), found in one pass without allocating.
+    /// Several such tokens are refused by name.
+    pub fn tokens_of<const N: usize>(&self, keys: [&str; N]) -> [Result<Option<u32>, String>; N] {
+        #[derive(Clone, Copy)]
+        enum Found {
+            None,
+            One(u32),
+            Two(u32, u32),
+        }
+        let mut found = [Found::None; N];
+        for (token, name) in self.iter() {
+            for (key, found) in keys.iter().zip(&mut found) {
+                if name.eq_ignore_ascii_case(key) {
+                    *found = match *found {
+                        Found::None => Found::One(token),
+                        Found::One(first) => Found::Two(first, token),
+                        two => two,
+                    };
+                }
+            }
+        }
+        std::array::from_fn(|index| match found[index] {
+            Found::None => Ok(None),
+            Found::One(token) => Ok(Some(token)),
+            Found::Two(first, second) => Err(format!(
+                "{} folds to several tokens: {first}, {second} and perhaps more",
+                keys[index]
+            )),
+        })
+    }
+
     /// The token's name, or why this hour cannot give one.
     pub fn name(&self, token: u32) -> Result<&'a str, TokenError> {
         if token == 0 {
@@ -121,6 +162,13 @@ impl<'a> TokenNames<'a> {
             .filter(|name| !name.contains('\0'))
             .ok_or(TokenError::NotText(token))
     }
+}
+
+/// Refused token matches by reason, with how often each was met.
+pub type Refusals = BTreeMap<String, usize>;
+
+pub fn refuse(refusals: &mut Refusals, reason: String) {
+    *refusals.entry(reason).or_default() += 1;
 }
 
 /// A key as the lexer identifies it: only ASCII A-Z fold (see `TokenKeys`).
@@ -226,6 +274,33 @@ mod tests {
         assert_eq!(
             TokenError::Missing(7).to_string(),
             "token 7 is among LexicalTokens' missing rows"
+        );
+    }
+
+    #[test]
+    fn keys_find_their_one_token_under_the_lexers_fold() {
+        let row = |token, literal: &[u8]| LexicalTokenRow {
+            token,
+            literal: literal.to_vec(),
+        };
+        let rows = TableRows::LexicalTokens(vec![
+            row(0, b"air_base"),
+            row(3, b"Air_Base"),
+            row(4, b"naval_base"),
+            row(5, b"NAVAL_BASE"),
+        ]);
+        let complete = frame(TableView::Complete(rows));
+        let names = TokenNames::new(&complete).unwrap();
+        // Token 0 names no one key, so only token 3 spells air_base.
+        let [air, bunker, naval] = names.tokens_of(["air_base", "BUNKER", "naval_base"]);
+        assert_eq!((air, bunker), (Ok(Some(3)), Ok(None)));
+        assert_eq!(
+            naval,
+            Err("naval_base folds to several tokens: 4, 5 and perhaps more".to_owned())
+        );
+        assert_eq!(
+            names.iter().map(|(token, _)| token).collect::<Vec<_>>(),
+            [3, 4, 5]
         );
     }
 

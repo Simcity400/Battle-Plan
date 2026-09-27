@@ -1237,6 +1237,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for (name, count) in &building_summary.unresolved_by_type {
             println!("  no entity: {name} x{count}");
         }
+        for (reason, count) in &building_summary.refused_tokens {
+            println!("  refused token: {reason} x{count}");
+        }
         println!(
             "Railways: {} recorded graph curves, {} dropped for a missing anchor, {} curve samples, \
              {} strip vertices; alpha {:.0} at height {:.3}; traced in {:.0} ms",
@@ -1350,6 +1353,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             raid_report.unanchored,
             raid_report.dropped_words
         );
+        for (reason, count) in &raid_report.refused_tokens {
+            println!("  refused token: {reason} x{count}");
+        }
         // counters
         println!(
             "Counters: {} land ({} between provinces), {} naval; {} air bases ({} showing their plane count, {} hidden by fog of war), {} naval bases ({} with an unreadable country list); {} land combats, {} naval combats; {} stacks with no anchor",
@@ -1365,6 +1371,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.naval_combats,
             counter_report.unanchored
         );
+        for reason in &counter_report.refused_tokens {
+            println!("  refused token: {reason}");
+        }
         // counters: faction-theatre pins
         let pings = &counter_report.faction_ping_limits;
         println!(

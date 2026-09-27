@@ -201,6 +201,10 @@ pub struct Layers {
     pub borders: Arc<Borders>,
     pub rails: Arc<Rails>,
     pub buildings: Arc<Shared<PreparedBuildings>>,
+    /// The building field's refused type tokens
+    /// ([`crate::map::map_buildings::MapBuildingSummary::warnings`]), worded
+    /// with the hour: an hour sharing its neighbour's field still reports its own.
+    pub building_warnings: Vec<String>,
     pub trains: TrainPlan,
     pub aircraft: AircraftPlan,
     pub units: PreparedModels,
@@ -241,7 +245,7 @@ enum Part {
     Names(io::Result<Arc<Placements>>),
     Overlay(io::Result<Box<PreparedOverlay>>),
     Rails(io::Result<Arc<Rails>>),
-    Buildings(io::Result<Arc<Shared<PreparedBuildings>>>),
+    Buildings(io::Result<(Arc<Shared<PreparedBuildings>>, Vec<String>)>),
     Movers(io::Result<Box<Movers>>),
     Fog(io::Result<(Arc<IntelMap>, Limitations, Arc<Header>)>),
     Snow(io::Result<Arc<SnowMud>>),
@@ -571,7 +575,7 @@ struct Pending {
     names: Option<Arc<Placements>>,
     overlay: Option<PreparedOverlay>,
     rails: Option<Arc<Rails>>,
-    buildings: Option<Arc<Shared<PreparedBuildings>>>,
+    buildings: Option<(Arc<Shared<PreparedBuildings>>, Vec<String>)>,
     movers: Option<Movers>,
     fog: Option<(Arc<IntelMap>, Limitations, Arc<Header>)>,
     snow: Option<Arc<SnowMud>>,
@@ -680,11 +684,13 @@ impl Pending {
         let (political, borders) = self.political.ok_or_else(missing)?;
         let movers = self.movers.ok_or_else(missing)?;
         let (intel, limitations, header) = self.fog.ok_or_else(missing)?;
+        let (buildings, building_warnings) = self.buildings.ok_or_else(missing)?;
         Ok(Layers {
             political,
             borders,
             rails: self.rails.ok_or_else(missing)?,
-            buildings: self.buildings.ok_or_else(missing)?,
+            buildings,
+            building_warnings,
             trains: movers.trains,
             aircraft: movers.aircraft,
             units: movers.units,
@@ -1447,10 +1453,10 @@ impl Coordinator {
                 "buildings",
                 Box::new(move |view| {
                     Part::Buildings(view.map_building_field(&building_perspective).map(
-                        |(field, _)| {
+                        |(field, summary)| {
                             let buildings = Shared::share(wait_all(near), field);
                             fill.set(Some(Arc::clone(&buildings)));
-                            buildings
+                            (buildings, summary.warnings())
                         },
                     ))
                 }),
