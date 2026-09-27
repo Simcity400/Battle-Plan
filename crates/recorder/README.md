@@ -45,6 +45,8 @@ It opens the single `hoi4.exe` read-only, gathers the same content stack a recor
 
 Match the sampled instant, not just the displayed date. Game state can change after the hourly sample but before a same-hour save. Matching allocation counters does not prove that nothing changed. Joined comparisons must respect each input table's availability and sample origin; an old carried value is not a new hourly observation.
 
+A naval side's saved `last_leader` is not the commander the game shows. A load restores only the last leader, and the current commander stays null until the next combat tick selects one ([evidence](../engine/src/cnaval_combatant.rs)). The recording keeps that null. So at an observed `LoadSignal` frame, whose loaded and first sampled hours both equal the compared hour, the oracle reports a null commander against a saved leader as a named limitation. Any nonzero mismatch still fails, as does a null commander at any other hour or branch start.
+
 ## Live checks and performance
 
 [AGENTS.md](../../AGENTS.md) lists local checks. `tools/smoke.ps1` is the existing end-to-end driver; inspect its help before use. It requires coordinated game ownership, the selected local save, an isolated text-save user directory, matching continue selection, calibrated UI settings and a new output directory. It drives the game separately from the passive recorder, then checks finalization, the oracle and reference renders. Keep all outputs out of Git.

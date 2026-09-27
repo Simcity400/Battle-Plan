@@ -611,7 +611,17 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 }
             }
             if let Some(leader) = saved.details.leaders[side] {
-                equal(r, format!("{label} commander"), actual.commander, leader);
+                // The save holds the last leader (+0x118), which equals the shown
+                // commander whenever that is nonnull. A load restores only the
+                // last leader (cnaval_combatant::COMMANDER).
+                if r.load_hour && actual.commander == 0 && leader != 0 {
+                    r.limitation(
+                        "Naval commander is null at the load hour: a load restores only the saved last_leader, and the game shows no commander until the next combat tick selects one",
+                        format!("{label} commander: replay 0, save last_leader {leader}"),
+                    );
+                } else {
+                    equal(r, format!("{label} commander"), actual.commander, leader);
+                }
             }
             equal(
                 r,
@@ -1219,6 +1229,117 @@ fn results(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn null_naval_commander_is_a_limitation_only_at_an_observed_load_hour() {
+        use replay::branches::BranchReason::{
+            HourDiscontinuity as Gap, LoadSignal as Load, SessionStart as Start,
+        };
+        use replay::branches::{BranchStart, Parentage};
+        use replay::rows::{NavalCombatDetailsRow, NavalCombatSideDetails};
+
+        let (mut frame, mut save, _, _) = super::super::tests::fixture();
+        let zero = Decimal::parse(b"0").unwrap();
+        let combat = 17;
+        let leader = (37_u64 << 32) | 4713;
+        save.naval_combats.insert(
+            combat,
+            save::NavalCombat {
+                id: combat,
+                province: 2,
+                attacker_positioning: zero.clone(),
+                defender_positioning: zero.clone(),
+                attacker_anti_air: zero.clone(),
+                defender_anti_air: zero.clone(),
+                details: save::combat_details::NavalDetails {
+                    day: Some(0),
+                    duration: Some(0),
+                    progress: Some(zero.clone()),
+                    leaders: [Some(leader), None],
+                    escort_bonus: [Some(zero.clone()), Some(zero)],
+                    ..Default::default()
+                },
+            },
+        );
+        let set_commander = |frame: &mut DecodedFrame, commander| {
+            *frame.tables[TableId::NavalCombatDetails.index()] =
+                TableView::Complete(TableRows::NavalCombatDetails(vec![NavalCombatDetailsRow {
+                    combat,
+                    province: 2,
+                    sides: [
+                        NavalCombatSideDetails {
+                            commander,
+                            ..Default::default()
+                        },
+                        NavalCombatSideDetails::default(),
+                    ],
+                    ..Default::default()
+                }]));
+        };
+        let compare = |frame: &DecodedFrame, save: &Save, branch: BranchStart| {
+            let mut report = Report {
+                hour: frame.hour,
+                ..Default::default()
+            };
+            report.set_load_hour(&branch);
+            naval(frame, save, &mut report).unwrap();
+            assert_eq!(report.compared_tables["NavalCombatDetails"], 1);
+            report
+        };
+        let limited = |report: &Report| {
+            report
+                .limitations
+                .keys()
+                .any(|key| key.starts_with("Naval commander is null at the load hour"))
+        };
+        let id = frame.branch;
+        let branch = |reason, loaded_hour, first_hour| BranchStart {
+            id,
+            session: 1,
+            loaded_hour,
+            first_hour,
+            parent: Parentage::Unknown,
+            reason,
+        };
+
+        // Only a null commander at an observed load's loaded and first sampled
+        // hour is a limitation; any other branch start, hour or value differs.
+        let h = frame.hour;
+        for (reason, loaded, first, sample, commander, expected) in [
+            (Load, Some(h), h, h, 0, "limited"),
+            (Load, Some(h), h, h, leader, "equal"),
+            (Load, Some(h), h, h, leader + 1, "differs"),
+            (Load, Some(h), h, h + 1, 0, "differs"),
+            (Load, None, h, h, 0, "differs"),
+            (Load, Some(h), h + 1, h, 0, "differs"),
+            (Start, Some(h), h, h, 0, "differs"),
+            (Gap, Some(h), h, h, 0, "differs"),
+        ] {
+            frame.hour = sample;
+            set_commander(&mut frame, commander);
+            let report = compare(&frame, &save, branch(reason, loaded, first));
+            let outcome = match (report.differences.len(), limited(&report)) {
+                (0, true) => "limited",
+                (0, false) => "equal",
+                (1, false) => "differs",
+                _ => panic!("{report:?}"),
+            };
+            assert_eq!(
+                outcome, expected,
+                "{reason:?} {loaded:?} {first} {sample} {commander}"
+            );
+        }
+
+        // Other fields of the same side stay exact at the load hour.
+        frame.hour = h;
+        set_commander(&mut frame, 0);
+        save.naval_combats.get_mut(&combat).unwrap().details.day = Some(1);
+        let report = compare(&frame, &save, branch(Load, Some(h), h));
+        assert!(limited(&report));
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("day"));
+    }
+
     #[test]
     fn positive_only_writer_does_not_invent_zero_or_waive_missing_positive() {
         let mut report = Report::default();
