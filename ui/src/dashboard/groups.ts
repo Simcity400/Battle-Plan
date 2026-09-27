@@ -22,7 +22,9 @@ export function groupRuns(reply: CountryGroupReply, group: CountryGroup): Member
 export function groupUnobserved(reply: CountryGroupReply, group: CountryGroup): HourSpan[] {
   switch (group.type) {
     case 'humans': return reply.unobserved.humans;
-    case 'faction': return reply.unobserved.factions;
+    // A faction's own incomplete rosters as well as the hours no faction was read.
+    case 'faction': return [...reply.unobserved.factions, ...(reply.factions.find(faction => faction.id === group.id)?.incomplete ?? [])]
+      .sort((a, b) => a.firstHour - b.firstHour);
     case 'war': return reply.unobserved.wars;
     case 'top': return [];
   }

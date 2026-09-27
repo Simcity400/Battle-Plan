@@ -175,11 +175,31 @@ id: string,
 /**
  * The faction's name as the game showed it; null when it cannot be resolved.
  */
-name: string | null, firstHour: number, lastHour: number, members: Array<MembershipRun>, };
+name: string | null, firstHour: number, lastHour: number, members: Array<MembershipRun>,
+/**
+ * Hours this faction's roster named a country the links cannot resolve: its
+ * roster is not known then (other factions' rosters are).
+ */
+incomplete: Array<HourSpan>, };
 export type WarPairRun = { first: string, second: string, firstHour: number, lastHour: number, };
+export type WarStart = { hour: number, attacking: string, defending: string, };
+export type Capitulation = { hour: number, tag: string, };
+export type IdentityChange = { hour: number, from: string, to: string, };
 export type HourSpan = { firstHour: number, lastHour: number, };
 export type UnobservedHours = { humans: Array<HourSpan>, factions: Array<HourSpan>, wars: Array<HourSpan>, };
 export type CountryGroupReply = { branchId: string, humans: Array<MembershipRun>, factions: Array<FactionGroup>, wars: Array<WarPairRun>,
+/**
+ * Every war start the recorded war relations name, in hour order.
+ */
+warStarts: Array<WarStart>,
+/**
+ * Every capitulation the recording saw, in hour order.
+ */
+capitulations: Array<Capitulation>,
+/**
+ * Every change of an id's tag between two consecutive recorded hours, in hour order.
+ */
+identityChanges: Array<IdentityChange>,
 /**
  * Hours inside the branch where each history was not observed: a run that
  * ends or starts next to one of these is a gap, not a join or a leave.
@@ -409,7 +429,13 @@ categories: Array<CategoryInfo>,
  * Hours the idea table was not observed for this country: a span ending or
  * starting next to one is a gap, not a change.
  */
-unobserved: Array<HourSpan>, warnings: Array<string>, };
+unobserved: Array<HourSpan>,
+/**
+ * Hours the country's recorded identity starts, in order: its first hour
+ * seen, after an hour it was not seen, or as another country identity. The
+ * ideas held then are that identity's initial state, not changes.
+ */
+identityStarts: Array<number>, warnings: Array<string>, };
 export type PartySeries = {
 /**
  * The party's ideology group token.

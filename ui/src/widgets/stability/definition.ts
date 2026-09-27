@@ -15,6 +15,10 @@ export const STABILITY_OPTIONS: readonly OptionField[] = [
   { key: 'stability', section: 'options', label: 'Stability', hint: 'The solid line', kind: 'toggle', default: true },
   { key: 'warSupport', section: 'options', label: 'War support', hint: 'The dashed line', kind: 'toggle', default: true },
   { key: 'endLabels', section: 'options', label: 'Values at line ends', kind: 'toggle', default: true },
+  { key: 'markWars', section: 'options', label: 'Markers: wars and capitulations', hint: '⚔ along the top', kind: 'toggle', default: true },
+  { key: 'markFactions', section: 'options', label: 'Markers: faction changes', hint: '⚑ along the top', kind: 'toggle', default: true },
+  { key: 'markGovernment', section: 'options', label: 'Markers: government changes', hint: '⚙ laws, advisors and ruling party', kind: 'toggle', default: true },
+  { key: 'markFocus', section: 'options', label: 'Markers: focuses completed', hint: '★ along the top', kind: 'toggle', default: true },
   { key: 'scale', section: 'axes', label: 'Scale', kind: 'choice', default: 'fixed',
     choices: [{ value: 'fixed', label: '0–100%' }, { value: 'zoom', label: 'Zoom' }] },
 ];

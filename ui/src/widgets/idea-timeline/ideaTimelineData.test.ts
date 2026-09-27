@@ -18,7 +18,7 @@ const OTHERS: CategoryInfo[] = [
   { token: 'army_spirit', name: null, kind: 'army_spirit', hidden: false, politicsTab: false, slots: [{ token: 'army_spirit', name: null, character: false, seats: 1, laws: [] }] },
 ];
 const REPLY: IdeaHistoryReply = {
-  branchId: '1', tag: 'GER', unobserved: [], warnings: [], categories: [GOVERNMENT, ...OTHERS],
+  branchId: '1', tag: 'GER', unobserved: [], identityStarts: [], warnings: [], categories: [GOVERNMENT, ...OTHERS],
   spans: [
     { token: 'civilian_economy', firstHour: 0, lastHour: 99, slot: null, character: null },
     { token: 'war_economy', firstHour: 100, lastHour: 500, slot: null, character: null },

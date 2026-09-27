@@ -7,6 +7,7 @@ export function validateIdeaHistoryReply(data: unknown): IdeaHistoryReply {
     && Array.isArray(reply.artwork) && Array.isArray(reply.holders)
     && reply.holders.every(holder => typeof holder?.token === 'string' && typeof holder.name === 'string' && typeof holder.characterToken === 'string' && Number.isInteger(holder.character) && typeof holder.artwork === 'object' && holder.artwork != null)
     && Array.isArray(reply.categories) && Array.isArray(reply.unobserved) && Array.isArray(reply.warnings)
+    && Array.isArray(reply.identityStarts) && reply.identityStarts.every(hour => Number.isInteger(hour))
     && reply.spans.every(span => typeof span.token === 'string' && Number.isInteger(span.firstHour) && Number.isInteger(span.lastHour) && span.firstHour <= span.lastHour);
   if (!ok) throw new Error('The idea history reply is malformed.');
   return reply;

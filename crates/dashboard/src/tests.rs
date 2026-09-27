@@ -1654,6 +1654,9 @@ fn group_frame(
     relations.sort_by_key(|row| (row.first_country, row.second_country));
     *frame.tables[TableId::WarRelations.index()] =
         TableView::Complete(TableRows::WarRelations(relations));
+    // As recorded: the capitulation table is present, here with no one capitulated.
+    *frame.tables[TableId::Capitulation.index()] =
+        TableView::Complete(TableRows::Capitulation(Vec::new()));
     frame
 }
 
@@ -1812,6 +1815,16 @@ fn country_groups_leave_out_unknown_countries_and_localise_faction_keys() {
     let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
     assert!(scan.humans().is_empty());
     assert_eq!(scan.faction(5).unwrap().3.len(), 1);
+    // The lists that named an unknown country are incomplete that hour: the humans
+    // list, and that faction's own roster (not every faction's); the wars list was complete.
+    let hour = [crate::products::country_groups::HourSpan {
+        first_hour: 100,
+        last_hour: 100,
+    }];
+    assert_eq!(scan.unobserved().humans, hour);
+    assert!(scan.unobserved().factions.is_empty());
+    assert_eq!(scan.faction_incomplete(5), Some(&hour[..]));
+    assert!(scan.unobserved().wars.is_empty());
     assert!(
         scan.warnings()
             .iter()
@@ -2094,6 +2107,8 @@ fn idea_history_spans_break_at_gaps_and_advisors_keep_their_recorded_role() {
             last_hour: 103
         }]
     );
+    // The identity starts at its first hour and again after the missing hour.
+    assert_eq!(scanned.identity_starts, [100, 104]);
     assert!(
         scan(&replay, 1, "FRA", &AtomicBool::new(false))
             .unwrap()
@@ -2215,6 +2230,7 @@ fn idea_history_marks_gaps_in_order_and_to_the_branch_end() {
         last_hour,
     };
     assert_eq!(scanned.unobserved, [span(101, 105), span(107, 109)]);
+    assert_eq!(scanned.identity_starts, [100, 106]);
 }
 
 /// GER (link 9001) with two parties at the given popularities (raw), one ruling,
@@ -2605,4 +2621,132 @@ fn a_stability_breakdown_needs_the_same_country_identity_as_its_history() {
     // CountryLinks no longer maps GER: the history leaves the hour out, and
     // so does the breakdown.
     assert!(load(101).series[0].breakdown.is_none());
+}
+
+#[test]
+fn country_groups_date_war_starts_and_capitulations_as_the_engine_does() {
+    use crate::products::country_groups::{Capitulation, WarStart, scan_branch};
+    let frame = |hour, capitulated: bool| {
+        let mut frame = group_frame(hour, &[], &[], &[]);
+        // GER's side (9001) started a war with FRA (44) at hour 100; GER is listed second.
+        *frame.tables[TableId::WarRelations.index()] =
+            TableView::Complete(TableRows::WarRelations(vec![
+                replay::rows::WarRelationRow {
+                    first_country: 44,
+                    second_country: 9001,
+                    start_hour: 100,
+                    first_was_instigator: 0,
+                    ..Default::default()
+                },
+            ]));
+        *frame.tables[TableId::Capitulation.index()] =
+            TableView::Complete(TableRows::Capitulation(vec![
+                replay::rows::CapitulationRow {
+                    country: 44,
+                    capitulated: u8::from(capitulated),
+                    capitulated_hour: 101,
+                    ..Default::default()
+                },
+            ]));
+        frame
+    };
+    // At hour 102 GER's link id names another identity: the war and the
+    // capitulation keep the countries they were first seen with.
+    let mut renamed = frame(102, true);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *renamed.tables[TableId::Countries.index()]
+    {
+        for row in rows.iter_mut().filter(|row| row.tag == b"GER") {
+            row.tag = b"BBB".to_vec();
+        }
+    }
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![frame(100, false), frame(101, true), renamed],
+        )],
+    )
+    .unwrap();
+    let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        scan.war_starts(),
+        [WarStart {
+            hour: 100,
+            attacking: "GER".into(),
+            defending: "FRA".into()
+        }]
+    );
+    assert_eq!(
+        scan.capitulations(),
+        [Capitulation {
+            hour: 101,
+            tag: "FRA".into()
+        }]
+    );
+    assert_eq!(
+        scan.identity_changes(),
+        [crate::products::country_groups::IdentityChange {
+            hour: 102,
+            from: "GER".into(),
+            to: "BBB".into()
+        }]
+    );
+    assert!(scan.warnings().is_empty(), "{:?}", scan.warnings());
+    // A war dated before it was first seen, after an unrecorded hour or once its
+    // id names another country, cannot be named at its own hour: it is left out.
+    let without_war = |hour| {
+        let mut frame = frame(hour, false);
+        *frame.tables[TableId::WarRelations.index()] =
+            TableView::Complete(TableRows::WarRelations(vec![]));
+        frame
+    };
+    let late = |hour, start_hour| {
+        let mut frame = frame(hour, false);
+        if let TableView::Complete(TableRows::WarRelations(rows)) =
+            &mut *frame.tables[TableId::WarRelations.index()]
+        {
+            rows[0].start_hour = start_hour;
+        }
+        frame
+    };
+    let mut renamed_late = late(101, 100);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *renamed_late.tables[TableId::Countries.index()]
+    {
+        for row in rows.iter_mut().filter(|row| row.tag == b"GER") {
+            row.tag = b"BBB".to_vec();
+        }
+    }
+    for frames in [
+        vec![without_war(100), late(102, 101)],
+        vec![without_war(100), renamed_late],
+    ] {
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+        assert!(scan.war_starts().is_empty(), "{:?}", scan.war_starts());
+        assert!(
+            scan.warnings()
+                .iter()
+                .any(|warning| warning.contains("which countries they were is not known")),
+            "{:?}",
+            scan.warnings()
+        );
+    }
+    // An hour whose capitulations cannot be read says so.
+    let mut unread = frame(103, true);
+    *unread.tables[TableId::Capitulation.index()] = TableView::Unavailable {
+        reason: "fixture".into(),
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![frame(100, false), unread])],
+    )
+    .unwrap();
+    let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert!(
+        scan.warnings()
+            .iter()
+            .any(|warning| warning.contains("Capitulations could not be read"))
+    );
 }

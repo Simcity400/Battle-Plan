@@ -30,6 +30,15 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { CountryStabilityReply, CountryStyle, CountryStyleReply } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color';
 import { STABILITY_OPTIONS } from './definition';
+import { stabilityMarkers } from './markers';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
+import type { NameAt } from '../../dashboard/countryNamesAt';
+import type { MarkerKind } from './markers';
+import type { FocusReply, PartyHistoryReply } from '../../generated/dashboard';
+import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply';
+import type { IdeaHistoryReply } from '../../generated/dashboard';
+import { validatePartyHistoryReply } from '../ruling-party/partyData';
+import { validateFocusReply } from '../national-focus/focusData';
 import { breakdownRows, formatPercent, lastSampleHour, linesPerMeasure, MAX_COUNTRIES, percentRuns, rawAt, zoomRange } from './stabilityData';
 import type { Measure } from './stabilityData';
 import './stability.css';
@@ -163,17 +172,55 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
       ? nudgeApart(coloured.map(item => item.color), parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : coloured.map(item => item.color);
     return raw.map(item => ({ ...item, hex: toHex(item.recordedColour ? adjusted[coloured.indexOf(item)] : item.color) }));
   }, [data, known, resolved.membership, tokens, track, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Event markers (mock-up politics-2), for one country: each kind can be switched off.
+  const kinds = useMemo(() => new Set(([['wars', 'markWars'], ['factions', 'markFactions'], ['government', 'markGovernment'], ['focus', 'markFocus']] as const)
+    .filter(([, key]) => options[key] !== false).map(([kind]) => kind as MarkerKind)), [options.markWars, options.markFactions, options.markGovernment, options.markFocus]);
+  const markerTag = resolved.tags.length === 1 && kinds.size ? resolved.tags[0] : null;
+  const markerGroups = useCountryGroups(runtime, track, active && markerTag != null && (kinds.has('wars') || kinds.has('factions')));
+  const markerRequest = (product: string) => track && markerTag ? { sourceId: track.source.id, revision: track.source.revision, product, params: { branchId: track.branch.id, tag: markerTag } } : null;
+  const markerParties = useProduct<PartyHistoryReply>(runtime.client, kinds.has('government') ? markerRequest('party-history') : null, active, validatePartyHistoryReply);
+  const markerFocus = useProduct<FocusReply>(runtime.client, kinds.has('focus') ? markerRequest('national-focus') : null, active, validateFocusReply);
+  // The idea history of the marker country itself (a group may resolve to another country).
+  const markerIdeas = useProduct<IdeaHistoryReply>(runtime.client, kinds.has('government') ? markerRequest('idea-history') : null, active, validateIdeaHistoryReply);
+  const markerSources = useMemo(() => !track || !markerTag ? null : {
+    tag: markerTag, extent, branch: [track.branch.firstHour, track.branch.lastHour] as const,
+    member: (hour: number) => isMember(resolved.membership?.get(markerTag), hour),
+    groups: markerGroups.data, ideas: markerIdeas.data && markerIdeas.data.tag === markerTag ? markerIdeas.data : undefined,
+    parties: markerParties.data, focus: markerFocus.data,
+  }, [track, markerTag, extent[0], extent[1], resolved.membership, markerGroups.data, markerIdeas.data, markerParties.data, markerFocus.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Other countries are named as the game showed them at each event's hour; until
+  // (or where) that is not known, by their name in the recording's metadata.
+  const namesWanted = useMemo(() => {
+    const wanted: NameAt[] = [];
+    if (markerSources) stabilityMarkers({ ...markerSources, countryName: (other, hour) => { wanted.push({ hour, tag: other }); return other; } }, kinds);
+    return wanted;
+  }, [markerSources, kinds]);
+  const namesAt = useCountryNamesAt(runtime.client, track, namesWanted, active);
+  const badges = useMemo(() => !track || !markerSources ? [] : stabilityMarkers({ ...markerSources,
+    countryName: (other, hour) => namesAt.get(nameKey(hour, other)) ?? track.source.metadata.countries.find(country => country.tag === other)?.name ?? other,
+  }, kinds), [track, markerSources, namesAt, kinds]);
+  // The marker sources shown report their notes and failures, so a missing kind of event is never silent.
+  const markerNotes = useMemo(() => markerTag ? ([
+    ['wars and factions', markerGroups, kinds.has('wars') || kinds.has('factions')], ['laws and advisors', markerIdeas, kinds.has('government')],
+    ['ruling party', markerParties, kinds.has('government')], ['focuses', markerFocus, kinds.has('focus')],
+  ] as const).flatMap(([what, state, used]) => {
+    if (!used) return [];
+    const product = state as { error?: string; data?: { warnings: string[] } };
+    return product.error ? [`Markers for ${what} could not be loaded: ${product.error}`] : product.data?.warnings ?? [];
+  }) : [], [markerTag, kinds, markerGroups.data, markerGroups.error, markerIdeas.data, markerIdeas.error, markerParties.data, markerParties.error, markerFocus.data, markerFocus.error]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Every diagnostic in one place, so no source's warning replaces another's.
   useEffect(() => {
     const uncoloured = series.filter(item => !item.recordedColour).map(item => item.name);
     const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []), ...(groups.data?.warnings ?? []),
       ...(styles.error ? [`Country names and colours could not be loaded: ${styles.error}`] : []),
       ...(uncoloured.length ? [`No map colour was recorded for ${uncoloured.join(', ')}; shown in grey.`] : []),
       ...(breakdown.data?.warnings ?? []), ...(breakdown.error ? [`The breakdown could not be loaded: ${breakdown.error}`] : []),
+      ...markerNotes,
       ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget draws at most ${resolved.tags.length}.`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, styles.data, styles.error, series, groups.data, breakdown.data, breakdown.error, resolved.dropped, resolved.tags.length, onDiagnostics]);
-
+  }, [data, styles.data, styles.error, series, groups.data, breakdown.data, breakdown.error, resolved.dropped, resolved.tags.length, markerNotes, onDiagnostics]);
   const menu = useContextMenu('Chart actions');
   const head = playhead ?? extent[1];
   // With the keyboard: while focus is in the widget, the breakdown of the read behind
@@ -256,6 +303,7 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
         padding={{ right: options.endLabels ? 150 : 14 }} layers={layers} active={active}
         revision={`${head}:${data.branchId}:${series.length}:${shown.length}:${breakdown.data ? breakdownFor?.readHour ?? 'empty' : breakdown.error ? 'failed' : 'none'}`}
         formatValue={value => `${Number.isInteger(value) ? value : value.toFixed(1)}%`}
+        badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hovered) => {
           const rows: TooltipRow[] = [...badgeRows(hovered)];
           if (series.length === 1) {

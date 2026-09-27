@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { loadProduct } from './products';
+import { validateCountryGroupReply } from './groupsReply';
 import { Icon } from '../components/Icons';
 import { Popover, PopoverHeading, usePopover } from '../components/Popover';
 import { factionColours } from '../charts/factionColours';
@@ -22,7 +23,7 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
     if (!source) return;
     const controller = new AbortController();
     Promise.all(source.metadata.branches.map(branch => loadProduct<CountryGroupReply>(client,
-      { sourceId: source.id, revision: source.revision, product: 'country-groups', params: { branchId: branch.id } }, controller.signal)))
+      { sourceId: source.id, revision: source.revision, product: 'country-groups', params: { branchId: branch.id } }, controller.signal, validateCountryGroupReply)))
       .then(replies => {
         if (controller.signal.aborted) return;
         const byId = new Map<string, FactionGroup>();

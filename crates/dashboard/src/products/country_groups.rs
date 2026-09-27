@@ -6,7 +6,10 @@
 //! whose tables are not complete ends every run, so nothing is carried across
 //! missing data. Those hours are listed as unobserved for each group history
 //! (up to the branch's own first and last hour), so a break there is not
-//! mistaken for a country joining or leaving. A war counts only while its
+//! mistaken for a country joining or leaving. An hour whose list names a
+//! country the links cannot resolve is unobserved for that history too, since
+//! the list is incomplete, though the runs of the countries it names go on.
+//! A war counts only while its
 //! recorded relation is ongoing. Faction names are the recorded
 //! engine names, localised when they are a localisation key. Which member leads
 //! a faction is not recorded: member order is kept, but order zero only means
@@ -40,6 +43,8 @@ pub struct CountryGroups;
 
 /// Runs kept per branch before the scan refuses.
 const MAX_RUNS: usize = 500_000;
+/// War starts and capitulations kept per branch.
+const MAX_EVENTS: usize = 100_000;
 /// Branches kept per source, so tracks on different branches do not evict each other.
 const CACHED_BRANCHES: usize = 4;
 
@@ -68,6 +73,9 @@ pub struct FactionGroup {
     pub first_hour: i32,
     pub last_hour: i32,
     pub members: Vec<MembershipRun>,
+    /// Hours this faction's roster named a country the links cannot resolve: its
+    /// roster is not known then (other factions' rosters are).
+    pub incomplete: Vec<HourSpan>,
 }
 
 /// Two countries at war with each other over consecutive recorded hours.
@@ -97,6 +105,37 @@ pub struct UnobservedHours {
     pub wars: Vec<HourSpan>,
 }
 
+/// The start of a war between two countries as the engine dates it (the war
+/// relation's start hour). `attacking` is the instigating side's country
+/// (`first_was_instigator`); it may be an ally that joined rather than the
+/// country that declared, which the relation does not record.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WarStart {
+    pub hour: i32,
+    pub attacking: String,
+    pub defending: String,
+}
+
+/// A capitulation as the engine dates it (Capitulation's capitulated hour).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Capitulation {
+    pub hour: i32,
+    pub tag: String,
+}
+
+/// A recorded country id naming another tag from one recorded hour to the next
+/// (a tag switch, or an id the game gives another country): runs kept by tag end
+/// and start there without the country joining or leaving anything.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityChange {
+    pub hour: i32,
+    pub from: String,
+    pub to: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CountryGroupReply {
@@ -104,6 +143,12 @@ pub struct CountryGroupReply {
     pub humans: Vec<MembershipRun>,
     pub factions: Vec<FactionGroup>,
     pub wars: Vec<WarPairRun>,
+    /// Every war start the recorded war relations name, in hour order.
+    pub war_starts: Vec<WarStart>,
+    /// Every capitulation the recording saw, in hour order.
+    pub capitulations: Vec<Capitulation>,
+    /// Every change of an id's tag between two consecutive recorded hours, in hour order.
+    pub identity_changes: Vec<IdentityChange>,
     /// Hours inside the branch where each history was not observed: a run that
     /// ends or starts next to one of these is a gap, not a join or a leave.
     pub unobserved: UnobservedHours,
@@ -121,6 +166,9 @@ impl Product for CountryGroups {
             MembershipRun::decl(),
             FactionGroup::decl(),
             WarPairRun::decl(),
+            WarStart::decl(),
+            Capitulation::decl(),
+            IdentityChange::decl(),
             HourSpan::decl(),
             UnobservedHours::decl(),
             CountryGroupReply::decl(),
@@ -187,6 +235,7 @@ impl Product for CountryGroups {
                 first_hour: faction.first_hour,
                 last_hour: faction.last_hour,
                 members: faction.members.clone(),
+                incomplete: faction.incomplete.clone(),
             })
             .collect();
         warnings.extend(scan.warnings.iter().cloned());
@@ -195,6 +244,9 @@ impl Product for CountryGroups {
             humans: scan.humans.clone(),
             factions,
             wars: scan.wars.clone(),
+            war_starts: scan.war_starts.iter().cloned().collect(),
+            capitulations: scan.capitulations.iter().cloned().collect(),
+            identity_changes: scan.identity_changes.clone(),
             unobserved: scan.unobserved.clone(),
             warnings,
         })
@@ -221,6 +273,7 @@ struct ScannedFaction {
     first_hour: i32,
     last_hour: i32,
     members: Vec<MembershipRun>,
+    incomplete: Vec<HourSpan>,
 }
 
 /// One branch's group history, before names are localised.
@@ -228,6 +281,9 @@ pub struct Scan {
     humans: Vec<MembershipRun>,
     factions: BTreeMap<u64, ScannedFaction>,
     wars: Vec<WarPairRun>,
+    war_starts: BTreeSet<WarStart>,
+    capitulations: BTreeSet<Capitulation>,
+    identity_changes: Vec<IdentityChange>,
     unobserved: UnobservedHours,
     warnings: Vec<String>,
 }
@@ -287,6 +343,15 @@ fn war_ongoing(start_hour: i32, end_hour: i32, hour: i32) -> bool {
     end_hour <= start_hour || hour < end_hour
 }
 
+/// The branch's first hour, if it is known.
+fn bounds_first(replay: &Replay, branch: u64) -> Option<i32> {
+    replay
+        .branches
+        .iter()
+        .find(|start| start.id == branch)
+        .map(|start| branch_bounds(replay, start).0)
+}
+
 /// Marks hours unobserved for every group history.
 fn mark_all(unobserved: &mut UnobservedHours, first_hour: i32, last_hour: i32) {
     for spans in [
@@ -321,6 +386,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
         TableId::Factions,
         TableId::FactionMembers,
         TableId::WarRelations,
+        TableId::Capitulation,
     ];
     let cancel = || {
         io::Error::new(
@@ -333,6 +399,26 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
     let mut factions: BTreeMap<u64, ScannedFaction> = BTreeMap::new();
     let mut member_open: BTreeMap<(u64, String), usize> = BTreeMap::new();
     let mut wars: Vec<WarPairRun> = Vec::new();
+    let mut war_starts: BTreeSet<WarStart> = BTreeSet::new();
+    let mut capitulations: BTreeSet<Capitulation> = BTreeSet::new();
+    // Each event is considered once, when first seen, keyed by raw ids and its hour:
+    // a later hour may map the same id to another identity. At most MAX_EVENTS are
+    // kept; past that, later ones are left out and the reply says so.
+    let mut named_starts: BTreeSet<(u32, u32, i32)> = BTreeSet::new();
+    let mut named_capitulations: BTreeSet<(u32, i32)> = BTreeSet::new();
+    let mut events_capped = false;
+    // An event is named by the tags its ids had at the event's own hour. That is
+    // known only when every hour since was recorded with the same tag for the id:
+    // `named_since` holds each id's tag and the hour it has had it without a break,
+    // `continuous_since` the hour since which every hour was recorded.
+    let mut named_since: HashMap<u32, (String, i32)> = HashMap::new();
+    let mut identity_changes: Vec<IdentityChange> = Vec::new();
+    let mut continuous_since: Option<i32> = None;
+    // Events in the branch whose countries at the event hour cannot be established.
+    let mut unattributed = 0_usize;
+    let branch_first = bounds_first(replay, branch);
+    // Hours whose capitulations could not be read, so an empty list is not passed off as none.
+    let mut capitulations_unread = 0_usize;
     let mut war_open: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut unobserved = UnobservedHours::default();
     let mut unmapped = BTreeSet::new();
@@ -380,6 +466,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                 && hour > previous + 1
             {
                 mark_all(&mut unobserved, previous + 1, hour - 1);
+                continuous_since = None;
             }
             previous_hour = Some(hour);
             let (Ok(countries), Ok(links)) = (
@@ -388,6 +475,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
             ) else {
                 incomplete += 1;
                 mark_all(&mut unobserved, hour, hour);
+                continuous_since = None;
                 continue;
             };
             let views = (
@@ -410,7 +498,43 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                     })
                     .collect();
                 tags_from = Some(views);
+                // An id naming another tag than the hour before, with no gap between.
+                if continuous_since.is_some() {
+                    let mut changed: Vec<IdentityChange> = named_since
+                        .iter()
+                        .filter_map(|(id, (from, _))| {
+                            let to = tags.get(id)?;
+                            (to != from).then(|| IdentityChange {
+                                hour,
+                                from: from.clone(),
+                                to: to.clone(),
+                            })
+                        })
+                        .collect();
+                    // Several ids may name one country: each change is listed once.
+                    changed.sort();
+                    changed.dedup();
+                    for change in changed {
+                        if identity_changes.len() >= MAX_EVENTS {
+                            events_capped = true;
+                            break;
+                        }
+                        identity_changes.push(change);
+                    }
+                }
+                named_since.retain(|id, (tag, _)| tags.get(id) == Some(tag));
+                for (id, tag) in &tags {
+                    named_since
+                        .entry(*id)
+                        .or_insert_with(|| (tag.clone(), hour));
+                }
             }
+            let since = *continuous_since.get_or_insert(hour);
+            // The tag an id had at `at`, when that is known (see `named_since`).
+            let tag_at = |raw: u32, at: i32| -> Option<&String> {
+                let (tag, from) = named_since.get(&raw)?;
+                (since.max(*from) <= at).then_some(tag)
+            };
             // Every group table names countries by their raw link id.
             let tag_of = |raw: u32, unmapped: &mut BTreeSet<u32>| -> Option<&String> {
                 let tag = tags.get(&raw);
@@ -423,18 +547,25 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
             let mut missed = false;
             match decoded.complete::<tables::HumanControllers>() {
                 Ok(rows) => {
+                    // A country the links cannot name leaves the hour's list incomplete.
+                    let mut incomplete = false;
                     for row in rows.iter().filter(|row| row.count > 0) {
-                        if let Some(tag) = tag_of(row.country, &mut unmapped) {
-                            let started =
-                                extend(&mut human_open, &mut humans, tag.clone(), hour, || {
-                                    MembershipRun {
-                                        tag: tag.clone(),
-                                        first_hour: hour,
-                                        last_hour: hour,
-                                    }
-                                });
-                            runs += usize::from(started);
-                        }
+                        let Some(tag) = tag_of(row.country, &mut unmapped) else {
+                            incomplete = true;
+                            continue;
+                        };
+                        let started =
+                            extend(&mut human_open, &mut humans, tag.clone(), hour, || {
+                                MembershipRun {
+                                    tag: tag.clone(),
+                                    first_hour: hour,
+                                    last_hour: hour,
+                                }
+                            });
+                        runs += usize::from(started);
+                    }
+                    if incomplete {
+                        mark_unobserved(&mut unobserved.humans, hour, hour);
                     }
                 }
                 Err(_) => {
@@ -454,6 +585,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                             first_hour: hour,
                             last_hour: hour,
                             members: Vec::new(),
+                            incomplete: Vec::new(),
                         });
                         faction.last_hour = hour;
                         // A renamed faction keeps its id; the latest name is shown.
@@ -463,11 +595,19 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                     }
                     let mut ordered: Vec<_> = members.iter().collect();
                     ordered.sort_by_key(|member| (member.faction, member.ordinal));
+                    // A member the links cannot name leaves that faction's roster
+                    // incomplete this hour: no join, leave or founding is read there. A
+                    // member of a faction the Factions table does not list belongs to
+                    // no faction this reply names.
                     for member in ordered {
                         let Some(faction) = factions.get_mut(&member.faction) else {
                             continue;
                         };
-                        if let Some(tag) = tag_of(member.country, &mut unmapped) {
+                        let tag = tag_of(member.country, &mut unmapped);
+                        if tag.is_none() {
+                            mark_unobserved(&mut faction.incomplete, hour, hour);
+                        }
+                        if let Some(tag) = tag {
                             let started = extend(
                                 &mut member_open,
                                 &mut faction.members,
@@ -490,6 +630,47 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
             }
             match decoded.complete::<tables::WarRelations>() {
                 Ok(rows) => {
+                    // When each war started, and which side instigated it.
+                    for row in rows.iter() {
+                        let key = (row.first_country, row.second_country, row.start_hour);
+                        if named_starts.contains(&key) {
+                            continue;
+                        }
+                        if named_starts.len() >= MAX_EVENTS {
+                            events_capped = true;
+                            continue;
+                        }
+                        let (Some(_), Some(_)) = (
+                            tag_of(row.first_country, &mut unmapped),
+                            tag_of(row.second_country, &mut unmapped),
+                        ) else {
+                            continue;
+                        };
+                        named_starts.insert(key);
+                        let (Some(first), Some(second)) = (
+                            tag_at(row.first_country, row.start_hour),
+                            tag_at(row.second_country, row.start_hour),
+                        ) else {
+                            // Before the branch it is not this branch's event at all.
+                            unattributed += usize::from(
+                                branch_first.is_some_and(|first| row.start_hour >= first),
+                            );
+                            continue;
+                        };
+                        let (attacking, defending) = if row.first_was_instigator != 0 {
+                            (first, second)
+                        } else {
+                            (second, first)
+                        };
+                        let start = WarStart {
+                            hour: row.start_hour,
+                            attacking: attacking.clone(),
+                            defending: defending.clone(),
+                        };
+                        war_starts.insert(start);
+                    }
+                    // A war the links cannot name leaves the hour's wars incomplete.
+                    let mut incomplete = false;
                     for row in rows
                         .iter()
                         .filter(|row| war_ongoing(row.start_hour, row.end_hour, hour))
@@ -498,6 +679,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                             tag_of(row.first_country, &mut unmapped),
                             tag_of(row.second_country, &mut unmapped),
                         ) else {
+                            incomplete = true;
                             continue;
                         };
                         // A war is one pair whichever side the row lists first.
@@ -520,10 +702,49 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                         );
                         runs += usize::from(started);
                     }
+                    if incomplete {
+                        mark_unobserved(&mut unobserved.wars, hour, hour);
+                    }
                 }
                 Err(_) => {
                     missed = true;
                     mark_unobserved(&mut unobserved.wars, hour, hour);
+                }
+            }
+            // Capitulations as the engine dates them, read while the flag is set; the
+            // date stays with the event after recovery. The hour word is certified
+            // only while the flag is set (the fresh-save oracle lists the retained word
+            // of an inactive capitulation as a limitation), so a capitulation that began
+            // and ended between two readable samples is not recorded, never guessed
+            // from that word.
+            let capitulation_rows = decoded.complete::<tables::Capitulation>();
+            if capitulation_rows.is_err() {
+                capitulations_unread += 1;
+            }
+            if let Ok(rows) = capitulation_rows {
+                for row in rows.iter().filter(|row| row.capitulated != 0) {
+                    let key = (row.country, row.capitulated_hour);
+                    if named_capitulations.contains(&key) {
+                        continue;
+                    }
+                    if named_capitulations.len() >= MAX_EVENTS {
+                        events_capped = true;
+                        continue;
+                    }
+                    if tag_of(row.country, &mut unmapped).is_some() {
+                        named_capitulations.insert(key);
+                        let Some(tag) = tag_at(row.country, row.capitulated_hour) else {
+                            unattributed += usize::from(
+                                branch_first.is_some_and(|first| row.capitulated_hour >= first),
+                            );
+                            continue;
+                        };
+                        let event = Capitulation {
+                            hour: row.capitulated_hour,
+                            tag: tag.clone(),
+                        };
+                        capitulations.insert(event);
+                    }
                 }
             }
             if missed {
@@ -559,10 +780,28 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
             "Part of this branch could not be read ({unreadable_blocks} unreadable blocks, {stopped} stopped reads); group history is missing there."
         ));
     }
+    if capitulations_unread > 0 {
+        warnings.push(format!(
+            "Capitulations could not be read at {capitulations_unread} recorded hours; some may be missing."
+        ));
+    }
+    if events_capped {
+        warnings.push(format!(
+            "War starts and capitulations exceed {MAX_EVENTS} each; later ones are left out."
+        ));
+    }
+    if unattributed > 0 {
+        warnings.push(format!(
+            "{unattributed} war starts or capitulations were first seen after an unrecorded hour or a change of country; which countries they were is not known, so they are left out."
+        ));
+    }
     Ok(Scan {
         humans,
         factions,
         wars,
+        war_starts,
+        capitulations,
+        identity_changes,
         unobserved,
         warnings,
     })
@@ -591,5 +830,19 @@ impl Scan {
     }
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+    pub fn faction_incomplete(&self, id: u64) -> Option<&[HourSpan]> {
+        self.factions
+            .get(&id)
+            .map(|faction| faction.incomplete.as_slice())
+    }
+    pub fn war_starts(&self) -> Vec<WarStart> {
+        self.war_starts.iter().cloned().collect()
+    }
+    pub fn capitulations(&self) -> Vec<Capitulation> {
+        self.capitulations.iter().cloned().collect()
+    }
+    pub fn identity_changes(&self) -> &[IdentityChange] {
+        &self.identity_changes
     }
 }

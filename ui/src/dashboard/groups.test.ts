@@ -7,11 +7,11 @@ import { defaultTemplate } from './model.ts';
 import '../widgets/definitions.ts';
 
 const REPLY: CountryGroupReply = {
-  branchId: '1', warnings: [], unobserved: { humans: [], factions: [{ firstHour: 190, lastHour: 200 }], wars: [] },
+  branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], unobserved: { humans: [], factions: [{ firstHour: 190, lastHour: 200 }], wars: [] },
   humans: [{ tag: 'GER', firstHour: 100, lastHour: 200 }, { tag: 'ENG', firstHour: 150, lastHour: 200 }],
   factions: [{ id: '5', name: 'Axis', firstHour: 100, lastHour: 200, members: [
-    { tag: 'GER', firstHour: 100, lastHour: 200 }, { tag: 'ITA', firstHour: 120, lastHour: 170 }, { tag: 'HUN', firstHour: 180, lastHour: 200 }] },
-  { id: '6', name: null, firstHour: 190, lastHour: 200, members: [] }],
+    { tag: 'GER', firstHour: 100, lastHour: 200 }, { tag: 'ITA', firstHour: 120, lastHour: 170 }, { tag: 'HUN', firstHour: 180, lastHour: 200 }] , incomplete: [] },
+  { id: '6', name: null, firstHour: 190, lastHour: 200, members: [] , incomplete: [] }],
   wars: [{ first: 'FRA', second: 'GER', firstHour: 130, lastHour: 200 }, { first: 'GER', second: 'POL', firstHour: 110, lastHour: 140 }],
 };
 
@@ -88,4 +88,10 @@ test('a group gives at most the widget limit', () => {
   const runs = Array.from({ length: 30 }, (_, index) => ({ tag: `T${index}`, firstHour: index, lastHour: 200 }));
   assert.equal(groupMembers(runs, 'ever', 0, 200, 16)?.length, 16);
   assert.deepEqual(groupMembers(runs, 'ever', 0, 200, 2), ['T0', 'T1']);
+});
+
+test('a faction is unobserved where no faction was read or its own roster was incomplete', () => {
+  const reply: CountryGroupReply = { ...REPLY, factions: REPLY.factions.map((faction, index) => index === 0 ? { ...faction, incomplete: [{ firstHour: 50, lastHour: 50 }] } : faction) };
+  const group = { type: 'faction' as const, id: reply.factions[0].id };
+  assert.deepEqual(groupUnobserved(reply, group).map(span => span.firstHour), [50, 190]);
 });

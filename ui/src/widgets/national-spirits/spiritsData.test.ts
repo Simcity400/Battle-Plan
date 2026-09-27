@@ -6,7 +6,7 @@ import { activeAt, endedBy, historyLanes, spiritState, spirits, startUnseen } fr
 const info = (token: string, category: string): IdeaInfo => ({ token, category, slot: null, law: false, designer: false,
   effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [] });
 const REPLY: IdeaHistoryReply = {
-  branchId: '1', tag: 'GER', unobserved: [], warnings: [],
+  branchId: '1', tag: 'GER', unobserved: [], identityStarts: [], warnings: [],
   categories: [
     { token: 'mod_spirits', name: null, kind: 'national_spirit', hidden: false, politicsTab: true, slots: [] },
     { token: 'government', name: null, kind: null, hidden: false, politicsTab: true, slots: [] },

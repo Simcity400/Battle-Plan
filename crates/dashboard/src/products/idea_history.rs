@@ -168,6 +168,10 @@ pub struct IdeaHistoryReply {
     /// Hours the idea table was not observed for this country: a span ending or
     /// starting next to one is a gap, not a change.
     pub unobserved: Vec<HourSpan>,
+    /// Hours the country's recorded identity starts, in order: its first hour
+    /// seen, after an hour it was not seen, or as another country identity. The
+    /// ideas held then are that identity's initial state, not changes.
+    pub identity_starts: Vec<i32>,
     pub warnings: Vec<String>,
 }
 
@@ -190,6 +194,7 @@ pub struct HolderArtwork {
 pub struct ScannedIdeas {
     pub spans: Vec<IdeaSpan>,
     pub unobserved: Vec<HourSpan>,
+    pub identity_starts: Vec<i32>,
     pub warnings: Vec<String>,
 }
 
@@ -295,6 +300,9 @@ pub fn scan(
             let continues =
                 last.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
             last = Some((identity, hour));
+            if !continues {
+                result.identity_starts.push(hour);
+            }
             let owner = |raw: u32| {
                 links
                     .binary_search_by_key(&raw, |link| link.id)
@@ -763,6 +771,7 @@ impl Product for IdeaHistory {
             holders,
             categories: categories(&joined),
             unobserved: scanned.unobserved.clone(),
+            identity_starts: scanned.identity_starts.clone(),
             warnings,
         })
     }

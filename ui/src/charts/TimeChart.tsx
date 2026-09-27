@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Icon } from '../components/Icons';
-import { BADGE_STRIP, badgesAt, drawBadges } from './badges';
+import { BADGE_STRIP, badgesAt, drawBadges, visibleBadges } from './badges';
 import type { EventBadge } from './badges';
-import { clipToPlot, drawAxes, drawCrosshair, drawPlayhead, drawSelection } from './draw';
+import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection } from './draw';
 import { approach, easeTau } from './easing';
 import { axisFraction, hitZone, plotFrame, pointerHour, wheelSteps } from './frame';
 import type { Padding, PlotFrame } from './frame';
@@ -85,6 +85,9 @@ export default function TimeChart(props: TimeChartProps) {
   const latest = useRef(props);
   latest.current = props;
   const [zoomed, setZoomed] = useState(false);
+  // The event badges drawn right now, as text for assistive technology: they follow
+  // the view (window, zoom, playhead), and change only when the drawn set does.
+  const [spoken, setSpoken] = useState('');
   const task = useRef<FrameTask | null>(null);
   const controls = useRef<{ dispatch: (action: ViewAction) => void } | null>(null);
 
@@ -93,6 +96,8 @@ export default function TimeChart(props: TimeChartProps) {
     const context = element.getContext('2d')!;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
+    // The badges last described, compared one by one (a count and range could repeat after a pan).
+    let spokenFor: readonly EventBadge[] = [];
     let eased: { x: [number, number]; y: [number, number] } | null = null;
     let frame: PlotFrame | null = null;
     let device: { width: number; height: number } | null = null;
@@ -159,6 +164,11 @@ export default function TimeChart(props: TimeChartProps) {
       context.restore();
       if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
       if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
+      const drawn = p.badges ? visibleBadges(p.badges, frame.x, until) : [];
+      if (drawn.length !== spokenFor.length || drawn.some((badge, index) => badge !== spokenFor[index])) {
+        spokenFor = drawn;
+        setSpoken(drawn.map(badge => `${dayLabel(badge.hour)}, ${badge.label}`).join('; '));
+      }
       p.overlay?.(context, frame, tokens);
       if (drag?.mode === 'box') drawSelection(context, tokens, drag);
 
@@ -339,7 +349,8 @@ export default function TimeChart(props: TimeChartProps) {
     }
   };
   return <div className="time-chart">
-    <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} onKeyDown={keyDown} />
+    <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={spoken ? `${owner}-events` : undefined} onKeyDown={keyDown} />
+    <p id={`${owner}-events`} className="sr-only">{spoken ? `Events: ${spoken}.` : ''}</p>
     {zoomed && <button type="button" className="button small time-chart-reset" onClick={() => controls.current?.dispatch({ type: 'reset' })}>
       <Icon name="refresh" />Reset zoom</button>}
   </div>;
