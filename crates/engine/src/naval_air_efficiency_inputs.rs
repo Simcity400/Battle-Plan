@@ -207,7 +207,7 @@ pub fn read(
     row.modifiers[0] = modifier(
         memory,
         add(country.pointer, crate::ccountry::MODIFIER_ACCUMULATOR)?,
-        0x23,
+        crate::modifier_keys::CARRIER_NIGHT_TRAFFIC,
     )?;
     let combat_weather = ptr(memory, combat, 0xb0)?;
     row.modifiers[1] = modifier(
@@ -217,7 +217,7 @@ pub fn read(
         } else {
             add(combat_weather, 0x10)?
         },
-        0x22,
+        crate::modifier_keys::CARRIER_TRAFFIC,
     )?;
     let province = ptr(memory, combat, crate::cnaval_combat::PROVINCE)?;
     auth(memory, base, province, crate::cprovince::VTABLE_RVA)?;
@@ -228,7 +228,7 @@ pub fn read(
     row.modifiers[2] = modifier(
         memory,
         add(element(weather_provinces, province_id, 0x330)?, 0x280)?,
-        0x22,
+        crate::modifier_keys::CARRIER_TRAFFIC,
     )?;
     let crowd_country = field::<u32>(memory, plane, 0x64)?;
     let slot = if crowd_country == 0 {
@@ -259,8 +259,11 @@ pub fn read(
     if definitions == 0 {
         return Err("naval air modifier metadata absent");
     }
-    for (out, key) in row.modifier_metadata.iter_mut().zip([0x22, 0x23]) {
-        let at = add(definitions, key * md::STRIDE)?;
+    for (out, key) in row.modifier_metadata.iter_mut().zip([
+        crate::modifier_keys::CARRIER_TRAFFIC,
+        crate::modifier_keys::CARRIER_NIGHT_TRAFFIC,
+    ]) {
+        let at = add(definitions, key as usize * md::STRIDE)?;
         *out = [
             field(memory, at, md::FLAGS)?,
             field(memory, at, md::FEATURE_SELECTOR)?,

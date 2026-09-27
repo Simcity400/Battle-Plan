@@ -224,6 +224,8 @@ impl OrderCounterCapture {
 }
 
 pub struct Captured {
+    /// This clocked hour's fixed-layout check, applied during conversion.
+    pub fixed_layout: Option<crate::fixed_layout::Layout>,
     /// The same sequence carried by this frame's sole DecodeJob (zero is valid).
     pub capture_seq: u64,
     pub order_counters: OrderCounterCapture,
@@ -291,6 +293,7 @@ impl Captured {
         division_fallback.reserve_sources(capacities[4].max(extended_capacities.division_sources));
         Self {
             capture_seq: 0,
+            fixed_layout: None,
             order_counters: OrderCounterCapture::with_capacity(capacities[0]),
             map: MapCaptured::with_capacities(map_capacities),
             extended: extended::Captured::with_capacities(extended_capacities),
@@ -595,6 +598,8 @@ pub struct Shared {
     /// The lexer's maximum token id at the last dictionary walk; a change
     /// means tokens were appended and the static dictionary is walked again.
     pub lexical_max: AtomicI32,
+    /// The attachment's first consistent fixed-layout check.
+    pub fixed_layout: OnceLock<engine::fixed_layout::Report>,
     /// The modifier definition table's data pointer and row count at the last
     /// hour; a change means a loader registered keys, and the static
     /// ModifierDefinitions table is walked again. `u64::MAX` before the first
@@ -706,6 +711,7 @@ impl Shared {
             template_models_missed: AtomicU64::new(0),
             force_next: AtomicBool::new(false),
             lexical_max: AtomicI32::new(-1),
+            fixed_layout: OnceLock::new(),
             modifier_table: [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)],
             division_mark: AtomicU64::new(extended::new_divisions::UNKNOWN),
             country_cache_swap: Mutex::new(CountryCacheSwap::default()),
@@ -1137,6 +1143,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         frame.country_cache_entries = 0;
         frame.country_cache_ns = 0;
         frame.order_counters.reset();
+        frame.fixed_layout = None;
         // Relations handoff state: same FIFO, same ordering guarantees.
         let mut relations_payload: Option<extended::intel::RelationsJob> = None;
         let mut relations_report = extended::intel::RelationsCopyReport::default();
@@ -1266,6 +1273,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         let mut inline_walk_ns = 0u64;
         let mut join_ns = 0u64;
         if let Some(clock) = frame.clock {
+            frame.fixed_layout = Some(match shared.fixed_layout.get() {
+                Some(report) => Ok(*report),
+                None => engine::fixed_layout::check(&memory, shared.base)
+                    .inspect(|report| _ = shared.fixed_layout.set(*report)),
+            });
             let cadence = unsafe { &mut *shared.cadence.get() };
             let continuous = cadence.continuous(&clock);
             let recovery = shared.force_next.swap(false, Ordering::AcqRel);

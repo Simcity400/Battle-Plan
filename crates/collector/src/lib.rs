@@ -22,6 +22,7 @@ mod decode;
 mod division_census;
 mod division_detail;
 mod extended;
+mod fixed_layout;
 mod history;
 mod hook;
 mod map_capture;

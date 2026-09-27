@@ -17,7 +17,11 @@ pub const MANPOWER_TERM_LIMIT: usize = 64;
 pub const DISPLAY_NAME_OWNER: usize = 0x340;
 pub const DISPLAY_NAME: usize = 0x60;
 /// Raw contextual keys used by width140C6E270 and reinforcement140C6D610.
-pub const CONTEXT_MODIFIER_KEYS: [u32; 3] = [0xfb, 0x10f, 0x250];
+pub const CONTEXT_MODIFIER_KEYS: [u32; 3] = [
+    crate::modifier_keys::LAND_REINFORCE_RATE,
+    crate::modifier_keys::COMBAT_WIDTH_FACTOR,
+    crate::modifier_keys::INITIATIVE_FACTOR,
+];
 /// Reinforcement width penalty/cap, base chance, initiative/speed coefficients,
 /// and speed baseline:140C6D610 and140C76E90.
 pub const CONTEXT_DEFINE_RVAS: [usize; 8] = [

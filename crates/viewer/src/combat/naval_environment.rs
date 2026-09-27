@@ -7,6 +7,7 @@ use crate::{
     document::Document,
     map::{perspective::Vision, tables::rows},
 };
+use engine::modifier_keys as keys;
 use replay::{
     frame::DecodedFrame,
     rows::{
@@ -88,17 +89,18 @@ pub(super) fn modifier(context: &NavalShipWeaponContext, key: u32) -> Option<i64
                 )
             }
             6 => {
-                let weather = add(ONE, source_term(context, 0, 0x248)?).clamp(0, ONE);
+                let weather =
+                    add(ONE, source_term(context, 0, keys::NAVY_WEATHER_PENALTY)?).clamp(0, ONE);
                 mul(
                     term(context, source, key)?,
                     add(context.weather_factor - ONE, weather),
                 )
             }
             11 => {
-                let severity = if key == 0x1bb {
+                let severity = if key == keys::NAVAL_CRITICAL_EFFECT_FACTOR {
                     ONE
                 } else {
-                    add(ONE, modifier(context, 0x1bb)?)
+                    add(ONE, modifier(context, keys::NAVAL_CRITICAL_EFFECT_FACTOR)?)
                 };
                 mul(
                     term(context, source, key)?.wrapping_mul(source.weights[0]),
@@ -142,31 +144,65 @@ fn weapon(row: &NavalCombatShipRow, case: usize, pride_in_battle: bool) -> Optio
         return None;
     }
     let depth = case == 4;
+    let lane = usize::from(depth);
     let mut base = context.weapon_bases[case];
     let mut factor = 0;
     // 140C25310 uses the cached formation flags at ship+628, without
     // substituting ship category or adding a strength multiplier.
     if context.formation_flags & (1 << 7) != 0 {
         if !depth {
-            base = add(base, modifier(context, 0x38)?);
+            base = add(base, modifier(context, keys::SUBMARINE_ATTACK)?);
         }
         factor = add(
-            modifier(context, 0xc2 + u32::from(depth))?,
-            source_term(context, 16, 0x1cc + u32::from(depth))?,
+            modifier(
+                context,
+                [
+                    keys::NAVY_SUBMARINE_ATTACK_FACTOR,
+                    keys::NAVY_SUBMARINE_DEFENCE_FACTOR,
+                ][lane],
+            )?,
+            source_term(
+                context,
+                16,
+                [
+                    keys::NAVY_SUBMARINE_ATTACK_FACTOR_AGAINST,
+                    keys::NAVY_SUBMARINE_DEFENCE_FACTOR_AGAINST,
+                ][lane],
+            )?,
         );
     }
     for (mask, key, relation) in [
         // Native instructions140C254B9/140C25527 add positive C4/C6.
         // The decompiler sign-extends these immediates incorrectly.
-        (1 << 6, 0xc4_u32, 0x1c8),
-        (1 << 8, 0xc6_u32, 0x1ca),
+        (
+            1 << 6,
+            [
+                keys::NAVY_CAPITAL_SHIP_ATTACK_FACTOR,
+                keys::NAVY_CAPITAL_SHIP_DEFENCE_FACTOR,
+            ],
+            [
+                keys::NAVY_CAPITAL_SHIP_ATTACK_FACTOR_AGAINST,
+                keys::NAVY_CAPITAL_SHIP_DEFENCE_FACTOR_AGAINST,
+            ],
+        ),
+        (
+            1 << 8,
+            [
+                keys::NAVY_SCREEN_ATTACK_FACTOR,
+                keys::NAVY_SCREEN_DEFENCE_FACTOR,
+            ],
+            [
+                keys::NAVY_SCREEN_ATTACK_FACTOR_AGAINST,
+                keys::NAVY_SCREEN_DEFENCE_FACTOR_AGAINST,
+            ],
+        ),
     ] {
         if context.formation_flags & mask != 0 {
             factor = add(
                 factor,
                 add(
-                    modifier(context, key + u32::from(depth))?,
-                    source_term(context, 16, relation + u32::from(depth))?,
+                    modifier(context, key[lane])?,
+                    source_term(context, 16, relation[lane])?,
                 ),
             );
         }
@@ -175,10 +211,18 @@ fn weapon(row: &NavalCombatShipRow, case: usize, pride_in_battle: bool) -> Optio
         return Some(0);
     }
     if !depth {
-        factor = add(factor, mul(modifier(context, 0x107)?, context.night));
+        factor = add(
+            factor,
+            mul(modifier(context, keys::NAVAL_NIGHT_ATTACK)?, context.night),
+        );
     }
-    factor = add(factor, modifier(context, 0x1b7 + u32::from(depth))?);
-    let lane = usize::from(depth);
+    factor = add(
+        factor,
+        modifier(
+            context,
+            [keys::NAVAL_DAMAGE_FACTOR, keys::NAVAL_DEFENSE_FACTOR][lane],
+        )?,
+    );
     if (context.ship_class as i32) < 0 {
         let fleet: Vec<_> = context.sources.iter().filter(|s| s.scope == 25).collect();
         if !fleet.is_empty() {
@@ -194,7 +238,17 @@ fn weapon(row: &NavalCombatShipRow, case: usize, pride_in_battle: bool) -> Optio
     factor = add(factor, mul(adjuster(context, 23, lane), context.night));
     factor = add(factor, adjuster(context, 22, lane));
     if pride_in_battle {
-        factor = add(factor, source_term(context, 9, 0x1d1 + u32::from(depth))?);
+        factor = add(
+            factor,
+            source_term(
+                context,
+                9,
+                [
+                    keys::NAVAL_HAS_POTF_IN_COMBAT_ATTACK,
+                    keys::NAVAL_HAS_POTF_IN_COMBAT_DEFENSE,
+                ][lane],
+            )?,
+        );
     }
     if !depth {
         let fuel = if context.fuel[1] < 1 {
@@ -345,6 +399,16 @@ pub(super) fn bind(
     let Some(detail) = details.rows().iter().find(|r| r.combat == id) else {
         return Ok(());
     };
+    let weapons_admitted = match replay::fixed_layout::validate_recording(
+        frame,
+        replay::fixed_layout::NAVAL_WEAPONS,
+    ) {
+        Ok(()) => true,
+        Err(reason) => {
+            out.warnings.push(reason);
+            false
+        }
+    };
     let aliases: BTreeMap<_, _> = rows::<tables::CountryLinks>(frame)?
         .rows()
         .iter()
@@ -453,6 +517,9 @@ pub(super) fn bind(
                 ("stat_torpedo", 3),
                 ("stat_depth_charges", 2),
             ] {
+                if !weapons_admitted {
+                    continue;
+                }
                 let convoys = members
                     .iter()
                     .filter(|r| r.live_ship == 0 && r.live_convoy != 0)

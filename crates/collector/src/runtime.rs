@@ -836,6 +836,7 @@ fn add_decode_status(status: &mut Value) {
     if !shared_ptr.is_null() {
         // Status is produced while runtime retains Shared and joins its spool.
         let shared = unsafe { &*shared_ptr };
+        status["fixed_layout"] = crate::fixed_layout::status(shared.fixed_layout.get());
         status["native_tick_work"] = json!({
             "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
             "calls": shared.native_tick_calls.load(Ordering::Relaxed),

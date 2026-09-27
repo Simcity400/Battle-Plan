@@ -1555,6 +1555,9 @@ impl Processor {
         });
         let retry_full = needs_retry(&source.tables) || sliced_retry;
         let skipped = campaign.apply_staggered_inputs(&mut source);
+        if let Some(layout) = &captured.fixed_layout {
+            crate::fixed_layout::apply(&mut source.tables, layout);
+        }
         let work = WorkSample {
             conversion: current_qpc() - conversion_started,
             ..WorkSample::default()
@@ -4464,6 +4467,49 @@ mod tests {
                 value_raw: i64::from(value),
             }],
         }])
+    }
+
+    #[test]
+    fn fixed_layout_refusal_survives_daily_carry_and_independent_keyframes() {
+        use replay::frame::FrameDecoder;
+        let (mut campaign, _) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let key = engine::modifier_keys::POWER_BALANCE_DAILY;
+        let mut report = engine::fixed_layout::Report {
+            static_token_maximum: 0x6000,
+            gap: Ok(()),
+            modifiers: [Ok(()); engine::modifier_keys::ALL.len()],
+            tokens: [Ok(()); engine::fixed_layout::TOKENS.len()],
+        };
+        report.modifiers[engine::modifier_keys::ALL
+            .iter()
+            .position(|entry| entry.index == key)
+            .unwrap()] = Err("definition token spells a different script name");
+        let mut decoder = FrameDecoder::new();
+        for (hour, skip, force_keyframe) in [(0, false, true), (1, true, false), (2, true, true)] {
+            let mut source: FrameInput = staggered_frame(branch, hour, skip).into();
+            let retry_before = needs_retry(&source.tables);
+            campaign.apply_staggered_inputs(&mut source);
+            crate::fixed_layout::apply(&mut source.tables, &Ok(report));
+            // Permanent refusals run after the recovery decision; a successful
+            // static/daily capture does not trigger repeated full acquisition.
+            assert!(!retry_before);
+            let frame = campaign
+                .encoder
+                .encode_input(source, force_keyframe)
+                .unwrap();
+            let decoded = decoder.apply(&frame).unwrap();
+            for &table in replay::fixed_layout::POWER_BALANCE.tables {
+                assert!(
+                    matches!(&*decoded.tables[table.index()], TableView::Unavailable { reason } if reason.contains("power_balance_daily"))
+                );
+                if force_keyframe {
+                    let alone = FrameDecoder::new().apply(&frame).unwrap();
+                    assert_eq!(alone.tables[table.index()], decoded.tables[table.index()]);
+                }
+            }
+            assert!(decoded.complete::<tables::Countries>().is_ok());
+        }
     }
 
     fn conversion_reuse_frame(

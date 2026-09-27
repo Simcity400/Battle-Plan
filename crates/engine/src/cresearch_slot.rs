@@ -22,7 +22,8 @@ pub const APPLIED_DAYS: usize = 0x28;
 pub const RESEARCH_SPEED: usize = 0x38;
 /// CResearchSlot native i32 ordinal; EBDB60 stores int, and the walker rejects negative/out-of-range bits against the positive array count.
 pub const INDEX: usize = 0x40;
-/// CResearchSlot idle handle; offsets.rs:336 and old active-slot reader skip this value (build-specific observation).
+/// `CResearchSlot::SetTechnology@140ECE4F0` writes this lexer `empty` token
+/// to slot+8 when slot+0x18 has no technology; `fixed_layout` checks its spelling.
 pub const IDLE_HANDLE: u32 = 0x2a4e;
 /// CResearchSlot multiplier scale; ECE4F0 resets to 100000 and divides the days product by 100000.
 pub const RESEARCH_SPEED_SCALE: i64 = 100_000;

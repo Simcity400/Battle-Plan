@@ -39,6 +39,8 @@ The replay stores content identity, ordered layer hashes and the coverage policy
 
 ## Checking changes
 
+[fixed_layout.rs](src/fixed_layout.rs) lists which recorded tables and playback calculations use each fixed modifier key and static token, and checks playback keys against complete ModifierDefinitions and LexicalTokens. A missing row or dictionary, a registered gap or a different script spelling produces a named refusal. Expected names live only in engine; collector refusals use the existing unavailable-table encoding, so the format is unchanged.
+
 Use existing round-trip, delta/baseline, malformed-input, version-rejection, provenance, branch and recovery tests. Validate affected collector, recorder, viewer and analytics consumers in the same change. See [AGENTS.md](../../AGENTS.md) for commands.
 
 ModifierDefinitions keeps each registered modifier key's native metadata by index, with its script name as a lexer token resolved through LexicalTokens; consumers decode the flag words. HiredAdvisors keeps each country's appointed advisors in native order, keyed by raw country reference and ordinal; resolve the country through CountryLinks like any other raw reference.

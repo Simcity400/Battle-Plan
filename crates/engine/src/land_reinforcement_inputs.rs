@@ -5,7 +5,10 @@
 //! chance, modifier sum, acclimatization fraction or supply ratio is composed.
 
 use crate::combat_sources::{Run, Sources, share};
-use crate::{Memory, carmy, ccountry, cgame_state, cpdx_array::Array, cprovince, cunit, read};
+use crate::{
+    Memory, carmy, ccountry, cgame_state, cpdx_array::Array, cprovince, cunit,
+    modifier_keys as keys, read,
+};
 
 pub const MODIFIER_LIMIT: usize = 96;
 pub const SUPPLY_TERM_LIMIT: usize = 64;
@@ -976,7 +979,7 @@ fn transport_context(
             sources,
             record + sweather_per_region::MODIFIERS,
             7,
-            &[0x29],
+            &[keys::NAVAL_SPEED_FACTOR],
             modifiers,
             &mut row.modifier_count,
         )?;
@@ -1057,7 +1060,7 @@ fn transport_context(
                 sources,
                 owner.pointer + ccountry::MODIFIER_ACCUMULATOR,
                 9,
-                &[0x1a7],
+                &[keys::NAVAL_MINES_EFFECT_REDUCTION],
                 modifiers,
                 &mut row.modifier_count,
             )?;
@@ -1067,7 +1070,7 @@ fn transport_context(
                 sources,
                 definition + cstatic_modifier::ACCUMULATOR,
                 8,
-                &[0x29],
+                &[keys::NAVAL_SPEED_FACTOR],
                 modifiers,
                 &mut row.modifier_count,
             )?;
@@ -1076,7 +1079,7 @@ fn transport_context(
             row.scalar_values[29] = i64::from(sources.field::<u32>(
                 memory,
                 metadata_table,
-                0x29 * metadata::STRIDE + metadata::CATEGORY_MASK,
+                keys::NAVAL_SPEED_FACTOR as usize * metadata::STRIDE + metadata::CATEGORY_MASK,
                 UNREADABLE,
             )?);
         }
@@ -1196,7 +1199,13 @@ pub fn capture_context(
         return Err("reinforcement modifier callback unsupported");
     };
     row.ids[5] = sources.field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA, UNREADABLE)?;
-    let country_keys = [0x2b, 0x1e9, 0x5e, 0x17f, 0x286];
+    let country_keys = [
+        keys::ARMY_SPEED_FACTOR,
+        keys::ARMY_ATTACK_SPEED_FACTOR,
+        keys::OUT_OF_SUPPLY_FACTOR,
+        keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
+        keys::ARMY_RETREAT_SPEED_FACTOR,
+    ];
     append_modifiers(
         memory,
         base,
@@ -1214,7 +1223,11 @@ pub fn capture_context(
             sources,
             leader,
             1,
-            &[0x2b, 0x5e, 0x17f],
+            &[
+                keys::ARMY_SPEED_FACTOR,
+                keys::OUT_OF_SUPPLY_FACTOR,
+                keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
+            ],
             modifiers,
             &mut row.modifier_count,
         )?;
@@ -1243,7 +1256,12 @@ pub fn capture_context(
             sources,
             accumulator,
             2,
-            &[0x2b, 0x1e9, 0x1e7, 0x1e8],
+            &[
+                keys::ARMY_SPEED_FACTOR,
+                keys::ARMY_ATTACK_SPEED_FACTOR,
+                keys::ARMY_SPEED_FACTOR_FOR_CONTROLLER,
+                keys::ENEMY_ARMY_SPEED_FACTOR,
+            ],
             modifiers,
             &mut row.modifier_count,
         )?;
@@ -1259,7 +1277,7 @@ pub fn capture_context(
             sources,
             accumulator,
             scope,
-            &[0x2b, 0x1e9],
+            &[keys::ARMY_SPEED_FACTOR, keys::ARMY_ATTACK_SPEED_FACTOR],
             modifiers,
             &mut row.modifier_count,
         )?;

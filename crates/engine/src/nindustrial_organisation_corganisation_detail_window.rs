@@ -75,8 +75,6 @@ pub const FIXED_SECTION_SITE_RVA: usize = 0x01f0_5a3c;
 pub const EQUIPMENT_SECTION_SITE_RVA: usize = 0x01f0_5baa;
 /// FUN141f05960 optional-bonus branch; B:95 uses its RVA as a presentation identity key.
 pub const OPTIONAL_BONUS_SITE_RVA: usize = 0x01f0_6032;
-/// Bonus UI's native modifier ids in display order; B:96/772 retains the fixed-disposition mapping.
-pub const FIXED_MODIFIER_IDS: [u32; 8] = [0x26b, 0x267, 0x268, 0x269, 0x26a, 0x26d, 0x26e, 0x26f];
 /// Bonus UI global for modifier 0x26b, read as u8 by B:737; owning engine struct unknown.
 pub const FIXED_BONUS_GLOBAL_RVA: usize = 0x0331_8b84;
 /// Bonus UI feature flag for modifier 0x268, read as usize by B:739; owning engine struct unknown.

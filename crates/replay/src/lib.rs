@@ -5,6 +5,7 @@ pub mod cadence;
 pub mod codec;
 pub mod container;
 pub mod eta_derive;
+pub mod fixed_layout;
 pub mod fixed_point;
 pub mod format;
 pub mod frame;

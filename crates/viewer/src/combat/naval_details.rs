@@ -108,6 +108,16 @@ fn active(
     if table.rows().is_empty() && !table.is_complete() {
         return Ok(());
     }
+    let organisation_admitted = match replay::fixed_layout::validate_recording(
+        frame,
+        replay::fixed_layout::SHIP_ORGANISATION,
+    ) {
+        Ok(()) => true,
+        Err(reason) => {
+            out.warnings.push(reason);
+            false
+        }
+    };
     let mut members: Vec<_> = table.rows().iter().filter(|r| r.combat == id).collect();
     // The native forward traversal and retained-member list are separate. Do
     // not drop source1 when its ship has already left NavalCombatParticipants.
@@ -232,9 +242,11 @@ fn active(
                     asset.size[0],
                     document,
                 );
-                if let Some(total) = live.iter().try_fold(0_i128, |sum, row| {
-                    Some(sum + fixed_ratio(row.organisation, organisation_maximum(row)?))
-                }) {
+                if organisation_admitted
+                    && let Some(total) = live.iter().try_fold(0_i128, |sum, row| {
+                        Some(sum + fixed_ratio(row.organisation, organisation_maximum(row)?))
+                    })
+                {
                     let ratio = total / live.len() as i128;
                     bar(
                         &mut values,
@@ -365,10 +377,12 @@ fn organisation_maximum(row: &NavalCombatShipRow) -> Option<i64> {
         };
     }
     let modifier = |key| super::naval_environment::modifier(&context, key);
-    let base = row.base_organisation.wrapping_add(modifier(0x46)?);
+    let base = row
+        .base_organisation
+        .wrapping_add(modifier(engine::modifier_keys::NAVY_ORG)?);
     let factor = 100_000_i64
-        .wrapping_add(modifier(0x47)?)
-        .wrapping_add(modifier(0x27e)?);
+        .wrapping_add(modifier(engine::modifier_keys::NAVY_ORG_FACTOR)?)
+        .wrapping_add(modifier(engine::modifier_keys::MAX_ORGANISATION)?);
     Some((base.wrapping_mul(factor) / 100_000).max(100))
 }
 fn show(values: &mut Values, key: &str) {

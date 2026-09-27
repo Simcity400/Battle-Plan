@@ -22,6 +22,8 @@ The struct files hold offsets, native widths and evidence. Do not recreate the o
 
 ## Adding or changing a reader
 
+Built-in modifier keys that readers use by index live only in [modifier_keys.rs](src/modifier_keys.rs), with the native registration callsite beside each entry; hard-coded static lexer tokens are listed in [fixed_layout.rs](src/fixed_layout.rs). Its check confirms, through the witnessed lexer dictionary, that each key's definition row spells the expected script name, that the gap row after the built-ins is default-constructed, and that each token is static and spells its name. Dynamic definitions remain sized and resolved from live data.
+
 Keep one source file per engine struct. Put a short evidence comment beside each constant: the native function or structure that establishes it and how it was confirmed. There is no arbitrary file-count cap.
 
 Derive widths, signedness, ownership and meaning from native writers, serializers and established evidence. An old reader is a lead, not proof. Look functions up through `hoi4re`; save established names, fields and notes before reporting the result. If a decompile drops an argument or arithmetic, inspect the indexed instructions rather than guessing. Distinguish virtual addresses from image-relative RVAs.

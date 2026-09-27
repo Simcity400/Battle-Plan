@@ -30,7 +30,13 @@ pub const FIXED_DEFINES: [usize; 18] = [
 pub const INTEGER_DEFINES: [usize; 3] = [0x03319080, 0x0331d1ac, 0x03318ec0];
 /// Sorted raw lookup keys:initial positioning, screening, positioning,
 /// convoy-only screening, opponent-admiral ship-ratio penalty.
-pub const MODIFIER_KEYS: [u32; 5] = [0x5a, 0x1b1, 0x1b2, 0x1b3, 0x1d0];
+pub const MODIFIER_KEYS: [u32; 5] = [
+    crate::modifier_keys::NAVAL_ENEMY_POSITIONING_IN_INITIAL_ATTACK,
+    crate::modifier_keys::SCREENING_EFFICIENCY,
+    crate::modifier_keys::POSITIONING,
+    crate::modifier_keys::SCREENING_WITHOUT_SCREENS,
+    crate::modifier_keys::NAVAL_ENEMY_FLEET_SIZE_RATIO_PENALTY_FACTOR,
+];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Modifier {

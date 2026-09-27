@@ -469,7 +469,7 @@ fn compare_traits(
         count += 1;
         // AAC50 formats reserved token 0x167 as fixed15 even in a trait
         // position. Its dictionary spelling is not the serialized value.
-        if row.token_id == 0x167 {
+        if row.token_id == engine::cpdx_lexer::FIXED15_TOKEN as i32 {
             formatted_tokens.push(key);
         } else {
             trait_token_value(
@@ -531,7 +531,7 @@ fn compare_trait_experience(
         let label = format!("leader trait experience {key:?}");
         // AE590 writes its key through AAC50; its reserved fixed15 token
         // needs formatting rather than a literal dictionary comparison.
-        if row.token_id == 0x167 {
+        if row.token_id == engine::cpdx_lexer::FIXED15_TOKEN as i32 {
             formatted_tokens.push(key);
         } else {
             trait_token_value(

@@ -14,10 +14,10 @@ use crate::{
 
 /// `GetUnitIntelLevel@1416068C0` scales a foreign unit's byte by the viewer's
 /// own modifier 0x24B (`modifier_accumulator::value@140551820` on `CCountry+0x5B8`).
-pub const UNIT_MODIFIER: u32 = 0x24b;
+pub const UNIT_MODIFIER: u32 = crate::modifier_keys::INTEL_FROM_COMBAT_FACTOR;
 /// `fog_consumer@141606390` asks `CState::GetModifierForCountry@1409CC140`
 /// for key 0x4B on each owned state another country controls.
-pub const NETWORK_MODIFIER: u32 = 0x4b;
+pub const NETWORK_MODIFIER: u32 = crate::modifier_keys::LOCAL_INTEL_TO_ENEMIES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CountryRow {

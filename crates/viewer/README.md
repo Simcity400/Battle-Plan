@@ -59,6 +59,8 @@ Keep coordinate conversions with their caller: bitmap rows run downward, world Z
 
 ## Fidelity limits
 
+Naval weapon totals and ship organisation bars require complete recorded ModifierDefinitions and LexicalTokens whose names match the shared fixed-key contract. Missing definitions or a patch-renumbered key suppress those calculations and produce a named combat diagnostic; the viewer checks the recording even if its recorder predates the guard.
+
 A replay can preserve exact simulation values without preserving the native rendered instant. Water/global clocks, camera fades, overlap/stencil producers, particle populations and previous renderer state can require inputs that an hourly sample lacks. A seed alone does not recover their update history. Do not replace these omissions with guessed visibility, fabricated data or fitted colours.
 
 

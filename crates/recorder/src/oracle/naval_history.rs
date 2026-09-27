@@ -275,7 +275,7 @@ fn compare_ship(
                 "sunk ship class token {token} lacks its recorded lexical entry"
             ))
         })?;
-        if token == 0x167 {
+        if token == engine::cpdx_lexer::FIXED15_TOKEN {
             return Err(invalid(
                 "sunk ship class uses the fixed15 formatter token, not a directly serialized lexical spelling",
             ));

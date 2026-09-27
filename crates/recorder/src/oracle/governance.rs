@@ -618,7 +618,7 @@ fn compare_research_slots(
         if !slot_indices.entry(tag).or_default().insert(row.index) {
             return Err(invalid("duplicate research slot index"));
         }
-        let token = if row.technology_handle == 0x2a4e {
+        let token = if row.technology_handle == engine::cresearch_slot::IDLE_HANDLE {
             b"empty".as_slice()
         } else {
             dictionary
@@ -664,7 +664,8 @@ fn compare_research_slots(
                             .is_ok_and(|owner| owner == tag.as_slice())
                     })
                     .map(|row| {
-                        let token = if row.technology_handle == 0x2a4e {
+                        let token = if row.technology_handle == engine::cresearch_slot::IDLE_HANDLE
+                        {
                             b"empty".as_slice()
                         } else {
                             dictionary[&row.technology_handle].0
@@ -1663,7 +1664,7 @@ mod tests {
             TableView::Complete(TableRows::ResearchSlots(vec![ResearchSlotRow {
                 country: 11,
                 index: 0,
-                technology_handle: 0x2a4e,
+                technology_handle: engine::cresearch_slot::IDLE_HANDLE,
                 technology_present: 0,
                 research_speed_raw: 100_000,
                 banked_days_raw: 0,
