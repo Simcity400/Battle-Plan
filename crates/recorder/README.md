@@ -47,6 +47,8 @@ Match the sampled instant, not just the displayed date. Game state can change af
 
 A naval side's saved `last_leader` is not the commander the game shows. A load restores only the last leader, and the current commander stays null until the next combat tick selects one ([evidence](../engine/src/cnaval_combatant.rs)). The recording keeps that null. So at an observed `LoadSignal` frame, whose loaded and first sampled hours both equal the compared hour, the oracle reports a null commander against a saved leader as a named limitation. Any nonzero mismatch still fails, as does a null commander at any other hour or branch start.
 
+The counter oracle compares each country's ordered `volunteers_sent` handles with SentVolunteers, including nulls and duplicates. Reordering, missing or extra references are differences; noncontiguous recorded ordinals are a comparison failure. The reader and comparison have synthetic coverage; fresh-save agreement and the collector smoke check must be exercised together on the coordinated game run.
+
 ## Live checks and performance
 
 After the first recorded hour, `status.json.fixed_layout.state` should be `verified`; `refused` lists each failed key or token with the tables it withholds, and `unverified` means no check has completed yet. Refused tables are unavailable in the recording with the reason preserved. Text saves cannot certify the native modifier layout, so the live status and the synthetic mismatch tests cover it.

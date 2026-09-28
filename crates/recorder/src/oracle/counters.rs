@@ -7,9 +7,41 @@ fn eq<T: PartialEq + std::fmt::Debug>(r: &mut Report, label: &str, a: T, b: T) {
     }
 }
 pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
+    report.attempt_table(TableId::SentVolunteers, |r| sent_volunteers(frame, save, r));
     report.attempt_table(TableId::ProvinceUnitOrder, |r| provinces(frame, save, r));
     report.attempt_table(TableId::CharacterPortraits, |r| characters(frame, save, r));
     report.attempt_table(TableId::LeaderPortraits, |r| leaders(frame, save, r));
+}
+fn sent_volunteers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::SentVolunteers>()?;
+    let context = country_context(frame)?;
+    let mut actual = BTreeMap::new();
+    for row in rows {
+        let tag = required_country_tag(row.country, &context.links)?;
+        let handles: &mut Vec<u64> = actual.entry(tag.to_vec()).or_default();
+        if handles.len() != row.ordinal as usize {
+            return Err(invalid("SentVolunteers ordinals are not contiguous"));
+        }
+        handles.push(row.division);
+    }
+    compare_sent_volunteers(&actual, &save.counter_inputs.sent_volunteers, r);
+    r.compared("SentVolunteers", rows.len());
+    Ok(())
+}
+fn compare_sent_volunteers(
+    actual: &BTreeMap<Vec<u8>, Vec<u64>>,
+    expected: &BTreeMap<Vec<u8>, Vec<u64>>,
+    r: &mut Report,
+) {
+    let tags: BTreeSet<_> = actual.keys().chain(expected.keys()).collect();
+    for tag in tags {
+        eq(
+            r,
+            &format!("SentVolunteers {} order", String::from_utf8_lossy(tag)),
+            actual.get(tag).map_or(&[][..], Vec::as_slice),
+            expected.get(tag).map_or(&[][..], Vec::as_slice),
+        );
+    }
 }
 fn provinces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::ProvinceUnitOrder>()?;
@@ -378,5 +410,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.differences.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod sent_volunteer_tests {
+    use super::*;
+    #[test]
+    fn oracle_rejects_reordering_missing_and_extra_references() {
+        let expected = BTreeMap::from([(b"AAA".to_vec(), vec![11, 0, 22])]);
+        let mut report = Report::default();
+        compare_sent_volunteers(&expected, &expected, &mut report);
+        assert!(report.differences.is_empty());
+        for handles in [vec![22, 0, 11], vec![11, 22], vec![11, 0, 22, 33]] {
+            let mut report = Report::default();
+            compare_sent_volunteers(
+                &BTreeMap::from([(b"AAA".to_vec(), handles)]),
+                &expected,
+                &mut report,
+            );
+            assert!(!report.differences.is_empty());
+        }
     }
 }

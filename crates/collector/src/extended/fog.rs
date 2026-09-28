@@ -20,7 +20,7 @@ use replay::{
 #[cfg(test)]
 use replay::frame::TableView;
 
-pub const N: usize = 6;
+pub const N: usize = 7;
 pub const TABLES: [TableId; N] = [
     TableId::RadarCoverage,
     TableId::VolunteerHosts,
@@ -28,16 +28,18 @@ pub const TABLES: [TableId; N] = [
     TableId::StationedUnits,
     TableId::UnitIntel,
     TableId::AirBaseRegistrations,
+    TableId::SentVolunteers,
 ];
 
 /// The stationed walk censuses areas and units together, so its cost is charged
-/// once to TheatreAreas. The other four families have independent roots.
+/// once to TheatreAreas. The other families have independent roots.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("radar coverage groups", 0, &[0]),
     ("volunteer host vectors", 1, &[1]),
     ("volunteer theatre areas and stationed units", 2, &[2, 3]),
     ("unit viewer levels", 4, &[4]),
     ("air base registrations", 5, &[5]),
+    ("sent volunteer references", 6, &[6]),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,7 +53,7 @@ pub struct Capacities {
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            rows: [1024, 512, 512, 1024, 32_768, 2048],
+            rows: [1024, 512, 512, 1024, 32_768, 2048, 512],
             radar_provinces: 65_536,
             area_provinces: 16_384,
             wings: 4096,
@@ -63,6 +65,7 @@ pub struct Captured {
     radar: CaptureRows<radar_group::Row>,
     radar_provinces: Arena<u32>,
     volunteers: CaptureRows<ccountry::VolunteerHostRow>,
+    sent_volunteers: CaptureRows<ccountry::SentVolunteerRow>,
     areas: CaptureRows<ccontroller_area::Row>,
     area_provinces: Arena<u32>,
     units: CaptureRows<ctheatre::StationedUnitRow>,
@@ -103,6 +106,7 @@ impl Captured {
             self.radar.fail(outcomes[0]);
         }
         self.volunteers.fail(outcomes[1]);
+        self.sent_volunteers.fail(outcomes[6]);
         self.areas.fail(outcomes[2]);
         self.units.fail(outcomes[3]);
         if !self.intel_raw_mode {
@@ -128,6 +132,7 @@ impl Captured {
             radar: CaptureRows::new(capacity.rows[0]),
             radar_provinces: Arena::new(capacity.radar_provinces),
             volunteers: CaptureRows::new(capacity.rows[1]),
+            sent_volunteers: CaptureRows::new(capacity.rows[6]),
             areas: CaptureRows::new(capacity.rows[2]),
             area_provinces: Arena::new(capacity.area_provinces),
             units: CaptureRows::new(capacity.rows[3]),
@@ -147,6 +152,7 @@ impl Captured {
         self.radar.reset();
         self.radar_provinces.reset();
         self.volunteers.reset();
+        self.sent_volunteers.reset();
         self.areas.reset();
         self.area_provinces.reset();
         self.units.reset();
@@ -159,6 +165,7 @@ impl Captured {
         self.radar.allocated_bytes()
             + self.radar_provinces.allocated_bytes()
             + self.volunteers.allocated_bytes()
+            + self.sent_volunteers.allocated_bytes()
             + self.areas.allocated_bytes()
             + self.area_provinces.allocated_bytes()
             + self.units.allocated_bytes()
@@ -172,6 +179,7 @@ impl Captured {
         self.radar.grow(&mut capacity.rows[0]);
         self.radar_provinces.grow(&mut capacity.radar_provinces);
         self.volunteers.grow(&mut capacity.rows[1]);
+        self.sent_volunteers.grow(&mut capacity.rows[6]);
         self.areas.grow(&mut capacity.rows[2]);
         self.area_provinces.grow(&mut capacity.area_provinces);
         self.units.grow(&mut capacity.rows[3]);
@@ -247,6 +255,16 @@ impl Captured {
         );
         ticks[1] = elapsed(begin);
         drop(volunteer_reads);
+        let sent_reads = read_accounting::table(TableId::SentVolunteers);
+        let begin = qpc();
+        let rows = &mut self.sent_volunteers.rows;
+        let len = rows.len();
+        self.sent_volunteers.outcome = bounded(
+            ccountry::walk_sent_volunteers(memory, base, game_state, rows),
+            len,
+        );
+        ticks[6] = elapsed(begin);
+        drop(sent_reads);
 
         let stationed_slot = if self.active[2] { 2 } else { 3 };
         let area_reads = read_accounting::table(TABLES[stationed_slot]);
@@ -334,6 +352,7 @@ impl Captured {
             self.units.outcome,
             self.intel.outcome,
             self.registrations.outcome,
+            self.sent_volunteers.outcome,
         ]
     }
 
@@ -389,7 +408,18 @@ impl Captured {
                     level: r.level,
                 },
             ),
-            self.registration_table(outcomes[5], projection),
+            self.registration_table(outcomes[5], projection.as_deref_mut()),
+            scalar_table::<tables::SentVolunteers, _>(
+                projection,
+                outcomes[6],
+                &self.sent_volunteers.rows,
+                |r| (u128::from(r.country) << 32) | u128::from(r.ordinal),
+                |r| rows::SentVolunteerRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    division: r.division,
+                },
+            ),
         ]
     }
 
@@ -620,7 +650,7 @@ mod registrations_memo_tests {
 
     fn captured() -> Captured {
         Captured::with_capacities(&Capacities {
-            rows: [0, 0, 0, 0, 0, 4],
+            rows: [0, 0, 0, 0, 0, 4, 4],
             radar_provinces: 0,
             area_provinces: 0,
             wings: 8,
@@ -672,7 +702,7 @@ mod registrations_memo_tests {
         let (_, _, job) = kit::split(&kit::memory(&bytes));
         for initial in [0, 1] {
             let mut capacities = Capacities {
-                rows: [0, 0, 0, 0, 0, initial],
+                rows: [0, 0, 0, 0, 0, initial, 0],
                 radar_provinces: 0,
                 area_provinces: 0,
                 wings: initial,
@@ -723,7 +753,7 @@ impl Captured {
         game_state: usize,
     ) -> RegistrationsSnapshot {
         let capacities = Capacities {
-            rows: [4, 4, 4, 4, 4, rows_cap],
+            rows: [4, 4, 4, 4, 4, rows_cap, 4],
             radar_provinces: 8,
             area_provinces: 8,
             wings: wings_cap,
@@ -1329,6 +1359,9 @@ mod tests {
         );
         put(&mut bytes, STATE_OBJECT + cstate::ID, &33_u32.to_le_bytes());
         array(&mut bytes, COUNTRY + ccountry::VOLUNTEER_HOSTS, HOSTS, 1);
+        array(&mut bytes, COUNTRY + ccountry::SENT_VOLUNTEERS, 0x12380, 2);
+        put(&mut bytes, 0x12380, &0_u64.to_le_bytes());
+        put(&mut bytes, 0x12388, &0xf000_0001_0000_0013_u64.to_le_bytes());
         array(
             &mut bytes,
             COUNTRY + ccountry::VOLUNTEER_TALLIES,
@@ -1577,6 +1610,21 @@ mod tests {
                 unit: (6 << 32) | 1,
             }]
         );
+        assert_eq!(
+            complete::<tables::SentVolunteers>(&views[6]),
+            &[
+                rows::SentVolunteerRow {
+                    country: 2,
+                    ordinal: 0,
+                    division: 0,
+                },
+                rows::SentVolunteerRow {
+                    country: 2,
+                    ordinal: 1,
+                    division: 0xf000_0001_0000_0013,
+                },
+            ]
+        );
         let intel = complete::<tables::UnitIntel>(&views[4]);
         assert_eq!(intel.len(), 2);
         assert_eq!(
@@ -1665,6 +1713,7 @@ mod tests {
             (COUNTRY + ccountry::RADAR_GROUPS_COUNT, 0_u32),
             (COUNTRY + ccountry::VOLUNTEER_HOSTS_COUNT, 0),
             (COUNTRY + ccountry::VOLUNTEER_TALLY_COUNT, 0),
+            (COUNTRY + ccountry::SENT_VOLUNTEERS + 12, 0),
             (COUNTRY + ccountry::THEATRES_COUNT, 0),
             (DIVISION + cunit::VIEWER_COUNT, 0),
             (AIR_BASE + cair_base::COUNTRY_CONTAINERS_COUNT, 0),
@@ -1852,7 +1901,7 @@ mod tests {
         }
         let bytes = fixture();
         let mut captured = Captured::with_capacities(&Capacities {
-            rows: [4, 4, 0, 4, 4, 4],
+            rows: [4, 4, 0, 4, 4, 4, 4],
             radar_provinces: 8,
             area_provinces: 0,
             wings: 8,
@@ -2281,7 +2330,7 @@ pub(crate) mod radar_test_kit {
     fn collect_typed(memory: &impl Memory, rows_cap: usize, provinces_cap: usize) -> Split {
         use engine::radar_group;
         let capacities = Capacities {
-            rows: [rows_cap, 4, 4, 4, 4, 4],
+            rows: [rows_cap, 4, 4, 4, 4, 4, 4],
             radar_provinces: provinces_cap,
             area_provinces: 8,
             wings: 8,
@@ -2322,7 +2371,7 @@ pub(crate) mod radar_test_kit {
             province_limit: provinces_cap,
         };
         let capacities = Capacities {
-            rows: [rows_cap, 4, 4, 4, 4, 4],
+            rows: [rows_cap, 4, 4, 4, 4, 4, 4],
             radar_provinces: provinces_cap,
             area_provinces: 8,
             wings: 8,
@@ -2458,7 +2507,7 @@ pub(crate) mod intel_test_kit {
     fn collect_typed(memory: &impl Memory, cap: usize) -> Split {
         use engine::unit_viewer_entry;
         let capacities = Capacities {
-            rows: [4, 4, 4, 4, cap, 4],
+            rows: [4, 4, 4, 4, cap, 4, 4],
             radar_provinces: 8,
             area_provinces: 8,
             wings: 8,
@@ -2479,7 +2528,7 @@ pub(crate) mod intel_test_kit {
             row_limit: cap,
         };
         let capacities = Capacities {
-            rows: [4, 4, 4, 4, cap, 4],
+            rows: [4, 4, 4, 4, cap, 4, 4],
             radar_provinces: 8,
             area_provinces: 8,
             wings: 8,

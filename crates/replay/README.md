@@ -29,6 +29,8 @@ Consumers that need only a few tables can use `FrameDecoder::for_tables`. It app
 
 LeaderPortraits and LeaderPortraitPaths hold the distinct leaders of every orders group with both an HQ provider and a leader, for all countries, independent of the recording client's country and camera. A registered leader outside that scope has no row; that is not evidence of an empty portrait. CharacterPortraits keeps the full character roster.
 
+SentVolunteers preserves each country's raw ordered division handles by country and ordinal, including null and unresolved references. An empty complete table means no sent references; an unavailable table does not. Consumers resolve only live references through the complete Divisions census.
+
 ## Compatibility and recovery
 
 A format change updates all affected writers, readers and consumers together. This release reads and writes only the current format. Reject other replay versions at the header and incompatible spool records explicitly; do not infer or silently translate an older layout.

@@ -46,6 +46,8 @@ The main map is an HDR scene. World-space country names draw before post-process
 
 Keep coordinate conversions with their caller: bitmap rows run downward, world Z uses `height - 1 - row`, and height sampling has caller-specific half-texel offsets, clamping and rounding. Preserve native traversal and tie order rather than replacing them with an apparently equivalent sort or sampler.
 
+Counter type icons use the recorded representative's roster and logical countries, faction/subject/war relations and the viewing country's ordered sent-volunteer references. [type_tint.rs](src/map/counters/type_tint.rs) holds the native predicates and precedence. The three colours come from the content stack's graphics defines; hidden question marks follow the same rule, and port hull icons keep their separate untinted path. The same decision picks the plate's allegiance colour (ours when the roster owner is the viewing country); counter grouping (1418BF940) and port plates (14197B4F0) are separate native rules this does not change. Missing inputs withhold detailed type icons, draw plates not our own as other, and name the limitation. Each hour resolves only the viewing country's referenced volunteers; the per-country index is rebuilt only when the relation tables, that host list or a country id's sign change, and a counter's lookup is constant-time.
+
 ## Source map
 
 | Area | Implementation and important distinction |

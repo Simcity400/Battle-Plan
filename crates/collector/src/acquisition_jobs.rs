@@ -1522,7 +1522,7 @@ mod tests {
         }
         fn decoded(job: &fog::IntelJob) -> (Outcome, replay::frame::TableView) {
             let mut captured = fog::Captured::with_capacities(&fog::Capacities {
-                rows: [0, 0, 0, 0, 4, 0],
+                rows: [0, 0, 0, 0, 4, 0, 0],
                 radar_provinces: 0,
                 area_provinces: 0,
                 wings: 0,

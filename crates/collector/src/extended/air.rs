@@ -5380,7 +5380,7 @@ mod tests {
                 .all(|(row, slot)| (row.slot, row.country) == (slot, slot))
         );
         let fog_capacities = fog::Capacities {
-            rows: [0, 0, 0, 0, 0, rows],
+            rows: [0, 0, 0, 0, 0, rows, 0],
             radar_provinces: 0,
             area_provinces: 0,
             wings: 1,
@@ -5397,7 +5397,7 @@ mod tests {
             assert_eq!(decoded.rows, direct.rows);
             assert_eq!(decoded.wings, direct.wings);
             owned.grow(&mut fog::Capacities {
-                rows: [0, 0, 0, 0, 0, rows],
+                rows: [0, 0, 0, 0, 0, rows, 0],
                 radar_provinces: 0,
                 area_provinces: 0,
                 wings: 1,
@@ -6981,7 +6981,7 @@ mod air_bases_memo_tests {
         });
         let mut fog =
             super::super::fog::Captured::with_capacities(&super::super::fog::Capacities {
-                rows: [0, 0, 0, 0, 0, cap[3]],
+                rows: [0, 0, 0, 0, 0, cap[3], 0],
                 radar_provinces: 0,
                 area_provinces: 0,
                 wings: cap[4],
@@ -7722,7 +7722,7 @@ pub(crate) mod air_bases_test_kit {
         let mut air = Captured::with_capacities(&capacities);
         let mut fog =
             crate::extended::fog::Captured::with_capacities(&crate::extended::fog::Capacities {
-                rows: [4, 4, 4, 4, 4, fog_rows],
+                rows: [4, 4, 4, 4, 4, fog_rows, 4],
                 radar_provinces: 8,
                 area_provinces: 8,
                 wings: fog_wings,
