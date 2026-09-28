@@ -1,10 +1,10 @@
-//! Hourly exact native leader portrait strings.
+//! Hourly exact native portrait strings for all land HQ leaders.
 use crate::{
     projection::{Projection, project_table},
     sampling::qpc,
     table_capture::CaptureRows,
 };
-use engine::{Memory, cunit_leader, walk::Outcome};
+use engine::{Memory, corders_group::Root, cunit_leader, walk::Outcome};
 use replay::{
     frame::TableInput,
     rows::{LeaderPortraitRow, TableId, tables},
@@ -65,14 +65,36 @@ impl Captured {
         self.rows.grow(&mut capacity.rows);
         self.sources.grow(&mut capacity.sources);
     }
-    pub fn capture(&mut self, memory: &impl Memory, base: usize, _state: usize) -> [u64; N] {
+    pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        roots: &[Root],
+        outcome: Outcome,
+    ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         self.sources.reset();
-        let acquired =
-            cunit_leader::walk_portraits(memory, base, &mut self.sources.rows, &mut self.rows.rows);
-        self.rows.outcome = acquired.outcome;
-        self.sources.outcome = acquired.sources;
+        if let Outcome::Rows { len } = outcome
+            && let Some(roots) = roots.get(..len)
+        {
+            let acquired = cunit_leader::walk_hq_portraits(
+                memory,
+                base,
+                roots,
+                &mut self.sources.rows,
+                &mut self.rows.rows,
+            );
+            self.rows.outcome = acquired.outcome;
+            self.sources.outcome = acquired.sources;
+        } else {
+            let reason = match outcome {
+                Outcome::Unavailable { reason } => reason,
+                _ => "HQ portrait orders census incomplete",
+            };
+            self.rows.outcome = Outcome::Unavailable { reason };
+            self.sources.outcome = self.rows.outcome;
+        }
         [qpc().saturating_sub(begin).max(0) as u64]
     }
     pub(crate) fn sources(&self) -> Option<&[(u64, usize)]> {
@@ -160,12 +182,37 @@ mod tests {
                 bytes: &[],
             },
             0,
-            0,
+            &[],
+            Outcome::Unavailable {
+                reason: "orders census failed",
+            },
         );
         assert_eq!(capture.sources(), None);
         let vacant = Captured::vacant();
         assert_eq!(vacant.allocated_bytes(), 0);
         assert_eq!(vacant.sources(), None);
+    }
+
+    #[test]
+    fn incomplete_order_census_is_not_an_empty_portrait_scope() {
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let mut capture = Captured::vacant();
+        capture.capture(
+            &memory,
+            0,
+            &[],
+            Outcome::Truncated { len: 0, unread_rows: 2 },
+        );
+        assert!(matches!(capture.outcomes()[0], Outcome::Unavailable { .. }));
+        assert_eq!(capture.sources(), None);
+        capture.capture(&memory, 0, &[], Outcome::Rows { len: 1 });
+        assert!(matches!(capture.outcomes()[0], Outcome::Unavailable { .. }));
+        capture.capture(&memory, 0, &[], Outcome::Rows { len: 0 });
+        assert_eq!(capture.outcomes()[0], Outcome::Rows { len: 0 });
+        assert_eq!(capture.sources(), Some([].as_slice()));
     }
 
     #[test]

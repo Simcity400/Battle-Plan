@@ -27,6 +27,8 @@ Keep those distinctions through encoding, decoding, inspection, analytics and or
 
 Consumers that need only a few tables can use `FrameDecoder::for_tables`. It applies the same baseline and recovery rules to those tables and reports omitted tables as unavailable. The selection is fixed for the decoder lifetime; ordinary `FrameDecoder::new` still reconstructs every table. `Replay::read_block_selected` complements this by retaining only selected updates during parsing. All updates still go through the same decoder and validation before unselected ones are discarded; frame ordering, bounds, keyframe and compression checks remain shared with the full reader. The decompression buffer reserves the bounded size from the block index once. Neither selection API changes the recording format.
 
+LeaderPortraits and LeaderPortraitPaths hold the distinct leaders of every orders group with both an HQ provider and a leader, for all countries, independent of the recording client's country and camera. A registered leader outside that scope has no row; that is not evidence of an empty portrait. CharacterPortraits keeps the full character roster.
+
 ## Compatibility and recovery
 
 A format change updates all affected writers, readers and consumers together. This release reads and writes only the current format. Reject other replay versions at the header and incompatible spool records explicitly; do not infer or silently translate an older layout.

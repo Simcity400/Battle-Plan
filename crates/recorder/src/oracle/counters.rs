@@ -188,12 +188,61 @@ fn characters(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<(
     r.limitation("138A110/13887E0 serialize category, size and the identity string for kinds0/1; the set byte and kind distinction are not serialized. Text identity comparison ends at embedded NUL; trailing resource/cache pointers are not part of the contract", "CharacterPortraits descriptor");
     Ok(())
 }
+/// Check the recorded scope and the independent saved selection. An omitted HQ
+/// cannot pass merely because both portrait tables omitted the same leader.
+pub(super) fn hq_leader_scope(
+    frame: &DecodedFrame,
+    save: &Save,
+    r: &mut Report,
+    label: &str,
+    actual: BTreeSet<u64>,
+) -> io::Result<()> {
+    let recorded: BTreeSet<_> = frame
+        .complete::<tables::OrdersGroups>()?
+        .iter()
+        .filter(|group| group.hq_provider != 0 && group.leader != 0)
+        .map(|group| group.leader)
+        .collect();
+    eq(r, &format!("{label} HQ census"), &actual, &recorded);
+    let countries = save
+        .naval_history
+        .theatre_countries
+        .as_ref()
+        .ok_or_else(|| invalid("save lacks theatre countries for HQ portrait scope"))?;
+    let saved: BTreeSet<_> = countries
+        .values()
+        .flat_map(|country| &country.land)
+        .flat_map(|theatre| &theatre.definitions)
+        .filter(|group| group.leader_unit.is_some_and(|unit| unit != 0))
+        .filter_map(|group| group.leader.filter(|leader| *leader != 0))
+        .collect();
+    for leader in saved {
+        eq(
+            r,
+            &format!("{label} {leader} saved HQ leader"),
+            actual.contains(&leader),
+            true,
+        );
+    }
+    Ok(())
+}
+
 fn leaders(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LeaderPortraits>()?;
     let by_id: BTreeMap<_, _> = rows.iter().map(|p| (p.leader, p)).collect();
-    for (&id, saved) in &save.characters.portraits {
-        let Some(row) = by_id.get(&id) else {
-            r.difference(format!("LeaderPortraits {id}"), "absent", "saved");
+    hq_leader_scope(
+        frame,
+        save,
+        r,
+        "LeaderPortraits",
+        by_id.keys().copied().collect(),
+    )?;
+    for (&id, row) in &by_id {
+        let Some(saved) = save.characters.portraits.get(&id) else {
+            r.limitation(
+                "HQ leader has no serialized portrait wrapper",
+                format!("LeaderPortraits {id}"),
+            );
             continue;
         };
         for (index, actual) in [&row.portrait_c0, &row.portrait_e0, &row.portrait_100]
@@ -209,7 +258,7 @@ fn leaders(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
         }
     }
     r.compared("LeaderPortraits", rows.len());
-    r.limitation("C0D920 omits empty portrait_path/picture/gfx; comparison uses their proven empty-string default and text bytes through NUL. All serialized role wrappers are checked, including non-character leaders; extra registry-resident unsaved leaders and raw character references cannot be verified by these strings", "LeaderPortraits");
+    r.limitation("C0D920 omits empty portrait_path/picture/gfx; comparison uses their proven empty-string default and text bytes through NUL. Only current HQ leaders are captured; all saved HQ leaders are required. Unsaved HQ leaders and raw character references cannot be verified by these strings", "LeaderPortraits");
     Ok(())
 }
 
@@ -217,11 +266,43 @@ fn leaders(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
 mod tests {
     use super::*;
     use replay::rows::{CharacterPortrait, CharacterPortraitRow, LeaderPortraitRow};
+    fn set_hq_scope(frame: &mut DecodedFrame, saved: &mut Save, leader: u64) {
+        use installed_content::save::naval_history::{LandTheatre, OrdersGroup, TheatreCountry};
+        *frame.tables[TableId::OrdersGroups.index()] =
+            TableView::Complete(TableRows::OrdersGroups(vec![
+                replay::rows::OrdersGroupRow {
+                    handle: 53,
+                    leader,
+                    hq_provider: 51,
+                    ..Default::default()
+                },
+            ]));
+        saved.naval_history.theatre_countries = Some(BTreeMap::from([(
+            b"GER".to_vec(),
+            TheatreCountry {
+                land: vec![LandTheatre {
+                    id: 1,
+                    volunteers_country: None,
+                    groups: vec![],
+                    units: vec![],
+                    area_representatives: vec![],
+                    definitions: vec![OrdersGroup {
+                        id: 53,
+                        leader: Some(leader),
+                        leader_unit: Some(51),
+                        ..Default::default()
+                    }],
+                }],
+                air: vec![],
+            },
+        )]));
+    }
     #[test]
     fn ordered_portraits_and_noncharacter_strings_compare_and_mismatches_fail() {
         let (mut frame, mut saved, _, _) = super::super::tests::fixture();
         let doc=installed_content::parser::parse(br#"countries={GER={units={corps_commander={id={id=8 type=4713} portrait_path="x.dds" picture="p" gfx="GFX_z"}}}} character_manager={historical={character={id={id=7 type=73} token=x portraits={civilian={small="GFX_a"} civilian={large="GFX_b"}}}}}"#).unwrap();
         saved.characters = save::characters::parse(&doc.items).unwrap();
+        set_hq_scope(&mut frame, &mut saved, (8 << 32) | 4713);
         *frame.tables[TableId::CharacterPortraits.index()] =
             TableView::Complete(TableRows::CharacterPortraits(vec![CharacterPortraitRow {
                 character: 7,
@@ -254,7 +335,7 @@ mod tests {
         characters(&frame, &saved, &mut report).unwrap();
         leaders(&frame, &saved, &mut report).unwrap();
         assert!(report.differences.is_empty());
-        assert_eq!(report.scalar_checks, 5);
+        assert_eq!(report.scalar_checks, 7);
         if let TableView::Complete(TableRows::CharacterPortraits(rows)) =
             &mut *frame.tables[TableId::CharacterPortraits.index()]
         {
@@ -269,5 +350,33 @@ mod tests {
         characters(&frame, &saved, &mut report).unwrap();
         leaders(&frame, &saved, &mut report).unwrap();
         assert_eq!(report.differences.len(), 2);
+    }
+
+    #[test]
+    fn hq_scope_checks_saved_leaders_even_if_recorded_groups_and_portraits_both_omit_them() {
+        let (mut frame, mut saved, _, _) = super::super::tests::fixture();
+        set_hq_scope(&mut frame, &mut saved, (8 << 32) | 4713);
+        *frame.tables[TableId::OrdersGroups.index()] =
+            TableView::Complete(TableRows::OrdersGroups(vec![]));
+        let mut report = Report::default();
+        hq_leader_scope(
+            &frame,
+            &saved,
+            &mut report,
+            "LeaderPortraits",
+            BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(report.differences.len(), 1);
+        let mut report = Report::default();
+        hq_leader_scope(
+            &frame,
+            &saved,
+            &mut report,
+            "LeaderPortraitPaths",
+            BTreeSet::from([(8 << 32) | 4713]),
+        )
+        .unwrap();
+        assert_eq!(report.differences.len(), 1);
     }
 }

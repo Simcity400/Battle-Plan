@@ -59,14 +59,19 @@ impl Captured {
     ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
-        self.rows.outcome = cunit_leader::walk_portrait_paths_memo(
-            memory,
-            base,
-            state,
-            sources,
-            &mut self.rows.rows,
-            &mut self.tag_memo,
-        );
+        self.rows.outcome = match sources {
+            Some(sources) => cunit_leader::walk_portrait_paths_memo(
+                memory,
+                base,
+                state,
+                sources,
+                &mut self.rows.rows,
+                &mut self.tag_memo,
+            ),
+            None => Outcome::Unavailable {
+                reason: "HQ portrait source census unavailable",
+            },
+        };
         [qpc().saturating_sub(begin).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -92,7 +97,7 @@ mod tests {
     use super::*;
     use engine::memory::SliceMemory;
     #[test]
-    fn missing_registry_is_unavailable_and_tag_bytes_convert_exactly() {
+    fn missing_hq_census_is_unavailable_and_tag_bytes_convert_exactly() {
         let memory = SliceMemory {
             base: 0,
             bytes: &[],

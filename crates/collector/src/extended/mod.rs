@@ -1012,8 +1012,6 @@ impl Captured {
     }
 
     fn swap_slow(&mut self, packs: &mut SlowPacks) {
-        std::mem::swap(&mut self.leader_portraits, &mut packs.leader_portraits);
-        std::mem::swap(&mut self.leader_paths, &mut packs.leader_paths);
         std::mem::swap(&mut self.map_names, &mut packs.map_names);
         std::mem::swap(&mut self.division_templates, &mut packs.division_templates);
         std::mem::swap(&mut self.visibility, &mut packs.visibility);
@@ -1138,6 +1136,8 @@ impl Captured {
     }
 
     fn swap_late(&mut self, packs: &mut LatePacks, orders: &mut Orders) {
+        std::mem::swap(&mut self.leader_portraits, &mut packs.leader_portraits);
+        std::mem::swap(&mut self.leader_paths, &mut packs.leader_paths);
         std::mem::swap(&mut self.air, &mut packs.air);
         std::mem::swap(&mut self.naval_history, &mut packs.naval_history);
         std::mem::swap(&mut self.army_icon_inputs, &mut packs.army_icon_inputs);
@@ -1738,15 +1738,6 @@ impl Captured {
                 *total += cost;
             }
         } else {
-            let cost = self.leader_portraits.capture(memory, base, game_state);
-            scatter(&leader_portraits::TABLES, cost, &mut ticks);
-            let cost = self.leader_paths.capture(
-                memory,
-                base,
-                game_state,
-                self.leader_portraits.sources(),
-            );
-            scatter(&leader_paths::TABLES, cost, &mut ticks);
             staggered!(
                 map_names,
                 division_templates,
@@ -2098,13 +2089,11 @@ impl OrdinaryPacks {
 }
 
 /// The live-memory packs run as a second pool job from the first burst
-/// (leader sprites, map names, templates, visibility, building detection,
+/// (map names, templates, visibility, building detection,
 /// faction theatres, model inputs, modifier definitions and hired advisors). No defines are recorded: the viewer reads the movement
 /// defines from the content's `NDefines`. Each table keeps its own [`replay::cadence`]: the
 /// template dictionary is daily, its counter inputs hourly.
 pub(crate) struct SlowPacks {
-    pub(crate) leader_portraits: leader_portraits::Captured,
-    pub(crate) leader_paths: leader_paths::Captured,
     pub(crate) map_names: map_names::Captured,
     pub(crate) division_templates: division_templates::Captured,
     pub(crate) visibility: visibility::Captured,
@@ -2119,8 +2108,6 @@ pub(crate) struct SlowPacks {
 
 impl SlowPacks {
     fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
-        self.leader_portraits.fail_capture(hour, force_full, reason);
-        self.leader_paths.fail_capture(hour, force_full, reason);
         self.map_names.fail_capture(hour, force_full, reason);
         self.division_templates
             .fail_capture(hour, force_full, reason);
@@ -2139,8 +2126,6 @@ impl SlowPacks {
 
     fn allocated_bytes(&self) -> usize {
         size_of::<Self>()
-            + self.leader_portraits.allocated_bytes()
-            + self.leader_paths.allocated_bytes()
             + self.map_names.allocated_bytes()
             + self.division_templates.allocated_bytes()
             + self.visibility.allocated_bytes()
@@ -2154,8 +2139,6 @@ impl SlowPacks {
 
     fn spare() -> Box<Self> {
         Box::new(Self {
-            leader_portraits: leader_portraits::Captured::vacant(),
-            leader_paths: leader_paths::Captured::vacant(),
             map_names: map_names::Captured::vacant(),
             division_templates: division_templates::Captured::vacant(),
             visibility: visibility::Captured::vacant(),
@@ -2188,12 +2171,6 @@ impl SlowPacks {
                 );
             )+};
         }
-        let cost = self.leader_portraits.capture(memory, base, game_state);
-        scatter(&leader_portraits::TABLES, cost, &mut ticks);
-        let cost =
-            self.leader_paths
-                .capture(memory, base, game_state, self.leader_portraits.sources());
-        scatter(&leader_paths::TABLES, cost, &mut ticks);
         staggered!(
             map_names,
             division_templates,
@@ -2217,10 +2194,12 @@ impl SlowPacks {
     }
 }
 
-/// The typed walks seeded by the map sample (wings, order sources) and the
+/// The typed walks seeded by the map sample (wings, order sources, HQ portraits) and the
 /// division census, moved off the game thread as a second pool job dispatched
 /// once the map sample has run.
 pub(crate) struct LatePacks {
+    pub(crate) leader_portraits: leader_portraits::Captured,
+    pub(crate) leader_paths: leader_paths::Captured,
     pub(crate) air: air::Captured,
     pub(crate) naval_history: naval_history::Captured,
     pub(crate) army_icon_inputs: army_icon_inputs::Captured,
@@ -2235,6 +2214,8 @@ pub(crate) struct LatePacks {
 
 impl LatePacks {
     fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.leader_portraits.fail_capture(hour, force_full, reason);
+        self.leader_paths.fail_capture(hour, force_full, reason);
         self.air.fail_late_capture(hour, force_full, reason);
         self.naval_history
             .fail_late_capture(hour, force_full, reason);
@@ -2244,6 +2225,8 @@ impl LatePacks {
 
     fn allocated_bytes(&self) -> usize {
         size_of::<Self>()
+            + self.leader_portraits.allocated_bytes()
+            + self.leader_paths.allocated_bytes()
             + self.air.allocated_bytes()
             + self.naval_history.allocated_bytes()
             + self.army_icon_inputs.allocated_bytes()
@@ -2253,6 +2236,8 @@ impl LatePacks {
 
     fn spare() -> Box<Self> {
         Box::new(Self {
+            leader_portraits: leader_portraits::Captured::vacant(),
+            leader_paths: leader_paths::Captured::vacant(),
             air: air::Captured::vacant(),
             naval_history: naval_history::Captured::vacant(),
             army_icon_inputs: army_icon_inputs::Captured::vacant(),
@@ -2274,6 +2259,17 @@ impl LatePacks {
         inputs: Option<&UnitInputs>,
     ) {
         let mut ticks = [0; TABLE_COUNT];
+        let cost = self.leader_portraits.capture(
+            memory,
+            base,
+            self.orders.roots(),
+            self.orders.root_outcome,
+        );
+        scatter(&leader_portraits::TABLES, cost, &mut ticks);
+        let cost =
+            self.leader_paths
+                .capture(memory, base, game_state, self.leader_portraits.sources());
+        scatter(&leader_paths::TABLES, cost, &mut ticks);
         if !self.naval_raw {
             self.naval_history.set_order_sources(
                 memory,
@@ -2924,8 +2920,6 @@ mod tests {
         use replay::frame::TableView;
 
         let slow = [
-            leader_portraits::TABLES.as_slice(),
-            leader_paths::TABLES.as_slice(),
             map_names::TABLES.as_slice(),
             division_templates::TABLES.as_slice(),
             visibility::TABLES.as_slice(),
@@ -2940,6 +2934,8 @@ mod tests {
         ]
         .concat();
         let late = [
+            leader_portraits::TABLES.as_slice(),
+            leader_paths::TABLES.as_slice(),
             air::TABLES.as_slice(),
             naval_history::TABLES.as_slice(),
             army_icon_inputs::TABLES.as_slice(),
@@ -3031,7 +3027,7 @@ mod tests {
             captured.capture_tables_late(&memory, 11, 0x1000, hour, true, &mut orders, &mut ticks);
             let reads = counted.finish();
             for id in [
-                TableId::LeaderPortraits,
+                TableId::ProvinceNames,
                 TableId::VolunteerHosts,
                 TableId::RailCooldowns,
             ] {

@@ -469,7 +469,7 @@ impl Role {
             Self::CharacterPortraits => character_portraits::TABLES[0],
             Self::ProvinceUnitOrder => province_unit_order::TABLES[0],
             Self::Ordinary => T::LandCombatDetails,
-            Self::Slow => T::LeaderPortraits,
+            Self::Slow => T::ProvinceNames,
             Self::Late => T::WingEquipment,
             Self::Orders => T::ArmyOrders,
             Self::Gated => T::VolunteerHosts,

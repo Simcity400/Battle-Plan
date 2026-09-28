@@ -11,7 +11,9 @@
 //!
 //! **UNVERIFIED**: the native counter tooltip reads `ForwardCachedPathCost` (`140BED280`), the
 //! pathfinder's cached estimate, where the division view reads `eta_remaining`. Only the latter is
-//! recorded, so a stale cache is the one case where the game's counter and this one could differ.
+//! reconstructed here. On a cache miss 140BED3A0 finds a new path, which need not be the stored
+//! route; its cache also retains the original result until 140BF0300 expires it. Native counter
+//! parity therefore needs both path selection and client cache history, not just fresh operands.
 //!
 //! Both sites do the same arithmetic: [`engine::cunit::eta_hours`] (`14047BDE0`), narrowed to i32,
 //! shown only when positive, split into `hours / 24` days and `hours % 24` hours.
