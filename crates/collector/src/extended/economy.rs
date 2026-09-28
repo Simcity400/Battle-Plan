@@ -12,7 +12,8 @@ use engine::{
     Memory, ccountry, ccountry_experience_status, ccountry_fuel_status, ccountry_resources,
     ccountry_supply_system, cgame_state, cpdx_array::Array, cpurchase_contract, cresource_exchange,
     cstrategic_resource, disrupted_supply_bucket, foreign_homebase_node, hub_motorization_entry,
-    market_contract_manager, msvc_string, sprovince_supply_data, supply_node_record, walk::Outcome,
+    fuel_consumer_data, fuel_history_entry, market_contract_manager, msvc_string,
+    sprovince_supply_data, supply_node_record, walk::Outcome,
 };
 use replay::{
     frame::TableInput,
@@ -20,7 +21,7 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 10;
+pub const N: usize = 11;
 pub const TABLES: [TableId; N] = [
     TableId::CountryFuel,
     TableId::CountryExperience,
@@ -32,13 +33,18 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryResources,
     TableId::ResourceExchanges,
     TableId::PurchaseContracts,
+    TableId::CountryFuelConsumers,
 ];
 
 /// Definitions are authenticated once and reused by the two dependent walks.
 /// Their read time is charged to ResourceDefinitions, not charged again to each
 /// consumer. The consumers' own timings include their additional native reads.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("resource dictionary and consumers", 6, &[6, 7, 8])];
+/// One fuel walk reads each country's status once for both its tables and is
+/// charged to CountryFuel.
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
+    ("resource dictionary and consumers", 6, &[6, 7, 8]),
+    ("fuel status and consumers", 0, &[0, 10]),
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
@@ -46,23 +52,39 @@ pub struct Capacities {
     pub foreign_sources: usize,
 }
 
+/// Consumer rows per country, fixed by the engine's fuel status.
+const FUEL_CONSUMERS: usize = ccountry_fuel_status::MAX_CONSUMERS as usize;
+
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            rows: [512, 512, 16_384, 1024, 256, 512, 16, 4096, 1024, 128],
+            rows: [
+                512,
+                512,
+                16_384,
+                1024,
+                256,
+                512,
+                16,
+                4096,
+                1024,
+                128,
+                512 * FUEL_CONSUMERS,
+            ],
             foreign_sources: 16_384,
         }
     }
 }
 impl Capacities {
-    /// CountryFuel and CountryExperience hold one row per canonical country;
-    /// CountryResources one per country and resource definition (the
+    /// CountryFuel and CountryExperience hold one row per canonical country,
+    /// and CountryFuelConsumers the engine's fixed number per country; CountryResources one per country and resource definition (the
     /// default's eight per country covers the vanilla roster; more grows).
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[0], rows(slots, 1));
         raise(&mut self.rows[1], rows(slots, 1));
         raise(&mut self.rows[7], rows(slots, 8));
+        raise(&mut self.rows[10], rows(slots, FUEL_CONSUMERS));
     }
 }
 
@@ -77,6 +99,7 @@ pub struct Captured {
     resources: CaptureRows<ccountry_resources::Row>,
     exchanges: CaptureRows<cresource_exchange::Row>,
     purchases: CaptureRows<cpurchase_contract::Row>,
+    fuel_consumers: CaptureRows<ccountry_fuel_status::ConsumerRow>,
     sources: Arena<u8>,
     exchange_scratch: Vec<cresource_exchange::Membership>,
     purchase_scratch: Vec<cpurchase_contract::Membership>,
@@ -103,6 +126,7 @@ impl Captured {
             resources: CaptureRows::new(capacity.rows[7]),
             exchanges: CaptureRows::new(capacity.rows[8]),
             purchases: CaptureRows::new(capacity.rows[9]),
+            fuel_consumers: CaptureRows::new(capacity.rows[10]),
             sources: Arena::new(capacity.foreign_sources),
             exchange_scratch: vec![cresource_exchange::Membership::default(); capacity.rows[8]],
             purchase_scratch: vec![cpurchase_contract::Membership::default(); capacity.rows[9]],
@@ -123,6 +147,7 @@ impl Captured {
         self.resources.reset();
         self.exchanges.reset();
         self.purchases.reset();
+        self.fuel_consumers.reset();
         self.sources.reset();
     }
 
@@ -137,6 +162,7 @@ impl Captured {
             + self.resources.allocated_bytes()
             + self.exchanges.allocated_bytes()
             + self.purchases.allocated_bytes()
+            + self.fuel_consumers.allocated_bytes()
             + self.sources.allocated_bytes()
             + self.exchange_scratch.capacity() * size_of::<cresource_exchange::Membership>()
             + self.purchase_scratch.capacity() * size_of::<cpurchase_contract::Membership>()
@@ -153,6 +179,7 @@ impl Captured {
         self.resources.grow(&mut capacity.rows[7]);
         self.exchanges.grow(&mut capacity.rows[8]);
         self.purchases.grow(&mut capacity.rows[9]);
+        self.fuel_consumers.grow(&mut capacity.rows[10]);
         self.sources.grow(&mut capacity.foreign_sources);
         grow_vec(&mut self.exchange_scratch, capacity.rows[8]);
         grow_vec(&mut self.purchase_scratch, capacity.rows[9]);
@@ -185,7 +212,10 @@ impl Captured {
             }};
         }
         if self.other_active {
-            plain!(0, fuel, ccountry_fuel_status::walk);
+            let _reads = read_accounting::table(TABLES[0]);
+            let begin = qpc();
+            self.capture_fuel(memory, base, game_state);
+            ticks[0] = elapsed(begin);
             plain!(1, experience, ccountry_experience_status::walk);
         }
         plain!(2, supply, sprovince_supply_data::walk);
@@ -267,6 +297,21 @@ impl Captured {
         ticks
     }
 
+    /// One fuel walk fills CountryFuel and CountryFuelConsumers, each with its
+    /// own outcome.
+    fn capture_fuel(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+        let outcomes = ccountry_fuel_status::walk(
+            memory,
+            base,
+            game_state,
+            &mut self.fuel.rows,
+            &mut self.fuel_consumers.rows,
+        );
+        self.fuel.outcome = bounded(outcomes.fuel, self.fuel.rows.len());
+        self.fuel_consumers.outcome =
+            bounded(outcomes.consumers, self.fuel_consumers.rows.len());
+    }
+
     fn set_schedule(&mut self, hour: i32, force_full: bool) {
         self.resources_active =
             replay::cadence::should_walk(TableId::ResourceDefinitions, hour, force_full);
@@ -290,6 +335,7 @@ impl Captured {
             self.disrupted.outcome = skipped;
             self.foreign.outcome = skipped;
             self.purchases.outcome = skipped;
+            self.fuel_consumers.outcome = skipped;
             self.sources.reset();
         }
     }
@@ -306,6 +352,7 @@ impl Captured {
             self.resources.outcome,
             self.exchanges.outcome,
             self.purchases.outcome,
+            self.fuel_consumers.outcome,
         ]
     }
 
@@ -326,6 +373,21 @@ impl Captured {
                     maximum_raw: r.maximum_raw,
                     gain_raw: r.gain_raw,
                     cost_raw: r.cost_raw,
+                    gain_from_states_raw: r.gain_from_states_raw,
+                    lend_lease_gain_raw: r.lend_lease_gain_raw,
+                    lend_lease_consumption_raw: r.lend_lease_consumption_raw,
+                    gain_per_oil_raw: r.gain_per_oil_raw,
+                    history_index: r.history_index,
+                    remaining_hours: r.remaining_hours,
+                    ring_gain_raw: r.ring_gain_raw,
+                    ring_consumed_raw: r.ring_consumed_raw,
+                    ring_other_raw: r.ring_other_raw,
+                    ring_requested_0_raw: r.ring_requested_raw[0],
+                    ring_requested_1_raw: r.ring_requested_raw[1],
+                    ring_requested_2_raw: r.ring_requested_raw[2],
+                    ring_received_0_raw: r.ring_received_raw[0],
+                    ring_received_1_raw: r.ring_received_raw[1],
+                    ring_received_2_raw: r.ring_received_raw[2],
                 },
             ),
             scalar_table::<tables::CountryExperience, _>(
@@ -448,7 +510,7 @@ impl Captured {
                 },
             ),
             scalar_table::<tables::PurchaseContracts, _>(
-                projection,
+                projection.as_deref_mut(),
                 outcomes[9],
                 &self.purchases.rows,
                 |r| r.id as u128,
@@ -465,6 +527,19 @@ impl Captured {
                     equipment_transfer_progress_raw: r.equipment_transfer_progress_raw,
                     collected_raw: r.collected_raw,
                     completed_deliveries: r.completed_deliveries,
+                },
+            ),
+            scalar_table::<tables::CountryFuelConsumers, _>(
+                projection,
+                outcomes[10],
+                &self.fuel_consumers.rows,
+                |r| (r.country as u128) << 32 | r.index as u128,
+                |r| rows::CountryFuelConsumerRow {
+                    country: r.country,
+                    index: r.index,
+                    priority: r.priority,
+                    requested_raw: r.requested_raw,
+                    received_raw: r.received_raw,
                 },
             ),
         ]
@@ -700,7 +775,7 @@ fn acquire_resource_group(
 }
 
 impl Captured {
-    /// Interpret seven indexed raw tables and install three owned native tables.
+    /// Interpret eight indexed raw tables and install three owned native tables.
     /// Resource rows are already acquired in dependency order; their
     /// installation performs no native reads, index lookup or replayed walk.
     /// All rows, arenas and truncation outcomes reach the same FIFO
@@ -709,7 +784,7 @@ impl Captured {
         &mut self,
         base: usize,
         job: &EconomyRestJob,
-        decode_ticks: &mut [u64; 10],
+        decode_ticks: &mut [u64; N],
     ) {
         self.resources_active = job.resources_active;
         self.other_active = job.other_active;
@@ -721,10 +796,7 @@ impl Captured {
         let recorded = crate::raw::Recorded::build(&job.log);
         if self.other_active {
             let started = qpc();
-            self.fuel.outcome = bounded(
-                ccountry_fuel_status::walk(&recorded, base, job.game_state, &mut self.fuel.rows),
-                self.fuel.rows.len(),
-            );
+            self.capture_fuel(&recorded, base, job.game_state);
             decode_ticks[0] += elapsed(started);
             let started = qpc();
             self.experience.outcome = bounded(
@@ -848,6 +920,7 @@ impl Captured {
         self.resources.outcome = Outcome::Unavailable { reason };
         self.exchanges.outcome = Outcome::Unavailable { reason };
         self.purchases.outcome = Outcome::Unavailable { reason };
+        self.fuel_consumers.outcome = Outcome::Unavailable { reason };
         self.mark_inactive();
         self.rest_raw_mode = false;
     }
@@ -857,21 +930,21 @@ impl Captured {
 // Economy-rest raw-copy split (CountryFuel, CountryExperience,
 // ProvinceSupply, HubMotorization, DisruptedSupply, ForeignHomebases,
 // ResourceDefinitions, CountryResources, ResourceExchanges,
-// PurchaseContracts).
+// PurchaseContracts, CountryFuelConsumers).
 //
-// Seven tables retain their raw mirror and indexed decode. The existing World
+// Eight tables retain their raw mirror and indexed decode. The existing World
 // acquisition request also owns native resource-definition, pool and exchange
 // rows, acquired by the direct readers with exact per-frame capacity grants.
 // All raw staging completes before typed resource acquisition, preventing a
 // later raw capacity shortage from retrying an already-read resource source.
 //
-// Shared raw census spans cover the six daily raw tables, never ProvinceSupply.
+// Shared raw census spans cover the seven daily raw tables, never ProvinceSupply.
 // A source fault there also blocks active typed resource acquisition. When the
 // other daily tables are inactive, only ProvinceSupply is staged; country and
 // market sources are untouched. Supply-root masks include only active supply tables.
 // ===========================================================================
 
-/// Raw bits retain full ten-table positions; slots6..8 use owned native rows.
+/// Raw bits retain full eleven-table positions; slots6..8 use owned native rows.
 const M_E_FUEL: u32 = 0x001;
 const M_E_EXP: u32 = 0x002;
 const M_E_SUPPLY: u32 = 0x004;
@@ -879,16 +952,19 @@ const M_E_HUBS: u32 = 0x008;
 const M_E_DISRUPTED: u32 = 0x010;
 const M_E_FOREIGN: u32 = 0x020;
 const M_E_PURCH: u32 = 0x200;
-const M_E_CENSUS: u32 = 0x23B;
+const M_E_FUEL_CONSUMERS: u32 = 0x400;
+/// The fuel status serves both fuel tables; the ring feeds CountryFuel alone.
+const M_E_FUEL_STATUS: u32 = M_E_FUEL | M_E_FUEL_CONSUMERS;
+const M_E_CENSUS: u32 = 0x63B;
 const M_E_SUPPLY_ROOT: u32 = 0x03C;
 const M_E_SUPPLY_OBJ: u32 = 0x038;
 
-/// One hour of seven raw tables and three owned native resource tables. Pools
+/// One hour of eight raw tables and three owned native resource tables. Pools
 /// recycle without allocation during acquisition; growth runs on the decode
 /// side only (see `crate::decode::recycle_economy_rest_job`).
 #[derive(Debug, Default)]
 pub(crate) struct EconomyRestJob {
-    pub log: RawLog<10>,
+    pub log: RawLog<N>,
     pub game_state: usize,
     resources_active: bool,
     other_active: bool,
@@ -899,7 +975,7 @@ pub(crate) struct EconomyRestJob {
 impl EconomyRestJob {
     pub fn new() -> Self {
         Self {
-            // Preserve provisioned capacity for the seven remaining raw tables.
+            // Preserve provisioned capacity for the eight remaining raw tables.
             // Resource rows use separate typed storage with exact frame grants.
             log: RawLog::new(1 << 18, 16 << 20),
             game_state: 0,
@@ -939,10 +1015,10 @@ pub(crate) struct EconomyRestCopyReport {
     /// has not consumed a source fault. Source faults plus overflow are accepted
     /// terminal unavailable payloads, never a reason to reread failed memory.
     pub raw_ok: bool,
-    pub copy_ticks: [u64; 10],
+    pub copy_ticks: [u64; N],
     /// Indexed raw payload bytes. Owned resource tables have zero raw bytes;
     /// their native row storage is included in raw-memory payload-vector cost.
-    pub raw_bytes: [u64; 10],
+    pub raw_bytes: [u64; N],
 }
 
 /// Acquisition-job parameters supplied at the sampling boundary.
@@ -1035,18 +1111,18 @@ impl Captured {
     }
 }
 
-fn e_pool_u64(log: &RawLog<10>, start: usize) -> u64 {
+fn e_pool_u64(log: &RawLog<N>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-fn e_pool_u32(log: &RawLog<10>, start: usize) -> u32 {
+fn e_pool_u32(log: &RawLog<N>, start: usize) -> u32 {
     u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
 }
 
 /// One mirrored span read. `None` addresses (arithmetic overflow) record
 /// nothing because the typed walk fails locally without reads.
 fn espan(
-    log: &mut RawLog<10>,
+    log: &mut RawLog<N>,
     memory: &impl Memory,
     addr: Option<usize>,
     len: usize,
@@ -1058,7 +1134,7 @@ fn espan(
 /// Bulk variant for contiguous table copies (status blocks, array data).
 /// Enclosed sub-reads serve from the bulk span at replay.
 fn esbulk(
-    log: &mut RawLog<10>,
+    log: &mut RawLog<N>,
     memory: &impl Memory,
     addr: Option<usize>,
     len: usize,
@@ -1069,7 +1145,7 @@ fn esbulk(
 
 /// Mirror of one MSVC string's reads: 32-byte header plus heap payload and
 /// terminator. Inline strings ride in the header span.
-fn copy_economy_string(log: &mut RawLog<10>, memory: &impl Memory, string: usize, mask: u32) {
+fn copy_economy_string(log: &mut RawLog<N>, memory: &impl Memory, string: usize, mask: u32) {
     let Some(header_start) = espan(log, memory, Some(string), 32, mask) else {
         return;
     };
@@ -1127,7 +1203,7 @@ fn copy_economy_string(log: &mut RawLog<10>, memory: &impl Memory, string: usize
 /// `ccountry::Reader::new` plus one full `read_at` per slot. Returns the
 /// canonical country list (slot, pointer, id) for per-country detail copies.
 fn copy_economy_link(
-    log: &mut RawLog<10>,
+    log: &mut RawLog<N>,
     memory: &impl Memory,
     links: &Array,
     countries: u32,
@@ -1156,7 +1232,7 @@ fn copy_economy_rest_pass(
     base: usize,
     game_state: usize,
     other_active: bool,
-    log: &mut RawLog<10>,
+    log: &mut RawLog<N>,
 ) {
     let _reads = read_accounting::table(TABLES[2]);
     log.has_bulk = true;
@@ -1291,19 +1367,22 @@ fn copy_economy_rest_pass(
             continue;
         }
         // Fuel status block (batched gather): one bulk covers the walk's
-        // scattered vtable/quantities/cost/owner reads.
+        // scattered status reads for both fuel tables, then its consumer
+        // entries and history ring.
         if let Some(ptr_start) = espan(
             log,
             memory,
             pointer.checked_add(ccountry::FUEL_STATUS),
             8,
-            M_E_FUEL,
+            M_E_FUEL_STATUS,
         ) {
             if let Some(status) = usize::try_from(e_pool_u64(log, ptr_start))
                 .ok()
                 .filter(|&p| p != 0)
             {
-                let _ = esbulk(log, memory, Some(status), 0xe8, M_E_FUEL);
+                if let Some(start) = esbulk(log, memory, Some(status), 0xe8, M_E_FUEL_STATUS) {
+                    copy_fuel_arrays(log, memory, start);
+                }
             }
         }
         // Experience block: one contiguous 0x58 bulk.
@@ -1346,8 +1425,34 @@ fn copy_economy_rest_pass(
     copy_economy_market_contracts(log, memory, base, market);
 }
 
+/// Mirror of the fuel walk's consumer-entry and history-ring reads, found
+/// through the headers in the status bulk at `start`. A header the walk
+/// refuses stages nothing; the replay refuses it from the same bulk.
+fn copy_fuel_arrays(log: &mut RawLog<N>, memory: &impl Memory, start: usize) {
+    use ccountry_fuel_status::{
+        CONSUMERS, HISTORY_RING, HISTORY_RING_ENTRIES, MAX_CONSUMERS,
+    };
+    let header = |log: &RawLog<N>, offset: usize| -> [u8; 16] {
+        log.bytes[start + offset..start + offset + 16]
+            .try_into()
+            .unwrap()
+    };
+    if let Some(consumers) = Array::from_header(header(log, CONSUMERS), fuel_consumer_data::STRIDE)
+        .filter(|array| array.count != 0 && array.count <= MAX_CONSUMERS)
+    {
+        let bytes = consumers.count as usize * fuel_consumer_data::STRIDE;
+        let _ = esbulk(log, memory, Some(consumers.data), bytes, M_E_FUEL_CONSUMERS);
+    }
+    if let Some(ring) = Array::from_header(header(log, HISTORY_RING), fuel_history_entry::STRIDE)
+        .filter(|ring| ring.count == HISTORY_RING_ENTRIES)
+    {
+        let bytes = HISTORY_RING_ENTRIES as usize * fuel_history_entry::STRIDE;
+        let _ = esbulk(log, memory, Some(ring.data), bytes, M_E_FUEL);
+    }
+}
+
 fn copy_economy_province_supply(
-    log: &mut RawLog<10>,
+    log: &mut RawLog<N>,
     memory: &impl Memory,
     game_state: usize,
     other_active: bool,
@@ -1410,7 +1515,7 @@ fn copy_economy_province_supply(
 }
 
 fn copy_economy_supply_details(
-    log: &mut RawLog<10>,
+    log: &mut RawLog<N>,
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -1621,7 +1726,7 @@ fn copy_economy_supply_details(
 /// Mirror of the market contracts: owned vector with 0x260 bulks plus
 /// per-country directional vectors. All spans carry the purchases mask.
 fn copy_economy_market_contracts(
-    log: &mut RawLog<10>,
+    log: &mut RawLog<N>,
     memory: &impl Memory,
     base: usize,
     market: Option<usize>,
@@ -2320,6 +2425,15 @@ mod tests {
                 ..Default::default()
             }
         );
+        sampled!(
+            fuel_consumers,
+            ccountry_fuel_status::ConsumerRow {
+                country: u32::MAX,
+                index: 2,
+                received_raw: i64::MIN,
+                ..Default::default()
+            }
+        );
 
         let mut baseline = FrameInput {
             branch: 1,
@@ -2339,7 +2453,7 @@ mod tests {
             // Hourly supply may reuse its validated baseline. Daily tables
             // materialize complete rows for their separate recovery cache.
             assert!(matches!(inputs[2], TableInput::ComparedEqual(_)));
-            for index in [0, 1, 3, 4, 5, 6, 7, 8, 9] {
+            for index in [0, 1, 3, 4, 5, 6, 7, 8, 9, 10] {
                 assert_eq!(inputs[index], original_inputs[index], "table {index}");
             }
         };
@@ -2441,6 +2555,25 @@ mod tests {
             maximum_raw: i64::MAX,
             gain_raw: -4_294_967_303,
             cost_raw: 4_294_967_311,
+            gain_from_states_raw: -4_294_967_313,
+            lend_lease_gain_raw: 4_294_967_317,
+            lend_lease_consumption_raw: -4_294_967_319,
+            gain_per_oil_raw: 4_294_967_323,
+            history_index: i32::MIN,
+            remaining_hours: -1,
+            ring_gain_raw: i64::MIN,
+            ring_consumed_raw: -1,
+            ring_other_raw: i64::MAX,
+            ring_requested_raw: [2, -3, 4],
+            ring_received_raw: [-5, 6, i64::MIN + 1],
+        };
+        captured.fuel_consumers.outcome = Outcome::Rows { len: 1 };
+        captured.fuel_consumers.rows[0] = ccountry_fuel_status::ConsumerRow {
+            country: u32::MAX,
+            index: u32::MAX,
+            priority: i32::MIN,
+            requested_raw: i64::MAX,
+            received_raw: i64::MIN,
         };
         captured.hubs.outcome = Outcome::Rows { len: 1 };
         captured.hubs.rows[0] = ccountry_supply_system::Row {
@@ -2476,6 +2609,44 @@ mod tests {
                 fuel.cost_raw
             ),
             (i64::MIN, i64::MAX, -4_294_967_303, 4_294_967_311)
+        );
+        assert_eq!(
+            (
+                fuel.gain_from_states_raw,
+                fuel.lend_lease_gain_raw,
+                fuel.lend_lease_consumption_raw,
+                fuel.gain_per_oil_raw,
+                fuel.history_index,
+                fuel.remaining_hours
+            ),
+            (
+                -4_294_967_313,
+                4_294_967_317,
+                -4_294_967_319,
+                4_294_967_323,
+                i32::MIN,
+                -1
+            )
+        );
+        let consumer = &complete::<tables::CountryFuelConsumers>(&views[10])[0];
+        assert_eq!(consumer.key(), u128::MAX >> 64);
+        assert_eq!(
+            (consumer.priority, consumer.requested_raw, consumer.received_raw),
+            (i32::MIN, i64::MAX, i64::MIN)
+        );
+        assert_eq!(
+            [
+                fuel.ring_gain_raw,
+                fuel.ring_consumed_raw,
+                fuel.ring_other_raw,
+                fuel.ring_requested_0_raw,
+                fuel.ring_requested_1_raw,
+                fuel.ring_requested_2_raw,
+                fuel.ring_received_0_raw,
+                fuel.ring_received_1_raw,
+                fuel.ring_received_2_raw,
+            ],
+            [i64::MIN, -1, i64::MAX, 2, -3, 4, -5, 6, i64::MIN + 1]
         );
         let hub = &complete::<tables::HubMotorization>(&views[3])[0];
         let expected_key = (u128::from(u32::MAX) << 96)
@@ -2608,7 +2779,7 @@ mod tests {
 
     fn e_capacities() -> Capacities {
         Capacities {
-            rows: [4, 4, 8, 4, 4, 4, 4, 8, 4, 4],
+            rows: [4, 4, 8, 4, 4, 4, 4, 8, 4, 4, 8],
             foreign_sources: 64,
         }
     }
@@ -2629,7 +2800,7 @@ mod tests {
         let report = crate::extended::economy::copy_economy_rest_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         captured.rest_raw_mode = report.raw_ok;
-        let mut ticks = [0u64; 10];
+        let mut ticks = [0u64; N];
         captured.decode_economy_rest_payload(E_BASE, &first, &mut ticks);
         (captured, report)
     }
@@ -2650,6 +2821,7 @@ mod tests {
         use engine::{ccountry, ccountry_fuel_status, memory::SliceMemory};
         let mut bytes = vec![0; 0x8000];
         e_census(&mut bytes);
+        e_fuel_arrays(&mut bytes);
         for (country, fuel) in [(E_C1, 0x6000_usize), (E_C2, 0x6200)] {
             e_put(
                 &mut bytes,
@@ -2694,12 +2866,157 @@ mod tests {
         let cap = e_capacities();
         let direct = e_direct(&memory, &cap);
         let (split, _) = e_split(&memory, &cap);
+        assert_eq!(split.fuel.outcome, Outcome::Rows { len: 2 });
         assert_eq!(split.fuel.outcome, direct.fuel.outcome);
         assert_eq!(
             split.fuel.rows[..split.fuel.outcome.len()],
             direct.fuel.rows[..direct.fuel.outcome.len()]
         );
         e_assert_table::<0>(&split, &direct, 0);
+    }
+
+    /// Fuel statuses with three consumers and a full history ring each.
+    fn e_fuel_arrays(bytes: &mut [u8]) {
+        use engine::{ccountry, ccountry_fuel_status as fuel};
+        for (index, (country, status)) in [(E_C1, 0x6000_usize), (E_C2, 0x6200)]
+            .into_iter()
+            .enumerate()
+        {
+            let entries = 0x6400 + index * 0x80;
+            let ring = 0x7000 + index * 0x800;
+            e_put(
+                &mut *bytes,
+                country + ccountry::FUEL_STATUS,
+                &(status as u64).to_le_bytes(),
+            );
+            e_put(
+                &mut *bytes,
+                status,
+                &(fuel::VTABLE_RVA as u64).to_le_bytes(),
+            );
+            e_put(
+                &mut *bytes,
+                status + fuel::COUNTRY,
+                &(country as u64).to_le_bytes(),
+            );
+            e_put(
+                &mut *bytes,
+                status + fuel::GAIN_PER_OIL,
+                &(360_000 + index as i64).to_le_bytes(),
+            );
+            e_put(&mut *bytes, status + fuel::HISTORY_INDEX, &13_i32.to_le_bytes());
+            e_array(&mut *bytes, status + fuel::CONSUMERS, entries, 3);
+            e_array(&mut *bytes, status + fuel::HISTORY_RING, ring, 24);
+            for offset in (0..3 * fuel_consumer_data::STRIDE).step_by(8) {
+                e_put(
+                    &mut *bytes,
+                    entries + offset,
+                    &(offset as i64 - 7).to_le_bytes(),
+                );
+            }
+            for offset in (0..24 * fuel_history_entry::STRIDE).step_by(8) {
+                e_put(
+                    &mut *bytes,
+                    ring + offset,
+                    &(offset as i64 * 3 - 11).to_le_bytes(),
+                );
+            }
+            e_put(
+                &mut *bytes,
+                status + fuel::PENDING_HISTORY,
+                &(-(index as i64) - 1).to_le_bytes(),
+            );
+        }
+    }
+
+    #[test]
+    fn economy_fuel_arrays_copy_matches_direct_walk_with_independent_failures() {
+        use engine::memory::SliceMemory;
+        let mut bytes = vec![0; 0x9000];
+        e_census(&mut bytes);
+        e_fuel_arrays(&mut bytes);
+        // Each case points one array header's data at unmapped memory.
+        for (case, header) in [
+            ("complete", None),
+            (
+                "unreadable ring",
+                Some(0x6200 + ccountry_fuel_status::HISTORY_RING),
+            ),
+            (
+                "unreadable consumer entries",
+                Some(0x6000 + ccountry_fuel_status::CONSUMERS),
+            ),
+        ] {
+            let mut bytes = bytes.clone();
+            if let Some(header) = header {
+                e_put(&mut bytes, header, &0x10_0000_u64.to_le_bytes());
+            }
+            let memory = SliceMemory {
+                base: E_GAME,
+                bytes: &bytes,
+            };
+            for fuel_rows in [0, 1, 4] {
+                let mut cap = e_capacities();
+                cap.rows[0] = fuel_rows;
+                let direct = e_direct(&memory, &cap);
+                let (split, _) = e_split(&memory, &cap);
+                for index in [0, 10] {
+                    e_assert_table::<0>(&split, &direct, index);
+                }
+                assert_eq!(
+                    split.fuel.rows[..split.fuel.outcome.len()],
+                    direct.fuel.rows[..direct.fuel.outcome.len()]
+                );
+                assert_eq!(
+                    split.fuel_consumers.rows[..split.fuel_consumers.outcome.len()],
+                    direct.fuel_consumers.rows[..direct.fuel_consumers.outcome.len()]
+                );
+                let outcomes = direct.outcomes();
+                match (case, fuel_rows) {
+                    ("unreadable ring", 4) => assert_eq!(
+                        outcomes[0],
+                        Outcome::Unavailable {
+                            reason: "fuel history ring unreadable"
+                        }
+                    ),
+                    // The second ring is never reached while its row cannot fit.
+                    (_, 1) => assert_eq!(
+                        outcomes[0],
+                        Outcome::Truncated {
+                            len: 1,
+                            unread_rows: 1
+                        }
+                    ),
+                    (_, 4) => {
+                        assert_eq!(outcomes[0], Outcome::Rows { len: 2 }, "{case}");
+                        // Ring entry i holds 3 * offset - 11 in every qword.
+                        let sum = |field: usize| {
+                            (0..24)
+                                .map(|slot| (slot * fuel_history_entry::STRIDE + field) as i64 * 3 - 11)
+                                .sum::<i64>()
+                        };
+                        let row = &direct.fuel.rows[1];
+                        assert_eq!(row.ring_gain_raw, sum(fuel_history_entry::GAIN));
+                        assert_eq!(row.ring_other_raw, sum(fuel_history_entry::OTHER));
+                        assert_eq!(
+                            row.ring_received_raw[2],
+                            sum(fuel_history_entry::RECEIVED + 16)
+                        );
+                    }
+                    _ => {}
+                }
+                if case == "unreadable consumer entries" {
+                    assert!(matches!(
+                        outcomes[10],
+                        Outcome::Unavailable {
+                            reason: "fuel consumer entries unreadable"
+                        }
+                    ));
+                } else {
+                    assert_eq!(outcomes[10], Outcome::Rows { len: 6 }, "{case}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -2809,7 +3126,7 @@ mod tests {
                     (force_full || hour.rem_euclid(24) == 10, &[6, 7, 8][..]),
                     (
                         force_full || hour.rem_euclid(24) == 17,
-                        &[0, 1, 3, 4, 5, 9][..],
+                        &[0, 1, 3, 4, 5, 9, 10][..],
                     ),
                 ] {
                     for &index in indices {
@@ -2984,6 +3301,7 @@ mod tests {
         use engine::{ccountry, ccountry_fuel_status, memory::SliceMemory};
         let mut bytes = vec![0; 0x8000];
         e_census(&mut bytes);
+        e_fuel_arrays(&mut bytes);
         for (country, fuel) in [(E_C1, 0x6000_usize), (E_C2, 0x6200)] {
             e_put(
                 &mut bytes,
@@ -3007,7 +3325,7 @@ mod tests {
         };
         for rows in [0_usize, 1, 2, 4] {
             let cap = Capacities {
-                rows: [rows, 4, 8, 4, 4, 4, 4, 8, 4, 4],
+                rows: [rows, 4, 8, 4, 4, 4, 4, 8, 4, 4, 8],
                 foreign_sources: 64,
             };
             let direct = e_direct(&memory, &cap);
@@ -3060,6 +3378,7 @@ mod tests {
         use engine::{ccountry, ccountry_fuel_status, memory::SliceMemory};
         let mut bytes = vec![0; 0x8000];
         e_census(&mut bytes);
+        e_fuel_arrays(&mut bytes);
         {
             let (country, fuel) = (E_C1, 0x6000_usize);
             e_put(
@@ -3105,6 +3424,7 @@ mod tests {
         let cap = e_capacities();
         let direct = e_direct(&memory, &cap);
         let (split, _) = e_split(&memory, &cap);
+        assert_eq!(split.fuel.outcome, Outcome::Rows { len: 2 });
         assert_eq!(split.fuel.outcome, direct.fuel.outcome);
         assert_eq!(
             split.fuel.rows[..split.fuel.outcome.len()],

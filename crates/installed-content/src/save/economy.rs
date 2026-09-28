@@ -6,7 +6,7 @@ use super::{
     Decimal, block, boolean, bytes, decimal, field, integer, invalid, required_block,
     required_bytes, scalar, typed_handle,
 };
-use crate::parser::Item;
+use crate::parser::{Item, Value};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
@@ -118,6 +118,8 @@ pub struct ForeignHomebase {
     pub source: Vec<u8>,
 }
 
+/// One saved `fuel_status`, in the fixed order CCountryFuelStatus::Serialize
+/// (1410E39B0) writes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fuel {
     /// Decimal spelling of a native /32768 quantity, not raw /100000 fuel.
@@ -127,7 +129,48 @@ pub struct Fuel {
     /// Native signed /100000 modifier values.
     pub gain: Decimal,
     pub cost: Decimal,
+    pub gain_per_oil: Decimal,
+    pub gain_from_states: Decimal,
+    /// Native /32768 quantities written through the same fixed15 formatter.
+    pub lend_lease_gain: FuelQuantity,
+    pub lend_lease_consumption: FuelQuantity,
+    /// Consumer entries in array order; each saved index is its position.
+    pub consumers: Vec<FuelConsumer>,
+    pub history_index: i32,
+    pub remaining_hours: i32,
+    /// The pending entry (index -1), then the ring entries in slot order.
+    pub history: Vec<FuelHistory>,
 }
+
+/// One `fuel_consumer_data` block; the writer's `index` is the entry's
+/// array position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FuelConsumer {
+    pub index: u32,
+    pub priority: i32,
+    pub received: Decimal,
+    pub requested: Decimal,
+}
+
+/// One `history` block (entry writer 1410E38F0). Fuel, consumed and other are
+/// /32768 quantities; gain and the three-value lists are /100000.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FuelHistory {
+    /// -1 for the pending entry, otherwise the ring slot.
+    pub index: i32,
+    pub fuel: FuelQuantity,
+    pub consumed: FuelQuantity,
+    pub gain: Decimal,
+    pub other: FuelQuantity,
+    pub requested: [Decimal; FUEL_CONSUMER_VALUES],
+    pub received: [Decimal; FUEL_CONSUMER_VALUES],
+}
+
+/// History ring entries 1410E39B0 writes after the pending entry: it loops
+/// over exactly 0x18 slots whatever the ring's own header holds.
+pub const FUEL_HISTORY_RING: usize = 24;
+/// Values per history list; the list writer 1410DBC90 always writes three.
+pub const FUEL_CONSUMER_VALUES: usize = 3;
 
 /// Save text numerator over 100000. This is deliberately wider than i64:
 /// formatting an i64 /32768 quantity can exceed i64 in decimal fixed5 units.
@@ -227,6 +270,167 @@ fn fixed15(items: &[Item], key: &[u8]) -> io::Result<Option<i64>> {
     field(items, key)?
         .map(|value| FuelQuantity::parse(scalar(value)?)?.raw())
         .transpose()
+}
+
+/// A block's items in the order a native writer emits them. Every key must be
+/// the one the writer puts at that position; nothing is looked up out of order.
+struct Sequence<'a> {
+    items: std::iter::Peekable<std::slice::Iter<'a, Item>>,
+    block: &'static str,
+}
+
+impl<'a> Sequence<'a> {
+    fn new(items: &'a [Item], block: &'static str) -> Self {
+        Self {
+            items: items.iter().peekable(),
+            block,
+        }
+    }
+
+    fn next(&mut self, key: &str) -> io::Result<&'a Value> {
+        let item = self
+            .items
+            .next()
+            .ok_or_else(|| invalid(format!("save {} ends before its {key}", self.block)))?;
+        if item.key.as_deref() != Some(key.as_bytes()) {
+            return Err(invalid(format!(
+                "save {} has {} where its writer puts {key}",
+                self.block,
+                item.key
+                    .as_deref()
+                    .map_or("an anonymous value".into(), String::from_utf8_lossy)
+            )));
+        }
+        Ok(&item.value)
+    }
+
+    fn peek_is(&mut self, key: &str) -> bool {
+        self.items
+            .peek()
+            .is_some_and(|item| item.key.as_deref() == Some(key.as_bytes()))
+    }
+
+    fn scalar(&mut self, key: &str) -> io::Result<&'a [u8]> {
+        scalar(self.next(key)?)
+    }
+
+    fn quantity(&mut self, key: &str) -> io::Result<FuelQuantity> {
+        FuelQuantity::parse(self.scalar(key)?)
+    }
+
+    fn decimal(&mut self, key: &str) -> io::Result<Decimal> {
+        Decimal::parse(self.scalar(key)?)
+    }
+
+    fn integer<T: std::str::FromStr>(&mut self, key: &str) -> io::Result<T> {
+        integer(self.scalar(key)?)
+    }
+
+    fn end(mut self) -> io::Result<()> {
+        match self.items.next() {
+            None => Ok(()),
+            Some(_) => Err(invalid(format!(
+                "save {} continues after its writer's last field",
+                self.block
+            ))),
+        }
+    }
+}
+
+/// CCountryFuelStatus::Serialize (1410E39B0) writes fuel, max_fuel,
+/// fuel_gain, fuel_cost, fuel_gain_per_oil, fuel_gain_from_states and the two
+/// lend-lease quantities, one `fuel_consumer_data` per consumer entry with its
+/// position as index, history_index, remaining_hours, the pending `history`
+/// (index -1) and FUEL_HISTORY_RING ring entries in slot order. Any other
+/// sequence is refused rather than reinterpreted.
+fn parse_fuel(items: &[Item]) -> io::Result<Fuel> {
+    let mut fields = Sequence::new(items, "fuel_status");
+    let current = fields.quantity("fuel")?;
+    let maximum = fields.quantity("max_fuel")?;
+    let gain = fields.decimal("fuel_gain")?;
+    let cost = fields.decimal("fuel_cost")?;
+    let gain_per_oil = fields.decimal("fuel_gain_per_oil")?;
+    let gain_from_states = fields.decimal("fuel_gain_from_states")?;
+    let lend_lease_gain = fields.quantity("fuel_gain_from_lend_lease")?;
+    let lend_lease_consumption = fields.quantity("fuel_consumption_from_lend_lease")?;
+    let mut consumers = Vec::new();
+    while fields.peek_is("fuel_consumer_data") {
+        let mut entry = Sequence::new(
+            block(fields.next("fuel_consumer_data")?)?,
+            "fuel_consumer_data",
+        );
+        let index = entry.integer::<u32>("index")?;
+        if usize::try_from(index).ok() != Some(consumers.len()) {
+            return Err(invalid(
+                "save fuel_consumer_data index is not its array position",
+            ));
+        }
+        consumers.push(FuelConsumer {
+            index,
+            priority: entry.integer("priority")?,
+            received: entry.decimal("received")?,
+            requested: entry.decimal("requested")?,
+        });
+        entry.end()?;
+    }
+    let history_index = fields.integer("history_index")?;
+    let remaining_hours = fields.integer("remaining_hours")?;
+    let mut history = Vec::with_capacity(1 + FUEL_HISTORY_RING);
+    for expected in -1..FUEL_HISTORY_RING as i32 {
+        let mut entry = Sequence::new(block(fields.next("history")?)?, "fuel history");
+        let index = entry.integer::<i32>("index")?;
+        if index != expected {
+            return Err(invalid(format!(
+                "save fuel history index {index} where its writer puts {expected}"
+            )));
+        }
+        let fuel = entry.quantity("fuel")?;
+        let consumed = entry.quantity("consumed")?;
+        let gain = entry.decimal("fuel_gain")?;
+        let other = entry.quantity("other")?;
+        let requested = consumer_values(entry.next("requested")?)?;
+        let received = consumer_values(entry.next("received")?)?;
+        entry.end()?;
+        history.push(FuelHistory {
+            index,
+            fuel,
+            consumed,
+            gain,
+            other,
+            requested,
+            received,
+        });
+    }
+    fields.end()?;
+    Ok(Fuel {
+        current,
+        maximum,
+        gain,
+        cost,
+        gain_per_oil,
+        gain_from_states,
+        lend_lease_gain,
+        lend_lease_consumption,
+        consumers,
+        history_index,
+        remaining_hours,
+        history,
+    })
+}
+
+/// One list of 1410DBC90: exactly three anonymous /100000 values.
+fn consumer_values(value: &Value) -> io::Result<[Decimal; FUEL_CONSUMER_VALUES]> {
+    let items = block(value)?;
+    if items.len() != FUEL_CONSUMER_VALUES || items.iter().any(|item| item.key.is_some()) {
+        return Err(invalid(
+            "save fuel history list is not three anonymous values",
+        ));
+    }
+    let values = items
+        .iter()
+        .map(|item| Decimal::parse(scalar(&item.value)?))
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(values.try_into().expect("three values"))
 }
 
 fn parse_experience(items: &[Item]) -> io::Result<Option<Experience>> {
@@ -451,16 +655,7 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
             .ok_or_else(|| invalid("save economy country lacks tag"))?;
         let fields = block(&item.value)?;
         let fuel = field(fields, b"fuel_status")?
-            .map(|value| {
-                // CCountryFuelStatus writer 1410E39B0 emits all four fields.
-                let fields = block(value)?;
-                Ok::<_, io::Error>(Fuel {
-                    current: FuelQuantity::parse(&required_bytes(fields, b"fuel")?)?,
-                    maximum: FuelQuantity::parse(&required_bytes(fields, b"max_fuel")?)?,
-                    gain: required_decimal(fields, b"fuel_gain")?,
-                    cost: required_decimal(fields, b"fuel_cost")?,
-                })
-            })
+            .map(|value| parse_fuel(block(value)?))
             .transpose()?;
         if countries
             .insert(
@@ -488,10 +683,51 @@ mod tests {
     use super::*;
     use crate::parser;
 
+    /// A `fuel_status` body in the writer's layout: the given scalars, one
+    /// consumer block per `(priority, received, requested)` and the pending
+    /// entry plus 24 ring entries, entry `i` from `history(i)`.
+    fn fuel_status(
+        scalars: &str,
+        consumers: &[(&str, &str, &str)],
+        history: impl Fn(i32) -> String,
+    ) -> String {
+        let mut text = scalars.to_owned();
+        for (index, (priority, received, requested)) in consumers.iter().enumerate() {
+            text += &format!(
+                " fuel_consumer_data={{ index={index} priority={priority} received={received} requested={requested} }}"
+            );
+        }
+        text += " history_index=13 remaining_hours=1";
+        for index in -1..FUEL_HISTORY_RING as i32 {
+            text += &format!(" history={{ index={index} {} }}", history(index));
+        }
+        text
+    }
+
+    /// The pending entry and ring written by the game for a country that has
+    /// consumed nothing: every field zero.
+    fn zero_history(_: i32) -> String {
+        "fuel=0.00000 consumed=0.00000 fuel_gain=0 other=0.00000 requested={ 0 0 0 } received={ 0 0 0 }"
+            .to_owned()
+    }
+
+    const SCALARS: &str = "fuel=489236.30682 max_fuel=627500.00000 fuel_gain=2 fuel_cost=0 fuel_gain_per_oil=3.6 fuel_gain_from_states=64.4 fuel_gain_from_lend_lease=0.00000 fuel_consumption_from_lend_lease=0.00000";
+
+    fn parse_fuel_text(body: &str) -> io::Result<Fuel> {
+        let input = format!("countries={{ENG={{fuel_status={{{body}}}}}}}");
+        let pack = parse(&parser::parse(input.as_bytes()).unwrap().items)?;
+        Ok(pack.countries[b"ENG".as_slice()].fuel.clone().unwrap())
+    }
+
     #[test]
     fn fuel_preserves_dormant_literal_and_signed_modifier_precision() {
+        let body = fuel_status(
+            "fuel=-1.00000 max_fuel=371500.00000 fuel_gain=-0.00001 fuel_cost=90071992547.40993 fuel_gain_per_oil=2.2 fuel_gain_from_states=0 fuel_gain_from_lend_lease=-0.00003 fuel_consumption_from_lend_lease=281474976710655.99996",
+            &[("1", "0", "0")],
+            zero_history,
+        );
         let document = parser::parse(
-            b"countries={GER={fuel_status={fuel=-1.00000 max_fuel=371500.00000 fuel_gain=-0.00001 fuel_cost=90071992547.40993}} D01={}}",
+            format!("countries={{GER={{fuel_status={{{body}}}}} D01={{}}}}").as_bytes(),
         )
         .unwrap();
         let pack = parse(&document.items).unwrap();
@@ -500,18 +736,113 @@ mod tests {
         assert_eq!(fuel.current.raw().unwrap(), -32_768);
         assert_eq!(fuel.gain.raw, -1);
         assert_eq!(fuel.cost.raw, 9_007_199_254_740_993);
+        assert_eq!(fuel.gain_per_oil.raw, 220_000);
+        assert_eq!(fuel.lend_lease_gain.raw().unwrap(), -1);
+        assert_eq!(fuel.lend_lease_consumption.raw().unwrap(), i64::MAX);
         assert!(pack.countries[b"D01".as_slice()].fuel.is_none());
     }
 
     #[test]
-    fn fuel_does_not_invent_omitted_or_rounded_values() {
-        for input in [
-            b"countries={GER={fuel_status={fuel=1 max_fuel=2 fuel_gain=3}}}".as_slice(),
-            b"countries={GER={fuel_status={fuel=1 max_fuel=2 fuel_gain=0.000001 fuel_cost=0}}}",
-            b"countries={GER={} GER={}}",
-        ] {
-            assert!(parse(&parser::parse(input).unwrap().items).is_err());
+    fn fuel_keeps_consumers_cursor_and_every_history_entry_in_writer_order() {
+        let fuel = parse_fuel_text(&fuel_status(
+            SCALARS,
+            &[
+                ("1", "83.62571", "83.62571"),
+                ("-2", "0", "8.1459"),
+                ("1", "216.145", "216.145"),
+            ],
+            |index| match index {
+                0 => "fuel=490422.48471 consumed=265.14755 fuel_gain=390.4 other=0.00000 requested={ 40.85669 8.1459 216.145 } received={ 40.85669 8.1459 216.145 }".to_owned(),
+                1 => "fuel=490547.73712 consumed=265.14755 fuel_gain=390.4 other=-0.00003 requested={ 0 -0.00001 1 } received={ 1 2 3 }".to_owned(),
+                _ => zero_history(index),
+            },
+        ))
+        .unwrap();
+        assert_eq!(fuel.gain_per_oil.raw, 360_000);
+        assert_eq!(fuel.gain_from_states.raw, 6_440_000);
+        assert_eq!(fuel.lend_lease_gain.raw().unwrap(), 0);
+        assert_eq!((fuel.history_index, fuel.remaining_hours), (13, 1));
+        assert_eq!(fuel.consumers.len(), 3);
+        assert_eq!(fuel.consumers[1].index, 1);
+        assert_eq!(fuel.consumers[1].priority, -2);
+        assert_eq!(fuel.consumers[1].received.raw, 0);
+        assert_eq!(fuel.consumers[1].requested.raw, 814_590);
+        assert_eq!(fuel.history.len(), 25);
+        assert_eq!(
+            fuel.history
+                .iter()
+                .map(|entry| entry.index)
+                .collect::<Vec<_>>(),
+            (-1..24).collect::<Vec<_>>()
+        );
+        let entry = &fuel.history[1];
+        assert_eq!(entry.fuel.lexeme, b"490422.48471");
+        assert_eq!(entry.consumed.lexeme, b"265.14755");
+        assert_eq!(entry.gain.raw, 39_040_000);
+        assert_eq!(
+            entry.requested.each_ref().map(|value| value.raw),
+            [4_085_669, 814_590, 21_614_500]
+        );
+        let entry = &fuel.history[2];
+        assert_eq!(entry.other.raw().unwrap(), -1);
+        assert_eq!(
+            entry.requested.each_ref().map(|value| value.raw),
+            [0, -1, 100_000]
+        );
+        assert_eq!(
+            entry.received.each_ref().map(|value| value.raw),
+            [100_000, 200_000, 300_000]
+        );
+        // An empty consumer array is a layout the writer produces.
+        assert!(
+            parse_fuel_text(&fuel_status(SCALARS, &[], zero_history))
+                .unwrap()
+                .consumers
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn fuel_refuses_layouts_its_writer_cannot_produce() {
+        let consumers = [("1", "0", "0"); 3];
+        let valid = fuel_status(SCALARS, &consumers, zero_history);
+        assert!(parse_fuel_text(&valid).is_ok());
+        let mut cases = vec![
+            // A missing, reordered, duplicated or trailing scalar.
+            valid.replacen("fuel_cost=0 ", "", 1),
+            valid.replacen(
+                "fuel_gain_per_oil=3.6 fuel_gain_from_states=64.4",
+                "fuel_gain_from_states=64.4 fuel_gain_per_oil=3.6",
+                1,
+            ),
+            valid.replacen("history_index=13", "history_index=13 history_index=13", 1),
+            format!("{valid} fuel=1.00000"),
+            // A consumer whose index is not its position, or whose fields move.
+            valid.replacen("index=1 priority", "index=2 priority", 1),
+            valid.replacen("received=0 requested=0", "requested=0 received=0", 1),
+            // A history entry out of slot order, missing or extra.
+            valid.replacen("index=5 ", "index=6 ", 1),
+            valid.replacen("history={ index=23 ", "history_extra={ index=23 ", 1),
+            format!("{valid} history={{ index=24 {} }}", zero_history(24)),
+            // Lists of other than three anonymous values, and rounding.
+            valid.replacen("requested={ 0 0 0 }", "requested={ 0 0 }", 1),
+            valid.replacen("received={ 0 0 0 }", "received={ a=0 0 0 }", 1),
+            valid.replacen("fuel_gain=2 ", "fuel_gain=0.000001 ", 1),
+        ];
+        cases.push(fuel_status(SCALARS, &consumers, |index| {
+            if index == 3 {
+                zero_history(index).replace(
+                    "consumed=0.00000 fuel_gain=0",
+                    "fuel_gain=0 consumed=0.00000",
+                )
+            } else {
+                zero_history(index)
+            }
+        }));
+        for case in cases {
+            assert!(parse_fuel_text(&case).is_err(), "{case}");
         }
+        assert!(parse(&parser::parse(b"countries={GER={} GER={}}").unwrap().items).is_err());
     }
 
     #[test]

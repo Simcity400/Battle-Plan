@@ -48,6 +48,9 @@ pub(super) fn compare(
     let mut all_complete = report.attempt("economy CountryFuel", |report| {
         compare_fuel(frame, &saved.economy, links, report)
     });
+    all_complete &= report.attempt("economy CountryFuelConsumers", |report| {
+        compare_fuel_consumers(frame, &saved.economy, links, report)
+    });
     all_complete &= report.attempt("economy CountryExperience", |report| {
         compare_experience(frame, &saved.economy, links, report)
     });
@@ -95,7 +98,7 @@ pub(super) fn compare(
             Ok(())
         });
     }
-    report.limitation("economy save country tags compare resolved identity and cannot certify equivalent raw country-link aliases", "CountryFuel, CountryExperience, ResourceExchanges, PurchaseContracts, HubMotorization, DisruptedSupply, ForeignHomebases");
+    report.limitation("economy save country tags compare resolved identity and cannot certify equivalent raw country-link aliases", "CountryFuel, CountryFuelConsumers, CountryExperience, ResourceExchanges, PurchaseContracts, HubMotorization, DisruptedSupply, ForeignHomebases");
     if all_complete {
         Ok(())
     } else {
@@ -569,8 +572,81 @@ fn compare_fuel(
             ("maximum_raw", actual.maximum_raw, expected.maximum.raw()?),
             ("gain_raw", actual.gain_raw, expected.gain.raw),
             ("cost_raw", actual.cost_raw, expected.cost.raw),
+            (
+                "gain_from_states_raw",
+                actual.gain_from_states_raw,
+                expected.gain_from_states.raw,
+            ),
+            (
+                "lend_lease_gain_raw",
+                actual.lend_lease_gain_raw,
+                expected.lend_lease_gain.raw()?,
+            ),
+            (
+                "lend_lease_consumption_raw",
+                actual.lend_lease_consumption_raw,
+                expected.lend_lease_consumption.raw()?,
+            ),
+            (
+                "gain_per_oil_raw",
+                actual.gain_per_oil_raw,
+                expected.gain_per_oil.raw,
+            ),
         ] {
             equal(report, format!("{label}.{name}"), actual, expected);
+        }
+        for (name, actual, expected) in [
+            (
+                "history_index",
+                actual.history_index,
+                expected.history_index,
+            ),
+            (
+                "remaining_hours",
+                actual.remaining_hours,
+                expected.remaining_hours,
+            ),
+        ] {
+            equal(report, format!("{label}.{name}"), actual, expected);
+        }
+        // The ring sums cover the 24 ring slots, never the pending entry.
+        let mut sums = [0_i128; 9];
+        for entry in expected.history.iter().filter(|entry| entry.index != -1) {
+            let values = [
+                entry.gain.raw,
+                entry.consumed.raw()?,
+                entry.other.raw()?,
+                entry.requested[0].raw,
+                entry.requested[1].raw,
+                entry.requested[2].raw,
+                entry.received[0].raw,
+                entry.received[1].raw,
+                entry.received[2].raw,
+            ];
+            for (sum, value) in sums.iter_mut().zip(values) {
+                *sum += i128::from(value);
+            }
+        }
+        for ((name, actual), expected) in [
+            ("ring_gain_raw", actual.ring_gain_raw),
+            ("ring_consumed_raw", actual.ring_consumed_raw),
+            ("ring_other_raw", actual.ring_other_raw),
+            ("ring_requested_0_raw", actual.ring_requested_0_raw),
+            ("ring_requested_1_raw", actual.ring_requested_1_raw),
+            ("ring_requested_2_raw", actual.ring_requested_2_raw),
+            ("ring_received_0_raw", actual.ring_received_0_raw),
+            ("ring_received_1_raw", actual.ring_received_1_raw),
+            ("ring_received_2_raw", actual.ring_received_2_raw),
+        ]
+        .into_iter()
+        .zip(sums)
+        {
+            equal(
+                report,
+                format!("{label}.{name}"),
+                i128::from(actual),
+                expected,
+            );
         }
     }
     for tag in actual.keys() {
@@ -585,6 +661,75 @@ fn compare_fuel(
         "fuel quantities compare exact /32768 bits through the injective native five-decimal formatter; native i64::MIN has malformed text serialization and is refused; gain/cost are separate /100000 modifiers, not total income/consumption",
         "CountryFuel",
     );
+    report.limitation(
+        "the per-hour fuel history ring entries are not recorded, only the exact sums of the 24 ring slots, so a sum difference cannot be attributed to an hour",
+        "CountryFuel",
+    );
+    report.limitation(
+        "the pending fuel history entry (saved index=-1) of the hour in progress is not recorded",
+        "CountryFuel",
+    );
+    Ok(())
+}
+
+/// Consumer entries by country and array position, the saved `index`.
+/// A country without a saved `fuel_status` is reported by CountryFuel; its
+/// recorded consumers are listed here as unmatched.
+fn compare_fuel_consumers(
+    frame: &DecodedFrame,
+    saved: &economy::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut actual = BTreeMap::new();
+    for row in complete::<tables::CountryFuelConsumers>(frame)? {
+        let tag = required_country_tag(row.country, links)?;
+        if actual.insert((tag, row.index), row).is_some() {
+            return Err(invalid("duplicate resolved fuel consumer"));
+        }
+    }
+    let mut count = 0;
+    for (tag, country) in &saved.countries {
+        let Some(fuel) = &country.fuel else {
+            continue;
+        };
+        for expected in &fuel.consumers {
+            let label = format!(
+                "{}.fuel_consumer[{}]",
+                String::from_utf8_lossy(tag),
+                expected.index
+            );
+            let Some(actual) = actual.remove(&(tag.as_slice(), expected.index)) else {
+                report.difference(label, "absent", "saved consumer present");
+                continue;
+            };
+            count += 1;
+            equal(
+                report,
+                format!("{label}.priority"),
+                actual.priority,
+                expected.priority,
+            );
+            for (name, actual, expected) in [
+                (
+                    "requested_raw",
+                    actual.requested_raw,
+                    expected.requested.raw,
+                ),
+                ("received_raw", actual.received_raw, expected.received.raw),
+            ] {
+                equal(report, format!("{label}.{name}"), actual, expected);
+            }
+        }
+    }
+    for (tag, index) in actual.keys() {
+        report.difference(
+            format!("{}.fuel_consumer[{index}]", String::from_utf8_lossy(tag)),
+            "present",
+            "absent",
+        );
+    }
+    report.compared("CountryFuelConsumers", count);
     Ok(())
 }
 
@@ -678,10 +823,74 @@ mod tests {
     use replay::{
         frame::{Metrics, TableView},
         rows::{
-            CountryExperienceRow, CountryFuelRow, HubMotorizationRow, LexicalTokenRow,
-            ResourceDefinitionRow, ResourceExchangeRow, TableId, TableRows,
+            CountryExperienceRow, CountryFuelConsumerRow, CountryFuelRow, HubMotorizationRow,
+            LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow, TableId, TableRows,
         },
     };
+
+    /// A `fuel_status` body in the writer's layout (1410E39B0): the scalars,
+    /// three consumers, the pending entry and 24 ring entries. Ring entry `i`
+    /// holds fuel and other of `i + 1` native units and otherwise the values
+    /// of `RING_SUMS / 24`; the pending entry holds values of its own that the
+    /// sums must not include.
+    fn fuel_status(scalars: &str) -> String {
+        let quantity = |raw: i128| {
+            let numerator = raw * 100_000 / 32_768;
+            format!("{}.{:05}", numerator / 100_000, numerator % 100_000)
+        };
+        let mut text = format!(
+            "{scalars} fuel_consumer_data={{ index=0 priority=1 received=83.62571 requested=83.62571 }} fuel_consumer_data={{ index=1 priority=1 received=0 requested=8.1459 }} fuel_consumer_data={{ index=2 priority=2 received=-0.00001 requested=0 }} history_index=13 remaining_hours=1 history={{ index=-1 fuel=0.00000 consumed=1.00000 fuel_gain=999 other=1.00000 requested={{ 1 2 3 }} received={{ 4 5 6 }} }}"
+        );
+        for index in 0..24 {
+            let raw = i128::from(index + 1);
+            text += &format!(
+                " history={{ index={index} fuel={} consumed=265.14755 fuel_gain=390.4 other={} requested={{ 40.85669 8.1459 216.145 }} received={{ 40.85669 8.1459 -0.00001 }} }}",
+                quantity(raw),
+                quantity(raw)
+            );
+        }
+        text
+    }
+
+    /// The raw sums of `fuel_status`'s 24 ring entries, in CountryFuel's
+    /// column order; 265.14755 is the formatter's text for 8_688_355 units.
+    const RING_SUMS: [i64; 9] = [
+        24 * 39_040_000,
+        24 * 8_688_355,
+        300,
+        24 * 4_085_669,
+        24 * 814_590,
+        24 * 21_614_500,
+        24 * 4_085_669,
+        24 * 814_590,
+        -24,
+    ];
+
+    fn with_ring_sums(row: CountryFuelRow) -> CountryFuelRow {
+        let [
+            gain,
+            consumed,
+            other,
+            requested_0,
+            requested_1,
+            requested_2,
+            received_0,
+            received_1,
+            received_2,
+        ] = RING_SUMS;
+        CountryFuelRow {
+            ring_gain_raw: gain,
+            ring_consumed_raw: consumed,
+            ring_other_raw: other,
+            ring_requested_0_raw: requested_0,
+            ring_requested_1_raw: requested_1,
+            ring_requested_2_raw: requested_2,
+            ring_received_0_raw: received_0,
+            ring_received_1_raw: received_1,
+            ring_received_2_raw: received_2,
+            ..row
+        }
+    }
 
     #[test]
     fn foreign_source_compares_native_text_prefix_without_certifying_nul_suffix() {
@@ -752,6 +961,7 @@ mod tests {
             );
         }
         for name in [
+            "CountryFuelConsumers",
             "CountryExperience",
             "PurchaseContracts",
             "DisruptedSupply",
@@ -979,9 +1189,26 @@ mod tests {
         assert!(compare_exchanges(&frame, &saved, &links, &tokens, &mut report).is_err());
     }
 
+    fn fuel_row(frame: &mut DecodedFrame) -> &mut CountryFuelRow {
+        let TableView::Complete(TableRows::CountryFuel(rows)) =
+            &mut *frame.tables[TableId::CountryFuel.index()]
+        else {
+            unreachable!()
+        };
+        &mut rows[0]
+    }
+
     #[test]
     fn fuel_oracle_detects_one_native_unit_and_requires_complete_table() {
-        let saved = economy::parse(&parser::parse(b"countries={GER={fuel_status={fuel=1.00003 max_fuel=-1.00000 fuel_gain=-0.00001 fuel_cost=0}}}").unwrap().items).unwrap();
+        let body = fuel_status(
+            "fuel=1.00003 max_fuel=-1.00000 fuel_gain=-0.00001 fuel_cost=0 fuel_gain_per_oil=3.6 fuel_gain_from_states=64.4 fuel_gain_from_lend_lease=0.00003 fuel_consumption_from_lend_lease=-0.00003",
+        );
+        let saved = economy::parse(
+            &parser::parse(format!("countries={{GER={{fuel_status={{{body}}}}}}}").as_bytes())
+                .unwrap()
+                .items,
+        )
+        .unwrap();
         let country = CountryRow {
             id: 11,
             canonical_slot: 7,
@@ -1003,17 +1230,64 @@ mod tests {
             })
             .map(Into::into),
         };
-        *frame.tables[TableId::CountryFuel.index()] =
-            TableView::Complete(TableRows::CountryFuel(vec![CountryFuelRow {
+        *frame.tables[TableId::CountryFuel.index()] = TableView::Complete(TableRows::CountryFuel(
+            vec![with_ring_sums(CountryFuelRow {
                 country: 12,
                 current_raw: 32_769,
                 maximum_raw: -32_768,
                 gain_raw: -1,
                 cost_raw: 0,
-            }]));
+                gain_from_states_raw: 6_440_000,
+                lend_lease_gain_raw: 1,
+                lend_lease_consumption_raw: -1,
+                gain_per_oil_raw: 360_000,
+                history_index: 13,
+                remaining_hours: 1,
+                ..Default::default()
+            })],
+        ));
         let mut report = Report::default();
         compare_fuel(&frame, &saved, &links, &mut report).unwrap();
-        assert!(report.differences.is_empty());
+        assert_eq!(report.differences, Vec::<String>::new());
+        assert_eq!(report.compared_tables["CountryFuel"], 1);
+        for reason in ["per-hour fuel history", "pending fuel history entry"] {
+            assert!(report.limitations.keys().any(|key| key.contains(reason)));
+        }
+        for change in 0..15 {
+            let TableView::Complete(TableRows::CountryFuel(rows)) =
+                &mut *frame.tables[TableId::CountryFuel.index()]
+            else {
+                unreachable!()
+            };
+            let mut row = rows[0].clone();
+            match change {
+                0 => row.gain_from_states_raw += 1,
+                1 => row.lend_lease_gain_raw += 1,
+                2 => row.lend_lease_consumption_raw -= 1,
+                3 => row.gain_per_oil_raw -= 1,
+                4 => row.history_index = 12,
+                5 => row.remaining_hours = 0,
+                6 => row.ring_gain_raw += 1,
+                7 => row.ring_consumed_raw -= 1,
+                8 => row.ring_other_raw += 1,
+                9 => row.ring_requested_0_raw += 1,
+                10 => row.ring_requested_1_raw += 1,
+                11 => row.ring_requested_2_raw += 1,
+                12 => row.ring_received_0_raw += 1,
+                13 => row.ring_received_1_raw += 1,
+                _ => row.ring_received_2_raw -= 1,
+            }
+            let original = std::mem::replace(&mut rows[0], row);
+            let mut report = Report::default();
+            compare_fuel(&frame, &saved, &links, &mut report).unwrap();
+            assert_eq!(report.differences.len(), 1, "change {change}");
+            let TableView::Complete(TableRows::CountryFuel(rows)) =
+                &mut *frame.tables[TableId::CountryFuel.index()]
+            else {
+                unreachable!()
+            };
+            rows[0] = original;
+        }
         let TableView::Complete(rows) = &mut *frame.tables[TableId::CountryFuel.index()] else {
             unreachable!()
         };
@@ -1025,10 +1299,125 @@ mod tests {
         let mut report = Report::default();
         compare_fuel(&frame, &saved, &links, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
+        fuel_row(&mut frame).current_raw += 1;
+        // Any one ring slot's saved value moves its sum; the pending entry's
+        // values move nothing.
+        fn fuel_text(saved: &mut economy::Pack) -> &mut economy::Fuel {
+            saved
+                .countries
+                .get_mut(b"GER".as_slice())
+                .unwrap()
+                .fuel
+                .as_mut()
+                .unwrap()
+        }
+        let mut changed = saved.clone();
+        fuel_text(&mut changed).history[24].received[1].raw += 1;
+        let mut report = Report::default();
+        compare_fuel(&frame, &changed, &links, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("GER.fuel.ring_received_1_raw"));
+        let mut changed = saved.clone();
+        let pending = &mut fuel_text(&mut changed).history[0];
+        assert_eq!(pending.index, -1);
+        pending.gain.raw += 1;
+        pending.requested[0].raw += 1;
+        let mut report = Report::default();
+        compare_fuel(&frame, &changed, &links, &mut report).unwrap();
+        assert!(report.differences.is_empty());
         *frame.tables[TableId::CountryFuel.index()] = TableView::Unavailable {
             reason: "read failed".into(),
         };
         assert!(compare_fuel(&frame, &saved, &links, &mut Report::default()).is_err());
+    }
+
+    #[test]
+    fn fuel_consumer_oracle_compares_every_field_by_saved_index() {
+        let body = fuel_status(
+            "fuel=1.00003 max_fuel=1.00003 fuel_gain=2 fuel_cost=0 fuel_gain_per_oil=3.6 fuel_gain_from_states=64.4 fuel_gain_from_lend_lease=0.00000 fuel_consumption_from_lend_lease=0.00000",
+        );
+        let saved = economy::parse(
+            &parser::parse(
+                format!("countries={{ENG={{fuel_status={{{body}}}}} D01={{}}}}").as_bytes(),
+            )
+            .unwrap()
+            .items,
+        )
+        .unwrap();
+        let country = CountryRow {
+            id: 11,
+            canonical_slot: 7,
+            tag: b"ENG".to_vec(),
+            ..Default::default()
+        };
+        let links = BTreeMap::from([(11, &country)]);
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 2,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+        };
+        let consumers = vec![
+            CountryFuelConsumerRow {
+                country: 11,
+                index: 0,
+                priority: 1,
+                requested_raw: 8_362_571,
+                received_raw: 8_362_571,
+            },
+            CountryFuelConsumerRow {
+                country: 11,
+                index: 1,
+                priority: 1,
+                requested_raw: 814_590,
+                received_raw: 0,
+            },
+            CountryFuelConsumerRow {
+                country: 11,
+                index: 2,
+                priority: 2,
+                requested_raw: 0,
+                received_raw: -1,
+            },
+        ];
+        *frame.tables[TableId::CountryFuelConsumers.index()] =
+            TableView::Complete(TableRows::CountryFuelConsumers(consumers.clone()));
+        let mut report = Report::default();
+        compare_fuel_consumers(&frame, &saved, &links, &mut report).unwrap();
+        assert_eq!(report.differences, Vec::<String>::new());
+        assert_eq!(report.compared_tables["CountryFuelConsumers"], 3);
+
+        // Every consumer field is compared.
+        for field in 0..3 {
+            let mut rows = consumers.clone();
+            match field {
+                0 => rows[2].priority = 1,
+                1 => rows[1].requested_raw += 1,
+                _ => rows[0].received_raw -= 1,
+            }
+            *frame.tables[TableId::CountryFuelConsumers.index()] =
+                TableView::Complete(TableRows::CountryFuelConsumers(rows));
+            let mut report = Report::default();
+            compare_fuel_consumers(&frame, &saved, &links, &mut report).unwrap();
+            assert_eq!(report.differences.len(), 1, "consumer field {field}");
+        }
+        // A missing or extra consumer is a difference, not a skipped row.
+        let mut rows = consumers.clone();
+        rows[2].index = 3;
+        *frame.tables[TableId::CountryFuelConsumers.index()] =
+            TableView::Complete(TableRows::CountryFuelConsumers(rows));
+        let mut report = Report::default();
+        compare_fuel_consumers(&frame, &saved, &links, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 2);
+        assert_eq!(report.compared_tables["CountryFuelConsumers"], 2);
+
+        *frame.tables[TableId::CountryFuelConsumers.index()] = TableView::Unavailable {
+            reason: "read failed".into(),
+        };
+        assert!(compare_fuel_consumers(&frame, &saved, &links, &mut Report::default()).is_err());
     }
 
     #[test]

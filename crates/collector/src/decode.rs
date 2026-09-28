@@ -219,11 +219,11 @@ pub const CONSTRUCTION_REST: [TableId; 10] = [
 
 /// Economy mixed rest in calibration/report order: [fuel, experience,
 /// supply, hubs, disrupted, foreign, definitions, resources, exchanges,
-/// purchases]. Supply stays hourly, the three resource tables refresh on
-/// slot 10, and the six remaining tables on slot 17. The supply
-/// shared traversal is anchor-charged to the hubs slot; the resource
-/// dictionary to the definitions slot, matching the read-group convention.
-pub const ECONOMY_REST: [TableId; 10] = [
+/// purchases, fuel consumers]. Supply stays hourly, the three resource tables
+/// refresh on slot 10, and the seven remaining tables on slot 17. The supply shared traversal is anchor-charged to the hubs slot; the
+/// resource dictionary to the definitions slot and the shared fuel walk to the
+/// fuel slot, matching the read-group convention.
+pub const ECONOMY_REST: [TableId; crate::extended::economy::N] = [
     TableId::CountryFuel,
     TableId::CountryExperience,
     TableId::ProvinceSupply,
@@ -234,6 +234,7 @@ pub const ECONOMY_REST: [TableId; 10] = [
     TableId::CountryResources,
     TableId::ResourceExchanges,
     TableId::PurchaseContracts,
+    TableId::CountryFuelConsumers,
 ];
 
 /// Hourly weather family in calibration/report order: [regions, provinces].
@@ -496,42 +497,12 @@ static CONSTRUCTION_REST_RAW_BYTES: [AtomicU64; 10] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-static ECONOMY_REST_COPY_NS: [AtomicU64; 10] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static ECONOMY_REST_DECODE_NS: [AtomicU64; 10] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static ECONOMY_REST_RAW_BYTES: [AtomicU64; 10] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
+static ECONOMY_REST_COPY_NS: [AtomicU64; crate::extended::economy::N] =
+    [const { AtomicU64::new(0) }; crate::extended::economy::N];
+static ECONOMY_REST_DECODE_NS: [AtomicU64; crate::extended::economy::N] =
+    [const { AtomicU64::new(0) }; crate::extended::economy::N];
+static ECONOMY_REST_RAW_BYTES: [AtomicU64; crate::extended::economy::N] =
+    [const { AtomicU64::new(0) }; crate::extended::economy::N];
 static AIR_BASES_COPY_NS: [AtomicU64; 3] =
     [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 // hits, misses, ineligible, comparisons, installs, compare/restore/install ns.
@@ -2154,7 +2125,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         && let Some(payload) = job.economy_rest_payload.as_ref()
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-        let mut decode_ticks = [0; 10];
+        let mut decode_ticks = [0; crate::extended::economy::N];
         frame
             .extended
             .economy_rest_pilot()
@@ -2639,9 +2610,9 @@ pub struct Calibration {
     pub construction_rest_copy_ns: [u64; 10],
     pub construction_rest_decode_ns: [u64; 10],
     pub construction_rest_raw_bytes: [u64; 10],
-    pub economy_rest_copy_ns: [u64; 10],
-    pub economy_rest_decode_ns: [u64; 10],
-    pub economy_rest_raw_bytes: [u64; 10],
+    pub economy_rest_copy_ns: [u64; crate::extended::economy::N],
+    pub economy_rest_decode_ns: [u64; crate::extended::economy::N],
+    pub economy_rest_raw_bytes: [u64; crate::extended::economy::N],
     pub air_bases_copy_ns: [u64; 3],
     pub air_bases_decode_ns: [u64; 3],
     pub air_bases_raw_bytes: [u64; 3],
@@ -2752,7 +2723,7 @@ impl Calibration {
             "economy_rest_copy_ns": self.economy_rest_copy_ns.as_slice(),
             "economy_rest_decode_ns": self.economy_rest_decode_ns.as_slice(),
             "economy_rest_raw_bytes": self.economy_rest_raw_bytes.as_slice(),
-            "economy_rest_tables": ["CountryFuel", "CountryExperience", "ProvinceSupply", "HubMotorization", "DisruptedSupply", "ForeignHomebases", "ResourceDefinitions", "CountryResources", "ResourceExchanges", "PurchaseContracts"],
+            "economy_rest_tables": ["CountryFuel", "CountryExperience", "ProvinceSupply", "HubMotorization", "DisruptedSupply", "ForeignHomebases", "ResourceDefinitions", "CountryResources", "ResourceExchanges", "PurchaseContracts", "CountryFuelConsumers"],
             "air_bases_copy_ns": self.air_bases_copy_ns.as_slice(),
             "air_bases_decode_ns": self.air_bases_decode_ns.as_slice(),
             "air_bases_raw_bytes": self.air_bases_raw_bytes.as_slice(),

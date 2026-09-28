@@ -371,11 +371,12 @@ mod tests {
         let per_state = bytes(1_501);
         let large = bytes(5_001);
         assert!(vanilla <= per_state && per_state <= large);
-        // Linear, not quadratic: about 12 KiB per country slot per frame
-        // (measured 2026-09-24: +14 MB at 1,500 slots, +60 MB at 5,000, over
-        // a 197 MB vanilla frame), dominated by the project pools and the
-        // per-slot research and party rows.
-        assert!(large - per_state <= 3_500 * 16 * 1024);
+        // Linear, not quadratic: about 16 KiB per country slot per frame
+        // (measured 2026-09-28: 16,519 B per slot between 1,500 and 5,000
+        // slots, +19 MB at 1,500 and +77 MB at 5,000 over a 199 MB vanilla
+        // frame), dominated by the project pools and the per-slot research and
+        // party rows.
+        assert!(large - per_state <= 3_500 * 17 * 1024);
     }
 
     /// Attaching at the main menu builds vanilla-sized frames; the spool then

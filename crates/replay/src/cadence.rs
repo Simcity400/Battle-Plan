@@ -148,7 +148,11 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::PowerBalanceMembers
         | TableId::PowerBalanceRanges
         | TableId::PowerBalanceOverrides
+        // The fuel status and its consumers come from one walk. CountryFuel's
+        // ring sums cover the last 24 hourly fuel updates, so reads on this
+        // daily slot tile time exactly.
         | TableId::CountryFuel
+        | TableId::CountryFuelConsumers
         | TableId::CountryExperience
         | TableId::HubMotorization
         | TableId::DisruptedSupply
