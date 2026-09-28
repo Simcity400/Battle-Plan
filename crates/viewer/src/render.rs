@@ -23,7 +23,6 @@ use crate::map::{
     map_buildings::{MapBuildingAssets, PreparedBuildings},
     // the map's table frame
     mapframe::{FrameAssets, FrameGeometry},
-    models::ModelField,
     // orders: the recorded player's battle plan
     orders::{OrderAssets, OrderField},
     // political fill
@@ -84,7 +83,7 @@ pub struct MapLayers<'a> {
     pub bridges: &'a Bridges,
     pub unit_models: &'a UnitModelAssets,
     /// This hour's placed figures, from [`super::map::unit_models::PreparedModels::field`].
-    pub unit_model_field: &'a ModelField,
+    pub unit_model_field: &'a crate::map::unit_history::Field,
     // orders: the recorded player's battle plan
     pub order_assets: &'a OrderAssets,
     /// This hour's ribbons, from [`crate::document::Document::order_field`].
@@ -635,14 +634,12 @@ pub fn dump_png(
                 layers.aircraft.clone(),
                 layers.aircraft_plan.clone(),
             )?;
-            let unit_field = layers.unit_model_field.clone();
-            let min_capacity = unit_field.byte_len() as u64;
             scene.set_unit_models(
                 &device,
                 &queue,
                 layers.unit_models,
-                unit_field,
-                min_capacity,
+                layers.unit_model_field.clone(),
+                true,
             )?;
         }
         // orders: the recorded player's battle plan

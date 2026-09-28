@@ -79,6 +79,7 @@ pub mod equipment_graphics;
 pub mod model_countries;
 pub mod model_multi_fallback;
 pub mod model_selection;
+pub mod unit_history;
 pub mod unit_models;
 pub mod visibility;
 pub mod water;

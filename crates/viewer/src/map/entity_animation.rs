@@ -262,6 +262,7 @@ impl Player {
                         requested: chosen,
                         clip,
                         start: if previous.is_none()
+                            && instance.animation_epoch == 0
                             && !matches!(instance.animation, BUILDING_IDLE | BUILDING_DAMAGED)
                         {
                             -phase
@@ -421,7 +422,9 @@ impl Player {
                 }
                 for (event_index, (event, age)) in authored.into_iter().enumerate() {
                     let event_clock = if event.trigger_once {
-                        if matches!(instance.animation, BUILDING_IDLE | BUILDING_DAMAGED) {
+                        if instance.animation_epoch != 0
+                            || matches!(instance.animation, BUILDING_IDLE | BUILDING_DAMAGED)
+                        {
                             self.nodes[index].as_ref().map_or(age, |p| time - p.start)
                         } else {
                             time + instance.animation_phase

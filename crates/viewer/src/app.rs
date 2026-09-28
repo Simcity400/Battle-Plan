@@ -469,10 +469,9 @@ pub struct Viewer {
     dropper: Option<Arc<hours::Dropper>>,
     // close zoom
     unit_models: Option<map::unit_models::PreparedModels>,
-    unit_fraction: Option<(f32, bool, bool)>,
-    /// Instance-buffer bytes sized for every height band this hour (see the
-    /// units upload), so zooming never reallocates mid-gesture.
-    unit_capacity: Option<(replay::BranchId, i32, u64)>,
+    /// Whether the scene holds `unit_models`' field. It does not move within
+    /// the hour, so each installed hour uploads it once.
+    unit_field_uploaded: bool,
     // names
     placements: Option<Arc<Placements>>,
     placements_at: Option<(replay::BranchId, i32)>,
@@ -743,8 +742,7 @@ impl Viewer {
             dropper: None,
             // close zoom
             unit_models: None,
-            unit_fraction: None,
-            unit_capacity: None,
+            unit_field_uploaded: false,
             // names
             placements: None,
             placements_at: None,
@@ -1658,8 +1656,7 @@ impl Viewer {
         self.last_view = None;
         // close zoom
         self.unit_models = None;
-        self.unit_fraction = None;
-        self.unit_capacity = None;
+        self.unit_field_uploaded = false;
         self.profile_frame = 0;
         self.generation = 0;
         if self.embedded.is_none() {
@@ -2474,15 +2471,19 @@ impl Viewer {
                 return Ok(());
             }
         };
+        let previous = self
+            .shown
+            .as_ref()
+            .filter(|shown| shown.error.is_none())
+            .map(|shown| (shown.branch, shown.hour, shown.header.viewing.as_deref()));
+        let next = (branch, hour, layers.header.viewing.as_deref());
         let continuity = map::presentation::continuity(
-            self.shown
-                .as_ref()
-                .filter(|shown| shown.error.is_none())
-                .map(|shown| (shown.branch, shown.hour, shown.header.viewing.as_deref())),
-            (branch, hour, layers.header.viewing.as_deref()),
+            previous,
+            next,
             self.animation_seek,
             &document.playback.replay().gaps,
         );
+        let unit_restart = map::presentation::unit_restart(previous, next, self.animation_seek);
         let hours::Layers {
             political,
             borders,
@@ -2550,9 +2551,16 @@ impl Viewer {
         )?;
         retired.push(replaced);
         laps.lap("aircraft_upload");
+        match unit_restart {
+            map::presentation::UnitRestart::Keep => {}
+            map::presentation::UnitRestart::ViewingCountry => {
+                scene.restart_unit_models(Some(units.owned()))
+            }
+            map::presentation::UnitRestart::All => scene.restart_unit_models(None),
+        }
         let model_warnings = units.report.warnings();
         retired.push(self.unit_models.replace(units));
-        self.unit_fraction = None;
+        self.unit_field_uploaded = false;
         if uploaded
             .orders
             .as_ref()
@@ -3007,58 +3015,26 @@ impl Viewer {
             None => *camera,
         };
         let scene = self.scene.as_mut().expect("created above");
-        let gates = document.unit_models.gates;
-        if gates.any(camera.height)
-            && self.unit_fraction
-                != Some((
-                    document.hour_fraction,
-                    gates.units(camera.height),
-                    gates.ships(camera.height),
-                ))
-        {
+        // A `--window-dump` settles unit models for its camera, as `--dump`
+        // does; an F12 or Export capture keeps the live history.
+        if !self.unit_field_uploaded {
             let timer = Instant::now();
             let units = self
                 .unit_models
                 .as_ref()
                 .expect("prepared above")
-                .field(&document.unit_models, camera.height);
-            // Size the buffer for every height band: height 0 draws all land
-            // units and ships, so zooming between bands rewrites the same
-            // buffer instead of reallocating mid-gesture. The count is read
-            // off the prepared hour rather than by building that field.
-            let hour_key = (document.playback.branch(), document.playback.hour());
-            let fresh_hour = self
-                .unit_capacity
-                .as_ref()
-                .is_none_or(|(branch, hour, _)| (*branch, *hour) != hour_key);
-            let min_capacity = if fresh_hour {
-                let full = self
-                    .unit_models
-                    .as_ref()
-                    .expect("prepared above")
-                    .full_byte_len() as u64;
-                let capacity = full.max(units.byte_len() as u64);
-                self.unit_capacity = Some((hour_key.0, hour_key.1, capacity));
-                capacity
-            } else {
-                let (_, _, capacity) = self.unit_capacity.as_ref().expect("checked above");
-                (*capacity).max(units.byte_len() as u64)
-            };
+                .field(&document.unit_models);
             scene
                 .set_unit_models(
                     &state.device,
                     &state.queue,
                     &document.unit_models,
                     units,
-                    min_capacity,
+                    self.options.window_dump,
                 )
                 .map_err(|error| error.to_string())?;
             laps.lap("units_upload");
-            self.unit_fraction = Some((
-                document.hour_fraction,
-                gates.units(camera.height),
-                gates.ships(camera.height),
-            ));
+            self.unit_field_uploaded = true;
             if map::counter_move::profiling() {
                 map::counter_move::profile_print(format!(
                     "PROFILE models {:.6}",

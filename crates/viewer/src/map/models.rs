@@ -2129,7 +2129,8 @@ impl ModelPass {
             self.palette = palette;
             self.default_palette = joints;
             self.palette_len = library.palette.len();
-            self.players.clear();
+            // Library slots only append; new meshes must not restart the
+            // retained unit entities' animation clocks.
             regroup = true;
         }
         if regroup {
@@ -2966,5 +2967,158 @@ mod tests {
         assert!(!visible(group, 0.0, Some([100.0, 0.0, 200.0, 20.0])));
         // The wrap copy moves the group, not the rectangle.
         assert!(visible(group, 100.0, Some([100.0, 0.0, 200.0, 20.0])));
+    }
+
+    #[test]
+    fn unit_lifetime_gpu_stream_and_hidden_animation_clock() {
+        use super::super::unit_history::{
+            History, Kind,
+            tests::{GATES, target},
+        };
+        let _serial = super::super::shader_tests::GPU_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            eprintln!("SKIP unit lifetime GPU test: no adapter");
+            return;
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&crate::render::device_descriptor(&adapter)))
+                .unwrap();
+        let mut entries = vec![wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }];
+        for binding in [1, 3, 4, 5, 7, 8] {
+            entries.push(texture_entry(
+                binding,
+                wgpu::ShaderStages::FRAGMENT,
+                wgpu::TextureViewDimension::D2,
+            ));
+        }
+        entries.extend([sampler_entry(2), sampler_entry(6)]);
+        let globals = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &entries,
+        });
+        let mut library = library_with_one_mesh(1.0);
+        library.palette = vec![PaletteJoint::IDENTITY];
+        library.rigs.push(Arc::new(Rig {
+            start: 0,
+            end: 1,
+            nodes: vec![entity_animation::Node {
+                mesh: Arc::new(mesh::Mesh::default()),
+                clips: vec![entity_animation::Clip {
+                    state: mesh::EntityState {
+                        name: "idle".into(),
+                        chance: 1.0,
+                        speed: 1.0,
+                        events: vec![mesh::EntityEvent {
+                            time: 0.2,
+                            trigger_once: true,
+                            particle: Some("synthetic".into()),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                    animation: None,
+                }],
+                default: "idle".into(),
+                follows_parent: false,
+                parent: None,
+                scale: 1.0,
+                mesh_scale: 1.0,
+                skin_base: None,
+                rigid: 0,
+                locators: BTreeMap::new(),
+            }],
+        }));
+        let mut pass = ModelPass::new(
+            &device,
+            1,
+            &queue,
+            &globals,
+            super::super::scene::SCENE_FORMAT,
+            &library,
+            "synthetic unit lifetime",
+        )
+        .unwrap();
+        // Read back the actual instance stream animate/update_placed write.
+        let bytes = std::mem::size_of::<ModelInstance>() as u64;
+        pass.instances = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: bytes,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+        let mut target = target(40, Kind::Land);
+        target.instance.animation = entity_animation::MOVE; // no reconstructed idle phase
+        let mut history = History::default();
+        history.set(vec![target], Arc::default(), false);
+        let faded = {
+            let mut frame = |time, shown, in_view| {
+                if time == 10.75 {
+                    // Discovering another mesh in a later hour grows the
+                    // palette without replacing this live entity.
+                    library.palette.push(PaletteJoint::IDENTITY);
+                    pass.sync(&device, &library).unwrap();
+                }
+                let placed = history.step(time, GATES, [shown; 2], true, |_| in_view);
+                pass.update_placed(&device, &queue, placed, 128.0).unwrap();
+                pass.animate(&device, &queue, time, None, &[0.0]).unwrap();
+                (
+                    pass.field.instances.clone(),
+                    pass.events.iter().map(|e| e.age).collect::<Vec<_>>(),
+                )
+            };
+            let (first, events) = frame(10.0, true, true);
+            assert!(
+                events.is_empty(),
+                "creation clock starts now, not at global time zero"
+            );
+            let epoch = first[0].animation_epoch;
+            let (_, events) = frame(10.5, true, true);
+            assert!((events[0] - 0.3).abs() < 1e-5);
+            let (hidden, events) = frame(10.75, true, false);
+            assert_eq!(hidden[0].animation_epoch, epoch);
+            assert!((events[0] - 0.55).abs() < 1e-5, "hidden entity advances");
+            let (back, events) = frame(11.0, true, true);
+            assert_eq!(back[0].animation_epoch, epoch);
+            assert!((events[0] - 0.8).abs() < 1e-5);
+            for _ in 0..100 {
+                frame(11.0, true, false);
+            }
+            let (fresh, events) = frame(12.0, true, true);
+            assert_ne!(fresh[0].animation_epoch, epoch);
+            assert!(events.is_empty());
+            frame(12.5, true, true);
+            let (faded, _) = frame(12.75, false, true);
+            assert_eq!(faded[0].scale, 0.5);
+            faded
+        };
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(pass.instances.as_ref().unwrap(), 0, &read, 0, bytes);
+        queue.submit([encoder.finish()]);
+        read.slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let readback = read.slice(..).get_mapped_range().unwrap();
+        let actual: &ModelInstance = bytemuck::from_bytes(&readback);
+        assert_eq!(*actual, faded[0]);
     }
 }

@@ -852,8 +852,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|placement| place(*placement))
             .collect::<io::Result<Vec<_>>>()?;
-        let (unit_model_field, unit_report) =
-            document.unit_model_field(&options.perspective, camera.height)?;
+        let (unit_model_field, unit_report) = document.unit_model_field(&options.perspective)?;
         // fog of war: the hour's `IntelMap` for the viewing country and the fog
         // switch. The camera decides `FOWFadeFactor`, so the report needs it.
         let intel_map = document.intel_map(&options.perspective)?;
