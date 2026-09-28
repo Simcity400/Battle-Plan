@@ -28,6 +28,7 @@ pub mod modifiers;
 pub mod movement;
 pub mod parser;
 pub mod particles;
+pub mod pdxshader;
 pub mod positions;
 pub mod raids;
 pub mod railways;

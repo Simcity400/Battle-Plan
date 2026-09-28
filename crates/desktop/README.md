@@ -87,3 +87,7 @@ Host implementation is under [src](src/). The [dashboard crate](../dashboard/REA
 The native export dialog accepts an optional dashboard view ID and carries it through the map action. The frontend uses this from the shared map menu in widget headers; standalone export omits the ID.
 
 Map-settings requests forward a global, campaign or widget target through the existing bounded service. Global requests require no recording; campaign/widget requests retain source/revision validation.
+
+## Shader compiler distribution
+
+`build:desktop` stages the pinned official DXC distribution in `.cargo-target/release/shader-tools/dxc/`. Ship that whole directory beside `viewer.exe` and `replay-desktop.exe`: the executable, dxcompiler.dll, dxil.dll and all three upstream licence files. [The installer](../../tools/install-shader-compiler.ps1) verifies the archive hash and supports an already downloaded archive. This is part of the executable-directory build; a future installer/updater must retain these files and the distribution terms. Development can stage the same directory beside its viewer or explicitly set `BATTLE_PLAN_SHADER_COMPILER`. Runtime performs no download and never guesses an SDK compiler. See [shader-pipeline](../shader-pipeline/README.md) for the exact cache location, invalidation, runtime refusal and licence contract.

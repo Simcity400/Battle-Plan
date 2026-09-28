@@ -66,3 +66,7 @@ Politics content readers share [script_files.rs](src/script_files.rs) (a content
 - [leader_traits.rs](src/leader_traits.rs): `common/country_leader` traits (country leaders and advisors) with their modifiers, equipment bonuses and targeted modifiers.
 - [ideologies.rs](src/ideologies.rs): ideology groups, their colours (`{ r g b }` or `rgb { }`; `hsv` stays unavailable) and sub-ideologies.
 - [modifier_definitions.rs](src/modifier_definitions.rs): scripted modifiers' display fields. Built-in modifiers are defined in the executable; their display comes from the recording.
+
+## PdxShader source contract
+
+[`pdxshader`](src/pdxshader/mod.rs) reads the native effect language independently of GUI layout. Its source assembler preserves child-first include order, repeated-key semantics, raw code, stage declarations, caller/effect defines, state tables and entry lookup, with executable addresses beside the rules. Every file resolves through the recorded content stack; a missing root produces the native empty technique record, a present root requires the DX11 header, and missing includes contribute empty content and a diagnostic as the engine does. The assembled program carries a SHA256 identity covering all resolved inputs. Effect artwork is currently outside recording hash coverage: its current stack identity is explicit and is not represented as recorded verification. UTF-8 source conversion or compilation failures name the effect. Execution, persistent caches and resource binding belong to [shader-pipeline](../shader-pipeline/README.md).

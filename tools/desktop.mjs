@@ -38,6 +38,12 @@ function run(executable, args, cwd = root) {
 
 try {
   await run("cargo", ["build", "-p", "viewer", ...(mode === "build" ? ["--release"] : [])]);
+  // Every shipped viewer uses the same pinned compiler, including vanilla recordings.
+  if (mode === "build") {
+    await run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+      path.join(root, "tools", "install-shader-compiler.ps1"), "-Destination",
+      path.join(root, ".cargo-target", "release", "shader-tools", "dxc")]);
+  }
   const cli = path.join(root, "node_modules", "@tauri-apps", "cli", "tauri.js");
   // Resolve hook directories at launch without storing machine paths in source.
   // JSON is passed as one argument, never interpreted as shell text.

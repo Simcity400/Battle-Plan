@@ -1,0 +1,21 @@
+[package]
+name = "shader-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+installed-content = { path = "../installed-content" }
+wgpu = "30.0.0"
+# Exact: the persistent cache ABI names this translator version.
+naga = { version = "=30.0.1", features = ["spv-in", "wgsl-out"] }
+bytemuck = "1"
+pollster = "0.4"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+installed-content = { path = "../installed-content", features = ["test-support"] }

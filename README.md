@@ -27,6 +27,7 @@ Each crate's README explains its responsibility, important rules and development
 
 | Component | What belongs here |
 |---|---|
+| [shader-pipeline](crates/shader-pipeline/README.md) | Executable native shader compiler, persistent cache and GPU pass binding. |
 | [engine](crates/engine/README.md) | Supported game build, native layouts and guarded memory reads. |
 | [collector](crates/collector/README.md) | Injected DLL, hourly acquisition and recording pipeline. |
 | [recorder](crates/recorder/README.md) | Attach/detach, replay finalization, inspection and save comparison. |
