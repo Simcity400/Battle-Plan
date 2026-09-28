@@ -8,10 +8,11 @@ import { definition as nationalSpirits } from './national-spirits/definition.ts'
 import { definition as placeholder } from './placeholder/definition.ts';
 import { definition as politicalPower } from './political-power/definition.ts';
 import { definition as research } from './research/definition.ts';
+import { definition as resourceBalance } from './resource-balance/definition.ts';
 import { definition as rulingParty } from './ruling-party/definition.ts';
 import { definition as spiritHistory } from './spirit-history/definition.ts';
 import { definition as stability } from './stability/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, placeholder] as const;
 
 registerWidgets(widgetMetas);

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { IdeaHistoryReply } from '../generated/dashboard';
-import { nameKey, useCountryNamesAt } from './countryNamesAt.ts';
-import type { NameAt } from './countryNamesAt';
+import { nameKey } from './countryFacts.ts';
+import type { NameAt } from './countryFacts';
+import { useCountryNamesAt } from './countryNamesAt.ts';
 import type { DashboardClient } from './client';
 import { ideaTooltipSources } from './ideaTooltip.ts';
 import type { BoundTrack } from './model';
@@ -10,7 +11,10 @@ import type { BoundTrack } from './model';
  * idea and its artwork, and the countries targeted modifiers name, as they were
  * when each idea was taken on (else their name in the recording's metadata).
  * Those names are read on demand, only for the tooltips actually built, each hour
- * once, so however long the campaign, every name shown can be read. */
+ * once, so however long the campaign, every name shown can be read. What is asked
+ * for is bounded by the reply (its ideas' targets at their hours), not by time, and
+ * is dropped with the reply; nothing asked is ever dropped while it is still shown,
+ * so asking never repeats itself. */
 /** How long a missing name waits before it is asked for again. */
 const RETRY_MS = 10_000;
 
@@ -21,7 +25,7 @@ export function useIdeaTooltips(data: IdeaHistoryReply | undefined, track: Pick<
   const asked = useRef(new Map<string, number>());
   const [attempt, setAttempt] = useState(0);
   useEffect(() => { setRequested([]); asked.current.clear(); }, [data, track?.source.id, track?.source.revision, track?.branch.id]);
-  // Asked for only as tooltips are built, so no cap on hours is needed.
+  // Asked for only as tooltips are built, so no cap on hours is needed; the store keeps every hour asked.
   const names = useCountryNamesAt(client, track, requested, active, Infinity, attempt);
   return useMemo(() => {
     if (!data || !track) return null;

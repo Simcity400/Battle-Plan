@@ -608,3 +608,97 @@ ideologies: Array<IdeologyInfo>,
  * to one is a gap, not a change.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type PoolRun = { firstHour: number, lastHour: number,
+/**
+ * The run follows a gap, a missing read or another country identity.
+ */
+startsSegment: boolean,
+/**
+ * Extracted in the country's states (`produced`).
+ */
+producedRaw: string,
+/**
+ * Moved from subjects (positive) or to the overlord (negative) (`adjustment`).
+ */
+subjectsRaw: string, importedRaw: string,
+/**
+ * Set aside for export by the trade law (`to_export`).
+ */
+toExportRaw: string,
+/**
+ * What buyers took (`exported`).
+ */
+exportedRaw: string,
+/**
+ * What the country has for use (`used`).
+ */
+availableRaw: string,
+/**
+ * What is left for use after special projects (`special_total`).
+ */
+afterProjectsRaw: string,
+/**
+ * Minus what production lines need, met or not (`production_demand`).
+ */
+productionRaw: string, };
+export type ResourceSeries = {
+/**
+ * The resource's native index (`ResourceDefinitions.id`).
+ */
+id: number, runs: Array<PoolRun>, };
+export type TradeDirection = "import" | "export";
+export type TradeRun = {
+/**
+ * The deal's native handle, as a decimal string.
+ */
+deal: string,
+/**
+ * The resource's native index.
+ */
+resource: number, direction: TradeDirection,
+/**
+ * The other country's tag.
+ */
+partner: string,
+/**
+ * The daily amount delivered.
+ */
+deliveredRaw: string,
+/**
+ * Civilian factories the importer pays.
+ */
+factories: number, convoysAssigned: number, convoysRequired: number, firstHour: number, lastHour: number, startsSegment: boolean, };
+export type ResourceInfo = {
+/**
+ * The native index (`ResourceDefinitions.id`).
+ */
+id: number, token: string,
+/**
+ * Which declaration of its token this is, from 1, in the game's order.
+ */
+ordinal: number, name: string | null,
+/**
+ * A PNG data URL; null when content has no icon for it.
+ */
+icon: string | null, };
+export type ResourceBalanceReply = { branchId: string, tag: string, decimals: number,
+/**
+ * Every recorded resource, in the game's order.
+ */
+resources: Array<ResourceInfo>,
+/**
+ * One per resource, in `resources` order.
+ */
+series: Array<ResourceSeries>,
+/**
+ * Hours the country's resources were read, ascending: a value shown at a
+ * later hour is as of the latest read before it.
+ */
+reads: Array<number>,
+/**
+ * Hours whose deals are known, as ascending spans: from a read of the deal
+ * table over the hours it is carried. The deal table is captured apart from
+ * the pools, so pools shown at an hour outside these spans have unknown deals,
+ * which is not the same as no deals.
+ */
+dealHours: Array<HourSpan>, trades: Array<TradeRun>, warnings: Array<string>, };

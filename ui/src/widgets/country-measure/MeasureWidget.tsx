@@ -15,8 +15,7 @@ import { formatFixed } from '../../charts/valueAxis';
 import type { Run } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
-import { readTokens, subscribeTokens } from '../../charts/tokens';
-import type { ChartTokens } from '../../charts/tokens';
+import { useChartTokens } from '../../charts/useChartTokens';
 import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
@@ -47,12 +46,6 @@ const CEILING_DASH = [6, 4] as const;
 /** Beyond this many countries the tooltip lists balances only, so it fits the window. */
 const CEILING_ROWS_MAX = 4;
 
-function useTokens(): ChartTokens {
-  const [tokens, setTokens] = useState(readTokens);
-  useEffect(() => subscribeTokens(setTokens), []);
-  return tokens;
-}
-
 /** Which balance a widget charts, and how it names it. */
 export interface MeasureConfig {
   measure: Measure;
@@ -73,7 +66,7 @@ export interface MeasureConfig {
  * falls in the balance. */
 export default function MeasureWidget({ widget, runtime, active, headerSlot, onDiagnostics, config }: WidgetProps & { config: MeasureConfig }) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const tokens = useTokens();
+  const tokens = useChartTokens();
   const options = resolveOptions(config.options ?? MEASURE_OPTIONS, widget.options);
   const showCeiling = config.ceiling != null && options.ceiling !== false;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

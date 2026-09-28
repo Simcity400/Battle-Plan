@@ -3,17 +3,20 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Icon } from '../components/Icons';
 import { BADGE_STRIP, badgesAt, drawBadges, visibleBadges } from './badges';
 import type { EventBadge } from './badges';
-import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection } from './draw';
+import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection, VALUE_LABEL_GAP, valueLabelWidth } from './draw';
 import { approach, easeTau } from './easing';
-import { axisFraction, hitZone, plotFrame, pointerHour, wheelSteps } from './frame';
+import { axisFraction, hitZone, keyedHour, plotFrame, pointerHour, STRIP_GAP, wheelSteps } from './frame';
+import { actionHour, hoverAt, NO_HOVER, pointerMenu, reduceHover } from './hover';
+import type { HoverEvent, HoverState } from './hover';
 import type { Padding, PlotFrame } from './frame';
 import { scheduler } from './scheduler';
 import type { FrameInfo, FrameTask } from './scheduler';
 import { backingSize, toLocal } from './surface';
 import { readTokens, subscribeTokens } from './tokens';
 import type { ChartTokens } from './tokens';
-import { hideTooltip, showTooltip } from './tooltip';
+import { hideTooltip, showTooltip, tooltipText } from './tooltip';
 import type { TooltipContent } from './tooltip';
+import { formatAxisValue } from './valueAxis';
 import { EMPTY_VIEW, playbackDomain, reduceView, resolveX, resolveY } from './view';
 import type { AxisSettings, PlaybackMode, Range, ViewAction, ViewState } from './view';
 import { shownUntil } from './view';
@@ -26,6 +29,15 @@ export interface ChartLayer {
   draw(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void;
   /** The values this layer shows inside a time range, for auto-fitting the value axis. */
   extent?(x: Range): Range | null;
+}
+
+/** A band under the plot on the same time axis, above the dates, such as daily bars. */
+export interface ChartStrip {
+  /** Its height in layout pixels, for a chart this many pixels tall. */
+  height(chartHeight: number): number;
+  /** Draws the strip (`frame.strip`), unclipped so it can label itself in the value
+   * axis' gutter; `state.playhead` is the last hour to draw (null: the whole range). */
+  draw(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void;
 }
 
 export interface TimeChartProps {
@@ -46,9 +58,14 @@ export interface TimeChartProps {
   fitValues?: (shown: Range | null) => Range | null;
   /** Axis settings store offsets from this hour. */
   branchStart: number;
+  /** Room around the plot. Without a `left`, the left side grows to fit the widest value label. */
   padding?: Partial<Padding>;
   layers: readonly ChartLayer[];
-  formatValue: (value: number) => string;
+  /** A strip under the plot; hovering it hovers the hour above. */
+  strip?: ChartStrip;
+  /** A value-axis label; `ticks` is every tick drawn with it, for a precision that keeps
+   * them apart. Without it, `formatAxisValue` writes plain amounts. */
+  formatValue?: (value: number, ticks: readonly number[]) => string;
   /** Event glyphs along the top edge. Hovering one snaps to its hour. */
   badges?: readonly EventBadge[];
   /** Tooltip content for an hour under the pointer, with any event badges hovered
@@ -56,6 +73,11 @@ export interface TimeChartProps {
   tooltip?: (hour: number, frame: PlotFrame, badges: readonly EventBadge[]) => TooltipContent | null;
   /** Moves a hovered hour onto something nearby, such as an event tick. */
   snap?: (hour: number, frame: PlotFrame) => number;
+  /** Hours the arrow keys step the keyboard hover through, ascending (such as every
+   * read); without them the keys step a day. Pass them all, not only those in view:
+   * a value carried into the view from an earlier one is reachable at the view's
+   * start (`keyStops`). */
+  keyHours?: readonly number[];
   /** Drawn after the plot, unclipped: end labels and markers. */
   overlay?: (ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens) => void;
   onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
@@ -68,6 +90,8 @@ export interface TimeChartProps {
 }
 
 const DEFAULT_PADDING: Padding = { left: 44, right: 14, top: 12, bottom: 24 };
+/** Room kept between the canvas edge and the widest value label. */
+const LABEL_MARGIN = 4;
 /** The narrowest time span a zoom may reach: two weeks. */
 const MIN_SPAN = 14 * 24;
 const BOX_THRESHOLD = 8;
@@ -75,7 +99,8 @@ const BOX_THRESHOLD = 8;
  * resets the zoom instead of picking): Windows' default double-click time. */
 const DOUBLE_CLICK_MS = 500;
 
-type Drag = { mode: 'axis-x'; grab: number } | { mode: 'axis-y'; grab: number } | { mode: 'pan'; lastX: number } | { mode: 'box'; x0: number; y0: number; x1: number; y1: number };
+/** A box started in a strip zooms time only: the strip has no value axis. */
+type Drag = { mode: 'axis-x'; grab: number } | { mode: 'axis-y'; grab: number } | { mode: 'pan'; lastX: number } | { mode: 'box'; x0: number; y0: number; x1: number; y1: number; timeOnly: boolean };
 
 /** A canvas time chart: axes from the recording's own dates, zoom that holds during
  * playback, live hover, and redraws only while something moves. */
@@ -88,6 +113,16 @@ export default function TimeChart(props: TimeChartProps) {
   // The event badges drawn right now, as text for assistive technology: they follow
   // the view (window, zoom, playhead), and change only when the drawn set does.
   const [spoken, setSpoken] = useState('');
+  // Who drives the hover (the pointer, or the keyboard's hour) and the hour it shows,
+  // which the keys act on; what the keyboard hover shows is read out as it changes.
+  type Point = { x: number; y: number; clientX: number; clientY: number };
+  const hover = useRef<HoverState<Point>>(NO_HOVER);
+  const shownHour = useRef<number | null>(null);
+  const [keySpoken, setKeySpoken] = useState('');
+  // The text last read out, so an unchanged tooltip is not announced again.
+  const keyText = useRef('');
+  // The time range drawn and the last hour shown, for the keyboard hover.
+  const shown = useRef<{ x: Range; until: number | null } | null>(null);
   const task = useRef<FrameTask | null>(null);
   const controls = useRef<{ dispatch: (action: ViewAction) => void } | null>(null);
 
@@ -128,8 +163,11 @@ export default function TimeChart(props: TimeChartProps) {
       if (element.width !== size.width) element.width = size.width;
       if (element.height !== size.height) element.height = size.height;
 
-      // Badges sit above the plot, so a chart with them keeps room there.
+      // Badges sit above the plot, so a chart with them keeps room there; a strip
+      // sits between the plot and the dates.
+      const strip = p.strip ? Math.max(0, Math.round(p.strip.height(layoutHeight))) : 0;
       const padding = { ...DEFAULT_PADDING, ...(p.badges ? { top: BADGE_STRIP } : {}), ...p.padding };
+      if (strip) padding.bottom += strip + STRIP_GAP;
       const extentKey = `${p.extent[0]}:${p.extent[1]}:${p.branchStart}`;
       if (extentKey !== zoomedFor) {
         if (zoomedFor && (view.x || view.y)) { view = EMPTY_VIEW; setZoomed(false); }
@@ -152,16 +190,25 @@ export default function TimeChart(props: TimeChartProps) {
       const targetY = resolveY(view, fitted ? { ...p.axes, yMin: p.axes.yMin ?? fitted[0], yMax: p.axes.yMax ?? fitted[1] } : p.axes, data);
       const y: [number, number] = eased ? [glide(eased.y[0], targetY.range[0]), glide(eased.y[1], targetY.range[1])] : [targetY.range[0], targetY.range[1]];
       eased = { x, y };
-      frame = plotFrame(layoutWidth, layoutHeight, padding, x, y, targetY.log);
+      frame = plotFrame(layoutWidth, layoutHeight, padding, x, y, targetY.log, strip);
+      // The value labels get the room they need: the left padding grows to the widest
+      // one (ticks depend only on the value range and plot height, so they stay the
+      // same), unless the widget chose its own left padding.
+      if (p.padding?.left == null) {
+        const needed = Math.ceil(valueLabelWidth(context, frame, tokens, (p.formatValue ?? formatAxisValue))) + VALUE_LABEL_GAP + LABEL_MARGIN;
+        if (needed > padding.left) frame = plotFrame(layoutWidth, layoutHeight, { ...padding, left: needed }, x, y, targetY.log, strip);
+      }
 
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       context.clearRect(0, 0, layoutWidth, layoutHeight);
-      drawAxes(context, frame, tokens, p.formatValue);
+      drawAxes(context, frame, tokens, (p.formatValue ?? formatAxisValue));
       context.save();
       clipToPlot(context, frame);
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
       for (const layer of p.layers) layer.draw(context, frame, tokens, { playhead: until });
       context.restore();
+      if (p.strip && frame.strip) p.strip.draw(context, frame, tokens, { playhead: until });
+      shown.current = { x, until };
       if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
       if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
       const drawn = p.badges ? visibleBadges(p.badges, frame.x, until) : [];
@@ -173,19 +220,30 @@ export default function TimeChart(props: TimeChartProps) {
       if (drag?.mode === 'box') drawSelection(context, tokens, drag);
 
       // Live hover: re-resolved every frame, so a still pointer stays current during playback.
+      // The pointer drives it until a navigation key hands it to the keyboard, whose hour
+      // shows while it is in view and not after the playhead.
       const zone = pointer ? hitZone(pointer, frame) : null;
-      const pointed = pointer && (!drag || drag.mode !== 'box') ? pointedAt(pointer, frame, p) : null;
-      if (pointer && pointed) {
-        drawCrosshair(context, frame, tokens, pointed.hour);
-        const hour = Math.floor(pointed.hour);
-        if (!hovered || hovered.hour !== hour || hovered.props !== p || !sameBadges(hovered.badges, pointed.badges)) {
-          hovered = { hour, badges: pointed.badges, props: p, content: p.tooltip?.(hour, frame, pointed.badges) ?? null };
+      const plot = frame;
+      const hit = hoverAt(hover.current, frame.x, until, point => !drag || drag.mode !== 'box' ? pointedAt(point, plot, p) : null);
+      const pointed = hit?.by === 'pointer' ? hit as { hour: number; badges: readonly EventBadge[] } : null;
+      const at = hit ? { hour: hit.hour, badges: pointed?.badges ?? [] } : null;
+      shownHour.current = at ? Math.floor(at.hour) : null;
+      if (at) {
+        drawCrosshair(context, frame, tokens, at.hour);
+        const hour = Math.floor(at.hour);
+        if (!hovered || hovered.hour !== hour || hovered.props !== p || !sameBadges(hovered.badges, at.badges)) {
+          hovered = { hour, badges: at.badges, props: p, content: p.tooltip?.(hour, frame, at.badges) ?? null };
         }
-        const key = `${hour}:${pointed.badges.map(badge => `${badge.hour}|${badge.label}`).join(',')}`;
-        if (hovered.content) showTooltip(owner, hovered.content, pointer.clientX, pointer.clientY, key); else hideTooltip(owner);
+        const contentKey = `${hour}:${at.badges.map(badge => `${badge.hour}|${badge.label}`).join(',')}`;
+        // The keyboard hover's tooltip sits at the top of its crosshair; layout pixels
+        // become screen pixels through the widget's Size zoom.
+        const point = pointed && pointer ? pointer : { clientX: rect.left + frame.toX(at.hour) * rect.width / layoutWidth, clientY: rect.top + (frame.plotTop + 8) * rect.height / layoutHeight };
+        if (hovered.content) showTooltip(owner, hovered.content, point.clientX, point.clientY, contentKey); else hideTooltip(owner);
+        const text = hit?.by === 'keyboard' && hovered.content ? tooltipText(hovered.content) : keyText.current;
+        if (text !== keyText.current) { keyText.current = text; setKeySpoken(text); }
       } else { hovered = null; hideTooltip(owner); }
       element.style.cursor = drag?.mode === 'pan' ? 'grabbing' : pointed?.badges.length ? 'pointer' : zone === 'x-axis' ? 'ew-resize'
-        : zone === 'y-axis' ? 'ns-resize' : zone === 'plot' ? 'crosshair' : 'default';
+        : zone === 'y-axis' ? 'ns-resize' : zone === 'plot' || zone === 'strip' ? 'crosshair' : 'default';
 
       const ySpan = Math.abs(targetY.range[1] - targetY.range[0]) || Math.max(1, Math.abs(targetY.range[1]));
       const settled = Math.abs(x[0] - targetX[0]) + Math.abs(x[1] - targetX[1]) < 1e-3
@@ -206,7 +264,8 @@ export default function TimeChart(props: TimeChartProps) {
     const pointedAt = (point: { x: number; y: number }, plot: PlotFrame, p: TimeChartProps): { hour: number; badges: readonly EventBadge[] } | null => {
       const badges = p.badges ? badgesAt(point, plot, p.badges, shownUntil(p.playhead, p.playback, p.afterPlayhead === true)) : [];
       if (badges.length) return { hour: badges[0].hour, badges };
-      if (hitZone(point, plot) !== 'plot') return null;
+      const zone = hitZone(point, plot);
+      if (zone !== 'plot' && zone !== 'strip') return null;
       const hour = pointedHour(point.x, plot, p);
       return hour == null ? null : { hour, badges: [] };
     };
@@ -231,6 +290,7 @@ export default function TimeChart(props: TimeChartProps) {
       return { ...point, clientX: event.clientX, clientY: event.clientY };
     };
     const down = (event: PointerEvent) => {
+      hover.current = reduceHover(hover.current, { type: 'pointer-down' });
       // The second press of a double-click never picks, however slow the double-click.
       if (event.detail >= 2 && pendingPick) { clearTimeout(pendingPick); pendingPick = null; }
       if (!frame || (event.button !== 0 && event.button !== 1)) return;
@@ -246,8 +306,8 @@ export default function TimeChart(props: TimeChartProps) {
       if (!zone) return;
       if (event.button === 0 && zone === 'x-axis') drag = { mode: 'axis-x', grab: frame.hourAt(point.x) };
       else if (event.button === 0 && zone === 'y-axis') drag = { mode: 'axis-y', grab: frame.valueAt(point.y) };
-      else if (zone === 'plot' && (event.button === 1 || event.shiftKey)) drag = { mode: 'pan', lastX: point.x };
-      else if (zone === 'plot') drag = { mode: 'box', x0: point.x, y0: point.y, x1: point.x, y1: point.y };
+      else if ((zone === 'plot' || zone === 'strip') && (event.button === 1 || event.shiftKey)) drag = { mode: 'pan', lastX: point.x };
+      else if (zone === 'plot' || zone === 'strip') drag = { mode: 'box', x0: point.x, y0: point.y, x1: point.x, y1: point.y, timeOnly: zone === 'strip' };
       else return;
       event.preventDefault();
       // Preventing the default also stops the chart taking focus; take it so Escape resets.
@@ -257,6 +317,8 @@ export default function TimeChart(props: TimeChartProps) {
     };
     const move = (event: PointerEvent) => {
       pointer = local(event);
+      // The pointer takes over from the keyboard hover.
+      hover.current = reduceHover(hover.current, { type: 'pointer', point: pointer });
       if (drag && frame) {
         if (drag.mode === 'axis-x') dispatch({ type: 'axis-x', grab: drag.grab, fraction: axisFraction(pointer, frame, 'x') });
         else if (drag.mode === 'axis-y') dispatch({ type: 'axis-y', grab: drag.grab, fraction: axisFraction(pointer, frame, 'y') });
@@ -278,7 +340,7 @@ export default function TimeChart(props: TimeChartProps) {
       drag = null;
       if (finished?.mode === 'box' && frame && Math.abs(finished.x1 - finished.x0) > BOX_THRESHOLD) {
         dispatch({ type: 'box', x: [frame.hourAt(finished.x0), frame.hourAt(finished.x1)],
-          y: Math.abs(finished.y1 - finished.y0) > BOX_THRESHOLD ? [frame.valueAt(finished.y1), frame.valueAt(finished.y0)] : undefined });
+          y: !finished.timeOnly && Math.abs(finished.y1 - finished.y0) > BOX_THRESHOLD ? [frame.valueAt(finished.y1), frame.valueAt(finished.y0)] : undefined });
       } else if (finished?.mode === 'box' && frame && Math.abs(finished.y1 - finished.y0) <= BOX_THRESHOLD && latest.current.onPick) {
         const hour = pointedHour(finished.x0, frame, latest.current);
         if (hour != null) schedulePick(hour);
@@ -286,12 +348,13 @@ export default function TimeChart(props: TimeChartProps) {
       wake();
     };
     const cancel = () => { drag = null; wake(); };
-    const leave = () => { pointer = null; hideTooltip(owner); wake(); };
+    const leave = () => { pointer = null; hover.current = reduceHover(hover.current, { type: 'pointer-leave' }); hideTooltip(owner); wake(); };
     const wheel = (event: WheelEvent) => {
       if (!frame) return;
       const point = local(event);
       const steps = wheelSteps(event.deltaY, event.deltaMode);
-      if (hitZone(point, frame) !== 'plot' || !steps) return;
+      const zone = hitZone(point, frame);
+      if ((zone !== 'plot' && zone !== 'strip') || !steps) return;
       event.preventDefault();
       dispatch({ type: 'wheel', at: frame.hourAt(point.x), steps });
     };
@@ -302,6 +365,11 @@ export default function TimeChart(props: TimeChartProps) {
       dispatch({ type: zone === 'x-axis' ? 'reset-x' : zone === 'y-axis' ? 'reset-y' : 'reset' });
     };
     const menu = (event: MouseEvent) => {
+      // The menu key already opened the menu at the hour shown; the browser's own event
+      // after it (at a place of its choosing) must not open another.
+      const fromPointer = pointerMenu(hover.current);
+      hover.current = reduceHover(hover.current, { type: 'contextmenu' });
+      if (!fromPointer) { event.preventDefault(); return; }
       const handler = latest.current.onContextMenu;
       if (!handler || !frame) return;
       const pointed = pointedAt(local(event), frame, latest.current);
@@ -340,22 +408,38 @@ export default function TimeChart(props: TimeChartProps) {
   }, [props.active, owner]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
 
+  const wake = () => { if (task.current) scheduler.wake(task.current); };
+  const send = (event: HoverEvent<Point>) => { hover.current = reduceHover(hover.current, event); wake(); };
+  const clearKeyed = () => { send({ type: 'key-clear' }); keyText.current = ''; setKeySpoken(''); };
   const keyDown = (event: ReactKeyboardEvent) => {
+    // The arrow keys, Home and End hover the chart as the pointer would, with its tooltip read out.
+    if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') && shown.current && props.tooltip) {
+      event.preventDefault();
+      // The keyboard takes over from the pointer, stepping on from the hour shown.
+      send({ type: 'key', hour: keyedHour(event.key, hover.current.keyed ?? shownHour.current, shown.current.x, shown.current.until, props.keyHours) });
+      return;
+    }
+    if (event.key === 'Escape' && hover.current.keyed != null) { event.preventDefault(); clearKeyed(); return; }
     if (event.key === 'Escape' && zoomed) { event.preventDefault(); controls.current?.dispatch({ type: 'reset' }); }
+    // The hour the hover shows (the keyboard's, or the pointer's), else the playhead.
+    const moment = actionHour(shownHour.current, hover.current, props.playhead);
     // Enter or Space picks the moment shown, as a click on the chart would.
     if ((event.key === 'Enter' || event.key === ' ') && props.onPick) {
       event.preventDefault();
-      props.onPick(Math.floor(props.playhead ?? props.extent[1]));
+      props.onPick(Math.floor(moment ?? props.extent[1]));
     }
-    if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && props.playhead != null) {
+    if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && moment != null) {
       event.preventDefault();
+      send({ type: 'menu-key' });
       const bounds = canvas.current!.getBoundingClientRect();
-      props.onContextMenu(Math.floor(props.playhead), bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+      props.onContextMenu(Math.floor(moment), bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
     }
   };
   return <div className="time-chart">
-    <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={spoken ? `${owner}-events` : undefined} onKeyDown={keyDown} />
+    <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={spoken ? `${owner}-events` : undefined}
+      aria-keyshortcuts={props.tooltip ? 'ArrowLeft ArrowRight Home End' : undefined} onKeyDown={keyDown} onBlur={clearKeyed} />
     <p id={`${owner}-events`} className="sr-only">{spoken ? `Events: ${spoken}.` : ''}</p>
+    <p className="sr-only" aria-live="polite">{keySpoken}</p>
     {zoomed && <button type="button" className="button small time-chart-reset" onClick={() => controls.current?.dispatch({ type: 'reset' })}>
       <Icon name="refresh" />Reset zoom</button>}
   </div>;

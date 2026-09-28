@@ -18,6 +18,7 @@ pub mod national_focus;
 pub mod party_history;
 pub mod politics_content;
 pub mod research;
+pub mod resource_balance;
 pub mod stability_parts;
 
 use std::{io, sync::atomic::AtomicBool};
@@ -190,6 +191,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_measure::CountryMeasure>(),
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
+    register::<resource_balance::ResourceBalance>(),
 ];
 
 /// A recorded character's script token: its lexer id (`CCharacter` +0x18,
@@ -240,6 +242,7 @@ mod tests {
             "MeasureReply",
             "IdeaHistoryReply",
             "PartyHistoryReply",
+            "ResourceBalanceReply",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == name).count(),

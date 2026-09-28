@@ -241,11 +241,8 @@ export function ideaTooltip(head: { title: string; icon?: string | null; subtitl
  * 30 characters at the widest fonts, and a divider's spacing counts as one more. */
 export const rowLines = (row: TooltipRow) => (row.short ? 1 : Math.max(1, Math.ceil((row.label.length + (row.value?.length ?? 0) + 3) / 30))) + (row.divider ? 1 : 0);
 
-/** A tooltip as one line of text, every row included, for screen readers. */
-export function tooltipText(content: TooltipContent): string {
-  return [content.title, content.subtitle, ...content.rows.map(row => row.value ? `${row.label} ${row.value}` : row.label), content.description, content.note]
-    .filter(Boolean).join('; ');
-}
+/** A tooltip as one line of text, every row included, for screen readers: the kit's. */
+export { tooltipText } from '../charts/tooltip.ts';
 
 /** How many effect rows fit the window under a tooltip's header, description
  * and note, so the tooltip never runs off screen. */

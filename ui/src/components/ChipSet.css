@@ -1,0 +1,9 @@
+.chip-set { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 2px 9px 2px 6px; border: 0; border-radius: 999px; font: inherit; font-size: var(--type-sm); cursor: pointer;
+  color: var(--muted); background: color-mix(in srgb, var(--text) 6%, transparent); transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.chip:hover:not([aria-disabled='true']) { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.chip[aria-pressed='true'] { color: var(--text); background: color-mix(in srgb, var(--text) 14%, transparent); }
+/* Still focusable and hoverable, so its tooltip says why it cannot be chosen. */
+.chip[aria-disabled='true'] { cursor: default; opacity: 0.55; }
+.chip:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 1px; }
+.chip img { width: 16px; height: 16px; object-fit: contain; }

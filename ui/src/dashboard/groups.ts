@@ -1,4 +1,5 @@
 import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/dashboard';
+import { clipToSpans } from '../charts/series.ts';
 import type { Run } from '../charts/series';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
 
@@ -82,18 +83,9 @@ export function isMember(membership: readonly MembershipRun[] | undefined, hour:
 }
 
 /** Runs cut to the hours a country was a group member, so a line starts when it
- * joins and stops when it leaves. */
+ * joins and stops when it leaves (`clipToSpans`). */
 export function clipRuns(runs: readonly Run[], membership: readonly MembershipRun[]): Run[] {
-  const clipped: Run[] = [];
-  for (const run of runs) {
-    for (const member of membership) {
-      const first = Math.max(run.firstHour, member.firstHour);
-      const last = Math.min(run.lastHour, member.lastHour);
-      // A cut piece keeps the run's line break (a new country identity) only where the run itself starts.
-      if (first <= last) clipped.push({ firstHour: first, lastHour: last, value: run.value, ...(run.breakBefore && first === run.firstHour ? { breakBefore: true } : {}) });
-    }
-  }
-  return clipped.sort((a, b) => a.firstHour - b.firstHour);
+  return clipToSpans(runs, membership);
 }
 
 export interface ResolvedCountries {

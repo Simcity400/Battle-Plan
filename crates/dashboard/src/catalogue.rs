@@ -212,19 +212,32 @@ pub fn texture_png(
     frames: u32,
     max_edge: u32,
 ) -> io::Result<String> {
+    texture_frame_png(layers, path, frames, 0, max_edge)
+}
+
+/// One authored frame (zero-based) of a horizontal sprite sheet, as
+/// [`texture_png`] reads the first.
+pub fn texture_frame_png(
+    layers: &ResolvedLayers,
+    path: &str,
+    frames: u32,
+    frame: u32,
+    max_edge: u32,
+) -> io::Result<String> {
     let image = read_texture(layers, path)?;
-    if frames == 0 || image.width % frames != 0 {
+    if frames == 0 || image.width % frames != 0 || frame >= frames {
         return Err(invalid("Invalid sprite frames"));
     }
     let frame_width = image.width / frames;
+    let left = frame * frame_width;
     let scale = (frame_width.max(image.height) as f64 / f64::from(max_edge)).max(1.0);
     let width = (frame_width as f64 / scale).round().max(1.0) as u32;
     let height = (image.height as f64 / scale).round().max(1.0) as u32;
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {
         for x in 0..width {
-            let at =
-                ((y * image.height / height * image.width + x * frame_width / width) * 4) as usize;
+            let at = ((y * image.height / height * image.width + left + x * frame_width / width)
+                * 4) as usize;
             pixels.extend_from_slice(&image.pixels[at..at + 4]);
         }
     }

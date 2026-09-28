@@ -7,8 +7,18 @@ export interface Run { firstHour: number; lastHour: number; value: number; break
 export interface Point { x: number; y: number }
 export type PathCommand = readonly ['M', number, number] | readonly ['L', number, number] | readonly ['C', number, number, number, number, number, number];
 
-/** The run holding `hour`, by binary search over runs sorted by hour. */
-export function runAt(runs: readonly Run[], hour: number): Run | null {
+/** Hours from `firstHour` to `lastHour`, both included. */
+export interface Span { firstHour: number; lastHour: number }
+
+/** A run whose line may break before it: `breakBefore` on plotting runs,
+ * `startsSegment` on the runs products send. */
+export type Breakable = Span & { breakBefore?: boolean; startsSegment?: boolean };
+
+/** Whether a line breaks before this run even if the hours touch. */
+export const breaksBefore = (run: Breakable) => run.breakBefore === true || run.startsSegment === true;
+
+/** The run holding `hour`, by binary search over runs sorted by hour that never overlap. */
+export function runAt<T extends Span>(runs: readonly T[], hour: number): T | null {
   let low = 0;
   let high = runs.length - 1;
   while (low <= high) {
@@ -117,6 +127,42 @@ export function monotonePath(points: readonly Point[]): PathCommand[] {
   return commands;
 }
 
+/** The curves a line through `runs` is drawn with between `from` and `to`: per
+ * unbroken segment, its sample points and the monotone path through them. Lines
+ * and anything that must agree with them (a fill between two lines) use this. */
+export function curveSegments(runs: readonly Run[], from: number, to: number, toX: (hour: number) => number, toY: (value: number) => number): { points: Point[]; path: PathCommand[] }[] {
+  return segments(runs, from, to).map(segment => samplePoints(segment, toX, toY)).filter(points => points.length)
+    .map(points => ({ points, path: monotonePath(points) }));
+}
+
+/** Closed regions for shading between two lines drawn with `curveSegments`, split
+ * by which is on top wherever they cross: `above` (the first line higher) is what
+ * lies under the first curve and over the second; `below` the reverse. Each region
+ * is a clip path and a fill path, both closed to the plot's `top` or `bottom` edge
+ * (screen y), so the shaded area's edges are exactly the drawn curves. Segments are
+ * paired by index: both lines must break at the same hours. */
+export interface GapRegion { clip: PathCommand[]; fill: PathCommand[] }
+export function gapRegions(first: readonly { points: Point[]; path: PathCommand[] }[], second: readonly { points: Point[]; path: PathCommand[] }[],
+  top: number, bottom: number): { above: GapRegion[]; below: GapRegion[] } {
+  // Closes a curve down (or up) to an edge of the plot, into an area.
+  const toEdge = (curve: { points: Point[]; path: PathCommand[] }, edge: number): PathCommand[] => {
+    const start = curve.points[0];
+    const end = curve.points.at(-1)!;
+    return [...curve.path, ['L', end.x, edge], ['L', start.x, edge], ['L', start.x, start.y]];
+  };
+  const above: GapRegion[] = [];
+  const below: GapRegion[] = [];
+  for (let index = 0; index < Math.min(first.length, second.length); index++) {
+    const a = first[index];
+    const b = second[index];
+    if (a.points.length < 2 || b.points.length < 2) continue;
+    // Screen y grows downward: "under the first curve" is toward the bottom edge.
+    above.push({ clip: toEdge(a, bottom), fill: toEdge(b, top) });
+    below.push({ clip: toEdge(b, bottom), fill: toEdge(a, top) });
+  }
+  return { above, below };
+}
+
 /** Cumulative totals for stacked layers sampled at the same points: `result[k][i]`
  * is the top of layer k at point i, or null when it is unknown because that layer
  * or one below it was not recorded there. Missing never stacks as zero. */
@@ -177,4 +223,49 @@ export function divergingStack(layers: readonly (readonly number[])[]): Band[] {
     }
     return { low, high };
   });
+}
+
+/** Whether the value at `to` continues the one at `from` in the same unbroken
+ * stretch of runs: no missing hour, line break or change of country between them.
+ * Something drawn from these runs (a bar, a number) glides between the two only
+ * then; across a break it jumps, as a line breaks. */
+export function sameStretch(runs: readonly Breakable[], from: number, to: number): boolean {
+  const first = Math.min(from, to);
+  const last = Math.max(from, to);
+  let index = runs.findIndex(run => run.firstHour <= first && first <= run.lastHour);
+  if (index < 0) return false;
+  while (runs[index].lastHour < last) {
+    const next = runs[index + 1];
+    if (!next || breaksBefore(next) || next.firstHour !== runs[index].lastHour + 1) return false;
+    index++;
+  }
+  return true;
+}
+
+/** Runs cut to the hours of `spans` (such as a date range, or the hours a country
+ * was a group member), in hour order, so nothing outside them is drawn, shaded,
+ * fitted or looked up. A cut piece keeps its run's line break (a new country
+ * identity) only where the run itself starts. */
+export function clipToSpans<T extends Breakable>(runs: readonly T[], spans: readonly Span[]): T[] {
+  const clipped: T[] = [];
+  for (const run of runs) {
+    for (const span of spans) {
+      const first = Math.max(run.firstHour, span.firstHour);
+      const last = Math.min(run.lastHour, span.lastHour);
+      if (first > last) continue;
+      const piece: T = { ...run, firstHour: first, lastHour: last };
+      if (first !== run.firstHour) {
+        if ('breakBefore' in piece) delete piece.breakBefore;
+        if ('startsSegment' in piece) piece.startsSegment = false;
+      }
+      clipped.push(piece);
+    }
+  }
+  return clipped.sort((a, b) => a.firstHour - b.firstHour);
+}
+
+/** The value range of several run lists over [from, to], or null when none has a value there. */
+export function extentOfAll(lists: readonly (readonly Run[])[], from: number, to: number): [number, number] | null {
+  const ranges = lists.map(runs => extentOf(runs, from, to)).filter((range): range is [number, number] => range != null);
+  return ranges.length ? [Math.min(...ranges.map(range => range[0])), Math.max(...ranges.map(range => range[1]))] : null;
 }

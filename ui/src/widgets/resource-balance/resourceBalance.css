@@ -1,0 +1,25 @@
+.resource-balance { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0 var(--space-2); }
+.resource-balance > .chip-set { padding: 0 var(--space-3); }
+.resource-caption { margin: 0; padding: 0 var(--space-3); font-size: var(--type-xs); color: var(--muted); }
+/* Mock-up economy-1: icon and name, then a supply bar above a demand bar, then the net. */
+.resource-bars { display: grid; grid-template-columns: max-content minmax(60px, 1fr) max-content; grid-auto-rows: minmax(34px, 1fr); align-content: start;
+  flex: 1; min-height: 0; margin: 0; padding: 0 var(--space-3); overflow-y: auto; list-style: none; }
+/* Each row spans the columns as a subgrid, so it is one focusable box. */
+.resource-bars > li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; border-radius: var(--r-sm); }
+.resource-bars > li > :not(.sr-only) { display: flex; align-items: center; min-width: 0; padding: 2px 0; }
+.resource-bars > li:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.resource-bars > li:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; background: var(--hover); }
+.resource-name { gap: var(--space-2); padding-right: var(--space-3) !important; font-size: var(--type-sm); font-weight: 500; color: var(--text); }
+.resource-name img, .resource-icon-missing { width: 22px; height: 22px; flex: none; object-fit: contain; }
+.resource-icon-missing { border-radius: 50%; background: color-mix(in srgb, var(--text) 8%, transparent); }
+.resource-track { flex-direction: column; justify-content: center; align-items: stretch !important; gap: 2px; }
+.resource-bar { display: flex; height: 9px; }
+.resource-bar > i { display: block; flex: none; border-radius: 2px; transition: width var(--resource-glide, 0ms) var(--ease); }
+.resource-bars b { justify-content: flex-end; padding-left: var(--space-3) !important; font-size: var(--type-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
+.resource-bars b.is-positive { color: var(--positive); }
+.resource-bars b.is-negative { color: var(--error); }
+.resource-missing { grid-column: span 2; font-size: var(--type-sm); color: var(--muted); }
+.resource-key { display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: 0 var(--space-3); font-size: var(--type-sm); color: var(--muted); }
+.resource-key > i { width: 16px; flex: none; border-top: 2px solid currentColor; }
+.resource-key > i.is-dashed { border-top-style: dashed; }
+.resource-chart { flex: 1; min-height: 0; }

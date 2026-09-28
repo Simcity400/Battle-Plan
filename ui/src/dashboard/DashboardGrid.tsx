@@ -11,6 +11,8 @@ import { recordingName } from '../shell/api';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime } from './definitions';
+import { setOption } from './options';
+import type { OptionValue } from './options';
 import WidgetSettingsMenu from './WidgetSettingsMenu';
 import CountryChip from './CountryChip';
 import { WidgetBody } from './widgets';
@@ -64,6 +66,11 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   }, []);
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
   const definition = widgetDefinition(widget.kind);
+  // An option set from inside the widget saves at once, as the settings panel does.
+  const saveOption = useCallback((key: string, value: OptionValue) => {
+    const options = setOption(definition?.options, widget.options, key, value);
+    if (options) onApply({ ...widget, options }, true);
+  }, [definition, widget, onApply]);
   const reset = definition ? () => {
     onApply(createWidget(widget.kind, template.tracks[0].id, widget.id), true);
     setMapOptions({ country: null, fog: true });
@@ -96,7 +103,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     </header>
     {missing.length > 0 && runtime.tracks.some((track) => widget.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label ?? id).join(', ')} unavailable</div>}
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
-      <WidgetBody widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} onDiagnostics={setDiagnostics} />
+      <WidgetBody widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} onDiagnostics={setDiagnostics} setOption={saveOption} />
     </div></div>
   </article>;
 }

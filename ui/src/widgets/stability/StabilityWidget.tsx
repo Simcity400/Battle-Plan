@@ -17,8 +17,7 @@ import { extentOf } from '../../charts/series';
 import type { Run } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
-import { readTokens, subscribeTokens } from '../../charts/tokens';
-import type { ChartTokens } from '../../charts/tokens';
+import { useChartTokens } from '../../charts/useChartTokens';
 import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
@@ -66,19 +65,13 @@ const MEASURES: readonly { key: Measure; label: string; dash?: readonly number[]
   { key: 'warSupport', label: 'War support', dash: WAR_SUPPORT_DASH },
 ];
 
-function useTokens(): ChartTokens {
-  const [tokens, setTokens] = useState(readTokens);
-  useEffect(() => subscribeTokens(setTokens), []);
-  return tokens;
-}
-
 /** Stability and war support over time (mock-ups politics-1/2): each country in its
  * map colour, stability solid and war support dashed, on a fixed 0–100% scale by
  * default. Hovering one country shows the game's own breakdown of both values for
  * the read behind that hour. */
 export default function StabilityWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const tokens = useTokens();
+  const tokens = useChartTokens();
   const options = resolveOptions(STABILITY_OPTIONS, widget.options);
   const shown = MEASURES.filter(measure => options[measure.key] !== false);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

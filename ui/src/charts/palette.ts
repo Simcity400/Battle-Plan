@@ -77,3 +77,48 @@ export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance 
   }
   return result;
 }
+
+/** A line's look: its colour, and the dashes of its primary line (none: solid) and
+ * of a secondary line drawn with it (such as demand beside supply). */
+export interface LineStyle { color: string; primary: readonly number[]; secondary: readonly number[] }
+
+/** The dash patterns for one round of lines. Round 0 is the ordinary look (a solid
+ * primary, a dashed secondary); each later round, used once every palette colour is
+ * taken, has dashes of its own length, so no two rounds match however many there
+ * are, and a primary pattern (two numbers, or none) never matches a secondary one
+ * (four numbers after round 0; 6-4 in it, which no primary dash of 2n-3 equals). */
+export function lineDashes(round: number): { primary: readonly number[]; secondary: readonly number[] } {
+  return round === 0 ? { primary: [], secondary: [6, 4] } : { primary: [2 * round, 3], secondary: [10 + 2 * round, 3, 2, 3] };
+}
+
+/** One distinct palette colour per line: each takes the colour at its `preferred`
+ * place (such as its place in the game's order, so it keeps its colour as others
+ * come and go) when free, else the first colour no other line has. With no more
+ * lines than colours, two lines never share one; past that, colours repeat. */
+export function lineColours<K>(lines: readonly { key: K; preferred: number }[], palette: readonly string[]): Map<K, string> {
+  const colours = new Map<K, string>();
+  const taken = new Set<number>();
+  const size = Math.max(1, palette.length);
+  for (const line of [...lines].sort((a, b) => a.preferred - b.preferred)) {
+    const preferred = Math.max(0, line.preferred) % size;
+    const free = !taken.has(preferred) ? preferred : palette.findIndex((_, candidate) => !taken.has(candidate));
+    const index = free < 0 ? preferred : free;
+    taken.add(index);
+    colours.set(line.key, palette[index]);
+  }
+  return colours;
+}
+
+/** Every line's style, distinct at any count: the first round of lines (as many as
+ * the palette has colours, by `preferred`) takes `lineColours` with the ordinary
+ * dashes, and each further round the colours again with its own `lineDashes`. */
+export function lineStyles<K>(lines: readonly { key: K; preferred: number }[], palette: readonly string[]): Map<K, LineStyle> {
+  const sorted = [...lines].sort((a, b) => a.preferred - b.preferred);
+  const size = Math.max(1, palette.length);
+  const styles = new Map<K, LineStyle>();
+  for (let start = 0; start < sorted.length; start += size) {
+    const dashes = lineDashes(start / size);
+    for (const [key, color] of lineColours(sorted.slice(start, start + size), palette)) styles.set(key, { color, ...dashes });
+  }
+  return styles;
+}

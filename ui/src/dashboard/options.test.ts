@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_OPTION_KEYS, parseStoredOptions, resolveOptions, sectionFields, setOption } from './options.ts';
+import { contentSet, MAX_OPTION_KEYS, MAX_SET_TOKENS, MAX_TOKEN, parseStoredOptions, resolveOptions, sectionFields, setLimit, setOption, storableToken,
+  toggleContentSet } from './options.ts';
 import type { OptionField } from './options';
 import { settingsSections, SETTINGS_SECTIONS } from './settingsSections.ts';
 import type { WidgetMeta } from './definitions';
@@ -17,7 +18,10 @@ const FIELDS: readonly OptionField[] = [
 
 test('stored options are bounded generically, so an uninstalled widget keeps its choices', () => {
   assert.deepEqual(parseStoredOptions({ a: true, b: 3, c: 'x', d: null }), { a: true, b: 3, c: 'x', d: null });
-  for (const bad of [null, [], 'x', { 'bad key': 1 }, { __proto__x: 1, constructor: 1 }, { a: NaN }, { a: {} }, { a: 'x'.repeat(161) }]) {
+  // The longest stored text is a full content set of the longest tokens.
+  const fullSet = Array.from({ length: MAX_SET_TOKENS }, (_, index) => `${index}`.padEnd(MAX_TOKEN, 'x')).join(' ');
+  assert.deepEqual(parseStoredOptions({ picked: fullSet }), { picked: fullSet });
+  for (const bad of [null, [], 'x', { 'bad key': 1 }, { __proto__x: 1, constructor: 1 }, { a: NaN }, { a: {} }, { a: `${fullSet}x` }]) {
     assert.equal(parseStoredOptions(bad), null, JSON.stringify(bad));
   }
   const many = Object.fromEntries(Array.from({ length: MAX_OPTION_KEYS + 1 }, (_, index) => [`k${index}`, 1]));
@@ -50,6 +54,47 @@ const META: WidgetMeta = { kind: 'test-options', version: 2, title: 'Test', icon
   scope: 'history', data: true, history: true, minSize: { w: 2, h: 2 }, defaultSize: { w: 4, h: 4 }, options: FIELDS,
   migrate: (from, widget) => from === 1 ? { ...widget, options: { order: 'size' } } : null };
 registerWidgets([META]);
+
+test('a content set stores distinct tokens up to its limit and empties back to automatic', () => {
+  const fields: readonly OptionField[] = [{ key: 'picked', section: 'options', label: 'Picked', kind: 'content-set', automatic: 'Automatic', max: 2, default: '' }];
+  assert.deepEqual(resolveOptions(fields, { picked: 'steel mod_ore' }), { picked: 'steel mod_ore' });
+  for (const bad of ['steel steel', 'a b c', 'steel  oil', ' steel', 'steel,oil', 3]) {
+    assert.deepEqual(resolveOptions(fields, { picked: bad }), { picked: '' }, String(bad));
+  }
+  assert.deepEqual(contentSet('steel oil'), ['steel', 'oil']);
+  assert.deepEqual(contentSet(''), []);
+  assert.equal(toggleContentSet('', 'steel', 2), 'steel');
+  assert.equal(toggleContentSet('steel', 'oil', 2), 'steel oil');
+  assert.equal(toggleContentSet('steel oil', 'coal', 2), null);
+  assert.equal(toggleContentSet('steel oil', 'steel', 2), 'oil');
+  assert.equal(toggleContentSet('oil', 'oil', 2), '');
+  assert.equal(toggleContentSet('', 'x'.repeat(161), 8), null);
+});
+
+test('a content set holds its whole limit of long tokens, and says which tokens it cannot hold', () => {
+  const eight: readonly OptionField[] = [{ key: 'picked', section: 'options', label: 'Picked', kind: 'content-set', automatic: 'Automatic', max: 8, default: '' }];
+  // Eight 20-character tokens are 167 characters with their separators.
+  const tokens = Array.from({ length: 8 }, (_, index) => `modded_resource_${index}`.padEnd(20, 'x'));
+  let stored = '';
+  for (const token of tokens) {
+    const next = toggleContentSet(stored, token, 8);
+    assert.notEqual(next, null, token);
+    stored = next!;
+  }
+  assert.equal(stored.length, 167);
+  // It survives the generic bounds on load and the field's own check.
+  assert.deepEqual(resolveOptions(eight, parseStoredOptions({ picked: stored })!), { picked: stored });
+  assert.deepEqual(setOption(eight, undefined, 'picked', stored), { picked: stored });
+  // The limit is the field's, and never past what any set stores.
+  assert.equal(toggleContentSet(stored, 'one_more', 8), null);
+  assert.equal(setLimit(8), 8);
+  assert.equal(setLimit(40), MAX_SET_TOKENS);
+  // The longest token fits; a longer or unusual one cannot be stored, and chips say so.
+  assert.equal(storableToken('x'.repeat(MAX_TOKEN)), true);
+  assert.equal(storableToken('x'.repeat(MAX_TOKEN + 1)), false);
+  assert.equal(storableToken('two words'), false);
+  assert.equal(storableToken(''), false);
+});
 
 test('settings sections keep one fixed order and appear only when they apply', () => {
   const all = settingsSections(META, resolveOptions(FIELDS), true);

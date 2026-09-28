@@ -32,6 +32,7 @@ pub mod positions;
 pub mod raids;
 pub mod railways;
 pub mod regions;
+pub mod resources;
 pub mod save;
 pub mod script_files;
 pub mod settings;

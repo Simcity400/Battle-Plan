@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { ChipSet } from '../../components/ChipSet';
 import { Segmented } from '../../components/Segmented';
-import { validOption } from '../options';
+import { contentSet, setLimit, storableToken, toggleContentSet, UNSTORABLE, validOption } from '../options';
 import type { OptionField, OptionValue } from '../options';
 import type { OptionChoices } from '../definitions';
 
@@ -18,7 +19,7 @@ export function OptionFields({ fields, values, choices, onChange }: {
 }
 
 function OptionRow({ field, value, choices, onChange }: {
-  field: OptionField; value: OptionValue; choices?: readonly { value: string; label: string }[]; onChange: (value: OptionValue) => void;
+  field: OptionField; value: OptionValue; choices?: OptionChoices[string]; onChange: (value: OptionValue) => void;
 }) {
   const caption = <span>{field.label}{field.hint && <small>{field.hint}</small>}</span>;
   switch (field.kind) {
@@ -43,6 +44,19 @@ function OptionRow({ field, value, choices, onChange }: {
           <option value="">{field.automatic}</option>
           {[...listed, ...kept].map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
         </select></label>;
+    }
+    case 'content-set': {
+      const chosen = contentSet(value);
+      // Saved tokens this campaign lacks stay listed, so opening the panel never changes them.
+      const listed = choices ?? [];
+      const kept = chosen.filter(token => !listed.some(choice => choice.value === token)).map(token => ({ value: token, label: `${token} (not in this campaign)` }));
+      const limit = setLimit(field.max);
+      const chips = [...listed, ...kept].map(chip => ({ ...chip, unavailable: storableToken(chip.value) ? undefined : UNSTORABLE }));
+      return <div className="setting-row setting-row-stacked">
+        <span>{field.label}<small>{chosen.length ? field.hint : `${field.automatic}${field.hint ? ` · ${field.hint}` : ''}`}</small></span>
+        <ChipSet label={field.label} chips={chips} selected={chosen} max={limit} full={chosen.length >= limit}
+          onToggle={token => { const next = toggleContentSet(value, token, field.max); if (next != null) onChange(next); }} />
+      </div>;
     }
     case 'number':
       return <NumberRow field={field} value={typeof value === 'number' ? value : null} caption={caption} onChange={onChange} />;

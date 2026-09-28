@@ -27,17 +27,53 @@ export type OptionField = FieldBase & (
    * short token is kept, so a choice survives a campaign that lacks it. The empty
    * default lets the widget pick, shown as `automatic`. */
   | { kind: 'content-choice'; automatic: string; default: '' }
+  /** Several things only the recording's content knows (such as its resources),
+   * listed like a content choice and shown as chips. Stored as their tokens
+   * separated by spaces, at most `max` of them (never more than
+   * [`MAX_SET_TOKENS`]); the empty default lets the widget pick, shown as `automatic`. */
+  | { kind: 'content-set'; automatic: string; max: number; default: '' }
 );
 
+/** The longest content token a content choice or set stores. */
+export const MAX_TOKEN = 160;
+/** The most tokens any content set stores. */
+export const MAX_SET_TOKENS = 16;
 /** A stored content-choice value: empty (automatic) or a content token. */
-const CONTENT_TOKEN = /^[\w.:-]{0,160}$/;
+const CONTENT_TOKEN = new RegExp(`^[\\w.:-]{0,${MAX_TOKEN}}$`);
+/** One token of a content set. */
+const SET_TOKEN = new RegExp(`^[\\w.:-]{1,${MAX_TOKEN}}$`);
+
+/** Whether a content token can be stored in a content set: some content names
+ * cannot (too long, or with characters a stored token may not hold), and a control
+ * offering them says so rather than failing when picked. */
+export const storableToken = (token: string) => SET_TOKEN.test(token);
+/** Why a chip for a token that cannot be stored is disabled. */
+export const UNSTORABLE = 'Its content name is too long or holds characters a setting cannot store';
+
+/** The most tokens a content-set field really holds. */
+export const setLimit = (max: number) => Math.max(0, Math.min(MAX_SET_TOKENS, Math.floor(max)));
+
+/** The tokens of a stored content-set value, in the order chosen. */
+export function contentSet(value: OptionValue): string[] {
+  return typeof value === 'string' && value ? value.split(' ') : [];
+}
+
+/** A content set with `token` added or removed; null when adding would pass the
+ * field's limit (`max`, at most [`MAX_SET_TOKENS`]) or the token cannot be stored.
+ * Removing the last token returns to automatic. */
+export function toggleContentSet(value: OptionValue, token: string, max: number): string | null {
+  const tokens = contentSet(value);
+  const next = tokens.includes(token) ? tokens.filter(item => item !== token) : [...tokens, token];
+  return next.length > setLimit(max) || !next.every(storableToken) ? null : next.join(' ');
+}
 
 /** Whole-campaign playback stops at the playhead unless this is on (user decision). */
 export const AFTER_PLAYHEAD_OPTION: OptionField = { key: 'afterPlayhead', section: 'time', label: 'Show after the playhead',
   hint: 'Draws the chart, events and hover past the moment shown', kind: 'toggle', default: false, visibleWhen: options => options.playback === 'cursor' };
 
 export const MAX_OPTION_KEYS = 48;
-const MAX_TEXT = 160;
+/** The longest stored text value: a full content set of the longest tokens. */
+const MAX_TEXT = MAX_SET_TOKENS * (MAX_TOKEN + 1) - 1;
 const KEY = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -64,6 +100,11 @@ export function validOption(field: OptionField, value: unknown): value is Option
     case 'toggle': return typeof value === 'boolean';
     case 'choice': return typeof value === 'string' && field.choices.some(choice => choice.value === value);
     case 'content-choice': return typeof value === 'string' && CONTENT_TOKEN.test(value);
+    case 'content-set': {
+      if (typeof value !== 'string') return false;
+      const tokens = contentSet(value);
+      return tokens.every(storableToken) && tokens.length <= setLimit(field.max) && new Set(tokens).size === tokens.length;
+    }
     case 'number': return (value === null && field.default === null) || (typeof value === 'number' && Number.isFinite(value) && value >= field.min && value <= field.max
       && Math.abs((value - field.min) / field.step - Math.round((value - field.min) / field.step)) < 1e-9);
   }

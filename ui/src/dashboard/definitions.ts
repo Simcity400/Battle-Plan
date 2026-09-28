@@ -6,7 +6,7 @@ import type { Campaign } from './campaigns';
 import type { MapViewsStore } from './geometry';
 import type { Alignment, BoundTrack, DashboardTemplate, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import type { PlaybackController } from './playback';
-import type { OptionField } from './options';
+import type { OptionField, OptionValue } from './options';
 
 /** What every widget receives from the dashboard. Widgets never open files or
  * start their own clock; they read products and follow the shared playback. */
@@ -40,6 +40,9 @@ export interface WidgetProps {
   /** A span inside the widget header for a short live summary. */
   headerSlot: HTMLElement | null;
   onDiagnostics: (warnings: string[]) => void;
+  /** Saves one of the widget's own options from inside it (such as chips above a
+   * chart), as the settings panel would; absent where the widget is not in a layout. */
+  setOption?: (key: string, value: OptionValue) => void;
 }
 
 export interface HeaderControlsProps {
@@ -83,8 +86,9 @@ export interface WidgetMeta {
   migrate?: (from: number, widget: WidgetSpec) => WidgetSpec | null;
 }
 
-/** Run-time choices for a widget's content-choice fields, by field key. */
-export type OptionChoices = Readonly<Record<string, readonly { value: string; label: string }[]>>;
+/** Run-time choices for a widget's content-choice and content-set fields, by field
+ * key; a content set shows each choice's icon (an image URL) when it has one. */
+export type OptionChoices = Readonly<Record<string, readonly { value: string; label: string; icon?: string | null }[]>>;
 
 export interface WidgetDefinition extends WidgetMeta {
   render?: ComponentType<WidgetProps>;

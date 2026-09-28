@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { fitTooltip, tooltipHeight, tooltipRoom, tooltipText } from './tooltip.ts';
+import type { TooltipContent, TooltipRow } from './tooltip';
+
+const rows = (count: number, prefix = 'Row'): TooltipRow[] => Array.from({ length: count }, (_, index) => ({ label: `${prefix} ${index + 1}`, value: String(index) }));
+const total: TooltipRow = { label: 'Total', value: '99', strong: true, divider: true };
+
+test('the fullest form that fits is shown, built only as far as needed', () => {
+  let built = 0;
+  function* forms(): Generator<TooltipContent> {
+    for (const count of [40, 20, 10]) { built++; yield { title: 'T', rows: [...rows(count), total] }; }
+    built++;
+    yield { title: 'T', rows: [total] };
+  }
+  const tall = fitTooltip(forms(), 1200);
+  assert.equal(tall.rows.length, 41);
+  assert.equal(built, 1);
+  assert.equal(tall.spoken, undefined);
+  built = 0;
+  const medium = fitTooltip(forms(), 500);
+  assert.ok(tooltipHeight(medium) <= tooltipRoom(500));
+  assert.equal(medium.rows.length, 21);
+  assert.equal(built, 2);
+  // What was left out is still read out: the fullest form, in full.
+  assert.equal(tooltipText(medium), tooltipText({ title: 'T', rows: [...rows(40), total] }));
+});
+
+test('when nothing fits, the last form is cut with its totals kept and the rest counted', () => {
+  const long: TooltipContent = { title: 'T', subtitle: 'A line', icon: 'icon', rows: [...rows(60), total], note: 'Read earlier; values are read once a day.' };
+  for (const height of [120, 160, 200, 300, 450, 700]) {
+    const tip = fitTooltip([long], height, { keep: 1 });
+    assert.ok(tooltipHeight(tip) <= tooltipRoom(height) || tip.rows.length === 2, `${height}: ${tooltipHeight(tip)}`);
+    assert.deepEqual(tip.rows.at(-1), total, `${height}`);
+    const more = tip.rows.at(-2)!;
+    const hidden = Number(/^(\d+) more rows/.exec(more.label)?.[1]);
+    assert.equal(tip.rows.length - 2 + hidden, 60, `${height}`);
+    assert.equal(tip.spoken, tooltipText(long));
+  }
+  // At a very short window the note gives way before the total does.
+  assert.equal(fitTooltip([long], 150, { keep: 1 }).note, undefined);
+  assert.equal(fitTooltip([long], 700, { keep: 1 }).note, long.note);
+  // The count row can be worded for what the rows are.
+  assert.equal(fitTooltip([{ title: 'T', rows: rows(80) }], 400, { more: hidden => `${hidden} more resources` }).rows.at(-1)!.label.endsWith('more resources'), true);
+});
+
+test('wrapping labels and dividers count toward the height', () => {
+  const short = tooltipHeight({ title: 'T', rows: [{ label: 'Label', value: '1' }] });
+  const wrapped = tooltipHeight({ title: 'T', rows: [{ label: 'A label long enough to wrap onto a second line in the tooltip', value: '1' }] });
+  const kept = tooltipHeight({ title: 'T', rows: [{ label: 'A label long enough to wrap onto a second line in the tooltip', value: '1', short: true }] });
+  assert.ok(wrapped > short);
+  assert.equal(kept, short);
+  assert.ok(tooltipHeight({ title: 'T', rows: [{ label: 'Label', value: '1', divider: true }] }) > short);
+});
+
+test('a tooltip is read out as one line, or as its full content when trimmed', () => {
+  assert.equal(tooltipText({ title: 'Oil', subtitle: 'Per day', rows: [{ label: 'Produced', value: '32' }, { label: 'Not recorded' }], note: 'Read earlier.' }),
+    'Oil; Per day; Produced 32; Not recorded; Read earlier.');
+  assert.equal(tooltipText({ title: 'Oil', rows: [], spoken: 'Oil in full' }), 'Oil in full');
+});
