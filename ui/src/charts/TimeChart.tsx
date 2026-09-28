@@ -6,8 +6,9 @@ import type { EventBadge } from './badges';
 import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection, VALUE_LABEL_GAP, valueLabelWidth } from './draw';
 import { approach, easeTau } from './easing';
 import { axisFraction, hitZone, keyedHour, plotFrame, pointerHour, STRIP_GAP, wheelSteps } from './frame';
-import { actionHour, hoverAt, NO_HOVER, pointerMenu, reduceHover } from './hover';
-import type { HoverEvent, HoverState } from './hover';
+import { actionHour, hoverAt, keyedStop, keyStopMemo, NO_HOVER, pointerMenu, pointerTarget, reduceHover } from './hover';
+import type { HoverEvent, HoverState, KeyStop } from './hover';
+import type { ChartStrip } from './strip';
 import type { Padding, PlotFrame } from './frame';
 import { scheduler } from './scheduler';
 import type { FrameInfo, FrameTask } from './scheduler';
@@ -31,14 +32,7 @@ export interface ChartLayer {
   extent?(x: Range): Range | null;
 }
 
-/** A band under the plot on the same time axis, above the dates, such as daily bars. */
-export interface ChartStrip {
-  /** Its height in layout pixels, for a chart this many pixels tall. */
-  height(chartHeight: number): number;
-  /** Draws the strip (`frame.strip`), unclipped so it can label itself in the value
-   * axis' gutter; `state.playhead` is the last hour to draw (null: the whole range). */
-  draw(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void;
-}
+export type { ChartStrip } from './strip';
 
 export interface TimeChartProps {
   /** Names the chart for screen readers. */
@@ -71,7 +65,8 @@ export interface TimeChartProps {
   /** Tooltip content for an hour under the pointer, with any event badges hovered
    * there; null shows none. */
   tooltip?: (hour: number, frame: PlotFrame, badges: readonly EventBadge[]) => TooltipContent | null;
-  /** Moves a hovered hour onto something nearby, such as an event tick. */
+  /** Moves an hour hovered over the plot onto something nearby, such as an event tick
+   * (never over a strip, which has its own `describe`). */
   snap?: (hour: number, frame: PlotFrame) => number;
   /** Hours the arrow keys step the keyboard hover through, ascending (such as every
    * read); without them the keys step a day. Pass them all, not only those in view:
@@ -99,6 +94,9 @@ const BOX_THRESHOLD = 8;
  * resets the zoom instead of picking): Windows' default double-click time. */
 const DOUBLE_CLICK_MS = 500;
 
+/** What a pointer is over: the crosshair's hour, the hour it is about and any badges. */
+type Pointed = { hour: number; describes: number; badges: readonly EventBadge[] };
+
 /** A box started in a strip zooms time only: the strip has no value axis. */
 type Drag = { mode: 'axis-x'; grab: number } | { mode: 'axis-y'; grab: number } | { mode: 'pan'; lastX: number } | { mode: 'box'; x0: number; y0: number; x1: number; y1: number; timeOnly: boolean };
 
@@ -118,6 +116,10 @@ export default function TimeChart(props: TimeChartProps) {
   type Point = { x: number; y: number; clientX: number; clientY: number };
   const hover = useRef<HoverState<Point>>(NO_HOVER);
   const shownHour = useRef<number | null>(null);
+  // The keyboard's stop, beside the hover state's hour: two stops can share an hour.
+  const keyedStopRef = useRef<KeyStop | null>(null);
+  // The keyboard's stops, built again only when the reads, the strip or the view change.
+  const keyStopsFor = useRef(keyStopMemo()).current;
   const [keySpoken, setKeySpoken] = useState('');
   // The text last read out, so an unchanged tooltip is not announced again.
   const keyText = useRef('');
@@ -225,12 +227,16 @@ export default function TimeChart(props: TimeChartProps) {
       const zone = pointer ? hitZone(pointer, frame) : null;
       const plot = frame;
       const hit = hoverAt(hover.current, frame.x, until, point => !drag || drag.mode !== 'box' ? pointedAt(point, plot, p) : null);
-      const pointed = hit?.by === 'pointer' ? hit as { hour: number; badges: readonly EventBadge[] } : null;
-      const at = hit ? { hour: hit.hour, badges: pointed?.badges ?? [] } : null;
-      shownHour.current = at ? Math.floor(at.hour) : null;
+      const pointed = hit?.by === 'pointer' ? hit as Pointed : null;
+      // The crosshair sits at `hour`; the tooltip and the keys are about `describes`. A
+      // keyboard stop at a strip bar the view cuts off is about the bar's read.
+      const stop = keyedStopRef.current;
+      const keyed = hit?.by === 'keyboard' ? (stop && stop.at === hit.hour && stop.describes <= (until ?? Infinity) ? stop.describes : hit.hour) : null;
+      const at = hit ? { hour: hit.hour, describes: pointed?.describes ?? keyed ?? hit.hour, badges: pointed?.badges ?? [] } : null;
+      shownHour.current = at ? Math.floor(at.describes) : null;
       if (at) {
         drawCrosshair(context, frame, tokens, at.hour);
-        const hour = Math.floor(at.hour);
+        const hour = Math.floor(at.describes);
         if (!hovered || hovered.hour !== hour || hovered.props !== p || !sameBadges(hovered.badges, at.badges)) {
           hovered = { hour, badges: at.badges, props: p, content: p.tooltip?.(hour, frame, at.badges) ?? null };
         }
@@ -250,24 +256,19 @@ export default function TimeChart(props: TimeChartProps) {
         && Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1]) < 1e-5 * ySpan;
       return !settled || drag != null;
     };
-    /** The hour under the pointer as hover and right-click both use it: clamped to the
-     * playhead and snapped to nearby marks. */
-    const pointedHour = (px: number, plot: PlotFrame, p: TimeChartProps): number | null => {
+    /** What the pointer is over, as hover, right-click and pick all use it: an event
+     * badge (at its hour), or an hour of the plot or the strip, kept in view and not
+     * after the playhead, with where its crosshair sits (`hour`) and what it is about
+     * (`describes`: a plot mark it snaps to, or the strip item's own hour). */
+    const pointedAt = (point: { x: number; y: number }, plot: PlotFrame, p: TimeChartProps): Pointed | null => {
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
-      const hour = pointerHour(plot.hourAt(px), plot.x, until);
-      if (hour == null || !p.snap) return hour;
-      // A snap may only land where the pointer itself could: in view and not after the playhead.
-      const snapped = p.snap(hour, plot);
-      return pointerHour(snapped, plot.x, until) === snapped ? snapped : hour;
-    };
-    /** What the pointer is over: an event badge (snapping to its hour) or an hour of the plot. */
-    const pointedAt = (point: { x: number; y: number }, plot: PlotFrame, p: TimeChartProps): { hour: number; badges: readonly EventBadge[] } | null => {
-      const badges = p.badges ? badgesAt(point, plot, p.badges, shownUntil(p.playhead, p.playback, p.afterPlayhead === true)) : [];
-      if (badges.length) return { hour: badges[0].hour, badges };
+      const badges = p.badges ? badgesAt(point, plot, p.badges, until) : [];
+      if (badges.length) return { hour: badges[0].hour, describes: badges[0].hour, badges };
       const zone = hitZone(point, plot);
       if (zone !== 'plot' && zone !== 'strip') return null;
-      const hour = pointedHour(point.x, plot, p);
-      return hour == null ? null : { hour, badges: [] };
+      const target = pointerTarget(zone, pointerHour(plot.hourAt(point.x), plot.x, until), plot.x, until, p.extent,
+        { snap: p.snap && (hour => p.snap!(hour, plot)), describe: p.strip?.describe && (hour => p.strip!.describe!(point, plot, until) ?? hour) });
+      return target ? { hour: target.at, describes: target.describes, badges: [] } : null;
     };
     const sameBadges = (a: readonly EventBadge[], b: readonly EventBadge[]) => a.length === b.length && a.every((badge, index) => badge === b[index]);
     const current: FrameTask = { frame: draw };
@@ -342,8 +343,8 @@ export default function TimeChart(props: TimeChartProps) {
         dispatch({ type: 'box', x: [frame.hourAt(finished.x0), frame.hourAt(finished.x1)],
           y: !finished.timeOnly && Math.abs(finished.y1 - finished.y0) > BOX_THRESHOLD ? [frame.valueAt(finished.y1), frame.valueAt(finished.y0)] : undefined });
       } else if (finished?.mode === 'box' && frame && Math.abs(finished.y1 - finished.y0) <= BOX_THRESHOLD && latest.current.onPick) {
-        const hour = pointedHour(finished.x0, frame, latest.current);
-        if (hour != null) schedulePick(hour);
+        const pointed = pointedAt({ x: finished.x0, y: finished.y0 }, frame, latest.current);
+        if (pointed) schedulePick(pointed.describes);
       }
       wake();
     };
@@ -375,7 +376,7 @@ export default function TimeChart(props: TimeChartProps) {
       const pointed = pointedAt(local(event), frame, latest.current);
       if (!pointed) return;
       event.preventDefault();
-      handler(Math.floor(pointed.hour), event.clientX, event.clientY);
+      handler(Math.floor(pointed.describes), event.clientX, event.clientY);
     };
     element.addEventListener('pointerdown', down);
     element.addEventListener('pointermove', move);
@@ -410,13 +411,26 @@ export default function TimeChart(props: TimeChartProps) {
 
   const wake = () => { if (task.current) scheduler.wake(task.current); };
   const send = (event: HoverEvent<Point>) => { hover.current = reduceHover(hover.current, event); wake(); };
-  const clearKeyed = () => { send({ type: 'key-clear' }); keyText.current = ''; setKeySpoken(''); };
+  const clearKeyed = () => { keyedStopRef.current = null; send({ type: 'key-clear' }); keyText.current = ''; setKeySpoken(''); };
   const keyDown = (event: ReactKeyboardEvent) => {
     // The arrow keys, Home and End hover the chart as the pointer would, with its tooltip read out.
     if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') && shown.current && props.tooltip) {
       event.preventDefault();
       // The keyboard takes over from the pointer, stepping on from the hour shown.
-      send({ type: 'key', hour: keyedHour(event.key, hover.current.keyed ?? shownHour.current, shown.current.x, shown.current.until, props.keyHours) });
+      // The strip's bars in view are stops too, so the keys reach everything the pointer can.
+      const { x, until } = shown.current;
+      const strip = props.strip;
+      const stops = keyStopsFor(props.keyHours, strip, () => strip?.keyTargets?.(x, until) ?? [], x, until);
+      const from = hover.current.keyed ?? shownHour.current;
+      if (stops) {
+        const own = keyedStopRef.current;
+        const current = own && hover.current.keyed === own.at ? own : from == null ? null : { at: from };
+        keyedStopRef.current = keyedStop(event.key, current, stops);
+        send({ type: 'key', hour: keyedStopRef.current?.at ?? null });
+      } else {
+        keyedStopRef.current = null;
+        send({ type: 'key', hour: keyedHour(event.key, from, x, until) });
+      }
       return;
     }
     if (event.key === 'Escape' && hover.current.keyed != null) { event.preventDefault(); clearKeyed(); return; }

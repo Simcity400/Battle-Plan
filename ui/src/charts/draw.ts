@@ -1,6 +1,7 @@
 import { formatDate, gameDate } from '../dashboard/calendar.ts';
 import { chartBottom } from './frame.ts';
 import type { PlotFrame } from './frame.ts';
+import { layoutEndLabels } from './labels.ts';
 import { curveSegments, gapRegions } from './series.ts';
 import type { PathCommand, Run } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
@@ -244,6 +245,18 @@ export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
     if (room > 0) ctx.fillText(label.text, x, label.y, room); else ctx.fillText(label.text, x, label.y);
   }
   ctx.restore();
+}
+
+/** One line's end label: where its line ends (`y`, in pixels), its text and colour. */
+export interface LineEnd { id: string; y: number; text: string; color: string; muted?: boolean }
+/** An end label's height, and the least gap kept between two. */
+export const END_LABEL_HEIGHT = 14;
+
+/** End labels for the lines' ends, placed apart inside the plot (`layoutEndLabels`)
+ * and drawn with a leader line where a label had to move from its line's end. */
+export function placeEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, ends: readonly LineEnd[], gap = 2): void {
+  const placed = layoutEndLabels(ends.map(end => ({ ...end, height: END_LABEL_HEIGHT })), frame.plotTop, frame.plotTop + frame.plotHeight, gap);
+  drawEndLabels(ctx, frame, tokens, ends.map(end => ({ text: end.text, y: placed.get(end.id)!, from: end.y, color: end.color, muted: end.muted })));
 }
 
 /** A day label for tooltips and menus, from the recording's own calendar. */

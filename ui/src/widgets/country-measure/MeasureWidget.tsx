@@ -5,12 +5,11 @@ import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { badgeRows } from '../../charts/badges';
 import type { EventBadge } from '../../charts/badges';
-import { dayLabel, drawEndLabels, drawEventTicks, drawLine } from '../../charts/draw';
+import { dayLabel, drawEventTicks, drawLine, placeEndLabels } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
-import { layoutEndLabels } from '../../charts/labels';
 import Legend from '../../charts/Legend';
-import { categoricalPalette, nudgeApart } from '../../charts/palette';
-import { extentOf } from '../../charts/series';
+import { categoricalPalette, nudgeApart, SECONDARY_DASH } from '../../charts/palette';
+import { extentOf, lineEndHour } from '../../charts/series';
 import { formatFixed } from '../../charts/valueAxis';
 import type { Run } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
@@ -41,8 +40,6 @@ const NO_WARNINGS: string[] = [];
 const STYLE_STEP = 30 * 24;
 /** Hovering within this many pixels of a spend tick snaps to it. */
 const SNAP_PX = 6;
-/** The recorded maximum's dash pattern, in pixels. */
-const CEILING_DASH = [6, 4] as const;
 /** Beyond this many countries the tooltip lists balances only, so it fits the window. */
 const CEILING_ROWS_MAX = 4;
 
@@ -155,7 +152,7 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
     }));
     // Each country's maximum, dashed in its colour.
     for (const item of series) if (item.ceilingRuns.length) list.push({
-      draw: (ctx, frame, chartTokens, state) => { drawLine(ctx, frame, chartTokens, item.ceilingRuns, item.hex, { dash: CEILING_DASH, until: state.playhead ?? undefined }); },
+      draw: (ctx, frame, chartTokens, state) => { drawLine(ctx, frame, chartTokens, item.ceilingRuns, item.hex, { dash: SECONDARY_DASH, until: state.playhead ?? undefined }); },
       extent: (x: readonly [number, number]) => extentOf(item.ceilingRuns as Run[], x[0], Math.min(x[1], until ?? x[1])),
     });
     if (options.spendTicks) list.push({ draw: (ctx, frame, chartTokens, state) => {
@@ -183,7 +180,7 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
         flag: <SourceFlag client={runtime.client} source={track.source} tag={item.tag} size="shield" /> };
     })} />
     {/* The dashed line is named, so it never rests on its dash pattern alone. */}
-    {series.some(item => item.ceilingRuns.length) && <p className="measure-key"><i aria-hidden="true" />Dashed line: {config.ceiling}</p>}
+    {series.some(item => item.ceilingRuns.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Dashed line: {config.ceiling}</p>}
     <div className="country-measure-chart">
       <TimeChart label={`${config.title} of ${series.map(item => item.name).join(', ')}`} extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
@@ -239,14 +236,15 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
           // At the end of the lines drawn, never past the recorded hours.
           const at = Math.min(until ?? extent[1], frame.x[1], extent[1]);
           const ends = series.flatMap(item => {
-            const raw = item.valueAt(Math.floor(at));
+            // Where the line ends, even when the playhead or view end lies in a gap after it.
+            const last = lineEndHour(item.runs, frame.x[0], at);
+            const raw = last == null ? null : item.valueAt(last);
             if (raw == null) return [];
             // One country: its value and unit, as signed off; several: each named.
             const text = series.length === 1 ? `${formatFixed(raw, decimals, 1)} ${config.unit}` : `${item.name} ${formatBalance(raw, decimals)}`;
-            return [{ id: item.tag, y: frame.toY(Number(raw) / 10 ** decimals), height: 14, text, color: item.hex }];
+            return [{ id: item.tag, y: frame.toY(Number(raw) / 10 ** decimals), text, color: item.hex }];
           });
-          const placed = layoutEndLabels(ends, frame.plotTop, frame.plotTop + frame.plotHeight);
-          drawEndLabels(ctx, frame, chartTokens, ends.map(end => ({ text: end.text, y: placed.get(end.id)!, from: end.y, color: end.color })));
+          placeEndLabels(ctx, frame, chartTokens, ends);
         }}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     </div>

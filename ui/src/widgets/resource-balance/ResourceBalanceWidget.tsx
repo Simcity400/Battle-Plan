@@ -273,7 +273,7 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
       return { id: String(line.resource.id), label: resourceName(line.resource), color: line.color,
         value: run ? formatSigned(balanceOf(run).net, data.decimals) : 'Not recorded' };
     })} />
-    <p className="resource-key"><i aria-hidden="true" />Solid: supply · <i className="is-dashed" aria-hidden="true" />dashed: demand, per day
+    <p className="chart-line-key"><i aria-hidden="true" />Solid: supply · <i className="is-dashed" aria-hidden="true" />dashed: demand, per day
       {overflow && ` · every further ${tokens.categories.length} lines repeat the colours with their own dashes`}</p>
     {/* The tooltip closes when the pointer leaves: its partners' names and flags are released. */}
     <div className="resource-chart" onPointerLeave={() => onRead(null)}>

@@ -15,7 +15,7 @@ use replay::{
     BranchId,
     branches::{BranchStart, Parentage},
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, TableView},
+    frame::{DecodedFrame, FrameDecoder, Metrics, TableView},
     rows::{CountryLinkRow, CountryRow, TableId, tables},
 };
 
@@ -120,15 +120,66 @@ pub fn mapped_slot(row: &CountryRow, links: &[CountryLinkRow]) -> io::Result<u32
     Ok(slot)
 }
 
+/// The canonical slot a raw country link id names, when the recorded links name
+/// it. Recorded tables name countries by raw link id; every product resolves
+/// them through this.
+pub fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
+    links
+        .binary_search_by_key(&raw, |link| link.id)
+        .ok()
+        .map(|index| links[index].canonical_slot)
+}
+
+/// What complete Countries and CountryLinks tables say of a tag this hour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaggedCountry<'a> {
+    /// The first row with the tag whose identity the links resolve, with its
+    /// canonical slot, as every per-country product reads it.
+    Found(&'a CountryRow, u32),
+    /// No row has the tag: no country holds it this hour.
+    Absent,
+    /// Rows have the tag, but the links resolve none of them: which country
+    /// holds it, and so anything about it, is unknown, never absent.
+    Unresolved,
+}
+
+impl<'a> TaggedCountry<'a> {
+    /// The country when found; absent and unresolved alike give none.
+    pub fn found(self) -> Option<(&'a CountryRow, u32)> {
+        match self {
+            Self::Found(country, slot) => Some((country, slot)),
+            Self::Absent | Self::Unresolved => None,
+        }
+    }
+}
+
+/// The country recorded under `tag`, told apart from no country holding it and
+/// from one whose identity the links cannot resolve.
+pub fn tagged_country<'a>(
+    countries: &'a [CountryRow],
+    links: &[CountryLinkRow],
+    tag: &str,
+) -> TaggedCountry<'a> {
+    let mut named = countries
+        .iter()
+        .filter(|country| country.tag == tag.as_bytes())
+        .peekable();
+    if named.peek().is_none() {
+        return TaggedCountry::Absent;
+    }
+    named
+        .find_map(|country| {
+            mapped_slot(country, links)
+                .ok()
+                .map(|slot| TaggedCountry::Found(country, slot))
+        })
+        .unwrap_or(TaggedCountry::Unresolved)
+}
+
 /// The viewer's default perspective: the single player's country, else the
 /// lowest human-controlled slot.
 fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> Option<u32> {
-    let slot = |raw: u32| {
-        links
-            .binary_search_by_key(&raw, |link| link.id)
-            .ok()
-            .map(|index| links[index].canonical_slot)
-    };
+    let slot = |raw: u32| link_slot(links, raw);
     let players: BTreeSet<u32> = frame
         .complete::<tables::Players>()
         .ok()?
@@ -159,6 +210,19 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
         ));
     }
     Ok(())
+}
+
+/// Whether this hour's frame read a daily table: a walk of any table of its slot
+/// was timed, since a shared read times only its anchor (as the fresh-save
+/// oracle dates daily tables, `recorder::oracle::last_read_hours`). Its slot hour
+/// and full hours (branch start, load, gap, refresh) read it; other hours carry
+/// the last read. Every product that dates a daily table's values by their read
+/// uses this.
+pub fn slot_read(metrics: &Metrics, table: TableId) -> bool {
+    let slot = replay::cadence::cadence(table);
+    TableId::ALL.into_iter().any(|other| {
+        replay::cadence::cadence(other) == slot && metrics.table_ns[other.index()] != 0
+    })
 }
 
 /// A branch's first and last hour: its start, every block and every recorded gap.

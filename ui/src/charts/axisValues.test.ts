@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { exactDecimal, formatAmount, formatAxisValue, formatSigned, linearTicks } from './valueAxis.ts';
+import { exactDecimal, formatAmount, formatAxisValue, formatSigned, linearTicks, rescale } from './valueAxis.ts';
 
 const axis = (ticks: number[]) => ticks.map(tick => formatAxisValue(tick, ticks));
 
@@ -55,4 +55,15 @@ test('amounts show at most two decimals; signs only where they mean something', 
   assert.equal(formatSigned(19600000n, 5), '+196');
   assert.equal(formatSigned(-500000n, 5), '−5');
   assert.equal(formatSigned(1n, 5), '0');
+});
+
+test('amounts in binary fixed point are written exactly in decimals', () => {
+  // 1/32768 is 0.000030517578125: two decimals round it away, five keep 0.00003.
+  assert.equal(rescale('1', 32768, 2), 0n);
+  assert.equal(rescale('1', 32768, 5), 3n);
+  assert.equal(rescale(String(1.5 * 32768), 32768, 0), 2n);
+  assert.equal(rescale(String(-1.5 * 32768), 32768, 0), -2n);
+  assert.equal(rescale(16384n, 32768n, 2), 50n);
+  // Any denominator, such as a net over two scales.
+  assert.equal(rescale(2n, 3n, 3), 667n);
 });

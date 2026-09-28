@@ -1,4 +1,2 @@
 .country-measure { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0 var(--space-2); }
 .country-measure-chart { flex: 1; min-height: 0; }
-.measure-key { display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: 0 var(--space-3); font-size: var(--type-sm); color: var(--muted); }
-.measure-key > i { width: 16px; flex: none; border-top: 2px dashed currentColor; }

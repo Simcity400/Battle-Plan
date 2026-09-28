@@ -8,12 +8,11 @@ import { SourceFlag } from '../../components/CountryFlag';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { badgeRows } from '../../charts/badges';
-import { dayLabel, drawEndLabels, drawLine } from '../../charts/draw';
+import { dayLabel, drawLine, END_LABEL_HEIGHT, placeEndLabels } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
-import { layoutEndLabels } from '../../charts/labels';
 import Legend from '../../charts/Legend';
-import { categoricalPalette, nudgeApart } from '../../charts/palette';
-import { extentOf } from '../../charts/series';
+import { categoricalPalette, nudgeApart, SECONDARY_DASH } from '../../charts/palette';
+import { extentOf, lineEndHour } from '../../charts/series';
 import type { Run } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
@@ -43,7 +42,7 @@ import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
 import { validatePartyHistoryReply } from '../ruling-party/partyData';
 import { validateFocusReply } from '../national-focus/focusData';
-import { breakdownRows, formatPercent, lastSampleHour, linesPerMeasure, MAX_COUNTRIES, percentRuns, rawAt, zoomRange } from './stabilityData';
+import { breakdownRows, formatPercent, linesPerMeasure, MAX_COUNTRIES, percentRuns, rawAt, zoomRange } from './stabilityData';
 import type { Measure } from './stabilityData';
 import './stability.css';
 
@@ -55,14 +54,11 @@ const BREAKDOWN_RETRY_MS = 3000;
 const BREAKDOWN_RETRIES = 4;
 /** With focus in the widget, the breakdown of the moment shown loads once playback rests this long. */
 const FOCUS_SETTLE_MS = 400;
-/** An end label's height and the gap `layoutEndLabels` keeps between labels. */
-const END_LABEL_HEIGHT = 14;
+/** The gap kept between end labels. */
 const END_LABEL_GAP = 2;
-/** War support's dash pattern, in pixels (stability is solid). */
-const WAR_SUPPORT_DASH = [6, 4] as const;
 const MEASURES: readonly { key: Measure; label: string; dash?: readonly number[] }[] = [
   { key: 'stability', label: 'Stability' },
-  { key: 'warSupport', label: 'War support', dash: WAR_SUPPORT_DASH },
+  { key: 'warSupport', label: 'War support', dash: SECONDARY_DASH },
 ];
 
 /** Stability and war support over time (mock-ups politics-1/2): each country in its
@@ -414,12 +410,12 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
           if (at < frame.x[0]) return;
           const ends = series.flatMap(item => shown.flatMap(measure => {
             // Each line's own last sample in view: a line may end before the others.
-            const last = lastSampleHour(item.lines[measure.key], Math.floor(at));
-            if (last == null || last < frame.x[0]) return [];
+            const last = lineEndHour(item.lines[measure.key], frame.x[0], at);
+            if (last == null) return [];
             const raw = item.valueAt(measure.key, last);
             if (raw == null) return [];
             const text = `${series.length > 1 ? `${item.name}: ` : ''}${measure.label} ${formatPercent(raw, decimals)}`;
-            return [{ id: `${item.tag}:${measure.key}`, y: frame.toY(Number(raw) / 10 ** decimals * 100), height: END_LABEL_HEIGHT, text, color: item.hex }];
+            return [{ id: `${item.tag}:${measure.key}`, y: frame.toY(Number(raw) / 10 ** decimals * 100), text, color: item.hex }];
           }));
           // Only as many labels as the plot can hold: war support's are dropped first, then all
           // (the legend and tooltip still name every line).
@@ -427,8 +423,7 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
           const fitted = ends.length <= room ? ends : ends.filter(end => end.id.endsWith(':stability'));
           if (fitted.length > room) return;
           ends.splice(0, ends.length, ...fitted);
-          const placed = layoutEndLabels(ends, frame.plotTop, frame.plotTop + frame.plotHeight, END_LABEL_GAP);
-          drawEndLabels(ctx, frame, chartTokens, ends.map(end => ({ text: end.text, y: placed.get(end.id)!, from: end.y, color: end.color })));
+          placeEndLabels(ctx, frame, chartTokens, ends, END_LABEL_GAP);
         }}
         onPick={single ? hour => {
           // Opening with one line shown opens that line's parts.

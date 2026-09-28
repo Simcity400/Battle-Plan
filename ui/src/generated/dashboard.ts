@@ -365,6 +365,64 @@ export type MeasureReply = { branchId: string, measure: Measure,
  * Decimal places of every raw value in this reply.
  */
 decimals: number, series: Array<MeasureSeries>, warnings: Array<string>, };
+export type FuelDay = {
+/**
+ * Fuel the updates added, in [`FuelReply::gain_scale`] units (`ring_gain_raw`).
+ */
+gainedRaw: string,
+/**
+ * Fuel they took out, in [`FuelReply::quantity_scale`] units
+ * (`ring_consumed_raw`), `ring_other_raw` included.
+ */
+burnedRaw: string, };
+export type DayLeftOut = "overlaps" | "notUpdated" | "ownershipNotRecorded";
+export type FuelRead = {
+/**
+ * The hour it was read, where its values start.
+ */
+firstHour: number,
+/**
+ * The last hour the read's values hold.
+ */
+lastHour: number,
+/**
+ * The read follows a gap, a missing read or another country identity.
+ */
+startsSegment: boolean,
+/**
+ * Fuel in the tank, in [`FuelReply::quantity_scale`] units (`current_raw`).
+ */
+fuelRaw: string,
+/**
+ * The tank's capacity, in the same units (`maximum_raw`).
+ */
+capacityRaw: string,
+/**
+ * Lend-lease fuel received in the hour before the read, in the same units
+ * (`lend_lease_gain_raw`): the tank gains it, but `day` does not include it.
+ */
+lendLeaseRaw: string,
+/**
+ * The day of updates before the read; null when `left_out` says why not.
+ */
+day: FuelDay | null, leftOut: DayLeftOut | null, };
+export type FuelReply = { branchId: string, tag: string,
+/**
+ * Units per fuel of the level, capacity and burned values.
+ */
+quantityScale: number,
+/**
+ * Units per fuel of the gained values.
+ */
+gainScale: number,
+/**
+ * Hours of fuel updates a read's day sums.
+ */
+dayHours: number,
+/**
+ * In hour order.
+ */
+reads: Array<FuelRead>, warnings: Array<string>, };
 export type IdeaSpan = { token: string, firstHour: number, lastHour: number, slot: string | null, character: IdeaCharacter | null, };
 export type IdeaCharacter = {
 /**

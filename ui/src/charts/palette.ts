@@ -91,6 +91,11 @@ export function lineDashes(round: number): { primary: readonly number[]; seconda
   return round === 0 ? { primary: [], secondary: [6, 4] } : { primary: [2 * round, 3], secondary: [10 + 2 * round, 3, 2, 3] };
 }
 
+/** The dash of a secondary line drawn with a solid one in the same colour: a
+ * ceiling (a maximum, a capacity), demand beside supply, war support beside
+ * stability. */
+export const SECONDARY_DASH = lineDashes(0).secondary;
+
 /** One distinct palette colour per line: each takes the colour at its `preferred`
  * place (such as its place in the game's order, so it keeps its colour as others
  * come and go) when free, else the first colour no other line has. With no more

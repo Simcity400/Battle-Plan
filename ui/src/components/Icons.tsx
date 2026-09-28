@@ -56,6 +56,7 @@ const paths = {
   pause: <><rect x="6.5" y="5" width="4" height="14" rx="1.2" fill="currentColor" stroke="none" /><rect x="13.5" y="5" width="4" height="14" rx="1.2" fill="currentColor" stroke="none" /></>,
   layers: <><path d="m12 3.5 8.5 4.5-8.5 4.5L3.5 8 12 3.5Z" /><path d="m3.5 12 8.5 4.5 8.5-4.5M3.5 16l8.5 4.5 8.5-4.5" /></>,
   history: <><path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5" /><path d="M4 4v4.5h4.5M12 8v4.2l3 1.8" /></>,
+  droplet: <path d="M12 3.5c2.6 3.4 6 7.1 6 10.8a6 6 0 0 1-12 0c0-3.7 3.4-7.4 6-10.8Z" />,
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof paths;

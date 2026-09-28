@@ -7,6 +7,7 @@
 
 pub mod artwork;
 pub mod country_flags;
+pub mod country_fuel;
 pub mod country_groups;
 pub mod country_measure;
 pub mod country_stability;
@@ -189,6 +190,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_stability::CountryStability>(),
     register::<stability_parts::StabilityParts>(),
     register::<country_measure::CountryMeasure>(),
+    register::<country_fuel::CountryFuel>(),
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
     register::<resource_balance::ResourceBalance>(),
@@ -240,6 +242,7 @@ mod tests {
             "StabilityPartsReply",
             "FixedRun",
             "MeasureReply",
+            "FuelReply",
             "IdeaHistoryReply",
             "PartyHistoryReply",
             "ResourceBalanceReply",

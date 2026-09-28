@@ -55,14 +55,13 @@ use super::{CountryParams, LoadContext, Product};
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{mapped_slot, validate_campaign},
+    metadata::{link_slot, slot_read, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
 };
 use replay::{
-    cadence,
     container::Replay,
-    frame::{FrameDecoder, Metrics},
-    rows::{CountryLinkRow, TableId, tables},
+    frame::FrameDecoder,
+    rows::{TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -248,15 +247,6 @@ fn same_terms(a: &TradeRun, b: &TradeRun) -> bool {
     )
 }
 
-/// Whether this hour's frame read the resource tables: a walk of any table of
-/// their daily slot was timed, since a shared read times only its anchor.
-pub fn resources_read(metrics: &Metrics) -> bool {
-    let slot = cadence::cadence(TableId::CountryResources);
-    TableId::ALL
-        .into_iter()
-        .any(|table| cadence::cadence(table) == slot && metrics.table_ns[table.index()] != 0)
-}
-
 /// Adds an hour to ascending spans, joining it to the last span when it follows it.
 fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
     match spans.last_mut() {
@@ -267,13 +257,6 @@ fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
             last_hour: hour,
         }),
     }
-}
-
-fn slot_of(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
-    links
-        .binary_search_by_key(&raw, |link| link.id)
-        .ok()
-        .map(|index| links[index].canonical_slot)
 }
 
 /// Scans one branch for one country's resources and trades.
@@ -327,14 +310,9 @@ pub fn scan(
                 .ok()
                 .zip(decoded.complete::<tables::CountryLinks>().ok())
                 .and_then(|(countries, links)| {
-                    countries
-                        .iter()
-                        .filter(|country| country.tag == tag.as_bytes())
-                        .find_map(|country| {
-                            mapped_slot(country, links)
-                                .ok()
-                                .map(|slot| ((slot, country.id), links))
-                        })
+                    tagged_country(countries, links, tag)
+                        .found()
+                        .map(|(country, slot)| ((slot, country.id), links))
                 });
             let continues = identity.is_some_and(|(identity, _)| {
                 last.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour))
@@ -353,7 +331,7 @@ pub fn scan(
             let Some(((slot, _), links)) = identity else {
                 continue;
             };
-            if !resources_read(&decoded.metrics) {
+            if !slot_read(&decoded.metrics, TableId::CountryResources) {
                 // Carried: the last read still holds, but only after a read of this identity.
                 if open {
                     for series in result.series.values_mut() {
@@ -403,7 +381,7 @@ pub fn scan(
                 open = true;
                 for row in rows
                     .iter()
-                    .filter(|row| slot_of(links, row.country) == Some(slot))
+                    .filter(|row| link_slot(links, row.country) == Some(slot))
                 {
                     if !ids.contains_key(&row.resource) {
                         result.unnamed += 1;
@@ -457,8 +435,8 @@ pub fn scan(
             let mut still = BTreeMap::new();
             for exchange in exchanges {
                 let (exporter, importer) = (
-                    slot_of(links, exchange.exporter),
-                    slot_of(links, exchange.importer),
+                    link_slot(links, exchange.exporter),
+                    link_slot(links, exchange.importer),
                 );
                 let (direction, partner) = if exporter == Some(slot) {
                     (TradeDirection::Export, importer)

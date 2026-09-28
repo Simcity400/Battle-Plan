@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     Source,
-    metadata::{mapped_slot, validate_campaign},
+    metadata::{tagged_country, validate_campaign},
     products::country_measure::FixedRun,
 };
 use replay::{
@@ -322,11 +322,7 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
             ) else {
                 continue;
             };
-            let Some((country, slot)) = countries
-                .iter()
-                .filter(|country| country.tag == tag.as_bytes())
-                .find_map(|country| mapped_slot(country, links).ok().map(|slot| (country, slot)))
-            else {
+            let Some((country, slot)) = tagged_country(countries, links, tag).found() else {
                 continue;
             };
             let Ok(index) = inputs.binary_search_by_key(&country.id, |row| row.country) else {

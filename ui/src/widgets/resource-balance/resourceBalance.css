@@ -19,7 +19,4 @@
 .resource-bars b.is-positive { color: var(--positive); }
 .resource-bars b.is-negative { color: var(--error); }
 .resource-missing { grid-column: span 2; font-size: var(--type-sm); color: var(--muted); }
-.resource-key { display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: 0 var(--space-3); font-size: var(--type-sm); color: var(--muted); }
-.resource-key > i { width: 16px; flex: none; border-top: 2px solid currentColor; }
-.resource-key > i.is-dashed { border-top-style: dashed; }
 .resource-chart { flex: 1; min-height: 0; }

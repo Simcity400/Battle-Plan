@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { BreakdownLine, StabilityBreakdown } from '../../generated/dashboard';
-import { breakdownRows, formatPercent, lastSampleHour, lineName, linesPerMeasure, percentRuns, rawAt, zoomRange } from './stabilityData.ts';
+import { breakdownRows, formatPercent, lineName, linesPerMeasure, percentRuns, rawAt, zoomRange } from './stabilityData.ts';
 
 const line = (position: number, kind: string, valueRaw: string, extra: Partial<BreakdownLine> = {}): BreakdownLine => ({
   line: position, kind, identity: '', identityId: 0, secondaryRaw: '0', valueRaw, text: null, label: null, group: null, groupKind: null, ...extra });
@@ -84,12 +84,3 @@ test('zoom fits both bounds of the values in view, even beyond 0-100% in a mod',
   assert.equal(zoomRange(null), null);
 });
 
-test('a line ending early is labelled at its own last sample', () => {
-  const run = (firstHour: number, lastHour: number) => ({ firstHour, lastHour, value: 50, breakBefore: false });
-  const runs = [run(0, 99), run(150, 200)];
-  assert.equal(lastSampleHour(runs, 300), 200);
-  assert.equal(lastSampleHour(runs, 120), 99);
-  assert.equal(lastSampleHour(runs, 160), 160);
-  assert.equal(lastSampleHour([], 10), null);
-  assert.equal(lastSampleHour(runs, -5), null);
-});

@@ -69,18 +69,6 @@ export const TOOLTIP_LINE_BUDGET = 8;
 /** Tree lines each measure may list when `measures` are shown. */
 export const linesPerMeasure = (measures: number) => Math.max(3, Math.floor(TOOLTIP_LINE_BUDGET / Math.max(1, measures)));
 
-/** The last hour at or before `at` that a line has a sample for, or null. */
-export function lastSampleHour(runs: readonly Run[], at: number): number | null {
-  let low = 0;
-  let high = runs.length - 1;
-  let found: Run | null = null;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    if (runs[middle].firstHour <= at) { found = runs[middle]; low = middle + 1; } else high = middle - 1;
-  }
-  return found ? Math.min(found.lastHour, at) : null;
-}
-
 /** The value axis for Zoom: both bounds fitted to the values drawn in view (in
  * percent), with a little room; a mod may allow values outside 0-100%, so
  * nothing is clamped; null when nothing is shown. */

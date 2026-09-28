@@ -72,6 +72,17 @@ export function fixedNumber(raw: string | bigint, scale: number): number {
   return Number(typeof raw === 'bigint' ? raw : BigInt(raw)) / 10 ** scale;
 }
 
+/** A recorded amount of `denominator` units to the whole (such as the engine's
+ * 32768ths) as an integer of 10^-`decimals` units, rounded half away from zero, so
+ * `formatAmount` and `formatSigned` can write it exactly. `raw` may be a sum or a
+ * difference over any denominator, such as a net of two scales. */
+export function rescale(raw: string | bigint, denominator: bigint | number, decimals: number): bigint {
+  const value = (typeof raw === 'bigint' ? raw : BigInt(raw)) * 10n ** BigInt(decimals);
+  const whole = BigInt(denominator);
+  const half = whole / 2n;
+  return value < 0n ? -((-value + half) / whole) : (value + half) / whole;
+}
+
 /** An amount as the game shows it, from a recorded fixed-point integer: at most
  * `digits` decimals (two by default), none when whole. */
 export function formatAmount(raw: string | bigint, scale: number, digits = 2): string {

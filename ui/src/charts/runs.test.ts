@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { IntervalIndex, intervalIndexOf } from './intervalIndex.ts';
-import { clipToSpans, extentOfAll, runAt, sameStretch } from './series.ts';
+import { clipToSpans, extentOfAll, lastSampleHour, lineEndHour, runAt, sameStretch } from './series.ts';
 import type { Run, Span } from './series';
 
 /** A product's run: its line breaks where `startsSegment` says. */
@@ -87,4 +87,26 @@ test('an interval index is built once per owner, and answers at its items’ edg
   assert.equal(index().at(123).length, 2);
   assert.deepEqual(index().at(124), [owner.items[1]]);
   assert.deepEqual(index().at(131), []);
+});
+
+test('a line ending early is labelled at its own last sample', () => {
+  const run = (firstHour: number, lastHour: number) => ({ firstHour, lastHour, value: 50, breakBefore: false });
+  const runs = [run(0, 99), run(150, 200)];
+  assert.equal(lastSampleHour(runs, 300), 200);
+  assert.equal(lastSampleHour(runs, 120), 99);
+  assert.equal(lastSampleHour(runs, 160), 160);
+  assert.equal(lastSampleHour([], 10), null);
+  assert.equal(lastSampleHour(runs, -5), null);
+});
+
+test('end labels sit where a line is last drawn in view, even when the playhead is in a gap after it', () => {
+  // Daily reads carried to 1040, then a recording gap until the next read at 1100.
+  const reads = [{ firstHour: 1017, lastHour: 1040 }, { firstHour: 1100, lastHour: 1120 }];
+  // A playhead or view end at 1060, in the gap: the line is named where it ends.
+  assert.equal(lineEndHour(reads, 1000, 1060), 1040);
+  assert.equal(lineEndHour(reads, 1000, 1110.6), 1110);
+  // No label when nothing of the line is drawn in view.
+  assert.equal(lineEndHour(reads, 1050, 1060), null);
+  assert.equal(lineEndHour(reads, 1000, 1010), null);
+  assert.equal(lineEndHour([], 1000, 1060), null);
 });

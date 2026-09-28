@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     Artwork, Source,
-    metadata::{branch_bounds, mapped_slot, validate_campaign},
+    metadata::{TaggedCountry, branch_bounds, link_slot, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
 };
 use installed_content::modifiers::{Amount, Modifier};
@@ -295,20 +295,15 @@ pub fn scan(
                 mark(&mut result.unobserved, hour, hour);
                 continue;
             };
-            let mut named = countries
-                .iter()
-                .filter(|country| country.tag == tag.as_bytes())
-                .peekable();
-            if named.peek().is_none() {
+            let (country, slot) = match tagged_country(countries, links, tag) {
+                TaggedCountry::Found(country, slot) => (country, slot),
                 // Not a country this hour: its ideas simply are not held.
-                continue;
-            }
-            let Some((country, slot)) = named
-                .find_map(|country| mapped_slot(country, links).ok().map(|slot| (country, slot)))
-            else {
+                TaggedCountry::Absent => continue,
                 // The country exists but its identity cannot be read: unknown, not absent.
-                mark(&mut result.unobserved, hour, hour);
-                continue;
+                TaggedCountry::Unresolved => {
+                    mark(&mut result.unobserved, hour, hour);
+                    continue;
+                }
             };
             let identity = (slot, country.id);
             let continues =
@@ -317,13 +312,7 @@ pub fn scan(
             if !continues {
                 result.identity_starts.push(hour);
             }
-            let owner = |raw: u32| {
-                links
-                    .binary_search_by_key(&raw, |link| link.id)
-                    .ok()
-                    .map(|index| links[index].canonical_slot)
-                    == Some(slot)
-            };
+            let owner = |raw: u32| link_slot(links, raw) == Some(slot);
             // Each appointed advisor's idea with its recorded seat and character.
             let characters = decoded.complete::<tables::Characters>().ok();
             let lexical = decoded.complete::<tables::LexicalTokens>().ok();

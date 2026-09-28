@@ -269,3 +269,25 @@ export function extentOfAll(lists: readonly (readonly Run[])[], from: number, to
   const ranges = lists.map(runs => extentOf(runs, from, to)).filter((range): range is [number, number] => range != null);
   return ranges.length ? [Math.min(...ranges.map(range => range[0])), Math.max(...ranges.map(range => range[1]))] : null;
 }
+
+/** The last hour at or before `at` that runs (in hour order) hold a value for, or
+ * null: where a line drawn up to `at` ends, even when `at` falls in a gap after it. */
+export function lastSampleHour(runs: readonly Span[], at: number): number | null {
+  let low = 0;
+  let high = runs.length - 1;
+  let found: Span | null = null;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (runs[middle].firstHour <= at) { found = runs[middle]; low = middle + 1; } else high = middle - 1;
+  }
+  return found ? Math.min(found.lastHour, at) : null;
+}
+
+/** Where a line's end label belongs: the last hour it is drawn at, up to `at` (the
+ * playhead or the view's end) and not before `from` (the view's start); null when
+ * none of it is drawn there. A playhead or view ending in a gap after the line's
+ * last value still labels the line where it ends, so a drawn line is always named. */
+export function lineEndHour(runs: readonly Span[], from: number, at: number): number | null {
+  const last = lastSampleHour(runs, Math.floor(at));
+  return last != null && last >= Math.floor(from) ? last : null;
+}

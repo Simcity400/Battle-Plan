@@ -30,7 +30,7 @@ use super::{
 };
 use crate::{
     Source,
-    metadata::{mapped_slot, validate_campaign},
+    metadata::{link_slot, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
 };
 use replay::{container::Replay, frame::FrameDecoder, rows::tables};
@@ -331,11 +331,7 @@ pub fn scan(
             if parties.is_none() {
                 mark(&mut result.unobserved, hour, hour);
             }
-            let Some((country, slot)) = countries
-                .iter()
-                .filter(|country| country.tag == tag.as_bytes())
-                .find_map(|country| mapped_slot(country, links).ok().map(|slot| (country, slot)))
-            else {
+            let Some((country, slot)) = tagged_country(countries, links, tag).found() else {
                 continue;
             };
             let identity = (slot, country.id);
@@ -350,13 +346,7 @@ pub fn scan(
                 mark(&mut result.unobserved, at + 1, hour - 1);
             }
             last = Some((identity, hour));
-            let owner = |raw: u32| {
-                links
-                    .binary_search_by_key(&raw, |link| link.id)
-                    .ok()
-                    .map(|index| links[index].canonical_slot)
-                    == Some(slot)
-            };
+            let owner = |raw: u32| link_slot(links, raw) == Some(slot);
             let appearance = decoded
                 .complete::<tables::CountryAppearance>()
                 .ok()
