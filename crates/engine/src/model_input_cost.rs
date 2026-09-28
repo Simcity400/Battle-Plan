@@ -5,6 +5,8 @@
 //! requirements differ. The budget test runs in every build; the timings are
 //! `#[ignore]`d benches:
 //! `cargo test -p engine --release model_input_capture_cost -- --ignored --nocapture`.
+//! `unit_scale_templates` instead spreads 50,000 and 100,000 templates over
+//! 1,500 countries.
 
 use std::cell::Cell;
 use std::time::Instant;
@@ -64,7 +66,7 @@ fn inline_text(world: &mut World, at: usize, text: &[u8]) {
     );
 }
 
-fn build(countries: u32) -> Bench {
+fn build(countries: u32, templates: usize) -> Bench {
     let mut world = World::new(MODULE, countries, ccountry::DEPLOYMENT_MANAGER + 8);
     let archetypes = [world.alloc(0x20), world.alloc(0x20)];
     for (index, &archetype) in archetypes.iter().enumerate() {
@@ -127,17 +129,19 @@ fn build(countries: u32) -> Bench {
         for (ordinal, &clone) in clones.iter().enumerate() {
             world.u64(list + ordinal * 8, clone as u64);
         }
-        let roster = world.alloc(TEMPLATES * 8);
+        let begin = (slot - 1) * templates / countries as usize;
+        let end = slot * templates / countries as usize;
+        let roster = world.alloc((end - begin) * 8);
         world.array(
             object + ccountry::DIVISION_TEMPLATES,
             roster,
-            TEMPLATES as u32,
+            (end - begin) as u32,
         );
-        for ordinal in 0..TEMPLATES {
+        for ordinal in 0..end - begin {
             let at = world.alloc(TEMPLATE + GROUPED * template::SUBUNIT_COUNT_STRIDE);
             world.u64(roster + ordinal * 8, at as u64);
             world.u64(at, (MODULE + template::VTABLE_RVA) as u64);
-            let id = (slot * TEMPLATES + ordinal) as u64;
+            let id = (begin + ordinal + 1) as u64;
             world.u64(
                 at + template::TYPE,
                 (id << 32) | u64::from(template::REFERENCE_TYPE),
@@ -206,9 +210,12 @@ fn fastest<T>(bench: &Bench, mut run: impl FnMut() -> T) -> (T, f64, usize) {
 }
 
 fn measure(countries: u32) -> Cost {
-    let bench = build(countries);
+    measure_templates(countries, countries as usize * TEMPLATES)
+}
+
+fn measure_templates(countries: u32, templates: usize) -> Cost {
+    let bench = build(countries, templates);
     let state = bench.world.game_state();
-    let templates = countries as usize * TEMPLATES;
     let mut memo: Vec<MemoSlot> = vec![(0, 0); 1024];
 
     let mut rows = vec![Row::default(); templates];
@@ -290,6 +297,23 @@ fn measure(countries: u32) -> Cost {
         clones,
         clone_copies,
         clone_seconds,
+    }
+}
+
+#[test]
+#[ignore = "release unit scaling benchmark"]
+fn unit_scale_templates() {
+    for templates in [50_000, 100_000] {
+        let cost = measure_templates(1_500, templates);
+        println!(
+            "UNIT_SCALE name=Templates countries=1500 templates={templates} daily_best_ms={:.6} hourly_best_ms={:.6} clones_best_ms={:.6} daily_calls={} hourly_calls={} clone_calls={}",
+            cost.daily_seconds * 1e3,
+            cost.hourly_seconds * 1e3,
+            cost.clone_seconds * 1e3,
+            cost.daily_copies,
+            cost.hourly_copies,
+            cost.clone_copies
+        );
     }
 }
 

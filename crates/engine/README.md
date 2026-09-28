@@ -42,6 +42,8 @@ Use the instrumentation present on the checked-out branch and its actual counter
 
 Test readers with the existing synthetic-memory fixtures, including aliases, invalid pointers, short reads and capacity limits. Run the local checks in [AGENTS.md](../../AGENTS.md); a new capture domain also needs collector/replay integration and an oracle comparison or an explicit limitation.
 
+Unit-count fixtures live in [tests/support/unit_world.rs](tests/support/unit_world.rs). Run `cargo test -p engine --release --test unit_scale -- --ignored --nocapture --test-threads=1` through the build slot; `BATTLE_PLAN_UNIT_SHAPE=design|stress` selects one population per process for memory measurement. `BATTLE_PLAN_UNIT_VALIDATE=1` checks complete native walks without timing repetitions. The separate `unit_scale_templates` test extends the model-input fixture; it retains that benchmark's in-memory fastest-pass methodology. Synthetic guarded reads measure acquisition work, not gameplay slowdown.
+
 ## Historical evidence
 
 The [archived domain index](#) preserves old registry-to-source mappings, exclusions and investigation results. It is not current coverage or acceptance: its double-read windows and phase gates are superseded by [AGENTS.md](../../AGENTS.md). Keep new field evidence beside the reader, not in another running porting log. For the hourly-sample versus later-save limitation, see the [recorder guide](../recorder/README.md#inspect-and-compare).

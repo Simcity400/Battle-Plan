@@ -42,6 +42,8 @@ mod snapshot_plan;
 mod spooling;
 mod status_writer;
 mod table_capture;
+#[cfg(test)]
+mod unit_scale_tests;
 
 use std::ffi::c_void;
 use windows_sys::Win32::{

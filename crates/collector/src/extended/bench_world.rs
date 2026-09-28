@@ -110,15 +110,19 @@ impl Heap {
 }
 
 pub(crate) fn build(countries: u32, shape: Shape) -> World {
+    build_groups(countries, countries as usize * 2, shape)
+}
+
+pub(crate) fn build_groups(countries: u32, groups: usize, shape: Shape) -> World {
     // The layout does not depend on the origin: size it once, then lay it out
     // in a buffer that never reallocates.
-    let len = build_in(countries, shape, Vec::new()).bytes.len();
-    let world = build_in(countries, shape, Vec::with_capacity(len));
+    let len = build_in(countries, groups, shape, Vec::new()).bytes.len();
+    let world = build_in(countries, groups, shape, Vec::with_capacity(len));
     assert_eq!(world.bytes.len(), len);
     world
 }
 
-fn build_in(countries: u32, shape: Shape, mut bytes: Vec<u8>) -> World {
+fn build_in(countries: u32, groups: usize, shape: Shape, mut bytes: Vec<u8>) -> World {
     let origin = bytes.as_ptr() as usize;
     bytes.resize(HEAP, 0);
     let mut heap = Heap { bytes, origin };
@@ -145,7 +149,7 @@ fn build_in(countries: u32, shape: Shape, mut bytes: Vec<u8>) -> World {
         );
         heap.u32(theatre + ctheatre::OWNER, slot as u32);
         let mut roster = Vec::new();
-        for _ in 0..2 {
+        for _ in (slot - 1) * groups / countries as usize..slot * groups / countries as usize {
             let group = heap.alloc(corders_group::SIZE + 0x20);
             let handle =
                 ((roots.len() as u64 + 1) << 32) | u64::from(corders_group::REFERENCE_TYPE);

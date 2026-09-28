@@ -12,6 +12,8 @@ mod playback;
 mod profiling;
 mod render;
 mod table_access;
+#[cfg(test)]
+mod unit_scale_tests;
 mod worker_priority;
 
 use dashboard::Config;
