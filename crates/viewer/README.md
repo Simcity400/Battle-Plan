@@ -63,6 +63,8 @@ Keep coordinate conversions with their caller: bitmap rows run downward, world Z
 
 ## Fidelity limits
 
+**Five-hour ETA operand staleness (accepted limitation).** The travel-time tooltip uses each division's latest recorded ETA operands with current movement/progress and shared hourly map data. Moving divisions refresh on a changed route/target/mode/location, on entering or leaving combat, on first observation, or on their stagger slot; unchanged operand rows can be four completed hours old. This allowance cites the native counter cache's five-hour TTL (`140be98e0`, hourly expiry `140bf0300`), but does not recreate that cache's UI-dependent history. The viewer's destination duration follows the stored route; the game's map counter can use a different pathfinding estimate (`140bed3a0`). Future or expired row provenance refuses the calculation.
+
 Naval weapon totals and ship organisation bars require complete recorded ModifierDefinitions and LexicalTokens whose names match the shared fixed-key contract. Missing definitions or a patch-renumbered key suppress those calculations and produce a named combat diagnostic; the viewer checks the recording even if its recorder predates the guard.
 
 A replay can preserve exact simulation values without preserving the native rendered instant. Water/global clocks, camera fades, overlap/stencil producers, particle populations and previous renderer state can require inputs that an hourly sample lacks. A seed alone does not recover their update history. Do not replace these omissions with guessed visibility, fabricated data or fitted colours.

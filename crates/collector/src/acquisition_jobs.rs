@@ -243,7 +243,7 @@ impl PresentationRequest {
         self.captured.fail_owned_capture(reason)
     }
 }
-/// One contiguous range of the per-leg ETA operands over the shared division
+/// One stable handle partition of ETA operands over the shared division
 /// census. Every range is dispatched with Presentation, so the route scan runs
 /// on several workers at once instead of one.
 pub(crate) struct EtaInputsRequest {
@@ -429,7 +429,12 @@ impl Role {
     fn worker_only(self) -> bool {
         matches!(
             self,
-            Self::Governance | Self::Variants | Self::Orders | Self::Ordinary | Self::Presentation
+            Self::Governance
+                | Self::Variants
+                | Self::Orders
+                | Self::Ordinary
+                | Self::Presentation
+                | Self::EtaInputs
         )
     }
     /// Shared native work follows an hourly consumer in mixed families. Detail
@@ -1156,7 +1161,7 @@ fn run_with_memory(
     report
 }
 
-const WORKER_ONLY_JOBS: usize = 5;
+const WORKER_ONLY_JOBS: usize = 5 + division_eta_inputs::MAX_RANGES;
 
 pub(crate) struct Pool {
     executor: acquisition::Pool<Job, Report>,

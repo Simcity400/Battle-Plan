@@ -586,6 +586,9 @@ pub struct Shared {
         crate::slicing::FAMILIES.len()],
     /// Fresh country authentication for this quiescent callback. Game thread only.
     country_cache: UnsafeCell<Arc<Cache>>,
+    eta_cadence:
+        [UnsafeCell<Option<Box<extended::division_eta_inputs::CadenceStore>>>; ETA_INPUT_RANGES],
+    eta_cadence_bytes: [AtomicU64; ETA_INPUT_RANGES],
     pub eta_inputs: EtaInputStats,
     /// Template rows whose model inputs failed; the status thread copies it.
     pub template_models: Mutex<TemplateModelStats>,
@@ -706,6 +709,8 @@ impl Shared {
                 UnsafeCell::new(Some(Box::new(crate::slicing::SliceFingerprints::new())))
             }),
             country_cache: UnsafeCell::new(country_cache),
+            eta_cadence: std::array::from_fn(|_| UnsafeCell::new(Some(Box::default()))),
+            eta_cadence_bytes: std::array::from_fn(|_| AtomicU64::new(0)),
             eta_inputs: EtaInputStats::default(),
             template_models: Mutex::new(TemplateModelStats::default()),
             template_models_missed: AtomicU64::new(0),
@@ -2011,12 +2016,19 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             let mut eta_inputs_pending: [Option<PendingAcquisition>; ETA_INPUT_RANGES] =
                 [const { None }; ETA_INPUT_RANGES];
             for (range, pending) in eta_inputs_pending.iter_mut().enumerate().take(eta_ranges) {
+                // SAFETY: this callback alone loans and returns each store.
+                let cadence = unsafe { &mut *shared.eta_cadence[range].get() }
+                    .take()
+                    .expect("ETA cadence loan");
                 *pending = Some(queue!(acquisition::Job::EtaInputs(
                     frame.extended.take_eta_inputs_request(
                         range,
                         &country_snapshot,
                         shared.base,
-                        state
+                        state,
+                        clock.hour,
+                        force_full,
+                        cadence
                     )
                 )));
             }
@@ -2679,7 +2691,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             for pending in eta_inputs_pending.into_iter().flatten() {
                 // SAFETY: this thread still owns the live acquisition boundary.
                 let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
-                let acquisition::Job::EtaInputs(request) = completed.request else {
+                let acquisition::Job::EtaInputs(mut request) = completed.request else {
                     unreachable!("EtaInputs ticket type")
                 };
                 let report = completed.report.map(|report| {
@@ -2688,6 +2700,35 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     };
                     report
                 });
+                if report.is_err() {
+                    request
+                        .captured
+                        .cadence
+                        .as_mut()
+                        .expect("ETA cadence loan")
+                        .invalidate();
+                }
+                let bytes = request
+                    .captured
+                    .cadence
+                    .as_ref()
+                    .expect("ETA cadence loan")
+                    .allocated_bytes() as u64;
+                let previous =
+                    shared.eta_cadence_bytes[request.range].swap(bytes, Ordering::Relaxed);
+                if bytes >= previous {
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes - previous, Ordering::Relaxed);
+                } else {
+                    shared
+                        .pool_bytes
+                        .fetch_sub(previous - bytes, Ordering::Relaxed);
+                }
+                // SAFETY: the owned job has joined; no worker retains this store.
+                unsafe {
+                    *shared.eta_cadence[request.range].get() = request.captured.cadence.take()
+                };
                 frame.extended.restore_eta_inputs_request(request, report);
             }
             segment!(11);
@@ -3472,6 +3513,18 @@ unsafe fn finish_acquisition(
                 return acquisition::Completion {
                     request,
                     report: Ok(acquisition::Report::Presentation(report)),
+                    table_reads: crate::read_accounting::ZERO,
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                };
+            }
+            if let acquisition::Job::EtaInputs(eta) = &mut request {
+                let report = eta
+                    .captured
+                    .fail_owned_capture("division ETA worker admission failed");
+                return acquisition::Completion {
+                    request,
+                    report: Ok(acquisition::Report::EtaInputs(report)),
                     table_reads: crate::read_accounting::ZERO,
                     #[cfg(feature = "callback_profile")]
                     profile: Default::default(),

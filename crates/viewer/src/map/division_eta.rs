@@ -241,7 +241,7 @@ fn derive(frame: &DecodedFrame, movement_content: Option<&MovementContent>) -> i
         .collect();
     let provinces = indexed(&terrain_rows, |&row| row);
     let distance = |from, to| map.distance(from, to);
-    for row in inputs {
+    for row in inputs.iter().filter(|row| row.valid_at(frame.hour)) {
         if let Some(value) = movement.get(&row.division).and_then(|movement| {
             eta_derive::movement_progress(
                 movement,
@@ -266,6 +266,10 @@ fn derive(frame: &DecodedFrame, movement_content: Option<&MovementContent>) -> i
         (row.id, row.movement_infrastructure)
     });
     for row in inputs {
+        if !row.valid_at(frame.hour) {
+            etas.report.refused += 1;
+            continue;
+        }
         let pair = movement
             .get(&row.division)
             .zip(location.get(&row.division))
@@ -407,6 +411,7 @@ mod tests {
     fn inputs(division: u64) -> DivisionEtaInputsRow {
         DivisionEtaInputsRow {
             division,
+            sample_hour: frame().hour,
             speed_modifier: 100_000,
             speed_base: SPEED,
             current_speed: SPEED,
@@ -585,6 +590,24 @@ mod tests {
                 .line()
                 .is_some_and(|line| line.ends_with("0 routes unplaced, 2 route hops skipped"))
         );
+    }
+
+    #[test]
+    fn latest_operand_rows_survive_seek_but_future_and_expired_rows_are_refused() {
+        let map = content(two_leg_map());
+        for age in [-1, 0, 1, 4, 5] {
+            let mut frame = derivable();
+            let mut row = inputs(DIVISION);
+            row.sample_hour = frame.hour - age;
+            put(
+                &mut frame,
+                TableId::DivisionEtaInputs,
+                TableRows::DivisionEtaInputs(vec![row]),
+            );
+            let etas = Etas::read(&frame, Some(&map)).unwrap();
+            assert_eq!(etas.get(DIVISION).is_some(), (0..5).contains(&age));
+            assert_eq!(etas.report().refused, usize::from(!(0..5).contains(&age)));
+        }
     }
 
     #[test]

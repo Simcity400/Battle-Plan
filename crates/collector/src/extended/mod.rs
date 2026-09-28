@@ -433,8 +433,7 @@ impl Captured {
         })
     }
 
-    /// Cut this hour's census into contiguous ranges and return how many jobs
-    /// to dispatch. Owned seed headers only; no native reads.
+    /// Plan stable handle partitions and return how many worker jobs to dispatch.
     pub(crate) fn plan_eta_input_ranges(&mut self) -> usize {
         self.eta_inputs_report = None;
         self.division_eta_inputs
@@ -443,20 +442,28 @@ impl Captured {
 
     /// Loan one planned range's buffers with the same census seeds Presentation
     /// takes, so the route scan runs across the pool instead of the game thread.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_eta_inputs_request(
         &mut self,
         range: usize,
         countries: &Arc<engine::country_memory::Cache>,
         base: usize,
         state: usize,
+        hour: i32,
+        force_full: bool,
+        cadence: Box<division_eta_inputs::CadenceStore>,
     ) -> crate::acquisition_jobs::EtaInputsRequest {
-        let (captured, span) = self.division_eta_inputs.take_range(range);
+        let (mut captured, span, partition) = self.division_eta_inputs.take_range(range);
+        captured.cadence = Some(cadence);
         crate::acquisition_jobs::EtaInputsRequest {
             countries: Arc::clone(countries),
             context: division_eta_inputs::CaptureContext {
+                hour,
+                force_full,
                 base,
                 game_state: state,
                 span,
+                partition,
             },
             inputs: self.unit_inputs.as_ref().map(Arc::clone),
             captured,
@@ -498,21 +505,11 @@ impl Captured {
         self.division_eta_inputs.counters()
     }
 
-    fn acquire_eta_inputs(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-    ) -> division_eta_inputs::CaptureReport {
+    fn acquire_eta_inputs(&mut self) -> division_eta_inputs::CaptureReport {
         let _reads = crate::read_accounting::table(TableId::DivisionEtaInputs);
         self.eta_inputs_report.take().unwrap_or_else(|| {
-            let ticks = self.division_eta_inputs.capture(
-                memory,
-                base,
-                game_state,
-                unit_sources(&self.unit_inputs),
-            );
-            division_eta_inputs::CaptureReport { ticks }
+            self.division_eta_inputs.fail_missing();
+            division_eta_inputs::CaptureReport::default()
         })
     }
 
@@ -1865,7 +1862,7 @@ impl Captured {
         scatter(&new_divisions::TABLES, cost, ticks);
         let report = self.acquire_presentation();
         scatter(&division_presentation::TABLES, report.ticks, ticks);
-        let eta_inputs_report = self.acquire_eta_inputs(memory, base, game_state);
+        let eta_inputs_report = self.acquire_eta_inputs();
         scatter(&division_eta_inputs::TABLES, eta_inputs_report.ticks, ticks);
         let cost = self.variants_ticks.take().unwrap_or_else(|| {
             let mut variants = self.production.take_variants();
@@ -2765,9 +2762,17 @@ mod tests {
             crate::acquisition::Failure::Stopped,
         ] {
             captured.install_unit_inputs(Some(Arc::clone(&inputs)));
-            // One seed is too small to split, so range zero takes it all.
-            assert_eq!(captured.plan_eta_input_ranges(), 1);
-            let request = captured.take_eta_inputs_request(0, &countries, 11, 0x1000);
+            // Stable worker ownership does not depend on census size.
+            assert!(captured.plan_eta_input_ranges() >= 1);
+            let request = captured.take_eta_inputs_request(
+                0,
+                &countries,
+                11,
+                0x1000,
+                7,
+                false,
+                Box::default(),
+            );
             let lent = captured.division_eta_inputs.allocated_bytes();
             assert!(lent < owned);
             assert_eq!(captured.allocated_bytes() + owned, bytes + lent);
@@ -2786,13 +2791,7 @@ mod tests {
             assert_eq!(Arc::strong_count(&countries), 1);
             assert_eq!(Arc::strong_count(&inputs), 2);
             // The terminal failure is consumed once, without a live retry.
-            struct NoRead;
-            impl Memory for NoRead {
-                fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                    panic!("a terminal ETA input failure must not retry live acquisition");
-                }
-            }
-            let report = captured.acquire_eta_inputs(&NoRead, 11, 0x1000);
+            let report = captured.acquire_eta_inputs();
             assert_eq!(report.ticks, [0]);
             assert!(captured.eta_inputs_report.is_none());
             assert_eq!(

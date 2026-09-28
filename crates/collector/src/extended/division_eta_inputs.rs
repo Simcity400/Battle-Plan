@@ -1,11 +1,11 @@
 //! Per-division operands a replayer folds into the full ETA. The moving census
-//! is cut into contiguous seed ranges, one owned acquisition each with its own
+//! is assigned to stable handle partitions, one acquisition each with its own
 //! packets and geometry memo: the composed speed graph once per division, the
 //! edge constants once, and a thin route scan for the per-leg vectors.
 use super::production::Sources;
 use crate::{
     sampling::qpc,
-    spooling::{table, unavailable},
+    spooling::table,
     table_capture::grow_capacity,
 };
 use engine::{
@@ -23,7 +23,9 @@ use replay::{
     frame::TableView,
     rows::{DivisionEtaInputsRow, TableId, tables},
 };
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::Arc};
+mod cadence;
+pub(crate) use cadence::Store as CadenceStore;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::DivisionEtaInputs];
@@ -32,8 +34,6 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// One range per pool worker at most.
 pub(crate) const MAX_RANGES: usize = 8;
-/// Below this the split costs more than it saves; one range takes everything.
-const MIN_SPLIT_WEIGHT: usize = 256;
 
 /// A snapshot pays for itself from the second lookup on the same accumulator,
 /// so the ceilings only keep one range's arena bounded. Above them the
@@ -234,10 +234,14 @@ fn range_count() -> usize {
 /// Everything the walk needs that the callback cannot lend a worker by reference.
 #[derive(Clone, Copy)]
 pub(crate) struct CaptureContext {
+    pub hour: i32,
+    pub force_full: bool,
     pub base: usize,
     pub game_state: usize,
-    /// The contiguous census seeds this range admits.
+    /// Census bounds; workers admit only their stable handle partition.
     pub span: (usize, usize),
+    /// Worker index and fixed worker count for this attachment.
+    pub partition: (usize, usize),
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -247,8 +251,7 @@ pub(crate) struct CaptureReport {
 
 pub(crate) type Counters = carmy::EtaInputCounters;
 
-/// Per-range capacities: every range allocates the same, so a balanced plan
-/// still fits what the whole census needed before the split.
+/// Every worker reserves the largest observed per-partition demand.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
@@ -289,9 +292,13 @@ fn packet(c: &Capacities) -> carmy::EtaInputPacket {
     carmy::EtaInputPacket::new(c.rows, c.terrain, c.legs)
 }
 
-/// One contiguous range of the census, acquired by one worker with its own
+/// One stable partition of the census, acquired by one worker with its own
 /// buffers and geometry memo.
 pub struct RangeCaptured {
+    pub(crate) cadence: Option<Box<CadenceStore>>,
+    carried: Option<Vec<Arc<DivisionEtaInputsRow>>>,
+    /// The latest full-census demand, so a forced full read fits.
+    census: cadence::Census,
     packet: carmy::EtaInputPacket,
     geometry: cprovince::GeometryPacket,
     /// Session-static map data, re-keyed from current roots before each capture.
@@ -314,6 +321,9 @@ pub struct RangeCaptured {
 impl RangeCaptured {
     fn with_capacities(c: &Capacities) -> Self {
         Self {
+            cadence: None,
+            carried: None,
+            census: cadence::Census::default(),
             packet: packet(c),
             geometry: cprovince::GeometryPacket::with_capacities(c.geometry),
             statics: cprovince::StaticGeometry::default(),
@@ -343,6 +353,8 @@ impl RangeCaptured {
     }
 
     fn reset(&mut self) {
+        // Retire carried row allocations on the acquisition worker, not here:
+        // reset also runs on the hourly game callback.
         self.air_defense.get_mut().reset_counts();
         self.required_modifiers = SnapshotCapacity::default();
         self.captured_current = false;
@@ -351,7 +363,9 @@ impl RangeCaptured {
     }
 
     pub(crate) fn allocated_bytes(&self) -> usize {
-        self.packet.allocated_bytes()
+        self.carried.as_ref().map_or(0, |rows| {
+            rows.capacity() * size_of::<Arc<DivisionEtaInputsRow>>()
+        }) + self.packet.allocated_bytes()
             + self.geometry.allocated_bytes()
             + self.statics.allocated_bytes()
             + self.modifiers.borrow().allocated_bytes()
@@ -373,6 +387,11 @@ impl RangeCaptured {
         }
         grow_capacity(&mut c.terrain, walk.required_terrain);
         grow_capacity(&mut c.legs, walk.required_legs);
+        // Unchanged divisions are not read on most hours, but a load, gap or
+        // failure re-reads every one of them.
+        grow_capacity(&mut c.rows, self.census.rows);
+        grow_capacity(&mut c.terrain, self.census.terrain.saturating_add(1));
+        grow_capacity(&mut c.legs, self.census.legs);
         let required = self.geometry.required_capacities();
         grow_capacity(&mut c.geometry.provinces, required.provinces);
         grow_capacity(
@@ -400,8 +419,72 @@ impl RangeCaptured {
         sources: Sources<'_, DivisionSeed>,
         countries: Option<engine::ccountry::AuthenticatedRoster<'_>>,
     ) -> CaptureReport {
+        let started = qpc();
+        self.carried = None;
+        let mut store = self.cadence.take().expect("ETA cadence loan");
+        self.reset();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if sources.outcome.len() != sources.rows.len()
+                || context.span.0 > context.span.1
+                || context.span.1 > sources.rows.len()
+            {
+                return Err("division ETA witness census range invalid");
+            }
+            store.select(
+                memory,
+                context.base,
+                context.hour,
+                context.force_full,
+                context.partition,
+                &sources.rows[context.span.0..context.span.1],
+                sources.outcome,
+            )?;
+            let selected = Sources {
+                rows: &store.selected,
+                outcome: Outcome::Rows {
+                    len: store.selected.len(),
+                },
+            };
+            self.capture(
+                memory,
+                CaptureContext {
+                    span: (0, selected.rows.len()),
+                    ..context
+                },
+                selected,
+                countries,
+            );
+            match self.outcome() {
+                Outcome::Rows { .. } => {}
+                Outcome::Unavailable { reason } => return Err(reason),
+                Outcome::Truncated { .. } => {
+                    return Err("division ETA selected operands truncated");
+                }
+            }
+            if !self.spans_valid() {
+                return Err("division ETA input spans invalid");
+            }
+            let terrain = self.rows().iter().map(|row| row.terrain_len);
+            let rows = self.project(context.hour).into_iter().zip(terrain);
+            self.carried = Some(store.finish(context.hour, rows)?);
+            self.census = store.census();
+            Ok(())
+        }));
+        let result = match result {
+            Ok(result) => result,
+            Err(payload) => {
+                store.invalidate();
+                self.cadence = Some(store);
+                std::panic::resume_unwind(payload);
+            }
+        };
+        if let Err(reason) = result {
+            store.invalidate();
+            self.failure = Some(reason);
+        }
+        self.cadence = Some(store);
         CaptureReport {
-            ticks: [self.capture(memory, context, sources, countries)],
+            ticks: [qpc().saturating_sub(started).max(0) as u64],
         }
     }
 
@@ -409,6 +492,9 @@ impl RangeCaptured {
     /// range denies the table, exactly as a denied single job did.
     pub(crate) fn fail_owned_capture(&mut self, reason: &'static str) -> CaptureReport {
         self.reset();
+        if let Some(store) = &mut self.cadence {
+            store.invalidate();
+        }
         self.failure = Some(reason);
         CaptureReport::default()
     }
@@ -421,6 +507,7 @@ impl RangeCaptured {
         countries: Option<engine::ccountry::AuthenticatedRoster<'_>>,
     ) -> u64 {
         self.reset();
+        self.carried = None;
         let rows = &sources.rows[..sources.outcome.len().min(sources.rows.len())];
         self.captured_current = true;
         let started = qpc();
@@ -466,6 +553,8 @@ impl RangeCaptured {
             Outcome::Unavailable {
                 reason: "division ETA input range was not acquired",
             }
+        } else if let Some(rows) = &self.carried {
+            Outcome::Rows { len: rows.len() }
         } else {
             self.packet.outcome().outcome
         }
@@ -475,6 +564,57 @@ impl RangeCaptured {
     fn rows(&self) -> &[carmy::EtaInputRow] {
         let rows = self.packet.rows();
         &rows[..self.outcome().len().min(rows.len())]
+    }
+
+    fn project(&self, sample_hour: i32) -> Vec<DivisionEtaInputsRow> {
+        self.rows()
+            .iter()
+            .map(|r| {
+                let terrain = self.packet.terrain();
+                let legs = self.packet.legs();
+                let pairs = &terrain[r.terrain_start..r.terrain_start + r.terrain_len];
+                let mut terrain_speed = vec![
+                    0;
+                    pairs
+                        .iter()
+                        .map(|(index, _)| usize::from(*index))
+                        .max()
+                        .unwrap_or(0)
+                ];
+                for &(index, value) in pairs {
+                    terrain_speed[usize::from(index) - 1] = value;
+                }
+                let span = r.leg_start..r.leg_start + r.leg_len;
+                let optional = |values: &[i64], present: bool| {
+                    if present {
+                        values[span.clone()].to_vec()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                DivisionEtaInputsRow {
+                    division: r.division,
+                    sample_hour,
+                    speed_modifier: r.speed_modifier,
+                    speed_base: r.speed_base,
+                    speed_org: r.speed_org,
+                    speed_fuel: r.speed_fuel,
+                    current_speed: r.current_speed,
+                    terrain_speed,
+                    fort_penalty: r.fort_penalty,
+                    snow_penalty: r.snow_penalty,
+                    river_adjustment: r.river_adjustment,
+                    river_leader: r.river_leader,
+                    class: r.class,
+                    rail_country_modifier: r.rail_country_modifier,
+                    rail_state_modifier: r.rail_state_modifier,
+                    rail_friendly_state_modifier: r.rail_friendly_state_modifier,
+                    leg_river_combined: optional(legs.river, r.any_river),
+                    leg_transport_speed: optional(legs.transport, r.any_transport),
+                    leg_rail_speed: optional(legs.rail, r.any_rail),
+                }
+            })
+            .collect()
     }
 
     /// True when every row's terrain and leg span lies inside this range's arenas.
@@ -497,7 +637,7 @@ impl RangeCaptured {
 
 pub struct Captured {
     ranges: Vec<RangeCaptured>,
-    /// This hour's contiguous spans, one per dispatched range.
+    /// Census bounds, with one stable handle partition per dispatched worker.
     plan: [(usize, usize); MAX_RANGES],
     planned: usize,
 }
@@ -539,67 +679,24 @@ impl Captured {
         }
     }
 
-    /// Contiguous spans balanced by native route length, so every worker scans
-    /// a similar number of legs. Owned seed headers only; no native reads.
+    /// Stable ownership keeps unrelated arrivals and reroutes from refreshing
+    /// another division's cache. Workers filter the census by full handle.
     pub(crate) fn plan(&mut self, sources: &Sources<'_, DivisionSeed>) -> usize {
         let count = sources.outcome.len().min(sources.rows.len());
-        self.plan = [(count, count); MAX_RANGES];
-        self.plan[0] = (0, count);
-        self.planned = 1;
-        let ranges = self.ranges.len().min(MAX_RANGES);
-        if ranges < 2 || count < 2 * ranges {
-            return 1;
-        }
-        let seeds = &sources.rows[..count];
-        let weight = |seed: &DivisionSeed| -> usize {
-            seed.ordinary_route
-                .and_then(|header| engine::cpdx_array::Array::from_header(header, 4))
-                .map_or(1, |route| {
-                    route.count as usize + 1
-                })
-        };
-        let mut remaining: usize = seeds.iter().map(weight).sum();
-        if remaining < MIN_SPLIT_WEIGHT {
-            return 1;
-        }
-        let mut start = 0;
-        for part in 0..ranges {
-            let parts = ranges - part;
-            if parts == 1 {
-                self.plan[part] = (start, count);
-                break;
-            }
-            // Leave at least one seed for every range still to come.
-            let limit = count - (parts - 1);
-            let target = remaining.div_ceil(parts);
-            let (mut end, mut taken) = (start, 0);
-            while end < limit {
-                let next = taken + weight(&seeds[end]);
-                if end != start
-                    && (taken >= target || (next > target && next - target > target - taken))
-                {
-                    break;
-                }
-                taken = next;
-                end += 1;
-            }
-            if end == start {
-                taken = weight(&seeds[start]);
-                end = start + 1;
-            }
-            self.plan[part] = (start, end);
-            remaining = remaining.saturating_sub(taken);
-            start = end;
-        }
-        self.planned = ranges;
-        ranges
+        self.plan = [(0, count); MAX_RANGES];
+        self.planned = self.ranges.len();
+        self.planned
     }
 
     /// Lend one planned range's buffers and its span to the pool.
-    pub(crate) fn take_range(&mut self, range: usize) -> (RangeCaptured, (usize, usize)) {
+    pub(crate) fn take_range(
+        &mut self,
+        range: usize,
+    ) -> (RangeCaptured, (usize, usize), (usize, usize)) {
         (
             std::mem::replace(&mut self.ranges[range], RangeCaptured::vacant()),
             self.plan[range],
+            (range, self.planned),
         )
     }
 
@@ -607,27 +704,12 @@ impl Captured {
         self.ranges[range] = captured;
     }
 
-    /// Whole-census fallback for a callback that never dispatched the ranges.
-    pub fn capture(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-        sources: Sources<'_, DivisionSeed>,
-    ) -> [u64; N] {
+    pub(crate) fn fail_missing(&mut self) {
         self.reset();
-        let count = sources.outcome.len().min(sources.rows.len());
-        self.plan[0] = (0, count);
-        self.planned = 1;
-        let context = CaptureContext {
-            base,
-            game_state: state,
-            span: self.plan[0],
-        };
-        [self.ranges[0].capture(memory, context, sources, None)]
+        self.ranges[0].fail_owned_capture("division ETA input acquisition not supplied");
     }
 
-    /// This hour's dispatched ranges, in census order.
+    /// This hour's dispatched ranges, in stable worker order.
     fn active(&self) -> &[RangeCaptured] {
         &self.ranges[..self.planned.max(1)]
     }
@@ -667,64 +749,17 @@ impl Captured {
     }
 
     pub fn tables(&self) -> [TableView; N] {
-        let outcome = self.outcomes()[0];
-        if self.active().iter().any(|range| !range.spans_valid()) {
-            return [unavailable("division ETA input spans invalid")];
-        }
-        // Ranges are contiguous in census order, so concatenating them keeps the
-        // row order one walk over the whole census produced.
-        let rows: Vec<(&RangeCaptured, &carmy::EtaInputRow)> = self
+        // A range publishes rows only after a complete acquisition; any other
+        // range state makes the outcome unavailable.
+        let rows: Vec<_> = self
             .active()
             .iter()
-            .flat_map(|range| range.rows().iter().map(move |row| (range, row)))
+            .flat_map(|range| range.carried.iter().flatten().map(Arc::as_ref))
             .collect();
         [table::<tables::DivisionEtaInputs, _>(
-            outcome,
+            self.outcomes()[0],
             &rows,
-            |(range, r)| {
-                let terrain = range.packet.terrain();
-                let legs = range.packet.legs();
-                let pairs = &terrain[r.terrain_start..r.terrain_start + r.terrain_len];
-                let mut terrain_speed = vec![
-                    0;
-                    pairs
-                        .iter()
-                        .map(|(index, _)| usize::from(*index))
-                        .max()
-                        .unwrap_or(0)
-                ];
-                for &(index, value) in pairs {
-                    terrain_speed[usize::from(index) - 1] = value;
-                }
-                let span = r.leg_start..r.leg_start + r.leg_len;
-                let optional = |values: &[i64], present: bool| {
-                    if present {
-                        values[span.clone()].to_vec()
-                    } else {
-                        Vec::new()
-                    }
-                };
-                DivisionEtaInputsRow {
-                    division: r.division,
-                    speed_modifier: r.speed_modifier,
-                    speed_base: r.speed_base,
-                    speed_org: r.speed_org,
-                    speed_fuel: r.speed_fuel,
-                    current_speed: r.current_speed,
-                    terrain_speed,
-                    fort_penalty: r.fort_penalty,
-                    snow_penalty: r.snow_penalty,
-                    river_adjustment: r.river_adjustment,
-                    river_leader: r.river_leader,
-                    class: r.class,
-                    rail_country_modifier: r.rail_country_modifier,
-                    rail_state_modifier: r.rail_state_modifier,
-                    rail_friendly_state_modifier: r.rail_friendly_state_modifier,
-                    leg_river_combined: optional(legs.river, r.any_river),
-                    leg_transport_speed: optional(legs.transport, r.any_transport),
-                    leg_rail_speed: optional(legs.rail, r.any_rail),
-                }
-            },
+            |row| (*row).clone(),
         )]
     }
 }
@@ -733,6 +768,63 @@ impl Captured {
 mod tests {
     use super::*;
     use engine::memory::SliceMemory;
+
+    #[test]
+    fn cadence_loan_survives_worker_panic_and_callback_reset_keeps_row_storage() {
+        struct Panics;
+        impl Memory for Panics {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("witness fault");
+            }
+        }
+        let mut range = RangeCaptured::vacant();
+        let row = Arc::new(DivisionEtaInputsRow::default());
+        range.carried = Some(vec![Arc::clone(&row)]);
+        range.reset();
+        assert_eq!(Arc::strong_count(&row), 2);
+        range.fail_owned_capture("admission failed");
+        assert_eq!(Arc::strong_count(&row), 2);
+        range.cadence = Some(Box::default());
+        let mut route = [0; 16];
+        route[..8].copy_from_slice(&0x1000_u64.to_le_bytes());
+        route[8..12].copy_from_slice(&1_u32.to_le_bytes());
+        route[12..].copy_from_slice(&1_u32.to_le_bytes());
+        let seed = DivisionSeed {
+            pointer: 0x2000,
+            division: 1,
+            handle: Some(1),
+            primary_vtable: Some(carmy::VTABLE_RVA as u64),
+            ordinary_route: Some(route),
+            movement_target: Some(0),
+            movement_source: Some(0),
+            location: Some(0),
+            retreat: Some(0),
+            strategic_redeployment: Some(0),
+            naval_transfer_membership: Some(0),
+            ..Default::default()
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            range.capture_owned(
+                &Panics,
+                CaptureContext {
+                    base: 0,
+                    game_state: 0,
+                    hour: 1,
+                    force_full: false,
+                    span: (0, 1),
+                    partition: (0, 1),
+                },
+                Sources {
+                    rows: &[seed],
+                    outcome: Outcome::Rows { len: 1 },
+                },
+                None,
+            );
+        }));
+        assert!(result.is_err());
+        assert!(range.cadence.is_some());
+        assert_eq!(Arc::strong_count(&row), 1);
+    }
 
     #[test]
     fn air_defense_memo_keeps_exact_signed_arguments_through_collisions_and_resets() {
@@ -1266,29 +1358,45 @@ mod tests {
 
     #[test]
     fn a_failed_census_never_becomes_an_empty_eta_input_table() {
-        let mut capture = Captured::with_capacities(&Capacities::default());
-        let unavailable = Outcome::Unavailable {
-            reason: "census failed",
+        let mut capture = Captured::with_capacities(&Capacities::with_ranges(1));
+        let sources = Sources {
+            rows: &[],
+            outcome: Outcome::Unavailable {
+                reason: "census failed",
+            },
         };
-        capture.capture(
+        assert_eq!(capture.plan(&sources), 1);
+        let (mut range, span, partition) = capture.take_range(0);
+        range.cadence = Some(Box::default());
+        range.capture_owned(
             &SliceMemory {
                 base: 0,
                 bytes: &[],
             },
-            0,
-            0,
-            Sources {
-                rows: &[],
-                outcome: unavailable,
+            CaptureContext {
+                hour: 0,
+                force_full: false,
+                base: 0,
+                game_state: 0,
+                span,
+                partition,
             },
+            sources,
+            None,
         );
-        assert!(matches!(capture.outcomes()[0], Outcome::Unavailable { .. }));
+        assert!(range.cadence.is_some());
+        capture.restore_range(0, range);
+        assert!(matches!(
+            capture.outcomes()[0],
+            Outcome::Unavailable {
+                reason: "census failed"
+            }
+        ));
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
-        assert_eq!(capture.counters().walks, 1);
     }
 
     #[test]
-    fn contiguous_ranges_cover_the_census_and_a_failed_range_denies_the_table() {
+    fn stable_partitions_cover_the_census_and_a_failed_range_denies_the_table() {
         let mut capture = Captured::with_capacities(&Capacities::with_ranges(3));
         let mut route = [0; 16];
         route[..8].copy_from_slice(&0x2000_u64.to_le_bytes());
@@ -1308,34 +1416,24 @@ mod tests {
             outcome,
         };
         assert_eq!(capture.plan(&sources), 3);
-        // The spans are contiguous, nonempty and cover the whole census.
-        let mut next = 0;
-        for range in 0..3 {
-            let (captured, span) = capture.take_range(range);
-            assert_eq!(span.0, next);
-            assert!(span.1 > span.0);
-            next = span.1;
-            capture.restore_range(range, captured);
+        // Every worker sees the same immutable census and a distinct stable partition.
+        for index in 0..3 {
+            let (captured, span, partition) = capture.take_range(index);
+            assert_eq!(span, (0, seeds.len()));
+            assert_eq!(partition, (index, 3));
+            capture.restore_range(index, captured);
         }
-        assert_eq!(next, seeds.len());
-        // A census too small to be worth splitting stays serial.
-        let stationary: Vec<_> = seeds
-            .iter()
-            .map(|seed| DivisionSeed {
-                ordinary_route: Some([0; 16]),
-                ..*seed
-            })
-            .collect();
+        // Empty and small censuses preserve ownership too.
         assert_eq!(
             capture.plan(&Sources {
-                rows: &stationary,
-                outcome,
+                rows: &[],
+                outcome: Outcome::Rows { len: 0 }
             }),
-            1
+            3
         );
         // A worker failure on one range denies the table with its own reason.
         assert_eq!(capture.plan(&sources), 3);
-        let (mut range, _) = capture.take_range(0);
+        let (mut range, _, _) = capture.take_range(0);
         assert_eq!(range.fail_owned_capture("worker stopped").ticks, [0]);
         capture.restore_range(0, range);
         assert!(matches!(
