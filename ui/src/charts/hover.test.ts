@@ -59,9 +59,15 @@ test('a range between two daily reads still has a stop at the value carried into
   // A view starting at a read, or before the first, adds nothing.
   assert.deepEqual(keyStops(reads, 100, 130), [100, 124]);
   assert.deepEqual(keyStops(reads, 50, 99), []);
-  // A zoomed view starts at a fractional hour: the stop is its first whole hour.
-  assert.deepEqual(keyStops(reads, 110.4, 120), [111]);
-  assert.deepEqual(keyStops(reads, 110.4, 110.9), []);
+  // A zoomed view starts at a fractional hour: the stop is the view's start, which hover
+  // shows as its hour (110), as the pointer at the edge does, even within one hour.
+  assert.deepEqual(keyStops(reads, 110.4, 120), [110.4]);
+  assert.deepEqual(keyStops(reads, 110.4, 110.9), [110.4]);
+  // The review's case: values change at 24 and the view starts at 23.2; hour 23's value
+  // (carried from the stop at 0) stays reachable before the stop at 24.
+  assert.deepEqual(keyStops([0, 24], 23.2, 47), [23.2, 24]);
+  assert.equal(keyedHour('Home', null, [23.2, 47], null, [0, 24]), 23.2);
+  assert.equal(keyedHour('ArrowLeft', 24, [23.2, 47], null, [0, 24]), 23.2);
   // Nothing after the playhead.
   assert.equal(keyedHour('End', null, [110, 120], 108, reads), null);
 });

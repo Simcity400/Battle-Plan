@@ -91,15 +91,16 @@ export function pointerHour(hourAtPointer: number, x: readonly [number, number],
 const KEY_STEP = 24;
 
 /** The stops the keyboard hover may land on in a view from `first` to `last`: the
- * stops inside it, and the view's first whole hour when a stop before the view
- * carries its value into it. A date range or zoom that starts between two daily
- * reads (reads at 100 and 124, a view of 110 to 120) so still reaches the value
- * read at 100, as the pointer does. Pass every stop, not only those in view. */
+ * stops inside it, and the view's start itself when a stop before the view carries
+ * its value into it. A date range or zoom that starts between two daily reads (reads
+ * at 100 and 124, a view of 110 to 120) so still reaches the value read at 100, as
+ * the pointer does; a zoom starting partway through an hour (23.2) stops at its
+ * start, which hover shows as that hour (23), as the pointer at the edge does, even
+ * when the next stop is the next whole hour. Pass every stop, not only those in view. */
 export function keyStops(stops: readonly number[], first: number, last: number): number[] {
   const inside = stops.filter(hour => hour >= first && hour <= last);
-  const start = Math.ceil(first);
-  const carried = start <= last && (inside[0] ?? Infinity) > start && stops.some(hour => hour < first);
-  return carried ? [start, ...inside] : inside;
+  const carried = first <= last && (inside[0] ?? Infinity) > first && stops.some(hour => hour < first);
+  return carried ? [first, ...inside] : inside;
 }
 
 /** Where a key moves keyboard hover: through `stops` (ascending hours, such as each

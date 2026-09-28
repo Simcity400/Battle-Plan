@@ -50,3 +50,14 @@
 .widget-state.is-error { color: var(--error); }
 .widget-state > svg { width: 20px; height: 20px; flex: none; }
 .widget-state .skeleton-chart { width: 100%; height: 100%; min-height: 60px; border-radius: var(--r-sm); }
+
+/* Table rows that slide to their new place, flash in and fade out (useRowMotion). A
+   widget places each row with a translateY and sets --row-glide from the app's motion. */
+.moving-row { transition: transform var(--row-glide, 450ms) cubic-bezier(.2, .8, .2, 1), opacity 450ms; }
+.moving-row.is-entering { animation: moving-row-in 700ms cubic-bezier(.2, .8, .2, 1); }
+.moving-row.is-leaving { opacity: 0; pointer-events: none; }
+@keyframes moving-row-in { from { opacity: 0; background: color-mix(in srgb, var(--accent) 16%, transparent); } }
+/* Reduced motion as the app resolves it (Appearance → Motion, where "system" follows the
+   system's preference, useAppearance): rows neither glide, flash nor fade. */
+:root[data-motion='reduced'] .moving-row { transition: none; }
+:root[data-motion='reduced'] .moving-row.is-entering { animation: none; }

@@ -42,6 +42,8 @@ Anything a second widget would need belongs in the shared kit, not in a widget f
 - **Reads** ([dashboard/reads.ts](../dashboard/reads.ts)): `readAt` (the read behind a value) and `readNote` ("Read …; … are read once a day.").
 - **Countries at an hour** ([dashboard/countryFlagsAt.ts](../dashboard/countryFlagsAt.ts), [dashboard/countryNamesAt.ts](../dashboard/countryNamesAt.ts)): `useCountryLabelsAt` (name and flag as recorded then), `useCountryNamesAt`, `useCountryFlagsAt`.
 - **Choosing content** ([dashboard/options.ts](../dashboard/options.ts), [components/ChipSet.tsx](../components/ChipSet.tsx)): content-set options and chips that say why they cannot act.
+- **Lane timelines** ([charts/timeline/](../charts/timeline/)): lanes of spans with keyboard stepping and Jump to; a span's `band` draws a thickness that follows a value (factories each day), and a `muted` lane fades.
+- **Moving table rows** ([charts/useRowMotion.ts](../charts/useRowMotion.ts)): rows that slide to a new order, flash in and fade out.
 - **Groups, drill-down, jump and states**: [dashboard/groups.ts](../dashboard/groups.ts), [charts/drill/](../charts/drill/), [charts/jump.ts](../charts/jump.ts), [WidgetState](../components/WidgetState.tsx).
 
 ## Adding a widget

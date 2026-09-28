@@ -14,11 +14,12 @@ import { hideTooltip, showTooltip, tooltipStore } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { EMPTY_VIEW, reduceView } from '../view';
 import type { ViewAction, ViewState } from '../view';
-import { AXIS_HEIGHT, ROW_HEIGHT, barHours, inSpans, laneAt, leftColumn, spanAt } from './layout';
+import { AXIS_HEIGHT, ROW_HEIGHT, bandHalf, bandHitAt, barHours, inSpans, laneAt, laneBandLayouts, laneBands, laneStops, leftColumn, spanAt } from './layout';
+import type { CachedBands } from './layout';
 import type { TimelineLane, TimelineSpan } from './layout';
 import '../charts.css';
 
-export type { TimelineLane, TimelineSpan } from './layout';
+export type { BandStep, TimelineLane, TimelineSpan } from './layout';
 
 export interface TimelineProps {
   /** Names the chart for screen readers. */
@@ -36,6 +37,9 @@ export interface TimelineProps {
   /** Hours the data was not recorded: a lane there has an unknown holder, not an empty slot. */
   unobserved?: readonly { firstHour: number; lastHour: number }[];
   hoursPerSecond?: number;
+  /** The value a band (`TimelineSpan.band`) is drawn full thickness at: the largest
+   * any band reaches, so every lane shares one scale. */
+  bandMax?: number;
   /** `full` asks for every row, for text read out rather than shown. */
   tooltip?: (lane: TimelineLane, span: TimelineSpan | null, hour: number, full?: boolean) => TooltipContent | null;
   /** What the timeline shows at the moment shown, as text for keyboard and screen-reader users. */
@@ -82,6 +86,19 @@ export default function Timeline(props: TimelineProps) {
     let zoomedFor = '';
     const holders = new Map<string, { id: string | null; previous: TimelineSpan | null; current: TimelineSpan | null; t: number }>();
     const images = new Map<string, HTMLImageElement>();
+    // Each lane's bands as last drawn: hover and Jump to describe what is drawn under the pointer.
+    // Rebuilt from the lanes shown at each draw (a lane gone is dropped), reusing a lane's
+    // layout while its lane and view are unchanged, so pointer movement lays nothing out.
+    let layouts = new Map<string, CachedBands>();
+    // The span and hour under a pointer in the plot: a band's drawn column describes the span
+    // and step it draws (`bandHitAt`), even a short band moved off its own hours; elsewhere
+    // the span holding the pointer's hour.
+    const pointed = (lane: TimelineLane, px: number, hour: number): { span: TimelineSpan | null; hour: number } => {
+      const bands = layouts.get(lane.id)?.bands;
+      const hit = bands && bandHitAt(bands, px, hour);
+      if (hit) return { span: lane.spans.find(span => span.id === hit.spanId) ?? null, hour: hit.hour };
+      return { span: spanAt(lane.spans, Math.floor(hour)), hour: Math.floor(hour) };
+    };
 
     const plotWidth = () => Math.max(8, element.clientWidth - left - PAD_RIGHT);
     const toX = (hour: number) => left + (hour - x[0]) / Math.max(1e-9, x[1] - x[0]) * plotWidth();
@@ -124,11 +141,12 @@ export default function Timeline(props: TimelineProps) {
       context.clearRect(0, 0, layoutWidth, layoutHeight);
 
       // The left column fits its longest slot or holder name, measured over the whole campaign.
-      const key = p.lanes.map(lane => `${lane.label}|${lane.spans.map(span => span.label).join('|')}`).join('\n');
+      // A lane's identity is measured too, since the column names it.
+      const key = p.lanes.map(lane => `${lane.label}|${lane.identity?.label ?? ''}|${lane.spans.map(span => span.label).join('|')}`).join('\n');
       if (key !== labelKey) {
         labelKey = key;
         context.font = font(tokens, tokens.fontSize.body, 500);
-        const texts = p.lanes.flatMap(lane => [lane.label, p.emptyLabel ?? 'Empty', ...lane.spans.map(span => span.label)]);
+        const texts = p.lanes.flatMap(lane => [lane.label, p.emptyLabel ?? 'Empty', ...(lane.identity ? [lane.identity.label] : []), ...lane.spans.map(span => span.label)]);
         fitted = fitLabelWidth(texts, text => context.measureText(text).width, 120, 280, ICON + 30);
       }
       left = leftColumn(fitted, layoutWidth);
@@ -162,6 +180,9 @@ export default function Timeline(props: TimelineProps) {
       for (const label of ticks.labels) context.fillText(label.text, toX(label.hour), AXIS_HEIGHT / 2);
 
       let animating = false;
+      // Each lane's bands, placed together so gaps between its spans stay visible too.
+      layouts = laneBandLayouts(p.lanes, `${x[0]}:${x[1]}:${left}:${right}:${p.playhead}:${p.bandMax}`, layouts,
+        lane => laneBands(lane.spans, p.playhead, toX, value => bandHalf(value, p.bandMax ?? 1, 1, 12), left, right));
       const holderHour = p.playhead ?? p.extent[1];
       const unknown = inSpans(p.unobserved, Math.floor(holderHour));
       p.lanes.forEach((lane, index) => {
@@ -177,8 +198,10 @@ export default function Timeline(props: TimelineProps) {
         state.t = tokens.reducedMotion ? 1 : Math.min(1, state.t + info.dt / FADE_MS);
         if (state.t < 1) animating = true;
         holders.set(lane.id, state);
+        // An ended lane's name and icon are faded.
+        const fade = lane.muted ? 0.55 : 1;
         const holder = (span: TimelineSpan | null, alpha: number) => {
-          context.globalAlpha = alpha;
+          context.globalAlpha = alpha * fade;
           context.textAlign = 'left'; context.textBaseline = 'middle';
           if (span) {
             drawIcon(span.icon, 10, centre - ICON / 2, ICON);
@@ -194,23 +217,37 @@ export default function Timeline(props: TimelineProps) {
         };
         if (state.t < 1) holder(state.previous, 1 - state.t);
         holder(state.current, state.t);
+        context.globalAlpha = fade;
         context.fillStyle = tokens.muted; context.font = font(tokens, tokens.fontSize.small);
         context.textAlign = 'left'; context.textBaseline = 'middle';
         context.fillText(lane.label, ICON + 18, centre + 8, left - ICON - 28);
+        context.globalAlpha = 1;
 
         context.save();
         context.beginPath(); context.rect(left, AXIS_HEIGHT - 2, plotWidth() + 10, bottom); context.clip();
+        const bands = layouts.get(lane.id)?.bands;
         for (const span of lane.spans) {
           const hours = barHours(span, p.playhead);
           if (!hours) continue;
-          const from = Math.max(left, toX(hours[0]) + 1);
-          const to = Math.min(right, toX(hours[1]) - 1);
-          if (to - from < 1.5) continue;
           // A law keeps its escalation shade even while held (signed off, mock-up politics-4);
           // other held spans are accented.
           const fill = span.shade != null ? mix(tokens.surface, tokens.accent, 0.3 + 0.6 * span.shade)
             : span.emphasis ? mix(tokens.surface, tokens.accent, 0.55) : mix(tokens.surface, tokens.text, 0.1);
           context.fillStyle = fill;
+          if (span.band) {
+            // A band: its thickness follows the span's value, in whole pixel columns by the
+            // kit's rule (`bandOutlines`), with no padding, so no recorded band vanishes.
+            for (const group of bands?.outlines.get(span.id) ?? []) {
+              context.beginPath();
+              for (const edge of group) { context.lineTo(edge.x0, centre - edge.half); context.lineTo(edge.x1, centre - edge.half); }
+              for (const edge of [...group].reverse()) { context.lineTo(edge.x1, centre + edge.half); context.lineTo(edge.x0, centre + edge.half); }
+              context.closePath(); context.fill();
+            }
+            continue;
+          }
+          const from = Math.max(left, toX(hours[0]) + 1);
+          const to = Math.min(right, toX(hours[1]) - 1);
+          if (to - from < 1.5) continue;
           context.beginPath(); context.roundRect(from, centre - 12, to - from, 24, 5); context.fill();
           let textX = from + 7;
           if ((lane.icons ?? p.showIcons) && span.icon && to - from > 28) { drawIcon(span.icon, from + 2, centre - BAR_ICON / 2, BAR_ICON); textX = from + BAR_ICON + 6; }
@@ -238,10 +275,10 @@ export default function Timeline(props: TimelineProps) {
       // A tooltip opened from the keyboard wins over a pointer resting on the chart.
       if (pointer && index != null && p.tooltip && !keyed.current && !quiet.current) {
         const lane = p.lanes[index];
-        const hour = pointer.x < left ? holderHour : Math.min(hourAt(pointer.x), p.playhead ?? Infinity);
-        const span = spanAt(lane.spans, Math.floor(hour));
-        const content = p.tooltip(lane, span && span.firstHour <= (p.playhead ?? Infinity) ? span : null, Math.floor(hour));
-        if (content) showTooltip(owner, content, pointer.clientX, pointer.clientY, `${lane.id}:${span?.id ?? ''}:${Math.floor(hour)}`); else hideTooltip(owner);
+        const { span, hour } = pointer.x < left ? { span: spanAt(lane.spans, Math.floor(holderHour)), hour: Math.floor(holderHour) }
+          : pointed(lane, pointer.x, Math.min(hourAt(pointer.x), p.playhead ?? Infinity));
+        const content = p.tooltip(lane, span && span.firstHour <= (p.playhead ?? Infinity) ? span : null, hour);
+        if (content) showTooltip(owner, content, pointer.clientX, pointer.clientY, `${lane.id}:${span?.id ?? ''}:${hour}`); else hideTooltip(owner);
       } else if (!keyed.current) hideTooltip(owner);
       element.style.cursor = drag?.mode === 'pan' ? 'grabbing' : pointer && pointer.y < AXIS_HEIGHT && pointer.x > left ? 'ew-resize' : 'default';
 
@@ -296,9 +333,11 @@ export default function Timeline(props: TimelineProps) {
     const menu = (event: MouseEvent) => {
       const handler = latest.current.onContextMenu;
       const point = local(event);
-      if (!handler || point.x < left || laneAt(point.y, latest.current.lanes.length) == null) return;
+      const index = laneAt(point.y, latest.current.lanes.length);
+      if (!handler || point.x < left || index == null) return;
       event.preventDefault();
-      handler(Math.floor(Math.min(hourAt(point.x), latest.current.playhead ?? Infinity)), event.clientX, event.clientY);
+      // Jump to what is drawn under the pointer: a band column's step, else the pointer's hour.
+      handler(pointed(latest.current.lanes[index], point.x, Math.min(hourAt(point.x), latest.current.playhead ?? Infinity)).hour, event.clientX, event.clientY);
     };
     element.addEventListener('pointerdown', down);
     element.addEventListener('pointermove', move);
@@ -337,15 +376,14 @@ export default function Timeline(props: TimelineProps) {
   const refreshKeyed = useRef<() => void>(() => {});
   // After Escape, no tooltip until the pointer moves again.
   const quiet = useRef(false);
-  // A lane's bars the keyboard can reach: those shown, inside the range and up to the playhead.
   // The hours in view (zoom included), as last drawn.
   const viewed = useRef<readonly [number, number] | null>(null);
+  // Where the keyboard can stop in a lane: each bar shown, and each step of a band, inside
+  // the view and up to the playhead (`laneStops`, on the kit's `keyStops`).
   const barsOf = (lane: number) => {
     const p = latest.current;
     const [from, to] = viewed.current ?? p.extent;
-    const end = Math.min(p.playhead ?? to, to);
-    // A bar is drawn from its first hour to its end, cut at the playhead.
-    return p.lanes[lane]?.spans.filter(span => span.firstHour <= end && Math.min(span.lastHour + 1, p.playhead ?? Infinity) > from) ?? [];
+    return laneStops(p.lanes[lane]?.spans ?? [], from, to, p.playhead);
   };
   const [spoken, setSpoken] = useState('');
   // Scrolls the nearest scrolling container so a keyboard-selected lane is in view.
@@ -374,16 +412,19 @@ export default function Timeline(props: TimelineProps) {
     const lane = p.lanes[at.lane];
     if (!lane) { keyed.current = null; hideTooltip(owner); setSpoken(''); return; }
     const bars = barsOf(at.lane);
-    // The selected bar is followed by id; one zoomed out of view gives way to the nearest in view.
+    // The selected stop is followed by id; one zoomed out of view gives way to the nearest in view.
     const same = at.spanId == null ? -1 : bars.findIndex(bar => bar.id === at.spanId);
     at.span = same >= 0 ? same : Math.max(0, Math.min(at.span, bars.length - 1));
     at.spanId = bars[at.span]?.id;
-    const span = bars[at.span] ?? null;
+    const stop = bars[at.span] ?? null;
+    const span = stop?.span ?? null;
     // With no bar in view, the lane is described at an hour in view, never one outside it.
     const [viewFrom, viewTo] = viewed.current ?? p.extent;
     // A view lying after the playback moment shows nothing yet: nothing is described.
     if (!span && p.playhead != null && viewFrom > p.playhead) { hideTooltip(owner); setSpoken(`${lane.label}: not reached yet`); return; }
-    const hour = span ? Math.max(span.firstHour, viewFrom) : Math.floor(Math.max(viewFrom, Math.min(p.playhead ?? viewTo, viewTo)));
+    // A stop is described at its whole hour, as hover floors the pointer's, so a band's
+    // stop gives the value of its step.
+    const hour = stop ? Math.floor(stop.hour) : Math.floor(Math.max(viewFrom, Math.min(p.playhead ?? viewTo, viewTo)));
     // With no bar reachable, the lane's holder at that hour (as hover resolves it), not an empty slot.
     const holder = span ?? spanAt(lane.spans, hour);
     const shown = holder && holder.firstHour <= (p.playhead ?? Infinity) ? holder : null;
@@ -392,7 +433,7 @@ export default function Timeline(props: TimelineProps) {
     const bounds = canvas.current.getBoundingClientRect();
     // Layout pixels to screen pixels: the widget's Size zoom scales the canvas.
     const scale = canvas.current.offsetHeight ? bounds.height / canvas.current.offsetHeight : 1;
-    showTooltip(owner, content, bounds.left + bounds.width / 2, bounds.top + (AXIS_HEIGHT + (at.lane + 1) * ROW_HEIGHT) * scale, `key:${lane.id}:${shown?.id ?? ''}`);
+    showTooltip(owner, content, bounds.left + bounds.width / 2, bounds.top + (AXIS_HEIGHT + (at.lane + 1) * ROW_HEIGHT) * scale, `key:${lane.id}:${stop?.id ?? shown?.id ?? ''}`);
     // Read out in full: every row, not only those the window fits.
     const full = p.tooltip(lane, shown, hour, true) ?? content;
     setSpoken([full.title, full.subtitle, ...full.rows.map(row => row.value ? `${row.label} ${row.value}` : row.label), full.description, full.note]
@@ -435,9 +476,9 @@ export default function Timeline(props: TimelineProps) {
     }
     if (event.key === 'Escape' && keyed.current) { keyed.current = null; quiet.current = true; hideTooltip(owner); setSpoken(''); return; }
     if (event.key === 'Escape' && zoomed) { event.preventDefault(); controls.current?.dispatch({ type: 'reset' }); }
-    // The keyboard's Jump to: the selected bar's first hour shown, else the playhead.
+    // The keyboard's Jump to: the selected stop's hour, else the playhead.
     const selected = keyed.current ? barsOf(keyed.current.lane)[keyed.current.span] : undefined;
-    const menuHour = selected ? Math.max(selected.firstHour, (viewed.current ?? props.extent)[0]) : props.playhead;
+    const menuHour = selected ? selected.hour : props.playhead;
     if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && menuHour != null) {
       event.preventDefault();
       const bounds = canvas.current!.getBoundingClientRect();
