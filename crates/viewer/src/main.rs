@@ -1373,8 +1373,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.naval_combats,
             counter_report.unanchored
         );
-        for reason in &counter_report.refused_tokens {
-            println!("  refused token: {reason}");
+        for warning in counter_report.warnings() {
+            println!("{warning}");
         }
         // counters: faction-theatre pins
         let pings = &counter_report.faction_ping_limits;
