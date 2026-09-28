@@ -5,6 +5,25 @@ import { bandHalf, bandHitAt, bandOutlines, laneBandLayouts, laneBands, laneStop
 const toX = (hour: number) => hour;
 const same = (value: number) => value;
 
+/** Asserts a layout is linear in its size: the best of several timed runs at 4n steps
+ * takes under eight times as long as at n (linear work takes about four times, a quadratic
+ * pass sixteen). A ratio of best times holds on a busy machine, where a fixed time does not. */
+function assertLinear(make: (steps: number) => () => unknown) {
+  const best = (run: () => unknown) => {
+    for (let round = 0; round < 3; round++) run();
+    let fastest = Infinity;
+    for (let round = 0; round < 9; round++) {
+      const started = performance.now();
+      run();
+      fastest = Math.min(fastest, performance.now() - started);
+    }
+    return fastest;
+  };
+  const small = best(make(5_000));
+  const large = best(make(20_000));
+  assert.ok(large < small * 8, `5,000 steps ${small.toFixed(2)} ms, 20,000 steps ${large.toFixed(2)} ms`);
+}
+
 test('a band has one flat stretch per step, cut to the hours shown', () => {
   const steps = [{ firstHour: 0, lastHour: 9, value: 2 }, { firstHour: 10, lastHour: 29, value: 5 }];
   assert.deepEqual(bandOutlines(steps, 0, 30, toX, same, 0, 1000), [[{ x0: 0, x1: 10, half: 2 }, { x0: 10, x1: 30, half: 5 }]]);
@@ -227,32 +246,24 @@ test('hover and Jump to describe the band drawn under the pointer, even one move
   assert.deepEqual(bandHitAt(wide, 42.7, 42.7), { spanId: 'w', hour: 42 });
 });
 
-test('a fragmented band is laid out in well under a frame', () => {
-  // Finding: 20,000 one-hour steps separated by missing hours across a 500 px plot, so 20,000
-  // runs narrower than a pixel compete for 500 columns.
-  const band = Array.from({ length: 20_000 }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2, value: 1 + (index % 5) }));
-  const span = { id: 'f', firstHour: 0, lastHour: 39_998, label: 'F', band };
-  const toFragmentX = (hour: number) => 120 + hour / 80;
-  // Warm up, then time the layout the timeline makes for a lane, and the plain outlines:
-  // the best of several runs, so a collection or a busy machine does not decide it (a
-  // quadratic pass takes tens of milliseconds every time).
-  const best = (run: () => unknown) => {
-    for (let round = 0; round < 5; round++) run();
-    let fastest = Infinity;
-    for (let round = 0; round < 7; round++) {
-      const started = performance.now();
-      run();
-      fastest = Math.min(fastest, performance.now() - started);
-    }
-    return fastest;
+test('a fragmented band is laid out in time linear in its steps', () => {
+  // Finding: 20,000 one-hour steps separated by missing hours across a 500 px plot, so the
+  // runs, narrower than a pixel, compete for 500 columns; a quadratic pass took 41-82 ms.
+  const fragmented = (steps: number) => {
+    const band = Array.from({ length: steps }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2, value: 1 + (index % 5) }));
+    const toX = (hour: number) => 120 + hour / (steps / 250);
+    return { band, span: { id: 'f', firstHour: 0, lastHour: steps * 2 - 2, label: 'F', band }, toX, to: steps * 2 };
   };
-  const bands = laneBands([span], null, toFragmentX, same, 120, 620);
-  const outlines = bandOutlines(band, 0, 40_000, toFragmentX, same, 120, 620);
-  const lane = best(() => laneBands([span], null, toFragmentX, same, 120, 620));
-  const plain = best(() => bandOutlines(band, 0, 40_000, toFragmentX, same, 120, 620));
+  const big = fragmented(20_000);
+  const bands = laneBands([big.span], null, big.toX, same, 120, 620);
   assert.ok(bands.columns.size > 0 && bands.columns.size <= 500);
-  assert.ok(outlines.length > 0);
-  assert.ok(lane < 10 && plain < 10, `lane ${lane.toFixed(1)} ms, outlines ${plain.toFixed(1)} ms`);
+  assert.ok(bandOutlines(big.band, 0, big.to, big.toX, same, 120, 620).length > 0);
+  // Linear, not quadratic: four times the steps take about four times as long, never the
+  // sixteen a quadratic pass would. A ratio, not a time, so a busy machine cannot fail it.
+  for (const layout of [
+    (f: ReturnType<typeof fragmented>) => laneBands([f.span], null, f.toX, same, 120, 620),
+    (f: ReturnType<typeof fragmented>) => bandOutlines(f.band, 0, f.to, f.toX, same, 120, 620),
+  ]) assertLinear(steps => { const f = fragmented(steps); return () => layout(f); });
 });
 
 test('lane layouts are rebuilt from the lanes shown and reused while nothing changes', () => {
@@ -301,13 +312,14 @@ test('a span whose last hour is the view’s first, partial hour is reachable th
 
 test('keyboard stops are found in one pass over a long band', () => {
   // Finding: 20,000 steps; a scan per stop took about 200 million comparisons.
-  const band = Array.from({ length: 20_000 }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2 + 1, value: index % 7 }));
-  const span = { id: 'long', firstHour: 0, lastHour: 39_999, label: 'Long', band };
-  const started = performance.now();
-  const stops = laneStops([span], 0.5, 40_000, null);
-  const elapsed = performance.now() - started;
+  const long = (steps: number) => {
+    const band = Array.from({ length: steps }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2 + 1, value: index % 7 }));
+    return { span: { id: 'long', firstHour: 0, lastHour: steps * 2 - 1, label: 'Long', band }, to: steps * 2 };
+  };
+  const { span, to } = long(20_000);
+  const stops = laneStops([span], 0.5, to, null);
   assert.equal(stops.length, 20_000);
   assert.deepEqual(stops.slice(0, 2).map(stop => [stop.id, stop.hour]), [['long@0', 0.5], ['long@2', 2]]);
   assert.equal(stops.at(-1)!.id, 'long@39998');
-  assert.ok(elapsed < 100, `took ${elapsed.toFixed(1)} ms`);
+  assertLinear(steps => { const l = long(steps); return () => laneStops([l.span], 0.5, l.to, null); });
 });
