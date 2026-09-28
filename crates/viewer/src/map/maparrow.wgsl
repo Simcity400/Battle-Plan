@@ -7,19 +7,17 @@
 // `vBodyUvScale`, `fCullingOffset`, the `ANIM_TEXTURE` texture scroll, the mask
 // channel weighting, the HSV saturation and value boost (1.5/1.0 for the head
 // shader, 2.0/1.5 for the no-head one), the 50 % lighting blend, the distance
-// fog and the day/night blend at 0.2, and both fade laws --- uv fractions for
-// the head shader, absolute map units for the no-head one.
+// fog and the day/night blend at 0.2, both fade laws --- uv fractions for
+// the head shader, absolute map units for the no-head one --- and the no-head
+// shader's second shadow. `CalculateTerrainNormal` takes its desktop path: the
+// `NO_SHADER_TEXTURE_LOD` early out is only defined on the OpenGL backend
+// (`142414D70`), so the terrain-atlas and water normals apply, with integer
+// atlas LODs and an equal four-tile blend, unlike the terrain pass.
 //
 // Dropped, with the reason:
 //
 // * Generated mip levels: not verified on pair H.
 //   Authored texture mip levels are retained.
-// * The `#ifndef NO_SHADER_TEXTURE_LOD` half of `CalculateTerrainNormal`, the
-//   terrain-atlas and water normals. The shipped shader has an explicit
-//   `#ifdef NO_SHADER_TEXTURE_LOD return normal;` early out that returns the
-//   heightmap normal alone, and that branch is what this port takes. The
-//   consequence is `vWaterValue = 0`, so `MAP_ARROW_NORMALS_STR_WATER` never
-//   applies and an arrow over water does not get the water's uv push.
 //
 // Two inputs are fed zero rather than dropped, because a replay has neither:
 // `vTime_IsSelected_FadeInOut.y`, the selection blink, and
@@ -28,11 +26,14 @@
 
 /// `gfx/FX/constants.fxh:225`.
 const MAP_ARROW_NORMALS_STR_TERR: f32 = 0.0125;
-/// `:226`. Reached only through `vWaterValue`, which this port leaves at zero.
+/// `:226`.
 const MAP_ARROW_NORMALS_STR_WATER: f32 = 0.08;
 /// `:223`, `:224`.
 const MAP_ARROW_SEL_BLINK_SPEED: f32 = 5.5;
 const MAP_ARROW_SEL_BLINK_RANGE: f32 = 0.7;
+/// `:170`, the weight `CalculateLighting` and the no-head shader's second
+/// shadow both pass to `GetShadowScaled`.
+const SHADOW_WEIGHT_TERRAIN: f32 = 0.7;
 
 @group(1) @binding(0) var arrow_mask_texture: texture_2d<f32>;
 @group(1) @binding(1) var arrow_pattern_texture: texture_2d<f32>;
@@ -40,6 +41,13 @@ const MAP_ARROW_SEL_BLINK_RANGE: f32 = 0.7;
 @group(1) @binding(3) var linear_wrap: sampler;
 @group(1) @binding(4) var linear_clamp: sampler;
 @group(1) @binding(5) var point_wrap: sampler;
+@group(1) @binding(6) var terrain_id_texture: texture_2d<f32>;
+@group(1) @binding(7) var height_texture: texture_2d<f32>;
+@group(1) @binding(8) var terrain_normal_texture: texture_2d<f32>;
+@group(1) @binding(9) var lean_texture1: texture_2d<f32>;
+@group(1) @binding(10) var lean_texture2: texture_2d<f32>;
+@group(1) @binding(11) var terrain_wrap: sampler;
+@group(1) @binding(12) var point_clamp: sampler;
 
 /// `ConstantBuffer(3, 32)` reduced to what the port reads, plus the viewer's own
 /// world-wrap offset in the slot the engine already keeps it in:
@@ -54,6 +62,7 @@ struct ArrowSlot {
     secondary_body_uv_scale: f32,
     texture_variant_scale: f32,
     culling_offset: f32,
+    shadow_factor: f32,
     normal_map_factor: f32,
     total_length: f32,
     uv_to_absolute_length: f32,
@@ -137,11 +146,49 @@ fn arrow_rgb_to_hsv(rgb: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(h, s, c_max);
 }
 
-/// `CalculateTerrainNormal` under `NO_SHADER_TEXTURE_LOD`: the heightmap normal
-/// alone, with the shipped `.rbg` swizzle and the 0.5 bias.
-fn arrow_terrain_normal(uv_terrain: vec2<f32>) -> vec3<f32> {
-    let sampled = textureSample(height_normal_texture, linear_clamp, wrap_u(uv_terrain));
-    return normalize(sampled.rbg - 0.5);
+struct ArrowNormal {
+    normal: vec3<f32>,
+    water: f32,
+}
+
+fn arrow_blend_normals(topology: vec3<f32>, land: vec3<f32>, wave: vec3<f32>, water: f32) -> vec3<f32> {
+    let normal = mix(topology, vec3<f32>(0.0, 1.0, 0.0), water);
+    let tile = normalize(mix(land, wave, water));
+    let tangent = normalize(cross(normal, vec3<f32>(0.0, 0.0, 1.0)));
+    let bitangent = normalize(cross(tangent, normal));
+    return tangent * tile.x + normal * tile.y + bitangent * tile.z;
+}
+
+/// `maparrow.shader::CalculateTerrainNormal`, desktop LOD path. Textures are
+/// bound by `render_functions::map_arrow_draw@14125ACB0`.
+fn arrow_terrain_normal(uv: vec2<f32>, world: vec2<f32>) -> ArrowNormal {
+    var normal = normalize(textureSample(height_normal_texture, terrain_wrap, uv).rbg - 0.5);
+    let ids = textureSample(terrain_id_texture, point_clamp, world / globals.map_size.xy);
+    let index = calculate_map_tex_index(ids);
+    let tile_repeat = uv * TERRAIN_TILE_FREQ * vec2<f32>(globals.map_size.x / globals.map_size.y, 1.0);
+    let lod = clamp(trunc(mipmap_level(tile_repeat) - 0.5), 0.0, 6.0);
+    let mip_texels = pow(2.0, ATLAS_TEXEL_POW2_EXPONENT - lod);
+    let uv_w = sample_terrain_uv(index.index_u.w, index.index_v.w, tile_repeat, mip_texels);
+    var tile = textureSampleLevel(terrain_normal_texture, terrain_wrap, uv_w, lod).rbg - 0.5;
+    if index.all_same < 1.0 {
+        let uv_x = sample_terrain_uv(index.index_u.x, index.index_v.x, tile_repeat, mip_texels);
+        let uv_y = sample_terrain_uv(index.index_u.y, index.index_v.y, tile_repeat, mip_texels);
+        let uv_z = sample_terrain_uv(index.index_u.z, index.index_v.z, tile_repeat, mip_texels);
+        tile += textureSampleLevel(terrain_normal_texture, terrain_wrap, uv_x, lod).rbg - 0.5;
+        tile += textureSampleLevel(terrain_normal_texture, terrain_wrap, uv_y, lod).rbg - 0.5;
+        tile += textureSampleLevel(terrain_normal_texture, terrain_wrap, uv_z, lod).rbg - 0.5;
+        tile *= 0.25;
+    }
+    let height = textureSample(height_texture, linear_clamp, uv).x * 255.0;
+    let water = 1.0 - levels1(height, WATER_HEIGHT * 10.0 - 5.0, WATER_HEIGHT * 10.0);
+    let wave = sample_water(uv, arrow.time_selected_fade.x, lean_texture1, lean_texture2, terrain_wrap);
+    return ArrowNormal(arrow_blend_normals(normal, tile, wave.normal, water), water);
+}
+
+/// `ArrowPixelShaderNoHead` applies its second shadow to the whole lighting
+/// blend, before fog/night; `ArrowPixelShader` leaves that blend unchanged.
+fn arrow_lit_color(color: vec3<f32>, lit: vec3<f32>, heads: bool, shadow: f32) -> vec3<f32> {
+    return mix(color, lit, 0.5) * select(shadow, 1.0, heads);
 }
 
 /// Plain Phong: maparrow declares no PDX_IMPROVED_BLINN_PHONG.
@@ -188,8 +235,9 @@ fn arrow_fragment(input: ArrowOut) -> @location(0) vec4<f32> {
         uv = vec2<f32>(input.uv_head_variant.x, body_v);
     }
 
-    let normal = arrow.normal_map_factor * arrow_terrain_normal(input.uv_terrain);
-    let water_value = 0.0;
+    let surface = arrow_terrain_normal(input.uv_terrain, input.prepos.xz);
+    let normal = arrow.normal_map_factor * surface.normal;
+    let water_value = surface.water;
     uv += normal.xz * MAP_ARROW_NORMALS_STR_TERR * select(normal.y, 1.0, heads);
     uv -= normal.xz * (water_value * MAP_ARROW_NORMALS_STR_WATER);
     if heads {
@@ -252,8 +300,9 @@ fn arrow_fragment(input: ArrowOut) -> @location(0) vec4<f32> {
     tint = vec4<f32>(arrow_hsv_to_rgb(hsv), tint.a);
 
     var color = saturate(pattern * tint);
-    let lit = arrow_lighting(input.prepos, normal, color, get_shadow_scaled(0.7, input.clip));
-    var rgb = mix(color.rgb, lit, 0.5);
+    let lit = arrow_lighting(input.prepos, normal, color, get_shadow_scaled(SHADOW_WEIGHT_TERRAIN, input.clip));
+    let shadow = get_shadow_scaled(arrow.shadow_factor * SHADOW_WEIGHT_TERRAIN, input.clip);
+    var rgb = arrow_lit_color(color.rgb, lit, heads, shadow);
     rgb = apply_distance_fog(rgb, input.prepos);
     rgb = day_night_with_blend(rgb, calc_globe_normal(input.prepos.xz), 0.2);
     return vec4<f32>(rgb, color.a * mask_value);
