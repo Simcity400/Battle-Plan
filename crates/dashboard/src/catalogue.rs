@@ -162,6 +162,9 @@ pub struct Catalogue {
     pub verification: Vec<String>,
     /// Standing notes about the recorded content, such as unparsed lines.
     pub warnings: Vec<String>,
+    /// The recording client's game language (the replay identity's, without
+    /// its `l_`): the language of text the game stored already localised.
+    pub recorded_language: String,
     /// Every key whose text [`Catalogue::localised_with`] or
     /// [`Catalogue::localise_in`] refused so far, by reason: a fact of the
     /// content, reported by [`Catalogue::refusal_lines`].
@@ -174,11 +177,10 @@ pub struct Catalogue {
 impl Catalogue {
     fn load(source: &Source, options: &ContentOptions) -> io::Result<Self> {
         let mut verification = Vec::new();
-        content::check_replay(
-            &source.replay(),
-            options.allow_unverified,
-            &mut verification,
-        )?;
+        let replay = source.replay();
+        content::check_replay(&replay, options.allow_unverified, &mut verification)?;
+        let language = &replay.identity.language;
+        let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
         let mut warnings = Vec::new();
         let content = source.content(&options.options)?;
         let localisation = content::localisation(source, options)?;
@@ -198,6 +200,7 @@ impl Catalogue {
             sprites,
             verification,
             warnings,
+            recorded_language,
             refused: Mutex::default(),
             scripted: OnceLock::new(),
         })
@@ -255,6 +258,9 @@ impl Catalogue {
                 Ok(crate::scripted_text::ScriptedContent {
                     names,
                     recursion,
+                    recorded_language: self.recorded_language.clone(),
+                    layers: Arc::clone(&self.content),
+                    environment: OnceLock::new(),
                     tag_aliases: std::sync::Arc::new(tag_aliases),
                 })
             })
@@ -280,6 +286,9 @@ impl Catalogue {
             .lines("texts are");
         if let Some(Ok(scripted)) = self.scripted.get() {
             lines.extend(scripted.names.warnings.iter().cloned());
+            if let Some(Ok(environment)) = scripted.environment.get() {
+                lines.extend(environment.warnings.iter().cloned());
+            }
         }
         lines
     }
@@ -490,6 +499,7 @@ pub(crate) mod tests {
             sprites,
             verification: Vec::new(),
             warnings: Vec::new(),
+            recorded_language: "english".into(),
             refused: Mutex::default(),
             scripted: OnceLock::new(),
         };

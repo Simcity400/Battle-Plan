@@ -410,6 +410,7 @@ impl Capacities {
     /// Presize the political tables from their live demand
     /// (`country_scale::observe_politics`).
     pub fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
+        crate::country_scale::raise(&mut self.intel.agency_names, demand.agency_name_bytes);
         self.hired_advisors
             .raise_for_active_characters(demand.active_characters);
         self.governance

@@ -1,5 +1,6 @@
-//! Current country colour bits, cosmetic tag, name operands and the ruling
-//! party's first leader's character and trait tokens, sampled hourly.
+//! Current country colour bits, cosmetic tag, name operands, the retained old
+//! names and the ruling party's first leader's character and trait tokens,
+//! sampled hourly.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -127,6 +128,9 @@ impl Captured {
                 graphical_culture: r.graphical_culture.as_bytes().to_vec(),
                 leader_character: r.leader_character,
                 leader_traits: span(r).unwrap().to_vec(),
+                old_name: r.old_names.map(|names| names[0].as_bytes().to_vec()),
+                old_adjective: r.old_names.map(|names| names[1].as_bytes().to_vec()),
+                old_definite_name: r.old_names.map(|names| names[2].as_bytes().to_vec()),
             },
         )]
     }
@@ -168,6 +172,7 @@ mod tests {
         assert_eq!(rows[0].alpha, 0x3f800000);
         assert_eq!(rows[0].leader_character, Some(0));
         assert_eq!(rows[0].leader_traits, [0x2ff1, 7]);
+        assert_eq!(rows[0].old_name, None);
         // A span past the captured traits withholds the table.
         capture.rows.rows[0].leader_traits_len = 3;
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));

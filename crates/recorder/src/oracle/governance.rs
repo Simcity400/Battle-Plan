@@ -1633,6 +1633,7 @@ mod tests {
             war_support_raw: 0,
             convoys_raw: None,
             peace_conference_participant: 0,
+            manpower_residual: 0,
         };
         let frame = DecodedFrame {
             branch: 1,

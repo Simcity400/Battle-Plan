@@ -164,12 +164,14 @@ pub struct PoliticsDemand {
     pub advisor_token_bytes: usize,
     pub faction_advisors: usize,
     pub faction_advisor_bytes: usize,
+    pub agency_name_bytes: usize,
 }
 
 impl PoliticsDemand {
     /// Whether any field exceeds `seen`'s.
     pub fn exceeds(&self, seen: &Self) -> bool {
-        self.active_characters > seen.active_characters
+        self.agency_name_bytes > seen.agency_name_bytes
+            || self.active_characters > seen.active_characters
             || self.party_leaders > seen.party_leaders
             || self.leader_traits > seen.leader_traits
             || self.civil_wars > seen.civil_wars
@@ -182,6 +184,7 @@ impl PoliticsDemand {
     /// The field-wise maximum.
     pub fn max(self, other: Self) -> Self {
         Self {
+            agency_name_bytes: self.agency_name_bytes.max(other.agency_name_bytes),
             active_characters: self.active_characters.max(other.active_characters),
             party_leaders: self.party_leaders.max(other.party_leaders),
             leader_traits: self.leader_traits.max(other.leader_traits),
@@ -213,7 +216,9 @@ pub fn observe_politics(memory: &impl Memory, base: usize) -> Option<PoliticsDem
     };
     let tokens = engine::advisor_tokens::walk(memory, base, state, &mut [], &mut []);
     let factions = engine::cfaction::walk_advisors(memory, base, state, &mut [], &mut []);
+    let agencies = engine::cintelligence_agency::walk(memory, base, state, &mut [], &mut []);
     Some(PoliticsDemand {
+        agency_name_bytes: agencies.required_bytes,
         active_characters: demand(engine::ccountry_characters::walk_active(
             memory,
             base,
@@ -358,6 +363,7 @@ mod tests {
         });
         assert!(sizing.extended != before);
         let seen = PoliticsDemand {
+            agency_name_bytes: 0,
             active_characters: 5,
             party_leaders: 3,
             leader_traits: 2,

@@ -212,6 +212,22 @@ fn compare_characters(
             row.name_token_id,
             &expected.token,
         );
+        // 1413DB0B0: enum 1 -> male, 2 -> female, every other value ->
+        // undefined. Compare the writer's projection without changing storage.
+        let gender: &[u8] = match row.gender {
+            1 => b"male",
+            2 => b"female",
+            _ => b"undefined",
+        };
+        if let Some(expected) = &expected.gender {
+            text_value(report, &format!("{label}.gender"), gender, expected);
+        } else {
+            report.difference(
+                format!("{label}.gender"),
+                String::from_utf8_lossy(gender),
+                "missing serialized gender",
+            );
+        }
         // F913A0 writes `template` exactly when CCharacter +20 is set, as the
         // lexer literal of the template's tag (CCharacterTemplate +8).
         match (row.template_present != 0, &expected.template) {
@@ -730,6 +746,7 @@ mod tests {
                 template_file: b"common/characters/GER.txt".to_vec(),
                 template_line: 3,
                 template_generated: 0,
+                gender: 0,
             }]));
         *frame.tables[TableId::UnitLeaders.index()] =
             TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
@@ -772,6 +789,7 @@ mod tests {
                     character,
                     saved::Character {
                         portraits: None,
+                        gender: Some(b"undefined".to_vec()),
                         id: character,
                         country: Some(b"GER".to_vec()),
                         roster: 1,
@@ -856,6 +874,37 @@ mod tests {
             compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
             assert_eq!(report.differences.len(), 1, "hour {hour}");
         }
+    }
+
+    #[test]
+    fn gender_oracle_rejects_mismatch_and_absent_writer_field() {
+        let (mut frame, mut pack, country) = fixture();
+        let links = BTreeMap::from([(102, &country)]);
+        let tokens = BTreeMap::from([
+            (5, b"script_token".as_slice()),
+            (6, b"assigned"),
+            (7, b"progress"),
+            (8, b"GER_template"),
+        ]);
+        if let TableView::Complete(TableRows::Characters(rows)) =
+            &mut *frame.tables[TableId::Characters.index()]
+        {
+            rows[0].gender = 2;
+        }
+        let mut report = Report::default();
+        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        pack.manager
+            .as_mut()
+            .unwrap()
+            .characters
+            .values_mut()
+            .next()
+            .unwrap()
+            .gender = None;
+        let mut report = Report::default();
+        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
     }
 
     #[test]

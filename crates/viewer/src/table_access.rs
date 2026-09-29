@@ -197,10 +197,7 @@ pub fn refuse(refusals: &mut Refusals, reason: String) {
     *refusals.entry(reason).or_default() += 1;
 }
 
-/// A key as the lexer identifies it: only ASCII A-Z fold (see `TokenKeys`).
-pub fn fold_token(key: &str) -> String {
-    key.to_ascii_lowercase()
-}
+pub use dashboard::triggers::fold_token;
 
 /// Content keys grouped by the lexer's token identity. `AddDynamicToken`
 /// (1424A65A0) finds an existing token with 1424A5EE0: an FNV-1a hash that

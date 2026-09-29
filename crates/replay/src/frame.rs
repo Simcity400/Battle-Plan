@@ -2008,6 +2008,7 @@ mod tests {
                         war_support_raw: 99_999,
                         convoys_raw: None,
                         peace_conference_participant: 0,
+                        manpower_residual: 0,
                     }])),
                     TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
                         id: 2,

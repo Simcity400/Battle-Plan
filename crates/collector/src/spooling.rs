@@ -2190,6 +2190,7 @@ fn state_table(
             owner: state.owner,
             controller: state.controller,
             movement_infrastructure: state.movement_infrastructure,
+            manpower_available: state.manpower_available,
             custom_name: text(state.custom_name).unwrap_or_default().to_vec(),
             owner_name: text(state.owner_name).unwrap_or_default().to_vec(),
         },
@@ -2336,6 +2337,7 @@ fn decoded_with_costs(
                         && country.stability_raw == previous.stability_raw
                         && country.war_support_raw == previous.war_support_raw
                         && country.convoys_raw == previous.convoys_raw
+                        && country.manpower_residual == previous.manpower_residual
                         && country.peace_conference_participant
                             == previous.peace_conference_participant
                 },
@@ -2349,6 +2351,7 @@ fn decoded_with_costs(
                     war_support_raw: country.war_support_raw,
                     convoys_raw: country.convoys_raw,
                     peace_conference_participant: country.peace_conference_participant,
+                    manpower_residual: country.manpower_residual,
                 },
             ),
             scalar_table::<tables::CountryLinks, _>(
@@ -3479,6 +3482,7 @@ mod tests {
             war_support_raw: -9_007_199_254_740_993,
             convoys_raw: Some(i64::MAX),
             peace_conference_participant: 1,
+            manpower_residual: -19,
         };
         captured.countries_result = Outcome::Rows { len: 1 };
         captured.links[0] = engine::ccountry::LinkRow {
@@ -3534,6 +3538,7 @@ mod tests {
                 war_support_raw: -9_007_199_254_740_993,
                 convoys_raw: Some(i64::MAX),
                 peace_conference_participant: 1,
+                manpower_residual: -19,
             }]))
         );
         let TableView::Complete(divisions) = &*frame.tables[TableId::Divisions.index()] else {

@@ -592,6 +592,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         war_support_raw: 54_321,
         convoys_raw: optional_scalar(5),
         peace_conference_participant: u8::from(index.is_multiple_of(11) && id == 7),
+        manpower_residual: [i32::MIN, -1, 0, i32::MAX][index % 4],
     };
     let mut countries = vec![country(7, 1), country(19, 3)];
     let mut links = vec![
@@ -649,6 +650,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             owner: [2, 19][(index / 37 + id as usize) % 2],
             controller: [0, 7, 19][(index / 5 + id as usize) % 3],
             movement_infrastructure: [i64::MIN, 0, 100_000, i64::MAX][(index + id as usize) % 4],
+            manpower_available: [i32::MIN, 0, i32::MAX][(index + id as usize) % 3],
             // Empty, ASCII and non-UTF-8 names, changing on their own cadence.
             custom_name: match (index / 11 + id as usize) % 3 {
                 0 => Vec::new(),

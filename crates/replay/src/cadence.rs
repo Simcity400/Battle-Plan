@@ -187,20 +187,22 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::IntelNetworks => Daily(0),
         TableId::DynamicModifiers | TableId::ActiveIdeas => Daily(15),
         TableId::OperativeMemberships | TableId::WingCumulative => Daily(16),
+        // Script effects can change the selected balance and its presentation
+        // in any tick, and scripted text reads them in the hour.
+        TableId::PowerBalances
+        | TableId::PowerBalanceMembers
+        | TableId::PowerBalanceRanges
+        | TableId::PowerBalanceOverrides => Cadence::Hourly,
         // Scientists and ScientistSkills, one roster walk, are hourly: a
         // tactic's character-scope has_trait (1403D7D20) reads the roster
         // (CCountryCharacters+0xA0) and each scientist's trait count
         // (CScientist+0x3C), which change at any hour. CRecruitScientistCommand
         // (141EDEE70) inserts into the roster (1410D8D70) and add_scientist_trait
         // (1404919B0) appends a trait (1413F5530).
-        TableId::PowerBalances
-        | TableId::PowerBalanceMembers
-        | TableId::PowerBalanceRanges
-        | TableId::PowerBalanceOverrides
         // The fuel status and its consumers come from one walk. CountryFuel's
         // ring sums cover the last 24 hourly fuel updates, so reads on this
         // daily slot tile time exactly.
-        | TableId::CountryFuel
+        TableId::CountryFuel
         | TableId::CountryFuelConsumers
         | TableId::CountryExperience
         | TableId::HubMotorization
@@ -214,7 +216,10 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::TheatreAreas => Daily(18),
         // Raids stay hourly: RaidTargets is the same walk's map-icon projection.
         TableId::SunkShips | TableId::Focus | TableId::CompletedFocuses => Daily(19),
-        TableId::IntelligenceAgencies | TableId::OperationTokens => Daily(20),
+        TableId::OperationTokens => Daily(20),
+        // Agency creation and renaming can run in any tick, and GetAgency
+        // reads the stored created byte and name in the hour.
+        TableId::IntelligenceAgencies => Cadence::Hourly,
         // The persistent role and trait tables are hourly: a tactic's
         // character-scope has_trait (1403D7D20) reads them, and their writers
         // run at any hour. CUnitLeader::AddTrait (140BFF6F0) fills the trait
@@ -391,6 +396,12 @@ mod tests {
             TableId::UnitLeaderTraitExperience,
             TableId::Scientists,
             TableId::ScientistSkills,
+            // Scripted text reads the balance and the agency of the hour.
+            TableId::PowerBalances,
+            TableId::PowerBalanceMembers,
+            TableId::PowerBalanceRanges,
+            TableId::PowerBalanceOverrides,
+            TableId::IntelligenceAgencies,
         ] {
             assert_eq!(cadence(table), Cadence::Hourly, "{table:?}");
             assert_eq!(refresh_text(table), "hourly");

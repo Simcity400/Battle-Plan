@@ -558,6 +558,7 @@ impl Captured {
                 id: row.id,
                 country: row.country,
                 name_token_id: row.name_token_id,
+                gender: row.gender,
                 roster: row.roster,
                 ordinal: row.ordinal,
                 name: owned(bytes, row.name_start, row.name_len),
@@ -1440,8 +1441,8 @@ const MASK_TRAIT_FALLBACK: u32 = MASK_TRAITS | MASK_EXPERIENCE;
 
 /// View span offsets, lengths and fault masks in `View::read` order:
 /// identity, country, name token id and template pointer, name/token headers,
-/// leader map head, unit leader pointer, advisor map head.
-const VIEW_OFFSETS: [usize; 7] = [
+/// leader map head, unit leader pointer, advisor map head, gender.
+const VIEW_OFFSETS: [usize; 8] = [
     0,
     ccharacter::COUNTRY,
     ccharacter::NAME_TOKEN_ID,
@@ -1449,9 +1450,10 @@ const VIEW_OFFSETS: [usize; 7] = [
     ccharacter::LEADER_MAP_HEAD,
     ccharacter::UNIT_LEADER,
     ccharacter::ADVISOR_MAP_HEAD,
+    ccharacter::GENDER,
 ];
-const VIEW_LENS: [usize; 7] = [16, 4, ccharacter::NAME_TOKEN_SPAN, 64, 16, 8, 16];
-const VIEW_MASKS: [u32; 7] = [
+const VIEW_LENS: [usize; 8] = [16, 4, ccharacter::NAME_TOKEN_SPAN, 64, 16, 8, 16, 4];
+const VIEW_MASKS: [u32; 8] = [
     MASK_ALL,
     MASK_COUNTRY,
     MASK_CHARACTERS,
@@ -1459,6 +1461,7 @@ const VIEW_MASKS: [u32; 7] = [
     MASK_LEADERS,
     MASK_UNIT_LINK,
     MASK_ADVISORS,
+    MASK_CHARACTERS,
 ];
 
 /// Roster pointer pages are read in 32-entry chunks, exactly like the typed
@@ -2431,14 +2434,14 @@ struct Dead {
 /// arena. Each roster occurrence owns its offsets; aliases never share them.
 #[derive(Clone, Copy)]
 struct ViewCopy {
-    starts: [u32; 7],
+    starts: [u32; 8],
     unit_id: Option<u32>,
 }
 
 impl Default for ViewCopy {
     fn default() -> Self {
         Self {
-            starts: [u32::MAX; 7],
+            starts: [u32::MAX; 8],
             unit_id: None,
         }
     }
@@ -2499,7 +2502,7 @@ fn copy_view(
     }
     // Resume only later independent fields, each at most once; the failed
     // field is never retried.
-    for index in completed + 1..7 {
+    for index in completed + 1..VIEW_OFFSETS.len() {
         if lengths[index] == 0 {
             continue;
         }
@@ -4778,6 +4781,7 @@ mod character_target_hint_tests {
             Some(4),
             Some(5),
             Some(6),
+            Some(7),
         ] {
             let memory = TraceMemory {
                 memory: engine::memory::SliceMemory {
@@ -4795,10 +4799,10 @@ mod character_target_hint_tests {
             };
             let copied = copy_view(&mut job, &memory, IMAGE, pointer);
             let calls = memory.calls.borrow().clone();
-            let expected_calls: Vec<_> = [0, 0x68, 0x18, 0x28, 0x98, 0xa8, 0xb0]
+            let expected_calls: Vec<_> = VIEW_OFFSETS
                 .into_iter()
-                .zip([16, 4, 16, 64, 16, 8, 16])
-                .take(if failed_call == Some(0) { 1 } else { 7 })
+                .zip(VIEW_LENS)
+                .take(if failed_call == Some(0) { 1 } else { VIEW_OFFSETS.len() })
                 .map(|(offset, len)| (pointer + offset, len))
                 .collect();
             assert_eq!(calls, expected_calls);
@@ -4878,8 +4882,9 @@ mod character_target_hint_tests {
                 }
             }
         }
-        // The descriptor and its optional unit ID replace the 128-byte image.
-        assert_eq!(size_of::<ViewCopy>(), 36);
+        // Eight span offsets (including gender) and the optional unit ID
+        // replace the old 128-byte image.
+        assert_eq!(size_of::<ViewCopy>(), 40);
     }
 
     // Frozen pre-hint text path: independent caller sequencing, with the same
@@ -7202,10 +7207,10 @@ mod tests {
         );
         // All six groups already used one guard each. Hints preserve every
         // observation and byte, including the ordinary view and heap groups.
-        // The view's name token span carries the template pointer (+12).
+        // The view carries the template pointer (+12) and gender (+4).
         assert_eq!(
             (source.guards.get(), source.spans.get(), source.bytes.get()),
-            (6, 23, 346 + 12)
+            (6, 24, 346 + 12 + 4)
         );
     }
 
@@ -7237,9 +7242,10 @@ mod tests {
         // inputs (three spans, 13 bytes: none is an army leader). Each of
         // the 32 views' name token spans also carries the template pointer
         // (12 bytes, no read); none of these characters has a template.
+        // Gender adds one four-byte span per view in the same scatter.
         assert_eq!(
             (memory.guards.get(), memory.spans.get(), memory.bytes.get()),
-            (588 + 3, 1204 + 9, 16_872 + 39 + 32 * 12)
+            (588 + 3, 1204 + 9 + 32, 16_872 + 39 + 32 * (12 + 4))
         );
     }
 

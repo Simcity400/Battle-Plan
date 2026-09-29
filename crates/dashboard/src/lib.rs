@@ -14,7 +14,9 @@ pub mod scope;
 pub mod scripted_text;
 pub mod service;
 pub mod source;
+pub mod state_resources;
 pub mod transport;
+pub mod triggers;
 
 pub use config::Config;
 pub use dto::*;

@@ -175,7 +175,7 @@ impl Context<'_, '_> {
             ),
             _ => {}
         }
-        combine(&mut result, used.not());
+        combine(&mut result, used.negate());
         combine(
             &mut result,
             self.condition(&mut lines, &kind.show_target, scopes, "raid show_target"),

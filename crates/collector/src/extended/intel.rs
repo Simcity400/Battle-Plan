@@ -110,6 +110,7 @@ pub struct Capacities {
     pub intel_scratch: usize,
     pub subject_names: usize,
     pub autonomy_names: usize,
+    pub agency_names: usize,
     pub variable_entries: usize,
     pub variable_names: usize,
     pub tokens: usize,
@@ -125,6 +126,7 @@ impl Default for Capacities {
             intel_scratch: 16_384,
             subject_names: 16_384,
             autonomy_names: 32_768,
+            agency_names: 32_768,
             variable_entries: 16_384,
             variable_names: 512 * 1024,
             tokens: 32_768,
@@ -318,6 +320,7 @@ pub struct Captured {
     country_intel_outcome: Outcome,
     subject_names: Arena<u8>,
     autonomy_names: Arena<u8>,
+    agency_names: Arena<u8>,
     variable_entries: Arena<cvariables::Row>,
     variable_names: Arena<u8>,
     tokens: Arena<u32>,
@@ -355,6 +358,7 @@ impl Captured {
                 intel_scratch: 0,
                 subject_names: 0,
                 autonomy_names: 0,
+                agency_names: 0,
                 variable_entries: 0,
                 variable_names: 0,
                 tokens: 0,
@@ -405,6 +409,7 @@ impl Captured {
             country_intel_outcome: UNCAPTURED,
             subject_names: Arena::new(capacity.subject_names),
             autonomy_names: Arena::new(capacity.autonomy_names),
+            agency_names: Arena::new(capacity.agency_names),
             variable_entries: Arena::new(capacity.variable_entries),
             variable_names: Arena::new(capacity.variable_names),
             tokens: Arena::new(capacity.tokens),
@@ -536,6 +541,7 @@ impl Captured {
         self.country_intel_outcome = UNCAPTURED;
         self.subject_names.reset();
         self.autonomy_names.reset();
+        self.agency_names.reset();
         self.variable_entries.reset();
         self.variable_names.reset();
         self.tokens.reset();
@@ -561,6 +567,7 @@ impl Captured {
             + self.subject_snapshot.allocated_bytes()
             + self.subject_names.allocated_bytes()
             + self.autonomy_names.allocated_bytes()
+            + self.agency_names.allocated_bytes()
             + self.variable_entries.allocated_bytes()
             + self.variable_names.allocated_bytes()
             + self.tokens.allocated_bytes()
@@ -592,6 +599,7 @@ impl Captured {
         self.country_intel.grow(&mut capacity.rows[15]);
         self.subject_names.grow(&mut capacity.subject_names);
         self.autonomy_names.grow(&mut capacity.autonomy_names);
+        self.agency_names.grow(&mut capacity.agency_names);
         self.variable_entries.grow(&mut capacity.variable_entries);
         self.variable_names.grow(&mut capacity.variable_names);
         self.tokens.grow(&mut capacity.tokens);
@@ -788,7 +796,12 @@ impl Captured {
                 },
             );
             ticks[2] = elapsed(begin);
-            plain!(3, agencies, cintelligence_agency::walk);
+            let begin = qpc();
+            capture_named(&mut self.agencies, &mut self.agency_names, |rows, names| {
+                let _reads = read_accounting::table(TABLES[3]);
+                ArenaRead::from(cintelligence_agency::walk(memory, base, state, rows, names))
+            });
+            ticks[3] = elapsed(begin);
             plain!(4, operatives, coperative_leader::walk);
             plain!(5, cryptology, ccryptology::walk);
             plain!(6, networks, ccountry_intel_network::walk);
@@ -985,18 +998,7 @@ impl Captured {
             )),
             sample(self.subjects_table(outcomes[1])),
             sample(self.autonomy_table(outcomes[2])),
-            sample(table::<tables::IntelligenceAgencies, _>(
-                outcomes[3],
-                &self.agencies.rows,
-                |r| rows::IntelligenceAgencyRow {
-                    country: r.country,
-                    upgrade_progress_raw: r.upgrade_progress_raw,
-                    defense_raw: r.defense_raw,
-                    active_count: r.active_count,
-                    admission_ceiling: r.admission_ceiling,
-                    unknown_f0: r.unknown_f0,
-                },
-            )),
+            sample(self.agencies_table(outcomes[3])),
             sample(table::<tables::OperativeMemberships, _>(
                 outcomes[4],
                 &self.operatives.rows,
@@ -1115,6 +1117,30 @@ impl Captured {
             cancel: r.cancel,
             autonomy_ratio: r.autonomy_ratio,
             state: literal(&self.subject_names.first, r.state).to_vec(),
+        })
+    }
+
+    fn agencies_table(&self, outcome: Outcome) -> TableView {
+        if !valid_arena(
+            outcome,
+            &self.agencies.rows,
+            &self.agency_names.first,
+            self.agency_names.len,
+            self.agency_names.required,
+        ) {
+            return unavailable("agency name lies outside captured arena");
+        }
+        table::<tables::IntelligenceAgencies, _>(outcome, &self.agencies.rows, |r| {
+            rows::IntelligenceAgencyRow {
+                country: r.country,
+                upgrade_progress_raw: r.upgrade_progress_raw,
+                defense_raw: r.defense_raw,
+                active_count: r.active_count,
+                admission_ceiling: r.admission_ceiling,
+                unknown_f0: r.unknown_f0,
+                name: literal(&self.agency_names.first, r.name).to_vec(),
+                created: r.created,
+            }
         })
     }
 
@@ -1396,6 +1422,12 @@ fn literal(bytes: &[u8], name: Name) -> &[u8] {
 impl ArenaRow<u8> for csubject_relation::Row {
     fn valid(&self, len: usize) -> bool {
         name_fits(self.state, len)
+    }
+}
+
+impl ArenaRow<u8> for cintelligence_agency::Row {
+    fn valid(&self, len: usize) -> bool {
+        name_fits(self.name, len)
     }
 }
 
@@ -2656,6 +2688,7 @@ pub(crate) fn intel_shadow_fixture(value: i64) -> Captured {
         intel_scratch: 0,
         subject_names: 0,
         autonomy_names: 0,
+        agency_names: 0,
         variable_entries: 0,
         variable_names: 0,
         tokens: 0,
@@ -2785,6 +2818,7 @@ mod tests {
             intel_scratch: 32,
             subject_names: 0,
             autonomy_names: 0,
+            agency_names: 0,
             variable_entries: 0,
             variable_names: 0,
             tokens: 0,
@@ -3100,6 +3134,7 @@ mod tests {
             intel_scratch: 2 * engine::country_intel_row::STRIDE,
             subject_names: 8,
             autonomy_names: 8,
+            agency_names: 8,
             variable_entries: 4,
             variable_names: 8,
             tokens: 8,
@@ -5131,6 +5166,7 @@ mod tests {
             intel_scratch: 2 * engine::country_intel_row::STRIDE,
             subject_names: 8,
             autonomy_names: 8,
+            agency_names: 8,
             variable_entries: 4,
             variable_names: 8,
             tokens: 8,
