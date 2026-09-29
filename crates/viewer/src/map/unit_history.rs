@@ -26,8 +26,14 @@
 //! Divisions (transports included) and railway guns share the land path,
 //! naval formations the ship path. Naval combat graphics are destroyed on
 //! land-gate loss (`14127CAA9`); aircraft and trains have their own
-//! managers. Not modelled: the per-frame creation budget
-//! `MAX_MESHES_LOADED_PER_FRAME` (see the viewer README).
+//! managers. The shared creation counter is in [`super::mesh_budget`].
+//!
+//! Native slots are the 38 visual buckets of `14127F000`; this layer receives
+//! the viewer's existing stack/formation reconstruction, not their recorded
+//! ownership. Land uses its reconstructed visual order with identity ties;
+//! ships keep the stationary reconstruction. Deferred native selection runs
+//! in parallel (`140B3E400`, `1412785B0`), so worker completion/RNG order is
+//! not recoverable; all queued creations still become visible on one frame.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -36,7 +42,8 @@ use std::{
 
 use super::{
     camera::Camera,
-    map_buildings::province_view,
+    map_buildings::{BuildingHistory, province_view},
+    mesh_budget::Budget,
     models::{ModelField, ModelInstance},
     unit_models::Gates,
 };
@@ -56,6 +63,12 @@ pub struct Target {
     pub identity: u64,
     /// The hull within a formation; 0 for a land figure.
     pub part: u32,
+    /// Land: the reconstructed native visual slot `141277810` walks in
+    /// order; stacks the reconstruction puts in one slot follow `identity`.
+    pub order: u32,
+    /// The ship a hull shows (`1416542A0` keeps a hull while its ship and
+    /// graphics stay); a land figure's representative.
+    pub occupant: u64,
     pub kind: Kind,
     pub mesh: usize,
     pub instance: ModelInstance,
@@ -164,13 +177,54 @@ struct Province {
     /// The arrow flag of its last update (`+0x175E`).
     arrows: bool,
     entities: BTreeMap<Slot, Entity>,
+    /// `141277810`'s round-robin cursor (`+0x18`): the visual slot
+    /// ([`Target::order`]) it last visited, not its successor, whichever
+    /// representative holds it now. `1412771B0` does not reset it.
+    land_cursor: u32,
+    /// Visits since each land slot was last queued (`+0x30 + slot * 0x50`).
+    land_visits: BTreeMap<Slot, u16>,
 }
 
 impl Province {
-    /// The update of a province in view.
-    fn visit(&mut self, targets: Option<&BTreeMap<Slot, Parts>>, frame: Frame, epoch: &mut u32) {
+    /// Queues land creations against what the counter leaves (`141277810`),
+    /// then grows existing figures and attaches hulls, which spend it inline
+    /// (`14127F000`). The queued land is created after every province's
+    /// visit ([`Province::create_land`]).
+    fn visit(
+        &mut self,
+        targets: Option<&BTreeMap<Slot, Parts>>,
+        frame: Frame,
+        epoch: &mut u32,
+        budget: &mut Budget,
+    ) -> Vec<(Slot, bool)> {
         let placed = |slot: &Slot| targets.is_some_and(|targets| targets.contains_key(slot));
         let was = self.shown;
+        let mut queued = Vec::new();
+        if frame.shown[Kind::Land as usize] {
+            let mut lands: Vec<_> = targets
+                .into_iter()
+                .flatten()
+                .filter(|(slot, _)| slot.0 == Kind::Land)
+                .map(|(slot, parts)| (parts.first_key_value().unwrap().1.order, *slot))
+                .collect();
+            lands.sort_unstable();
+            let start = lands.partition_point(|&(order, _)| order < self.land_cursor);
+            for &(order, slot) in lands[start..].iter().chain(&lands[..start]) {
+                if queued.len() >= budget.remaining() {
+                    break;
+                }
+                self.land_cursor = order;
+                let visits = self.land_visits.entry(slot).or_default();
+                *visits += 1;
+                // A slot is queued when its representative changed, which
+                // here means it has no entity, or on its hundredth visit.
+                if frame.steady || *visits > 99 || !self.entities.contains_key(&slot) {
+                    *visits = 0;
+                    queued.push((slot, was[Kind::Land as usize]));
+                }
+            }
+        }
+        self.land_visits.retain(|slot, _| placed(slot));
         self.entities.retain(|slot, entity| {
             let kind = slot.0 as usize;
             if frame.steady {
@@ -191,51 +245,126 @@ impl Province {
             if !frame.shown[kind] {
                 continue;
             }
-            // A stack whose figure changes gets a new entity (1412785B0).
-            if slot.0 == Kind::Land
-                && self.entities.get(&slot).is_some_and(|entity| {
-                    entity.parts.iter().any(|(part, old)| {
-                        parts
-                            .get(part)
-                            .is_some_and(|new| new.mesh != old.target.mesh)
-                    })
-                })
-            {
-                self.entities.remove(&slot);
+            if slot.0 == Kind::Land {
+                if let Some(entity) = self.entities.get_mut(&slot) {
+                    for (&index, &target) in parts {
+                        if let Some(part) = entity.parts.get_mut(&index) {
+                            // Transform/state follow this frame; the definition waits
+                            // for 141277810's periodic selection or pointer change.
+                            let mesh = part.target.mesh;
+                            part.target = target;
+                            part.target.mesh = mesh;
+                        }
+                    }
+                    entity.shrinking = false;
+                    entity.scale = if frame.steady {
+                        1.0
+                    } else {
+                        (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                    };
+                }
+                continue;
             }
-            let created = !self.entities.contains_key(&slot);
+            // 14127F000 acquires a formation root outside the counter, full
+            // size where ships were already shown, and grows it even while
+            // all its hulls wait.
             let entity = self.entities.entry(slot).or_insert_with(|| Entity {
                 kind: slot.0,
-                // 1412785B0 and 14127F000: full size where the kind was
-                // already shown.
                 scale: if frame.steady || was[kind] { 1.0 } else { 0.0 },
                 shrinking: false,
                 parts: BTreeMap::new(),
             });
-            // Hulls attach and detach under the formation's root without
-            // touching its scale (141653F00 -> 1416542A0).
+            // Hulls attach and detach under the root without touching its
+            // scale (141653F00 -> 1416542A0), slot 0 first.
             entity.parts.retain(|part, _| parts.contains_key(part));
             for (&index, &target) in parts {
-                let part = entity.parts.entry(index).or_insert_with(|| Part {
-                    target,
-                    epoch: incarnation(epoch, frame.steady),
+                let replace = entity.parts.get(&index).is_none_or(|part| {
+                    part.target.mesh != target.mesh || part.target.occupant != target.occupant
                 });
-                if part.target.mesh != target.mesh {
-                    part.epoch = incarnation(epoch, frame.steady);
+                if replace {
+                    // 141653F00 clears a stale support slot before attaching;
+                    // slot 0 attaches directly and keeps its old hull if held.
+                    if index != 0 {
+                        entity.parts.remove(&index);
+                    }
+                    if !budget.take() {
+                        continue;
+                    }
+                    entity.parts.insert(
+                        index,
+                        Part {
+                            target,
+                            epoch: incarnation(epoch, frame.steady),
+                        },
+                    );
+                } else if let Some(part) = entity.parts.get_mut(&index) {
+                    part.target = target;
                 }
-                part.target = target;
             }
             entity.shrinking = false;
-            if frame.steady {
-                entity.scale = 1.0;
-            } else if !created || slot.0 == Kind::Ship {
-                // Land creation is deferred until after 14127F000's growth
-                // pass; formations are created within it and grow at once.
-                entity.scale = (entity.scale + frame.delta * frame.gates.scale_up).min(1.0);
+            entity.scale = if frame.steady {
+                1.0
+            } else {
+                (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+            };
+        }
+        // 14127C910 keeps a newly shown kind's bit clear while the counter is
+        // spent, so what it creates next frame still grows from zero.
+        for kind in 0..2 {
+            if budget.remaining() != 0 || !frame.shown[kind] {
+                self.shown[kind] = frame.shown[kind];
             }
         }
-        self.shown = frame.shown;
         self.arrows = frame.arrows;
+        queued
+    }
+
+    /// `141276C20` for a request `141277810` queued: `1412785B0` recreates
+    /// the figure only if its definition changed, at the scale of the show
+    /// bit the request remembered.
+    fn create_land(
+        &mut self,
+        slot: Slot,
+        parts: &Parts,
+        was_shown: bool,
+        steady: bool,
+        epoch: &mut u32,
+        budget: &mut Budget,
+    ) {
+        let changed = self.entities.get(&slot).is_none_or(|entity| {
+            entity.parts.len() != parts.len()
+                || parts.iter().any(|(index, target)| {
+                    entity
+                        .parts
+                        .get(index)
+                        .is_none_or(|part| part.target.mesh != target.mesh)
+                })
+        });
+        if !changed {
+            return;
+        }
+        // 141276C20 has no budget guard; queued work can exceed the limit.
+        budget.charge();
+        self.entities.insert(
+            slot,
+            Entity {
+                kind: Kind::Land,
+                scale: if steady || was_shown { 1.0 } else { 0.0 },
+                shrinking: false,
+                parts: parts
+                    .iter()
+                    .map(|(&index, &target)| {
+                        (
+                            index,
+                            Part {
+                                target,
+                                epoch: incarnation(epoch, steady),
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+        );
     }
 
     /// The phase update of a province out of view. The gate-loss loops
@@ -249,6 +378,12 @@ impl Province {
         self.shown = [false; 2];
         self.arrows = false;
     }
+}
+
+/// One frame's unit and (when changed) building instance streams.
+pub struct FrameModels {
+    pub units: Vec<(usize, ModelInstance)>,
+    pub buildings: Option<Vec<(usize, ModelInstance)>>,
 }
 
 /// Every province's unit entities, advanced once per viewer frame.
@@ -299,36 +434,88 @@ impl History {
         self.steady = steady;
     }
 
+    #[cfg(test)]
+    pub(super) fn steady_for_test(&mut self, steady: bool) {
+        self.steady = steady;
+    }
+
+    pub(super) fn settle(&mut self) {
+        self.steady = true;
+    }
+
+    pub(super) fn restart_live(&mut self) {
+        self.reset(None);
+        self.last = None;
+        self.steady = false;
+    }
+
     /// Clears the unit slots of `provinces`, or of every province, as a load
     /// [`super::presentation::UnitRestart`]): their entities go and their
     /// show bits drop, so what shows next grows in on a new clock.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
         for (id, province) in &mut self.provinces {
             if provinces.is_none_or(|provinces| provinces.contains(id)) {
-                *province = Province::default();
+                *province = Province {
+                    land_cursor: province.land_cursor,
+                    ..Province::default()
+                };
             }
         }
     }
 
-    /// Advances one frame for `camera` and returns the models to draw.
-    pub fn update(
+    /// The scene's single frame walk: buildings then units per province,
+    /// followed by deferred land creation. Offline exports settle both histories.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_models(
+        &mut self,
+        camera: Camera,
+        viewport: [u32; 2],
+        time: f32,
+        gates: Gates,
+        limit: i32,
+        buildings: &mut BuildingHistory,
+        buildings_enabled: bool,
+    ) -> FrameModels {
+        let in_view = province_view(camera, viewport);
+        let bounds = Arc::clone(&self.bounds);
+        let mut buildings = buildings.frame(camera, viewport, time, buildings_enabled, self.steady);
+        let mut budget = Budget::new(limit, self.steady);
+        let placed = self.step_with(
+            time,
+            gates,
+            [gates.units(camera.height), gates.ships(camera.height)],
+            camera.height < gates.arrows,
+            |id| bounds.get(&id).is_some_and(|bounds| in_view(*bounds)),
+            &mut budget,
+            |id, budget| buildings.through(id, budget),
+        );
+        FrameModels {
+            units: placed,
+            buildings: buildings.finish(&mut budget),
+        }
+    }
+
+    #[cfg(test)]
+    fn update(
         &mut self,
         camera: Camera,
         viewport: [u32; 2],
         time: f32,
         gates: Gates,
     ) -> Vec<(usize, ModelInstance)> {
-        let in_view = province_view(camera, viewport);
-        let bounds = Arc::clone(&self.bounds);
-        self.step(
+        self.update_models(
+            camera,
+            viewport,
             time,
             gates,
-            [gates.units(camera.height), gates.ships(camera.height)],
-            camera.height < gates.arrows,
-            |id| bounds.get(&id).is_some_and(|bounds| in_view(*bounds)),
+            i32::MAX,
+            &mut BuildingHistory::default(),
+            false,
         )
+        .units
     }
 
+    #[cfg(test)]
     pub(super) fn step(
         &mut self,
         time: f32,
@@ -336,6 +523,28 @@ impl History {
         shown: [bool; 2],
         arrows: bool,
         in_view: impl Fn(u32) -> bool,
+    ) -> Vec<(usize, ModelInstance)> {
+        self.step_with(
+            time,
+            gates,
+            shown,
+            arrows,
+            in_view,
+            &mut Budget::new(i32::MAX, self.steady),
+            |_, _| {},
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn step_with(
+        &mut self,
+        time: f32,
+        gates: Gates,
+        shown: [bool; 2],
+        arrows: bool,
+        in_view: impl Fn(u32) -> bool,
+        budget: &mut Budget,
+        mut buildings: impl FnMut(u32, &mut Budget),
     ) -> Vec<(usize, ModelInstance)> {
         if self.last.is_some_and(|previous| time < previous) {
             self.reset(None);
@@ -351,12 +560,30 @@ impl History {
         // The native literal, advanced before the province updates; never
         // indexed by the replay hour.
         self.phase = (self.phase + 1) % 100;
+        let mut queued = Vec::new();
         for (&id, province) in &mut self.provinces {
+            buildings(id, budget);
             if in_view(id) {
-                province.visit(self.targets.get(&id), frame, &mut self.epoch);
+                queued.extend(
+                    province
+                        .visit(self.targets.get(&id), frame, &mut self.epoch, budget)
+                        .into_iter()
+                        .map(|(slot, shown)| (id, slot, shown)),
+                );
             } else if self.steady || id % 100 == self.phase {
                 province.leave(self.steady);
             }
+        }
+        buildings(u32::MAX, budget);
+        for (id, slot, shown) in queued {
+            self.provinces.get_mut(&id).unwrap().create_land(
+                slot,
+                &self.targets[&id][&slot],
+                shown,
+                self.steady,
+                &mut self.epoch,
+                budget,
+            );
         }
         self.provinces
             .values()
@@ -385,6 +612,8 @@ pub(super) mod tests {
             kind,
             identity: u64::from(province),
             part: 0,
+            order: 0,
+            occupant: u64::from(province),
             mesh: 0,
             instance: ModelInstance {
                 scale: 1.0,
@@ -403,6 +632,100 @@ pub(super) mod tests {
 
     fn near(h: &mut History, time: f32) -> Vec<(usize, ModelInstance)> {
         h.step(time, GATES, [true; 2], true, |_| true)
+    }
+
+    fn limited(h: &mut History, time: f32, limit: i32) -> Vec<(usize, ModelInstance)> {
+        h.step_with(
+            time,
+            GATES,
+            [true; 2],
+            true,
+            |_| true,
+            &mut Budget::new(limit, h.steady),
+            |_, _| {},
+        )
+    }
+
+    #[test]
+    fn deferred_land_allowance_is_per_province_and_can_exceed_limit() {
+        let targets = [1, 2, 3]
+            .into_iter()
+            .flat_map(|province| {
+                (0..3).map(move |order| Target {
+                    order,
+                    identity: u64::from(province * 10 + order),
+                    mesh: (province * 10 + order) as usize,
+                    ..target(province, Kind::Land)
+                })
+            })
+            .collect();
+        let mut h = history(targets, false);
+        assert_eq!(
+            limited(&mut h, 0.0, 2)
+                .iter()
+                .map(|p| p.0)
+                .collect::<Vec<_>>(),
+            [10, 11, 20, 21, 30, 31]
+        );
+        assert_eq!(
+            limited(&mut h, 0.0, 2).len(),
+            9,
+            "same timestamp is still a new frame"
+        );
+    }
+
+    #[test]
+    fn the_land_cursor_is_a_visual_slot_kept_across_restarts() {
+        let land = |order, identity| Target {
+            order,
+            identity,
+            mesh: identity as usize,
+            ..target(1, Kind::Land)
+        };
+        let meshes = |placed: Vec<(usize, ModelInstance)>| {
+            placed.into_iter().map(|(mesh, _)| mesh).collect::<Vec<_>>()
+        };
+        let mut h = history(vec![land(0, 20), land(1, 30), land(2, 40)], false);
+        assert_eq!(meshes(limited(&mut h, 0.0, 1)), [20]);
+        assert_eq!(meshes(limited(&mut h, 0.1, 1)), [20, 30]);
+        h.reset(None);
+        assert_eq!(
+            meshes(limited(&mut h, 0.2, 1)),
+            [30],
+            "1412771B0 leaves the cursor on the last slot visited"
+        );
+        // A new representative in the cursor's slot is visited first.
+        h.set(vec![land(1, 10), land(2, 40)], Arc::default(), false);
+        assert_eq!(meshes(limited(&mut h, 0.3, 1)), [10]);
+    }
+
+    #[test]
+    fn spent_inline_budget_holds_show_bits_and_next_land_starts_at_zero() {
+        let mut h = history(vec![target(1, Kind::Ship), target(2, Kind::Land)], false);
+        assert_eq!(limited(&mut h, 0.0, 1).len(), 1);
+        assert_eq!(h.provinces[&2].shown, [false; 2]);
+        let next = limited(&mut h, 0.25, 1);
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[1].1.scale, 0.0);
+        assert_eq!(next[0].1.scale, 0.5);
+    }
+
+    #[test]
+    fn capital_replacement_holds_but_support_replacement_clears_before_budget_check() {
+        let hull = |part, occupant| Target {
+            part,
+            occupant,
+            ..target(1, Kind::Ship)
+        };
+        let mut h = history(vec![hull(0, 10), hull(1, 11)], false);
+        let old = limited(&mut h, 0.0, 2);
+        h.set(vec![hull(0, 20), hull(1, 21)], Arc::default(), false);
+        let held = limited(&mut h, 0.1, 0);
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].1.animation_epoch, old[0].1.animation_epoch);
+        let next = limited(&mut h, 0.2, 2);
+        assert_eq!(next.len(), 2);
+        assert_ne!(next[0].1.animation_epoch, old[0].1.animation_epoch);
     }
 
     #[test]
@@ -475,6 +798,14 @@ pub(super) mod tests {
         replacement.mesh = 2;
         h.set(vec![replacement], Arc::default(), false);
         assert_eq!(h.step(1.1, GATES, [true; 2], true, |_| false), full);
+        let held = near(&mut h, 1.2);
+        assert_eq!(
+            held[0].0, 0,
+            "same representative waits for the periodic selector"
+        );
+        for _ in 0..97 {
+            near(&mut h, 1.2);
+        }
         let new = near(&mut h, 1.2);
         assert_eq!(new[0].0, 2);
         assert_eq!(

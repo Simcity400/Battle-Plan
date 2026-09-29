@@ -666,6 +666,7 @@ pub fn dump_png(
         )?;
         // fog of war
         scene.set_fog_of_war(&queue, &layers.intel_map.texels, layers.intel_map.fog)?;
+        scene.settle_models();
         // `--settle`: play the preceding seconds, one frame a second, so entity
         // events and particles are under way when the frame renders.
         let steps = settle.ceil() as u32;
@@ -713,11 +714,8 @@ pub fn dump_png(
             render_banner(&scene, &device, &queue, text)?;
         }
         write_png(&scene, &device, &queue, path)?;
-        // After the PNG: the benchmark advances clocks a re-render cannot
-        // rewind, such as the weather particles'.
-        bench_frames(&mut scene, &device, &queue, request)?;
         let grid = scene.grid();
-        Ok(DumpReport {
+        let report = DumpReport {
             adapter: format!("{} ({:?})", info.name, info.backend),
             render_seconds,
             cpu_seconds,
@@ -739,8 +737,58 @@ pub fn dump_png(
             // shadows
             shadows: scene.shadows(),
             grading: scene.grading(),
-        })
+        };
+        // After the PNG and its report: diagnostics advance clocks a re-render
+        // cannot rewind, such as the weather particles'.
+        bench_frames(&mut scene, &device, &queue, request)?;
+        model_frames(&mut scene, &device, &queue, request, path, banner)?;
+        Ok(report)
     })
+}
+
+/// Diagnostic only: after the settled PNG, restart the model histories and
+/// export viewer frames at 120 Hz, each with the dump's banner. No game
+/// process or replay clock is advanced.
+fn model_frames(
+    scene: &mut Scene,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    request: Request<'_>,
+    path: &std::path::Path,
+    banner: Option<&str>,
+) -> io::Result<()> {
+    let Some(value) = std::env::var_os("BATTLE_PLAN_VIEWER_MODEL_FRAMES").or_else(|| std::env::var_os("HOI4_VIEWER_MODEL_FRAMES")) else {
+        return Ok(());
+    };
+    let count: u32 = value
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| {
+            io::Error::other("BATTLE_PLAN_VIEWER_MODEL_FRAMES must be an unsigned frame count")
+        })?;
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    scene.restart_live_models();
+    for frame in 0..count {
+        scene.render(
+            device,
+            queue,
+            Request {
+                animation_time: request.animation_time + frame as f32 / 120.0,
+                ..request
+            },
+        )?;
+        if let Some(text) = banner {
+            render_banner(scene, device, queue, text)?;
+        }
+        let output = path.with_file_name(format!("{stem}-model-frame-{frame:03}.png"));
+        write_png(scene, device, queue, &output)?;
+        eprintln!(
+            "MODEL_FRAME frame={frame} units={} buildings={}",
+            scene.unit_models_drawn(),
+            scene.map_buildings_drawn()
+        );
+    }
+    Ok(())
 }
 
 /// Profiling only: `BATTLE_PLAN_VIEWER_BENCH_FRAMES=<n>` renders `n` more frames of
@@ -769,6 +817,9 @@ fn bench_frames(
             .map(|_| ())
             .map_err(io::Error::other)
     };
+    if std::env::var_os("BATTLE_PLAN_VIEWER_BENCH_MODELS").or_else(|| std::env::var_os("HOI4_VIEWER_BENCH_MODELS")).is_some() {
+        scene.restart_live_models();
+    }
     for frame in 0..frames {
         let step = (frame + 1) as f32 / 120.0;
         scene.label_frame(u64::from(frame));
