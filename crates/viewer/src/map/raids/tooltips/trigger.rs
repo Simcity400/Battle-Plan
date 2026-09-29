@@ -1,5 +1,6 @@
-//! Narrow adapter for raid diagnostic mode1. L4's shared trigger text can
-//! replace this module without changing the recorded schema or line rules.
+//! Raid diagnostic mode 1: condition traversal, native leaf keys and evaluator joins.
+//! Kept until the unified trigger evaluator after #52; localisation, arguments
+//! and scoped custom-tooltip expansion use the shared text code.
 use super::super::rules::Lines;
 use super::*;
 use installed_content::triggers::{Trigger, TriggerValue, Triggers};
@@ -175,8 +176,8 @@ impl Context<'_, '_> {
                         "TRIGGER_HAS_WAR_WITH"
                     },
                     &[
-                        ("TAG", Arg::Text(tag)),
-                        ("COUNTRY", Arg::Text(self.countries.name(country)?)),
+                        ("TAG", Arg::Text(&tag)),
+                        ("COUNTRY", Arg::Text(&self.countries.name(country)?)),
                     ],
                 )
             }
@@ -200,7 +201,8 @@ impl Context<'_, '_> {
                 } else {
                     key.into()
                 };
-                localise(self.loc, &key, &[])
+                // 1413931A0 passes the event scope to SScopeLocalizer (1402F5F40).
+                self.scoped_text(&key, scopes)
             }
             name => Err(format!("unsupported native trigger text form {name}")),
         }

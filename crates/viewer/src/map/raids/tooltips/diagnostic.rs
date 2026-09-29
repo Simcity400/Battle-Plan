@@ -21,7 +21,7 @@ impl Context<'_, '_> {
             &self.assets.equipment,
             &self.assets.equipment_groups,
             kind,
-            |key| self.country_localise(key),
+            |key| self.equipment_name(key),
             |key| {
                 let token = self.world.token_of(key.as_bytes())?.unwrap_or(0);
                 let rows = self
@@ -100,7 +100,10 @@ impl Context<'_, '_> {
         localise(
             self.loc,
             "raid_source_desc",
-            &[("WHAT", Arg::Text(what)), ("LOCATION", Arg::Text(location))],
+            &[
+                ("WHAT", Arg::Text(&what)),
+                ("LOCATION", Arg::Text(&location)),
+            ],
         )
     }
     fn plain(&self, key: &str) -> Result<String> {
@@ -121,7 +124,7 @@ impl Context<'_, '_> {
                         localise(
                             self.loc,
                             "raid_tooltip_trigger_title",
-                            &[("TITLE", Arg::Text(title))],
+                            &[("TITLE", Arg::Text(&title))],
                         )
                     }),
                 );
@@ -189,7 +192,7 @@ impl Context<'_, '_> {
                     localise(
                         self.loc,
                         "tooltip_raid_on_cooldown",
-                        &[("DAYS", Arg::Integer(days))],
+                        &[("DAYS", Arg::Int32(days))],
                     ),
                 );
                 combine(&mut result, Eval::False);
@@ -363,8 +366,8 @@ impl Context<'_, '_> {
                                 self.loc,
                                 "tooltip_raid_missing_equipment_entry",
                                 &[
-                                    ("EQUIPMENT", Arg::Text(name)),
-                                    ("AMOUNT", Arg::Integer(required.wrapping_sub(have))),
+                                    ("EQUIPMENT", Arg::Text(&name)),
+                                    ("AMOUNT", Arg::Int32(required.wrapping_sub(have))),
                                 ],
                             )
                         }),
@@ -386,7 +389,7 @@ impl Context<'_, '_> {
                 for (name, required) in order {
                     entry(
                         &format!("tooltip_raid_missing_equipment_entry: {name}"),
-                        self.country_localise(name),
+                        self.equipment_name(name),
                         required,
                         have(name),
                     );
@@ -411,19 +414,13 @@ impl Context<'_, '_> {
         }
         (met, lines)
     }
-    fn country_localise(&self, key: &str) -> Result<String> {
-        // 140BBA780 uses current viewer country's tag prefix, then plain key.
+    fn equipment_name(&self, key: &str) -> Result<String> {
         let operands = self
             .countries
             .operands(self.ours)
             .ok_or("viewer country naming operands absent")?
             .as_ref()?;
-        let prefixed = format!("{}_{}", operands.tag, key);
-        self.plain(if self.loc.get(&prefixed).is_some() {
-            &prefixed
-        } else {
-            key
-        })
+        crate::combat::text::country_localised(self.loc, Ok(&operands.tag), key)
     }
     pub(super) fn offer_denial<'a, 'w>(
         &self,
@@ -441,7 +438,7 @@ impl Context<'_, '_> {
                 localise(
                     self.loc,
                     "raid_insufficient_command_power",
-                    &[("COST", Arg::Fixed(kind.command_power_raw))],
+                    &[("COST", Arg::Fixed5(kind.command_power_raw))],
                 ),
             ),
             Err(reason) => add(&mut lines, "raid_insufficient_command_power", Err(reason)),
@@ -507,8 +504,8 @@ impl Context<'_, '_> {
                         self.loc,
                         "raid_unit_not_yet_at_source",
                         &[
-                            ("UNIT", Arg::Text(name)),
-                            ("SOURCE", Arg::Text(self.source_description(raid)?)),
+                            ("UNIT", Arg::Text(&name)),
+                            ("SOURCE", Arg::Text(&self.source_description(raid)?)),
                         ],
                     )
                 })(),
@@ -640,9 +637,12 @@ mod tests {
             assets,
             world: &world,
             loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &Err("no scripted content in this test".into()),
             ours: 0,
             countries: installed_content::country_names::CountryNames::read(frame, &loc),
             flag_exists: &|_| true,
+            scripted: Default::default(),
         });
     }
 

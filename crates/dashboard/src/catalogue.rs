@@ -236,33 +236,16 @@ impl Catalogue {
         self.localised_with(key, &[], view)
     }
 
-    /// The content the scripted text evaluator needs: the scripted
-    /// localisation names, with the files the port cannot read to their end,
-    /// and `NGame.MAX_SCRIPTED_LOC_RECURSION`, or why they cannot be read.
-    /// Their reading's warnings join [`Catalogue::refusal_lines`].
+    /// The content the scripted text evaluator needs
+    /// ([`crate::scripted_text::ScriptedContent::read`]), read once. Its
+    /// reading's warnings join [`Catalogue::refusal_lines`].
     pub fn scripted_content(&self) -> Result<&crate::scripted_text::ScriptedContent, String> {
         self.scripted
             .get_or_init(|| {
-                let layers = &self.content.layers;
-                let names = installed_content::scripted_localisation::names(layers).map_err(|error| {
-                    format!("common/scripted_localisation is unreadable: {error}")
-                })?;
-                let recursion = installed_content::defines::read(layers)
-                    .and_then(|defines| defines.int32("NGame", "MAX_SCRIPTED_LOC_RECURSION"))
-                    .map_err(|error| {
-                        format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}")
-                    })?;
-                let tag_aliases = installed_content::tag_aliases::read(layers).map_err(|error| {
-                    format!("common/country_tag_aliases is unreadable: {error}")
-                })?;
-                Ok(crate::scripted_text::ScriptedContent {
-                    names,
-                    recursion,
-                    recorded_language: self.recorded_language.clone(),
-                    layers: Arc::clone(&self.content),
-                    environment: OnceLock::new(),
-                    tag_aliases: std::sync::Arc::new(tag_aliases),
-                })
+                crate::scripted_text::ScriptedContent::read(
+                    Arc::clone(&self.content),
+                    self.recorded_language.clone(),
+                )
             })
             .as_ref()
             .map_err(Clone::clone)

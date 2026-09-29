@@ -87,7 +87,13 @@ impl<'a> ScriptedText<'a> {
             .map_err(Clone::clone)
     }
 
-    pub(super) fn entry(&self, object: Object, name: &str) -> Result<String, String> {
+    pub(super) fn entry(
+        &self,
+        object: Object,
+        name: &str,
+        scopes: &EventScopes,
+        active: usize,
+    ) -> Result<String, String> {
         if !self.content.names.unknown.is_empty() {
             return Err(format!(
                 "{name}: scripted localisation definitions are uncertain: {}",
@@ -97,31 +103,14 @@ impl<'a> ScriptedText<'a> {
         let Some(entry) = self.content.names.entries.get(name.as_bytes()) else {
             return Ok(String::new());
         };
+        let (bound, at) = bound_scope(object, scopes, active);
+        let bare = object != Object::Event;
         for text in &entry.texts {
             // 140A9CC20 skips a null value without checking its trigger.
             let Some(key) = &text.key else { continue };
             let trigger = text.trigger.as_ref().map_err(|e| format!("{name}: {e}"))?;
             if !trigger.0.is_empty() {
-                let root = Scope::Country(self.root);
-                // 1410CD900 / 1410CDDF0 bind a promoted object as THIS;
-                // ROOT/FROM stay the original event's and PREV is that event.
-                let this = match object {
-                    Object::Event => root,
-                    Object::Country(slot) => Scope::Country(slot),
-                    Object::State(id) => Scope::State(id.unwrap_or(crate::triggers::NULL_STATE)),
-                    Object::Character(id) => {
-                        return Err(format!(
-                            "{name}: character {id} event-scope triggers require a character scope (1410CDDF0); the shared evaluator currently accepts unit-leader scopes only"
-                        ));
-                    }
-                };
-                let scopes = Scopes {
-                    root,
-                    this,
-                    prev: Some(root),
-                    from: Some(root),
-                    ..Scopes::of(root)
-                };
+                let scopes = entry_scopes(&bound, at, bare, name)?;
                 let world = self
                     .world
                     .get_or_init(|| World::new(self.frame, self.environment()?.facts()))
@@ -141,7 +130,21 @@ impl<'a> ScriptedText<'a> {
             let key = key
                 .as_ref()
                 .map_err(|e| format!("scripted localisation {name}: {e}"))?;
-            return self.localisation.localise(key).map_err(|e| e.to_string());
+            let text = self.localisation.localise(key).map_err(|e| e.to_string())?;
+            // SScopeLocalizer (1402F6340) -> ExpandLocalizationWithEventScope
+            // (1410CF560): a new context in the evaluation scope, from depth
+            // 0. An entry that reaches itself would not end, so nesting as
+            // deep as MAX_SCRIPTED_LOC_RECURSION is refused.
+            let depth = self.nested.get();
+            if depth >= self.content.recursion {
+                return Err(format!(
+                    "scripted localisation {name} is nested {depth} entries deep, and each restarts at depth 0 (1410CF560)"
+                ));
+            }
+            self.nested.set(depth + 1);
+            let expanded = self.process(&text, 0, &bound, at);
+            self.nested.set(depth);
+            return expanded;
         }
         // The shared empty CBoundLocalization at 143098438.
         Ok(String::new())
@@ -175,6 +178,83 @@ impl<'a> ScriptedText<'a> {
         let key = definition.as_ref().map_err(Clone::clone)?;
         self.localise(key)
     }
+}
+
+/// The event scope 1410CD900 evaluates an entry in, as an index into the
+/// returned scopes. With no promotion it is the active scope itself
+/// (1410CE090 with +0x378); otherwise 1410CDDF0 binds the promoted object as
+/// THIS in a new scope with the active scope's ROOT (+0x18) and FROM
+/// (+0x20), and the active scope as PREV (+0x28); a country or state is set
+/// with clearing (14052DD00, 14052ECE0 with 1 -> 14052F3F0), so that scope
+/// carries no character.
+fn bound_scope(object: Object, scopes: &EventScopes, active: usize) -> (EventScopes, usize) {
+    let this = match object {
+        Object::Event => return (scopes.clone(), active),
+        Object::Country(slot) => EventObject::Country(slot),
+        Object::State(id) => EventObject::State(id.unwrap_or(crate::triggers::NULL_STATE)),
+        Object::Character(id) => EventObject::Character(id),
+    };
+    let current = scopes.scopes[active];
+    let carried = |link| match link {
+        Link::Itself => Link::Scope(active),
+        other => other,
+    };
+    let mut bound = scopes.clone();
+    bound.scopes.push(EventScope {
+        this,
+        root: carried(current.root),
+        from: carried(current.from),
+        prev: Link::Scope(active),
+    });
+    let at = bound.scopes.len() - 1;
+    (bound, at)
+}
+
+/// The trigger scopes of event scope `at`, `bare` when its THIS was set with
+/// clearing ([`bound_scope`]). A link the caller cannot
+/// describe, or one naming a character (the evaluator reads unit-leader
+/// character scopes only), is unknown to the evaluator, so only a
+/// condition that reads it is unknown (`always` reads none, 1403CE520).
+fn entry_scopes(scopes: &EventScopes, at: usize, bare: bool, name: &str) -> Result<Scopes, String> {
+    let scope = |object| match object {
+        EventObject::Country(slot) => Some(Scope::Country(slot)),
+        EventObject::State(id) => Some(Scope::State(id)),
+        EventObject::Province(id) => Some(Scope::Province(id)),
+        EventObject::UnitLeader(reference) => Some(Scope::Leader(reference)),
+        EventObject::Character(_) => None,
+    };
+    let current = scopes.scopes[at];
+    let this = scope(current.this).ok_or_else(|| {
+        format!(
+            "{name}: THIS is a character, and event-scope triggers require a character scope (1410CDDF0); the shared evaluator currently accepts unit-leader scopes only"
+        )
+    })?;
+    let linked = |link| {
+        scopes
+            .linked(at, link, "")
+            .ok()
+            .and_then(|to| scope(scopes.scopes[to].this))
+    };
+    let (root, from, prev) = (
+        linked(current.root),
+        linked(current.from),
+        linked(current.prev),
+    );
+    Ok(Scopes {
+        root: root.unwrap_or(this),
+        this,
+        prev,
+        from,
+        unknown: crate::triggers::UnknownLinks {
+            root: root.is_none(),
+            from: from.is_none(),
+            prev: prev.is_none(),
+        },
+        bare,
+        target_state: scopes.variables.target_state,
+        target_province: scopes.variables.target_province,
+        target_leader: scopes.variables.target_leader,
+    })
 }
 
 #[cfg(test)]

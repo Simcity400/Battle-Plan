@@ -82,7 +82,7 @@ Naval weapon totals and ship organisation bars require complete recorded Modifie
 A replay can preserve exact simulation values without preserving the native rendered instant. Water/global clocks, camera fades, overlap/stencil producers, particle populations and previous renderer state can require inputs that an hourly sample lacks. A seed alone does not recover their update history. Do not replace these omissions with guessed visibility, fabricated data or fitted colours.
 
 
-Map text uses the configured user folder's game language (`settings.txt`), not the recording's.
+Map text uses the configured user folder's game language (`settings.txt`), not the recording's. Text the game stored already localised without its key, such as a state's custom or owner name, is drawn only when that language is the recording's and refused by name otherwise (`dashboard::scripted_text::stored_text`, shared with the dashboard).
 
 Land combat hovers ([tooltips.rs](src/combat/tooltips.rs), [division_tooltips.rs](src/combat/division_tooltips.rs), [commander_tooltips.rs](src/combat/commander_tooltips.rs)) are rebuilt from recorded operands, the content and the viewer's localisation. Modifier lines follow the native formatter ([modifier_text.rs](src/combat/modifier_text.rs)) over the recorded `ModifierDefinitions`, `LexicalTokens` and `SimulationFeatures` tables. Trait content is read as the game's reader reads it: its number scanner, file-local `@` variables, the sub-unit database order for `sub_unit_modifiers`, and the hash-table order of `custom_modifier_tooltip` keys. What cannot be rebuilt is refused, named and counted in diagnostics, never approximated:
 

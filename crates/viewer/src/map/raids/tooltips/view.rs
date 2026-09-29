@@ -2,7 +2,7 @@
 //! main's combat parser and assets; image decoding stays on the hover worker.
 use super::Tooltip;
 use crate::{
-    combat::{self, TextChunk},
+    combat::{self, Chunk},
     map::sprites::MapIcons,
 };
 use eframe::egui;
@@ -27,24 +27,36 @@ pub fn prepare(mut tooltip: Tooltip, icons: &MapIcons) -> Prepared {
         format!("{}\n\n{}", tooltip.title, tooltip.body)
     };
     let base = [1.; 4];
-    let mut color = base;
-    let chunks: Vec<_> = text
+    let mut color = combat::text::Colours::new(base);
+    let queued: Vec<_> = text
         .split('\n')
-        .map(|line| combat::text_chunks(line, &icons.combat.text_colors, base, &mut color))
+        .map(|line| combat::text::chunks(&icons.combat, line, &mut color))
         .collect();
     // Queue inline flags/portraits before draining the shared loader once.
-    for chunk in chunks.iter().flatten() {
+    for chunk in queued.iter().flatten() {
         match chunk {
-            TextChunk::Flag(key) => {
+            Chunk::Flag(key) => {
                 icons.combat.inline_flag(key);
             }
-            TextChunk::Icon(name) => {
-                icons.combat.sprite(name);
-            }
-            TextChunk::Text(..) => {}
+            Chunk::Icon(..) => {}
+            Chunk::Text(..) => {}
         }
     }
     icons.lazy.settle();
+    // Lazy text icons may become resident during settle; resolve the final runs now.
+    color = combat::text::Colours::new(base);
+    let chunks: Vec<_> = text
+        .split('\n')
+        .filter_map(
+            |line| match combat::text::checked_chunks(&icons.combat, line, &mut color) {
+                Ok(chunks) => Some(chunks),
+                Err(reason) => {
+                    tooltip.refuse("tooltip text", reason);
+                    None
+                }
+            },
+        )
+        .collect();
     let resident: BTreeMap<_, _> = icons.lazy.snapshot().into_iter().collect();
     let mut images = Vec::new();
     let mut lines = Vec::new();
@@ -52,55 +64,35 @@ pub fn prepare(mut tooltip: Tooltip, icons: &MapIcons) -> Prepared {
         let mut line = Vec::new();
         for chunk in chunks {
             let (name, source) = match chunk {
-                TextChunk::Text(value, color) => {
+                Chunk::Text(value, color) => {
                     line.push(Run::Text(value, color));
                     continue;
                 }
-                TextChunk::Flag(key) => {
+                Chunk::Flag(key) => {
                     let source = icons
                         .combat
                         .inline_flag(&key)
                         .map(|(id, uv)| (id, uv, icons.combat.inline_flag_size));
                     (format!("inline flag {key}"), source)
                 }
-                TextChunk::Icon(name) => {
-                    let source = icons
-                        .combat
-                        .sprite(&name)
-                        .map(|s| (s.sheet.texture, s.sheet.frame_uv(0), s.size));
-                    (name, source)
+                Chunk::Icon(sprite, frame) => {
+                    let source = (
+                        sprite.sheet.texture,
+                        sprite.sheet.frame_uv(frame),
+                        sprite.size,
+                    );
+                    (sprite.sheet.name.clone(), Some(source))
                 }
             };
-            let decoded = (|| {
+            let decoded: Result<_, &str> = (|| {
                 let (id, uv, size) = source.ok_or("asset absent or unreadable")?;
                 let texture = icons
                     .images
                     .get(id)
                     .or_else(|| resident.get(&id).map(|r| r.texture.as_ref()))
                     .ok_or("decoded image absent")?;
-                let rgba = combat::texture::rgba8(texture)
-                    .map_err(|_| "unsupported tooltip image format")?;
-                if rgba.format != installed_content::image::dds::TextureFormat::Rgba8 {
-                    return Err("unsupported tooltip image format");
-                }
-                let [x0, y0, x1, y1] = [
-                    uv[0] * rgba.width as f32,
-                    uv[1] * rgba.height as f32,
-                    uv[2] * rgba.width as f32,
-                    uv[3] * rgba.height as f32,
-                ]
-                .map(|v| v.round() as usize);
-                if x0 >= x1 || y0 >= y1 || x1 > rgba.width as usize || y1 > rgba.height as usize {
-                    return Err("tooltip image rectangle outside texture");
-                }
-                let mut bytes = Vec::with_capacity((x1 - x0) * (y1 - y0) * 4);
-                for y in y0..y1 {
-                    bytes.extend_from_slice(
-                        &rgba.base().data[(y * rgba.width as usize + x0) * 4
-                            ..(y * rgba.width as usize + x1) * 4],
-                    );
-                }
-                let image = egui::ColorImage::from_rgba_unmultiplied([x1 - x0, y1 - y0], &bytes);
+                let image = combat::texture::region_image(texture, uv)
+                    .map_err(|_| "unsupported tooltip image or rectangle")?;
                 Ok((image, size))
             })();
             match decoded {

@@ -1,8 +1,7 @@
 //! Line order and conditions, apart from content and recorded-input joins.
-use super::{
-    Tooltip,
-    text::{Arg, localise},
-};
+use super::Tooltip;
+use crate::combat::text::localise;
+use installed_content::localisation::Argument as Arg;
 use installed_content::localisation::Localisation;
 
 pub type Text = Result<String, String>;
@@ -70,10 +69,10 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                     loc,
                     "tooltip_raid_result",
                     &[
-                        ("RAID_DESC", Arg::Text(input.description?)),
+                        ("RAID_DESC", Arg::Text(&input.description?)),
                         (
                             "OUTCOME_TYPE",
-                            Arg::Text(plain(enum_key(&OUTCOMES, input.outcome))?),
+                            Arg::Text(&plain(enum_key(&OUTCOMES, input.outcome))?),
                         ),
                     ],
                 )
@@ -110,8 +109,8 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                     loc,
                     "tooltip_raid_warning_description",
                     &[
-                        ("COUNTRY", Arg::Text(input.owner?)),
-                        ("RAID", Arg::Text(input.description?)),
+                        ("COUNTRY", Arg::Text(&input.owner?)),
+                        ("RAID", Arg::Text(&input.description?)),
                     ],
                 )
             })(),
@@ -124,7 +123,7 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                 localise(
                     loc,
                     "tooltip_raid_warning_success_chance_header",
-                    &[("VALUE", Arg::Fixed(chance))],
+                    &[("VALUE", Arg::Fixed5(chance))],
                 )
             }),
         );
@@ -163,7 +162,10 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                 Some(value) => localise(
                     loc,
                     "raid_inst_progress_desc",
-                    &[("PHASE", Arg::Text(phase)), ("PROGRESS", Arg::Fixed(value))],
+                    &[
+                        ("PHASE", Arg::Text(&phase)),
+                        ("PROGRESS", Arg::Fixed5(value)),
+                    ],
                 ),
                 None => Ok(phase),
             }
@@ -197,7 +199,7 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                 localise(
                     loc,
                     "tooltip_launch_button_right_click",
-                    &[("NAME", Arg::Text(name))],
+                    &[("NAME", Arg::Text(&name))],
                 )
             }),
         ),
@@ -255,8 +257,8 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                     loc,
                     key,
                     &[
-                        ("TARGET_NAME", Arg::Text(target.name?)),
-                        ("CONTROLLER_FLAG", Arg::Text(target.flag?)),
+                        ("TARGET_NAME", Arg::Text(&target.name?)),
+                        ("CONTROLLER_FLAG", Arg::Text(&target.flag?)),
                     ],
                 )
             })(),
@@ -272,8 +274,8 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                     loc,
                     "TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC",
                     &[
-                        ("CURRENT", Arg::Fixed(current)),
-                        ("REQUIRED", Arg::Fixed(required)),
+                        ("CURRENT", Arg::Fixed5(current)),
+                        ("REQUIRED", Arg::Fixed5(required)),
                     ],
                 ),
             ),
@@ -285,7 +287,7 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                     localise(
                         loc,
                         "TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC",
-                        &[("PROJECT_NAME", Arg::Text(name))],
+                        &[("PROJECT_NAME", Arg::Text(&name))],
                     )
                 }),
             ),
@@ -306,7 +308,7 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                     localise(
                         loc,
                         "TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL",
-                        &[("CURRENT", Arg::Fixed(current))],
+                        &[("CURRENT", Arg::Fixed5(current))],
                     ),
                 ),
                 Ok(None) => {}
@@ -332,7 +334,7 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                     } else {
                         "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_NOT_ALLOWED"
                     };
-                    localise(loc, key, &[("RAID", Arg::Text(kind.name?))])
+                    localise(loc, key, &[("RAID", Arg::Text(&kind.name?))])
                 })(),
             );
             match kind.captive {
@@ -343,7 +345,7 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                     localise(
                         loc,
                         "raid_type_rescue_captured_general_captive_line",
-                        &[("NAME", Arg::Text(name))],
+                        &[("NAME", Arg::Text(&name))],
                     ),
                 ),
                 Ok(None) => {}
@@ -358,7 +360,8 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                         localise(
                             loc,
                             "TOOLTIP_POTENTIAL_TARGET_RAID_DESC",
-                            &[("DESC", Arg::Text(desc))],
+                            // 141612FC0: TEXT, literal at 14292F680.
+                            &[("TEXT", Arg::Text(&desc))],
                         ),
                     ),
                     Ok(None) => {}
@@ -390,7 +393,7 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                     localise(
                         loc,
                         "RAID_RANGE_FACTOR_TOOLTIP",
-                        &[("RANGE_FACTOR", Arg::Fixed(kind.range))],
+                        &[("RANGE_FACTOR", Arg::Fixed5(kind.range))],
                     ),
                 );
             }

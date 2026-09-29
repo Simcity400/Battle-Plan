@@ -1,6 +1,5 @@
 use super::rules::*;
 use installed_content::localisation::Localisation;
-
 fn loc() -> Localisation {
     [
         ("raid_inst_progress_desc", "$PHASE$ $PROGRESS|0%$"),
@@ -40,7 +39,7 @@ fn loc() -> Localisation {
             "raid_type_rescue_captured_general_captive_line",
             "captive $NAME$",
         ),
-        ("TOOLTIP_POTENTIAL_TARGET_RAID_DESC", "description $DESC$"),
+        ("TOOLTIP_POTENTIAL_TARGET_RAID_DESC", "description $TEXT$"),
         ("RAID_RANGE_FACTOR_TOOLTIP", "range $RANGE_FACTOR|0%$"),
     ]
     .into_iter()

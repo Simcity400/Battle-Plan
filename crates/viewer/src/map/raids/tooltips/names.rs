@@ -1,10 +1,8 @@
 //! 1414536D0/1414545D0: the first resolving army, otherwise wing.
-use super::{
-    content::Content,
-    rules::Text,
-    text::{Arg, localise},
-};
+use super::{content::Content, rules::Text};
+use crate::combat::text::localise;
 use engine::{cname_group_member as member, raid_tooltip_operands::*};
+use installed_content::localisation::Argument as Arg;
 use installed_content::localisation::Localisation;
 use replay::{
     frame::DecodedFrame,
@@ -74,7 +72,7 @@ impl<'a> Name<'a> {
         localise(
             loc,
             "raid_inst_unit_desc",
-            &[("NAME", Arg::Text(self.raw(content)?))],
+            &[("NAME", Arg::Text(&self.raw(content)?))],
         )
     }
     fn raw(&self, content: &Content) -> Text {

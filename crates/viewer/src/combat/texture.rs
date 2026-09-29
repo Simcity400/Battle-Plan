@@ -110,6 +110,45 @@ pub(crate) fn rgba8(texture: &dds::Texture) -> io::Result<dds::Texture> {
     }))
 }
 
+/// The pixels of one sprite frame or flag rectangle (`uv`), for the map
+/// hover worker ([`crate::map::raids::tooltips::view`]).
+pub(crate) fn region_image(
+    texture: &dds::Texture,
+    uv: [f32; 4],
+) -> io::Result<eframe::egui::ColorImage> {
+    if uv
+        .iter()
+        .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+    {
+        return Err(super::invalid("tooltip image rectangle outside texture"));
+    }
+    let rgba = rgba8(texture)?;
+    if rgba.format != dds::TextureFormat::Rgba8 || rgba.faces != 1 {
+        return Err(super::invalid("unsupported tooltip image format"));
+    }
+    let [x0, y0, x1, y1] = [
+        uv[0] * rgba.width as f32,
+        uv[1] * rgba.height as f32,
+        uv[2] * rgba.width as f32,
+        uv[3] * rgba.height as f32,
+    ]
+    .map(|v| v.round() as usize);
+    if x0 >= x1 || y0 >= y1 || x1 > rgba.width as usize || y1 > rgba.height as usize {
+        return Err(super::invalid("tooltip image rectangle outside texture"));
+    }
+    let mut bytes = Vec::with_capacity((x1 - x0) * (y1 - y0) * 4);
+    for y in y0..y1 {
+        bytes.extend_from_slice(
+            &rgba.base().data
+                [(y * rgba.width as usize + x0) * 4..(y * rgba.width as usize + x1) * 4],
+        );
+    }
+    Ok(eframe::egui::ColorImage::from_rgba_unmultiplied(
+        [x1 - x0, y1 - y0],
+        &bytes,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +192,31 @@ mod tests {
         let result = uploadable(texture).unwrap();
         assert_eq!((result.width, result.height), (2, 1));
         assert_eq!(result.base().data, [255, 0, 0, 255, 0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn hover_image_crops_the_selected_frame_and_keeps_alpha() {
+        let texture = dds::Texture::from_rgba8(Rgba8Image {
+            width: 4,
+            height: 1,
+            pixels: vec![
+                255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 128,
+            ],
+        });
+        let cropped = region_image(&texture, [0.5, 0., 1., 1.]).unwrap();
+        assert_eq!(cropped.size, [2, 1]);
+        assert_eq!(cropped.pixels[0], eframe::egui::Color32::GREEN);
+        assert_eq!(
+            cropped.pixels[1],
+            eframe::egui::Color32::from_rgba_unmultiplied(0, 0, 255, 128)
+        );
+        for uv in [
+            [0., 0., 0., 1.],
+            [-0.1, 0., 1., 1.],
+            [0., 0., 1.1, 1.],
+            [f32::NAN, 0., 1., 1.],
+        ] {
+            assert!(region_image(&texture, uv).is_err());
+        }
     }
 }

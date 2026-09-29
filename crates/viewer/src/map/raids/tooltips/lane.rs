@@ -103,14 +103,7 @@ fn run(shared: Shared, ctx: egui::Context) {
             state.wanted.clone().expect("pending request")
         };
         let request = held.insert(next);
-        let result = super::build(
-            &request.content.icons.raids,
-            &request.frame,
-            &request.content.names.localisation,
-            request.ours,
-            &request.key,
-            &request.content.icons.combat,
-        );
+        let result = super::build(&request.content, &request.frame, request.ours, &request.key);
         let result = super::view::prepare(result, &request.content.icons);
         let mut state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
         if state

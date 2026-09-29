@@ -13,10 +13,10 @@ mod recorded;
 mod requirements;
 mod rules;
 mod success;
-mod text;
 pub mod view;
 
 use super::offers::TooltipTarget;
+use crate::combat::text::ensure_newlines;
 pub use recorded::build;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -71,17 +71,6 @@ impl Tooltip {
                 }
             }
             Err(reason) => self.refuse(name, reason),
-        }
-    }
-}
-
-/// `EnsureTrailingNewlines@1424B6660`: separators do not lead an empty
-/// tooltip and do not double newlines already present in localisation.
-fn ensure_newlines(text: &mut String, count: usize) {
-    if !text.is_empty() {
-        let have = text.bytes().rev().take_while(|&b| b == b'\n').count();
-        for _ in have..count {
-            text.push('\n');
         }
     }
 }

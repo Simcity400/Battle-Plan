@@ -228,36 +228,30 @@ struct StateNames<'a> {
     /// CState+0x38 (`States.custom_name`) and +0xE8 (`States.owner_name`).
     custom_name: &'a [u8],
     owner_name: &'a [u8],
+    /// The recording client's language, in which the game stored those two.
+    recorded_language: &'a str,
     /// The definition's `name` key (CStateTemplate+0x40), or why the
     /// definition's reading cannot be followed.
     name_key: Result<&'a str, &'a str>,
 }
 
-/// CState::display_name (1409CC380): the +0x38 string when it has a length,
-/// else the +0xE8 string when it has one, else the template's name (+0x20),
-/// which CStateTemplate's reader (140AAF580) localises from the `name` key
-/// when the file is read (a key the localisation lacks is its own text).
-/// The two recorded strings are already localised text and are copied as
-/// they are (140E69320 copies the returned string).
+/// CState::display_name (1409CC380) through [`super::text::state_name`]:
+/// the template's name is localised from the `name` key when CStateTemplate's
+/// reader (140AAF580) reads the file (a key the localisation lacks is its own
+/// text). 140E69320 copies the returned string.
 fn state_display_name(
     icons: &dyn TextIcons,
     loc: &Localisation,
     state: &StateNames<'_>,
 ) -> Result<String, String> {
     let id = state.id;
-    for (field, bytes) in [
-        ("custom_name", state.custom_name),
-        ("owner_name", state.owner_name),
-    ] {
-        if !bytes.is_empty() {
-            return String::from_utf8(bytes.to_vec())
-                .map_err(|_| format!("state {id}'s recorded {field} is not UTF-8"));
-        }
-    }
-    let key = state
-        .name_key
-        .map_err(|reason| format!("state {id}'s definition name is unknown: {reason}"))?;
-    token(icons, loc, key.as_bytes()).map_err(|reason| format!("state {id}'s name: {reason}"))
+    let (custom, owner) = (state.custom_name, state.owner_name);
+    super::text::state_name(loc, state.recorded_language, id, custom, owner, || {
+        let key = state
+            .name_key
+            .map_err(|reason| format!("state {id}'s definition name is unknown: {reason}"))?;
+        token(icons, loc, key.as_bytes()).map_err(|reason| format!("state {id}'s name: {reason}"))
+    })
 }
 
 /// 140E69320 for a province of a state: a nonempty recorded rename through
@@ -429,6 +423,7 @@ pub(super) fn title(
                         id,
                         custom_name: &recorded.custom_name,
                         owner_name: &recorded.owner_name,
+                        recorded_language: &document.recorded_language,
                         name_key: name_key.as_deref().map_err(String::as_str),
                     })
                 })
@@ -845,10 +840,11 @@ mod tests {
         );
         // CState::display_name (1409CC380): the rename, else the owner name,
         // else the definition's localised name key.
-        let loc: Localisation = [("STATE_7", "Bohemia")]
+        let mut loc: Localisation = [("STATE_7", "Bohemia")]
             .into_iter()
             .map(|(key, value)| (key.to_owned(), value.to_owned()))
             .collect();
+        loc.language = "english".into();
         let named = |custom_name: &'static [u8], owner_name: &'static [u8]| Province {
             id: 10,
             rename: Ok(None),
@@ -857,6 +853,7 @@ mod tests {
                 id: 7,
                 custom_name,
                 owner_name,
+                recorded_language: "english",
                 name_key: Ok("STATE_7"),
             })),
             region_name_key: None,
@@ -879,7 +876,20 @@ mod tests {
         );
         assert_eq!(
             province_name(&NoIcons, &loc, &named(b"\xff", b"")),
-            Err("state 7's recorded custom_name is not UTF-8".into())
+            Err("state 7: the custom name (CState+0x38) is not UTF-8".into())
+        );
+        // Stored without its key, a name is refused in another language; the
+        // template's is not.
+        let mut german = loc.clone();
+        german.language = "german".into();
+        assert!(
+            province_name(&NoIcons, &german, &named(b"", b"Bohmen"))
+                .unwrap_err()
+                .contains("stored in english without its key")
+        );
+        assert_eq!(
+            province_name(&NoIcons, &german, &named(b"", b"")).as_deref(),
+            Ok("Bohemia")
         );
         let unrecorded = Province {
             state: Some(Err("state 7 has no States row".into())),

@@ -21,6 +21,7 @@ pub(crate) mod progress;
 mod reinforcement_speed;
 mod tactics;
 mod template_icons;
+pub(crate) mod text;
 pub(crate) mod texture;
 mod tooltip_painter;
 mod tooltips;
@@ -28,13 +29,12 @@ mod trigger_names;
 
 use crate::{
     document::Document,
-    map::{sprites::Batch, text},
+    map::{sprites::Batch, text as map_text},
 };
 pub use assets::Assets;
 use assets::Sprite;
 pub(crate) use battle_name::battle_name_candidates;
 use binding::Bindings;
-use installed_content::localisation::{Piece, pieces};
 /// The one screen-rectangle hit test; the map's counter hits share it.
 pub(crate) use layout::contains;
 use layout::{Node, boolean, number, string};
@@ -773,12 +773,13 @@ pub(crate) fn naval_bubble_progress(
     .node(root, rect, "", &values)?;
     Ok(drawn.batch)
 }
-/// Native inline country flag marker (`0x12` followed by the country), which
-/// CCombatantEntry (1415BA240) writes into land division names. Bindings put
-/// the resolved flag-atlas key after it, ended by a space or the string end;
-/// an authored 0x12 in bound text is refused ([`binding::displayable`]), so
-/// every one the painter sees is the viewer's own.
-pub(crate) const INLINE_FLAG: char = '\u{12}';
+/// The viewer's inline flag: this marker, then the resolved flag-atlas key,
+/// ended by a space or the string end. The game writes 0x12 and a country tag
+/// (CCombatantEntry 1415BA240); the viewer resolves the tag first and marks it
+/// with a byte the localisation loader never makes a control (142386AD0), so
+/// an authored `@` (0x12) inside localised text around it is still refused
+/// by name ([`binding::displayable`]), in combat windows and map hovers alike.
+pub(crate) const INLINE_FLAG: char = '\u{1f}';
 /// CGameBitmapFont::text_icon_lookup (14162E880) reads an icon name as the
 /// part before its first `|` and, after it, a frame counted from one: digits
 /// only, else the first frame; no digits, or `0`, give frame -1.
@@ -819,78 +820,6 @@ pub(crate) enum Chunk {
     Icon(Box<Sprite>, u32),
     Flag(String),
 }
-/// A run of #163's raid tooltip markup ([`text_chunks`]): its own parser,
-/// until the tooltips move onto the combat window's text path.
-pub(crate) enum TextChunk {
-    Text(String, [f32; 4]),
-    Icon(String),
-    Flag(String),
-}
-pub(crate) fn text_chunks(
-    raw: &str,
-    colors: &installed_content::fonts::TextColors,
-    base: [f32; 4],
-    color: &mut [f32; 4],
-) -> Vec<TextChunk> {
-    let mut chunks = Vec::new();
-    let mut run = String::new();
-    let mut chars = raw.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '§' || ch == '£' || ch == INLINE_FLAG {
-            if !run.is_empty() {
-                chunks.push(TextChunk::Text(std::mem::take(&mut run), *color));
-            }
-            if ch == '§' {
-                if let Some(code) = chars.next() {
-                    *color = if code == '!' {
-                        base
-                    } else if let Some(rgb) = colors.get(&code) {
-                        [
-                            rgb[0] as f32 / 255.0,
-                            rgb[1] as f32 / 255.0,
-                            rgb[2] as f32 / 255.0,
-                            1.0,
-                        ]
-                    } else {
-                        *color
-                    };
-                }
-            } else if ch == INLINE_FLAG {
-                let mut key = String::new();
-                while let Some(c) = chars
-                    .peek()
-                    .copied()
-                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                {
-                    key.push(c);
-                    chars.next();
-                }
-                chunks.push(TextChunk::Flag(key));
-            } else {
-                let mut name = String::from("GFX_");
-                while let Some(c) = chars
-                    .peek()
-                    .copied()
-                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                {
-                    name.push(c);
-                    chars.next();
-                }
-                if chars.peek() == Some(&'£') {
-                    chars.next();
-                }
-                chunks.push(TextChunk::Icon(name));
-            }
-        } else {
-            run.push(ch);
-        }
-    }
-    if !run.is_empty() {
-        chunks.push(TextChunk::Text(run, *color));
-    }
-    chunks
-}
-
 /// The layer of a window quad pushed after `quads` others: the window draws
 /// in push order, one icon ordinal per quad, in the GUI band above every
 /// map-icon priority, so the open window covers the icons behind it.
@@ -1042,9 +971,9 @@ impl Painter<'_> {
                 // No unbound dynamic widget is allowed to expose those examples.
                 let value = data.and_then(|d| d.text.as_deref()).unwrap_or("—");
                 let align = match installed_content::gui::format(&child.items) {
-                    Some("center" | "centre") => text::Align::Centre,
-                    Some("right") => text::Align::Right,
-                    _ => text::Align::Left,
+                    Some("center" | "centre") => map_text::Align::Centre,
+                    Some("right") => map_text::Align::Right,
+                    _ => map_text::Align::Left,
                 };
                 let width = data.and_then(|d| d.text_width).or(installed_content::gui::number(
                     &child.items,
@@ -1308,29 +1237,29 @@ impl Painter<'_> {
     }
     fn text(
         &mut self,
-        font: &text::Font,
+        font: &map_text::Font,
         value: &str,
         origin: [f32; 2],
-        align: text::Align,
+        align: map_text::Align,
         width: Option<f32>,
     ) {
         if !value.contains(['\n', '\u{11}', '\u{13}', INLINE_FLAG]) {
             self.drawn.batch.text(
-                &text::layout(font, value, origin, align, width),
+                &map_text::layout(font, value, origin, align, width),
                 font.color(),
             );
             return;
         }
-        let mut color = font.color();
+        let mut color = text::Colours::new(font.color());
         for (line, raw) in value.lines().enumerate() {
-            let chunks = self.chunks(font, raw, &mut color);
+            let chunks = self.chunks(raw, &mut color);
             let measured: f32 = chunks.iter().map(|c| self.length(font, c)).sum();
             let slack = (width.unwrap_or(0.0) - measured).max(0.0);
             let mut x = origin[0]
                 + match align {
-                    text::Align::Left => 0.0,
-                    text::Align::Centre => slack * 0.5,
-                    text::Align::Right => slack,
+                    map_text::Align::Left => 0.0,
+                    map_text::Align::Centre => slack * 0.5,
+                    map_text::Align::Right => slack,
                 };
             let y = origin[1] + line as f32 * font.line_height();
             for chunk in chunks {
@@ -1363,7 +1292,7 @@ impl Painter<'_> {
                     }
                     Chunk::Text(run, color) => {
                         self.drawn.batch.text(
-                            &text::layout(font, run, [x, y], text::Align::Left, remaining),
+                            &map_text::layout(font, run, [x, y], map_text::Align::Left, remaining),
                             *color,
                         );
                     }
@@ -1372,76 +1301,25 @@ impl Painter<'_> {
             }
         }
     }
-    /// One line of rich text as the game's text layout reads it (1422894D0,
-    /// through [`pieces`]): colour codes, text icons and the viewer's
-    /// resolved inline flags ([`INLINE_FLAG`]).
-    fn chunks(&self, font: &text::Font, raw: &str, color: &mut [f32; 4]) -> Vec<Chunk> {
-        let mut chunks = Vec::new();
-        let mut run = String::new();
-        let flush = |run: &mut String, chunks: &mut Vec<Chunk>, color: [f32; 4]| {
-            if !run.is_empty() {
-                chunks.push(Chunk::Text(std::mem::take(run), color));
-            }
-        };
-        for (index, mut segment) in raw.split(INLINE_FLAG).enumerate() {
-            if index > 0 {
-                let end = segment
-                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                    .unwrap_or(segment.len());
-                flush(&mut run, &mut chunks, *color);
-                chunks.push(Chunk::Flag(segment[..end].to_owned()));
-                segment = &segment[end..];
-            }
-            for piece in pieces(segment) {
-                match piece {
-                    Piece::Text(text) => run.push_str(text),
-                    Piece::Colour(code) => {
-                        flush(&mut run, &mut chunks, *color);
-                        *color = if code == '!' {
-                            font.color()
-                        } else if let Some(rgb) = self.assets.text_colors.get(&code) {
-                            [
-                                rgb[0] as f32 / 255.0,
-                                rgb[1] as f32 / 255.0,
-                                rgb[2] as f32 / 255.0,
-                                1.0,
-                            ]
-                        } else {
-                            *color
-                        };
-                    }
-                    Piece::Icon(name) => {
-                        flush(&mut run, &mut chunks, *color);
-                        // A frame outside the sprite is refused when bound
-                        // (binding::displayable).
-                        if let Some((sprite, frame)) = text_icon(self.assets, name)
-                            && let Ok(frame) = u32::try_from(frame)
-                        {
-                            chunks.push(Chunk::Icon(Box::new(sprite.into_owned()), frame));
-                        }
-                    }
-                    // Refused when bound (binding::displayable).
-                    Piece::Flag(_) | Piece::Control14 | Piece::Control1A(_) => (),
-                }
-            }
-        }
-        flush(&mut run, &mut chunks, *color);
-        chunks
+    /// One line of rich text as the game's text layout reads it
+    /// ([`text::chunks`]).
+    fn chunks(&self, raw: &str, colours: &mut text::Colours) -> Vec<Chunk> {
+        text::chunks(self.assets, raw, colours)
     }
-    fn length(&self, font: &text::Font, chunk: &Chunk) -> f32 {
+    fn length(&self, font: &map_text::Font, chunk: &Chunk) -> f32 {
         match chunk {
             Chunk::Icon(sprite, _) => sprite.size[0],
             Chunk::Flag(_) => INLINE_FLAG_ADVANCE,
-            Chunk::Text(run, _) => text::measure(font, run),
+            Chunk::Text(run, _) => map_text::measure(font, run),
         }
     }
     /// The text a `fixedsize` box shows: [`fit`] with this font's metrics.
-    fn fit(&self, font: &text::Font, value: &str, width: f32, height: f32) -> String {
+    fn fit(&self, font: &map_text::Font, value: &str, width: f32, height: f32) -> String {
         use crate::map::names::GlyphMetrics;
         if value.contains(['\n', '\u{11}', '\u{13}']) {
             return value.into();
         }
-        let mut color = font.color();
+        let mut color = text::Colours::new(font.color());
         let glyphs = Glyphs {
             // The font loader (142287830) stores a zero height for the space,
             // which is what ends a word.
@@ -1451,8 +1329,7 @@ impl Painter<'_> {
             kerning: |a, b| GlyphMetrics::kerning(font, a, b),
             line_height: font.line_height(),
         };
-        fit(self.chunks(font, value, &mut color), width, height, &glyphs)
-            .unwrap_or_else(|| value.into())
+        fit(self.chunks(value, &mut color), width, height, &glyphs).unwrap_or_else(|| value.into())
     }
     fn progress(
         &mut self,

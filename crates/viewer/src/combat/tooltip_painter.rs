@@ -378,11 +378,11 @@ pub(super) fn draw(
         hovers: false,
         layer_base: 0,
     };
-    let mut color = font.color();
+    let mut color = super::text::Colours::new(font.color());
     let mut lines = Vec::new();
     for paragraph in value.split('\n') {
         let mut atoms = Vec::new();
-        for chunk in painter.chunks(font, paragraph, &mut color) {
+        for chunk in painter.chunks(paragraph, &mut color) {
             // Even a zero-width colour marker resets the previous glyph in
             // 142285B10 after 1422894D0 consumes the formatting code.
             let mut previous = None;

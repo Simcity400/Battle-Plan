@@ -2,34 +2,15 @@
 use super::{
     ensure_newlines,
     rules::{Lines, Text},
-    text::{Arg, localise},
 };
+use crate::combat::text::localise;
+use installed_content::localisation::Argument as Arg;
 use installed_content::{
     equipment::{Database, Groups},
     localisation::Localisation,
     parser,
     raids::RaidType,
 };
-
-/// 141580360 preserves signed integer limits, including an invalid interval.
-pub fn limit(loc: &Localisation, min: Option<i32>, max: Option<i32>) -> Text {
-    let key = match (min, max) {
-        (None, None) => return Ok(String::new()),
-        (Some(_), None) => "value_limit_min",
-        (None, Some(_)) => "value_limit_max",
-        (Some(a), Some(b)) if b < a => "value_limit_invalid",
-        (Some(a), Some(b)) if a == b => "value_limit_exact",
-        _ => "value_limit_min_max",
-    };
-    let mut args = Vec::new();
-    if let Some(n) = min {
-        args.push(("MIN", Arg::Integer(n)));
-    }
-    if let Some(n) = max {
-        args.push(("MAX", Arg::Integer(n)));
-    }
-    localise(loc, key, &args)
-}
 
 /// A stored name as the port's text, or why it is not.
 fn stored<'a>(what: &str, bytes: &'a [u8]) -> Result<&'a str, String> {
@@ -109,8 +90,11 @@ pub fn build(
                     loc,
                     "raid_unit_requirements_equipment_header",
                     &[
-                        ("EQUIPMENT", Arg::Text(name)),
-                        ("AMOUNT", Arg::Text(limit(loc, req.min, req.max)?)),
+                        ("EQUIPMENT", Arg::Text(&name)),
+                        (
+                            "AMOUNT",
+                            Arg::Text(&crate::combat::text::value_limit(loc, req.min, req.max)?),
+                        ),
                     ],
                 )?;
                 let mut groups = String::new();
@@ -125,7 +109,7 @@ pub fn build(
                             modules.push(localise(
                                 loc,
                                 "raid_unit_requirements_module",
-                                &[("NAME", Arg::Text(country_name(found)?))],
+                                &[("NAME", Arg::Text(&country_name(found)?))],
                             )?);
                         }
                     }
@@ -133,7 +117,7 @@ pub fn build(
                     groups.push_str(&localise(
                         loc,
                         "raid_unit_requirements_module_group",
-                        &[("LIST", Arg::Text(modules.join(&separator)))],
+                        &[("LIST", Arg::Text(&modules.join(&separator)))],
                     )?);
                     ensure_newlines(&mut groups, 1);
                 }
@@ -153,7 +137,7 @@ pub fn build(
                 if !active_subunit(&req.name)? {
                     return Ok(String::new());
                 }
-                let value = limit(loc, req.min, req.max)?;
+                let value = crate::combat::text::value_limit(loc, req.min, req.max)?;
                 if value.is_empty() {
                     return Ok(value);
                 }
@@ -161,8 +145,8 @@ pub fn build(
                     loc,
                     "raid_unit_requirements_battalion",
                     &[
-                        ("NAME", Arg::Text(country_name(&req.name)?)),
-                        ("LIMIT", Arg::Text(value)),
+                        ("NAME", Arg::Text(&country_name(&req.name)?)),
+                        ("LIMIT", Arg::Text(&value)),
                     ],
                 )?;
                 ensure_newlines(&mut text, 1);
@@ -246,7 +230,10 @@ mod tests {
             (Some(3), Some(3), "exact 3"),
             (Some(-1), Some(9), "-1..9"),
         ] {
-            assert_eq!(limit(&loc, min, max).unwrap(), expected);
+            assert_eq!(
+                crate::combat::text::value_limit(&loc, min, max).unwrap(),
+                expected
+            );
         }
     }
     /// Groups through the database's load (140165060): a group found by its

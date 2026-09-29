@@ -514,3 +514,238 @@ fn promoted_entry_binds_this_and_preserves_root_and_from() {
     );
     assert_eq!(rendered(&catalogue, &frame(), "TEST").unwrap(), "pass|pass");
 }
+
+/// GER (slot 0), SOV (1) and ENG (2), each owning a state.
+fn raid_frame() -> DecodedFrame {
+    let mut f = frame();
+    let countries = [(100, 0, "GER"), (200, 1, "SOV"), (300, 2, "ENG")];
+    set::<tables::CountryLinks>(
+        &mut f,
+        countries
+            .iter()
+            .map(|&(id, canonical_slot, _)| CountryLinkRow { id, canonical_slot })
+            .collect(),
+    );
+    set::<tables::Countries>(
+        &mut f,
+        countries
+            .iter()
+            .map(|&(id, canonical_slot, tag)| CountryRow {
+                id,
+                canonical_slot,
+                tag: tag.into(),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    set::<tables::CountryCounterInputs>(
+        &mut f,
+        countries
+            .iter()
+            .map(|&(id, ..)| CountryCounterInputRow {
+                country: id,
+                owned_state_count: 1,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    f
+}
+
+/// A viewer (GER), a raiding country (SOV) and its target (ENG): the raid's
+/// scope is SOV with FROM a default scope of ENG (140A8D3F0 -> 141580600).
+#[test]
+fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
+    let (catalogue, _folder) = tests::catalogue(
+        r#"entry = { name = Side text = { trigger = { tag = SOV ROOT = { tag = SOV } FROM = { tag = ENG } PREV = { tag = SOV } } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = Target text = { trigger = { tag = ENG ROOT = { tag = ENG } FROM = { tag = ENG } PREV = { tag = ENG } } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = Named text = { trigger = { tag = ENG ROOT = { tag = SOV } FROM = { tag = ENG } PREV = { tag = SOV } } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = Echo text = { localization_key = ECHO } }"#,
+        " YES:0 \"yes\"\n NO:0 \"no\"\n ECHO:0 \"[THIS.GetTag]/[ROOT.GetTag]/[PREV.GetTag]\"\n",
+    );
+    let content = catalogue.scripted_content().unwrap();
+    assert!(
+        content
+            .environment
+            .set(Ok(entries::Environment::synthetic()))
+            .is_ok()
+    );
+    let f = raid_frame();
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let raid = EventScopes::new(vec![
+        EventScope {
+            from: Link::Scope(1),
+            ..EventScope::of(EventObject::Country(1))
+        },
+        EventScope::of(EventObject::Country(2)),
+    ]);
+    let expand = |text_: &str, scopes: &EventScopes| text.expand_in(text_, scopes);
+    // Each keyword moves the active scope (141A81250); each bracket starts
+    // again from the caller's (1410D0900).
+    assert_eq!(
+        expand(
+            "[THIS.GetTag] [ROOT.GetTag] [FROM.GetTag] [FROM.ROOT.GetTag] [ROOT.FROM.PREV.GetTag] [PREV.GetTag]",
+            &raid
+        )
+        .as_deref(),
+        Ok("SOV SOV ENG ENG ENG SOV")
+    );
+    // Entries see the active scope, not the viewer: in place (1410CE090),
+    // after a keyword, and bound as THIS with PREV the active scope
+    // (1410CDDF0).
+    assert_eq!(
+        expand("[Side] [FROM.Target] [ENG.Named]", &raid).as_deref(),
+        Ok("yes yes yes")
+    );
+    assert_eq!(text.expand("[Side]").as_deref(), Ok("no"));
+    // An entry's own brackets expand in the scope it was evaluated in
+    // (1410CE090 -> 1402F6340 -> 1410CF560), not the caller's.
+    assert_eq!(
+        expand("[Echo] [FROM.Echo] [ENG.Echo]", &raid).as_deref(),
+        Ok("SOV/SOV/SOV ENG/ENG/ENG ENG/SOV/SOV")
+    );
+    // A scope whose own links the caller does not know stops a chain.
+    let nested = EventScopes::new(vec![
+        EventScope {
+            this: EventObject::Country(1),
+            root: Link::Scope(1),
+            from: Link::Scope(2),
+            prev: Link::Scope(1),
+        },
+        EventScope {
+            this: EventObject::Country(1),
+            root: Link::Unknown,
+            from: Link::Unknown,
+            prev: Link::Unknown,
+        },
+        EventScope {
+            this: EventObject::Country(2),
+            root: Link::Unknown,
+            from: Link::Unknown,
+            prev: Link::Unknown,
+        },
+    ]);
+    assert_eq!(expand("[FROM.GetTag]", &nested).as_deref(), Ok("ENG"));
+    let refused = expand("[FROM.ROOT.GetTag]", &nested).unwrap_err();
+    assert!(refused.contains("Root link is not known"), "{refused}");
+    let refused = expand("[FROM.Target]", &nested).unwrap_err();
+    assert!(refused.contains("ROOT is not known"), "{refused}");
+}
+
+/// Scopes the caller cannot fully describe refuse only what reads them: an
+/// unknown link only in a condition that reads it (`always` reads none,
+/// 1403CE520), a state or character scope's missing country only where
+/// 1410CF9C0 would search it, and a unit leader only through its character.
+#[test]
+fn unknown_scope_parts_refuse_only_where_they_are_read() {
+    let (catalogue, _folder) = tests::catalogue(
+        r#"entry = { name = Always text = { trigger = { always = yes } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = ThisOnly text = { trigger = { tag = SOV } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = RootToo text = { trigger = { tag = SOV ROOT = { tag = SOV } } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = Targeted text = { trigger = { var:target_state = { always = yes } } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = Choice text = { trigger = { has_character_flag = x } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = Holder text = { localization_key = HOLDER } }"#,
+        " YES:0 \"yes\"\n NO:0 \"no\"\n HOLDER:0 \"[SOV.Choice]\"\n",
+    );
+    let content = catalogue.scripted_content().unwrap();
+    assert!(
+        content
+            .environment
+            .set(Ok(entries::Environment::synthetic()))
+            .is_ok()
+    );
+    let mut f = raid_frame();
+    set::<tables::LexicalTokens>(
+        &mut f,
+        vec![LexicalTokenRow {
+            token: 7,
+            literal: b"rommel".to_vec(),
+        }],
+    );
+    set::<tables::Characters>(
+        &mut f,
+        vec![CharacterRow {
+            id: 44,
+            country: 100,
+            name_token_id: 7,
+            name: b"Erwin Rommel".to_vec(),
+            ..Default::default()
+        }],
+    );
+    set::<tables::UnitLeaders>(
+        &mut f,
+        vec![UnitLeaderRow {
+            id: 9,
+            reference_type: 3,
+            character_id: 44,
+            ..Default::default()
+        }],
+    );
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let unknown = |this| {
+        EventScopes::new(vec![EventScope {
+            this,
+            root: Link::Unknown,
+            from: Link::Unknown,
+            prev: Link::Unknown,
+        }])
+    };
+    let sov = unknown(EventObject::Country(1));
+    assert_eq!(
+        text.expand_in("[Always] [ThisOnly] [SOV.ThisOnly]", &sov)
+            .as_deref(),
+        Ok("yes yes yes")
+    );
+    let refused = text.expand_in("[RootToo]", &sov).unwrap_err();
+    assert!(refused.contains("ROOT is not known"), "{refused}");
+    // The caller's script variables stay set for the whole expansion.
+    assert_eq!(text.expand_in("[Targeted]", &sov).as_deref(), Ok("no"));
+    let targeted = EventScopes {
+        variables: ScopeVariables {
+            target_state: Some(64),
+            ..ScopeVariables::default()
+        },
+        ..sov.clone()
+    };
+    assert_eq!(
+        text.expand_in("[Targeted] [SOV.Targeted]", &targeted)
+            .as_deref(),
+        Ok("yes yes")
+    );
+    // A state scope holds no country, so a number goes on to a state id.
+    let state = unknown(EventObject::State(64));
+    assert_eq!(
+        text.expand_in("[THIS.64.GetID]", &state).as_deref(),
+        Ok("64")
+    );
+    assert!(text.expand_in("[THIS.rommel.GetID]", &state).is_ok());
+    // A unit leader's scope reads as its character (140529310).
+    let leader = unknown(EventObject::UnitLeader(9 << 32 | 3));
+    assert_eq!(
+        text.expand_in("[THIS.GetName] [THIS.64.GetID]", &leader)
+            .as_deref(),
+        Ok("Erwin Rommel 64")
+    );
+    // A promoted country is bound with clearing (1410CDDF0 -> 14052F3F0), so
+    // it carries no character and a character trigger is false whatever its
+    // PREV (140542CA0 reads THIS alone).
+    assert_eq!(text.expand_in("[SOV.Choice]", &sov).as_deref(), Ok("no"));
+    assert_eq!(
+        text.expand_in("[THIS.Holder]", &leader).as_deref(),
+        Ok("no")
+    );
+    let refused = text
+        .expand_in("[THIS.GetName]", &unknown(EventObject::Province(5)))
+        .unwrap_err();
+    assert!(refused.contains("province 5"), "{refused}");
+    // A unit leader's scope holds no country (14052EFD0), so a number is a
+    // state id without the character inventory (1410CF9C0).
+    *f.tables[TableId::Characters.index()] = TableView::Unavailable {
+        reason: "test gap".into(),
+    };
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    assert_eq!(
+        text.expand_in("[THIS.64.GetID]", &leader).as_deref(),
+        Ok("64")
+    );
+}

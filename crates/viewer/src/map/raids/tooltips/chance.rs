@@ -2,7 +2,8 @@
 //! (`141617380`) displays its complement. Counterplay uses slot 3
 //! (`14161AC80`), skip slot 6, and the smaller output endpoint.
 
-use super::text::{Arg, localise};
+use crate::combat::text::localise;
+use installed_content::localisation::Argument as Arg;
 use installed_content::{
     localisation::Localisation,
     raids::tooltips::{Formula, Modifier},
@@ -101,7 +102,7 @@ fn effect(loc: &Localisation, value: i64, thresholds: [i64; 2]) -> Result<String
         "RAID_SUCCESS_MODIFIER_VALUE_GOOD"
     };
     // Literal at `14272F830` is VAL, including the native trailing NUL.
-    localise(loc, key, &[("VAL", Arg::Fixed(value))])
+    localise(loc, key, &[("VAL", Arg::Fixed5(value))])
 }
 
 fn counterplay_text(
@@ -141,19 +142,19 @@ fn counterplay_text(
         localise(
             loc,
             &source_key,
-            &[("VAL", Arg::Fixed(raw)), ("MAX", Arg::Fixed(endpoint))],
+            &[("VAL", Arg::Fixed5(raw)), ("MAX", Arg::Fixed5(endpoint))],
         )?
     } else {
         String::new()
     };
-    let mut args = vec![
-        ("VAL", Arg::Text(effect(loc, value, thresholds)?)),
-        ("MAX", Arg::Text(effect(loc, maximum, thresholds)?)),
-    ];
+    let value = effect(loc, value, thresholds)?;
+    let maximum = effect(loc, maximum, thresholds)?;
+    // 141619580: VALUE (unlike the source key's VAL), MAX (1427B5918), SOURCE.
+    let mut args = vec![("VALUE", Arg::Text(&value)), ("MAX", Arg::Text(&maximum))];
     let key = if source.is_empty() {
         "tooltip_raid_modifier_effect_improvement_no_source"
     } else {
-        args.push(("SOURCE", Arg::Text(source)));
+        args.push(("SOURCE", Arg::Text(&source)));
         "tooltip_raid_modifier_effect_improvement"
     };
     let detail = localise(loc, key, &args)?;
@@ -241,5 +242,34 @@ mod tests {
             defender_can_affect: Ok(true),
         });
         assert!(got.counterplay.is_empty());
+    }
+
+    #[test]
+    fn counterplay_detail_takes_value_max_and_source_while_the_source_takes_val() {
+        let loc: Localisation = [
+            ("success_modifier_synthetic_counterplay", "counter"),
+            ("success_modifier_synthetic_source", "$VAL|0$ of $MAX|0$"),
+            ("RAID_SUCCESS_MODIFIER_VALUE_GOOD", "$VAL|0%$"),
+            (
+                "tooltip_raid_modifier_effect_improvement",
+                "($VALUE$/$MAX$ from $SOURCE$)",
+            ),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let f = Formula {
+            base: 0,
+            modifiers: vec![modifier()],
+        };
+        let got = evaluate(&loc, &f, Ok([i64::MIN; 2]), |_| Input {
+            raw: Ok(50_000),
+            skip: Ok(false),
+            defender_can_affect: Ok(true),
+        });
+        assert_eq!(
+            got.counterplay,
+            [Ok("counter\n(-5%/20% from 0 of 0)".into())]
+        );
     }
 }
