@@ -8,10 +8,10 @@
 //! whose hour the spool records in SliceReads. The family computes its fingerprints; this
 //! module keeps the bookkeeping.
 //!
-//! Owners are native country IDs or native state IDs, one kind per family
-//! ([`OwnerKind`]). Each family has its own [`SliceSelection`] per frame and
-//! its own [`SliceFingerprints`] store for the attachment, so country 5 and
-//! state 5 never share a bit. Register a family in [`FAMILIES`]; the spool
+//! Owners are native country IDs, canonical country slots or native state IDs,
+//! one kind per family ([`OwnerKind`]). Each family has its own
+//! [`SliceSelection`] per frame and its own [`SliceFingerprints`] store for the
+//! attachment, so country 5, slot 5 and state 5 never share a bit. Register a family in [`FAMILIES`]; the spool
 //! then merges its tables by owner ([`replay::sliced::merge_slice`]).
 //!
 //! A read that was selected but not published (failed, truncated or dropped)
@@ -25,16 +25,20 @@
 
 use replay::rows::TableId;
 
-/// Owners with a fingerprint: the engine's u16 slot range. A larger ID is
-/// still read in its slice; it has no early re-read and is counted in status.
+/// Owners with a fingerprint: the engine's u16 slot range. A larger ID has
+/// no fingerprint, so nothing certifies it unchanged: it is read at every
+/// hour, and counted in status.
 pub(crate) const FINGERPRINT_OWNERS: usize = 1 << 16;
 const OWNER_WORDS: usize = FINGERPRINT_OWNERS / 64;
 
 /// What a family's owner IDs are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OwnerKind {
+    /// Native country IDs.
     Country,
-    #[allow(dead_code)]
+    /// Canonical country slots, which follow a tag through aliasing.
+    CanonicalSlot,
+    /// Native state IDs.
     State,
 }
 
@@ -47,11 +51,15 @@ pub(crate) struct SliceFamily {
 
 pub(crate) const RESEARCH: usize = 0;
 pub(crate) const TECHNOLOGIES: usize = 1;
-pub(crate) const RELATIONS: usize = 2;
-pub(crate) const STABILITY: usize = 3;
+pub(crate) const RAID_LAUNCH: usize = 2;
+pub(crate) const RAID_STATE: usize = 3;
+pub(crate) const RAID_BUILDINGS: usize = 4;
+pub(crate) const RELATIONS: usize = 5;
+pub(crate) const STABILITY: usize = 6;
+pub(crate) const RETREAT_BANS: usize = 7;
 
 /// Every sliced family. Index with the family constants above.
-pub(crate) const FAMILIES: [SliceFamily; 4] = [
+pub(crate) const FAMILIES: [SliceFamily; 8] = [
     SliceFamily {
         name: "research",
         owner: OwnerKind::Country,
@@ -72,6 +80,34 @@ pub(crate) const FAMILIES: [SliceFamily; 4] = [
             TableId::TechnologyDefinitions,
         ],
     },
+    // The raid input families are read daily with a constant fingerprint,
+    // as relations are: no hook or change fingerprint makes them exact within
+    // the hour (owner rule: no harsher than the game's rolling re-check).
+    SliceFamily {
+        name: "raid_launch",
+        owner: OwnerKind::CanonicalSlot,
+        tables: &[
+            TableId::RaidCountryInputs,
+            TableId::StockpileArchetypes,
+            TableId::RaidAirSites,
+            TableId::AceRangeInputs,
+        ],
+    },
+    SliceFamily {
+        name: "raid_state",
+        owner: OwnerKind::State,
+        tables: &[
+            TableId::StateResourceInputs,
+            TableId::StateResources,
+            TableId::StateDynamicModifiers,
+            TableId::StateCores,
+        ],
+    },
+    SliceFamily {
+        name: "raid_country_buildings",
+        owner: OwnerKind::Country,
+        tables: &[TableId::CountryBuildingResources],
+    },
     // Relations are read once a day, one owner slice per hour (owner rule),
     // with no change fingerprint: an opinion or relation changed by an event
     // waits for its owner's slice. A constant fingerprint reads new owners
@@ -90,6 +126,13 @@ pub(crate) const FAMILIES: [SliceFamily; 4] = [
             TableId::CountryStabilityInputs,
             TableId::CountryStabilityLines,
         ],
+    },
+    // Commanders' retreat bans, read with a constant print by the roster
+    // owner's canonical slot in the Presentation job.
+    SliceFamily {
+        name: "retreat_bans",
+        owner: OwnerKind::CanonicalSlot,
+        tables: &[TableId::DivisionRetreatBans],
     },
 ];
 
@@ -130,9 +173,14 @@ pub(crate) struct SliceSelection {
     seen: Box<[u64]>,
     /// The scan visited every live owner without a census error.
     census: bool,
+    /// Owners the family's walker read this hour, when it reports them
+    /// (`track_reads`): a walker that visits only some census owners stamps
+    /// only those it read.
+    walked: Box<[u64]>,
+    tracked: bool,
     /// Owners whose fingerprint was compared this hour.
     pub(crate) scanned: u32,
-    /// Owners above the fingerprint range: read in their slice only.
+    /// Owners above the fingerprint range: read at every hour.
     pub(crate) out_of_range: u32,
     /// Worker ticks spent computing fingerprints (not game-thread time).
     pub(crate) scan_ticks: u64,
@@ -148,6 +196,8 @@ impl SliceSelection {
             early_count: 0,
             seen: vec![0; if storage { OWNER_WORDS } else { 0 }].into_boxed_slice(),
             census: false,
+            walked: vec![0; if storage { OWNER_WORDS } else { 0 }].into_boxed_slice(),
+            tracked: false,
             scanned: 0,
             out_of_range: 0,
             scan_ticks: 0,
@@ -162,6 +212,7 @@ impl SliceSelection {
         self.early_count = 0;
         self.seen.fill(0);
         self.census = false;
+        self.tracked = false;
         self.scanned = 0;
         self.out_of_range = 0;
         self.scan_ticks = 0;
@@ -195,15 +246,65 @@ impl SliceSelection {
         fingerprints.keep_only(&self.seen);
     }
 
+    /// End an hour's fingerprint pass. A complete pass is a census; a failed
+    /// or truncated one compared only some owners, so an unchanged print
+    /// certifies nothing this hour and every owner is read (the owners never
+    /// compared would otherwise publish a slice read as current).
+    pub(crate) fn finish_pass(&mut self, fingerprints: &mut SliceFingerprints, complete: bool) {
+        if complete {
+            self.finish_census(fingerprints);
+        } else {
+            self.force_full = true;
+        }
+    }
+
     /// Whether `owner` may still hold rows: seen by a complete census, above
     /// the tracked range, or not known to be gone (no complete census).
     pub(crate) fn live(&self, owner: u32) -> bool {
         !self.census || owner as usize >= FINGERPRINT_OWNERS || bit(&self.seen, owner)
     }
 
-    /// Whether this hour's read covers `owner`.
+    /// Whether this hour's read covers `owner`. An owner above the
+    /// fingerprint range has no fingerprint and is read at every hour.
     pub(crate) fn contains(&self, owner: u32) -> bool {
-        replay::cadence::slice_active(owner, self.hour, self.force_full) || bit(&self.early, owner)
+        owner as usize >= FINGERPRINT_OWNERS
+            || replay::cadence::slice_active(owner, self.hour, self.force_full)
+            || bit(&self.early, owner)
+    }
+
+    /// This hour's walker reports the owners it read (`mark_read`); only
+    /// those are read owners.
+    pub(crate) fn track_reads(&mut self) {
+        self.tracked = true;
+        self.walked.fill(0);
+    }
+
+    /// The walker read `owner` this hour, rows or none.
+    pub(crate) fn mark_read(&mut self, owner: u32) {
+        if (owner as usize) < FINGERPRINT_OWNERS {
+            set_bit(&mut self.walked, owner, true);
+        }
+    }
+
+    /// Owners the scan saw that this hour's read covers, ascending: the owners
+    /// read now, including those that returned no rows (with a tracking
+    /// walker, only those it read). Empty without a scan.
+    pub(crate) fn read_owners(&self) -> impl Iterator<Item = u32> + '_ {
+        self.seen
+            .iter()
+            .enumerate()
+            .flat_map(|(index, &word)| {
+                let mut word = word;
+                std::iter::from_fn(move || {
+                    (word != 0).then(|| {
+                        let owner = (index * 64) as u32 + word.trailing_zeros();
+                        word &= word - 1;
+                        owner
+                    })
+                })
+            })
+            .filter(|&owner| self.contains(owner))
+            .filter(|&owner| !self.tracked || bit(&self.walked, owner))
     }
 
     /// This hour's read was not published (failed, truncated or dropped):
@@ -295,16 +396,16 @@ impl SliceFingerprints {
     }
 
     /// Record `value` (None: unreadable) for `owner`. True if the owner is new
-    /// or was invalidated, if its value differs, or if its read starts or keeps
-    /// failing after a success: the full read then publishes the exact rows
-    /// or failure. An owner that stays unreadable is not re-read every hour.
+    /// or was invalidated, if its value differs, or if it is unreadable: an
+    /// unreadable fingerprint certifies nothing, so the owner is read at
+    /// every hour until its fingerprint reads again, and that read publishes
+    /// its exact rows or its failure.
     fn observe(&mut self, owner: u32, value: Option<u64>) -> bool {
         let index = owner as usize;
         if index >= FINGERPRINT_OWNERS {
             return false;
         }
         let known = bit(&self.known, owner);
-        let failed = !known && bit(&self.stale, owner);
         let stale = bit(&self.stale, owner)
             || self.stale_slices & (1 << replay::cadence::slice_of(owner)) != 0;
         let previous = self.values[index];
@@ -314,8 +415,6 @@ impl SliceFingerprints {
             self.values[index] = value;
         }
         match value {
-            // Stays unreadable: its slice read publishes the failure.
-            None if failed => false,
             None => true,
             Some(value) => stale || !known || value != previous,
         }
@@ -364,8 +463,8 @@ mod tests {
         );
         assert_eq!(selection.early_count, 1);
         assert!(selection.contains(1) && selection.contains(29) && !selection.contains(3));
-        // Failing is a change; staying failed is not; recovering is.
-        for (hour, value, read) in [(6, None, true), (7, None, false), (8, Some(3), true)] {
+        // Failing, staying failed and recovering are each read at once.
+        for (hour, value, read) in [(6, None, true), (7, None, true), (8, Some(3), true)] {
             selection.reset(hour, false);
             scan(&mut selection, &mut store, &[(3, value)]);
             assert_eq!(selection.contains(3), read, "hour {hour}");
@@ -379,7 +478,7 @@ mod tests {
         selection.reset(10, false);
         scan(&mut selection, &mut store, &[(1, Some(100)), (3, Some(3))]);
         assert_eq!(selection.early_count, 2);
-        // Owners above the fingerprint range are counted and read in their slice only.
+        // Owners above the fingerprint range are counted and read every hour.
         selection.reset(11, false);
         scan(
             &mut selection,
@@ -387,10 +486,31 @@ mod tests {
             &[(70_000, Some(1)), (70_000, Some(2))],
         );
         assert_eq!((selection.early_count, selection.out_of_range), (0, 2));
+        assert!(selection.contains(70_000) && selection.contains(70_001));
         // A full hour reads everyone.
         let mut full = SliceSelection::new(false);
         full.reset(10, true);
         assert!(full.contains(12_345));
+    }
+
+    #[test]
+    fn an_incomplete_pass_reads_every_owner_and_forgets_nobody() {
+        let mut store = SliceFingerprints::new();
+        let mut selection = SliceSelection::new(true);
+        selection.reset(0, true);
+        scan(&mut selection, &mut store, &[(1, Some(1)), (2, Some(2))]);
+        selection.finish_pass(&mut store, true);
+        // Hour 3: the pass stopped after owner 1; owner 2 was never compared.
+        selection.reset(3, false);
+        scan(&mut selection, &mut store, &[(1, Some(1))]);
+        selection.finish_pass(&mut store, false);
+        assert!(selection.force_full && selection.contains(2) && selection.contains(1));
+        assert!(selection.live(2));
+        // A complete pass the next hour reads its slice only.
+        selection.reset(4, false);
+        scan(&mut selection, &mut store, &[(1, Some(1)), (2, Some(2))]);
+        selection.finish_pass(&mut store, true);
+        assert!(!selection.force_full && !selection.contains(2) && !selection.contains(1));
     }
 
     #[test]
@@ -508,6 +628,10 @@ mod tests {
         assert_eq!(FAMILIES[RESEARCH].owner, OwnerKind::Country);
         assert_eq!(FAMILIES[TECHNOLOGIES].name, "technologies");
         assert_eq!(FAMILIES[TECHNOLOGIES].owner, OwnerKind::Country);
+        assert_eq!(FAMILIES[RAID_LAUNCH].name, "raid_launch");
+        assert_eq!(FAMILIES[RAID_LAUNCH].owner, OwnerKind::CanonicalSlot);
+        assert_eq!(FAMILIES[RAID_STATE].owner, OwnerKind::State);
+        assert_eq!(FAMILIES[RAID_BUILDINGS].owner, OwnerKind::Country);
         assert_eq!(FAMILIES[STABILITY].name, "stability");
     }
 }

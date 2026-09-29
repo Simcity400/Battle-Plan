@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 193] = [
+const DOMAIN_TABLES: [TableId; 217] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -199,7 +199,6 @@ const DOMAIN_TABLES: [TableId; 193] = [
     TableId::OrdersGroupCounterInputs,
     TableId::LeaderPortraitPaths,
     TableId::RaidTargets,
-    TableId::RaidProvinces,
     TableId::NavalBases,
     TableId::ResearchInputs,
     TableId::ResearchAppliedBonuses,
@@ -207,7 +206,32 @@ const DOMAIN_TABLES: [TableId; 193] = [
     TableId::SimulationFeatures,
     TableId::CountryVisibility,
     TableId::StateVisibility,
-    TableId::BuildingDetection,
+    TableId::RaidTargetStatuses,
+    TableId::RaidCooldowns,
+    TableId::RaidPathDistances,
+    TableId::StateResourceInputs,
+    TableId::StateResources,
+    TableId::StateDynamicModifiers,
+    TableId::CountryBuildingResources,
+    TableId::RaidCountryInputs,
+    TableId::CountryCommandPower,
+    TableId::DivisionRetreatBans,
+    TableId::StateCores,
+    TableId::RaidSpeedInputs,
+    TableId::RaidEquipment,
+    TableId::InvasionPreparations,
+    TableId::CountryCharacters,
+    TableId::PartyLeaders,
+    TableId::CountryCivilWars,
+    TableId::AdvisorTokens,
+    TableId::FactionAdvisors,
+    TableId::StockpileArchetypes,
+    TableId::RaidAirSites,
+    TableId::AceRangeInputs,
+    TableId::CountryWars,
+    TableId::NavalRegionAccess,
+    TableId::BorderConflicts,
+    TableId::RaidPlayerAllowedTypes,
     TableId::RelationLinks,
     TableId::SliceReads,
     TableId::DivisionTemplateIcons,
@@ -448,6 +472,7 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 expeditionary_owner: [0, 19, u32::MAX][(tick + 1) % 3],
                 province: tick as u32,
                 mission: [0, u32::MAX, 7][tick % 3],
+                route_count: [0, -1, i32::MAX][(tick + 2) % 3],
             },
         );
         push_map::<tables::Ships>(
@@ -501,6 +526,8 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 effective_planes: [i32::MAX, i32::MIN, 0][tick % 3],
                 mission_mask: [0, u32::MAX, 0x8000_0001][tick % 3],
                 mission_region: [None, Some(0), Some(u32::MAX)][tick % 3],
+                base_range_raw: [i64::MIN, 0, i64::MAX][tick % 3],
+                ace: [0, u64::MAX, FACTION_A][tick % 3],
             },
         );
         push_map::<tables::ArmyOrders>(
@@ -577,6 +604,8 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             },
             victory_points: [i32::MIN, -1, 0, i32::MAX][(index + id as usize) % 4],
             fort_positive: u8::from((index + id as usize).is_multiple_of(3)),
+            move_gate: [0, 1, 2, 3][(index + id as usize) % 4],
+            port_sea: [0, 1, -1, i32::MAX][id as usize % 4],
         })
         .collect();
     if index % 17 < 5 {
@@ -587,6 +616,8 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             controller: 0,
             victory_points: i32::MAX,
             fort_positive: 0,
+            move_gate: 0,
+            port_sea: 0,
         });
     }
     let mut states: Vec<_> = (0..=2)

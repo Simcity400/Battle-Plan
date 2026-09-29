@@ -329,12 +329,9 @@ impl Captured {
                     war_support_factor: t[5],
                     stability_weekly: t[6],
                     war_support_weekly: t[7],
-                    max_command_power: t[8],
-                    max_command_power_mult: t[9],
                     keys: keys.clone(),
                     children: row.children,
                     language: language.clone(),
-                    allocated_command_power_raw: row.allocated_command_power_raw,
                 }
             },
         );

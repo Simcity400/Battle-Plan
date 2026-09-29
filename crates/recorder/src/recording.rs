@@ -49,6 +49,7 @@ recorder detach [--out <directory>]
 recorder refresh [--out <directory>]
 recorder finalize <session-directory> [--out <directory>]
 recorder inspect <campaign.battleplan>
+recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --branch <id>
 {}
 {}",
         crate::oracle::USAGE,
@@ -67,6 +68,9 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     };
     if command == "inspect" && args.len() == 1 {
         return replay_io::inspect(Path::new(&args[0]));
+    }
+    if command == "inspect" {
+        return inspect_characters(&args);
     }
     if command == "oracle" {
         return crate::oracle::command(args).map_err(|error| error.to_string());
@@ -114,6 +118,40 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
         }
         _ => Err(usage()),
     }
+}
+
+/// `inspect <replay> --characters <substring> --hour <n> --branch <id>`, the
+/// options in any order, each once.
+fn inspect_characters(args: &[OsString]) -> Result<(), String> {
+    let (path, options) = args.split_first().ok_or_else(usage)?;
+    let (mut needle, mut hour, mut branch) = (None, None, None);
+    for pair in options.chunks(2) {
+        let [option, value] = pair else {
+            return Err(usage());
+        };
+        let value = value.to_str().ok_or_else(usage)?;
+        let slot = match option.to_str() {
+            Some("--characters") => &mut needle,
+            Some("--hour") => &mut hour,
+            Some("--branch") => &mut branch,
+            _ => return Err(usage()),
+        };
+        if slot.replace(value).is_some() {
+            return Err(usage());
+        }
+    }
+    let (Some(needle), Some(hour), Some(branch)) = (needle, hour, branch) else {
+        return Err(usage());
+    };
+    replay_io::inspect_characters(
+        Path::new(path),
+        needle,
+        hour.parse()
+            .map_err(|_| "--hour requires an engine i32 hour".to_string())?,
+        branch
+            .parse()
+            .map_err(|_| "--branch requires a u64 branch id".to_string())?,
+    )
 }
 
 fn checked_single_game() -> Result<Option<u32>, String> {

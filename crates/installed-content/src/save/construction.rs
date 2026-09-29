@@ -115,6 +115,22 @@ pub struct CountryCollaboration {
     pub progress: Decimal,
 }
 
+/// One `modify_building_resources` entry: the building's name and its
+/// (one-based resource database index, amount) elements in native order.
+pub type BuildingOverride = (Vec<u8>, Vec<(i32, Decimal)>);
+
+/// A country's `resources` block as `CCountryResources::Write@140CAEB80`
+/// writes it, reduced to what the raid state inputs read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CountryResources {
+    /// Each `origin`'s `state` (`CResourceOrigin + 0x80`, written by
+    /// `Serialize@140CAF880` only when not null), in native order.
+    pub origin_states: Vec<u32>,
+    /// `modify_building_resources` (`+0x7a0`, read back by `140CAA0C0`) in
+    /// native order. An entry can be empty.
+    pub building_overrides: Vec<BuildingOverride>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
     pub state_buildings: BTreeMap<BuildingKey, Building>,
@@ -127,6 +143,44 @@ pub struct Pack {
     pub country_reserve_manpower: BTreeMap<Vec<u8>, Vec<Manpower>>,
     pub state_resistance: BTreeMap<u32, StateResistance>,
     pub country_collaboration: BTreeMap<(Vec<u8>, Vec<u8>), CountryCollaboration>,
+    /// A state's `resources` block: its own `CState + 0x1b8` pool by name.
+    pub state_resources: BTreeMap<(u32, Vec<u8>), Decimal>,
+    /// A state's `dynamic_modifier` block: its `CState + 0x788` container in order.
+    pub state_dynamic_modifiers: BTreeMap<u32, Vec<super::governance::DynamicModifier>>,
+    /// Each country's `resources` block, when it has one.
+    pub country_resources: BTreeMap<Vec<u8>, CountryResources>,
+}
+
+fn country_resources(fields: &[Item]) -> io::Result<CountryResources> {
+    let mut out = CountryResources::default();
+    for item in fields {
+        match item.key.as_deref() {
+            Some(b"origin") => {
+                if let Some(state) = field(block(&item.value)?, b"state")? {
+                    out.origin_states.push(integer(scalar(state)?)?);
+                }
+            }
+            Some(b"modify_building_resources") => {
+                for entry in block(&item.value)? {
+                    let building = entry
+                        .key
+                        .clone()
+                        .filter(|key| !key.is_empty())
+                        .ok_or_else(|| invalid("building resource override lacks a building"))?;
+                    let mut elements = Vec::new();
+                    for element in block(&entry.value)? {
+                        let index = integer(element.key.as_deref().ok_or_else(|| {
+                            invalid("building resource override lacks a resource index")
+                        })?)?;
+                        elements.push((index, Decimal::parse(scalar(&element.value)?)?));
+                    }
+                    out.building_overrides.push((building, elements));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 fn number<T: std::str::FromStr>(items: &[Item], key: &[u8]) -> io::Result<T> {
@@ -406,6 +460,10 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
         if let Some(value) = field(fields, b"occupation_status")? {
             occupation(country, block(value)?, &mut pack)?;
         }
+        if let Some(value) = field(fields, b"resources")? {
+            pack.country_resources
+                .insert(country.to_vec(), country_resources(block(value)?)?);
+        }
         if let Some(value) = field(fields, b"collaboration")? {
             // Country 70C580 and status13E08A0 use the same literal at two levels.
             if let Some(value) = field(block(value)?, b"collaboration")? {
@@ -440,6 +498,22 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
         let fields = block(&item.value)?;
         if let Some(value) = field(fields, b"buildings")? {
             buildings(state, block(value)?, &mut pack.state_buildings)?;
+        }
+        if let Some(value) = field(fields, b"resources")? {
+            for entry in block(value)? {
+                let name = entry
+                    .key
+                    .clone()
+                    .ok_or_else(|| invalid("state resource lacks a name"))?;
+                let amount = Decimal::parse(scalar(&entry.value)?)?;
+                if pack.state_resources.insert((state, name), amount).is_some() {
+                    return Err(invalid("duplicate saved state resource"));
+                }
+            }
+        }
+        let modifiers = super::governance::parse_dynamic_modifiers(fields)?;
+        if !modifiers.is_empty() {
+            pack.state_dynamic_modifiers.insert(state, modifiers);
         }
         if let Some(value) = field(fields, b"resistance")? {
             let fields = block(value)?;
@@ -593,6 +667,74 @@ mod tests {
 
     fn pack(input: &str) -> io::Result<Pack> {
         parse(&crate::parser::parse(input.as_bytes())?.items)
+    }
+
+    #[test]
+    fn country_resources_keep_origin_states_and_override_entries_in_order() {
+        let saved = pack(
+            r#"
+            countries={ITA={resources={
+                origin={id={id=1 type=4713} country="ITA" state=731 destination=2}
+                origin={id={id=2 type=4713} country="ITA"}
+                origin={id={id=3 type=4713} country="ITA" state=5}
+                modify_building_resources={synthetic_refinery={3=3 1=-0.5} dockyard={}}
+            }} GER={}}
+            states={}
+            provinces={}
+        "#,
+        )
+        .unwrap();
+        assert_eq!(saved.country_resources.len(), 1);
+        let italy = &saved.country_resources[b"ITA".as_slice()];
+        assert_eq!(italy.origin_states, [731, 5]);
+        let [(refinery, elements), (dockyard, empty)] = italy.building_overrides.as_slice() else {
+            panic!("{:?}", italy.building_overrides);
+        };
+        assert_eq!(
+            (refinery.as_slice(), dockyard.as_slice()),
+            (b"synthetic_refinery".as_slice(), b"dockyard".as_slice())
+        );
+        assert_eq!(
+            elements
+                .iter()
+                .map(|(index, amount)| (*index, amount.raw))
+                .collect::<Vec<_>>(),
+            [(3, 300_000), (1, -50_000)]
+        );
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn state_pools_and_dynamic_modifiers_keep_names_and_order() {
+        let saved = pack(
+            r#"
+            countries={}
+            states={2={resources={steel=8 oil=-0.5} dynamic_modifier={
+                modifier={modifier="b" tag="SWI" enabled=yes}
+                modifier={modifier="a" state=4 days=12 enabled=no}
+            }} 3={}}
+            provinces={}
+        "#,
+        )
+        .unwrap();
+        assert_eq!(saved.state_resources[&(2, b"steel".to_vec())].raw, 800_000);
+        assert_eq!(saved.state_resources[&(2, b"oil".to_vec())].raw, -50_000);
+        let modifiers = &saved.state_dynamic_modifiers[&2];
+        assert_eq!(
+            modifiers
+                .iter()
+                .map(|m| (
+                    m.token.as_slice(),
+                    m.scope_country.as_deref(),
+                    m.scope_state
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (&b"b"[..], Some(&b"SWI"[..]), None),
+                (&b"a"[..], None, Some(4))
+            ]
+        );
+        assert!(!saved.state_dynamic_modifiers.contains_key(&3));
     }
 
     #[test]

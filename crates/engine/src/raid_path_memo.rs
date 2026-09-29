@@ -1,0 +1,447 @@
+//! The raid system's path distance memo, `CRaidSystem + 0x230`.
+//!
+//! `RaidPathCache_GetOrComputeNaval@1419F5450` and `_Land@1419F52F0` share
+//! this spin-locked robin-hood table, keyed only by the (source, target)
+//! province ids (`+0xa4`), so the first path kind computed for a pair wins
+//! for the session, failures included. Only the `CRaidSystem` constructor
+//! (`140E6EE70`) and destructor (`140E70510`) otherwise touch it; it is not
+//! saved. Header: buckets `+8`, element count `+0x10`, slot mask `+0x14`,
+//! maximum probe length `+0x18`. Buckets are 0x20 bytes: hash `+0`, probe
+//! byte `+4` (0 empty, 0xff the end sentinel, else distance from the ideal
+//! slot plus one), key `+8`/`+0xc`, value `{i64 distance, u8 ok}` at `+0x10`
+//!
+//! The game guards the table with the spin lock at `+0x20`, which both
+//! get-or-compute paths hold across the lookup, the insert and a rehash
+//! (`1419F5D90`), and pathfinding threads may insert while the collector
+//! reads. The collector never takes a game lock. It reads lock-free and
+//! validates: it snapshots the header and the lock word before and after
+//! copying the buckets, and accepts the copy only when the lock was free at
+//! both ends and the header did not change. A writer holds the lock for the
+//! whole insert or rehash and every insert changes the element count, so an
+//! insert or rehash that overlapped the copy fails that check (x86 stores are
+//! not reordered with each other). A failed check is a torn read: it is
+//! counted and that hour's table is published unavailable. The copy is not
+//! retried: a second read is not the value the hour held.
+
+use crate::{Memory, cgame_state, craid_system, memory::read_slice, read, walk::Outcome};
+
+/// `CRaidSystem + 0x230`: the path distance memo.
+pub const MEMO: usize = 0x230;
+const BUCKETS: usize = 0x08;
+const COUNT: usize = 0x10;
+const MASK: usize = 0x14;
+const MAX_PROBE: usize = 0x18;
+/// The spin lock `RaidPathCache_GetOrComputeNaval@1419F5450` takes (`LOCK`
+/// compare-exchange of 0 to 1).
+const LOCK: usize = 0x20;
+/// The header span a read snapshots: buckets through the lock word.
+const HEADER: usize = LOCK + 4 - BUCKETS;
+const BUCKET: usize = 0x20;
+const PROBE: usize = 0x04;
+const SOURCE: usize = 0x08;
+const TARGET: usize = 0x0c;
+const DISTANCE: usize = 0x10;
+const OK: usize = 0x18;
+const END: u8 = 0xff;
+const BATCH: usize = 256;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub source: u32,
+    pub target: u32,
+    /// Fixed5 map units; meaningful only when `ok`.
+    pub distance: i64,
+    pub ok: u8,
+}
+
+/// Every memo entry, ordered by (source, target). Capacity shortfalls
+/// truncate and count the unread entries. `torn` counts copies rejected
+/// because a writer overlapped them (see the module documentation).
+pub fn walk(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: &mut [Row],
+    torn: &mut u32,
+) -> Outcome {
+    match walk_rows(memory, base, game_state, rows, torn) {
+        Ok(outcome) => outcome,
+        Err(reason) => Outcome::Unavailable { reason },
+    }
+}
+
+fn walk_rows(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: &mut [Row],
+    torn: &mut u32,
+) -> Result<Outcome, &'static str> {
+    let system = game_state
+        .checked_add(cgame_state::RAID_SYSTEM)
+        .and_then(|at| read::<u64>(memory, at))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .filter(|&pointer| pointer != 0)
+        .ok_or("raid system unreadable or null")?;
+    let vtable = base
+        .checked_add(craid_system::VTABLE_RVA)
+        .ok_or("module address overflow")? as u64;
+    if read::<u64>(memory, system) != Some(vtable) {
+        return Err("raid system vtable mismatch");
+    }
+    let memo = system + MEMO;
+    let header = || {
+        let mut bytes = [0_u8; HEADER];
+        read_slice(memory, memo + BUCKETS, &mut bytes)
+            .then_some(bytes)
+            .ok_or("raid path memo header unreadable")
+    };
+    let before = header()?;
+    let copied = copy_table(memory, &before, rows);
+    let after = header()?;
+    let locked = |header: &[u8; HEADER]| header[LOCK - BUCKETS..] != [0; 4];
+    if before != after || locked(&before) || locked(&after) {
+        *torn += 1;
+        return Err("raid path memo was written during the read");
+    }
+    // A quiet table that fails validation is malformed, not torn.
+    copied
+}
+
+/// Copy and validate the buckets the header snapshot describes.
+fn copy_table(
+    memory: &impl Memory,
+    header: &[u8; HEADER],
+    rows: &mut [Row],
+) -> Result<Outcome, &'static str> {
+    let field = |at: usize| &header[at - BUCKETS..];
+    let buckets = usize::try_from(u64::from_le_bytes(field(BUCKETS)[..8].try_into().unwrap()))
+        .ok()
+        .filter(|&pointer| pointer != 0)
+        .ok_or("raid path memo buckets unreadable or null")?;
+    let count = u32::from_le_bytes(field(COUNT)[..4].try_into().unwrap());
+    let mask = u32::from_le_bytes(field(MASK)[..4].try_into().unwrap());
+    let max_probe = field(MAX_PROBE)[0];
+    if mask
+        .checked_add(1)
+        .is_none_or(|slots| !slots.is_power_of_two())
+    {
+        return Err("raid path memo mask is not a power of two less one");
+    }
+    // Slots `0..=mask + max_probe`, then the end sentinel.
+    let slots = mask as usize + usize::from(max_probe) + 1;
+    let mut chunk = [0_u8; BATCH * BUCKET];
+    let (mut len, mut occupied, mut unread) = (0, 0_u32, 0_u32);
+    let mut first = 0;
+    while first <= slots {
+        let batch = (slots + 1 - first).min(BATCH);
+        let address = buckets
+            .checked_add(first * BUCKET)
+            .ok_or("raid path memo address overflow")?;
+        let bytes = &mut chunk[..batch * BUCKET];
+        if !read_slice(memory, address, bytes) {
+            return Err("raid path memo buckets unreadable");
+        }
+        for (index, bucket) in bytes.chunks_exact(BUCKET).enumerate() {
+            let probe = bucket[PROBE];
+            if first + index == slots {
+                if probe != END {
+                    return Err("raid path memo end sentinel missing");
+                }
+                continue;
+            }
+            if probe == 0 {
+                continue;
+            }
+            if probe == END || probe > max_probe {
+                return Err("raid path memo probe length invalid");
+            }
+            occupied += 1;
+            if bucket[OK] > 1 {
+                return Err("raid path memo ok byte invalid");
+            }
+            if len == rows.len() {
+                unread += 1;
+                continue;
+            }
+            let word = |at: usize| u32::from_le_bytes(bucket[at..at + 4].try_into().unwrap());
+            rows[len] = Row {
+                source: word(SOURCE),
+                target: word(TARGET),
+                distance: i64::from_le_bytes(bucket[DISTANCE..DISTANCE + 8].try_into().unwrap()),
+                ok: bucket[OK],
+            };
+            len += 1;
+        }
+        first += batch;
+    }
+    if occupied != count {
+        return Err("raid path memo count disagrees with its buckets");
+    }
+    rows[..len].sort_unstable_by_key(|row| (row.source, row.target));
+    if rows[..len]
+        .windows(2)
+        .any(|pair| (pair[0].source, pair[0].target) == (pair[1].source, pair[1].target))
+    {
+        return Err("raid path memo holds a duplicate key");
+    }
+    Ok(if unread == 0 {
+        Outcome::Rows { len }
+    } else {
+        Outcome::Truncated {
+            len,
+            unread_rows: unread,
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    const GAME: usize = 0x100;
+    const SYSTEM: usize = 0x800;
+    const TABLE: usize = 0x1000;
+
+    fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+        bytes[at..at + value.len()].copy_from_slice(value);
+    }
+
+    type Bucket = (usize, u8, u32, u32, i64, u8);
+
+    /// Module base zero, so the vtable is its RVA.
+    fn fixture(buckets: &[Bucket], mask: u32, probe: u8, count: u32) -> Vec<u8> {
+        let mut bytes = vec![0; 0x2000];
+        put(
+            &mut bytes,
+            GAME + cgame_state::RAID_SYSTEM,
+            &(SYSTEM as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            SYSTEM,
+            &(craid_system::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            SYSTEM + MEMO + BUCKETS,
+            &(TABLE as u64).to_le_bytes(),
+        );
+        put(&mut bytes, SYSTEM + MEMO + COUNT, &count.to_le_bytes());
+        put(&mut bytes, SYSTEM + MEMO + MASK, &mask.to_le_bytes());
+        put(&mut bytes, SYSTEM + MEMO + MAX_PROBE, &[probe]);
+        let slots = mask as usize + usize::from(probe) + 1;
+        put(&mut bytes, TABLE + slots * BUCKET + PROBE, &[END]);
+        for &(slot, probe, source, target, distance, ok) in buckets {
+            let at = TABLE + slot * BUCKET;
+            put(&mut bytes, at + PROBE, &[probe]);
+            put(&mut bytes, at + SOURCE, &source.to_le_bytes());
+            put(&mut bytes, at + TARGET, &target.to_le_bytes());
+            put(&mut bytes, at + DISTANCE, &distance.to_le_bytes());
+            put(&mut bytes, at + OK, &[ok]);
+        }
+        bytes
+    }
+
+    fn run(bytes: &[u8], rows: &mut [Row]) -> Outcome {
+        let mut torn = 0;
+        let outcome = walk(&SliceMemory { base: 0, bytes }, 0, GAME, rows, &mut torn);
+        assert_eq!(torn, 0, "a quiet table is never torn");
+        outcome
+    }
+
+    #[test]
+    fn a_held_lock_or_a_moving_header_is_a_counted_torn_read() {
+        let buckets = [(3, 1, 7, 9, 500_000, 1)];
+        let mut rows = [Row::default(); 4];
+        // Held by a writer: this hour's table is not published.
+        let mut locked = fixture(&buckets, 7, 1, 1);
+        put(&mut locked, SYSTEM + MEMO + LOCK, &1_u32.to_le_bytes());
+        let mut torn = 0;
+        let outcome = walk(
+            &SliceMemory {
+                base: 0,
+                bytes: &locked,
+            },
+            0,
+            GAME,
+            &mut rows,
+            &mut torn,
+        );
+        assert!(matches!(outcome, Outcome::Unavailable { .. }));
+        assert_eq!(torn, 1);
+        // An insert lands during the copy: counted and unavailable, not
+        // read again.
+        let quiet = fixture(&buckets, 7, 1, 1);
+        let memory = Inserting {
+            bytes: std::cell::RefCell::new(quiet),
+            reads: std::cell::Cell::new(0),
+        };
+        let mut torn = 0;
+        assert_eq!(
+            walk(&memory, 0, GAME, &mut rows, &mut torn),
+            Outcome::Unavailable {
+                reason: "raid path memo was written during the read"
+            }
+        );
+        assert_eq!(torn, 1);
+    }
+
+    /// Bumps the element count after the first header read, as a writer that
+    /// finishes an insert while the buckets are copied.
+    struct Inserting {
+        bytes: std::cell::RefCell<Vec<u8>>,
+        reads: std::cell::Cell<u32>,
+    }
+
+    impl Memory for Inserting {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            let bytes = self.bytes.borrow().clone();
+            let copied = SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            }
+            .copy(address, destination);
+            if address == SYSTEM + MEMO + BUCKETS {
+                let reads = self.reads.get() + 1;
+                self.reads.set(reads);
+                if reads == 1 {
+                    // The first snapshot saw one entry; the writer then adds
+                    // a second and the count moves before the second snapshot.
+                    let mut bytes = self.bytes.borrow_mut();
+                    put(&mut bytes, TABLE + 5 * BUCKET + PROBE, &[1]);
+                    put(
+                        &mut bytes,
+                        TABLE + 5 * BUCKET + SOURCE,
+                        &8_u32.to_le_bytes(),
+                    );
+                    put(
+                        &mut bytes,
+                        TABLE + 5 * BUCKET + TARGET,
+                        &9_u32.to_le_bytes(),
+                    );
+                    put(&mut bytes, SYSTEM + MEMO + COUNT, &2_u32.to_le_bytes());
+                }
+            }
+            copied
+        }
+    }
+
+    #[test]
+    fn entries_come_back_by_key_with_failures_kept() {
+        let bytes = fixture(&[(3, 1, 9, 2, 700_000, 1), (1, 2, 4, 5, 0, 0)], 3, 2, 2);
+        let mut rows = [Row::default(); 4];
+        assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 2 });
+        assert_eq!(
+            rows[..2],
+            [
+                Row {
+                    source: 4,
+                    target: 5,
+                    distance: 0,
+                    ok: 0
+                },
+                Row {
+                    source: 9,
+                    target: 2,
+                    distance: 700_000,
+                    ok: 1
+                },
+            ]
+        );
+        let mut one = [Row::default(); 1];
+        assert_eq!(
+            run(&bytes, &mut one),
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_count_sentinel_or_probe_mismatch_is_refused() {
+        let mut rows = [Row::default(); 4];
+        let wrong_count = fixture(&[(0, 1, 1, 2, 3, 1)], 1, 1, 2);
+        assert!(matches!(
+            run(&wrong_count, &mut rows),
+            Outcome::Unavailable { .. }
+        ));
+        let mut no_end = fixture(&[], 1, 1, 0);
+        put(&mut no_end, TABLE + 3 * BUCKET + PROBE, &[0]);
+        assert!(matches!(
+            run(&no_end, &mut rows),
+            Outcome::Unavailable { .. }
+        ));
+        let too_far = fixture(&[(0, 3, 1, 2, 3, 1)], 1, 1, 1);
+        assert!(matches!(
+            run(&too_far, &mut rows),
+            Outcome::Unavailable { .. }
+        ));
+        let empty = fixture(&[], 0, 0, 0);
+        assert_eq!(run(&empty, &mut rows), Outcome::Rows { len: 0 });
+    }
+
+    /// `entries` pairs in a table at most seven-eighths full, one per slot.
+    fn scaled(entries: usize) -> Vec<u8> {
+        let slots = (entries * 8 / 7).next_power_of_two().max(2);
+        let table = 0x1000;
+        let mut bytes = vec![0; table + (slots + 2) * BUCKET];
+        put(
+            &mut bytes,
+            GAME + cgame_state::RAID_SYSTEM,
+            &(SYSTEM as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            SYSTEM,
+            &(craid_system::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            SYSTEM + MEMO + BUCKETS,
+            &(table as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            SYSTEM + MEMO + COUNT,
+            &(entries as u32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            SYSTEM + MEMO + MASK,
+            &((slots - 1) as u32).to_le_bytes(),
+        );
+        put(&mut bytes, SYSTEM + MEMO + MAX_PROBE, &[1]);
+        put(&mut bytes, table + (slots + 1) * BUCKET + PROBE, &[END]);
+        for entry in 0..entries {
+            let at = table + entry * BUCKET;
+            put(&mut bytes, at + PROBE, &[1]);
+            put(&mut bytes, at + SOURCE, &(entry as u32).to_le_bytes());
+            put(&mut bytes, at + TARGET, &7_u32.to_le_bytes());
+            put(&mut bytes, at + DISTANCE, &100_000_i64.to_le_bytes());
+            put(&mut bytes, at + OK, &[1]);
+        }
+        bytes
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_path_memo_by_entries() {
+        for entries in [1_000, 10_000, 50_000] {
+            let bytes = scaled(entries);
+            let memory = crate::memory::CountingMemory::new(&bytes);
+            let mut rows = vec![Row::default(); entries];
+            memory.bench(
+                &format!("RaidPathDistances {entries} entries"),
+                20,
+                |memory| {
+                    let outcome = walk(memory, 0, GAME, &mut rows, &mut 0);
+                    assert_eq!(outcome, Outcome::Rows { len: entries });
+                    format!("{entries} rows")
+                },
+            );
+        }
+    }
+}

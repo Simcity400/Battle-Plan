@@ -22,6 +22,14 @@ pub fn note_slots(slots: usize) {
     SLOTS_HINT.fetch_max(slots, Ordering::Relaxed);
 }
 
+/// Tests that raise the registry hint, or measure buffers it sizes, hold
+/// this so a parallel test cannot move it mid-measurement.
+#[cfg(test)]
+pub(crate) fn hint_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Country census rows a raw-copy job needs for the largest observed registry.
 pub fn census_rows(minimum: usize) -> usize {
     rows(SLOTS_HINT.load(Ordering::Relaxed), 1).max(minimum)
@@ -73,6 +81,143 @@ pub fn observe_country_intel(memory: &impl Memory, base: usize) -> Option<usize>
     Some(rows.min(slots.saturating_mul(slots)))
 }
 
+/// The raid arenas whose per-country demand content decides, not the slot
+/// count: the raid type tokens of every raid parent and of the player cache,
+/// and every country's convoy reservation words.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RaidArenas {
+    pub type_tokens: usize,
+    pub reservation_words: usize,
+}
+
+/// Live raid arena demand, or `None` when no raid system or country census
+/// is readable (at the main menu, say). Header words and the raid parents'
+/// batched records only; nothing observed is recorded.
+pub fn observe_raid_arenas(memory: &impl Memory, base: usize) -> Option<RaidArenas> {
+    let game_state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
+    let state = usize::try_from(game_state)
+        .ok()
+        .filter(|state| *state != 0)?;
+    let parents = engine::craid_system::required_type_tokens(memory, base, state).ok()?;
+    let player = engine::cplayer_status_cache::required_tokens(memory, base, state).unwrap_or(0);
+    let reservation_words =
+        engine::raid_launch_inputs::required_reservations(memory, base, state).ok()?;
+    Some(RaidArenas {
+        type_tokens: parents.checked_add(player)?,
+        reservation_words,
+    })
+}
+
+/// Live character and script flag demand: the Characters rows and text
+/// bytes, and the flags of every ScriptFlags scope (global, countries, states
+/// and characters).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CharacterDemand {
+    pub characters: engine::ccharacter::Demand,
+    pub flags: usize,
+}
+
+/// Live character roster and flag demand, or `None` when either census is
+/// unreadable (at the main menu, say). Header words, character views and
+/// template headers only; nothing observed is recorded.
+pub fn observe_characters(memory: &impl Memory, base: usize) -> Option<CharacterDemand> {
+    let game_state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
+    let state = usize::try_from(game_state)
+        .ok()
+        .filter(|state| *state != 0)?;
+    Some(CharacterDemand {
+        characters: engine::ccharacter::demand(memory, base, state).ok()?,
+        flags: extended::intel::script_flag_demand(memory, base, state)?,
+    })
+}
+
+/// Live demand of the political and character tables whose per-country
+/// sizes content and play decide: CountryCharacters' active-character
+/// records, PartyLeaders' party leaders, CountryAppearance's leader trait
+/// tokens, CountryCivilWars' entries, AdvisorTokens' keys and bytes, and
+/// FactionAdvisors' occupied slots and token bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PoliticsDemand {
+    pub active_characters: usize,
+    pub party_leaders: usize,
+    pub leader_traits: usize,
+    pub civil_wars: usize,
+    pub advisor_tokens: usize,
+    pub advisor_token_bytes: usize,
+    pub faction_advisors: usize,
+    pub faction_advisor_bytes: usize,
+}
+
+impl PoliticsDemand {
+    /// Whether any field exceeds `seen`'s.
+    pub fn exceeds(&self, seen: &Self) -> bool {
+        self.active_characters > seen.active_characters
+            || self.party_leaders > seen.party_leaders
+            || self.leader_traits > seen.leader_traits
+            || self.civil_wars > seen.civil_wars
+            || self.advisor_tokens > seen.advisor_tokens
+            || self.advisor_token_bytes > seen.advisor_token_bytes
+            || self.faction_advisors > seen.faction_advisors
+            || self.faction_advisor_bytes > seen.faction_advisor_bytes
+    }
+
+    /// The field-wise maximum.
+    pub fn max(self, other: Self) -> Self {
+        Self {
+            active_characters: self.active_characters.max(other.active_characters),
+            party_leaders: self.party_leaders.max(other.party_leaders),
+            leader_traits: self.leader_traits.max(other.leader_traits),
+            civil_wars: self.civil_wars.max(other.civil_wars),
+            advisor_tokens: self.advisor_tokens.max(other.advisor_tokens),
+            advisor_token_bytes: self.advisor_token_bytes.max(other.advisor_token_bytes),
+            faction_advisors: self.faction_advisors.max(other.faction_advisors),
+            faction_advisor_bytes: self.faction_advisor_bytes.max(other.faction_advisor_bytes),
+        }
+    }
+}
+
+/// Live political table demand, or `None` without a game state (at the main
+/// menu, say). Each count is the table's own walk with no row storage, which
+/// reads array headers (and, for text, string headers) only; a census that
+/// is unreadable adds nothing, and its hourly walk reports it. Nothing
+/// observed is recorded.
+pub fn observe_politics(memory: &impl Memory, base: usize) -> Option<PoliticsDemand> {
+    let game_state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
+    let state = usize::try_from(game_state)
+        .ok()
+        .filter(|state| *state != 0)?;
+    let demand = |outcome: engine::walk::Outcome| match outcome {
+        engine::walk::Outcome::Rows { len } => len,
+        engine::walk::Outcome::Truncated { len, unread_rows } => {
+            len.saturating_add(unread_rows as usize)
+        }
+        engine::walk::Outcome::Unavailable { .. } => 0,
+    };
+    let tokens = engine::advisor_tokens::walk(memory, base, state, &mut [], &mut []);
+    let factions = engine::cfaction::walk_advisors(memory, base, state, &mut [], &mut []);
+    Some(PoliticsDemand {
+        active_characters: demand(engine::ccountry_characters::walk_active(
+            memory,
+            base,
+            state,
+            &mut [],
+        )),
+        party_leaders: engine::cpolitical_status::party_leader_demand(memory, base, state)
+            .unwrap_or(0),
+        leader_traits: engine::ccountry::leader_trait_demand(memory, base, state).unwrap_or(0),
+        civil_wars: demand(engine::ccountry::walk_civil_wars(
+            memory,
+            base,
+            state,
+            &mut [],
+        )),
+        advisor_tokens: demand(tokens.outcome),
+        advisor_token_bytes: tokens.required_bytes,
+        faction_advisors: demand(factions.outcome),
+        faction_advisor_bytes: factions.required_bytes,
+    })
+}
+
 /// Rows for `per_country` rows per slot, with a third of headroom so the
 /// three-quarters growth rule does not double a fresh buffer on its first hour.
 pub fn rows(slots: usize, per_country: usize) -> usize {
@@ -90,7 +235,7 @@ pub fn raise(capacity: &mut usize, required: usize) {
 /// Every capture capacity the frame pool is built from.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Sizing {
-    pub core: [usize; 9],
+    pub core: [usize; 11],
     pub map: MapCapacities,
     pub extended: extended::Capacities,
     pub country_cells: usize,
@@ -128,6 +273,93 @@ impl Sizing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The #63 attach hour: 440 countries whose raid type lists need more
+    /// tokens than the default arena (it read 336 parents), and more
+    /// convoy reservation words than the default 512. The observed demand
+    /// raises both arenas, so the first hour's packs hold every row.
+    #[test]
+    fn observed_raid_demand_presizes_both_raid_arenas() {
+        let demand = RaidArenas {
+            type_tokens: 5_400,
+            reservation_words: 1_900,
+        };
+        let mut sizing = Sizing::for_slots(440);
+        let default_tokens = sizing.extended.projects.raid_type_tokens;
+        assert!(default_tokens < demand.type_tokens);
+        sizing.extended.raise_for_raid_arenas(demand);
+        assert!(sizing.extended.projects.raid_type_tokens >= demand.type_tokens);
+        assert!(
+            sizing
+                .extended
+                .raid_launch_inputs
+                .holds_reservations(demand.reservation_words)
+        );
+        // Raising never lowers a capacity.
+        let before = sizing.extended;
+        sizing.extended.raise_for_raid_arenas(RaidArenas::default());
+        assert!(sizing.extended == before);
+    }
+
+    /// The political demand walks the live registry (here five thousand
+    /// countries without a character object) and raising by it never lowers.
+    #[test]
+    fn observed_politics_demand_reads_the_registry_and_only_raises() {
+        let demand = observe_politics(&world(), BASE).unwrap();
+        assert_eq!(demand, PoliticsDemand::default());
+        let mut sizing = Sizing::for_slots(COUNTRIES + 1);
+        let before = sizing.extended;
+        sizing.extended.raise_for_politics(demand);
+        assert!(sizing.extended == before);
+        sizing.extended.raise_for_politics(PoliticsDemand {
+            active_characters: 1 << 20,
+            ..Default::default()
+        });
+        assert!(sizing.extended != before);
+        let before = sizing.extended;
+        sizing.extended.raise_for_politics(PoliticsDemand {
+            party_leaders: 1 << 20,
+            ..Default::default()
+        });
+        assert!(sizing.extended != before);
+        let before = sizing.extended;
+        sizing.extended.raise_for_politics(PoliticsDemand {
+            leader_traits: 1 << 20,
+            ..Default::default()
+        });
+        assert!(sizing.extended != before);
+        let before = sizing.extended;
+        sizing.extended.raise_for_politics(PoliticsDemand {
+            civil_wars: 1 << 20,
+            ..Default::default()
+        });
+        assert!(sizing.extended != before);
+        let seen = PoliticsDemand {
+            active_characters: 5,
+            party_leaders: 3,
+            leader_traits: 2,
+            civil_wars: 1,
+            advisor_tokens: 4,
+            advisor_token_bytes: 40,
+            faction_advisors: 2,
+            faction_advisor_bytes: 20,
+        };
+        let before = sizing.extended;
+        sizing.extended.raise_for_politics(PoliticsDemand {
+            faction_advisors: 1 << 16,
+            faction_advisor_bytes: 1 << 20,
+            ..Default::default()
+        });
+        assert!(sizing.extended != before);
+        let before = sizing.extended;
+        sizing.extended.raise_for_politics(PoliticsDemand {
+            advisor_tokens: 1 << 16,
+            advisor_token_bytes: 1 << 20,
+            ..Default::default()
+        });
+        assert!(sizing.extended != before);
+        assert!(!seen.exceeds(&seen) && seen.max(demand) == seen);
+    }
     use crate::extended::{country_appearance, country_counters};
     use engine::{
         ccountry, ccountry_intel, cgame_state as gs, country_intel_row, msvc_string, walk::Outcome,
@@ -362,6 +594,8 @@ mod tests {
 
     #[test]
     fn per_frame_memory_grows_linearly_with_countries() {
+        // The registry hint is process-wide; hold it still while measuring.
+        let _hint = crate::country_scale::hint_guard();
         let bytes = |slots| {
             let sizing = Sizing::for_slots(slots);
             sampling::Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended)
@@ -372,11 +606,14 @@ mod tests {
         let large = bytes(5_001);
         assert!(vanilla <= per_state && per_state <= large);
         // Linear, not quadratic: about 16 KiB per country slot per frame
-        // (measured 2026-09-28: 16,519 B per slot between 1,500 and 5,000
-        // slots, +19 MB at 1,500 and +77 MB at 5,000 over a 199 MB vanilla
-        // frame), dominated by the project pools and the per-slot research and
-        // party rows.
-        assert!(large - per_state <= 3_500 * 17 * 1024);
+        // (measured 2026-09-28 after merging main's fuel and volunteer
+        // tables with the raid and political tables; main alone is 16,519 B
+        // per slot between 1,500 and 5,000 slots), dominated by the project
+        // pools and the per-slot research, party and raid rows.
+        assert!(
+            large - per_state <= 3_500 * 20 * 1024,
+            "vanilla {vanilla}, 1,501 slots {per_state}, 5,001 slots {large}"
+        );
     }
 
     /// Attaching at the main menu builds vanilla-sized frames; the spool then

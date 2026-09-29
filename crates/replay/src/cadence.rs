@@ -54,6 +54,22 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::ResearchInputs | TableId::ResearchAppliedBonuses | TableId::ResearchModifiers => {
             Sliced
         }
+        // Raid inputs: a daily read per owner, one owner slice per hour, with
+        // no change fingerprint (owner rule: no harsher than the game, whose
+        // raid offers are re-checked in a rolling sweep); an owner new to the
+        // census, or whose read was not published, is read at the next hour.
+        TableId::RaidCountryInputs
+        | TableId::StockpileArchetypes
+        | TableId::RaidAirSites
+        | TableId::AceRangeInputs => Sliced,
+        // Commanders' retreat bans, per roster owner's divisions.
+        TableId::DivisionRetreatBans => Sliced,
+        // State cores, with the raid state family.
+        TableId::StateCores => Sliced,
+        TableId::StateResourceInputs
+        | TableId::StateResources
+        | TableId::StateDynamicModifiers
+        | TableId::CountryBuildingResources => Sliced,
         // Technology rosters: daily progress for every country. Definitions
         // are the templates the hour's rosters reach, merged by handle; the
         // console command reloadtechnologies can rewrite them after a load.
@@ -68,7 +84,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         // a change of only those reaches the rows at the country's slice.
         TableId::CountryStabilityInputs | TableId::CountryStabilityLines => Sliced,
         // Cannot change after the save loads (the DLC set included).
-        TableId::LexicalTokens | TableId::SimulationFeatures => Static,
+        TableId::LexicalTokens => Static,
         // Modifier definitions are registered only by database loaders; the
         // collector also re-reads them whenever the table's data pointer or
         // count changes, as it does the lexer on a new maximum token.
@@ -128,7 +144,9 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::ResourceDefinitions | TableId::CountryResources | TableId::ResourceExchanges => {
             Daily(10)
         }
-        TableId::ResearchSlots => Daily(11),
+        // The raid army search's strategic-region access modes, which the
+        // player's UI and the AI's daily step set.
+        TableId::ResearchSlots | TableId::NavalRegionAccess => Daily(11),
         TableId::ScriptFlags => Daily(12),
         // Theatre details share one daily slot. LandTheatres itself (id,
         // owner, roster ordinal) falls to the hourly arm below: hourly
@@ -198,6 +216,9 @@ pub const fn cadence(table: TableId) -> Cadence {
         // groups at any hour (141093AC0). Cost at W1 (25 hours, vanilla map):
         // 0.11 ms p50 / 0.16 ms p95 read on the game thread, a 0.12 ms/h raw
         // copy on the decode worker, 104 B/h encoded.
+        // The DLC mask is fixed for the session, but `human_ai`
+        // hour; both are single reads.
+        TableId::SimulationFeatures => Cadence::Hourly,
         _ => Cadence::Hourly,
     }
 }
@@ -312,7 +333,7 @@ mod tests {
             // Bombing changes a building's mesh and fire within the hour.
             TableId::StateBuildings,
             TableId::ProvinceBuildings,
-            TableId::BuildingDetection,
+            TableId::RaidTargetStatuses,
         ] {
             assert_eq!(cadence(table), Cadence::Hourly, "{table:?}");
             assert_eq!(refresh_text(table), "hourly");
@@ -356,8 +377,19 @@ mod tests {
 
     #[test]
     fn sliced_tables_read_every_owner_once_per_day_and_everything_on_full_hours() {
-        assert!(is_sliced(TableId::ResearchInputs));
-        assert!(!is_staggered(TableId::ResearchInputs));
+        for table in [
+            TableId::ResearchInputs,
+            TableId::RaidCountryInputs,
+            TableId::RaidAirSites,
+            TableId::AceRangeInputs,
+            TableId::StateResourceInputs,
+            TableId::StateResources,
+            TableId::StateDynamicModifiers,
+            TableId::CountryBuildingResources,
+        ] {
+            assert!(is_sliced(table), "{table:?}");
+            assert!(!is_staggered(table), "{table:?}");
+        }
         assert_eq!(refresh_slot(TableId::ResearchModifiers), None);
         assert!(is_sliced(TableId::CountryStabilityInputs));
         assert!(is_sliced(TableId::CountryStabilityLines));

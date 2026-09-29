@@ -9,7 +9,7 @@ use std::{
     collections::BTreeSet,
     io,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -70,6 +70,30 @@ impl SharedView {
     /// The allocation's address, for counting distinct tables.
     pub fn as_ptr(&self) -> *const TableView {
         Arc::as_ptr(&self.0)
+    }
+
+    /// This allocation's identity, which does not keep its rows alive.
+    pub fn identity(&self) -> ViewIdentity {
+        ViewIdentity(Arc::downgrade(&self.0))
+    }
+}
+
+/// A [`SharedView`]'s allocation, named without holding its rows: the
+/// allocation's address cannot be reused while the identity exists, so it
+/// matches only views of that allocation, whether or not they are alive.
+#[derive(Clone, Debug)]
+pub struct ViewIdentity(Weak<TableView>);
+
+impl ViewIdentity {
+    /// Whether `view` is the named allocation.
+    pub fn is(&self, view: &SharedView) -> bool {
+        std::ptr::eq(self.0.as_ptr(), Arc::as_ptr(&view.0))
+    }
+}
+
+impl PartialEq for ViewIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -2052,6 +2076,8 @@ mod tests {
             controller,
             victory_points: 50,
             fort_positive: 0,
+            move_gate: 0,
+            port_sea: 0,
         }
     }
 
@@ -3144,7 +3170,7 @@ mod tests {
             ),
             (
                 vec![DeltaRow {
-                    mask: 128,
+                    mask: 1 << TableId::Provinces.field_count(),
                     ..change
                 }],
                 vec![],

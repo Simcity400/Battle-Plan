@@ -806,6 +806,496 @@ pub(super) fn collaboration(
     Ok(())
 }
 
+/// The sliced raid-state tables hold each state's rows as last read, up to a
+/// day earlier. Only states read at the frame's hour (`sampled`) are
+/// compared; the rest are reported, not compared.
+fn earlier_states(
+    report: &mut Report,
+    table: &str,
+    states: impl Iterator<Item = u32>,
+    sampled: &dyn Fn(u32) -> bool,
+) {
+    let earlier: BTreeSet<u32> = states.filter(|&state| !sampled(state)).collect();
+    if !earlier.is_empty() {
+        report.limitation(
+            &format!(
+                "{} states' rows were read before this hour (sliced, daily) and are not compared; compare at a full-refresh hour",
+                earlier.len()
+            ),
+            table,
+        );
+    }
+}
+
+/// `StateResources.pool` against each saved state's `resources` block: the
+/// CState+0x1c0 pool. A zero pool has no saved entry; the accumulator
+/// operands of the same rows are not saved. Only states `sampled` at the
+/// frame's hour are compared.
+pub(super) fn state_pools(
+    rows: &[replay::rows::StateResourceRow],
+    saved: &BTreeMap<(u32, Vec<u8>), installed_content::save::Decimal>,
+    names: &BTreeMap<u32, &[u8]>,
+    sampled: &dyn Fn(u32) -> bool,
+    report: &mut Report,
+) -> io::Result<()> {
+    earlier_states(
+        report,
+        "StateResources",
+        rows.iter()
+            .map(|row| row.state)
+            .chain(saved.keys().map(|(state, _)| *state)),
+        sampled,
+    );
+    let mut seen = BTreeSet::new();
+    let mut matched = 0;
+    for row in rows
+        .iter()
+        .filter(|row| row.pool != 0 && sampled(row.state))
+    {
+        let name = match token(names, row.resource) {
+            Ok(name) => name,
+            Err(reason) => {
+                report.limitation(
+                    &format!("state resource {reason}; its pool cannot be matched by name"),
+                    format!("state resources.{}.token({})", row.state, row.resource),
+                );
+                continue;
+            }
+        };
+        let key = (row.state, name.to_vec());
+        let subject = format!(
+            "state resources.{}.{}",
+            row.state,
+            String::from_utf8_lossy(name)
+        );
+        seen.insert(key.clone());
+        match saved.get(&key) {
+            Some(amount) => {
+                matched += 1;
+                value(report, &format!("{subject}.pool"), row.pool, amount.raw);
+            }
+            None => report.difference(subject, row.pool, "missing saved pool"),
+        }
+    }
+    missing(
+        report,
+        "state resources",
+        &seen,
+        saved
+            .iter()
+            .filter(|((state, _), amount)| amount.raw != 0 && sampled(*state))
+            .map(|(key, _)| key.clone()),
+    );
+    report.compared("StateResources.pool", matched);
+    report.limitation(
+        "the resource accumulator operands (additive, factor, cost) are not saved",
+        "StateResources",
+    );
+    Ok(())
+}
+
+/// `StateResourceInputs.origin` and `.infrastructure_level` against the save.
+/// A state has an origin when its controller's saved `resources` block has an
+/// `origin` of that state (`CResourceOrigin + 0x80`, the pointer the walk
+/// matches). The level is that of the state's building whose token the
+/// engine fixes (`engine::cbuilding_database::INFRASTRUCTURE_TOKEN`), damage
+/// included: the saved `buildings` entry's `level`. It is read only with an
+/// origin. Only states `sampled` at the frame's hour are compared.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn resource_inputs(
+    rows: &[replay::rows::StateResourceInputRow],
+    states: &[replay::rows::StateRow],
+    saved: &saved::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    names: &BTreeMap<u32, &[u8]>,
+    sampled: &dyn Fn(u32) -> bool,
+    report: &mut Report,
+) -> io::Result<()> {
+    earlier_states(
+        report,
+        "StateResourceInputs",
+        rows.iter().map(|row| row.state),
+        sampled,
+    );
+    let infrastructure = token(names, engine::cbuilding_database::INFRASTRUCTURE_TOKEN)
+        .map_err(|reason| invalid(format!("the infrastructure building {reason}")))?;
+    let controllers: BTreeMap<u32, u32> = states
+        .iter()
+        .map(|state| (state.id, state.controller))
+        .collect();
+    let mut matched = 0;
+    for row in rows.iter().filter(|row| sampled(row.state)) {
+        let subject = format!("StateResourceInputs.{}", row.state);
+        let controller = controllers
+            .get(&row.state)
+            .ok_or_else(|| invalid(format!("{subject} has no captured state")))?;
+        let tag = required_country_tag(*controller, links)?;
+        let origin = saved
+            .country_resources
+            .get(tag)
+            .is_some_and(|resources| resources.origin_states.contains(&row.state));
+        matched += 1;
+        value(
+            report,
+            &format!("{subject}.origin"),
+            row.origin != 0,
+            origin,
+        );
+        if row.origin == 0 {
+            continue;
+        }
+        let level = saved
+            .state_buildings
+            .get(&(row.state, infrastructure.to_vec()))
+            .map(|building| i32::from(building.level));
+        value(
+            report,
+            &format!("{subject}.infrastructure_level"),
+            row.infrastructure_level,
+            level,
+        );
+    }
+    report.compared("StateResourceInputs", matched);
+    report.limitation(
+        "the resource gate (CState+0x1b4), the global factor (state modifier 0x223), the controller's infrastructure modifier (0x292) and the supply-route test (MaxStateProvinceNodeValue@1412138A0) are runtime reads the save does not carry",
+        "StateResourceInputs.gate, global_factor, infrastructure_modifier, supply_route",
+    );
+    Ok(())
+}
+
+/// A country's captured override entries: building token and its
+/// (resource token, amount) elements, in native order.
+type OverrideEntries = Vec<(u32, Vec<(u32, i64)>)>;
+
+/// `CountryBuildingResources` against each saved country's
+/// `resources.modify_building_resources` (`CCountryResources::Write@140CAEB80`),
+/// entry by entry and element by element in native order. A saved element's
+/// key is the one-based resource database index (`ResourceDefinitions.id`)
+/// the walk turns into a token. The walk reads state controllers only. A
+/// country was read at this hour when `SliceReads` gives this hour, with or
+/// without rows; a controller without rows and without a `SliceReads` row has
+/// no known read and is named, not compared.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn building_overrides(
+    rows: &[replay::rows::CountryBuildingResourceRow],
+    reads: &[replay::rows::SliceReadRow],
+    resources: &[replay::rows::ResourceDefinitionRow],
+    states: &[replay::rows::StateRow],
+    saved: &saved::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    names: &BTreeMap<u32, &[u8]>,
+    hour: replay::Hour,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut captured: BTreeMap<u32, OverrideEntries> = BTreeMap::new();
+    let mut ordinals: BTreeMap<u32, u32> = BTreeMap::new();
+    for row in rows {
+        let next = ordinals.entry(row.country).or_default();
+        if row.ordinal != *next {
+            return Err(invalid(
+                "building resource override ordinals are not contiguous",
+            ));
+        }
+        *next += 1;
+        let entries = captured.entry(row.country).or_default();
+        if row.entry as usize == entries.len() {
+            entries.push((row.building, Vec::new()));
+        } else if row.entry as usize + 1 != entries.len()
+            || entries[row.entry as usize].0 != row.building
+        {
+            return Err(invalid(
+                "building resource override entries are not contiguous",
+            ));
+        }
+        if row.count != 0 {
+            entries
+                .last_mut()
+                .unwrap()
+                .1
+                .push((row.resource, row.amount));
+        }
+    }
+    for row in rows {
+        if row.count as usize != captured[&row.country][row.entry as usize].1.len() {
+            return Err(invalid(
+                "a building resource override's element count disagrees with its rows",
+            ));
+        }
+    }
+    let by_index: BTreeMap<u32, u32> = resources.iter().map(|row| (row.id, row.token)).collect();
+    let controllers: BTreeSet<u32> = states
+        .iter()
+        .filter_map(|state| links.get(&state.controller).map(|country| country.id))
+        .collect();
+    let mut read = BTreeSet::new();
+    let mut earlier = BTreeSet::new();
+    let mut unread = BTreeSet::new();
+    for &country in captured.keys().chain(&controllers) {
+        match replay::sliced::read_hour(
+            reads,
+            replay::rows::TableId::CountryBuildingResources,
+            country,
+        ) {
+            Some(read_at) if read_at == hour => {
+                read.insert(country);
+            }
+            Some(_) => {
+                earlier.insert(country);
+            }
+            None if captured.contains_key(&country) => {
+                return Err(invalid(format!(
+                    "country {country}'s building resource overrides have no SliceReads hour"
+                )));
+            }
+            None => {
+                unread.insert(country);
+            }
+        }
+    }
+    let no_entries = OverrideEntries::new();
+    let mut compared = 0;
+    for &country in &read {
+        let tag = required_country_tag(country, links)?;
+        let subject = format!("CountryBuildingResources.{}", String::from_utf8_lossy(tag));
+        let entries = captured.get(&country).unwrap_or(&no_entries);
+        let expected = saved
+            .country_resources
+            .get(tag)
+            .map(|resources| resources.building_overrides.as_slice())
+            .unwrap_or_default();
+        value(
+            report,
+            &format!("{subject}.entries"),
+            entries.len(),
+            expected.len(),
+        );
+        for (ordinal, ((building, elements), (saved_building, saved_elements))) in
+            entries.iter().zip(expected).enumerate()
+        {
+            compared += 1;
+            let subject = format!("{subject}[{ordinal}]");
+            match token(names, *building) {
+                Ok(name) => value(
+                    report,
+                    &format!("{subject}.building"),
+                    name,
+                    saved_building.as_slice(),
+                ),
+                Err(reason) => report.limitation(
+                    &format!(
+                        "building {reason}; the override's building cannot be matched by name"
+                    ),
+                    format!("{subject}.token({building})"),
+                ),
+            }
+            value(
+                report,
+                &format!("{subject}.count"),
+                elements.len(),
+                saved_elements.len(),
+            );
+            for (element, (&(resource, amount), (index, saved_amount))) in
+                elements.iter().zip(saved_elements).enumerate()
+            {
+                let subject = format!("{subject}.{element}");
+                let saved_resource = match *index {
+                    0 => Some(0),
+                    index => u32::try_from(index)
+                        .ok()
+                        .and_then(|index| by_index.get(&index).copied()),
+                };
+                match saved_resource {
+                    Some(saved_resource) => value(
+                        report,
+                        &format!("{subject}.resource"),
+                        resource,
+                        saved_resource,
+                    ),
+                    None => report.difference(
+                        format!("{subject}.resource"),
+                        resource,
+                        format!("saved index {index} is not in the recorded resource database"),
+                    ),
+                }
+                report.scalar(&subject, "amount", Some(amount), Some(saved_amount));
+            }
+        }
+    }
+    for (tag, resources) in &saved.country_resources {
+        if resources.building_overrides.is_empty() {
+            continue;
+        }
+        let subject = format!("CountryBuildingResources.{}", String::from_utf8_lossy(tag));
+        let Some(country) = links
+            .values()
+            .find(|country| country.tag == *tag)
+            .map(|country| country.id)
+        else {
+            report.difference(subject, "no captured country", "present");
+            continue;
+        };
+        if !read.contains(&country) && !earlier.contains(&country) && !unread.contains(&country) {
+            report.limitation(
+                "the walk reads building-resource overrides for state controllers only, and this country controls no captured state",
+                subject,
+            );
+        }
+    }
+    if !earlier.is_empty() {
+        report.limitation(
+            &format!(
+                "{} countries' rows were read before this hour (sliced, daily) and are not compared; compare at a full-refresh hour",
+                earlier.len()
+            ),
+            "CountryBuildingResources",
+        );
+    }
+    if !unread.is_empty() {
+        report.limitation(
+            &format!(
+                "{} state controllers have no rows and no SliceReads hour (the family's scan did not see them), so no read is known to have found them without overrides; not compared",
+                unread.len()
+            ),
+            "CountryBuildingResources",
+        );
+    }
+    report.compared("CountryBuildingResources", compared);
+    Ok(())
+}
+
+/// `StateCores` against the saved countries' `cores` lists, inverted per
+/// state. The save writes membership reciprocally from the country side
+/// (`CCountry+0x4A8`), so it certifies canonical membership, not the state
+/// list's raw alias spelling or order: each recorded link is resolved to its
+/// country's tag and a state's tags compare as a sorted list. Only states
+/// whose StateCores row was read at the frame's hour are compared.
+pub(super) fn state_cores(
+    rows: &[replay::rows::StateCoreRow],
+    countries: &BTreeMap<Vec<u8>, installed_content::save::Country>,
+    links: &BTreeMap<u32, &CountryRow>,
+    reads: &[replay::rows::SliceReadRow],
+    hour: i32,
+    report: &mut Report,
+) -> io::Result<()> {
+    let sampled = |state: u32| {
+        replay::sliced::read_hour(reads, replay::rows::TableId::StateCores, state) == Some(hour)
+    };
+    let mut expected: BTreeMap<u32, Vec<&[u8]>> = BTreeMap::new();
+    for (tag, country) in countries {
+        for &state in &country.cores {
+            expected.entry(state).or_default().push(tag.as_slice());
+        }
+    }
+    let mut compared = 0;
+    for row in rows.iter().filter(|row| sampled(row.state)) {
+        let mut captured = row
+            .cores
+            .iter()
+            .map(|&link| required_country_tag(link, links))
+            .collect::<io::Result<Vec<_>>>()?;
+        captured.sort_unstable();
+        let mut saved = expected.remove(&row.state).unwrap_or_default();
+        saved.sort_unstable();
+        compared += 1;
+        if captured != saved {
+            report.difference(
+                format!("state {} cores", row.state),
+                format!("{captured:?}"),
+                format!("{saved:?}"),
+            );
+        }
+    }
+    for state in expected.keys().filter(|state| sampled(**state)) {
+        report.difference(format!("state {state} cores"), "no row", "saved cores");
+    }
+    report.compared("StateCores", compared);
+    report.limitation(
+        "the save writes core membership from the country side, so a state's raw alias spelling and list order are not certified",
+        "StateCores",
+    );
+    Ok(())
+}
+
+/// `StateDynamicModifiers` against each saved state's `dynamic_modifier`
+/// container, in order: name, scope country and scope state. Only states
+/// `sampled` at the frame's hour are compared.
+pub(super) fn state_modifiers(
+    rows: &[replay::rows::StateDynamicModifierRow],
+    saved: &BTreeMap<u32, Vec<installed_content::save::governance::DynamicModifier>>,
+    links: &BTreeMap<u32, &CountryRow>,
+    sampled: &dyn Fn(u32) -> bool,
+    report: &mut Report,
+) -> io::Result<()> {
+    earlier_states(
+        report,
+        "StateDynamicModifiers",
+        rows.iter()
+            .map(|row| row.state)
+            .chain(saved.keys().copied()),
+        sampled,
+    );
+    let mut seen = BTreeSet::new();
+    let mut matched = 0;
+    for row in rows.iter().filter(|row| sampled(row.state)) {
+        if !seen.insert((row.state, row.ordinal)) {
+            return Err(invalid("duplicate state dynamic modifier ordinal"));
+        }
+        let subject = format!("state dynamic_modifier.{}.{}", row.state, row.ordinal);
+        let Some(modifier) = saved
+            .get(&row.state)
+            .and_then(|list| list.get(row.ordinal as usize))
+        else {
+            report.difference(subject, "captured modifier", "missing saved modifier");
+            continue;
+        };
+        matched += 1;
+        value(
+            report,
+            &format!("{subject}.token"),
+            row.token.as_slice(),
+            modifier.token.as_slice(),
+        );
+        match (&modifier.scope_country, (row.scope_country as i32) > 0) {
+            (Some(tag), true) => value(
+                report,
+                &format!("{subject}.country"),
+                required_country_tag(row.scope_country, links)?,
+                tag.as_slice(),
+            ),
+            (None, false) => {}
+            (saved, _) => report.difference(
+                format!("{subject}.country"),
+                row.scope_country,
+                format!("{saved:?}"),
+            ),
+        }
+        match modifier.scope_state {
+            Some(state) => value(report, &format!("{subject}.state"), row.scope_state, state),
+            None if row.scope_state > 0 => report.difference(
+                format!("{subject}.state"),
+                row.scope_state,
+                "missing positive state",
+            ),
+            None => {}
+        }
+    }
+    missing(
+        report,
+        "state dynamic_modifier",
+        &seen,
+        saved
+            .iter()
+            .filter(|(state, _)| sampled(**state))
+            .flat_map(|(&state, list)| (0..list.len() as u32).map(move |ordinal| (state, ordinal))),
+    );
+    report.compared("StateDynamicModifiers", matched);
+    report.limitation(
+        "save omission proves only a nonpositive scope; the raw omitted values stay captured",
+        "StateDynamicModifiers",
+    );
+    Ok(())
+}
+
 fn value<T: std::fmt::Debug + PartialEq>(
     report: &mut Report,
     subject: &str,
@@ -893,8 +1383,316 @@ fn manpower(
 mod tests {
     use super::*;
 
+    /// The save's country-side `cores`, inverted, against the recorded state
+    /// lists: order and alias spelling do not matter; membership does, and
+    /// only states read at the frame's hour are compared.
+    #[test]
+    fn state_cores_compare_canonical_membership_with_the_saved_country_lists() {
+        let country = |tag: &[u8], id| CountryRow {
+            id,
+            tag: tag.to_vec(),
+            ..Default::default()
+        };
+        let (ger, fra, alias) = (country(b"GER", 5), country(b"FRA", 7), country(b"GER", 9));
+        let links = BTreeMap::from([(5_u32, &ger), (7, &fra), (9, &alias)]);
+        let saved = |cores: &[(&[u8], &[u32])]| {
+            cores
+                .iter()
+                .map(|(tag, states)| {
+                    (
+                        tag.to_vec(),
+                        installed_content::save::Country {
+                            tag: tag.to_vec(),
+                            cores: states.to_vec(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let reads = |states: &[u32]| {
+            states
+                .iter()
+                .map(|&owner| replay::rows::SliceReadRow {
+                    table: replay::rows::TableId::StateCores.index() as u32,
+                    owner,
+                    sample_hour: 10,
+                })
+                .collect::<Vec<_>>()
+        };
+        let row = |state, cores: &[u32]| replay::rows::StateCoreRow {
+            state,
+            cores: cores.to_vec(),
+        };
+        let run = |rows: &[replay::rows::StateCoreRow], countries, read: &[u32]| {
+            let mut report = Report::default();
+            state_cores(rows, countries, &links, &reads(read), 10, &mut report).unwrap();
+            report
+        };
+        let countries = saved(&[(b"GER", &[1, 2]), (b"FRA", &[1])]);
+        // State 1 lists FRA then GER through an alias; state 3 has none.
+        let report = run(
+            &[row(1, &[7, 9]), row(2, &[5]), row(3, &[])],
+            &countries,
+            &[1, 2, 3],
+        );
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["StateCores"], 3);
+        // A missing core differs; a state not read this hour is not compared.
+        let report = run(&[row(1, &[5]), row(2, &[])], &countries, &[1]);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        // A saved core of a read state with no row is a difference too.
+        let report = run(&[row(1, &[5, 7])], &countries, &[1, 2]);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    }
+
     fn saved_pack(text: &[u8]) -> saved::Pack {
         saved::parse(&installed_content::parser::parse(text).unwrap().items).unwrap()
+    }
+
+    #[test]
+    fn state_pools_and_modifiers_compare_names_order_and_scopes() {
+        let saved = saved_pack(
+            br#"countries={} provinces={} states={2={resources={steel=8} dynamic_modifier={
+                modifier={modifier="b" tag="SWI" enabled=yes}
+                modifier={modifier="a" enabled=yes}
+            }}}"#,
+        );
+        let names = BTreeMap::from([(7_u32, &b"steel"[..]), (8, &b"oil"[..])]);
+        let pool = |resource, pool| replay::rows::StateResourceRow {
+            state: 2,
+            resource,
+            pool,
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        state_pools(
+            &[pool(7, 800_000), pool(8, 0)],
+            &saved.state_resources,
+            &names,
+            &|_| true,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.compared_tables["StateResources.pool"], 1);
+        assert!(report.differences.is_empty());
+        state_pools(
+            &[pool(7, 800_001)],
+            &saved.state_resources,
+            &names,
+            &|_| true,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.differences.len(), 1);
+        // A state read at an earlier hour is reported, not compared.
+        let mut report = Report::default();
+        state_pools(
+            &[pool(7, 800_001)],
+            &saved.state_resources,
+            &names,
+            &|state| state != 2,
+            &mut report,
+        )
+        .unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.compared_tables["StateResources.pool"], 0);
+        assert_eq!(report.limitations.len(), 2);
+
+        let swiss = CountryRow {
+            id: 5,
+            tag: b"SWI".to_vec(),
+            ..Default::default()
+        };
+        let links = BTreeMap::from([(5_u32, &swiss)]);
+        let modifier =
+            |ordinal, token: &[u8], scope_country| replay::rows::StateDynamicModifierRow {
+                state: 2,
+                ordinal,
+                token: token.to_vec(),
+                scope_country,
+                scope_state: 0,
+            };
+        let mut report = Report::default();
+        state_modifiers(
+            &[modifier(0, b"b", 5), modifier(1, b"a", 0)],
+            &saved.state_dynamic_modifiers,
+            &links,
+            &|_| true,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.compared_tables["StateDynamicModifiers"], 2);
+        assert!(report.differences.is_empty());
+        state_modifiers(
+            &[modifier(0, b"a", 0)],
+            &saved.state_dynamic_modifiers,
+            &links,
+            &|_| true,
+            &mut report,
+        )
+        .unwrap();
+        // The swapped name and the missing second entry.
+        assert_eq!(report.differences.len(), 3);
+    }
+
+    /// Origin presence comes from the controller's saved `origin` states and
+    /// the infrastructure level from the saved state building the engine's
+    /// fixed token names; a state without an origin has no level to compare.
+    #[test]
+    fn resource_inputs_compare_origins_and_infrastructure_levels() {
+        let saved = saved_pack(
+            br#"countries={ITA={resources={origin={country="ITA" state=2} origin={country="ITA" state=4}}}} provinces={}
+            states={2={buildings={infra={level=5 healthy_levels=3 partial_health=0}}} 3={} 4={}}"#,
+        );
+        let italy = CountryRow {
+            id: 5,
+            tag: b"ITA".to_vec(),
+            ..Default::default()
+        };
+        let links = BTreeMap::from([(5_u32, &italy)]);
+        let names = BTreeMap::from([(
+            engine::cbuilding_database::INFRASTRUCTURE_TOKEN,
+            &b"infra"[..],
+        )]);
+        let states: Vec<_> = [2, 3, 4]
+            .map(|id| replay::rows::StateRow {
+                id,
+                controller: 5,
+                ..Default::default()
+            })
+            .into();
+        let input = |state, origin, infrastructure_level| replay::rows::StateResourceInputRow {
+            state,
+            origin,
+            infrastructure_level,
+            ..Default::default()
+        };
+        let run = |rows: &[_], sampled: &dyn Fn(u32) -> bool| {
+            let mut report = Report::default();
+            resource_inputs(rows, &states, &saved, &links, &names, sampled, &mut report).unwrap();
+            report
+        };
+        let exact = [input(2, 1, Some(5)), input(3, 0, None), input(4, 1, None)];
+        let report = run(&exact, &|_| true);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["StateResourceInputs"], 3);
+        let report = run(
+            &[input(2, 1, Some(4)), input(3, 1, None), input(4, 0, None)],
+            &|_| true,
+        );
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+        // States read at an earlier hour are named, not compared.
+        let report = run(&[input(2, 0, None)], &|state| state != 2);
+        assert!(report.differences.is_empty());
+        assert_eq!(report.compared_tables["StateResourceInputs"], 0);
+    }
+
+    /// Overrides compare entry by entry and element by element in native
+    /// order, the saved element key through the recorded resource database;
+    /// a controller without rows compares as empty only in its own slice.
+    #[test]
+    fn building_overrides_compare_entries_elements_and_empty_controllers() {
+        let saved = saved_pack(
+            br#"countries={ITA={resources={modify_building_resources={refinery={3=3 1=-0.5} dock={}}}}
+            GER={resources={modify_building_resources={refinery={3=1}}}}} provinces={} states={}"#,
+        );
+        let italy = CountryRow {
+            id: 5,
+            tag: b"ITA".to_vec(),
+            ..Default::default()
+        };
+        let germany = CountryRow {
+            id: 24,
+            canonical_slot: 1,
+            tag: b"GER".to_vec(),
+            ..Default::default()
+        };
+        let links = BTreeMap::from([(5_u32, &italy), (24, &germany)]);
+        let names = BTreeMap::from([(40_u32, &b"refinery"[..]), (41, &b"dock"[..])]);
+        let resources: Vec<_> = [(1, 70), (3, 72)]
+            .map(|(id, token)| replay::rows::ResourceDefinitionRow {
+                id,
+                token,
+                ..Default::default()
+            })
+            .into();
+        let states: Vec<_> = [(2, 5), (3, 24)]
+            .map(|(id, controller)| replay::rows::StateRow {
+                id,
+                controller,
+                ..Default::default()
+            })
+            .into();
+        let hour = 5;
+        let row = |ordinal, entry, building, count, resource, amount| {
+            replay::rows::CountryBuildingResourceRow {
+                country: 5,
+                ordinal,
+                entry,
+                building,
+                count,
+                resource,
+                amount,
+            }
+        };
+        let read = |owner, sample_hour| replay::rows::SliceReadRow {
+            table: replay::rows::TableId::CountryBuildingResources.index() as u32,
+            owner,
+            sample_hour,
+        };
+        let attempt = |rows: &[_], reads: &[_], hour| {
+            let mut report = Report::default();
+            building_overrides(
+                rows,
+                reads,
+                &resources,
+                &states,
+                &saved,
+                &links,
+                &names,
+                hour,
+                &mut report,
+            )
+            .map(|()| report)
+        };
+        let run = |rows: &[_], reads: &[_], hour| attempt(rows, reads, hour).unwrap();
+        let exact = [
+            row(0, 0, 40, 2, 72, 300_000),
+            row(1, 0, 40, 2, 70, -50_000),
+            row(2, 1, 41, 0, 0, 0),
+        ];
+        // ITA was read at hour 5; GER, without rows, at hour 0.
+        let reads = [read(5, hour), read(24, 0)];
+        let report = run(&exact, &reads, hour);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CountryBuildingResources"], 2);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("read before this hour"))
+        );
+        let changed = [row(0, 0, 40, 2, 70, 300_000), row(1, 0, 40, 2, 70, -50_001)];
+        let report = run(&changed, &reads, hour);
+        // The resource, the amount and the missing empty entry.
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+        // At hour 0 GER's read found no rows against one saved entry.
+        let report = run(&[], &[read(5, hour), read(24, 0)], 0);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        // A controller with neither rows nor a recorded read is named, not
+        // compared, whatever its slice.
+        let report = run(&[], &[read(5, hour)], 0);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("no SliceReads hour"))
+        );
+        // Rows without a read hour, and rows that skip an entry, are refused.
+        assert!(attempt(&exact, &[], hour).is_err());
+        assert!(attempt(&[row(0, 1, 40, 0, 0, 0)], &reads, hour).is_err());
     }
 
     #[test]

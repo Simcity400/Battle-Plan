@@ -4,8 +4,128 @@
 //! `-1` means unset in every numeric column. The shipped file ends with a
 //! `-1;-1;;-1;...` sentinel row and a commented copy of the header, both of
 //! which are skipped.
+//!
+//! [`parse`] is the strict reader the map passes use. [`native_rows`] reads
+//! the file as the engine's loader does, for the province graph; both live
+//! here so the file has one home.
 
 use std::io;
+
+use crate::province_geometry::engine_number;
+
+/// A row as `load_authored_adjacencies@140A53290` reads it: numeric prefixes,
+/// the kind word, `Through` and the rule name. Raw values; the province graph
+/// validates them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NativeRow {
+    pub from: i32,
+    /// A row without a `To` field keeps the previous row's.
+    pub to: i32,
+    /// 1 sea, 2 river, 3 large river, 4 impassable, else 0.
+    pub kind: u8,
+    /// The raw `Through` column; -1 when unset.
+    pub through: i32,
+    /// The rule column, `None` when blank.
+    pub rule: Option<String>,
+}
+
+/// Authored adjacency kinds (`140A53290`).
+pub const SEA_CROSSING: u8 = 1;
+pub const IMPASSABLE: u8 = 4;
+
+struct CsvCursor<'a> {
+    bytes: &'a [u8],
+    position: usize,
+    /// The last field ended its line.
+    line_ended: bool,
+}
+
+impl<'a> CsvCursor<'a> {
+    /// The next `;`- or newline-ended field; a line's last field keeps no
+    /// `\r` of a CRLF ending. `None` at the end or at a 0xFF byte.
+    fn field(&mut self) -> Option<&'a [u8]> {
+        let start = self.position;
+        while let Some(&byte) = self.bytes.get(self.position) {
+            self.position += 1;
+            if byte == 0xff {
+                return None;
+            }
+            if byte == b';' || byte == b'\n' {
+                self.line_ended = byte == b'\n';
+                let field = &self.bytes[start..self.position - 1];
+                return Some(field.strip_suffix(b"\r").unwrap_or(field));
+            }
+        }
+        None
+    }
+
+    /// Past the rest of the row: nothing more when its last field ended it.
+    fn next_row(&mut self) {
+        if !std::mem::take(&mut self.line_ended) {
+            self.skip_line();
+        }
+    }
+
+    fn skip_line(&mut self) {
+        while let Some(&byte) = self.bytes.get(self.position) {
+            self.position += 1;
+            if byte == b'\n' || byte == 0xff {
+                break;
+            }
+        }
+    }
+}
+
+/// `From`; a zero `From` field is skipped without its line, and the next
+/// field is read as `From` again.
+pub(crate) fn native_rows(authored: &[u8]) -> Vec<NativeRow> {
+    let mut cursor = CsvCursor {
+        bytes: authored,
+        position: 0,
+        line_ended: false,
+    };
+    cursor.skip_line();
+    let number = |field: &[u8]| engine_number(&String::from_utf8_lossy(field)) as i32;
+    let mut rows = Vec::new();
+    let mut to = 0_i32;
+    while let Some(field) = cursor.field() {
+        let from = number(field);
+        if from < 0 {
+            break;
+        }
+        if from == 0 {
+            continue;
+        }
+        if let Some(field) = cursor.field() {
+            to = number(field);
+        }
+        let kind = match cursor.field() {
+            Some(b"sea") => SEA_CROSSING,
+            Some(b"river") => 2,
+            Some(b"river_large") => 3,
+            Some(b"impassable") => IMPASSABLE,
+            _ => 0,
+        };
+        let through = cursor.field().map_or(0, number);
+        for _ in 0..4 {
+            cursor.field();
+        }
+        let rule = cursor
+            .field()
+            .filter(|name| !name.is_empty())
+            .map(|name| String::from_utf8_lossy(name).into_owned());
+        rows.push(NativeRow {
+            from,
+            to,
+            kind,
+            through,
+            rule,
+        });
+        // A row without the comment column ends at its rule.
+        cursor.next_row();
+    }
+    rows
+}
 
 /// What an adjacency represents; the game writes the empty kind for a strait
 /// that only an adjacency rule controls.
@@ -176,6 +296,42 @@ mod tests {
     fn an_unknown_type_word_is_kept_rather_than_dropped() {
         let rows = parse(b"1;2;canal;-1;-1;-1;-1;-1;;x\n").unwrap();
         assert_eq!(rows[0].kind, AdjacencyKind::Other("canal".into()));
+    }
+
+    #[test]
+    fn native_rows_keep_kind_through_and_rule_and_stop_at_the_sentinel() {
+        let rows = native_rows(
+            b"From;To;Type;Through;a;b;c;d;rule;Comment\n\
+              1;5;sea;9;-1;-1;-1;-1;STRAIT;x\n\
+              2;3;impassable;-1;-1;-1;-1;-1;;y\n\
+              -1;-1;;-1;-1;-1;-1;-1;;\n\
+              4;6;sea;-1;-1;-1;-1;-1;;after\n",
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0],
+            NativeRow {
+                from: 1,
+                to: 5,
+                kind: SEA_CROSSING,
+                through: 9,
+                rule: Some("STRAIT".into())
+            }
+        );
+        assert_eq!((rows[1].kind, rows[1].rule.as_deref()), (IMPASSABLE, None));
+    }
+
+    #[test]
+    fn crlf_rows_without_a_comment_column_keep_every_row_and_clean_rule_names() {
+        let rows = native_rows(
+            b"From;To;Type;Through;a;b;c;d;rule\r\n\
+              1;5;sea;9;-1;-1;-1;-1;STRAIT\r\n\
+              2;3;;-1;-1;-1;-1;-1;CANAL\r\n\
+              -1;-1;;-1;-1;-1;-1;-1;-1\r\n",
+        );
+        let rules: Vec<_> = rows.iter().map(|row| row.rule.as_deref()).collect();
+        assert_eq!(rules, [Some("STRAIT"), Some("CANAL")]);
+        assert_eq!((rows[1].from, rows[1].to), (2, 3));
     }
 
     #[test]

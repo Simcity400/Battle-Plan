@@ -22,7 +22,7 @@ use std::mem::size_of;
 #[cfg(test)]
 use replay::rows::TableRows;
 
-pub const N: usize = 22;
+pub const N: usize = 23;
 
 pub const TABLES: [TableId; N] = [
     TableId::Focus,
@@ -47,6 +47,7 @@ pub const TABLES: [TableId; N] = [
     TableId::ResearchInputs,
     TableId::ResearchAppliedBonuses,
     TableId::ResearchModifiers,
+    TableId::PartyLeaders,
 ];
 /// Name, local cost anchor and local members. Reports sum member ticks;
 /// physically shared walks charge their anchor once and leave followers zero.
@@ -56,9 +57,9 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("Research technologies and definitions", 2, &[2, 4]),
     ("Research slots", 3, &[3]),
     (
-        "Politics, parties, ideas and shared country authentication",
+        "Politics, parties, party leaders, ideas and shared country authentication",
         5,
-        &[5, 6, 7],
+        &[5, 6, 7, 22],
     ),
     ("Decision counts and state", 8, &[8, 9]),
     ("Dynamic modifiers", 10, &[10]),
@@ -106,7 +107,7 @@ impl Default for Capacities {
         Self {
             rows: [
                 512, 8192, 32768, 2048, 4096, 512, 2048, 16384, 512, 8192, 4096, 512, 512, 128,
-                1024, 128, 512, 1024, 512, 2048, 4096, 16384,
+                1024, 128, 512, 1024, 512, 2048, 4096, 16384, 2048,
             ],
             focus_text: 131072,
             definition_text: 262144,
@@ -140,6 +141,14 @@ impl Capacities {
         }
         raise(&mut self.party_countries, self.rows[6]);
     }
+
+    /// PartyLeaders from the live leader total
+    /// (`country_scale::observe_politics`), with the three-quarters growth
+    /// rule's headroom. Never lowers.
+    pub(crate) fn raise_for_party_leaders(&mut self, leaders: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[22], rows(leaders, 1));
+    }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +172,7 @@ pub struct Captured {
     definitions: CaptureRows<ctechnology_template::Row>,
     politics: CaptureRows<CountryRow<cpolitical_status::Row>>,
     parties: CaptureRows<cpolitical_party::Row>,
+    party_leaders: CaptureRows<cpolitical_party::LeaderRow>,
     ideas: CaptureRows<cpolitical_status::IdeaRow>,
     counts: CaptureRows<CountryRow<cdecision_status::Counts>>,
     decisions: CaptureRows<cdecision_status::Row>,
@@ -448,6 +458,7 @@ impl Captured {
             definitions: CaptureRows::new(capacity.rows[4]),
             politics: CaptureRows::new(capacity.rows[5]),
             parties: CaptureRows::new(capacity.rows[6]),
+            party_leaders: CaptureRows::new(capacity.rows[22]),
             ideas: CaptureRows::new(capacity.rows[7]),
             counts: CaptureRows::new(capacity.rows[8]),
             decisions: CaptureRows::new(capacity.rows[9]),
@@ -551,6 +562,7 @@ impl Captured {
             research_bonuses = 20,
             research_modifiers = 21,
             research_inputs = 19,
+            party_leaders = 22,
         );
         CaptureReport::default()
     }
@@ -578,6 +590,7 @@ impl Captured {
         self.research_bonuses.reset();
         self.research_modifiers.reset();
         self.research_inputs.reset();
+        self.party_leaders.reset();
         self.focus_text.reset();
         self.definition_text.reset();
         self.party_text.reset();
@@ -616,6 +629,7 @@ impl Captured {
             + self.research_bonuses.allocated_bytes()
             + self.research_modifiers.allocated_bytes()
             + self.research_inputs.allocated_bytes()
+            + self.party_leaders.allocated_bytes()
             + self.focus_text.allocated_bytes()
             + self.definition_text.allocated_bytes()
             + self.party_text.allocated_bytes()
@@ -655,6 +669,7 @@ impl Captured {
         self.research_inputs.grow(&mut capacity.rows[19]);
         self.research_bonuses.grow(&mut capacity.rows[20]);
         self.research_modifiers.grow(&mut capacity.rows[21]);
+        self.party_leaders.grow(&mut capacity.rows[22]);
         self.overrides.grow(&mut capacity.rows[18]);
         capacity.party_countries = capacity.rows[6];
         capacity.idea_countries = capacity.rows[7];
@@ -699,6 +714,7 @@ impl Captured {
             self.research_inputs.outcome,
             self.research_bonuses.outcome,
             self.research_modifiers.outcome,
+            self.party_leaders.outcome,
         ]
     }
 
@@ -724,6 +740,7 @@ impl Captured {
             balance_members: &mut self.balance_members.rows,
             ranges: &mut self.ranges.rows,
             overrides: &mut self.overrides.rows,
+            party_leaders: &mut self.party_leaders.rows,
             focus_text: &mut self.focus_text.first,
             definition_text: &mut self.definition_text.first,
             party_text: &mut self.party_text.first,
@@ -810,6 +827,7 @@ impl Captured {
         self.balance_members.outcome = first.outcomes[16];
         self.ranges.outcome = first.outcomes[17];
         self.overrides.outcome = first.outcomes[18];
+        self.party_leaders.outcome = first.outcomes[22];
         self.focus_text.len = first.lens[0];
         self.focus_text.required = first.required[0];
         self.definition_text.len = first.lens[1];
@@ -913,6 +931,7 @@ struct Buffers<'a> {
     balance_members: &'a mut [power_balance_record::MemberRow],
     ranges: &'a mut [power_balance_range::Row],
     overrides: &'a mut [power_balance_gfx_override::Row],
+    party_leaders: &'a mut [cpolitical_party::LeaderRow],
     focus_text: &'a mut [u8],
     definition_text: &'a mut Vec<u8>,
     party_text: &'a mut [u8],
@@ -997,7 +1016,7 @@ fn acquire(
     }
     // Every live country was visited without a census error.
     let mut census = true;
-    if enabled[..13].iter().any(|&value| value) {
+    if enabled[..13].iter().any(|&value| value) || enabled[22] {
         let started = qpc();
         let countries = read_accounting::with_table(TABLES[5], || {
             ccountry::Reader::new(memory, base, game_state)
@@ -1008,6 +1027,9 @@ fn acquire(
                 census = false;
                 for (outcome, _) in o.outcomes[..13].iter_mut().zip(&enabled[..13]).filter(|(_, active)| **active) {
                     *outcome = Outcome::Unavailable { reason };
+                }
+                if enabled[22] {
+                    o.outcomes[22] = Outcome::Unavailable { reason };
                 }
             }
             Ok(countries) => {
@@ -1022,6 +1044,9 @@ fn acquire(
                             census = false;
                             for (outcome, _) in o.outcomes[..13].iter_mut().zip(&enabled[..13]).filter(|(_, active)| **active) {
                                 *outcome = Outcome::Unavailable { reason };
+                            }
+                            if enabled[22] {
+                                o.outcomes[22] = Outcome::Unavailable { reason };
                             }
                             break;
                         }
@@ -1095,7 +1120,7 @@ fn acquire(
                         append(&mut o.outcomes[3], result);
                         o.ticks[3] += elapsed(started);
                     }
-                    if enabled[5] {
+                    if enabled[5] || enabled[22] {
                         let _reads = read_accounting::table(TABLES[5]);
                         let started = qpc();
                         match cpolitical_status::Reader::new(memory, base, country.pointer) {
@@ -1105,8 +1130,22 @@ fn acquire(
                                         o.outcomes[index] = Outcome::Unavailable { reason };
                                     }
                                 }
+                                if enabled[22] {
+                                    o.outcomes[22] = Outcome::Unavailable { reason };
+                                }
                             }
                             Ok(reader) => {
+                                // PartyLeaders shares Politics' hourly walk and
+                                // authenticated status, charged to its own table.
+                                if enabled[22] {
+                                    let _reads = read_accounting::table(TABLES[22]);
+                                    let leaders = qpc();
+                                    let first = o.outcomes[22].len();
+                                    let result = reader
+                                        .party_leaders(country.id, &mut b.party_leaders[first..]);
+                                    append(&mut o.outcomes[22], result);
+                                    o.ticks[22] += elapsed(leaders);
+                                }
                                 let first = o.outcomes[5].len();
                                 let result = reader
                                     .row()
@@ -2038,7 +2077,13 @@ impl Captured {
                 country: r.country, index: r.index, ordinal: r.ordinal, technology_handle: r.technology_handle,
                 kind: match r.kind { engine::research_modifiers::Kind::Technology => rows::ResearchModifierRow::TECHNOLOGY, engine::research_modifiers::Kind::CountrySpeed => rows::ResearchModifierRow::COUNTRY_SPEED, engine::research_modifiers::Kind::CategorySpeed => rows::ResearchModifierRow::CATEGORY_SPEED, engine::research_modifiers::Kind::DesignTeam => rows::ResearchModifierRow::DESIGN_TEAM, engine::research_modifiers::Kind::Experience => rows::ResearchModifierRow::EXPERIENCE, engine::research_modifiers::Kind::Sharing => rows::ResearchModifierRow::SHARING, engine::research_modifiers::Kind::License => rows::ResearchModifierRow::LICENSE, engine::research_modifiers::Kind::Scientist => rows::ResearchModifierRow::SCIENTIST, engine::research_modifiers::Kind::Year => rows::ResearchModifierRow::YEAR, engine::research_modifiers::Kind::AheadFactor => rows::ResearchModifierRow::AHEAD_FACTOR, engine::research_modifiers::Kind::MinimumSpeed => rows::ResearchModifierRow::MINIMUM_SPEED, engine::research_modifiers::Kind::CountrySource => rows::ResearchModifierRow::COUNTRY_SOURCE, engine::research_modifiers::Kind::IdeaSource => rows::ResearchModifierRow::IDEA_SOURCE, engine::research_modifiers::Kind::ScriptSource => rows::ResearchModifierRow::SCRIPT_SOURCE, engine::research_modifiers::Kind::ScientistSource => rows::ResearchModifierRow::SCIENTIST_SOURCE, engine::research_modifiers::Kind::SharingMultiplier => rows::ResearchModifierRow::SHARING_MULTIPLIER, engine::research_modifiers::Kind::SharingMaximum => rows::ResearchModifierRow::SHARING_MAXIMUM, engine::research_modifiers::Kind::ModifierMetadata => rows::ResearchModifierRow::MODIFIER_METADATA, engine::research_modifiers::Kind::ScientistCategory => rows::ResearchModifierRow::SCIENTIST_CATEGORY, engine::research_modifiers::Kind::SharingMember => rows::ResearchModifierRow::SHARING_MEMBER, engine::research_modifiers::Kind::SharingPredecessor => rows::ResearchModifierRow::SHARING_PREDECESSOR, engine::research_modifiers::Kind::SharingFilter => rows::ResearchModifierRow::SHARING_FILTER, engine::research_modifiers::Kind::SharingCategory => rows::ResearchModifierRow::SHARING_CATEGORY, engine::research_modifiers::Kind::SharingDoctrine => rows::ResearchModifierRow::SHARING_DOCTRINE, engine::research_modifiers::Kind::SharingMissingMember => rows::ResearchModifierRow::SHARING_MISSING_MEMBER }, raw: r.raw, auxiliary: r.auxiliary, count: r.count, source_id: r.source_id, name: r.name.as_bytes().to_vec(),
             })),
-
+            wrap(view::<tables::PartyLeaders, _>(&self.party_leaders, |_| true, |r| rows::PartyLeaderRow {
+                country: r.country,
+                party: r.party,
+                ordinal: r.ordinal,
+                character: r.character,
+                leader_id: r.leader_id,
+            })),
         ]
     }
 }

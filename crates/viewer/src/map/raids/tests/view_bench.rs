@@ -1,0 +1,1613 @@
+//! The raid layer's per-hour cost on the army-reach bench's
+//! vanilla-sized grid ([`super::reach_bench`]): 120 x 110 provinces, four
+//! continents, a 300-country faction on the first with 300 naval bases, and
+//! the viewing country's 20 marine divisions and three bomber wings. Every
+//! country's first province holds a naval base and a supply node, both
+//! targets. The catalogue has the vanilla count and mix of raid types (36:
+//! 23 from air bases, 2 from naval bases, 6 from buildings, 1 from carriers,
+//! 4 nuclear `province = any`), each a distinct type. The session memo holds
+//! the viewing country's pairs and grows every 12 hours, as a recording's
+//! does when the game asks new pairs. The hours play as the raid lane builds
+//! them ([`super::super::cycle`]: each hour's rebuild frame, one batch and
+//! its icons), steady and with typical changes and two large ones
+//! ([`bench_hours`]); then the last hour is paused, one batch per frame,
+//! until every target is current. The raid layer only: the other builder
+//! parts need the game's content. Each batch is split across the threads a
+//! builder pool lends, as the viewer starts one for the processors the
+//! process may use (`RAID_BENCH_THREADS` limits them; 1 evaluates in order
+//! on the calling thread). Run in release, `RAID_BENCH_ROUNDS` times:
+//! `cargo test -p viewer --release --bin viewer -- --ignored raid_view_bench --nocapture`.
+
+use std::time::{Duration, Instant};
+
+use installed_content::raids::{BattalionRequirement, SourceKind, StartingPoint, UnitRequirement};
+use replay::rows::{
+    DivisionTemplateIconRow, NavalBaseRow, NukeRow, RaidCountryInputRow, RaidPathDistanceRow,
+    TemplateSubunit,
+};
+
+use super::{
+    bench::Timed,
+    reach_bench::{HEIGHT, MARINES, WIDTH, base_provinces, grid, hour},
+    *,
+};
+
+const HOURS: i32 = 96;
+const NAVAL_BASE: u32 = 10;
+const SUPPLY_NODE: u32 = 11;
+const MARINE: u32 = 20;
+const LARGE: u32 = 30;
+const VARIANT: u64 = 0x0000_0006_0000_0046;
+const WINGS: u32 = 3;
+const TEMPLATE: u64 = 0x0000_0005_0000_0014;
+
+fn raw(slot: u32) -> u32 {
+    1_000 + slot
+}
+
+fn xy(province: u32) -> (u32, u32) {
+    ((province - 1) % WIDTH, (province - 1) / WIDTH)
+}
+
+/// The vanilla catalogue's mix: its 36 types by starting point.
+fn kinds() -> Vec<RaidType> {
+    let targets = |index: usize| {
+        let building = if index.is_multiple_of(2) {
+            "naval_base"
+        } else {
+            "supply_node"
+        };
+        vec![TargetType::Building(installed_content::raids::BuildingSelector {
+            types: vec![building.into()],
+            ..Default::default()
+        })]
+    };
+    let marines = vec![UnitRequirement {
+        battalions: vec![BattalionRequirement {
+            name: "marine".into(),
+            min: Some(1),
+            max: None,
+        }],
+        ..Default::default()
+    }];
+    let bombers = vec![UnitRequirement {
+        equipment: vec![installed_content::raids::EquipmentRequirement {
+            types: vec!["strategic_bomber".into()],
+            min: Some(10),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    let base = |index: usize, starting_point: StartingPoint, units: &Vec<UnitRequirement>| {
+        RaidType {
+            name: format!("raid_{index}"),
+            category: Some("army".into()),
+            show_target: parse("NOT = { is_in_faction_with = FROM }"),
+            target_types: targets(index),
+            command_power_raw: 10 * 100_000,
+            // Ten to thirty provinces of 50,000.
+            max_distance_raw: Some(500_000 * (2 + (index % 5) as i64)),
+            starting_point,
+            unit_requirements: units.clone(),
+            ..Default::default()
+        }
+    };
+    let from = |types: Vec<SourceKind>| StartingPoint {
+        types,
+        ..Default::default()
+    };
+    let buildings = |names: &[&str], faction: bool| StartingPoint {
+        building_types: names.iter().map(|name| (*name).into()).collect(),
+        allow_faction_buildings: faction,
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    for index in 0..23 {
+        out.push(base(index, from(vec![SourceKind::AirBase]), &bombers));
+    }
+    for index in 23..25 {
+        out.push(base(index, from(vec![SourceKind::NavalBase]), &marines));
+    }
+    for (index, point) in (25..31).zip([
+        buildings(&["supply_node"], true),
+        buildings(&["supply_node"], false),
+        buildings(&["supply_node"], true),
+        buildings(&["supply_node"], false),
+        buildings(&["supply_node", "naval_base"], true),
+        buildings(&["naval_base"], true),
+    ]) {
+        out.push(base(index, point, &marines));
+    }
+    out.push(base(31, from(vec![SourceKind::Carrier]), &bombers));
+    for index in 32..36 {
+        out.push(RaidType {
+            any_province: true,
+            ..base(index, from(vec![SourceKind::AirBase]), &bombers)
+        });
+    }
+    out
+}
+
+fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
+    let (graph, geometry) = grid();
+    let mut assets = assets();
+    assets.moves = Ok(installed_content::unit_path::MoveGraph::new(&graph, &geometry));
+    assets.geometry = geometry;
+    assets.paths = Ok(paths::PathSearch::new(graph));
+    // Command power capacity for the types' cost.
+    assets.defines.base_max_command_power = 100 * 100_000;
+    assets.catalog = Catalog {
+        types: kinds(),
+        ..Default::default()
+    };
+    assets.buildings = installed_content::buildings::Buildings {
+        types: ["naval_base", "supply_node"]
+            .map(|name| {
+                (
+                    name.to_owned(),
+                    BuildingType {
+                        name: name.into(),
+                        province_max: Some(10),
+                        ..Default::default()
+                    },
+                )
+            })
+            .into(),
+        ..Default::default()
+    };
+    assets.equipment = installed_content::equipment::parse(
+        &[installed_content::parser::parse(
+            b"equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } }",
+        )
+        .unwrap()],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let mut frame = hour(countries);
+    // States: each country's land, in province order.
+    let provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
+    assets.state_provinces = BTreeMap::new();
+    let mut first: BTreeMap<u32, u32> = BTreeMap::new();
+    for row in &provinces {
+        if row.state != 0 {
+            assets
+                .state_provinces
+                .entry(row.state)
+                .or_default()
+                .push(row.id);
+            first.entry(row.owner).or_insert(row.id);
+        }
+    }
+    put::<tables::States>(
+        &mut frame,
+        assets
+            .state_provinces
+            .keys()
+            .map(|&state| StateRow {
+                id: state,
+                owner: raw(state - 10_000),
+                controller: raw(state - 10_000),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    // The viewing country (slot 0) holds the marines.
+    let mut divisions = frame.complete::<tables::Divisions>().unwrap().to_vec();
+    for division in divisions.iter_mut().take(MARINES) {
+        division.roster_owner = raw(0);
+        division.logical_owner = raw(0);
+        division.template = TEMPLATE;
+    }
+    put::<tables::Divisions>(&mut frame, divisions);
+    put::<tables::DivisionTemplateIcons>(
+        &mut frame,
+        vec![DivisionTemplateIconRow {
+            template: TEMPLATE,
+            subunits: vec![TemplateSubunit {
+                token: MARINE,
+                local: 0,
+                count: 3,
+            }],
+            ..Default::default()
+        }],
+    );
+    let mut countries_rows = frame.complete::<tables::Countries>().unwrap().to_vec();
+    countries_rows[0].command_power_raw = 50 * 100_000;
+    put::<tables::Countries>(&mut frame, countries_rows);
+    put::<tables::RaidCountryInputs>(
+        &mut frame,
+        (0..countries)
+            .map(|slot| RaidCountryInputRow {
+                canonical_slot: slot,
+                ..registered_launch_inputs()
+            })
+            .collect(),
+    );
+    put::<tables::CountryCommandPower>(&mut frame, registered_command_power(0..countries));
+    put::<tables::Nukes>(
+        &mut frame,
+        (0..2)
+            .map(|nuke_type| NukeRow {
+                country: raw(0),
+                nuke_type,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    put::<tables::RaidCountries>(
+        &mut frame,
+        (0..countries)
+            .map(|slot| RaidCountryRow {
+                canonical_slot: slot,
+                country: raw(slot) as i32,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    put::<tables::LexicalTokens>(
+        &mut frame,
+        [
+            (NAVAL_BASE, "naval_base"),
+            (SUPPLY_NODE, "supply_node"),
+            (MARINE, "marine"),
+            (LARGE, "large_plane_airframe"),
+        ]
+        .map(|(token, name)| LexicalTokenRow {
+            token,
+            literal: name.as_bytes().to_vec(),
+        })
+        .into(),
+    );
+    // Each type's name, as cooldowns and used types name them.
+    let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
+    for (index, kind) in assets.catalog.types.iter().enumerate() {
+        tokens.push(LexicalTokenRow {
+            token: TYPE_TOKENS + index as u32,
+            literal: kind.name.as_bytes().to_vec(),
+        });
+    }
+    tokens.sort_by_key(|row| row.token);
+    put::<tables::LexicalTokens>(&mut frame, tokens);
+    // A naval base and a supply node on every country's first province.
+    let targets: Vec<u32> = first.values().copied().collect();
+    let mut buildings: Vec<BuildingRow> = targets
+        .iter()
+        .flat_map(|&province| {
+            [NAVAL_BASE, SUPPLY_NODE].map(|building_type| BuildingRow {
+                location: province,
+                building_type,
+                level: 1,
+                healthy_level: 1,
+                ..Default::default()
+            })
+        })
+        .collect();
+    buildings.sort_by_key(|row| (row.location, row.building_type));
+    put::<tables::ProvinceBuildings>(&mut frame, buildings);
+    let mut bases: BTreeMap<u32, NavalBaseRow> = frame
+        .complete::<tables::NavalBases>()
+        .unwrap()
+        .iter()
+        .map(|row| (row.province, row.clone()))
+        .collect();
+    let owners: BTreeMap<u32, u32> = provinces.iter().map(|row| (row.id, row.owner)).collect();
+    for &province in &targets {
+        bases.entry(province).or_insert(NavalBaseRow {
+            province,
+            country: owners[&province],
+            level: 1,
+            healthy_level: 1,
+            ..Default::default()
+        });
+    }
+    put::<tables::NavalBases>(&mut frame, bases.into_values().collect());
+    put::<tables::RaidTargetStatuses>(
+        &mut frame,
+        targets
+            .iter()
+            .flat_map(|&province| [NAVAL_BASE, SUPPLY_NODE].map(|kind| (province, kind)))
+            .enumerate()
+            .map(|(ordinal, (province, building_type))| RaidTargetStatusRow {
+                ordinal: ordinal as u32,
+                valid: 1,
+                scope: RaidScope {
+                    building_type,
+                    building_location: province,
+                    building_flags: 1,
+                    ..Default::default()
+                },
+                detected: Vec::new(),
+            })
+            .collect(),
+    );
+    // Air bases on the faction's first provinces, which the viewing
+    // country's air sites list, and its three bomber wings at its own.
+    let faction: Vec<u32> = (0..300.min(countries)).collect();
+    let base_id = |slot: u32| (u64::from(slot) << 32) | 0x41;
+    put::<tables::AirBases>(
+        &mut frame,
+        faction
+            .iter()
+            .filter_map(|&slot| {
+                Some(replay::rows::AirBaseRow {
+                    id: base_id(slot),
+                    state: Some(10_000 + slot),
+                    province: Some(*first.get(&raw(slot))?),
+                    capacity: 200,
+                    ..Default::default()
+                })
+            })
+            .collect(),
+    );
+    put::<tables::RaidAirSites>(
+        &mut frame,
+        faction
+            .iter()
+            .filter(|slot| first.contains_key(&raw(**slot)))
+            .enumerate()
+            .map(|(ordinal, &slot)| replay::rows::RaidAirSiteRow {
+                canonical_slot: 0,
+                ordinal: ordinal as u32,
+                list: 0,
+                base: base_id(slot),
+                container_capacity_raw: Some(100_000),
+            })
+            .collect(),
+    );
+    let wing_id = |index: u32| (u64::from(index + 1) << 32) | 0x45;
+    put::<tables::AirWings>(
+        &mut frame,
+        (0..WINGS)
+            .map(|index| replay::rows::AirWingRow {
+                id: wing_id(index),
+                owner: raw(0),
+                air_base: base_id(0),
+                planes: 50,
+                base_range_raw: 1000 * 100_000,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    put::<tables::WingEquipment>(
+        &mut frame,
+        (0..WINGS)
+            .map(|index| replay::rows::WingEquipmentRow {
+                wing: wing_id(index),
+                ordinal: 0,
+                variant: VARIANT,
+                amount_raw: 20 * 100_000,
+            })
+            .collect(),
+    );
+    put::<tables::VariantDefinitions>(
+        &mut frame,
+        vec![replay::rows::VariantDefinitionRow {
+            id: VARIANT,
+            archetype_token: LARGE,
+            ..Default::default()
+        }],
+    );
+    // The viewing country's memo: its naval-base and building sources to
+    // every target, Manhattan steps of 50,000.
+    let mut sources: Vec<u32> = base_provinces();
+    sources.extend(targets.iter().filter(|&&province| {
+        let (x, _) = xy(province);
+        x < 30
+    }));
+    sources.sort_unstable();
+    sources.dedup();
+    let mut memo = Vec::new();
+    for &source in &sources {
+        let (sx, sy) = xy(source);
+        for &target in &targets {
+            let (tx, ty) = xy(target);
+            memo.push(RaidPathDistanceRow {
+                source,
+                target,
+                distance: i64::from(sx.abs_diff(tx) + sy.abs_diff(ty)) * 50_000,
+                ok: 1,
+            });
+        }
+    }
+    memo.sort_by_key(|row| (row.source, row.target));
+    put::<tables::RaidPathDistances>(&mut frame, memo);
+    (assets, frame)
+}
+
+fn ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+/// The hours a bench view plays: `steady` as [`raid_view_bench`] describes;
+/// `typical` also changes 2 % of the target rows, moves a marine every hour,
+/// sets or clears a cooldown every 6 hours and moves a country in or out of
+/// the faction every 24; at hour 48 a large change: a tenth of the provinces
+/// change controller (a front moving), and at hour 72 our command power
+/// drops below every type's cost (every type's gate).
+fn bench_hours(base: &DecodedFrame, countries: u32, typical: bool) -> Vec<DecodedFrame> {
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut hours: Vec<DecodedFrame> = Vec::new();
+    for hour in 0..HOURS {
+        let mut frame = hours.last().unwrap_or(base).clone();
+        frame.hour = hour;
+        let mut rows = frame.complete::<tables::Countries>().unwrap().to_vec();
+        rows[0].command_power_raw = (50 + i64::from(hour % 3)) * 100_000;
+        if typical && hour >= 72 {
+            rows[0].command_power_raw = 5 * 100_000;
+        }
+        put::<tables::Countries>(&mut frame, rows);
+        if hour % 12 == 11 {
+            let mut memo = frame
+                .complete::<tables::RaidPathDistances>()
+                .unwrap()
+                .to_vec();
+            // A sea province's pair: new to the memo, asked by no source.
+            memo.push(RaidPathDistanceRow {
+                source: u32::MAX - hour as u32,
+                target: 1,
+                distance: 50_000,
+                ok: 1,
+            });
+            memo.sort_by_key(|row| (row.source, row.target));
+            put::<tables::RaidPathDistances>(&mut frame, memo);
+        }
+        if typical && hour > 0 {
+            let mut rows = frame
+                .complete::<tables::RaidTargetStatuses>()
+                .unwrap()
+                .to_vec();
+            for _ in 0..rows.len() / 50 {
+                let at = rng.below(rows.len());
+                rows[at].valid ^= 1;
+            }
+            put::<tables::RaidTargetStatuses>(&mut frame, rows);
+            let mut rows = frame.complete::<tables::Divisions>().unwrap().to_vec();
+            let at = rng.below(MARINES);
+            rows[at].province =
+                super::reach_bench::id(rng.below(26) as u32, rng.below(HEIGHT as usize) as u32);
+            put::<tables::Divisions>(&mut frame, rows);
+            if hour % 6 == 0 {
+                let targets = frame.complete::<tables::RaidTargetStatuses>().unwrap();
+                let scope = targets[rng.below(targets.len())].scope.clone();
+                let rows = if rng.chance(50) {
+                    vec![RaidCooldownRow {
+                        owner_slot: 0,
+                        ordinal: 0,
+                        raid_type: TYPE_TOKENS + rng.below(32) as u32,
+                        scope,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                put::<tables::RaidCooldowns>(&mut frame, rows);
+            }
+            if hour % 24 == 0 {
+                let mut rows = frame.complete::<tables::FactionMembers>().unwrap().to_vec();
+                let country = raw(300 + rng.below((countries - 300) as usize) as u32);
+                match rows.iter().position(|row| row.country == country) {
+                    Some(at) => {
+                        rows.remove(at);
+                    }
+                    None => {
+                        rows.push(FactionMemberRow {
+                            country,
+                            faction: 1,
+                            ordinal: 10_000 + hour as u32,
+                        });
+                        // The game measures the new member's naval base and
+                        // buildings to every target that hour, and the
+                        // recorded memo holds them from then on.
+                        let first = frame
+                            .complete::<tables::Provinces>()
+                            .unwrap()
+                            .iter()
+                            .find(|row| row.owner == country)
+                            .map(|row| row.id);
+                        if let Some(source) = first {
+                            let (sx, sy) = xy(source);
+                            let targets: BTreeSet<u32> = frame
+                                .complete::<tables::RaidTargetStatuses>()
+                                .unwrap()
+                                .iter()
+                                .map(|row| row.scope.building_location)
+                                .collect();
+                            let mut memo = frame
+                                .complete::<tables::RaidPathDistances>()
+                                .unwrap()
+                                .to_vec();
+                            memo.extend(targets.into_iter().map(|target| {
+                                let (tx, ty) = xy(target);
+                                RaidPathDistanceRow {
+                                    source,
+                                    target,
+                                    distance: i64::from(sx.abs_diff(tx) + sy.abs_diff(ty)) * 50_000,
+                                    ok: 1,
+                                }
+                            }));
+                            memo.sort_by_key(|row| (row.source, row.target));
+                            memo.dedup_by_key(|row| (row.source, row.target));
+                            put::<tables::RaidPathDistances>(&mut frame, memo);
+                        }
+                    }
+                }
+                put::<tables::FactionMembers>(&mut frame, rows);
+            }
+            if hour == 48 {
+                let mut rows = frame.complete::<tables::Provinces>().unwrap().to_vec();
+                for row in rows.iter_mut().filter(|row| row.controller != 0) {
+                    if rng.chance(10) {
+                        row.controller = raw(rng.below(countries as usize) as u32);
+                    }
+                }
+                put::<tables::Provinces>(&mut frame, rows);
+            }
+        }
+        hours.push(frame);
+    }
+    hours
+}
+
+/// The process's working set and its peak so far, in MB
+/// (`K32GetProcessMemoryInfo`).
+#[cfg(windows)]
+fn memory() -> (f64, f64) {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Counters {
+        cb: u32,
+        page_faults: u32,
+        peak_working_set: usize,
+        working_set: usize,
+        pools: [usize; 4],
+        pagefile: usize,
+        peak_pagefile: usize,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, size: u32) -> i32;
+    }
+    let mut counters = Counters {
+        cb: std::mem::size_of::<Counters>() as u32,
+        ..Counters::default()
+    };
+    // SAFETY: the pseudo handle needs no closing, and `counters` is a
+    // `PROCESS_MEMORY_COUNTERS` of the size it states.
+    let read = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+    let mb = |bytes: usize| bytes as f64 / 1_048_576.0;
+    if read == 0 {
+        return (0.0, 0.0);
+    }
+    (mb(counters.working_set), mb(counters.peak_working_set))
+}
+
+#[cfg(not(windows))]
+fn memory() -> (f64, f64) {
+    (0.0, 0.0)
+}
+
+/// Median, 95th percentile, mean and worst of `times`, in ms.
+fn spread(times: &[Duration]) -> (f64, f64, f64, f64) {
+    let mut sorted: Vec<f64> = times.iter().map(|time| ms(*time)).collect();
+    sorted.sort_by(f64::total_cmp);
+    let mean = sorted.iter().sum::<f64>() / sorted.len().max(1) as f64;
+    let at = |fraction: f64| {
+        let rank = (fraction * sorted.len() as f64).ceil() as usize;
+        sorted.get(rank.saturating_sub(1)).copied().unwrap_or(0.0)
+    };
+    (
+        at(0.5),
+        at(0.95),
+        mean,
+        sorted.last().copied().unwrap_or(0.0),
+    )
+}
+
+fn timed<'a>(assets: &'a RaidAssets, frame: &'a DecodedFrame) -> Timed<'a> {
+    Timed {
+        paths: paths::HourPaths::new(assets, frame),
+        reach: bench::Tally::default(),
+        distance: bench::Tally::default(),
+    }
+}
+
+/// One hour as the raid lane builds it while playing: the hour's layer,
+/// its rebuild frame and one batch, and its icons; a row that changed
+/// target starts the cycle again. The icons, and the time of the layer,
+/// the batch, its army reach and the icons.
+fn built_hour(
+    assets: &RaidAssets,
+    frame: &DecodedFrame,
+    cycle: &mut cycle::Cycle,
+    cache: &mut IconCache,
+    workers: &crate::parallel::Workers,
+) -> (RaidIcons, [Duration; 4]) {
+    let start = Instant::now();
+    let paths = timed(assets, frame);
+    let world = World::new(frame, assets.facts()).unwrap();
+    let mut layer = HourLayer::new(assets, &world, 0, &paths);
+    layer.sweep.workers = workers.clone();
+    if cycle.begin(assets, &layer.sweep).is_err() {
+        *cycle = cycle::Cycle::new(frame.branch, 0);
+        cycle.begin(assets, &layer.sweep).unwrap();
+    }
+    let built = start.elapsed();
+    let start = Instant::now();
+    cycle.step(&layer.sweep);
+    let batch = start.elapsed();
+    let start = Instant::now();
+    let icons = layer.icons(cycle, cache);
+    (icons, [built, batch, paths.reach.get(), start.elapsed()])
+}
+
+#[test]
+#[ignore = "release bench"]
+fn raid_view_bench() {
+    let rounds: usize = std::env::var("RAID_BENCH_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    let counts: Vec<u32> = std::env::var("RAID_BENCH_COUNTRIES")
+        .ok()
+        .map(|value| value.split(',').filter_map(|n| n.parse().ok()).collect())
+        .unwrap_or_else(|| vec![1_500, 5_000]);
+    let per_hour = std::env::var_os("RAID_BENCH_PER_HOUR").is_some();
+    let workers = match std::env::var("RAID_BENCH_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        Some(1) => crate::parallel::Workers::default(),
+        Some(threads) => crate::hours::builder_workers().unwrap().limited(threads),
+        None => crate::hours::builder_workers().unwrap(),
+    };
+    println!(
+        "BENCH raid cycle threads: {} ({} usable processors)",
+        workers.threads(),
+        crate::parallel::usable_processors()
+    );
+    for countries in counts {
+        let (assets, base) = world(countries);
+        let steady = bench_hours(&base, countries, false);
+        let typical = bench_hours(&base, countries, true);
+        let (before, _) = memory();
+        for _ in 0..rounds {
+            for (label, hours) in [("steady", &steady), ("typical changes", &typical)] {
+                let mut cycle = cycle::Cycle::new(base.branch, 0);
+                let mut cache = IconCache::default();
+                let mut before = cycle.clone();
+                let (mut times, mut parts) = (Vec::new(), [Duration::ZERO; 4]);
+                let mut last = RaidIcons::default();
+                for frame in hours.iter() {
+                    before = cycle.clone();
+                    let start = Instant::now();
+                    let (icons, spent) =
+                        built_hour(&assets, frame, &mut cycle, &mut cache, &workers);
+                    times.push(start.elapsed());
+                    for (part, time) in parts.iter_mut().zip(spent) {
+                        *part += time;
+                    }
+                    last = icons;
+                }
+                let per = |time: Duration| ms(time) / times.len() as f64;
+                if per_hour {
+                    let line: Vec<String> = times
+                        .iter()
+                        .map(|time| format!("{:.1}", ms(*time)))
+                        .collect();
+                    println!("HOURS {countries} {label}: {}", line.join(" "));
+                }
+                let (median, p95, mean, worst) = spread(&times[1..]);
+                let worst_at = times[1..]
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, time)| **time)
+                    .map_or(0, |(at, _)| at + 1);
+                println!(
+                    "BENCH raid cycle {countries} countries, {label}, playing: per built hour median {median:.2} ms, p95 {p95:.2}, mean {mean:.2}, worst {worst:.2} at hour {worst_at} ({:.2} first); mean layer {:.2}, batch {:.2} (army reach {:.2}), icons {:.2}; last hour {} icons, {} offers, {} of {} targets evaluated",
+                    ms(times[0]),
+                    per(parts[0]),
+                    per(parts[1]),
+                    per(parts[2]),
+                    per(parts[3]),
+                    last.icons.len(),
+                    last.report.offers,
+                    last.report.cycle.0,
+                    last.report.cycle.1,
+                );
+                // Paused on the last hour: the lane builds it again from the
+                // hour before, then one batch per frame until it is complete.
+                let frame = hours.last().expect("hours");
+                let start = Instant::now();
+                let paths = timed(&assets, frame);
+                let world = World::new(frame, assets.facts()).unwrap();
+                let mut layer = HourLayer::new(&assets, &world, 0, &paths);
+                layer.sweep.workers = workers.clone();
+                let mut paused = before;
+                if paused.begin(&assets, &layer.sweep).is_err() {
+                    paused = cycle::Cycle::new(frame.branch, 0);
+                    paused.begin(&assets, &layer.sweep).unwrap();
+                }
+                paused.step(&layer.sweep);
+                std::hint::black_box(layer.icons(&paused, &mut cache));
+                let rebuilt = start.elapsed();
+                let (mut frames, mut icons_time) = (Vec::new(), Duration::ZERO);
+                while !paused.complete() {
+                    let start = Instant::now();
+                    paused.step(&layer.sweep);
+                    let icons = Instant::now();
+                    std::hint::black_box(layer.icons(&paused, &mut cache));
+                    icons_time += icons.elapsed();
+                    frames.push(start.elapsed());
+                }
+                if per_hour {
+                    let line: Vec<String> = frames
+                        .iter()
+                        .map(|time| format!("{:.1}", ms(*time)))
+                        .collect();
+                    println!("FRAMES {countries} {label}: {}", line.join(" "));
+                }
+                let (median, p95, mean, worst) = spread(&frames);
+                println!(
+                    "BENCH raid cycle {countries} countries, {label}, paused: rebuilt in {:.2} ms, then per frame median {median:.2} ms, p95 {p95:.2}, mean {mean:.2} (icons {:.2}), worst {worst:.2}; complete after {} more frames",
+                    ms(rebuilt),
+                    ms(icons_time) / frames.len().max(1) as f64,
+                    frames.len(),
+                );
+            }
+            // A dump: one hour with every target evaluated.
+            let frame = &steady[steady.len() / 2];
+            let start = Instant::now();
+            let full = icons(&assets, frame, 0, &paths::HourPaths::new(&assets, frame));
+            println!(
+                "BENCH raid cycle {countries} countries, one hour fully evaluated: {:.2} ms, {} icons, {} offers",
+                ms(start.elapsed()),
+                full.icons.len(),
+                full.report.offers,
+            );
+        }
+        let (after, peak) = memory();
+        println!(
+            "MEMORY raid cycle {countries} countries: working set {before:.0} MB with the hours built, {after:.0} MB after the raid runs, peak {peak:.0} MB"
+        );
+    }
+}
+
+/// The equivalence run's hours.
+const CHURN_HOURS: i32 = 90;
+/// Targets the equivalence run keeps, spread over the countries.
+const CHURN_TARGETS: usize = 48;
+const FLAG: u32 = 40;
+const TYPE_TOKENS: u32 = 100;
+
+/// A small xorshift: the run is the same every time.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n.max(1) as u64) as usize
+    }
+
+    fn chance(&mut self, percent: u64) -> bool {
+        self.next() % 100 < percent
+    }
+}
+
+/// [`world`] at 310 countries with a spread of its targets, a token for
+/// every type and a script flag, and types whose triggers read wars, flags,
+/// state controllers and building levels, so every input family a target's
+/// evaluation reads can change.
+fn churn_world() -> (RaidAssets, DecodedFrame) {
+    churn_world_keeping(CHURN_TARGETS)
+}
+
+/// [`churn_world`] keeping `keep` of its targets.
+fn churn_world_keeping(keep: usize) -> (RaidAssets, DecodedFrame) {
+    let (mut assets, mut frame) = world(310);
+    let kinds = &mut assets.catalog.types;
+    // Even types target naval bases, odd ones supply nodes ([`kinds`]).
+    kinds[2].show_target = parse("has_war_with = FROM");
+    kinds[6].available = parse("has_country_flag = reuse_flag");
+    kinds[8].available = parse("num_of_nukes > 0");
+    kinds[4].show_target = parse("var:target_state = { is_controlled_by = FROM }");
+    kinds[7].target_types = vec![TargetType::Building(installed_content::raids::BuildingSelector {
+        types: vec!["naval_base".into()],
+        minimum_level: Some(2),
+        ..Default::default()
+    })];
+    let targets = frame
+        .complete::<tables::RaidTargetStatuses>()
+        .unwrap()
+        .to_vec();
+    let step = (targets.len() / keep).max(1);
+    let mut kept: Vec<_> = targets.into_iter().step_by(step).take(keep).collect();
+    // The player cache's rows are the target array's, index for index.
+    for (at, row) in kept.iter_mut().enumerate() {
+        row.ordinal = at as u32;
+    }
+    put::<tables::RaidTargetStatuses>(&mut frame, kept);
+    let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
+    tokens.push(LexicalTokenRow {
+        token: FLAG,
+        literal: b"reuse_flag".to_vec(),
+    });
+    tokens.sort_by_key(|row| row.token);
+    put::<tables::LexicalTokens>(&mut frame, tokens);
+    put::<tables::ScriptFlags>(&mut frame, Vec::new());
+    put::<tables::RaidCooldowns>(&mut frame, Vec::new());
+    // A small faction, so that most targets are foreign and offered; its
+    // members' naval bases and buildings stay sources.
+    let mut members = frame.complete::<tables::FactionMembers>().unwrap().to_vec();
+    members.truncate(12);
+    put::<tables::FactionMembers>(&mut frame, members);
+    (assets, frame)
+}
+
+/// One random change to one input family of the churn world.
+fn churn(frame: &mut DecodedFrame, rng: &mut Rng, hour: i32) {
+    let targets = frame
+        .complete::<tables::RaidTargetStatuses>()
+        .unwrap()
+        .to_vec();
+    let target = &targets[rng.below(targets.len())];
+    let location = target.scope.building_location;
+    match rng.below(15) {
+        // The target row: validity, or our detection bit.
+        0 => {
+            let mut rows = targets.clone();
+            let at = rng.below(rows.len());
+            if rng.chance(50) {
+                rows[at].valid ^= 1;
+            } else if rows[at].detected.is_empty() {
+                rows[at].detected = vec![1];
+            } else {
+                rows[at].detected.clear();
+            }
+            put::<tables::RaidTargetStatuses>(frame, rows);
+        }
+        // Command power across the types' cost.
+        1 => {
+            let mut rows = frame.complete::<tables::Countries>().unwrap().to_vec();
+            rows[0].command_power_raw = if rng.chance(50) { 5 } else { 50 } * 100_000;
+            put::<tables::Countries>(frame, rows);
+        }
+        // A cooldown of a random type on a target, or none.
+        2 => {
+            let rows = if rng.chance(60) {
+                vec![RaidCooldownRow {
+                    owner_slot: 0,
+                    ordinal: 0,
+                    raid_type: TYPE_TOKENS + rng.below(32) as u32,
+                    scope: target.scope.clone(),
+                }]
+            } else {
+                Vec::new()
+            };
+            put::<tables::RaidCooldowns>(frame, rows);
+        }
+        // A marine moves: army reach.
+        3 => {
+            let mut rows = frame.complete::<tables::Divisions>().unwrap().to_vec();
+            let at = rng.below(MARINES);
+            let (x, y) = (rng.below(30) as u32, rng.below(HEIGHT as usize) as u32);
+            rows[at].province = super::reach_bench::id(x, y);
+            put::<tables::Divisions>(frame, rows);
+        }
+        // A wing's range or base: its limit and reach.
+        4 => {
+            let mut rows = frame.complete::<tables::AirWings>().unwrap().to_vec();
+            let at = rng.below(rows.len());
+            if rng.chance(50) {
+                rows[at].base_range_raw = (100 + rng.below(1200) as i64) * 100_000;
+            } else {
+                rows[at].air_base = (u64::from(rng.below(300) as u32) << 32) | 0x41;
+            }
+            put::<tables::AirWings>(frame, rows);
+        }
+        // An air site leaves or comes back: the air sources.
+        5 => {
+            let mut rows = frame.complete::<tables::RaidAirSites>().unwrap().to_vec();
+            if rng.chance(50) && rows.len() > 1 {
+                rows.remove(rng.below(rows.len()));
+            } else if let Some(last) = rows.last().cloned() {
+                rows.push(replay::rows::RaidAirSiteRow {
+                    ordinal: last.ordinal + 1,
+                    base: (u64::from(rng.below(300) as u32) << 32) | 0x41,
+                    ..last
+                });
+            }
+            put::<tables::RaidAirSites>(frame, rows);
+        }
+        // The memo gains a pair, or loses one (which the game never does,
+        // but a reused distance must still be asked again).
+        6 => {
+            let mut rows = frame
+                .complete::<tables::RaidPathDistances>()
+                .unwrap()
+                .to_vec();
+            if rng.chance(50) && !rows.is_empty() {
+                rows.remove(rng.below(rows.len()));
+            } else {
+                rows.push(RaidPathDistanceRow {
+                    source: base_provinces()[rng.below(10)],
+                    target: location,
+                    distance: rng.below(40) as i64 * 50_000,
+                    ok: rng.chance(80) as u8,
+                });
+                rows.sort_by_key(|row| (row.source, row.target));
+                rows.dedup_by_key(|row| (row.source, row.target));
+            }
+            put::<tables::RaidPathDistances>(frame, rows);
+        }
+        // A country joins or leaves the faction: `show_target`.
+        7 => {
+            let mut rows = frame.complete::<tables::FactionMembers>().unwrap().to_vec();
+            let country = raw(rng.below(310) as u32);
+            match rows.iter().position(|row| row.country == country) {
+                Some(at) => {
+                    rows.remove(at);
+                }
+                None => rows.push(FactionMemberRow {
+                    country,
+                    faction: 1,
+                    ordinal: 1_000 + hour as u32,
+                }),
+            }
+            put::<tables::FactionMembers>(frame, rows);
+        }
+        // We declare war on, or make peace with, a target's controller.
+        8 => {
+            let mut rows = frame.complete::<tables::WarRelations>().unwrap().to_vec();
+            let enemy = raw(300 + rng.below(10) as u32);
+            match rows.iter().position(|row| row.first_country == raw(0)) {
+                Some(at) if rng.chance(50) => rows[at].end_hour = hour,
+                _ => rows.push(replay::rows::WarRelationRow {
+                    first_country: raw(0),
+                    second_country: enemy,
+                    start_hour: hour,
+                    ..Default::default()
+                }),
+            }
+            put::<tables::WarRelations>(frame, rows);
+        }
+        // Our flag is set or cleared.
+        9 => {
+            let rows = if rng.chance(50) {
+                vec![replay::rows::ScriptFlagRow {
+                    scope_kind: 1,
+                    scope_id: raw(0),
+                    token: FLAG,
+                    value: 1,
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            put::<tables::ScriptFlags>(frame, rows);
+        }
+        // A target province or state changes controller.
+        10 => {
+            let other = raw(rng.below(310) as u32);
+            if rng.chance(50) {
+                let mut rows = frame.complete::<tables::Provinces>().unwrap().to_vec();
+                if let Some(row) = rows.iter_mut().find(|row| row.id == location) {
+                    row.controller = other;
+                }
+                put::<tables::Provinces>(frame, rows);
+            } else {
+                let state = frame
+                    .complete::<tables::Provinces>()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row.id == location)
+                    .map(|row| row.state);
+                let mut rows = frame.complete::<tables::States>().unwrap().to_vec();
+                if let Some(row) = rows.iter_mut().find(|row| Some(row.id) == state) {
+                    row.controller = other;
+                }
+                put::<tables::States>(frame, rows);
+            }
+        }
+        // A target building's level.
+        11 => {
+            let mut rows = frame
+                .complete::<tables::ProvinceBuildings>()
+                .unwrap()
+                .to_vec();
+            if let Some(row) = rows.iter_mut().find(|row| row.location == location) {
+                row.level = if row.level == 1 { 2 } else { 1 };
+            }
+            put::<tables::ProvinceBuildings>(frame, rows);
+        }
+        // A naval base in a target's state: naval path targets and sources.
+        12 => {
+            let mut rows = frame.complete::<tables::NavalBases>().unwrap().to_vec();
+            match rows.iter().position(|row| row.province == location) {
+                Some(at) => {
+                    rows.remove(at);
+                }
+                None => {
+                    rows.push(NavalBaseRow {
+                        province: location,
+                        level: 1,
+                        healthy_level: 1,
+                        ..Default::default()
+                    });
+                    rows.sort_by_key(|row| row.province);
+                }
+            }
+            put::<tables::NavalBases>(frame, rows);
+        }
+        // Our nukes: a type's `available`.
+        13 => {
+            let mut rows = frame.complete::<tables::Nukes>().unwrap().to_vec();
+            if let Some(row) = rows.first_mut() {
+                row.amount_raw = if row.amount_raw == 0 {
+                    10_000_000_000_000
+                } else {
+                    0
+                };
+            }
+            put::<tables::Nukes>(frame, rows);
+        }
+        // Nothing changes.
+        _ => {}
+    }
+}
+
+/// The parts of an hour's icons a cycle must reproduce.
+fn shown(icons: &RaidIcons) -> String {
+    format!("{:?}", (&icons.icons, &icons.report))
+}
+
+/// Each row's evaluation hour in `cycle`, `None` for a row not evaluated
+/// since the reset.
+fn evaluated_at(cycle: &cycle::Cycle) -> Vec<Option<replay::Hour>> {
+    (0..cycle.progress().1)
+        .map(|at| cycle.kept(at).map(|kept| kept.0))
+        .collect()
+}
+
+/// `frame`'s hour begun on `cycle`, then `steps` batches, with the hour's
+/// icons after them.
+fn run_hour(
+    assets: &RaidAssets,
+    frame: &DecodedFrame,
+    cycle: &mut cycle::Cycle,
+    steps: usize,
+) -> Result<RaidIcons, String> {
+    let paths = paths::HourPaths::new(assets, frame);
+    let world = World::new(frame, assets.facts()).unwrap();
+    let layer = HourLayer::new(assets, &world, 0, &paths);
+    cycle.begin(assets, &layer.sweep)?;
+    for _ in 0..steps {
+        cycle.step(&layer.sweep);
+    }
+    Ok(layer.icons(cycle, &mut IconCache::default()))
+}
+
+/// A new target status: the next row, a supply node on `province`.
+fn append_target(frame: &mut DecodedFrame, province: u32) {
+    let mut rows = frame
+        .complete::<tables::RaidTargetStatuses>()
+        .unwrap()
+        .to_vec();
+    rows.push(RaidTargetStatusRow {
+        ordinal: rows.len() as u32,
+        valid: 1,
+        scope: RaidScope {
+            building_type: SUPPLY_NODE,
+            building_location: province,
+            building_flags: 1,
+            ..Default::default()
+        },
+        detected: Vec::new(),
+    });
+    put::<tables::RaidTargetStatuses>(frame, rows);
+}
+
+/// Each built hour evaluates the next batch from the rolling cursor, with
+/// the hour's row count; new targets get rows, and a paused hour takes a
+/// batch per frame until every row is current
+/// (`CPlayerStatusCache::Update@141998AB0`).
+#[test]
+fn a_cycle_evaluates_a_batch_per_hour_from_a_rolling_cursor() {
+    let (mut assets, mut frame) = churn_world_keeping(5);
+    assets.batch = Ok(2);
+    let mut cycle = cycle::Cycle::new(frame.branch, 0);
+    for hour in 0..3 {
+        frame.hour = hour;
+        run_hour(&assets, &frame, &mut cycle, 1).unwrap();
+    }
+    assert_eq!(
+        evaluated_at(&cycle),
+        [Some(2), Some(0), Some(1), Some(1), Some(2)],
+        "rows 0-1, 2-3, then 4 and 0"
+    );
+    assert_eq!(cycle.progress(), (2, 5));
+    // A new target gets a row; the cursor (1) wraps over six rows now.
+    frame.hour = 3;
+    append_target(&mut frame, 7);
+    let before = cycle.clone();
+    let icons = run_hour(&assets, &frame, &mut cycle, 1).unwrap();
+    assert_eq!(icons.report.cycle, (2, 6));
+    assert!(!icons.report.cycle_complete());
+    assert!(
+        icons
+            .report
+            .warnings()
+            .iter()
+            .any(|line| line.contains("2 of 6 targets"))
+    );
+    assert_eq!(
+        evaluated_at(&cycle),
+        [Some(2), Some(3), Some(3), Some(1), Some(2), None]
+    );
+    // Paused: the hour's batch, rows 3-4, then 5 and 0: complete.
+    let paths = paths::HourPaths::new(&assets, &frame);
+    let world = World::new(&frame, assets.facts()).unwrap();
+    let layer = HourLayer::new(&assets, &world, 0, &paths);
+    let mut paused = before;
+    paused.begin(&assets, &layer.sweep).unwrap();
+    assert_eq!(
+        paused.progress(),
+        (0, 6),
+        "a rebuild frame makes every row pending"
+    );
+    for _ in 0..3 {
+        paused.step(&layer.sweep);
+    }
+    assert!(paused.complete());
+    assert_eq!(evaluated_at(&paused), [Some(3); 6]);
+    paused.step(&layer.sweep);
+    assert_eq!(
+        paused.progress(),
+        (6, 6),
+        "a complete hour evaluates nothing more"
+    );
+}
+
+/// A kept row keeps its evaluation, the very one, until the cursor returns
+/// to it; a row not evaluated since the reset shows nothing.
+#[test]
+fn a_kept_row_shows_its_last_evaluation_until_evaluated_again() {
+    let (mut assets, mut frame) = churn_world();
+    assets.batch = Ok(10);
+    let mut cycle = cycle::Cycle::new(frame.branch, 0);
+    let first = run_hour(&assets, &frame, &mut cycle, 1).unwrap();
+    let kept = cycle.kept(3).cloned().expect("row 3 is in the first batch");
+    // Every target of the world is foreign and offered: only the first
+    // batch's show.
+    let full = icons(&assets, &frame, 0, &paths::HourPaths::new(&assets, &frame));
+    assert!(first.report.offers < full.report.offers);
+    assert_eq!(first.report.cycle, (10, CHURN_TARGETS));
+    // The faction takes in every country: nothing is offered any more,
+    // but rows 10-19 alone know it.
+    frame.hour = 1;
+    let mut members = frame.complete::<tables::FactionMembers>().unwrap().to_vec();
+    members.extend((12..310).map(|slot| FactionMemberRow {
+        country: raw(slot),
+        faction: 1,
+        ordinal: 1_000 + slot,
+    }));
+    put::<tables::FactionMembers>(&mut frame, members);
+    run_hour(&assets, &frame, &mut cycle, 1).unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &kept,
+        &cycle.kept(3).cloned().unwrap()
+    ));
+    assert_eq!(cycle.kept(12).map(|kept| kept.0), Some(1));
+    assert!(cycle.kept(25).is_none());
+}
+
+/// A row that names another target, or a table that lost rows (a middle
+/// target gone), cannot continue the cycle: it starts again at that hour,
+/// and the targets not evaluated since draw nothing.
+#[test]
+fn a_changed_or_lost_row_starts_the_cycle_again() {
+    let (mut assets, mut frame) = churn_world();
+    assets.batch = Ok(10);
+    let mut cycle = cycle::Cycle::new(frame.branch, 0);
+    for hour in 0..5 {
+        frame.hour = hour;
+        run_hour(&assets, &frame, &mut cycle, 1).unwrap();
+    }
+    let mut lost = frame.clone();
+    lost.hour = 5;
+    let mut rows = lost
+        .complete::<tables::RaidTargetStatuses>()
+        .unwrap()
+        .to_vec();
+    rows.remove(20);
+    for (at, row) in rows.iter_mut().enumerate() {
+        row.ordinal = at as u32;
+    }
+    put::<tables::RaidTargetStatuses>(&mut lost, rows);
+    let reason = run_hour(&assets, &lost, &mut cycle.clone(), 1).unwrap_err();
+    assert!(reason.contains("went from 48 rows to 47"), "{reason}");
+    // Another target in a kept row, with the row count unchanged.
+    let mut moved = frame.clone();
+    moved.hour = 5;
+    let mut rows = moved
+        .complete::<tables::RaidTargetStatuses>()
+        .unwrap()
+        .to_vec();
+    rows[20].scope.building_location += 1;
+    put::<tables::RaidTargetStatuses>(&mut moved, rows);
+    let reason = run_hour(&assets, &moved, &mut cycle.clone(), 1).unwrap_err();
+    assert!(
+        reason.contains("status 20 names another target"),
+        "{reason}"
+    );
+    // Started again at that hour: one batch shows.
+    let mut again = cycle::Cycle::new(lost.branch, 0);
+    let icons = run_hour(&assets, &lost, &mut again, 1).unwrap();
+    assert_eq!(icons.report.cycle, (10, 47));
+    assert_eq!(
+        evaluated_at(&again)
+            .iter()
+            .filter(|hour| hour.is_some())
+            .count(),
+        10
+    );
+}
+
+/// Army reach answers alike from one search per key, resumed as far as
+/// each source needs, and from the full search, for every marine and source
+/// of an hour with moved marines and changed controllers.
+#[test]
+fn stopped_and_full_army_searches_answer_alike() {
+    let (assets, mut frame) = churn_world();
+    let mut rng = Rng(0x0bad_5eed_1234_5678);
+    for hour in 0..6 {
+        frame.hour = hour;
+        churn(&mut frame, &mut rng, hour);
+    }
+    let id = super::reach_bench::id;
+    let sources: Vec<u32> = (0..HEIGHT)
+        .step_by(7)
+        .flat_map(|y| [id(3, y), id(20, y), id(25, y), id(40, y)])
+        .collect();
+    let world = World::new(&frame, assets.facts()).unwrap();
+    let cells = reach::Cells::default();
+    let moves = reach::Moves::new(&world, &assets, &cells);
+    let graph = assets.moves.as_ref().unwrap();
+    let mover = installed_content::unit_path::Mover {
+        graph,
+        world: &moves,
+    };
+    for division in 1..=MARINES as u64 {
+        let army = moves.army(division).unwrap();
+        let full = mover.reach(&army);
+        for &source in &sources {
+            let expected = match mover.army_reaches_in(&army, source, assets.avoid_enemy, || &full)
+            {
+                Ok(reached) => Eval::from_bool(reached),
+                Err(reason) => Eval::unknown(reason),
+            };
+            assert_eq!(
+                moves.reaches(division, source),
+                expected,
+                "{division} {source}"
+            );
+        }
+    }
+}
+
+/// Hours played with one batch each, then paused and cycled until
+/// complete, equal a full evaluation of the paused hour in the same order,
+/// at every pause of a run in which every input family a target's
+/// evaluation reads changes at random; and every kept row is the
+/// evaluation its batch made.
+#[test]
+fn a_complete_cycle_equals_a_full_evaluation_under_random_changes() {
+    for seed in [
+        0x9e37_79b9_7f4a_7c15,
+        0x2545_f491_4f6c_dd1d,
+        0xd1b5_4a32_d192_ed03,
+    ] {
+        let (mut assets, mut frame) = churn_world();
+        assets.batch = Ok(7);
+        let mut rng = Rng(seed);
+        let mut cycle = cycle::Cycle::new(frame.branch, 0);
+        let mut cache = IconCache::default();
+        let mut pauses = 0;
+        for hour in 0..CHURN_HOURS {
+            frame.hour = hour;
+            for _ in 0..1 + rng.below(3) {
+                churn(&mut frame, &mut rng, hour);
+            }
+            let paths = paths::HourPaths::new(&assets, &frame);
+            let world = World::new(&frame, assets.facts()).unwrap();
+            let layer = HourLayer::new(&assets, &world, 0, &paths);
+            cycle.begin(&assets, &layer.sweep).unwrap();
+            // The same rows in the same order, evaluated in one sweep.
+            let mut reference = cycle.clone();
+            cycle.step(&layer.sweep);
+            // Icons kept from earlier hours equal icons laid out afresh.
+            assert_eq!(
+                shown(&layer.icons(&cycle, &mut cache)),
+                shown(&layer.icons(&cycle, &mut IconCache::default())),
+                "seed {seed:#x} hour {hour}: kept icons"
+            );
+            if rng.chance(15) {
+                while !cycle.complete() {
+                    cycle.step(&layer.sweep);
+                }
+                let paths = paths::HourPaths::new(&assets, &frame);
+                let fresh = HourLayer::new(&assets, &world, 0, &paths);
+                reference.begin(&assets, &fresh.sweep).unwrap();
+                while !reference.complete() {
+                    reference.step(&fresh.sweep);
+                }
+                assert_eq!(
+                    shown(&layer.icons(&cycle, &mut cache)),
+                    shown(&fresh.icons(&reference, &mut IconCache::default())),
+                    "seed {seed:#x} hour {hour}"
+                );
+                pauses += 1;
+            }
+        }
+        assert!(pauses > 5, "seed {seed:#x}: {pauses} pauses");
+    }
+}
+
+/// A cycle carried across hours the builders passed over while playing (a
+/// playback skip: those hours evaluate nothing, and the inputs change
+/// under them), then paused and cycled until complete, equals a full
+/// evaluation of the paused hour in the same order.
+#[test]
+fn a_cycle_carried_across_skipped_hours_equals_a_full_evaluation() {
+    for seed in [0x9e37_79b9_7f4a_7c15, 0xd1b5_4a32_d192_ed03] {
+        let (mut assets, mut frame) = churn_world();
+        assets.batch = Ok(7);
+        let mut rng = Rng(seed);
+        let mut cycle = cycle::Cycle::new(frame.branch, 0);
+        let mut cache = IconCache::default();
+        let (mut skips, mut pauses) = (0, 0);
+        for hour in 0..CHURN_HOURS {
+            frame.hour = hour;
+            for _ in 0..1 + rng.below(3) {
+                churn(&mut frame, &mut rng, hour);
+            }
+            if hour > 0 && rng.chance(40) {
+                skips += 1;
+                continue;
+            }
+            let paths = paths::HourPaths::new(&assets, &frame);
+            let world = World::new(&frame, assets.facts()).unwrap();
+            let layer = HourLayer::new(&assets, &world, 0, &paths);
+            cycle.begin(&assets, &layer.sweep).unwrap();
+            let mut reference = cycle.clone();
+            cycle.step(&layer.sweep);
+            if rng.chance(20) {
+                while !cycle.complete() {
+                    cycle.step(&layer.sweep);
+                }
+                let paths = paths::HourPaths::new(&assets, &frame);
+                let fresh = HourLayer::new(&assets, &world, 0, &paths);
+                reference.begin(&assets, &fresh.sweep).unwrap();
+                while !reference.complete() {
+                    reference.step(&fresh.sweep);
+                }
+                assert_eq!(
+                    shown(&layer.icons(&cycle, &mut cache)),
+                    shown(&fresh.icons(&reference, &mut IconCache::default())),
+                    "seed {seed:#x} hour {hour}"
+                );
+                pauses += 1;
+            }
+        }
+        assert!(
+            skips > 20 && pauses > 3,
+            "seed {seed:#x}: {skips} skips, {pauses} pauses"
+        );
+    }
+}
+
+/// Where no target's evaluation leaves hour state (every path pair is in
+/// the recorded memo), a complete cycle equals the dump's full evaluation
+/// from row 0, whatever row the hour's sweep began at.
+#[test]
+fn a_complete_cycle_equals_the_full_evaluation_from_row_zero() {
+    let (mut assets, mut frame) = churn_world();
+    assets.batch = Ok(5);
+    let mut cycle = cycle::Cycle::new(frame.branch, 0);
+    for hour in 0..4 {
+        frame.hour = hour;
+        run_hour(&assets, &frame, &mut cycle, 1).unwrap();
+    }
+    let paths = paths::HourPaths::new(&assets, &frame);
+    let world = World::new(&frame, assets.facts()).unwrap();
+    let layer = HourLayer::new(&assets, &world, 0, &paths);
+    cycle.begin(&assets, &layer.sweep).unwrap();
+    while !cycle.complete() {
+        cycle.step(&layer.sweep);
+    }
+    let full = icons(&assets, &frame, 0, &paths::HourPaths::new(&assets, &frame));
+    assert!(full.report.offers > 0);
+    assert_eq!(
+        shown(&layer.icons(&cycle, &mut IconCache::default())),
+        shown(&full)
+    );
+}
+
+/// What a cycle keeps after a step and the icons it draws, as text: each
+/// row's evaluation and its hour, and the icons and report.
+fn transcript(cycle: &cycle::Cycle, icons: &RaidIcons) -> String {
+    let rows: Vec<String> = (0..cycle.progress().1)
+        .map(|at| format!("{:?}", cycle.kept(at)))
+        .collect();
+    format!("{rows:?}\n{}", shown(icons))
+}
+
+/// The churn run's hours for `seed`, in which every fifth hour a province
+/// moves into or out of a faction member's state, so that some states the
+/// building sources visit have no known native province order, and half
+/// the time that state loses its buildings, so that some of those hold no
+/// source. When `unrecorded`, with no recorded memo, so that every path
+/// pair a target measures is asked this hour, and each target followed by
+/// its province's supply node, which measures the same pairs: two parts
+/// holding a province's two targets ask the same pair.
+fn churn_hours(seed: u64, hours: i32, unrecorded: bool) -> (RaidAssets, Vec<DecodedFrame>) {
+    let (assets, mut frame) = churn_world();
+    if unrecorded {
+        let rows = frame
+            .complete::<tables::RaidTargetStatuses>()
+            .unwrap()
+            .to_vec();
+        let paired = rows
+            .into_iter()
+            .flat_map(|row| {
+                let mut supply = row.clone();
+                supply.scope.building_type = SUPPLY_NODE;
+                [row, supply]
+            })
+            .enumerate()
+            .map(|(at, mut row)| {
+                row.ordinal = at as u32;
+                row
+            })
+            .collect();
+        put::<tables::RaidTargetStatuses>(&mut frame, paired);
+    }
+    let mut rng = Rng(seed);
+    let mut out = Vec::new();
+    for hour in 0..hours {
+        frame.hour = hour;
+        for _ in 0..1 + rng.below(3) {
+            churn(&mut frame, &mut rng, hour);
+        }
+        if hour % 5 == 4 {
+            let members: BTreeSet<u32> = frame
+                .complete::<tables::FactionMembers>()
+                .unwrap()
+                .iter()
+                .map(|row| row.country)
+                .collect();
+            let mut rows = frame.complete::<tables::Provinces>().unwrap().to_vec();
+            let owned: Vec<usize> = (0..rows.len())
+                .filter(|&at| members.contains(&rows[at].owner))
+                .collect();
+            let member = owned[rng.below(owned.len())];
+            let other = rng.below(rows.len());
+            if rng.chance(50) {
+                let content = &assets.state_provinces[&rows[member].state];
+                let mut buildings = frame
+                    .complete::<tables::ProvinceBuildings>()
+                    .unwrap()
+                    .to_vec();
+                buildings.retain(|row| !content.contains(&row.location));
+                put::<tables::ProvinceBuildings>(&mut frame, buildings);
+            }
+            if rng.chance(50) {
+                rows[other].state = rows[member].state;
+            } else {
+                rows[member].state = rows[other].state;
+            }
+            put::<tables::Provinces>(&mut frame, rows);
+        }
+        if unrecorded {
+            put::<tables::RaidPathDistances>(&mut frame, Vec::new());
+        }
+        out.push(frame.clone());
+    }
+    (assets, out)
+}
+
+/// Each hour's transcripts, after every batch: one batch an hour, and every
+/// fourth hour paused, batches until every row is current. The batches'
+/// parts run on `workers`, each taking at least `part_rows` rows. With the
+/// parts evaluated again because an earlier part asked a pair they read.
+fn split_run(
+    assets: &RaidAssets,
+    frames: &[DecodedFrame],
+    workers: &crate::parallel::Workers,
+    part_rows: usize,
+) -> (Vec<String>, usize, usize) {
+    let mut cycle = cycle::Cycle::new(frames[0].branch, 0);
+    let (mut out, mut again, mut prefetched) = (Vec::new(), 0, 0);
+    for (hour, frame) in frames.iter().enumerate() {
+        let paths = paths::HourPaths::new(assets, frame);
+        let world = World::new(frame, assets.facts()).unwrap();
+        let mut layer = HourLayer::new(assets, &world, 0, &paths);
+        layer.sweep.workers = workers.clone();
+        layer.sweep.part_rows = part_rows;
+        if cycle.begin(assets, &layer.sweep).is_err() {
+            cycle = cycle::Cycle::new(frame.branch, 0);
+            cycle.begin(assets, &layer.sweep).unwrap();
+        }
+        loop {
+            cycle.step(&layer.sweep);
+            out.push(transcript(
+                &cycle,
+                &layer.icons(&cycle, &mut IconCache::default()),
+            ));
+            if hour % 4 != 3 || cycle.complete() {
+                break;
+            }
+        }
+        again += layer.sweep.again.load(std::sync::atomic::Ordering::Relaxed);
+        prefetched += layer
+            .sweep
+            .prefetched
+            .load(std::sync::atomic::Ordering::Relaxed);
+    }
+    (out, again, prefetched)
+}
+
+/// A batch split across threads is exact: every row's kept evaluation, the
+/// icons and the report after every batch are byte for byte those of the
+/// batch evaluated in order on one thread, for 1 to 8 threads, under the
+/// churn run's random changes to every input family. The batches take
+/// several compositions: the whole table at once in one-row parts, batches
+/// that wrap around the table in parts of odd sizes that part a province's
+/// two targets, the default parts of a mid-sized batch, and batches too
+/// small to split; with the path memo recorded, and without, so that parts
+/// ask the same new pairs and some are evaluated again after the parts
+/// before them. Every split batch also runs its shown types and its
+/// prefetch (type preparations, memo groups, reachable components) on the
+/// threads first, with the lead army searches run ahead beside them.
+#[test]
+fn a_batch_split_across_threads_equals_the_batch_in_order() {
+    let pool = crate::hours::builder_workers().unwrap();
+    let (mut again, mut prefetched) = (0, 0);
+    let ahead = reach::RAN_AHEAD.load(std::sync::atomic::Ordering::Relaxed);
+    for (seed, batch, part_rows, unrecorded) in [
+        (0x9e37_79b9_7f4a_7c15, 2 * CHURN_TARGETS, 1, true),
+        (0x2545_f491_4f6c_dd1d, 30, 3, true),
+        (0x6a09_e667_f3bc_c908, 7, 2, true),
+        (0xd1b5_4a32_d192_ed03, 30, 8, false),
+        (0x0bad_5eed_1234_5678, 5, 8, false),
+    ] {
+        let (mut assets, frames) = churn_hours(seed, 16, unrecorded);
+        assets.batch = Ok(batch);
+        let (reference, _, _) = split_run(&assets, &frames, &Default::default(), part_rows);
+        for threads in [1, 2, 3, 4, 8] {
+            let workers = pool.clone().limited(threads);
+            let (split, parts_again, tasks) = split_run(&assets, &frames, &workers, part_rows);
+            again += parts_again;
+            prefetched += tasks;
+            assert_eq!(split.len(), reference.len());
+            for (at, (split, reference)) in split.iter().zip(&reference).enumerate() {
+                assert!(
+                    split == reference,
+                    "seed {seed:#x}, batch {batch}, {threads} threads: batch {at} differs\n{split}\n{reference}"
+                );
+            }
+        }
+    }
+    assert!(again > 0, "no part was evaluated again");
+    assert!(prefetched > 0, "no batch prefetched");
+    assert!(
+        reach::RAN_AHEAD.load(std::sync::atomic::Ordering::Relaxed) > ahead,
+        "no search ran ahead"
+    );
+}

@@ -229,6 +229,14 @@ impl Content {
         Ok(content)
     }
 
+    /// One `graphic_db` document; for other modules' fixtures.
+    #[cfg(test)]
+    pub(crate) fn from_test_document(text: &[u8], names: &Names) -> io::Result<Self> {
+        let mut content = Self::default();
+        content.read_document(&parser::parse(text)?, names)?;
+        Ok(content)
+    }
+
     fn read_document(&mut self, document: &parser::Document, names: &Names) -> io::Result<()> {
         for root in &document.items {
             let name = key(root)?;

@@ -91,6 +91,8 @@ impl Target {
 pub struct Field {
     pub models: ModelField,
     pub targets: Vec<Target>,
+    /// The raid arrows' units where the hour placed them ([`History::set_raids`]).
+    pub raids: Vec<(usize, ModelInstance)>,
 }
 
 /// One slot's targets, by part.
@@ -402,6 +404,16 @@ pub struct History {
     epoch: u32,
     /// Offline frames settle for their camera instead of animating.
     steady: bool,
+    /// The raid arrows' units. No unit slot holds them:
+    /// `CRaidArrow::CreateUnitEntity@141CD4900` creates its entity at once
+    /// through `entity_factory@142277DF0`, never testing or charging the
+    /// shared creation counter (`1433232A4`, [`super::mesh_budget`]), and
+    /// `UpdateForRaid@141CD75A0` shows it at every camera height with no
+    /// popup scale, so they stand on every frame whatever the gates.
+    raids: Vec<(usize, ModelInstance)>,
+    /// The raid units' incarnation: a load-equivalent reset recreates them
+    /// too, so their animation starts again ([`History::reset`]).
+    raid_epoch: u32,
 }
 
 impl History {
@@ -434,6 +446,16 @@ impl History {
         self.steady = steady;
     }
 
+    /// The raid units to stand this frame: the hour's placement, or a
+    /// playing window's placement at its playback fraction.
+    pub fn set_raids(&mut self, raids: Vec<(usize, ModelInstance)>) {
+        if self.raid_epoch == 0 {
+            self.epoch += 1;
+            self.raid_epoch = self.epoch;
+        }
+        self.raids = raids;
+    }
+
     #[cfg(test)]
     pub(super) fn steady_for_test(&mut self, steady: bool) {
         self.steady = steady;
@@ -453,6 +475,13 @@ impl History {
     /// [`super::presentation::UnitRestart`]): their entities go and their
     /// show bits drop, so what shows next grows in on a new clock.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
+        // A load destroys the raid arrows and their units with the rest of
+        // the map (`CRaidArrowManager::Update@14166B540` builds them again);
+        // a tag switch shows the new country's raids, other raid ids.
+        if provinces.is_none() && self.raid_epoch != 0 {
+            self.epoch += 1;
+            self.raid_epoch = self.epoch;
+        }
         for (id, province) in &mut self.provinces {
             if provinces.is_none_or(|provinces| provinces.contains(id)) {
                 *province = Province {
@@ -585,9 +614,19 @@ impl History {
                 budget,
             );
         }
+        let raid_epoch = self.raid_epoch;
         self.provinces
             .values()
             .flat_map(|province| province.entities.values().flat_map(Entity::placed))
+            .chain(self.raids.iter().map(|&(mesh, instance)| {
+                (
+                    mesh,
+                    ModelInstance {
+                        animation_epoch: raid_epoch,
+                        ..instance
+                    },
+                )
+            }))
             .collect()
     }
 }
@@ -644,6 +683,53 @@ pub(super) mod tests {
             &mut Budget::new(limit, h.steady),
             |_, _| {},
         )
+    }
+
+    #[test]
+    fn raid_units_stand_at_every_height_outside_the_budget_and_restart_on_load() {
+        let raid = ModelInstance {
+            scale: 2.0,
+            animation_seed: 541,
+            ..Default::default()
+        };
+        let mut h = history(vec![target(40, Kind::Land)], false);
+        h.set_raids(vec![(9, raid)]);
+        let raids = |placed: &[(usize, ModelInstance)]| {
+            placed
+                .iter()
+                .filter(|(mesh, _)| *mesh == 9)
+                .map(|(_, i)| *i)
+                .collect::<Vec<_>>()
+        };
+        // Above both cutoffs, out of view and with no creation allowance
+        // left, the raid unit stands at full scale; the figure does not.
+        let placed = limited(&mut h, 0.0, 0);
+        assert_eq!(placed.len(), 1);
+        let first = raids(&placed)[0];
+        assert_eq!(first.scale, 2.0);
+        assert_ne!(first.animation_epoch, 0, "its clock starts at creation");
+        let hidden = h.step(0.5, GATES, [false; 2], false, |_| false);
+        assert_eq!(raids(&hidden), [first]);
+        // A tag switch keeps its history, a load-equivalent reset renews it.
+        h.reset(Some(&[40].into()));
+        assert_eq!(
+            raids(&near(&mut h, 1.0))[0].animation_epoch,
+            first.animation_epoch
+        );
+        h.reset(None);
+        assert_ne!(
+            raids(&near(&mut h, 1.5))[0].animation_epoch,
+            first.animation_epoch
+        );
+        // A playing window moves it by replacing the frame's placement.
+        let moved = ModelInstance {
+            position: [1.0, 2.0, 3.0],
+            ..raid
+        };
+        h.set_raids(vec![(9, moved)]);
+        assert_eq!(raids(&near(&mut h, 2.0))[0].position, [1.0, 2.0, 3.0]);
+        h.set_raids(Vec::new());
+        assert!(raids(&near(&mut h, 2.5)).is_empty());
     }
 
     #[test]

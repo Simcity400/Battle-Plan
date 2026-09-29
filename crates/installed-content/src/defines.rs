@@ -182,6 +182,16 @@ impl Defines {
         Ok(wide as i32)
     }
 
+    /// `NDefines.<section>.<name>`, which must be a Lua boolean.
+    pub fn boolean(&self, section: &str, name: &str) -> io::Result<bool> {
+        match self.value(section, name)? {
+            Value::Boolean(value) => Ok(value),
+            _ => Err(invalid(format!(
+                "NDefines.{section}.{name} is not a boolean"
+            ))),
+        }
+    }
+
     /// `NDefines.<section>.<name>`, which must be a Lua string.
     pub fn text(&self, section: &str, name: &str) -> io::Result<String> {
         match self.value(section, name)? {

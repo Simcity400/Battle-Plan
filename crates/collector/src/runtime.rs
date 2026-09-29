@@ -467,6 +467,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
     let mut portrait_hooks = unsafe { crate::portrait_changes::Hooks::new(&memory, base) }?;
     let mut advisor_hooks = unsafe { crate::advisor_changes::Hooks::new(&memory, base) }?;
+    // A family whose sentinels differ is left uninstalled; it reads as before.
     let mut opinion_hooks = unsafe { crate::opinion_changes::Hooks::new(&memory, base) }?;
     // Size every country-proportional buffer from the live registry before
     // the hook exists. At the main menu the registry may still be empty; the
@@ -477,6 +478,15 @@ fn run(module: HMODULE) -> Result<(), String> {
     sizing.content = engine::cdlc_manager::observe_counts(&memory, base);
     if let Some(rows) = crate::country_scale::observe_country_intel(&memory, base) {
         sizing.extended.raise_for_country_intel(rows);
+    }
+    if let Some(demand) = crate::country_scale::observe_raid_arenas(&memory, base) {
+        sizing.extended.raise_for_raid_arenas(demand);
+    }
+    if let Some(demand) = crate::country_scale::observe_characters(&memory, base) {
+        sizing.extended.raise_for_characters(demand);
+    }
+    if let Some(demand) = crate::country_scale::observe_politics(&memory, base) {
+        sizing.extended.raise_for_politics(demand);
     }
     let shared = Arc::new(Shared::with_sizing(
         base,
@@ -1003,6 +1013,12 @@ struct RegistryWatch {
     slots: usize,
     last_intel: Option<Instant>,
     intel_rows: usize,
+    last_raids: Option<Instant>,
+    raids: crate::country_scale::RaidArenas,
+    last_characters: Option<Instant>,
+    characters: crate::country_scale::CharacterDemand,
+    last_politics: Option<Instant>,
+    politics: crate::country_scale::PoliticsDemand,
 }
 
 impl RegistryWatch {
@@ -1043,12 +1059,89 @@ impl RegistryWatch {
             rows
         })
     }
+
+    /// Larger raid arena demand than any seen, at most every
+    /// `INTEL_INTERVAL`: raid parents' type lists and convoy reservations
+    /// fill after a save's registry does, and a full hour must read them all.
+    fn poll_raids(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Option<crate::country_scale::RaidArenas> {
+        if self
+            .last_raids
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return None;
+        }
+        self.last_raids = Some(Instant::now());
+        let demand = crate::country_scale::observe_raid_arenas(memory, base)?;
+        (demand.type_tokens > self.raids.type_tokens
+            || demand.reservation_words > self.raids.reservation_words)
+            .then(|| {
+                self.raids.type_tokens = self.raids.type_tokens.max(demand.type_tokens);
+                self.raids.reservation_words =
+                    self.raids.reservation_words.max(demand.reservation_words);
+                self.raids
+            })
+    }
+
+    /// Larger character or script flag demand than any seen, at most every
+    /// `INTEL_INTERVAL`: a save's roster, template files and flags fill after
+    /// its registry does, and a full hour must read them all.
+    fn poll_characters(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Option<crate::country_scale::CharacterDemand> {
+        if self
+            .last_characters
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return None;
+        }
+        self.last_characters = Some(Instant::now());
+        let demand = crate::country_scale::observe_characters(memory, base)?;
+        let seen = &mut self.characters;
+        (demand.characters.rows > seen.characters.rows
+            || demand.characters.bytes > seen.characters.bytes
+            || demand.flags > seen.flags)
+            .then(|| {
+                seen.characters.rows = seen.characters.rows.max(demand.characters.rows);
+                seen.characters.bytes = seen.characters.bytes.max(demand.characters.bytes);
+                seen.flags = seen.flags.max(demand.flags);
+                *seen
+            })
+    }
+
+    /// Larger political table demand than any seen, at most every
+    /// `INTEL_INTERVAL`: a save's character records, parties, civil wars and
+    /// advisor lists fill after its registry does, and a full hour must read
+    /// them all.
+    fn poll_politics(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Option<crate::country_scale::PoliticsDemand> {
+        if self
+            .last_politics
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return None;
+        }
+        self.last_politics = Some(Instant::now());
+        let demand = crate::country_scale::observe_politics(memory, base)?;
+        demand.exceeds(&self.politics).then(|| {
+            self.politics = self.politics.max(demand);
+            self.politics
+        })
+    }
 }
 
 /// Grow every idle frame to the current capacities under its queue lease.
 fn grow_idle_frames(
     shared: &Shared,
-    capacities: &mut [usize; 9],
+    capacities: &mut [usize; 11],
     map_capacities: &mut crate::map_capture::MapCapacities,
     extended_capacities: &mut crate::extended::Capacities,
 ) {
@@ -1224,6 +1317,12 @@ fn spool_loop(
             if processor.take_retry_full() {
                 shared.force_next.store(true, Ordering::Release);
             }
+            let unpublished = processor.take_unpublished_families();
+            if unpublished != 0 {
+                shared
+                    .forget_families
+                    .fetch_or(unpublished, Ordering::Release);
+            }
             let previous_capacities = capacities;
             let previous_map_capacities = map_capacities;
             let previous_extended_capacities = extended_capacities;
@@ -1300,6 +1399,42 @@ fn spool_loop(
         if let Some(rows) = registry.poll_intel(&live, shared.base) {
             let before = extended_capacities;
             extended_capacities.raise_for_country_intel(rows);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+        }
+        if let Some(demand) = registry.poll_raids(&live, shared.base) {
+            let before = extended_capacities;
+            extended_capacities.raise_for_raid_arenas(demand);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+        }
+        if let Some(demand) = registry.poll_characters(&live, shared.base) {
+            let before = extended_capacities;
+            extended_capacities.raise_for_characters(demand);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+        }
+        if let Some(demand) = registry.poll_politics(&live, shared.base) {
+            let before = extended_capacities;
+            extended_capacities.raise_for_politics(demand);
             if extended_capacities != before {
                 grow_idle_frames(
                     shared,

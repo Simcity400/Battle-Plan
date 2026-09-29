@@ -159,6 +159,7 @@ fn unit_scale_orders() {
             plans.visit(
                 &live,
                 world.base,
+                world.game_state,
                 map.orders.roots(),
                 map.orders.visits(),
                 map.orders.successor_lists(),
@@ -173,6 +174,7 @@ fn unit_scale_orders() {
             plans.visit(
                 &live,
                 world.base,
+                world.game_state,
                 map.orders.roots(),
                 map.orders.visits(),
                 map.orders.successor_lists(),
@@ -185,6 +187,7 @@ fn unit_scale_orders() {
                 [
                     Outcome::Rows { len: groups * 2 },
                     Outcome::Rows { len: groups },
+                    Outcome::Rows { len: 0 },
                     Outcome::Rows { len: 0 }
                 ]
             );

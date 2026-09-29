@@ -97,13 +97,11 @@ fn main() -> io::Result<()> {
         province.owner = country.id;
         province.controller = country.id;
     }
-    // Exclude the old raid inputs from synthetic measurements, without changing viewer code.
-    for table in [TableId::RaidProvinces, TableId::RaidTargets] {
-        frame.tables[table.index()] = TableView::Unavailable {
-            reason: "raid inputs excluded from the unit-scale fixture (#63)".into(),
-        }
-        .into();
+    // Exclude the raid targets from synthetic measurements, without changing viewer code.
+    frame.tables[TableId::RaidTargets.index()] = TableView::Unavailable {
+        reason: "raid inputs excluded from the unit-scale fixture (#63)".into(),
     }
+    .into();
 
     use replay::rows::RowCodec;
     let mut division_copies = BTreeMap::<u64, Vec<u64>>::new();

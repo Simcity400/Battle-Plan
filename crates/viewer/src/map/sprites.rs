@@ -87,7 +87,7 @@ pub struct MapIcons {
     pub victory_points: SpriteSheet,
     // counters: the unit-counter, base and combat sheets, and the flag atlas.
     pub counters: CounterAssets,
-    /// The raid map icon's frame strip, glyphs and raid types.
+    /// The raid map icon's layout, sprites and raid content.
     pub raids: super::raids::RaidAssets,
     /// Flags and portraits decoded on first draw, above [`DYNAMIC_BASE`].
     pub lazy: Arc<LazyTextures>,
@@ -102,6 +102,7 @@ impl MapIcons {
     pub fn load(
         layers: &ResolvedLayers,
         defines: &installed_content::defines::Defines,
+        map: &installed_content::map::MapData,
         language: &str,
     ) -> io::Result<Self> {
         let mut images = Vec::new();
@@ -146,7 +147,7 @@ impl MapIcons {
             &mut images,
             &lazy,
         )?;
-        let raids = super::raids::RaidAssets::load(layers, &mut images)?;
+        let raids = super::raids::RaidAssets::load(layers, defines, map, &mut images)?;
         if images.len() >= DYNAMIC_BASE {
             return Err(invalid("more static icon pages than texture ids"));
         }

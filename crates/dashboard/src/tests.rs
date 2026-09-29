@@ -2357,8 +2357,6 @@ fn stability_inputs() -> replay::rows::CountryStabilityInputRow {
         war_support_factor: Some(0),
         stability_weekly: Some(0),
         war_support_weekly: Some(0),
-        max_command_power: Some(1_000_000),
-        max_command_power_mult: Some(10_000),
         keys: vec![
             0x8d, 0x90, 0x91, 0x17b, 0x17c, 0x95, 0x8e, 0x96, 0x14b, 0x14d,
         ],
@@ -2422,16 +2420,39 @@ fn stability_formula_follows_the_engine_getters() {
     );
     row.interception_sum_raw = -10_000_000;
     assert_eq!(interception_term(&row), -30_000);
-    // Maximum command power: (base + flat) * (1 + mult).
-    assert_eq!(max_command_power(&row).value, Some(9_900_000));
+    // Maximum command power: (base + flat) * (1 + mult), with the modifier
+    // getter values and the allocated power from CountryCommandPower.
+    assert_eq!(
+        max_command_power(&row, Some(&launch(0))).value,
+        Some(9_900_000)
+    );
     // The game shows and clamps to the maximum minus the allocated command
     // power, which can be negative.
-    row.allocated_command_power_raw = 400_000;
-    assert_eq!(max_command_power(&row).value, Some(9_500_000));
-    row.allocated_command_power_raw = -10_600_000;
-    assert_eq!(max_command_power(&row).value, Some(20_500_000));
-    row.max_command_power_mult = None;
-    assert_eq!(max_command_power(&row).value, None);
+    assert_eq!(
+        max_command_power(&row, Some(&launch(400_000))).value,
+        Some(9_500_000)
+    );
+    assert_eq!(
+        max_command_power(&row, Some(&launch(-10_600_000))).value,
+        Some(20_500_000)
+    );
+    // No CountryCommandPower row: unknown, never a zero allocation.
+    assert_eq!(max_command_power(&row, None).value, None);
+    let mut unregistered = launch(0);
+    unregistered.max_command_power_factor = None;
+    assert_eq!(max_command_power(&row, Some(&unregistered)).value, None);
+}
+
+/// The country's CountryCommandPower row: the capacity modifiers' getter
+/// values and `allocated` command power.
+fn launch(allocated: i64) -> replay::rows::CountryCommandPowerRow {
+    replay::rows::CountryCommandPowerRow {
+        canonical_slot: 7,
+        allocated_command_power_raw: allocated,
+        max_command_power: Some(1_000_000),
+        max_command_power_factor: Some(10_000),
+        ..Default::default()
+    }
 }
 
 fn stability_frame(
@@ -2468,6 +2489,161 @@ fn stability_frame(
             },
         ]));
     frame
+}
+
+/// The maximum command power takes the allocated power from
+/// CountryCommandPower, joined through CountryLinks by canonical slot at the
+/// same frame; an hour without that row has no value, never a zero one.
+#[test]
+fn stability_product_takes_the_allocated_command_power_from_raid_country_inputs() {
+    use crate::products::country_stability::scan;
+    let with_allocation = |hour, allocated: Option<i64>| {
+        let mut frame = stability_frame(hour, stability_inputs(), hour, vec![]);
+        *frame.tables[TableId::CountryCommandPower.index()] = TableView::Complete(
+            TableRows::CountryCommandPower(allocated.map(launch).into_iter().collect()),
+        );
+        frame
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                with_allocation(100, Some(400_000)),
+                with_allocation(101, None),
+            ],
+        )],
+    )
+    .unwrap();
+    let (result, _) = scan(&replay, 1, &["GER"], Some(101), &AtomicBool::new(false)).unwrap();
+    let germany = &result["GER"];
+    let runs: Vec<_> = germany
+        .max_command_power
+        .iter()
+        .map(|run| (run.first_hour, run.last_hour, run.value_raw.as_str()))
+        .collect();
+    assert_eq!(runs, [(100, 100, "9500000")]);
+    let breakdown = germany.breakdown.as_ref().unwrap();
+    assert_eq!(breakdown.max_command_power.value_raw, None);
+    let allocated = breakdown
+        .max_command_power
+        .terms
+        .iter()
+        .find(|term| term.term == "allocatedCommandPower")
+        .unwrap();
+    assert_eq!(allocated.value_raw, None);
+}
+
+/// A maximum computed from a carried stability read and fresh command power
+/// names only the stability read: CountryCommandPower is read every hour.
+#[test]
+fn stability_product_names_only_the_stability_read_of_the_maximum() {
+    use crate::products::country_stability::scan;
+    let frame = |hour, stability_read, allocated| {
+        let mut frame = stability_frame(hour, stability_inputs(), stability_read, vec![]);
+        *frame.tables[TableId::CountryCommandPower.index()] =
+            TableView::Complete(TableRows::CountryCommandPower(vec![launch(allocated)]));
+        frame
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                frame(100, 100, 400_000),
+                // Stability carried from 100; the allocation read fresh.
+                frame(101, 100, 500_000),
+                frame(102, 102, 500_000),
+            ],
+        )],
+    )
+    .unwrap();
+    let (result, _) = scan(&replay, 1, &["GER"], None, &AtomicBool::new(false)).unwrap();
+    let germany = &result["GER"];
+    let runs: Vec<_> = germany
+        .max_command_power
+        .iter()
+        .map(|run| (run.first_hour, run.last_hour, run.value_raw.as_str()))
+        .collect();
+    assert_eq!(runs, [(100, 100, "9500000"), (101, 102, "9400000")]);
+    let reads: Vec<_> = germany
+        .carried
+        .iter()
+        .map(|run| (run.first_hour, run.last_hour, run.read_hour))
+        .collect();
+    assert_eq!(reads, [(101, 101, 100)]);
+}
+
+/// The stability product's bytes are the same as before the command power
+/// values moved to CountryCommandPower: the maximum command power breakdown
+/// and the modifier totals, built from the same values the old way (all on
+/// the stability row) and the new way, serialise identically.
+#[test]
+fn stability_output_is_byte_identical_with_the_values_on_country_command_power() {
+    use crate::products::country_stability::{
+        breakdown, formula, modifiers, modifiers_with_totals,
+    };
+    // The old formula, over values the stability row used to hold.
+    fn old_max_command_power(
+        base: i64,
+        max: Option<i64>,
+        mult: Option<i64>,
+        allocated: i64,
+    ) -> formula::Terms {
+        let value = (|| {
+            let base = base.wrapping_add(max?);
+            Some((mult?.wrapping_add(100_000).wrapping_mul(base) / 100_000).wrapping_sub(allocated))
+        })();
+        formula::Terms {
+            terms: vec![
+                ("baseMaxCommandPower", Some(base)),
+                ("maxCommandPower", max),
+                ("maxCommandPowerMult", mult),
+                ("allocatedCommandPower", Some(allocated)),
+            ],
+            unclamped: value,
+            value,
+        }
+    }
+    let row = stability_inputs();
+    for (max, mult, allocated) in [
+        (Some(1_000_000), Some(10_000), 400_000),
+        (Some(0), Some(0), -10_600_000),
+        (None, Some(10_000), 0),
+        (Some(5), None, 7),
+    ] {
+        let launch = replay::rows::CountryCommandPowerRow {
+            canonical_slot: 7,
+            allocated_command_power_raw: allocated,
+            max_command_power: max,
+            max_command_power_factor: mult,
+            ..Default::default()
+        };
+        let old = breakdown(old_max_command_power(
+            row.base_max_command_power,
+            max,
+            mult,
+            allocated,
+        ));
+        let new = breakdown(formula::max_command_power(&row, Some(&launch)));
+        assert_eq!(
+            serde_json::to_vec(&old).unwrap(),
+            serde_json::to_vec(&new).unwrap()
+        );
+        // The old totals: all ten on the stability row.
+        let stability = row.totals();
+        let old_totals: [Option<i64>; 10] = std::array::from_fn(|index| match index {
+            8 => max,
+            9 => mult,
+            index => stability[index],
+        });
+        let old = modifiers_with_totals(&row, old_totals, None, |_| Some(true));
+        let new = modifiers(&row, Some(&launch), None, |_| Some(true));
+        assert_eq!(
+            serde_json::to_vec(&old).unwrap(),
+            serde_json::to_vec(&new).unwrap()
+        );
+    }
 }
 
 #[test]

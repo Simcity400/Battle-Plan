@@ -10,12 +10,13 @@ use crate::{
 use engine::{
     Memory, ccountry, ccountry_raid_status, cgame_state, cnuke,
     cpdx_array::Array,
-    craid_instance, craid_province_entries, craid_system,
+    cplayer_status_cache, craid_instance, craid_system,
     memory::{RecordField, RecordLayout, RecordSources},
     msvc_string, nproject_breakthrough_node, nproject_cbreakthrough_progress, nproject_cprogram,
     nproject_cprogram_status, nproject_cproject, nproject_cproject_pool,
     nproject_cproject_state_machine as machine, nproject_sproject_context,
-    nproject_sproject_history, peace_conference, scientist_roster,
+    nproject_sproject_history, peace_conference, raid_equipment, raid_path_memo, raid_speed_inputs,
+    scientist_roster,
     walk::Outcome,
 };
 use replay::{
@@ -24,7 +25,7 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 12;
+pub const N: usize = 16;
 pub const TABLES: [TableId; N] = [
     TableId::ProjectPrograms,
     TableId::Projects,
@@ -37,7 +38,11 @@ pub const TABLES: [TableId; N] = [
     TableId::Scientists,
     TableId::ScientistSkills,
     TableId::RaidTargets,
-    TableId::RaidProvinces,
+    TableId::RaidCooldowns,
+    TableId::RaidPathDistances,
+    TableId::RaidPlayerAllowedTypes,
+    TableId::RaidSpeedInputs,
+    TableId::RaidEquipment,
 ];
 
 /// Each rooted walk produces two independently bounded tables.
@@ -46,9 +51,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("project pool and reward histories", 1, &[1, 2]),
     // RaidTargets is the raid instance walk's second projection: the same rows
     // carry the map icon's operands, so it joins that walk's cost group.
-    ("raid countries and instances", 5, &[5, 6, 10]),
+    ("raid countries and instances", 5, &[5, 6, 10, 11]),
     ("scientist rosters and specializations", 8, &[8, 9]),
-    ("raid province registrations", 11, &[11]),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -56,16 +60,30 @@ pub struct Capacities {
     pub rows: [usize; N],
     pub program_names: usize,
     pub program_candidates: usize,
+    /// Eligible and used raid type tokens, and raid `show_for` handles.
+    pub raid_type_tokens: usize,
+    pub raid_show_for: usize,
+    /// RaidSpeedInputs' transport speeds, every live raid's.
+    pub raid_transports: usize,
+    /// RaidEquipment's pool entries, every recorded raid's.
+    pub raid_equipment_items: usize,
+    /// RaidEquipment's per-archetype pool totals, every recorded raid's.
+    pub raid_equipment_archetypes: usize,
 }
 
 impl Default for Capacities {
     fn default() -> Self {
         Self {
             rows: [
-                256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192, 128, 4096,
+                256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192, 128, 64, 1024, 1, 64, 64,
             ],
+            raid_equipment_items: 1024,
+            raid_equipment_archetypes: 1024,
+            raid_transports: 256,
             program_names: 8192,
             program_candidates: 1024,
+            raid_type_tokens: 4096,
+            raid_show_for: 256,
         }
     }
 }
@@ -78,6 +96,16 @@ impl Capacities {
         raise(&mut self.rows[1], rows(slots, 64));
         raise(&mut self.rows[4], rows(slots, 2));
         raise(&mut self.rows[5], rows(slots, 1));
+        // Every country holds its eligible raid types.
+        raise(&mut self.raid_type_tokens, rows(slots, 8));
+    }
+
+    /// The live type-token demand of every raid parent and the player cache
+    /// ([`crate::country_scale::observe_raid_arenas`]), so a full hour reads
+    /// every parent however many types each lists.
+    pub(crate) fn raise_for_raid_type_tokens(&mut self, tokens: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.raid_type_tokens, rows(tokens, 1));
     }
 }
 
@@ -92,7 +120,25 @@ pub struct Captured {
     peace: CaptureRows<peace_conference::Row>,
     scientists: CaptureRows<scientist_roster::Row>,
     scientist_skills: CaptureRows<scientist_roster::SkillRow>,
-    raid_provinces: CaptureRows<craid_province_entries::Row>,
+    raid_cooldowns: CaptureRows<craid_system::CooldownRow>,
+    raid_paths: CaptureRows<raid_path_memo::Row>,
+    /// The player raid cache; its tokens follow the parents' in the arena.
+    raid_player: CaptureRows<cplayer_status_cache::Row>,
+    raid_speeds: CaptureRows<raid_speed_inputs::Row>,
+    raid_transports: Arena<i64>,
+    raid_equipment: CaptureRows<raid_equipment::Row>,
+    raid_equipment_variants: Arena<u64>,
+    raid_equipment_amounts: Arena<i64>,
+    raid_equipment_archetype_tokens: Arena<u32>,
+    raid_equipment_archetype_amounts: Arena<i64>,
+    /// Modifier metadata for the speed inputs' getters, read once per walk.
+    speed_memo: engine::modifier_definition::DefinitionMemo,
+    /// This hour's torn memo copies and refused raid rows.
+    raid_reads: super::RaidReadCounts,
+    raid_type_tokens: Arena<u32>,
+    raid_show_for: Arena<u32>,
+    /// Raid type tokens by definition, sized from the raid database.
+    raid_type_memo: ccountry_raid_status::TypeTokens,
     names: Arena<u8>,
     candidates: Vec<usize>,
     required_candidates: usize,
@@ -121,7 +167,11 @@ impl Captured {
         self.peace.fail(outcomes[7]);
         self.scientists.fail(outcomes[8]);
         self.scientist_skills.fail(outcomes[9]);
-        self.raid_provinces.fail(outcomes[11]);
+        self.raid_cooldowns.fail(outcomes[11]);
+        self.raid_paths.fail(outcomes[12]);
+        self.raid_player.fail(outcomes[13]);
+        self.raid_speeds.fail(outcomes[14]);
+        self.raid_equipment.fail(outcomes[15]);
     }
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -130,6 +180,11 @@ impl Captured {
             rows: [0; N],
             program_names: 0,
             program_candidates: 0,
+            raid_type_tokens: 0,
+            raid_show_for: 0,
+            raid_transports: 0,
+            raid_equipment_items: 0,
+            raid_equipment_archetypes: 0,
         })
     }
 
@@ -146,12 +201,38 @@ impl Captured {
             peace: CaptureRows::new(capacity.rows[7]),
             scientists: CaptureRows::new(capacity.rows[8]),
             scientist_skills: CaptureRows::new(capacity.rows[9]),
-            raid_provinces: CaptureRows::new(capacity.rows[11]),
+            raid_cooldowns: CaptureRows::new(capacity.rows[11]),
+            raid_paths: CaptureRows::new(capacity.rows[12]),
+            raid_player: CaptureRows::new(capacity.rows[13]),
+            raid_speeds: CaptureRows::new(capacity.rows[14]),
+            raid_transports: Arena::new(capacity.raid_transports),
+            raid_equipment: CaptureRows::new(capacity.rows[15]),
+            raid_equipment_variants: Arena::new(capacity.raid_equipment_items),
+            raid_equipment_amounts: Arena::new(capacity.raid_equipment_items),
+            raid_equipment_archetype_tokens: Arena::new(capacity.raid_equipment_archetypes),
+            raid_equipment_archetype_amounts: Arena::new(capacity.raid_equipment_archetypes),
+            speed_memo: engine::modifier_definition::DefinitionMemo::with_capacity(
+                if capacity.rows[14] == 0 { 0 } else { 3 },
+            ),
+            raid_reads: super::RaidReadCounts::default(),
+            raid_type_tokens: Arena::new(capacity.raid_type_tokens),
+            raid_show_for: Arena::new(capacity.raid_show_for),
+            raid_type_memo: if capacity.raid_type_tokens == 0 {
+                ccountry_raid_status::TypeTokens::empty()
+            } else {
+                // Grown from the database's count after the first walk.
+                ccountry_raid_status::TypeTokens::with_definitions(64)
+            },
             names: Arena::new(capacity.program_names),
             candidates: vec![0; capacity.program_candidates],
             required_candidates: 0,
             raw_mode: false,
         }
+    }
+
+    /// This hour's torn memo copies and refused raid rows.
+    pub(crate) fn raid_reads(&self) -> super::RaidReadCounts {
+        self.raid_reads
     }
 
     pub fn reset(&mut self) {
@@ -165,7 +246,19 @@ impl Captured {
         self.peace.reset();
         self.scientists.reset();
         self.scientist_skills.reset();
-        self.raid_provinces.reset();
+        self.raid_cooldowns.reset();
+        self.raid_paths.reset();
+        self.raid_player.reset();
+        self.raid_speeds.reset();
+        self.raid_transports.reset();
+        self.raid_equipment.reset();
+        self.raid_equipment_variants.reset();
+        self.raid_equipment_amounts.reset();
+        self.raid_equipment_archetype_tokens.reset();
+        self.raid_equipment_archetype_amounts.reset();
+        self.raid_reads = super::RaidReadCounts::default();
+        self.raid_type_tokens.reset();
+        self.raid_show_for.reset();
         self.names.reset();
         self.required_candidates = 0;
     }
@@ -181,7 +274,20 @@ impl Captured {
             + self.peace.allocated_bytes()
             + self.scientists.allocated_bytes()
             + self.scientist_skills.allocated_bytes()
-            + self.raid_provinces.allocated_bytes()
+            + self.raid_cooldowns.allocated_bytes()
+            + self.raid_paths.allocated_bytes()
+            + self.raid_player.allocated_bytes()
+            + self.raid_speeds.allocated_bytes()
+            + self.raid_transports.allocated_bytes()
+            + self.raid_equipment.allocated_bytes()
+            + self.raid_equipment_variants.allocated_bytes()
+            + self.raid_equipment_amounts.allocated_bytes()
+            + self.raid_equipment_archetype_tokens.allocated_bytes()
+            + self.raid_equipment_archetype_amounts.allocated_bytes()
+            + self.speed_memo.allocated_bytes()
+            + self.raid_type_tokens.allocated_bytes()
+            + self.raid_show_for.allocated_bytes()
+            + self.raid_type_memo.allocated_bytes()
             + self.names.allocated_bytes()
             + self.candidates.capacity() * size_of::<usize>()
     }
@@ -197,7 +303,24 @@ impl Captured {
         self.peace.grow(&mut capacity.rows[7]);
         self.scientists.grow(&mut capacity.rows[8]);
         self.scientist_skills.grow(&mut capacity.rows[9]);
-        self.raid_provinces.grow(&mut capacity.rows[11]);
+        self.raid_cooldowns.grow(&mut capacity.rows[11]);
+        self.raid_paths.grow(&mut capacity.rows[12]);
+        self.raid_player.grow(&mut capacity.rows[13]);
+        self.raid_speeds.grow(&mut capacity.rows[14]);
+        self.raid_transports.grow(&mut capacity.raid_transports);
+        self.raid_equipment.grow(&mut capacity.rows[15]);
+        let mut items = capacity.raid_equipment_items;
+        self.raid_equipment_variants.grow(&mut items);
+        self.raid_equipment_amounts.grow(&mut capacity.raid_equipment_items);
+        capacity.raid_equipment_items = capacity.raid_equipment_items.max(items);
+        let mut archetypes = capacity.raid_equipment_archetypes;
+        self.raid_equipment_archetype_tokens.grow(&mut archetypes);
+        self.raid_equipment_archetype_amounts
+            .grow(&mut capacity.raid_equipment_archetypes);
+        capacity.raid_equipment_archetypes = capacity.raid_equipment_archetypes.max(archetypes);
+        self.raid_type_tokens.grow(&mut capacity.raid_type_tokens);
+        self.raid_show_for.grow(&mut capacity.raid_show_for);
+        self.raid_type_memo.grow();
         self.names.grow(&mut capacity.program_names);
         grow_capacity(&mut capacity.program_candidates, self.required_candidates);
         if self.required_candidates > 0
@@ -281,36 +404,139 @@ impl Captured {
         }
         plain!(nukes, 4, cnuke);
         // Slot 10 (RaidTargets) is the same walk as slot 6: one read, two tables.
-        if active[5] || active[10] {
+        if active[5] || active[10] || active[11] {
             let begin = qpc();
-            capture_pair(
-                &mut self.raid_countries,
-                &mut self.raids,
-                |parents, instances| {
-                    let _reads = read_accounting::table(TABLES[5]);
-                    craid_system::walk(memory, base, game_state, parents, instances)
+            let _reads = read_accounting::table(TABLES[5]);
+            let walk = craid_system::walk(
+                memory,
+                base,
+                game_state,
+                craid_system::Buffers {
+                    parents: &mut self.raid_countries.rows,
+                    type_tokens: &mut self.raid_type_tokens.first,
+                    instances: &mut self.raids.rows,
+                    show_for: &mut self.raid_show_for.first,
+                    cooldowns: &mut self.raid_cooldowns.rows,
+                    type_memo: &mut self.raid_type_memo,
                 },
             );
+            self.raid_cooldowns.outcome = bounded(walk.cooldowns, self.raid_cooldowns.rows.len());
+            self.raid_countries.outcome = bounded(walk.parents, self.raid_countries.rows.len());
+            self.raids.outcome = bounded(walk.instances, self.raids.rows.len());
+            self.raid_type_tokens.len = walk.type_tokens_len;
+            self.raid_type_tokens.required = walk.required_type_tokens;
+            self.raid_show_for.len = walk.show_for_len;
+            self.raid_show_for.required = walk.required_show_for;
+            self.raid_reads.refused_leaders += walk.refused_leaders;
             ticks[5] = elapsed(begin);
         } else {
             self.raid_countries.outcome = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
             };
             self.raids.outcome = self.raid_countries.outcome;
+            self.raid_cooldowns.outcome = self.raid_countries.outcome;
         }
-        if active[11] {
+        if active[13] {
+            let _reads = read_accounting::table(TABLES[13]);
             let begin = qpc();
-            capture_rows(&mut self.raid_provinces, |rows| {
-                let _reads = read_accounting::table(TABLES[11]);
-                craid_province_entries::walk(memory, base, game_state, rows)
-            });
-            ticks[11] = elapsed(begin);
+            // The cache's tokens follow the parents' in the shared arena.
+            let start = self.raid_type_tokens.len.min(self.raid_type_tokens.first.len());
+            let walk = cplayer_status_cache::walk(
+                memory,
+                base,
+                game_state,
+                &mut self.raid_player.rows,
+                &mut self.raid_type_tokens.first[start..],
+                &mut self.raid_type_memo,
+            );
+            if let Some(row) = self.raid_player.rows.first_mut() {
+                row.allowed_start += start;
+            }
+            self.raid_type_tokens.len = start + walk.tokens_len;
+            self.raid_type_tokens.required = self
+                .raid_type_tokens
+                .required
+                .max(start)
+                .saturating_add(walk.required_tokens);
+            self.raid_player.outcome = bounded(walk.outcome, self.raid_player.rows.len());
+            ticks[13] = elapsed(begin);
         } else {
-            self.raid_provinces.outcome = Outcome::Unavailable {
+            self.raid_player.outcome = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+        }
+        if active[14] {
+            let _reads = read_accounting::table(TABLES[14]);
+            let begin = qpc();
+            let walk = raid_speed_inputs::walk(
+                memory,
+                base,
+                game_state,
+                &self.speed_memo,
+                &mut self.raid_speeds.rows,
+                &mut self.raid_transports.first,
+            );
+            self.raid_transports.len = walk.transport_len;
+            self.raid_transports.required = walk.required_transport;
+            self.raid_speeds.outcome = bounded(walk.outcome, self.raid_speeds.rows.len());
+            ticks[14] = elapsed(begin);
+        } else {
+            self.raid_speeds.outcome = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+        }
+        if active[15] {
+            let _reads = read_accounting::table(TABLES[15]);
+            let begin = qpc();
+            let walk = raid_equipment::walk(
+                memory,
+                base,
+                game_state,
+                &mut self.raid_equipment.rows,
+                raid_equipment::Arenas {
+                    variants: &mut self.raid_equipment_variants.first,
+                    amounts: &mut self.raid_equipment_amounts.first,
+                    archetype_tokens: &mut self.raid_equipment_archetype_tokens.first,
+                    archetype_amounts: &mut self.raid_equipment_archetype_amounts.first,
+                },
+            );
+            for arena in [
+                &mut self.raid_equipment_variants.len,
+                &mut self.raid_equipment_amounts.len,
+            ] {
+                *arena = walk.items_len;
+            }
+            for arena in [
+                &mut self.raid_equipment_archetype_tokens.len,
+                &mut self.raid_equipment_archetype_amounts.len,
+            ] {
+                *arena = walk.archetypes_len;
+            }
+            self.raid_equipment_variants.required = walk.required_items;
+            self.raid_equipment_amounts.required = walk.required_items;
+            self.raid_equipment_archetype_tokens.required = walk.required_archetypes;
+            self.raid_equipment_archetype_amounts.required = walk.required_archetypes;
+            self.raid_equipment.outcome = bounded(walk.outcome, self.raid_equipment.rows.len());
+            ticks[15] = elapsed(begin);
+        } else {
+            self.raid_equipment.outcome = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
             };
         }
         plain!(peace, 7, peace_conference);
+        if active[12] {
+            let _reads = read_accounting::table(TABLES[12]);
+            let begin = qpc();
+            let torn = &mut self.raid_reads.torn_memo_reads;
+            capture_rows(&mut self.raid_paths, |rows| {
+                raid_path_memo::walk(memory, base, game_state, rows, torn)
+            });
+            ticks[12] = elapsed(begin);
+        } else {
+            self.raid_paths.outcome = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+        }
         if active[8] {
             let begin = qpc();
             capture_pair(
@@ -369,7 +595,11 @@ impl Captured {
             self.scientists.outcome,
             self.scientist_skills.outcome,
             self.raids.outcome,
-            self.raid_provinces.outcome,
+            self.raid_cooldowns.outcome,
+            self.raid_paths.outcome,
+            self.raid_player.outcome,
+            self.raid_speeds.outcome,
+            self.raid_equipment.outcome,
         ]
     }
 
@@ -428,33 +658,8 @@ impl Captured {
                 amount_raw: r.amount_raw,
                 ready: r.ready,
             }),
-            table::<tables::RaidCountries, _>(outcomes[5], &self.raid_countries.rows, |r| {
-                rows::RaidCountryRow {
-                    canonical_slot: r.canonical_slot,
-                    country: r.country,
-                    priority: r.priority,
-                    child_count: r.child_count,
-                }
-            }),
-            table::<tables::Raids, _>(outcomes[6], &self.raids.rows, |r| rows::RaidRow {
-                reference_type: r.reference_type,
-                id: r.id,
-                parent_slot: r.parent_slot,
-                ordinal: r.ordinal,
-                preparation_hours: r.preparation_hours,
-                phase: r.phase,
-                outcome: r.outcome,
-                end_date_present: r.end_date_present,
-                victim_country: r.victim_country,
-                source: rows::RaidSource {
-                    kind: r.source.kind,
-                    kind_present: r.source.kind_present,
-                    province: r.source.province,
-                    ship_reference_type: r.source.ship_reference_type,
-                    ship_reference_id: r.source.ship_reference_id,
-                    country: r.source.country,
-                },
-            }),
+            self.raid_countries_table(outcomes[5]),
+            self.raids_table(outcomes[6]),
             table::<tables::PeaceConferences, _>(outcomes[7], &self.peace.rows, |r| {
                 rows::PeaceConferenceRow {
                     id: r.id,
@@ -486,30 +691,193 @@ impl Captured {
                 rows::RaidTargetRow {
                     reference_type: r.reference_type,
                     id: r.id,
-                    province: r.target.province,
-                    leader_province: r.target.leader_province,
-                    state: r.target.state,
-                    building_type: r.target.building_type,
-                    building_location: r.target.building_location,
-                    building_flags: r.target.building_flags,
+                    scope: super::raid_target_statuses::scope(&r.target),
                     raid_type: r.raid_type,
                     detected: r.detected,
                 }
             }),
-            table::<tables::RaidProvinces, _>(outcomes[11], &self.raid_provinces.rows, |r| {
-                rows::RaidProvinceRow {
-                    province: r.province,
-                    targets: r.targets,
-                    subset: r.subset,
-                    owned: r.owned,
-                    incoming: r.incoming,
-                    words: r.words().to_vec(),
-                    dropped_words: r.dropped_words,
-                    offers: r.offers().to_vec(),
-                    offer_count: r.offer_count,
+            table::<tables::RaidCooldowns, _>(outcomes[11], &self.raid_cooldowns.rows, |r| {
+                rows::RaidCooldownRow {
+                    owner_slot: r.owner_slot,
+                    ordinal: r.ordinal,
+                    raid_type: r.raid_type,
+                    scope: super::raid_target_statuses::scope(&r.scope),
                 }
             }),
+            table::<tables::RaidPathDistances, _>(outcomes[12], &self.raid_paths.rows, |r| {
+                rows::RaidPathDistanceRow {
+                    source: r.source,
+                    target: r.target,
+                    distance: r.distance,
+                    ok: r.ok,
+                }
+            }),
+            self.raid_player_table(outcomes[13]),
+            self.raid_speed_table(outcomes[14]),
+            self.raid_equipment_table(outcomes[15]),
         ]
+    }
+
+    fn raid_equipment_table(&self, outcome: Outcome) -> TableView {
+        let len = self.raid_equipment_variants.len;
+        let archetype_len = self.raid_equipment_archetype_tokens.len;
+        let (Some(variants), Some(amounts), Some(tokens), Some(totals)) = (
+            self.raid_equipment_variants.first.get(..len),
+            self.raid_equipment_amounts.first.get(..len),
+            self.raid_equipment_archetype_tokens.first.get(..archetype_len),
+            self.raid_equipment_archetype_amounts.first.get(..archetype_len),
+        ) else {
+            return unavailable("raid equipment arena length invalid");
+        };
+        let range = |start: usize, count: usize, len: usize| {
+            start
+                .checked_add(count)
+                .filter(|&end| end <= len)
+                .map(|end| start..end)
+        };
+        let items = |r: &raid_equipment::Row| range(r.items_start, r.items_len, len);
+        let archetypes =
+            |r: &raid_equipment::Row| range(r.archetypes_start, r.archetypes_len, archetype_len);
+        let rows = &self.raid_equipment.rows[..outcome.len().min(self.raid_equipment.rows.len())];
+        if rows.iter().any(|r| items(r).is_none()) {
+            return unavailable("raid equipment entries outside captured arena");
+        }
+        if rows.iter().any(|r| archetypes(r).is_none()) {
+            return unavailable("raid equipment archetype totals outside captured arena");
+        }
+        table::<tables::RaidEquipment, _>(outcome, &self.raid_equipment.rows, |r| {
+            let entries = items(r).unwrap_or_default();
+            let archetypes = archetypes(r).unwrap_or_default();
+            rows::RaidEquipmentRow {
+                reference_type: r.reference_type,
+                id: r.id,
+                phase: r.phase,
+                end_hour: r.end_hour,
+                variants: variants[entries.clone()].to_vec(),
+                amounts: amounts[entries].to_vec(),
+                nukes: r.nukes,
+                archetype_tokens: tokens[archetypes.clone()].to_vec(),
+                archetype_amounts: totals[archetypes].to_vec(),
+            }
+        })
+    }
+
+    fn raid_speed_table(&self, outcome: Outcome) -> TableView {
+        let speeds = &self.raid_transports.first[..self.raid_transports.len.min(self.raid_transports.first.len())];
+        let list = |r: &raid_speed_inputs::Row| {
+            r.transport_start
+                .checked_add(r.transport_len)
+                .and_then(|end| speeds.get(r.transport_start..end))
+        };
+        let rows = &self.raid_speeds.rows[..outcome.len().min(self.raid_speeds.rows.len())];
+        if rows.iter().any(|r| list(r).is_none()) {
+            return unavailable("raid transport speeds outside captured arena");
+        }
+        table::<tables::RaidSpeedInputs, _>(outcome, &self.raid_speeds.rows, |r| {
+            rows::RaidSpeedInputRow {
+                reference_type: r.reference_type,
+                id: r.id,
+                phase: r.phase,
+                outcome: r.outcome,
+                end_hour: r.end_hour,
+                wing_max_speed: r.wing_max_speed,
+                army_max_speed: r.army_max_speed,
+                transport_speeds: list(r).unwrap_or_default().to_vec(),
+                transport_from_country: r.transport_from_country,
+                transport_fallback: r.transport_fallback,
+                ace_present: r.ace_present,
+                ace_alive: r.ace_alive,
+                ace_speed: r.ace_speed,
+                ace_type_speed: r.ace_type_speed,
+                ace_wing_planes: r.ace_wing_planes,
+                ace_owner: r.ace_owner,
+                wing_country: r.wing_country,
+            }
+        })
+    }
+
+    fn raid_player_table(&self, outcome: Outcome) -> TableView {
+        let tokens = &self.raid_type_tokens.first[..self.raid_type_tokens.len];
+        let rows = &self.raid_player.rows[..outcome.len().min(self.raid_player.rows.len())];
+        let list = |r: &cplayer_status_cache::Row| {
+            r.allowed_start
+                .checked_add(r.allowed_len)
+                .and_then(|end| tokens.get(r.allowed_start..end))
+        };
+        if rows.iter().any(|r| list(r).is_none()) {
+            return unavailable("player raid cache tokens outside captured arena");
+        }
+        table::<tables::RaidPlayerAllowedTypes, _>(outcome, &self.raid_player.rows, |r| {
+            rows::RaidPlayerAllowedTypeRow {
+                country: r.country,
+                allowed: list(r).unwrap_or_default().to_vec(),
+            }
+        })
+    }
+
+    fn raid_countries_table(&self, outcome: Outcome) -> TableView {
+        let Some(tokens) = self.raid_type_tokens.first.get(..self.raid_type_tokens.len) else {
+            return unavailable("raid type token arena length invalid");
+        };
+        let list = |start: usize, len: usize| {
+            start
+                .checked_add(len)
+                .and_then(|end| tokens.get(start..end))
+        };
+        let rows = &self.raid_countries.rows[..outcome.len().min(self.raid_countries.rows.len())];
+        if rows
+            .iter()
+            .any(|r| list(r.eligible_start, r.eligible_len).is_none() || list(r.used_start, r.used_len).is_none())
+        {
+            return unavailable("raid type tokens outside captured arena");
+        }
+        table::<tables::RaidCountries, _>(outcome, &self.raid_countries.rows, |r| {
+            rows::RaidCountryRow {
+                canonical_slot: r.canonical_slot,
+                country: r.country,
+                eligible_types: list(r.eligible_start, r.eligible_len).unwrap().to_vec(),
+                used_types: list(r.used_start, r.used_len).unwrap().to_vec(),
+            }
+        })
+    }
+
+    fn raids_table(&self, outcome: Outcome) -> TableView {
+        let Some(handles) = self.raid_show_for.first.get(..self.raid_show_for.len) else {
+            return unavailable("raid show-for arena length invalid");
+        };
+        let list = |r: &craid_instance::Row| {
+            r.show_for_start
+                .checked_add(r.show_for_len)
+                .and_then(|end| handles.get(r.show_for_start..end))
+        };
+        let rows = &self.raids.rows[..outcome.len().min(self.raids.rows.len())];
+        if rows.iter().any(|r| list(r).is_none()) {
+            return unavailable("raid show-for handles outside captured arena");
+        }
+        table::<tables::Raids, _>(outcome, &self.raids.rows, |r| rows::RaidRow {
+            reference_type: r.reference_type,
+            id: r.id,
+            parent_slot: r.parent_slot,
+            ordinal: r.ordinal,
+            phase: r.phase,
+            outcome: r.outcome,
+            source: rows::RaidSource {
+                kind: r.source.kind,
+                kind_present: r.source.kind_present,
+                province: r.source.province,
+                ship_reference_type: r.source.ship_reference_type,
+                ship_reference_id: r.source.ship_reference_id,
+                country: r.source.country,
+                building_type: r.source.building_type,
+                building_location: r.source.building_location,
+                building_country: r.source.building_country,
+            },
+            show_for: list(r).unwrap().to_vec(),
+            unit: r.unit,
+            air_wing: r.air_wing,
+            travelled: Some(r.travelled),
+            preparation_hours: r.preparation_hours,
+        })
     }
 
     fn program_table(&self, outcome: Outcome) -> TableView {
@@ -681,7 +1049,8 @@ impl ProjectsJob {
     /// the first hour after a large save loads does not overflow.
     pub fn presize_countries(&mut self) {
         let census = crate::country_scale::reserve_census(&mut self.census);
-        if crate::country_scale::reserve_census(&mut self.statuses) || census {
+        let statuses = crate::country_scale::reserve_census(&mut self.statuses);
+        if census || statuses {
             self.update_capacity_charge();
         }
     }
@@ -2448,6 +2817,11 @@ mod tests {
             rows: [2; N],
             program_names: 4,
             program_candidates: 2,
+            raid_type_tokens: 2,
+            raid_show_for: 2,
+        raid_transports: 16,
+        raid_equipment_items: 16,
+        raid_equipment_archetypes: 16,
         };
         let captured = Captured::with_capacities(&capacities);
         (capacities, captured)
@@ -2642,20 +3016,32 @@ mod tests {
         captured.raid_countries.rows[0] = ccountry_raid_status::Row {
             canonical_slot: 0,
             country: -1,
-            priority: i32::MIN,
-            child_count: 1,
+            eligible_start: 0,
+            eligible_len: 1,
+            used_start: 1,
+            used_len: 1,
         };
+        captured.raid_type_tokens.first[..2].copy_from_slice(&[u32::MAX, 7]);
+        captured.raid_type_tokens.len = 2;
+        // The player cache's tokens follow the parents' in the arena.
+        captured.raid_player.outcome = Outcome::Rows { len: 1 };
+        captured.raid_player.rows[0] = engine::cplayer_status_cache::Row {
+            country: u32::MAX,
+            allowed_start: 1,
+            allowed_len: 1,
+        };
+        captured.raid_show_for.first[0] = u32::MAX;
+        captured.raid_show_for.len = 1;
         captured.raids.outcome = Outcome::Rows { len: 1 };
         captured.raids.rows[0] = craid_instance::Row {
             reference_type: u32::MAX - 1,
             id: u32::MAX,
             parent_slot: 0,
             ordinal: 7,
-            preparation_hours: i32::MIN,
             phase: 3,
             outcome: -1,
-            end_date_present: 1,
-            victim_country: -1,
+            show_for_start: 0,
+            show_for_len: 1,
             source: engine::craid_source::Row {
                 kind: None,
                 kind_present: 0,
@@ -2663,6 +3049,9 @@ mod tests {
                 ship_reference_type: u32::MAX,
                 ship_reference_id: u32::MAX - 1,
                 country: -1,
+                building_type: u32::MAX,
+                building_location: i32::MIN,
+                building_country: i32::MAX,
             },
             ..Default::default()
         };
@@ -2722,9 +3111,16 @@ mod tests {
         assert_eq!((nuke.amount_raw, nuke.ready), (i64::MAX, i32::MIN));
         let parent = &complete::<tables::RaidCountries>(&views[5])[0];
         assert_eq!(
-            (parent.canonical_slot, parent.country, parent.priority),
-            (0, -1, i32::MIN)
+            (
+                parent.canonical_slot,
+                parent.country,
+                parent.eligible_types.as_slice(),
+                parent.used_types.as_slice()
+            ),
+            (0, -1, &[u32::MAX][..], &[7][..])
         );
+        let player = &complete::<tables::RaidPlayerAllowedTypes>(&views[13])[0];
+        assert_eq!((player.country, player.allowed.as_slice()), (u32::MAX, &[7][..]));
         let raid = &complete::<tables::Raids>(&views[6])[0];
         assert_eq!(
             raid.key(),
@@ -2738,6 +3134,7 @@ mod tests {
             ),
             (None, u32::MAX, u32::MAX - 1)
         );
+        assert_eq!(raid.show_for, [u32::MAX]);
         let peace = &complete::<tables::PeaceConferences>(&views[7])[0];
         assert_eq!(
             (peace.id, peace.ordinal, peace.current_turn, peace.finalized),
@@ -2835,12 +3232,12 @@ mod tests {
             |parents, instances| {
                 calls += 1;
                 parents[0] = ccountry_raid_status::Row {
-                    child_count: 1,
+                    country: 1,
                     ..Default::default()
                 };
                 instances[0] = craid_instance::Row {
                     id: 7,
-                    preparation_hours: 13,
+                    phase: 3,
                     ..Default::default()
                 };
                 (Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 })
@@ -2848,7 +3245,7 @@ mod tests {
         );
         assert_eq!(calls, 1);
         assert_eq!(&captured.outcomes()[5..7], &[Outcome::Rows { len: 1 }; 2]);
-        assert_eq!(captured.raids.rows[0].preparation_hours, 13);
+        assert_eq!(captured.raids.rows[0].phase, 3);
         captured.raids.rows.clear();
         capture_pair(
             &mut captured.raid_countries,
@@ -2906,6 +3303,11 @@ mod tests {
             rows: [256; N],
             program_names: 8192,
             program_candidates: 1024,
+            raid_type_tokens: 256,
+            raid_show_for: 256,
+        raid_transports: 16,
+        raid_equipment_items: 16,
+        raid_equipment_archetypes: 16,
         }
     }
 
@@ -3464,6 +3866,11 @@ mod tests {
                 rows,
                 program_names: 8192,
                 program_candidates: 1024,
+                raid_type_tokens: 256,
+                raid_show_for: 256,
+            raid_transports: 16,
+            raid_equipment_items: 16,
+            raid_equipment_archetypes: 16,
             };
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
@@ -3476,6 +3883,11 @@ mod tests {
                 rows: [256; N],
                 program_names: names,
                 program_candidates: candidates,
+                raid_type_tokens: 256,
+                raid_show_for: 256,
+            raid_transports: 16,
+            raid_equipment_items: 16,
+            raid_equipment_archetypes: 16,
             };
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
@@ -3487,6 +3899,11 @@ mod tests {
             rows: [1; N],
             program_names: 8192,
             program_candidates: 1024,
+            raid_type_tokens: 256,
+            raid_show_for: 256,
+        raid_transports: 16,
+        raid_equipment_items: 16,
+        raid_equipment_archetypes: 16,
         };
         let (split, _, _) = kit::split(&memory, &capacities);
         assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
@@ -3523,6 +3940,11 @@ mod tests {
             rows: [1; N],
             program_names: 4,
             program_candidates: 1,
+            raid_type_tokens: 256,
+            raid_show_for: 256,
+        raid_transports: 16,
+        raid_equipment_items: 16,
+        raid_equipment_archetypes: 16,
         };
         let direct = kit::direct(&memory, &capacities);
         let (split, report, _) = kit::split(&memory, &capacities);

@@ -472,6 +472,8 @@ pub struct Viewer {
     /// Whether the scene holds `unit_models`' field. It does not move within
     /// the hour, so each installed hour uploads it once.
     unit_field_uploaded: bool,
+    /// The playback fraction the scene's raid units were last placed at.
+    raid_tick: Option<f32>,
     // names
     placements: Option<Arc<Placements>>,
     placements_at: Option<(replay::BranchId, i32)>,
@@ -480,6 +482,8 @@ pub struct Viewer {
     fade: Option<LayerFade>,
     last_frame: Instant,
     label_report: LabelReport,
+    /// The raid offer cycle, advanced off the frame path.
+    raid_lane: crate::raid_lane::RaidLane,
     // counters
     counter_report: CounterReport,
     /// The last icon layer built, and the frame, camera and viewport it was
@@ -581,6 +585,54 @@ pub(crate) fn load_scene(
 }
 
 impl Viewer {
+    /// Lays the overlay out afresh from the current tables and draws it at
+    /// this frame's fraction; an error unless its quads, raid report, label
+    /// report and counter report equal those of the overlay with its raid
+    /// icons installed in place.
+    fn check_overlay(
+        &mut self,
+        now: &crate::document::Hour<'_>,
+        camera: Camera,
+        pixels: [u32; 2],
+        ui_scale: f32,
+    ) -> Result<(), String> {
+        let (Some((_, _, _, tables)), Some(prepared), Some(drawn)) = (
+            self.overlay_tables.as_ref(),
+            self.prepared_overlay.as_ref(),
+            self.overlay.as_ref(),
+        ) else {
+            return Ok(());
+        };
+        let mut full = now
+            .prepare_overlay_cached(camera, pixels, ui_scale, tables)
+            .map_err(|error| error.to_string())?;
+        let (mut batch, mut report) = (Batch::default(), CounterReport::default());
+        full.draw_into(
+            now,
+            camera,
+            pixels,
+            ui_scale,
+            Default::default(),
+            &mut batch,
+            &mut report,
+        )
+        .map_err(|error| error.to_string())?;
+        let same = crate::document::same_quads(&batch.quads, &drawn.quads)
+            && full.raid_report() == prepared.raid_report()
+            && full.label_report() == prepared.label_report()
+            && report == self.counter_report;
+        crate::map::counter_move::profile_print(format!(
+            "CHECK overlay raids in place {} quads {}",
+            if same { "equal" } else { "DIFFER" },
+            drawn.quads.len()
+        ));
+        if same {
+            Ok(())
+        } else {
+            Err("raid icons installed in place differ from the overlay laid out afresh".into())
+        }
+    }
+
     fn configure_service(&self) {
         if let Some(embedded) = &self.embedded {
             embedded
@@ -743,12 +795,14 @@ impl Viewer {
             // close zoom
             unit_models: None,
             unit_field_uploaded: false,
+            raid_tick: None,
             // names
             placements: None,
             placements_at: None,
             fade: None,
             last_frame: Instant::now(),
             label_report: LabelReport::default(),
+            raid_lane: Default::default(),
             // counters
             counter_report: CounterReport::default(),
             overlay: None,
@@ -818,6 +872,7 @@ impl Viewer {
             self.overlay_tables.take(),
             self.prepared_overlay.take(),
             self.unit_models.take(),
+            std::mem::take(&mut self.raid_lane),
             permit,
         );
         if let Some(dropper) = &self.dropper {
@@ -1677,6 +1732,7 @@ impl Viewer {
         self.overlay_fraction = None;
         self.overlay_at = None;
         self.overlay_tables = None;
+        self.raid_lane = Default::default();
     }
 
     /// Records a lap of the frame that is being timed, if one is.
@@ -2196,6 +2252,7 @@ impl Viewer {
             self.epoch = 0;
             self.ready.clear();
             self.shown = None;
+            self.raid_lane = Default::default();
         }
         let playhead = self.playhead.unwrap_or(Playhead {
             branch: document.playback.branch(),
@@ -2277,6 +2334,7 @@ impl Viewer {
         // Everything this frame lets go of, freed off the frame path at its end.
         let mut retired = hours::Retired::default();
         for built in pipeline.take()? {
+            feed_raids(&self.raid_lane, &built);
             if built.epoch == epoch {
                 if let Some(old) = self.ready.insert((built.branch, built.hour), built) {
                     retired.push(old);
@@ -2322,18 +2380,13 @@ impl Viewer {
                 .is_some_and(|capture| !map::counter_move::profiling() || capture.remaining == 0);
             if next.is_none() && wait {
                 let pipeline = self.hours.as_ref().expect("started above");
-                while next.is_none() {
-                    let built = pipeline.wait()?;
-                    if built.epoch != epoch {
-                        retired.push(built);
-                        continue;
-                    }
-                    if (built.branch, built.hour) == target {
-                        next = Some(built);
-                    } else {
-                        self.ready.insert((built.branch, built.hour), built);
-                    }
-                }
+                next = Some(wait_for_hour(
+                    &self.raid_lane,
+                    (target, epoch),
+                    || pipeline.wait(),
+                    &mut self.ready,
+                    |built| retired.push(built),
+                )?);
             }
             if next.is_none() && self.playing {
                 // The newest hour on the way from the one on screen.
@@ -2435,6 +2488,9 @@ impl Viewer {
                 opened.elapsed().as_secs_f64() * 1000.0
             ));
         }
+        // The raid lane gets the hour's own frame with the hour, cache hits
+        // too: it may have pruned the frame since the builders delivered it.
+        let raid_frame = current.clone();
         retired.push(document.playback.present(branch, hour, current));
         laps.lap("present");
         if map::counter_move::profiling() {
@@ -2453,6 +2509,17 @@ impl Viewer {
             Ok(layers) => layers,
             Err(error) => {
                 self.animation_seek = false;
+                present_raids(
+                    &self.raid_lane,
+                    map::presentation::Continuity::Continue,
+                    crate::raid_lane::Presented {
+                        content: Some(&document.content),
+                        perspective: &self.perspective,
+                        at: (branch, hour),
+                        playing: self.playing,
+                        current: &raid_frame,
+                    },
+                );
                 self.shown = Some(ShownHour {
                     epoch,
                     branch,
@@ -2501,6 +2568,7 @@ impl Viewer {
             header,
             names,
             overlay,
+            overlay_tables,
         } = layers;
         let scene = self
             .scene
@@ -2534,6 +2602,19 @@ impl Viewer {
             uploaded.buildings = Some(buildings.id);
         }
         laps.lap("buildings_upload");
+        // The raid offer cycle is presentation history too: it starts again
+        // exactly when the trains and the weather do.
+        present_raids(
+            &self.raid_lane,
+            continuity,
+            crate::raid_lane::Presented {
+                content: Some(&document.content),
+                perspective: &self.perspective,
+                at: (branch, hour),
+                playing: self.playing,
+                current: &raid_frame,
+            },
+        );
         let replaced = scene.set_trains(
             &state.device,
             &state.queue,
@@ -2625,6 +2706,12 @@ impl Viewer {
         retired.push(self.placements.replace(names));
         self.placements_at = Some((branch, hour));
         retired.push(self.prepared_overlay.replace(overlay));
+        retired.push(self.overlay_tables.replace((
+            branch,
+            hour,
+            self.perspective.clone(),
+            overlay_tables,
+        )));
         self.overlay_at = Some((
             branch,
             hour,
@@ -3035,12 +3122,32 @@ impl Viewer {
                 .map_err(|error| error.to_string())?;
             laps.lap("units_upload");
             self.unit_field_uploaded = true;
+            // The field placed the raid units at the hour's start.
+            self.raid_tick = Some(0.0);
             if map::counter_move::profiling() {
                 map::counter_move::profile_print(format!(
                     "PROFILE models {:.6}",
                     timer.elapsed().as_secs_f64() * 1000.0
                 ));
             }
+        }
+        // Playing, the raid units move every rendered frame by the playback
+        // fraction, the tick's progress `UpdateUnitMovement@141CD7750` reads
+        // each frame; paused, they stand where the hour's start put them.
+        // Only they move within the hour: the figures and ships stay uploaded.
+        let tick = if self.playing {
+            document.hour_fraction
+        } else {
+            0.0
+        };
+        if self.raid_tick != Some(tick)
+            && let Some(prepared) = self.unit_models.as_ref()
+        {
+            let hour = document.hour().map_err(|error| error.to_string())?;
+            let heights = hour.heights();
+            scene
+                .set_raid_units(prepared.raid_units(&document.unit_models, Some((&heights, tick))));
+            self.raid_tick = Some(tick);
         }
         // names: the engine integrates the layer cross-fade by the frame delta
         // and clamps to [0, 1], so it takes one second whatever the zoom speed.
@@ -3094,7 +3201,45 @@ impl Viewer {
             .prepared_overlay
             .as_ref()
             .is_some_and(|prepared| prepared.is_stale(&now));
-        if stale || self.overlay_at.as_ref() != Some(&overlay_key) {
+        // The raid lane's icons for the hour on screen replace the hour's
+        // when they are newer; a paused frame asks the lane for one batch.
+        let ctx = ui.ctx().clone();
+        // Its batches borrow the hour builders' threads.
+        if let Some(hours) = &self.hours {
+            self.raid_lane.use_workers(hours.workers());
+        }
+        self.raid_lane.show(
+            &document.content,
+            &self.perspective,
+            (document.playback.branch(), document.playback.hour()),
+            self.playing,
+            move || ctx.request_repaint(),
+        );
+        // Only icons of the lane's current reset, built for the hour and the
+        // resolved viewing country the tables are for, install.
+        let mut raids_changed = false;
+        if let Some((branch, hour, _, tables)) = &mut self.overlay_tables
+            && let Some(icons) = self.raid_lane.icons(*branch, *hour, tables.ours())
+            && !Arc::ptr_eq(&icons, &tables.raids())
+        {
+            raids_changed = tables.set_raids(icons);
+        }
+        let layout_changed = stale || self.overlay_at.as_ref() != Some(&overlay_key);
+        // A raid batch on the laid-out hour, camera and view replaces the raid
+        // icons alone: the rest of the overlay does not read them. The batch
+        // drawn at this fraction takes them in place, as drawing it again
+        // would; a new fraction draws it again below.
+        let raids_only = raids_changed && !layout_changed;
+        if raids_only
+            && let (Some(prepared), Some((_, _, _, tables))) =
+                (self.prepared_overlay.as_mut(), self.overlay_tables.as_ref())
+        {
+            let drawn = (self.overlay_fraction == Some(document.hour_fraction))
+                .then_some(self.overlay.as_mut())
+                .flatten();
+            prepared.replace_raids(&now, camera, pixels, ui_scale, &tables.raids(), drawn);
+        }
+        if layout_changed || (raids_only && self.prepared_overlay.is_none()) {
             let tables_key = (
                 document.playback.branch(),
                 document.playback.hour(),
@@ -3107,8 +3252,19 @@ impl Viewer {
                     (*branch, *hour, perspective) != (tables_key.0, tables_key.1, &tables_key.2)
                 })
             {
+                // Raid offers are only evaluated on the raid lane: until it
+                // delivers this hour's for this view, no raid icon draws
+                // (`RaidIcons::carried`).
+                let ours = now
+                    .vision(&self.perspective)
+                    .map_err(|error| error.to_string())?
+                    .ours();
+                let raids = self
+                    .raid_lane
+                    .icons(tables_key.0, tables_key.1, ours)
+                    .unwrap_or_default();
                 let tables = now
-                    .hour_tables(&self.perspective)
+                    .hour_tables_with_raids(&self.perspective, raids)
                     .map_err(|error| error.to_string())?;
                 self.overlay_tables = Some((tables_key.0, tables_key.1, tables_key.2, tables));
             }
@@ -3139,6 +3295,9 @@ impl Viewer {
                 self.label_report.clone_from(prepared.label_report());
             }
             self.overlay_fraction = Some(document.hour_fraction);
+        }
+        if raids_only && check_overlay() {
+            self.check_overlay(&now, camera, pixels, ui_scale)?;
         }
         // Resolve clicks against this hour and camera's newly rebuilt hit regions.
         if response.clicked()
@@ -3270,7 +3429,15 @@ impl Viewer {
                 .prepared_overlay
                 .as_ref()
                 .is_some_and(|prepared| !prepared.is_stale(&now));
-            if !laid_out || document.icons.lazy.has_pending() {
+            // And until the raid offer cycle is complete at the shown hour:
+            // every target evaluated, as a paused frame ends.
+            let raids = self
+                .overlay_tables
+                .as_ref()
+                .map(|(_, _, _, tables)| tables.raids());
+            let cycled =
+                raids.is_some_and(|raids| !raids.report.pending && raids.report.cycle_complete());
+            if !laid_out || document.icons.lazy.has_pending() || !cycled {
                 capture.remaining = capture.remaining.max(1);
             }
         }
@@ -3759,6 +3926,86 @@ fn filter_tags<'a>(tags: &'a [String], filter: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// Hands the raid lane the hour put on screen, with its frame, and starts
+/// its offer cycle again there when the presentation history resets:
+/// exactly when the trains and the weather do (a seek, same-hour ones too, a
+/// step back, a branch change, a new recording, a recorded gap or a new
+/// resolved viewing country); playback, one hour forward and a playback skip
+/// carry it ([`map::presentation::continuity`]). The view and the reset are
+/// installed together, before the lane wakes.
+fn present_raids(
+    lane: &crate::raid_lane::RaidLane,
+    continuity: map::presentation::Continuity,
+    presented: crate::raid_lane::Presented<'_>,
+) {
+    lane.present(
+        presented,
+        continuity == map::presentation::Continuity::Reset,
+    );
+}
+
+/// A built hour as the builders deliver it to the window.
+trait Delivered {
+    /// The [`hours::Want`] generation it was built for.
+    fn epoch(&self) -> u64;
+    fn at(&self) -> (replay::BranchId, i32);
+    fn current(&self) -> &crate::playback::Current;
+}
+
+impl Delivered for hours::Built {
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn at(&self) -> (replay::BranchId, i32) {
+        (self.branch, self.hour)
+    }
+
+    fn current(&self) -> &crate::playback::Current {
+        &self.current
+    }
+}
+
+/// Hands a delivered hour's frame to the raid lane. Every path that
+/// receives a built hour calls it before the hour is consumed, whatever its
+/// epoch (raid offers do not read the fog): the lane builds its cycle only
+/// from the frames it is fed, and a capture waits for that cycle.
+/// `BATTLE_PLAN_VIEWER_CHECK_OVERLAY`: after every raid batch installed in place,
+/// lay the whole overlay out again and require the same quads and report
+/// ([`Viewer::check_overlay`]).
+fn check_overlay() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_OVERLAY").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_OVERLAY")).is_some())
+}
+
+fn feed_raids(lane: &crate::raid_lane::RaidLane, built: &impl Delivered) {
+    let (branch, hour) = built.at();
+    lane.feed(branch, hour, built.current());
+}
+
+/// Blocks on `wait` until the hour `target` of `epoch` arrives, feeding
+/// every hour received to the raid lane on the way ([`feed_raids`]). Other
+/// hours of `epoch` are kept in `ready`, other epochs' go to `stale`.
+fn wait_for_hour<B: Delivered>(
+    lane: &crate::raid_lane::RaidLane,
+    (target, epoch): ((replay::BranchId, i32), u64),
+    mut wait: impl FnMut() -> std::io::Result<B>,
+    ready: &mut BTreeMap<(replay::BranchId, i32), B>,
+    mut stale: impl FnMut(B),
+) -> std::io::Result<B> {
+    loop {
+        let built = wait()?;
+        feed_raids(lane, &built);
+        if built.epoch() != epoch {
+            stale(built);
+        } else if built.at() == target {
+            return Ok(built);
+        } else {
+            ready.insert(built.at(), built);
+        }
+    }
+}
+
 /// What the hours strictly between the hour on screen and `next` built,
 /// oldest first, so the scene's building history advances through them; empty
 /// for the same hour rebuilt. `built` answers `None` for an hour never built
@@ -3824,6 +4071,256 @@ fn presentation_matches(rendered: Playhead, target: Playhead, playing: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A built hour of branch 1 standing for the builders' delivery: a
+    /// recorded gap, as what the lane holds is all this reads.
+    struct Delivery {
+        epoch: u64,
+        hour: i32,
+        current: crate::playback::Current,
+    }
+
+    impl Delivered for Delivery {
+        fn epoch(&self) -> u64 {
+            self.epoch
+        }
+
+        fn at(&self) -> (replay::BranchId, i32) {
+            (1, self.hour)
+        }
+
+        fn current(&self) -> &crate::playback::Current {
+            &self.current
+        }
+    }
+
+    fn delivery(epoch: u64, hour: i32) -> Delivery {
+        Delivery {
+            epoch,
+            hour,
+            current: crate::playback::Current::Gap {
+                branch: 1,
+                hour,
+                reason: String::new(),
+            },
+        }
+    }
+
+    /// A capture that waits on the builders for its hour feeds every hour it
+    /// receives to the raid lane before taking it, so the lane holds the
+    /// capture's hour and can cycle it: a cold `--window-dump` does not wait
+    /// forever for a cycle the lane never got (the lane's side:
+    /// `raid_lane::tests::a_cold_capture_cycles_its_hour_once_its_frame_is_fed`).
+    #[test]
+    fn a_waiting_capture_feeds_every_hour_it_receives_to_the_raid_lane() {
+        let lane = crate::raid_lane::RaidLane::default();
+        let mut arrivals = [
+            delivery(1, 9),
+            delivery(2, 11),
+            delivery(2, 10),
+            delivery(2, 12),
+        ]
+        .into_iter();
+        let mut ready = BTreeMap::new();
+        let mut stale = Vec::new();
+        let built = wait_for_hour(
+            &lane,
+            ((1, 10), 2),
+            || {
+                arrivals
+                    .next()
+                    .ok_or_else(|| std::io::Error::other("the builders stopped"))
+            },
+            &mut ready,
+            |built| stale.push(built.at()),
+        )
+        .unwrap();
+        assert_eq!(built.at(), (1, 10));
+        assert_eq!(ready.keys().copied().collect::<Vec<_>>(), [(1, 11)]);
+        assert_eq!(stale, [(1, 9)]);
+        for hour in 9..=11 {
+            assert!(lane.has_frame(1, hour), "hour {hour} was fed");
+        }
+        assert!(!lane.has_frame(1, 12), "not received yet");
+    }
+
+    /// The raid cycle resets exactly when the trains and the weather do:
+    /// they all take the continuity `apply_hour` computes for the hour it
+    /// puts on screen. Seeks (same-hour ones and forward seeks over built
+    /// hours too), a step back, a branch change, a new recording, a recorded
+    /// gap and a new resolved viewing country reset them; playback, one hour
+    /// forward and a playback skip carry them.
+    #[test]
+    fn the_raid_cycle_resets_exactly_with_the_trains_and_weather() {
+        use map::presentation::{Continuity, Target, continuity};
+        let gap = replay::branches::Gap {
+            branch: 1,
+            first_hour: 45,
+            last_hour: 49,
+            reason: "missing".into(),
+        };
+        let gaps = std::slice::from_ref(&gap);
+        let on_screen = Some((1, 20, Some("GER")));
+        // The timeline's seek controls (|<, <, >|, the scrub, the branch
+        // chooser) raise the seek flag; > and the playback clock do not.
+        // Dashboard targets tell seeks by their clock's seek counter.
+        let clock = Target {
+            branch: 1,
+            hour: 20,
+            seek_sequence: Some(3),
+        };
+        let dashboard_skip = Target { hour: 26, ..clock }.seeks_from(clock);
+        let dashboard_seek = Target {
+            hour: 26,
+            seek_sequence: Some(4),
+            ..clock
+        }
+        .seeks_from(clock);
+        let cases = [
+            (
+                "playback",
+                on_screen,
+                (1, 21),
+                "GER",
+                false,
+                Continuity::Continue,
+            ),
+            ("+1", on_screen, (1, 21), "GER", false, Continuity::Continue),
+            (
+                "playback skip",
+                on_screen,
+                (1, 26),
+                "GER",
+                false,
+                Continuity::Continue,
+            ),
+            (
+                "dashboard skip",
+                on_screen,
+                (1, 26),
+                "GER",
+                dashboard_skip,
+                Continuity::Continue,
+            ),
+            ("seek", on_screen, (1, 400), "GER", true, Continuity::Reset),
+            (
+                "same-hour seek",
+                on_screen,
+                (1, 20),
+                "GER",
+                true,
+                Continuity::Reset,
+            ),
+            (
+                "forward seek over built hours",
+                on_screen,
+                (1, 24),
+                "GER",
+                true,
+                Continuity::Reset,
+            ),
+            (
+                "dashboard seek",
+                on_screen,
+                (1, 26),
+                "GER",
+                dashboard_seek,
+                Continuity::Reset,
+            ),
+            (
+                "step back",
+                on_screen,
+                (1, 19),
+                "GER",
+                true,
+                Continuity::Reset,
+            ),
+            ("branch", on_screen, (2, 20), "GER", true, Continuity::Reset),
+            (
+                "new recording",
+                None,
+                (1, 20),
+                "GER",
+                false,
+                Continuity::Reset,
+            ),
+            (
+                "recorded gap",
+                Some((1, 44, Some("GER"))),
+                (1, 50),
+                "GER",
+                false,
+                Continuity::Reset,
+            ),
+            // The gap hour itself is shown as an error: nothing carries past it.
+            (
+                "after a gap hour",
+                None,
+                (1, 50),
+                "GER",
+                false,
+                Continuity::Reset,
+            ),
+            (
+                "country",
+                on_screen,
+                (1, 21),
+                "SOV",
+                false,
+                Continuity::Reset,
+            ),
+        ];
+        for (name, previous, next, viewing, sought, expected) in cases {
+            let perspective = map::perspective::Choice::default();
+            let shown = |at: (replay::BranchId, i32)| crate::playback::Current::Gap {
+                branch: at.0,
+                hour: at.1,
+                reason: String::new(),
+            };
+            let lane = crate::raid_lane::RaidLane::default();
+            // The lane presents the hour on screen before the move.
+            if let Some((branch, hour, _)) = previous {
+                let current = shown((branch, hour));
+                present_raids(
+                    &lane,
+                    Continuity::Reset,
+                    crate::raid_lane::Presented {
+                        content: None,
+                        perspective: &perspective,
+                        at: (branch, hour),
+                        playing: false,
+                        current: &current,
+                    },
+                );
+            }
+            let before = lane.generation();
+            let presented = continuity(previous, (next.0, next.1, Some(viewing)), sought, gaps);
+            assert_eq!(presented, expected, "{name}");
+            let current = shown(next);
+            present_raids(
+                &lane,
+                presented,
+                crate::raid_lane::Presented {
+                    content: None,
+                    perspective: &perspective,
+                    at: next,
+                    playing: false,
+                    current: &current,
+                },
+            );
+            assert!(lane.has_frame(next.0, next.1), "{name}: the hour's frame");
+            let raids_reset = lane.generation() != before;
+            // What the trains and the weather keep across the same move.
+            let kept =
+                previous.is_some_and(|(branch, hour, _)| presented.keeps((branch, hour), next));
+            assert_eq!(raids_reset, !kept, "{name}");
+            assert_eq!(raids_reset, expected == Continuity::Reset, "{name}");
+        }
+        // A forward seek over hours that are all built continues the
+        // building history, which does not reset the raid cycle any more.
+        let built = |hour: i32| Some(Some(hour));
+        assert!(skipped_hours(Some((1, 20)), (1, 24), false, built).is_some());
+    }
 
     #[test]
     fn playing_shows_the_newest_built_hour_until_the_playheads_own_arrives() {

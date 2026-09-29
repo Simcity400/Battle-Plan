@@ -75,16 +75,60 @@ impl Document {
 /// Errors use zero-based byte offsets in the original input. `HOI4txt` is an
 /// ordinary anonymous scalar, so save-header validation belongs to the caller.
 pub fn parse(bytes: &[u8]) -> io::Result<Document> {
+    Ok(parse_spanned(bytes, false)?.0)
+}
+
+/// The 1-based lines of one block's `{` and `}`, counting `\n` only, as the
+/// game's reader counts them (`CFile::CFile@1424DC040` starts at 1 and
+/// `CMemoryFile::ReadNextCharacter@1424D92C0` adds one on the character after
+/// a `\n`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BlockLines {
+    pub open: u32,
+    pub close: u32,
+}
+
+/// [`parse_unclosed`] with the lines of every block and tagged block, in the
+/// order their `{` appear: a pre-order walk of the document's
+/// [`Value::Block`] and [`Value::Tagged`] values meets them in this order.
+pub fn parse_unclosed_lines(input: &[u8]) -> io::Result<(Document, Vec<BlockLines>, bool)> {
+    let first = match parse_spanned(input, true) {
+        Ok((document, lines)) => return Ok((document, lines, false)),
+        Err(error) => error,
+    };
+    for missing in 1..=MAX_DEPTH {
+        let mut repaired = input.to_vec();
+        repaired.extend(std::iter::repeat_n(b'}', missing));
+        if let Ok((document, lines)) = parse_spanned(&repaired, true) {
+            return Ok((document, lines, true));
+        }
+    }
+    Err(first)
+}
+
+fn parse_spanned(bytes: &[u8], lines: bool) -> io::Result<(Document, Vec<BlockLines>)> {
     let mut parser = Parser {
         lexer: Lexer {
             bytes,
             position: usize::from(bytes.starts_with(b"\xef\xbb\xbf")) * 3,
         },
         lookahead: None,
+        lines: lines.then(|| Lines {
+            newlines: bytes
+                .iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte == b'\n')
+                .map(|(offset, _)| offset)
+                .collect(),
+            blocks: Vec::new(),
+        }),
+        closed_at: 0,
     };
-    Ok(Document {
-        items: parser.items(0, false)?,
-    })
+    let items = parser.items(0, false)?;
+    Ok((
+        Document { items },
+        parser.lines.map(|lines| lines.blocks).unwrap_or_default(),
+    ))
 }
 
 #[derive(Debug)]
@@ -209,6 +253,22 @@ pub fn parse_unclosed(input: &[u8]) -> io::Result<(Document, bool)> {
 struct Parser<'a> {
     lexer: Lexer<'a>,
     lookahead: Option<Token>,
+    lines: Option<Lines>,
+    /// The offset of the last closing brace a block ended on.
+    closed_at: usize,
+}
+
+struct Lines {
+    /// Offsets of every `\n`, ascending.
+    newlines: Vec<usize>,
+    blocks: Vec<BlockLines>,
+}
+
+impl Lines {
+    fn line(&self, offset: usize) -> u32 {
+        let before = self.newlines.partition_point(|&newline| newline < offset);
+        u32::try_from(before).unwrap_or(u32::MAX).saturating_add(1)
+    }
 }
 
 impl Parser<'_> {
@@ -230,7 +290,10 @@ impl Parser<'_> {
         let mut items = Vec::new();
         while let Some(token) = self.next()? {
             match token.kind {
-                TokenKind::Close if in_block => return Ok(items),
+                TokenKind::Close if in_block => {
+                    self.closed_at = token.offset;
+                    return Ok(items);
+                }
                 TokenKind::Close => return Err(invalid(token.offset, "unexpected closing brace")),
                 TokenKind::Equals => {
                     return Err(invalid(token.offset, "expected an item before '='"));
@@ -300,7 +363,16 @@ impl Parser<'_> {
                 "block nesting exceeds the depth limit of 128",
             ));
         }
-        self.items(depth + 1, true)
+        let index = self.lines.as_mut().map(|lines| {
+            let open = lines.line(offset);
+            lines.blocks.push(BlockLines { open, close: open });
+            lines.blocks.len() - 1
+        });
+        let items = self.items(depth + 1, true)?;
+        if let (Some(index), Some(lines)) = (index, self.lines.as_mut()) {
+            lines.blocks[index].close = lines.line(self.closed_at);
+        }
+        Ok(items)
     }
 }
 
@@ -314,6 +386,26 @@ fn invalid(offset: usize, message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_lines_follow_the_braces_in_preorder() {
+        let (document, lines, repaired) = parse_unclosed_lines(
+            b"a = {\n  b = { c = 1 }\n  color = rgb { 1 2 3 }\n}\r\nd = {\n\n  e = {\n}",
+        )
+        .unwrap();
+        assert!(repaired);
+        assert_eq!(document.items.len(), 2);
+        let spans: Vec<_> = lines
+            .iter()
+            .map(|lines| (lines.open, lines.close))
+            .collect();
+        // a, b, the tagged colour, d, then e; the supplied brace closes d.
+        assert_eq!(spans, [(1, 4), (2, 2), (3, 3), (5, 8), (7, 8)]);
+        assert_eq!(
+            parse(b"x = { }").unwrap(),
+            parse_unclosed_lines(b"x = { }").unwrap().0
+        );
+    }
 
     #[test]
     fn document_keeps_save_header_duplicate_keys_and_mixed_lists() {

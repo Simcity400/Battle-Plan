@@ -1783,7 +1783,6 @@ mod tests {
             TableId::Campaign,
             TableId::DivisionEtaInputs,
             TableId::RaidTargets,
-            TableId::RaidProvinces,
             TableId::NavalBases,
             TableId::FactionTheatres,
         ];

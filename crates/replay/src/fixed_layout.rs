@@ -82,6 +82,16 @@ pub const DIVISION_STATUS: Family = Family {
     tables: &[TableId::DivisionStatus],
 };
 
+pub const RETREAT_BANS: Family = Family {
+    name: "commander retreat bans",
+    keys: &[
+        keys::CANNOT_RETREAT_WHILE_DEFENDING,
+        keys::CANNOT_RETREAT_WHILE_ATTACKING,
+    ],
+    tokens: &[],
+    tables: &[TableId::DivisionRetreatBans],
+};
+
 pub const SHIP_ORGANISATION: Family = Family {
     name: "ship organisation",
     keys: &[
@@ -175,6 +185,69 @@ pub const POWER_BALANCE: Family = Family {
     tables: &[TableId::PowerBalanceMembers],
 };
 
+pub const STATE_RESOURCES: Family = Family {
+    name: "state resources",
+    keys: &[
+        keys::STATE_RESOURCES_FACTOR,
+        keys::LOCAL_RESOURCE_GAIN_EFFICIENCY_PER_INFRASTRUCTURE,
+    ],
+    tokens: &[],
+    tables: &[TableId::StateResourceInputs],
+};
+
+/// The raid launch gate's daily range getters: `GetModifiedMapRange@140F49440`
+/// (key 5 on the country and, in AceRangeInputs, on the ace and its type) and
+/// `GetRaidUnitRangeLimit@141453E10`.
+pub const RAID_LAUNCH: Family = Family {
+    name: "raid launch",
+    keys: &[keys::AIR_RANGE_FACTOR, keys::NAVAL_COMMANDO_RAID_DISTANCE],
+    tokens: &[],
+    tables: &[TableId::RaidCountryInputs, TableId::AceRangeInputs],
+};
+
+/// `CCountry::CanAffordCommandPower@1406F0380`'s capacity pair.
+pub const COMMAND_POWER: Family = Family {
+    name: "command power",
+    keys: &[keys::MAX_COMMAND_POWER, keys::MAX_COMMAND_POWER_MULT],
+    tokens: &[],
+    tables: &[TableId::CountryCommandPower],
+};
+
+/// The ace country modifiers every raid reads live, recorded hourly per
+/// country beside the command power pair: 0x25a on an ace's owner
+/// (`CAce::scaled_modifier@14060DDF0`) and 0x72 on a wing's country (the ace
+/// terms of `GetModifiedMapRange@140F49440` and
+/// `CAirWing::GetAceModifiedMaxSpeed@140F4B5E0`).
+pub const COUNTRY_ACE_MODIFIERS: Family = Family {
+    name: "country ace modifiers",
+    keys: &[keys::AIR_ACE_BONUSES_FACTOR, keys::ACE_EFFECTIVENESS_FACTOR],
+    tokens: &[],
+    tables: &[TableId::CountryCommandPower],
+};
+
+/// `CalculateRaidUnitSpeed@141453880`'s ace speed terms: key 2 on the ace and
+/// its type. Its country terms are [`COUNTRY_ACE_MODIFIERS`]'.
+pub const RAID_UNIT_SPEED: Family = Family {
+    name: "raid unit speed",
+    keys: &[keys::AIR_MAXIMUM_SPEED_FACTOR],
+    tokens: &[],
+    tables: &[TableId::RaidSpeedInputs],
+};
+
+/// `COrderInstance::GetRequiredInvasionPreparationHours@141016930`'s naval
+/// invasion terms: 0x1a on the country, the relation and the leader, 0x184
+/// on the country, 0x1ce on the relation.
+pub const INVASION_PREPARATION: Family = Family {
+    name: "invasion preparation",
+    keys: &[
+        keys::INVASION_PREPARATION,
+        keys::NAVAL_INVASION_PREP_DAYS,
+        keys::INVASION_PREPARATION_AGAINST,
+    ],
+    tokens: &[],
+    tables: &[TableId::InvasionPreparations],
+};
+
 pub const RESEARCH_IDLE: Family = Family {
     name: "research slots",
     keys: &[],
@@ -201,6 +274,7 @@ pub const FAMILIES: &[Family] = &[
     LAND_COMBAT_DIVISIONS,
     LAND_COMMANDERS,
     DIVISION_STATUS,
+    RETREAT_BANS,
     SHIP_ORGANISATION,
     NAVAL_WEAPONS,
     NAVAL_SUMMARY,
@@ -209,6 +283,12 @@ pub const FAMILIES: &[Family] = &[
     COUNTRY_VISIBILITY,
     STATE_VISIBILITY,
     POWER_BALANCE,
+    STATE_RESOURCES,
+    RAID_LAUNCH,
+    COMMAND_POWER,
+    COUNTRY_ACE_MODIFIERS,
+    RAID_UNIT_SPEED,
+    INVASION_PREPARATION,
     RESEARCH_IDLE,
     ORACLE_FIXED15,
 ];

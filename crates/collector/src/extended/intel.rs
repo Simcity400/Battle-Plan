@@ -10,7 +10,8 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_vec},
 };
 use engine::{
-    Memory, ccountry, ccountry_intel, ccountry_intel_network, ccountry_operation_manager,
+    Memory, ccharacter, ccharacter_manager, ccountry, ccountry_intel, ccountry_intel_network,
+    ccountry_operation_manager,
     ccountry_operation_token_manager, ccryptology, ccurrent_autonomy_status, cdiplomacy_status,
     cflag_manager, cgame_state, cintelligence_agency, coperation_instance, coperative_leader,
     cwar_relation,
@@ -75,6 +76,9 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
 pub const GLOBAL_SCOPE: u8 = 0;
 pub const COUNTRY_SCOPE: u8 = 1;
 pub const STATE_SCOPE: u8 = 2;
+/// ScriptFlags only: a character's own flags (`CCharacter+0x110`), keyed by
+/// its id (`CCharacter+0xC`, the Characters id).
+pub const CHARACTER_SCOPE: u8 = 3;
 
 /// Spool-owned membership scratch, not another captured-frame lease. Bits are
 /// cleared for each comparison, and contain no pointers, names or prior values.
@@ -148,6 +152,24 @@ impl Capacities {
     pub(crate) fn raise_for_country_intel(&mut self, native_rows: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[15], rows(native_rows, 1));
+    }
+
+    /// ScriptFlags keeps one row per live flag of every scope, which the
+    /// managers' own counts give (`script_flag_demand`); the per-manager
+    /// scratch follows the same capacity.
+    pub(crate) fn raise_for_script_flags(&mut self, flags: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[7], rows(flags, 1));
+    }
+}
+
+/// Sizing only: the live flag count of every ScriptFlags scope, from each
+/// manager's header, through the walk itself with no room for rows.
+pub(crate) fn script_flag_demand(memory: &impl Memory, base: usize, state: usize) -> Option<usize> {
+    match walk_flags(memory, base, state, &mut [], &mut []) {
+        Outcome::Rows { len } => Some(len),
+        Outcome::Truncated { unread_rows, .. } => Some(unread_rows as usize),
+        Outcome::Unavailable { .. } => None,
     }
 }
 
@@ -1515,6 +1537,9 @@ fn valid_variable_parts(
 
 /// Proven expiry callers dereference all three manager roots. Slot zero and
 /// null state holes are not scopes; canonical country aliases are visited once.
+/// Every character in both serialized rosters is a scope too, with its flag
+/// manager embedded in the character (`ccharacter::FLAGS`); each manager's
+/// live count (+0x14) sizes its rows, and an omitted count is kept for growth.
 fn walk_flags(
     memory: &impl Memory,
     base: usize,
@@ -1525,11 +1550,14 @@ fn walk_flags(
     let result = (|| {
         let mut len = 0;
         let mut unread = 0_u32;
-        let mut scope = |kind, id, root, offset| -> Result<(), &'static str> {
+        let root = |root, offset| -> Result<usize, &'static str> {
             let manager = pointer(memory, root, offset)?;
             if manager == 0 {
                 return Err("script flag manager root is null");
             }
+            Ok(manager)
+        };
+        let mut scope = |kind, id, manager| -> Result<(), &'static str> {
             let available = (output.len() - len).min(scratch.len());
             let outcome = bounded(
                 cflag_manager::walk(memory, base, manager, &mut scratch[..available]),
@@ -1555,7 +1583,7 @@ fn walk_flags(
             }
             Ok(())
         };
-        scope(GLOBAL_SCOPE, 0, state, cgame_state::GLOBAL_FLAGS)?;
+        scope(GLOBAL_SCOPE, 0, root(state, cgame_state::GLOBAL_FLAGS)?)?;
         let countries = ccountry::Reader::new(memory, base, state)?;
         let mut found_country = false;
         for slot in 1..countries.count() {
@@ -1564,8 +1592,7 @@ fn walk_flags(
                 scope(
                     COUNTRY_SCOPE,
                     country.id,
-                    country.pointer,
-                    ccountry::FLAG_MANAGER,
+                    root(country.pointer, ccountry::FLAG_MANAGER)?,
                 )?;
             }
         }
@@ -1610,12 +1637,21 @@ fn walk_flags(
                 if id != first + index as u32 {
                     return Err("state scope id differs from slot");
                 }
-                scope(STATE_SCOPE, id, at, cstate::FLAGS)?;
+                scope(STATE_SCOPE, id, root(at, cstate::FLAGS)?)?;
             }
             first += count as u32;
         }
         if !found_state {
             return Err("state table has no readable states");
+        }
+        // Each authenticated roster occurrence's identity, then its manager.
+        let mut characters = ccharacter_manager::Roster::read(memory, base, state)?.cursor();
+        while let Some(view) = characters.next(memory, [false; 4])? {
+            let (character, id) = view.reference();
+            let manager = character
+                .checked_add(ccharacter::FLAGS)
+                .ok_or("character flag manager address overflow")?;
+            scope(CHARACTER_SCOPE, id, manager)?;
         }
         Ok(if unread == 0 {
             Outcome::Rows { len }
@@ -3689,17 +3725,59 @@ mod tests {
             &((BASE + cstate::VTABLE_RVA) as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x8000 + cstate::ID, &1_u32.to_le_bytes());
+        // Two historical characters, ids 44 and 45: 44 owns one flag, 45 an
+        // empty manager. Their managers are embedded, not pointed to.
+        put(
+            &mut bytes,
+            GAME + cgame_state::CHARACTER_MANAGER,
+            &0x5000_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            0x5000,
+            &((BASE + ccharacter_manager::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        let historical = 0x5000 + ccharacter_manager::HISTORICAL_CHARACTERS;
+        put(&mut bytes, historical, &0x5100_u64.to_le_bytes());
+        put(&mut bytes, historical + 8, &2_u32.to_le_bytes());
+        put(&mut bytes, historical + 12, &2_u32.to_le_bytes());
+        for (index, (character, id)) in [(0x6000_usize, 44_u32), (0x6200, 45)].into_iter().enumerate() {
+            put(&mut bytes, 0x5100 + index * 8, &(character as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                character,
+                &((BASE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                character + ccharacter::TYPE,
+                &ccharacter::REFERENCE_TYPE.to_le_bytes(),
+            );
+            put(&mut bytes, character + ccharacter::ID, &id.to_le_bytes());
+        }
+        put(
+            &mut bytes,
+            0x6200 + ccharacter::FLAGS,
+            &((BASE + cflag_manager::VTABLE_RVA) as u64).to_le_bytes(),
+        );
         for (index, (root, offset)) in [
-            (GAME, cgame_state::GLOBAL_FLAGS),
-            (0x4000, ccountry::FLAG_MANAGER),
-            (0x8000, cstate::FLAGS),
+            (Some(GAME), cgame_state::GLOBAL_FLAGS),
+            (Some(0x4000), ccountry::FLAG_MANAGER),
+            (Some(0x8000), cstate::FLAGS),
+            (None, 0x6000 + ccharacter::FLAGS),
         ]
         .into_iter()
         .enumerate()
         {
-            let manager = 0xa000 + index * 0x100;
             let row = 0xb000 + index * cscript_flag::STRIDE;
-            put(&mut bytes, root + offset, &(manager as u64).to_le_bytes());
+            let manager = match root {
+                Some(root) => {
+                    let manager = 0xa000 + index * 0x100;
+                    put(&mut bytes, root + offset, &(manager as u64).to_le_bytes());
+                    manager
+                }
+                None => offset,
+            };
             put(
                 &mut bytes,
                 manager,
@@ -3761,31 +3839,75 @@ mod tests {
     #[test]
     fn flag_census_preserves_all_scope_identities_aliases_and_exact_truncation() {
         let mut bytes = flag_scopes();
-        let mut rows = [ScopedFlag::default(); 3];
-        let mut scratch = [cscript_flag::Row::default(); 3];
+        let mut rows = [ScopedFlag::default(); 4];
+        let mut scratch = [cscript_flag::Row::default(); 4];
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
         };
         assert_eq!(
             walk_flags(&memory, BASE, GAME, &mut rows, &mut scratch),
-            Outcome::Rows { len: 3 }
+            Outcome::Rows { len: 4 }
         );
+        // Character 45's empty manager is a scope without rows.
         assert_eq!(
             rows.map(|row| (row.scope_kind, row.scope_id)),
-            [(GLOBAL_SCOPE, 0), (COUNTRY_SCOPE, 2), (STATE_SCOPE, 1)]
+            [
+                (GLOBAL_SCOPE, 0),
+                (COUNTRY_SCOPE, 2),
+                (STATE_SCOPE, 1),
+                (CHARACTER_SCOPE, 44)
+            ]
         );
         assert!(
             rows.iter()
                 .all(|row| row.flag.value == i16::MIN && row.flag.remaining_days == -3)
         );
+        // Every later manager's own count is the omitted demand, characters'
+        // included; an empty buffer still counts the whole table.
         assert_eq!(
             walk_flags(&memory, BASE, GAME, &mut rows[..1], &mut scratch),
             Outcome::Truncated {
                 len: 1,
-                unread_rows: 2
+                unread_rows: 3
             }
         );
+        assert_eq!(
+            walk_flags(&memory, BASE, GAME, &mut [], &mut []),
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 4
+            }
+        );
+        // That count sizes the first full hour.
+        assert_eq!(script_flag_demand(&memory, BASE, GAME), Some(4));
+        let mut capacities = Capacities::default();
+        capacities.rows[7] = 1;
+        capacities.raise_for_script_flags(4);
+        let mut sized = vec![ScopedFlag::default(); capacities.rows[7]];
+        let mut scratch = vec![cscript_flag::Row::default(); capacities.rows[7]];
+        assert_eq!(
+            walk_flags(&memory, BASE, GAME, &mut sized, &mut scratch),
+            Outcome::Rows { len: 4 }
+        );
+        // A character whose manager is not a CFlagManager fails the table.
+        let mut broken = bytes.clone();
+        put(&mut broken, 0x6200 + ccharacter::FLAGS, &0_u64.to_le_bytes());
+        assert!(matches!(
+            walk_flags(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &broken
+                },
+                BASE,
+                GAME,
+                &mut rows,
+                &mut scratch
+            ),
+            Outcome::Unavailable {
+                reason: "flag manager vtable mismatch"
+            }
+        ));
         put(&mut bytes, 0x8000 + cstate::FLAGS, &0_u64.to_le_bytes());
         assert!(matches!(
             walk_flags(

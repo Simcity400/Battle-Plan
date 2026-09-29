@@ -17,6 +17,8 @@ use replay::rows::TableSchema;
 /// Through the explicit entity's string header.
 const VARIANT: usize = cequipment_variant::EXPLICIT_ENTITY + 32;
 const DEFINITION: usize = 0x40;
+/// An equipment type reaches its archetype pointer.
+const TYPE_DEFINITION: usize = cequipment_type::ARCHETYPE + 8;
 const TYPES: usize = 200;
 const MODULES: usize = 300;
 const UPGRADES: usize = 100;
@@ -121,6 +123,7 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         .collect();
     let size = 0x800
         + (TYPES + MODULES + UPGRADES) * (DEFINITION + 48)
+        + TYPES * TYPE_DEFINITION
         + variants * (8 + VARIANT + 64 + 48)
         + plans
             .iter()
@@ -138,7 +141,11 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
     let definitions = |writer: &mut Writer, count: usize, rva: usize, kind: &str| {
         (0..count)
             .map(|index| {
-                let at = writer.alloc(DEFINITION);
+                let at = writer.alloc(if kind == "type" {
+                    TYPE_DEFINITION
+                } else {
+                    DEFINITION
+                });
                 writer.u64(at, vtable(rva));
                 writer.u32(at + 8, 0x4000 + (index as u32) * 3 + kind.len() as u32);
                 let name = if index.is_multiple_of(3) {
@@ -152,6 +159,11 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
             .collect::<Vec<_>>()
     };
     let types = definitions(&mut writer, TYPES, cequipment_type::VTABLE_RVA, "type");
+    // Each type is its own archetype (`CEquipmentType+0x4D8`), which the
+    // definitions walk authenticates for the archetype token.
+    for &equipment in &types {
+        writer.u64(equipment + cequipment_type::ARCHETYPE, equipment as u64);
+    }
     let modules = definitions(&mut writer, MODULES, cequipment_module::VTABLE_RVA, "module");
     for (index, &module) in modules.iter().enumerate() {
         writer.put(module + cequipment_module::ACTIVE, &[u8::from(!index.is_multiple_of(11))]);
@@ -207,8 +219,8 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         writer.u32(variant + cequipment_variant::MISSION_MASK, (seed >> 32) as u32);
         writer.put(variant + cequipment_variant::OBSOLETE, &[(seed >> 16) as u8 & 1]);
         for (slot, offset) in [
-            cequipment_variant::SPEED_CACHE_CANDIDATE,
-            cequipment_variant::RANGE_CACHE_CANDIDATE,
+            cequipment_variant::MAP_RANGE_STAT,
+            cequipment_variant::STAT_2F,
             cequipment_variant::AIR_ATTACK_CACHE_CANDIDATE,
             cequipment_variant::AGILITY_CACHE_CANDIDATE,
             cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE,

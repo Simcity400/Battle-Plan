@@ -3505,6 +3505,7 @@ mod tests {
     /// addresses' order, exactly as the former sorted-insert memo did.
     #[test]
     fn a_large_registry_presizes_the_order_of_battle_theatres() {
+        let _hint = crate::country_scale::hint_guard();
         crate::country_scale::note_slots(5_000);
         let mut job = NavalJob::new();
         job.presize_countries();

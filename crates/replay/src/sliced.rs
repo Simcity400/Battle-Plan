@@ -1,8 +1,12 @@
 //! Rows of [`Cadence::Sliced`](crate::cadence::Cadence::Sliced) tables.
 //!
-//! A sliced table is refreshed one owner slice per hour. Each row belongs to
-//! one owner and records the hour it was read. Owners are native country IDs
-//! or native state IDs, one kind per table. A recorder merges each hour's read
+//! A sliced table is read, at each hour, for the owners of that hour's slice
+//! and for every owner whose change fingerprint differs or cannot be read,
+//! so a steady hour does not read the whole table; an hour whose fingerprint
+//! pass is incomplete, or whose native writers are not observed, reads every
+//! owner. Each row belongs to one owner, whose read hour SliceReads records.
+//! Owners are native country IDs, canonical country slots or native state
+//! IDs, one kind per table. A recorder merges each hour's read
 //! into the previous complete rows and records each owner's read hour in
 //! SliceReads ([`read_hour`]); consumers use that hour, never the frame's hour.
 //! Rows carry no hour, so an owner's unchanged rows stay unchanged when it is
@@ -15,34 +19,49 @@
 //! hour reads every roster and replaces the table.
 
 use crate::rows::{
-    CountryStabilityInputRow, CountryStabilityLineRow, RelationOpinionRow, RelationTupleRow,
-    ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow,
-    SliceReadRow, TableId, TableRows,
+    AceRangeInputRow, CountryBuildingResourceRow, CountryStabilityInputRow,
+    CountryStabilityLineRow, DivisionRetreatBanRow, RaidAirSiteRow, RaidCountryInputRow,
+    RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow, ResearchInputRow,
+    ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
+    StateDynamicModifierRow, StateResourceInputRow, StateResourceRow, StockpileArchetypeRow,
+    TableId, TableRows,
 };
 use std::io;
 
 pub trait SlicedRow: Clone {
-    /// The slice owner: a native country ID or native state ID. It must be
+    /// The slice owner: a native country ID, canonical country slot or native
+    /// state ID. It must be
     /// the most significant part of the row key, so one owner's rows are
     /// contiguous in key order.
     fn owner(&self) -> u32;
 }
 
-macro_rules! sliced_by_country {
-    ($($row:ty),+) => {$(
+macro_rules! sliced_by {
+    ($owner:ident: $($row:ty),+) => {$(
         impl SlicedRow for $row {
-            fn owner(&self) -> u32 { self.country }
+            fn owner(&self) -> u32 { self.$owner }
         }
     )+};
 }
-sliced_by_country!(
-    ResearchInputRow,
+// Native country IDs.
+sliced_by!(
+    country: ResearchInputRow,
     ResearchAppliedBonusRow,
     ResearchModifierRow,
     ResearchTechnologyRow,
+    CountryBuildingResourceRow,
     CountryStabilityInputRow,
     CountryStabilityLineRow
 );
+// Canonical country slots: the raid launch family keys its rows by slot.
+sliced_by!(
+    canonical_slot: RaidCountryInputRow,
+    StockpileArchetypeRow,
+    RaidAirSiteRow,
+    AceRangeInputRow
+);
+// Native state IDs.
+sliced_by!(state: StateResourceInputRow, StateResourceRow, StateDynamicModifierRow, StateCoreRow);
 
 /// A relation row belongs to the country whose relation status holds it.
 macro_rules! sliced_by_owner_country {
@@ -53,6 +72,12 @@ macro_rules! sliced_by_owner_country {
     )+};
 }
 sliced_by_owner_country!(RelationOpinionRow, RelationTupleRow);
+// The canonical slot of a division's roster owner.
+impl SlicedRow for DivisionRetreatBanRow {
+    fn owner(&self) -> u32 {
+        self.owner
+    }
+}
 
 macro_rules! dispatch {
     ($previous:expr, $fresh:expr, |$old:ident, $new:ident| $body:expr) => {
@@ -69,6 +94,37 @@ macro_rules! dispatch {
             (TableRows::ResearchModifiers($old), TableRows::ResearchModifiers($new)) => {
                 Ok(TableRows::ResearchModifiers($body?))
             }
+            (TableRows::RaidCountryInputs($old), TableRows::RaidCountryInputs($new)) => {
+                Ok(TableRows::RaidCountryInputs($body?))
+            }
+            (TableRows::DivisionRetreatBans($old), TableRows::DivisionRetreatBans($new)) => {
+                Ok(TableRows::DivisionRetreatBans($body?))
+            }
+            (TableRows::StockpileArchetypes($old), TableRows::StockpileArchetypes($new)) => {
+                Ok(TableRows::StockpileArchetypes($body?))
+            }
+            (TableRows::RaidAirSites($old), TableRows::RaidAirSites($new)) => {
+                Ok(TableRows::RaidAirSites($body?))
+            }
+            (TableRows::AceRangeInputs($old), TableRows::AceRangeInputs($new)) => {
+                Ok(TableRows::AceRangeInputs($body?))
+            }
+            (TableRows::StateResourceInputs($old), TableRows::StateResourceInputs($new)) => {
+                Ok(TableRows::StateResourceInputs($body?))
+            }
+            (TableRows::StateResources($old), TableRows::StateResources($new)) => {
+                Ok(TableRows::StateResources($body?))
+            }
+            (TableRows::StateCores($old), TableRows::StateCores($new)) => {
+                Ok(TableRows::StateCores($body?))
+            }
+            (TableRows::StateDynamicModifiers($old), TableRows::StateDynamicModifiers($new)) => {
+                Ok(TableRows::StateDynamicModifiers($body?))
+            }
+            (
+                TableRows::CountryBuildingResources($old),
+                TableRows::CountryBuildingResources($new),
+            ) => Ok(TableRows::CountryBuildingResources($body?)),
             (TableRows::RelationOpinions($old), TableRows::RelationOpinions($new)) => {
                 Ok(TableRows::RelationOpinions($body?))
             }
@@ -211,6 +267,16 @@ pub fn owners(rows: &TableRows) -> Vec<u32> {
         TableRows::ResearchInputs(rows) => collect(rows),
         TableRows::ResearchAppliedBonuses(rows) => collect(rows),
         TableRows::ResearchModifiers(rows) => collect(rows),
+        TableRows::RaidCountryInputs(rows) => collect(rows),
+        TableRows::StockpileArchetypes(rows) => collect(rows),
+        TableRows::DivisionRetreatBans(rows) => collect(rows),
+        TableRows::RaidAirSites(rows) => collect(rows),
+        TableRows::AceRangeInputs(rows) => collect(rows),
+        TableRows::StateResourceInputs(rows) => collect(rows),
+        TableRows::StateResources(rows) => collect(rows),
+        TableRows::StateDynamicModifiers(rows) => collect(rows),
+        TableRows::StateCores(rows) => collect(rows),
+        TableRows::CountryBuildingResources(rows) => collect(rows),
         TableRows::RelationOpinions(rows) => collect(rows),
         TableRows::RelationTuples(rows) => collect(rows),
         TableRows::CountryStabilityInputs(rows) => collect(rows),
@@ -372,5 +438,133 @@ mod tests {
         )])));
         let unordered = TableRows::TechnologyDefinitions(vec![definition(4, 0), definition(4, 0)]);
         assert!(merge_slice(&merged, unordered, |_| true, |_| true).is_err());
+    }
+
+    /// Merges hour 25's slice (owner 1, plus owner 3 early) into hour 24's
+    /// complete rows, `parts` rows per owner, marking a row's hour in `mark`,
+    /// and returns each surviving row's (owner, mark).
+    fn merged_marks<R: SlicedRow>(
+        wrap: fn(Vec<R>) -> TableRows,
+        unwrap: fn(&TableRows) -> &[R],
+        row: fn(u32, u32, i32) -> R,
+        mark: fn(&R) -> i32,
+        parts: u32,
+    ) -> Vec<(u32, i32)> {
+        let rows = |owners: &[u32], hour| {
+            let mut rows = Vec::new();
+            for &owner in owners {
+                rows.extend((0..parts).map(|part| row(owner, part, hour)));
+            }
+            wrap(rows)
+        };
+        let merged = merge_slice(
+            &rows(&[1, 2, 3], 24),
+            rows(&[1, 3], 25),
+            |owner| owner == 1 || owner == 3,
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(owners(&merged), [1, 2, 3]);
+        let mut marks: Vec<(u32, i32)> = unwrap(&merged)
+            .iter()
+            .map(|row| (row.owner(), mark(row)))
+            .collect();
+        marks.dedup();
+        marks
+    }
+
+    #[test]
+    fn every_raid_family_merges_by_its_owner() {
+        let expected = [(1, 25), (2, 24), (3, 25)];
+        macro_rules! family {
+            ($variant:ident, $parts:literal, $field:ident, |$owner:ident, $part:ident, $hour:ident| $row:expr) => {
+                assert_eq!(
+                    merged_marks(
+                        TableRows::$variant,
+                        |rows| match rows {
+                            TableRows::$variant(rows) => rows,
+                            _ => unreachable!(),
+                        },
+                        |$owner, $part, $hour| {
+                            let _ = $part;
+                            $row
+                        },
+                        |row| row.$field as i32,
+                        $parts,
+                    ),
+                    expected,
+                    stringify!($variant)
+                );
+            };
+        }
+        // The launch family's hour source, marked by its reservation list.
+        assert_eq!(
+            merged_marks(
+                TableRows::RaidCountryInputs,
+                |rows| match rows {
+                    TableRows::RaidCountryInputs(rows) => rows,
+                    _ => unreachable!(),
+                },
+                |owner, _, hour| RaidCountryInputRow {
+                    canonical_slot: owner,
+                    convoy_reservations: vec![hour as u32],
+                    ..Default::default()
+                },
+                |row| row.convoy_reservations[0] as i32,
+                1,
+            ),
+            expected,
+            "RaidCountryInputs"
+        );
+        family!(RaidAirSites, 2, base, |owner, part, hour| RaidAirSiteRow {
+            canonical_slot: owner,
+            ordinal: part,
+            base: hour as u64,
+            ..Default::default()
+        });
+        family!(AceRangeInputs, 2, range, |owner, part, hour| {
+            AceRangeInputRow {
+                canonical_slot: owner,
+                ace: u64::from(part) << 32 | 0x77,
+                range: i64::from(hour),
+                ..Default::default()
+            }
+        });
+        family!(StateResourceInputs, 1, gate, |owner, part, hour| {
+            StateResourceInputRow {
+                state: owner,
+                gate: hour as u8,
+                ..Default::default()
+            }
+        });
+        family!(StateResources, 2, pool, |owner, part, hour| {
+            StateResourceRow {
+                state: owner,
+                resource: 0x3000 + part,
+                pool: i64::from(hour),
+                ..Default::default()
+            }
+        });
+        family!(
+            StateDynamicModifiers,
+            2,
+            scope_state,
+            |owner, part, hour| {
+                StateDynamicModifierRow {
+                    state: owner,
+                    ordinal: part,
+                    scope_state: hour,
+                    ..Default::default()
+                }
+            }
+        );
+        family!(CountryBuildingResources, 2, amount, |owner, part, hour| {
+            CountryBuildingResourceRow {
+                country: owner,
+                ordinal: part,
+                amount: i64::from(hour),
+                ..Default::default()
+            }
+        });
     }
 }

@@ -154,6 +154,130 @@ mod tests {
     }
 
     #[test]
+    fn a_retreat_ban_key_mismatch_withholds_only_the_retreat_bans() {
+        for key in [
+            modifier_keys::CANNOT_RETREAT_WHILE_DEFENDING,
+            modifier_keys::CANNOT_RETREAT_WHILE_ATTACKING,
+        ] {
+            let mut report = valid();
+            let position = modifier_keys::ALL
+                .iter()
+                .position(|expected| expected.index == key)
+                .unwrap();
+            report.modifiers[position] = Err("definition token spells a different script name");
+            let mut input = inputs();
+            apply(&mut input, &Ok(report));
+            let name = modifier_keys::ALL[position].name;
+            assert!(refused(
+                &input,
+                TableId::DivisionRetreatBans,
+                &format!("commander retreat bans refused: {name} ({key:#x})")
+            ));
+            for table in [
+                TableId::DivisionStatus,
+                TableId::DivisionMovement,
+                TableId::LandCombats,
+            ] {
+                assert!(untouched(&input, table), "{table:?}");
+            }
+        }
+    }
+
+    /// A command power key or an ace country modifier withholds only
+    /// CountryCommandPower; a launch key only the launch inputs and ace
+    /// ranges; the ace speed key only RaidSpeedInputs.
+    #[test]
+    fn launch_command_power_and_raid_speed_keys_withhold_their_own_tables() {
+        let refuse = |key: u32| {
+            let mut report = valid();
+            let position = modifier_keys::ALL
+                .iter()
+                .position(|expected| expected.index == key)
+                .unwrap();
+            report.modifiers[position] = Err("definition token spells a different script name");
+            let mut input = inputs();
+            apply(&mut input, &Ok(report));
+            input
+        };
+        for (key, family) in [
+            (modifier_keys::MAX_COMMAND_POWER, "command power refused"),
+            (
+                modifier_keys::AIR_ACE_BONUSES_FACTOR,
+                "country ace modifiers refused",
+            ),
+            (
+                modifier_keys::ACE_EFFECTIVENESS_FACTOR,
+                "country ace modifiers refused",
+            ),
+        ] {
+            let power = refuse(key);
+            assert!(
+                refused(&power, TableId::CountryCommandPower, family),
+                "{key:#x}"
+            );
+            for table in [
+                TableId::RaidCountryInputs,
+                TableId::AceRangeInputs,
+                TableId::RaidSpeedInputs,
+            ] {
+                assert!(untouched(&power, table), "{key:#x} {table:?}");
+            }
+        }
+        let launch = refuse(modifier_keys::NAVAL_COMMANDO_RAID_DISTANCE);
+        for table in [TableId::RaidCountryInputs, TableId::AceRangeInputs] {
+            assert!(refused(&launch, table, "raid launch refused"), "{table:?}");
+        }
+        for table in [TableId::CountryCommandPower, TableId::RaidSpeedInputs] {
+            assert!(untouched(&launch, table), "{table:?}");
+        }
+        let speed = refuse(modifier_keys::AIR_MAXIMUM_SPEED_FACTOR);
+        assert!(refused(
+            &speed,
+            TableId::RaidSpeedInputs,
+            "raid unit speed refused"
+        ));
+        for table in [
+            TableId::CountryCommandPower,
+            TableId::RaidCountryInputs,
+            TableId::AceRangeInputs,
+        ] {
+            assert!(untouched(&speed, table), "{table:?}");
+        }
+    }
+
+    /// Each invasion preparation key withholds only InvasionPreparations.
+    #[test]
+    fn invasion_preparation_keys_withhold_only_their_table() {
+        for key in [
+            modifier_keys::INVASION_PREPARATION,
+            modifier_keys::NAVAL_INVASION_PREP_DAYS,
+            modifier_keys::INVASION_PREPARATION_AGAINST,
+        ] {
+            let mut report = valid();
+            let position = modifier_keys::ALL
+                .iter()
+                .position(|expected| expected.index == key)
+                .unwrap();
+            report.modifiers[position] = Err("definition token spells a different script name");
+            let mut input = inputs();
+            apply(&mut input, &Ok(report));
+            let name = modifier_keys::ALL[position].name;
+            assert!(refused(
+                &input,
+                TableId::InvasionPreparations,
+                &format!("invasion preparation refused: {name} ({key:#x})")
+            ));
+            for table in TableId::ALL
+                .into_iter()
+                .filter(|&table| table != TableId::InvasionPreparations)
+                .filter(|&table| untouched(&inputs(), table))
+            {
+                assert!(untouched(&input, table), "{table:?}");
+            }
+        }
+    }
+
+    #[test]
     fn valid_report_preserves_every_input_and_records_static_maximum() {
         let mut input = inputs();
         let original = input.clone();

@@ -2073,6 +2073,7 @@ fn definitions(
         rows::VariantDefinitionRow {
             id: r.identity.id,
             equipment_token: r.identity.equipment_token,
+            archetype_token: r.identity.archetype_token,
             creator_link: r.identity.creator_link,
             origin_link: r.identity.origin_link,
             append_variant_name: r.identity.append_variant_name,

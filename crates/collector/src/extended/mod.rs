@@ -37,6 +37,16 @@ const DIVISION_SOURCE_TABLES: [TableId; 9] = [
 ];
 pub type ReadGroup = (&'static str, TableId, Vec<TableId>);
 
+/// One hour's raid reads that were torn or refused (`status.json`
+/// `raid_reads`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RaidReadCounts {
+    /// Path memo copies a game writer overlapped (`raid_path_memo`).
+    pub(crate) torn_memo_reads: u32,
+    /// Raid, cooldown and target rows refused for an unproven leader captor.
+    pub(crate) refused_leaders: u32,
+}
+
 /// A terminal job failure invalidates scheduled reads, never carried samples.
 fn failed_capture(table: TableId, hour: i32, force_full: bool, reason: &'static str) -> Outcome {
     Outcome::Unavailable {
@@ -135,6 +145,12 @@ macro_rules! packs {
             ordinary_spare: Option<Box<OrdinaryPacks>>,
             slow_ticks: Option<[u64; TABLE_COUNT]>,
             slow_spare: Option<Box<SlowPacks>>,
+            raid_state_ticks: Option<[u64; TABLE_COUNT]>,
+            raid_state_spare: Option<Box<RaidStatePacks>>,
+            raid_launch_ticks: Option<[u64; TABLE_COUNT]>,
+            raid_launch_spare: Option<Box<RaidLaunchPacks>>,
+            raid_targets_ticks: Option<[u64; TABLE_COUNT]>,
+            raid_targets_spare: Option<Box<RaidTargetPacks>>,
             late_ticks: Option<[u64; TABLE_COUNT]>,
             late_spare: Option<Box<LatePacks>>,
             gated_ticks: Option<[u64; TABLE_COUNT]>,
@@ -168,6 +184,12 @@ macro_rules! packs {
                     ordinary_spare: Some(OrdinaryPacks::spare()),
                     slow_ticks: None,
                     slow_spare: Some(SlowPacks::spare()),
+                    raid_state_ticks: None,
+                    raid_state_spare: Some(RaidStatePacks::spare()),
+                    raid_launch_ticks: None,
+                    raid_launch_spare: Some(RaidLaunchPacks::spare()),
+                    raid_targets_ticks: None,
+                    raid_targets_spare: Some(RaidTargetPacks::spare()),
                     late_ticks: None,
                     late_spare: Some(LatePacks::spare()),
                     gated_ticks: None,
@@ -190,6 +212,9 @@ macro_rules! packs {
                 self.ordinary_ticks = None;
                 self.ordinary_failure = None;
                 self.slow_ticks = None;
+                self.raid_state_ticks = None;
+                self.raid_launch_ticks = None;
+                self.raid_targets_ticks = None;
                 self.late_ticks = None;
                 self.gated_ticks = None;
                 self.air_root = None; self.overhead = [0; TABLE_COUNT];
@@ -266,8 +291,8 @@ macro_rules! packs {
                 vec![TableId::Ships, TableId::ShipModels]));
             groups.push(("states and hourly state flags", TableId::States,
                 vec![TableId::States, TableId::StateFlags]));
-            groups.push(("army order census, plan operands, group plans and front sections", TableId::ArmyOrders,
-                vec![TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupPlans, TableId::Fronts]));
+            groups.push(("army order census, plan operands, group plans, front sections and invasion preparations", TableId::ArmyOrders,
+                vec![TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupPlans, TableId::Fronts, TableId::InvasionPreparations]));
             groups
         }
     };
@@ -310,7 +335,9 @@ packs!(
     session,
     state_flags,
     visibility,
-    building_detection,
+    raid_target_statuses,
+    raid_state_inputs,
+    raid_launch_inputs,
     slice_reads,
     faction_theatres,
     model_inputs,
@@ -335,7 +362,9 @@ impl Capacities {
         self.supply_trains.raise_for_countries(slots);
         self.construction.raise_for_countries(slots);
         self.visibility.raise_for_countries(slots);
-        self.building_detection.raise_for_countries(slots);
+        self.raid_target_statuses.raise_for_countries(slots);
+        self.raid_launch_inputs.raise_for_countries(slots);
+        self.raid_state_inputs.raise_for_countries(slots);
         self.model_inputs.raise_for_countries(slots);
         self.hired_advisors.raise_for_countries(slots);
         self.country_stability.raise_for_countries(slots);
@@ -344,6 +373,37 @@ impl Capacities {
     /// Presize CountryIntel from the live dense record total.
     pub fn raise_for_country_intel(&mut self, native_rows: usize) {
         self.intel.raise_for_country_intel(native_rows);
+    }
+
+    /// Presize Characters and ScriptFlags from the live roster and flag
+    /// managers (`country_scale::observe_characters`).
+    pub fn raise_for_characters(&mut self, demand: crate::country_scale::CharacterDemand) {
+        self.characters.raise_for_characters(demand.characters);
+        self.intel.raise_for_script_flags(demand.flags);
+    }
+
+    /// Presize the raid arenas whose per-country demand content decides.
+    pub fn raise_for_raid_arenas(&mut self, demand: crate::country_scale::RaidArenas) {
+        self.projects.raise_for_raid_type_tokens(demand.type_tokens);
+        self.raid_launch_inputs
+            .raise_for_reservations(demand.reservation_words);
+    }
+
+    /// Presize the political tables from their live demand
+    /// (`country_scale::observe_politics`).
+    pub fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
+        self.hired_advisors
+            .raise_for_active_characters(demand.active_characters);
+        self.governance
+            .raise_for_party_leaders(demand.party_leaders);
+        self.country_appearance
+            .raise_for_leader_traits(demand.leader_traits);
+        self.country_counters
+            .raise_for_civil_wars(demand.civil_wars);
+        self.hired_advisors
+            .raise_for_advisor_tokens(demand.advisor_tokens, demand.advisor_token_bytes);
+        self.faction_theatres
+            .raise_for_faction_advisors(demand.faction_advisors, demand.faction_advisor_bytes);
     }
 }
 
@@ -363,6 +423,9 @@ impl Captured {
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         // A frame whose sliced job never runs must not report an older read.
         self.governance.reset_slice_selections(hour, force_full);
+        self.raid_launch_inputs.reset_selection(hour, force_full);
+        self.raid_state_inputs.reset_selections(hour, force_full);
+        self.division_presentation.reset_selection(hour, force_full);
         self.country_stability.prepare_hour(hour, force_full);
         self.air.prepare_hour(hour, force_full);
         self.fog.prepare_hour(hour, force_full);
@@ -386,18 +449,25 @@ impl Captured {
         self.division_presentation.decode_inputs()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_presentation_request(
         &mut self,
         countries: &Arc<engine::country_memory::Cache>,
         base: usize,
         state: usize,
+        hour: i32,
+        force_full: bool,
+        store: Option<Box<crate::slicing::SliceFingerprints>>,
     ) -> crate::acquisition_jobs::PresentationRequest {
         self.presentation_report = None;
         crate::acquisition_jobs::PresentationRequest {
             countries: Arc::clone(countries),
+            store,
             context: division_presentation::CaptureContext {
                 base,
                 game_state: state,
+                hour,
+                force_full,
             },
             inputs: self.unit_inputs.as_ref().map(Arc::clone),
             captured: std::mem::replace(
@@ -407,11 +477,22 @@ impl Captured {
         }
     }
 
+    /// Returns the `retreat_bans` store it lent: forgotten if the job failed
+    /// (every owner is then new and read at the next hour), and with this
+    /// hour's selection invalidated if DivisionRetreatBans was not published
+    /// (unavailable or truncated), so its owners are read again at the next
+    /// hour.
     pub(crate) fn restore_presentation_request(
         &mut self,
         mut request: crate::acquisition_jobs::PresentationRequest,
         report: Result<division_presentation::CaptureReport, crate::acquisition::Failure>,
-    ) {
+    ) -> Option<Box<crate::slicing::SliceFingerprints>> {
+        if report.is_err()
+            && let Some(store) = request.store.as_deref_mut()
+        {
+            store.forget();
+        }
+        let store = request.store.take();
         self.presentation_report = Some(match report {
             Ok(report) => report,
             Err(failure) => request.captured.fail_owned_capture(match failure {
@@ -424,6 +505,16 @@ impl Captured {
             }),
         });
         self.division_presentation = request.captured;
+        let mut store = store;
+        let bans = self.division_presentation.outcomes()[division_presentation::BANS];
+        if unpublished(&[bans])
+            && let Some(store) = store.as_deref_mut()
+        {
+            self.division_presentation
+                .bans_selection()
+                .invalidate(store);
+        }
+        store
     }
 
     fn acquire_presentation(&mut self) -> division_presentation::CaptureReport {
@@ -582,13 +673,27 @@ impl Captured {
         request.fingerprints
     }
 
+    /// This hour's torn and refused raid reads: a path memo copy a game
+    /// writer overlapped is published unavailable, not retried.
+    pub(crate) fn raid_reads(&self) -> RaidReadCounts {
+        let projects = self.projects.raid_reads();
+        RaidReadCounts {
+            torn_memo_reads: projects.torn_memo_reads,
+            refused_leaders: projects.refused_leaders + self.raid_target_statuses.refused_leaders(),
+        }
+    }
+
     /// One sliced family's read at this frame's hour (`slicing::FAMILIES`).
     pub(crate) fn family_selection(&self, family: usize) -> &crate::slicing::SliceSelection {
         match family {
             crate::slicing::RESEARCH => self.governance.research_selection(),
             crate::slicing::TECHNOLOGIES => self.governance.technology_selection(),
+            crate::slicing::RAID_LAUNCH => self.raid_launch_inputs.selection(),
+            crate::slicing::RAID_STATE => self.raid_state_inputs.state_selection(),
+            crate::slicing::RAID_BUILDINGS => self.raid_state_inputs.country_selection(),
             crate::slicing::RELATIONS => self.intel.relations_selection(),
             crate::slicing::STABILITY => self.country_stability.selection(),
+            crate::slicing::RETREAT_BANS => self.division_presentation.bans_selection(),
             _ => unreachable!("unregistered sliced family {family}"),
         }
     }
@@ -889,6 +994,18 @@ impl Captured {
                 .as_ref()
                 .map_or(0, |packs| packs.allocated_bytes())
             + self
+                .raid_state_spare
+                .as_ref()
+                .map_or(0, |packs| packs.allocated_bytes())
+            + self
+                .raid_launch_spare
+                .as_ref()
+                .map_or(0, |packs| packs.allocated_bytes())
+            + self
+                .raid_targets_spare
+                .as_ref()
+                .map_or(0, |packs| packs.allocated_bytes())
+            + self
                 .late_spare
                 .as_ref()
                 .map_or(0, |packs| packs.allocated_bytes())
@@ -953,6 +1070,8 @@ impl Captured {
         std::mem::swap(&mut self.group_counters, &mut packs.group_counters);
     }
 
+    /// Loan the slow packs, with the raid families' fingerprint stores, to
+    /// the Slow job.
     pub(crate) fn take_slow_request(
         &mut self,
         countries: &Arc<engine::country_memory::Cache>,
@@ -1008,11 +1127,189 @@ impl Captured {
         fingerprints
     }
 
+    /// Loan the raid target statuses to their own pool job, so they run
+    /// beside the sliced raid families rather than after them.
+    pub(crate) fn take_raid_targets_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> crate::acquisition_jobs::RaidTargetsRequest {
+        self.raid_targets_ticks = None;
+        let mut packs = self
+            .raid_targets_spare
+            .take()
+            .expect("raid targets spare present");
+        std::mem::swap(
+            &mut self.raid_target_statuses,
+            &mut packs.raid_target_statuses,
+        );
+        packs.ticks = [0; TABLE_COUNT];
+        crate::acquisition_jobs::RaidTargetsRequest {
+            countries: Arc::clone(countries),
+            base,
+            game_state: state,
+            hour,
+            force_full,
+            packs,
+        }
+    }
+
+    /// Restore the raid target statuses.
+    pub(crate) fn restore_raid_targets_request(
+        &mut self,
+        request: crate::acquisition_jobs::RaidTargetsRequest,
+        completed: bool,
+    ) {
+        let mut packs = request.packs;
+        if !completed {
+            packs.raid_target_statuses.fail_capture(
+                request.hour,
+                request.force_full,
+                "raid target acquisition failed",
+            );
+            packs.ticks = [0; TABLE_COUNT];
+        }
+        self.raid_targets_ticks = Some(packs.ticks);
+        std::mem::swap(
+            &mut self.raid_target_statuses,
+            &mut packs.raid_target_statuses,
+        );
+        self.raid_targets_spare = Some(packs);
+    }
+
+    /// Loan the sliced state and building inputs, with their fingerprint
+    /// stores, to their own pool job.
+    pub(crate) fn take_raid_state_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force_full: bool,
+        stores: RaidStateStores,
+    ) -> crate::acquisition_jobs::RaidStateRequest {
+        self.raid_state_ticks = None;
+        let mut packs = self
+            .raid_state_spare
+            .take()
+            .expect("raid state spare present");
+        self.swap_raid_state(&mut packs);
+        packs.ticks = [0; TABLE_COUNT];
+        crate::acquisition_jobs::RaidStateRequest {
+            countries: Arc::clone(countries),
+            base,
+            game_state: state,
+            hour,
+            force_full,
+            packs,
+            stores,
+        }
+    }
+
+    /// Restore the raid state packs and return their stores: forgotten if the
+    /// job was interrupted (every owner is then new and read at the next
+    /// hour), and with a family's selection invalidated if any of its tables
+    /// was not read completely, so its owners are read again at the next hour.
+    pub(crate) fn restore_raid_state_request(
+        &mut self,
+        request: crate::acquisition_jobs::RaidStateRequest,
+        completed: bool,
+    ) -> RaidStateStores {
+        let mut packs = request.packs;
+        let mut stores = request.stores;
+        if !completed {
+            packs.fail(
+                request.hour,
+                request.force_full,
+                "raid state acquisition failed",
+            );
+            stores.states.forget();
+            stores.buildings.forget();
+        }
+        self.raid_state_ticks = Some(packs.ticks);
+        self.swap_raid_state(&mut packs);
+        self.raid_state_spare = Some(packs);
+        let state = self.raid_state_inputs.outcomes();
+        if unpublished(&raid_state_inputs::STATE_TABLES.map(|index| state[index])) {
+            self.raid_state_inputs
+                .state_selection()
+                .invalidate(&mut stores.states);
+        }
+        if unpublished(&state[3..4]) {
+            self.raid_state_inputs
+                .country_selection()
+                .invalidate(&mut stores.buildings);
+        }
+        stores
+    }
+
+    /// Loan the sliced raid launch inputs and their store to their own job.
+    pub(crate) fn take_raid_launch_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force_full: bool,
+        store: Box<crate::slicing::SliceFingerprints>,
+    ) -> crate::acquisition_jobs::RaidLaunchRequest {
+        self.raid_launch_ticks = None;
+        let mut packs = self
+            .raid_launch_spare
+            .take()
+            .expect("raid launch spare present");
+        std::mem::swap(&mut self.raid_launch_inputs, &mut packs.raid_launch_inputs);
+        packs.ticks = [0; TABLE_COUNT];
+        crate::acquisition_jobs::RaidLaunchRequest {
+            countries: Arc::clone(countries),
+            base,
+            game_state: state,
+            hour,
+            force_full,
+            packs,
+            store,
+        }
+    }
+
+    /// Restore the raid launch pack and return its store, forgotten or
+    /// invalidated as [`Self::restore_raid_state_request`] does.
+    pub(crate) fn restore_raid_launch_request(
+        &mut self,
+        request: crate::acquisition_jobs::RaidLaunchRequest,
+        completed: bool,
+    ) -> Box<crate::slicing::SliceFingerprints> {
+        let mut packs = request.packs;
+        let mut store = request.store;
+        if !completed {
+            packs.raid_launch_inputs.fail_capture(
+                request.hour,
+                request.force_full,
+                "raid launch acquisition failed",
+            );
+            packs.ticks = [0; TABLE_COUNT];
+            store.forget();
+        }
+        self.raid_launch_ticks = Some(packs.ticks);
+        std::mem::swap(&mut self.raid_launch_inputs, &mut packs.raid_launch_inputs);
+        self.raid_launch_spare = Some(packs);
+        let launch = self.raid_launch_inputs.outcomes();
+        if unpublished(&[launch[0], launch[2], launch[3]]) {
+            self.raid_launch_inputs.selection().invalidate(&mut store);
+        }
+        store
+    }
+
+    fn swap_raid_state(&mut self, packs: &mut RaidStatePacks) {
+        std::mem::swap(&mut self.raid_state_inputs, &mut packs.raid_state_inputs);
+    }
+
     fn swap_slow(&mut self, packs: &mut SlowPacks) {
         std::mem::swap(&mut self.map_names, &mut packs.map_names);
         std::mem::swap(&mut self.division_templates, &mut packs.division_templates);
         std::mem::swap(&mut self.visibility, &mut packs.visibility);
-        std::mem::swap(&mut self.building_detection, &mut packs.building_detection);
         std::mem::swap(&mut self.faction_theatres, &mut packs.faction_theatres);
         std::mem::swap(&mut self.model_inputs, &mut packs.model_inputs);
         std::mem::swap(
@@ -1028,9 +1325,11 @@ impl Captured {
         &mut self,
         orders: &mut Orders,
         base: usize,
+        game_state: usize,
     ) -> crate::acquisition_jobs::OrdersRequest {
         crate::acquisition_jobs::OrdersRequest {
             base,
+            game_state,
             orders: std::mem::replace(orders, Orders::vacant()),
             plans: std::mem::replace(&mut self.plans, plans::Captured::vacant()),
         }
@@ -1618,7 +1917,9 @@ impl Captured {
         self.divisions.visit_source(source);
     }
     #[cfg(test)]
-    pub(crate) fn test_division_presentation_tables(&self) -> [replay::frame::TableView; 2] {
+    pub(crate) fn test_division_presentation_tables(
+        &self,
+    ) -> [replay::frame::TableView; division_presentation::N] {
         self.division_presentation.tables()
     }
     pub fn finish_divisions(&mut self, outcome: Outcome) -> u64 {
@@ -1663,8 +1964,14 @@ impl Captured {
         if self.presentation_report.is_none() {
             self.presentation_report = Some(self.division_presentation.capture_owned(
                 memory,
-                division_presentation::CaptureContext { base, game_state },
+                division_presentation::CaptureContext {
+                    base,
+                    game_state,
+                    hour: current_hour,
+                    force_full,
+                },
                 unit_sources(&self.unit_inputs),
+                None,
             ));
         }
         let mut ticks = self.capture_tables(memory, base, game_state, current_hour, force_full);
@@ -1739,7 +2046,6 @@ impl Captured {
                 map_names,
                 division_templates,
                 visibility,
-                building_detection,
                 faction_theatres,
                 model_inputs,
                 modifier_definitions,
@@ -1755,6 +2061,27 @@ impl Captured {
                 None,
             );
             scatter(&country_stability::TABLES, cost, &mut ticks);
+        }
+        if let Some(done) = self.raid_state_ticks.replace([0; TABLE_COUNT]) {
+            for (total, cost) in ticks.iter_mut().zip(done) {
+                *total += cost;
+            }
+        } else {
+            staggered!(raid_state_inputs);
+        }
+        if let Some(done) = self.raid_targets_ticks.replace([0; TABLE_COUNT]) {
+            for (total, cost) in ticks.iter_mut().zip(done) {
+                *total += cost;
+            }
+        } else {
+            staggered!(raid_target_statuses);
+        }
+        if let Some(done) = self.raid_launch_ticks.replace([0; TABLE_COUNT]) {
+            for (total, cost) in ticks.iter_mut().zip(done) {
+                *total += cost;
+            }
+        } else {
+            staggered!(raid_launch_inputs);
         }
         if let Some(done) = self.gated_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
@@ -2085,16 +2412,40 @@ impl OrdinaryPacks {
     }
 }
 
+/// The raid state job's owner stores (`slicing::RAID_STATE`, `RAID_BUILDINGS`).
+pub(crate) struct RaidStateStores {
+    pub(crate) states: Box<crate::slicing::SliceFingerprints>,
+    pub(crate) buildings: Box<crate::slicing::SliceFingerprints>,
+}
+
+impl RaidStateStores {
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
+        Self {
+            states: Box::new(crate::slicing::SliceFingerprints::new()),
+            buildings: Box::new(crate::slicing::SliceFingerprints::new()),
+        }
+    }
+}
+
+/// Whether a table was selected but not published (skipped is not a read).
+fn unpublished(outcomes: &[Outcome]) -> bool {
+    outcomes.iter().any(|outcome| {
+        !matches!(outcome, Outcome::Rows { .. })
+            && !matches!(outcome, Outcome::Unavailable { reason } if *reason == replay::cadence::SKIPPED_REASON)
+    })
+}
+
 /// The live-memory packs run as a second pool job from the first burst
-/// (map names, templates, visibility, building detection,
-/// faction theatres, model inputs, modifier definitions and hired advisors). No defines are recorded: the viewer reads the movement
-/// defines from the content's `NDefines`. Each table keeps its own [`replay::cadence`]: the
+/// (map names, templates, visibility, faction theatres, model inputs,
+/// modifier definitions and hired advisors). No defines are recorded: the
+/// viewer reads the movement defines from the content's `NDefines`. Each
+/// table keeps its own [`replay::cadence`]: the
 /// template dictionary is daily, its counter inputs hourly.
 pub(crate) struct SlowPacks {
     pub(crate) map_names: map_names::Captured,
     pub(crate) division_templates: division_templates::Captured,
     pub(crate) visibility: visibility::Captured,
-    pub(crate) building_detection: building_detection::Captured,
     pub(crate) faction_theatres: faction_theatres::Captured,
     pub(crate) model_inputs: model_inputs::Captured,
     pub(crate) modifier_definitions: modifier_definitions::Captured,
@@ -2103,14 +2454,140 @@ pub(crate) struct SlowPacks {
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
+/// The sliced state and building-resource inputs: their own pool job of the
+/// first burst, so they run beside Slow.
+pub(crate) struct RaidStatePacks {
+    pub(crate) raid_state_inputs: raid_state_inputs::Captured,
+    pub(crate) ticks: [u64; TABLE_COUNT],
+}
+
+/// Raid target statuses: their own pool job of the first burst, so they run
+/// beside the sliced raid families.
+pub(crate) struct RaidTargetPacks {
+    pub(crate) raid_target_statuses: raid_target_statuses::Captured,
+    pub(crate) ticks: [u64; TABLE_COUNT],
+}
+
+impl RaidTargetPacks {
+    fn allocated_bytes(&self) -> usize {
+        size_of::<Self>() + self.raid_target_statuses.allocated_bytes()
+    }
+
+    fn spare() -> Box<Self> {
+        Box::new(Self {
+            raid_target_statuses: raid_target_statuses::Captured::vacant(),
+            ticks: [0; TABLE_COUNT],
+        })
+    }
+
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) {
+        let mut ticks = [0; TABLE_COUNT];
+        let cost = self
+            .raid_target_statuses
+            .capture(memory, base, game_state, hour, force_full);
+        scatter(&raid_target_statuses::TABLES, cost, &mut ticks);
+        self.ticks = ticks;
+    }
+}
+
+impl RaidStatePacks {
+    fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.raid_state_inputs
+            .fail_capture(hour, force_full, reason);
+        self.ticks = [0; TABLE_COUNT];
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        size_of::<Self>() + self.raid_state_inputs.allocated_bytes()
+    }
+
+    fn spare() -> Box<Self> {
+        Box::new(Self {
+            raid_state_inputs: raid_state_inputs::Captured::vacant(),
+            ticks: [0; TABLE_COUNT],
+        })
+    }
+
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        stores: &mut RaidStateStores,
+    ) {
+        let mut ticks = [0; TABLE_COUNT];
+        let cost = self.raid_state_inputs.capture_sliced(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            Some(raid_state_inputs::Stores {
+                states: &mut stores.states,
+                countries: &mut stores.buildings,
+            }),
+        );
+        scatter(&raid_state_inputs::TABLES, cost, &mut ticks);
+        self.ticks = ticks;
+    }
+}
+
+/// The sliced raid launch inputs: their own pool job of the first burst.
+pub(crate) struct RaidLaunchPacks {
+    pub(crate) raid_launch_inputs: raid_launch_inputs::Captured,
+    pub(crate) ticks: [u64; TABLE_COUNT],
+}
+
+impl RaidLaunchPacks {
+    fn allocated_bytes(&self) -> usize {
+        size_of::<Self>() + self.raid_launch_inputs.allocated_bytes()
+    }
+
+    fn spare() -> Box<Self> {
+        Box::new(Self {
+            raid_launch_inputs: raid_launch_inputs::Captured::vacant(),
+            ticks: [0; TABLE_COUNT],
+        })
+    }
+
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        store: &mut crate::slicing::SliceFingerprints,
+    ) {
+        let mut ticks = [0; TABLE_COUNT];
+        let cost = self.raid_launch_inputs.capture_sliced(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            Some(store),
+        );
+        scatter(&raid_launch_inputs::TABLES, cost, &mut ticks);
+        self.ticks = ticks;
+    }
+}
+
 impl SlowPacks {
     fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.map_names.fail_capture(hour, force_full, reason);
         self.division_templates
             .fail_capture(hour, force_full, reason);
         self.visibility.fail_capture(hour, force_full, reason);
-        self.building_detection
-            .fail_capture(hour, force_full, reason);
         self.faction_theatres.fail_capture(hour, force_full, reason);
         self.model_inputs.fail_capture(hour, force_full, reason);
         self.modifier_definitions
@@ -2126,7 +2603,6 @@ impl SlowPacks {
             + self.map_names.allocated_bytes()
             + self.division_templates.allocated_bytes()
             + self.visibility.allocated_bytes()
-            + self.building_detection.allocated_bytes()
             + self.faction_theatres.allocated_bytes()
             + self.model_inputs.allocated_bytes()
             + self.modifier_definitions.allocated_bytes()
@@ -2139,7 +2615,6 @@ impl SlowPacks {
             map_names: map_names::Captured::vacant(),
             division_templates: division_templates::Captured::vacant(),
             visibility: visibility::Captured::vacant(),
-            building_detection: building_detection::Captured::vacant(),
             faction_theatres: faction_theatres::Captured::vacant(),
             model_inputs: model_inputs::Captured::vacant(),
             modifier_definitions: modifier_definitions::Captured::vacant(),
@@ -2172,7 +2647,6 @@ impl SlowPacks {
             map_names,
             division_templates,
             visibility,
-            building_detection,
             faction_theatres,
             model_inputs,
             modifier_definitions,
@@ -2521,6 +2995,9 @@ mod tests {
             size_of::<SlowPacks>(),
             size_of::<LatePacks>(),
             size_of::<GatedPacks>(),
+            size_of::<RaidStatePacks>(),
+            size_of::<RaidLaunchPacks>(),
+            size_of::<RaidTargetPacks>(),
         ];
         let assert_vacant = |captured: &Captured| {
             // The boxes remain reusable; none of their parked packs owns a
@@ -2531,6 +3008,21 @@ mod tests {
                     captured.slow_spare.as_ref().unwrap().allocated_bytes(),
                     captured.late_spare.as_ref().unwrap().allocated_bytes(),
                     captured.gated_spare.as_ref().unwrap().allocated_bytes(),
+                    captured
+                        .raid_state_spare
+                        .as_ref()
+                        .unwrap()
+                        .allocated_bytes(),
+                    captured
+                        .raid_launch_spare
+                        .as_ref()
+                        .unwrap()
+                        .allocated_bytes(),
+                    captured
+                        .raid_targets_spare
+                        .as_ref()
+                        .unwrap()
+                        .allocated_bytes(),
                 ],
                 box_bytes
             );
@@ -2705,10 +3197,10 @@ mod tests {
         let bytes = captured.allocated_bytes();
         let presentation_bytes = captured.division_presentation.allocated_bytes();
         assert!(presentation_bytes > 0);
-        let report = division_presentation::CaptureReport { ticks: [89, 97] };
+        let report = division_presentation::CaptureReport { ticks: [89, 97, 5] };
         captured.install_unit_inputs(Some(Arc::clone(&inputs)));
         captured.presentation_report = Some(report);
-        let request = captured.take_presentation_request(&countries, 11, 0x1000);
+        let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, true, None);
         assert!(captured.presentation_report.is_none());
         assert_eq!(captured.division_presentation.allocated_bytes(), 0);
         assert_eq!(captured.allocated_bytes() + presentation_bytes, bytes);
@@ -2839,7 +3331,9 @@ mod tests {
         let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
         let inputs = Arc::new(UnitInputs::empty_rows());
         let bytes = captured.allocated_bytes();
-        let report = division_presentation::CaptureReport { ticks: [113, 227] };
+        let report = division_presentation::CaptureReport {
+            ticks: [113, 227, 5],
+        };
         for failure in [
             None,
             Some(crate::acquisition::Failure::Panicked),
@@ -2847,7 +3341,7 @@ mod tests {
         ] {
             captured.reset();
             captured.install_unit_inputs(Some(Arc::clone(&inputs)));
-            let request = captured.take_presentation_request(&countries, 11, 0x1000);
+            let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, true, None);
             let context = request.context;
             captured.restore_presentation_request(request, failure.map_or(Ok(report), Err));
             let expected_outcomes = captured.division_presentation.outcomes();
@@ -2901,13 +3395,14 @@ mod tests {
                 captured.division_presentation.outcomes(),
                 [Outcome::Unavailable {
                     reason: "division presentation acquisition not supplied",
-                }; 2]
+                }; division_presentation::N]
             );
             memory.forbid_presentation.set(false);
             captured.division_presentation.capture_owned(
                 &memory,
                 context,
                 unit_sources(&captured.unit_inputs),
+                None,
             );
             assert!(memory.presentation.get() > before);
         }
@@ -2922,7 +3417,6 @@ mod tests {
             map_names::TABLES.as_slice(),
             division_templates::TABLES.as_slice(),
             visibility::TABLES.as_slice(),
-            building_detection::TABLES.as_slice(),
             faction_theatres::TABLES.as_slice(),
         ]
         .concat();
@@ -2955,6 +3449,20 @@ mod tests {
                 captured.take_slow_request(&countries, 11, 0x1000, hour, force_full, None);
             request.packs.ticks.fill(17);
             captured.restore_slow_request(request, false);
+            let state = RaidStateStores::new();
+            let mut request =
+                captured.take_raid_state_request(&countries, 11, 0x1000, hour, force_full, state);
+            request.packs.ticks.fill(19);
+            captured.restore_raid_state_request(request, false);
+            let launch = Box::new(crate::slicing::SliceFingerprints::new());
+            let mut request =
+                captured.take_raid_launch_request(&countries, 11, 0x1000, hour, force_full, launch);
+            request.packs.ticks.fill(21);
+            captured.restore_raid_launch_request(request, false);
+            let mut request =
+                captured.take_raid_targets_request(&countries, 11, 0x1000, hour, force_full);
+            request.packs.ticks.fill(22);
+            captured.restore_raid_targets_request(request, false);
             let mut request = captured.take_gated_request(11, 0x1000, hour, force_full);
             request.packs.ticks.fill(23);
             captured.restore_gated_request(request, false);
@@ -2996,6 +3504,10 @@ mod tests {
                     (&slow, "slow acquisition failed"),
                     (&gated, "gated acquisition failed"),
                     (&late, "late acquisition failed"),
+                    (
+                        &raid_target_statuses::TABLES.to_vec(),
+                        "raid target acquisition failed",
+                    ),
                 ] {
                     for &id in ids {
                         let expected = failed_capture(id, hour, force_full, reason);
@@ -3189,6 +3701,139 @@ mod tests {
             );
             captured.restore_ordinary_request(request, None);
             assert_eq!(Arc::strong_count(&countries), 1);
+        }
+    }
+
+    #[test]
+    fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
+        use crate::slicing::{SliceFingerprints, SliceSelection};
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let (hour, force_full) = (7, false);
+        // Owner 7 (in this hour's slice) was seen, unchanged, before this hour.
+        let seen = |store: &mut SliceFingerprints| {
+            let mut selection = SliceSelection::for_test(0, true, &[]);
+            selection.scan(store, 7, Some(1));
+            store.finish_scan();
+        };
+        for completed in [true, false] {
+            let mut captured = Captured::with_capacities(&Capacities::default());
+            captured.prepare_hour(hour, force_full);
+            let mut launch = Box::new(crate::slicing::SliceFingerprints::new());
+            let mut state = RaidStateStores::new();
+            for store in [&mut launch, &mut state.states, &mut state.buildings] {
+                seen(store);
+            }
+            let mut state_request =
+                captured.take_raid_state_request(&countries, 11, 0x1000, hour, force_full, state);
+            let mut launch_request =
+                captured.take_raid_launch_request(&countries, 11, 0x1000, hour, force_full, launch);
+            if completed {
+                // The walks fail on an empty image: nothing is published.
+                state_request.packs.capture(
+                    &memory,
+                    11,
+                    0x1000,
+                    hour,
+                    force_full,
+                    &mut state_request.stores,
+                );
+                launch_request.packs.capture(
+                    &memory,
+                    11,
+                    0x1000,
+                    hour,
+                    force_full,
+                    &mut launch_request.store,
+                );
+            }
+            let mut state = captured.restore_raid_state_request(state_request, completed);
+            let mut launch = captured.restore_raid_launch_request(launch_request, completed);
+            for (family, store) in [
+                (crate::slicing::RAID_LAUNCH, &mut launch),
+                (crate::slicing::RAID_STATE, &mut state.states),
+                (crate::slicing::RAID_BUILDINGS, &mut state.buildings),
+            ] {
+                assert_eq!(captured.family_selection(family).hour, hour);
+                let mut next = SliceSelection::for_test(hour + 1, false, &[]);
+                next.scan(store, 7, Some(1));
+                assert!(next.contains(7), "family {family}, completed {completed}");
+            }
+        }
+    }
+
+    #[test]
+    fn unpublished_retreat_ban_reads_are_read_again_at_the_next_hour() {
+        use crate::slicing::{SliceFingerprints, SliceSelection};
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let (hour, force_full) = (7, false);
+        // Owner 7 (in this hour's slice) was seen, unchanged, before this hour.
+        let seen = |store: &mut SliceFingerprints| {
+            let mut selection = SliceSelection::for_test(0, true, &[]);
+            selection.scan(store, 7, Some(1));
+            store.finish_scan();
+        };
+        let unseen_next_hour = |store: &mut SliceFingerprints| {
+            let mut next = SliceSelection::for_test(hour + 1, false, &[]);
+            next.scan(store, 7, Some(1));
+            next.contains(7)
+        };
+        let inputs = Arc::new(UnitInputs::empty_rows());
+        let truncated = Outcome::Truncated {
+            len: 0,
+            unread_rows: 1,
+        };
+        // A completed job whose bans read was unavailable (an empty image),
+        // truncated or published; then a failed job.
+        for (bans, completed, again) in [
+            (None, true, true),
+            (Some(truncated), true, true),
+            (Some(Outcome::Rows { len: 0 }), true, false),
+            (None, false, true),
+        ] {
+            let mut captured = Captured::with_capacities(&Capacities::default());
+            captured.prepare_hour(hour, force_full);
+            captured.install_unit_inputs(Some(Arc::clone(&inputs)));
+            let mut store = Box::new(SliceFingerprints::new());
+            seen(&mut store);
+            let mut request = captured.take_presentation_request(
+                &countries,
+                11,
+                0x1000,
+                hour,
+                force_full,
+                Some(store),
+            );
+            let report = if completed {
+                let context = request.context;
+                let report = request.captured.capture_owned(
+                    &memory,
+                    context,
+                    unit_sources(&request.inputs),
+                    request.store.as_deref_mut(),
+                );
+                if let Some(outcome) = bans {
+                    request.captured.test_set_bans_outcome(outcome);
+                }
+                Ok(report)
+            } else {
+                Err(crate::acquisition::Failure::Panicked)
+            };
+            let mut store = captured
+                .restore_presentation_request(request, report)
+                .unwrap();
+            assert_eq!(
+                unseen_next_hour(&mut store),
+                again,
+                "bans {bans:?}, completed {completed}"
+            );
         }
     }
 
@@ -4026,12 +4671,13 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, replay::frame::TABLE_COUNT - 20);
+        // BorderConflicts is the Provinces walk's second output, set by the core spool.
+        assert_eq!(N, replay::frame::TABLE_COUNT - 21);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL
             .into_iter()
-            .filter(|table| table.index() >= 20)
+            .filter(|table| table.index() >= 20 && *table != TableId::BorderConflicts)
             .collect();
         assert_eq!(actual, expected);
         for (name, anchor, members) in read_groups() {
@@ -4051,7 +4697,8 @@ mod tests {
                         TableId::ArmyOrders,
                         TableId::ArmyOrderPlans,
                         TableId::OrdersGroupPlans,
-                        TableId::Fronts
+                        TableId::Fronts,
+                        TableId::InvasionPreparations
                     ]
                 );
             } else if anchor == TableId::Countries {

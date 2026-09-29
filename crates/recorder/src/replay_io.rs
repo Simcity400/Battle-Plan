@@ -10,10 +10,10 @@ use std::{
 use replay::{
     BranchId, Hour, SessionId,
     branches::Parentage,
-    container::{RecoveryNote, Replay},
+    container::{RecoveryNote, Replay, SeekResult},
     frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableUpdate, TableView},
     identity::{Identity, SessionStart, Verification},
-    rows::{TableId, TableRows},
+    rows::{TableId, TableRows, tables},
     spool::{ControlRecord, Record, Recovery, recover_prefix},
 };
 
@@ -482,6 +482,77 @@ pub fn inspect(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `recorder inspect <replay> --characters <substring> --hour <h> --branch <id>`:
+/// the recorded Characters rows at that frame whose token or name contains
+/// the substring, with their template columns.
+pub fn inspect_characters(path: &Path, needle: &str, hour: Hour, branch: BranchId) -> Result<()> {
+    let replay = open(path)?;
+    let frame = match replay
+        .seek(branch, hour)
+        .map_err(|error| failure(path, error))?
+    {
+        SeekResult::Frame(frame) => frame,
+        SeekResult::Gap { reason, .. } => {
+            return Err(format!("branch {branch}, hour {hour} is a gap: {reason}"));
+        }
+    };
+    let lines = character_lines(&frame, needle.as_bytes())?;
+    println!(
+        "characters branch={branch} hour={hour} matching {needle:?}: {}",
+        lines.len()
+    );
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// One line per Characters row whose token or name contains `needle`, in id
+/// order. `template_tag` is shown with its literal from the frame's
+/// LexicalTokens when that table is complete and holds the token.
+fn character_lines(frame: &DecodedFrame, needle: &[u8]) -> Result<Vec<String>> {
+    if needle.is_empty() {
+        return Err("--characters needs a nonempty substring".into());
+    }
+    let contains = |haystack: &[u8]| haystack.windows(needle.len()).any(|part| part == needle);
+    let rows = frame
+        .complete::<tables::Characters>()
+        .map_err(|error| error.to_string())?;
+    let literals = frame
+        .complete::<tables::LexicalTokens>()
+        .map(|rows| {
+            rows.iter()
+                .map(|row| (row.token, row.literal.as_slice()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .map_err(|error| error.to_string());
+    Ok(rows
+        .iter()
+        .filter(|row| contains(&row.token) || contains(&row.name))
+        .map(|row| {
+            let literal = match &literals {
+                Ok(literals) => match literals.get(&row.template_tag) {
+                    Some(literal) => format!("{:?}", String::from_utf8_lossy(literal)),
+                    None => "not in LexicalTokens".into(),
+                },
+                Err(error) => format!("LexicalTokens unreadable: {error}"),
+            };
+            format!(
+                "character id={} country={} token={:?} name={:?} template_present={} template_tag={} ({literal}) template_file={:?} template_line={} template_generated={}",
+                row.id,
+                row.country,
+                String::from_utf8_lossy(&row.token),
+                String::from_utf8_lossy(&row.name),
+                row.template_present,
+                row.template_tag,
+                String::from_utf8_lossy(&row.template_file),
+                row.template_line,
+                row.template_generated
+            )
+        })
+        .collect())
+}
+
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -796,6 +867,56 @@ fn print_throughput<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn character_lines_filter_by_token_or_name_and_resolve_the_template_tag() {
+        use replay::{
+            frame::Metrics,
+            rows::{CharacterRow, LexicalTokenRow},
+        };
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 1,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+            metrics: Metrics::default(),
+        };
+        let row = |id, token: &[u8], name: &[u8], tag, line| CharacterRow {
+            id,
+            token: token.to_vec(),
+            name: name.to_vec(),
+            template_present: 1,
+            template_tag: tag,
+            template_file: b"common/characters/ARG.txt".to_vec(),
+            template_line: line,
+            ..Default::default()
+        };
+        *frame.tables[TableId::Characters.index()] =
+            TableView::Complete(TableRows::Characters(vec![
+                row(1, b"ARG_pedro_pablo_ramirez", b"", 7, 263),
+                row(2, b"ARG_other", b"ARG_pedro_pablo_ramirez", 8, 329),
+                row(3, b"GER_other", b"", 7, 1),
+            ]));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 7,
+                literal: b"ARG_pedro_pablo_ramirez".to_vec(),
+            }]));
+        let lines = character_lines(&frame, b"pedro_pablo").unwrap();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("character id=1 "));
+        assert!(lines[0].contains(
+            "template_tag=7 (\"ARG_pedro_pablo_ramirez\") template_file=\"common/characters/ARG.txt\" template_line=263"
+        ));
+        assert!(lines[1].contains("template_tag=8 (not in LexicalTokens)"));
+        assert!(character_lines(&frame, b"").is_err());
+        *frame.tables[TableId::Characters.index()] = TableView::Unavailable {
+            reason: "test".into(),
+        };
+        assert!(character_lines(&frame, b"pedro").is_err());
+    }
 
     #[test]
     fn file_names_are_validated_without_rewriting_campaign_identity() {

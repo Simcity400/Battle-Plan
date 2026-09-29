@@ -226,6 +226,7 @@ fn task_forces(
             expeditionary_owner: row.expeditionary_owner,
             province: row.province,
             mission: row.mission,
+            route_count: row.route_count,
         },
     )
 }
@@ -325,6 +326,8 @@ fn air_wings(
             effective_planes: row.effective_planes,
             mission_mask: row.mission_mask,
             mission_region: row.mission_region,
+            base_range_raw: row.base_range_raw,
+            ace: row.ace,
         },
     )
 }
@@ -533,6 +536,7 @@ mod tests {
                 expeditionary_owner: 3,
                 province: u32::MAX,
                 mission: u32::MAX - 1,
+                route_count: -1,
             }],
         );
         set(
@@ -583,6 +587,8 @@ mod tests {
                 effective_planes: i32::MAX,
                 mission_mask: u32::MAX,
                 mission_region: Some(0),
+                base_range_raw: i64::MIN,
+                ace: u64::MAX,
             }],
         );
         set(
@@ -641,6 +647,7 @@ mod tests {
                 expeditionary_owner: 3,
                 province: u32::MAX,
                 mission: u32::MAX - 1,
+                route_count: -1,
             }]),
             TableRows::Ships(vec![ShipRow {
                 id: u64::MAX,
@@ -678,6 +685,8 @@ mod tests {
                 effective_planes: i32::MAX,
                 mission_mask: u32::MAX,
                 mission_region: Some(0),
+                base_range_raw: i64::MIN,
+                ace: u64::MAX,
             }]),
             TableRows::ArmyOrders(vec![ArmyOrderRow {
                 owner_group: u64::MAX,

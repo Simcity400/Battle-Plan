@@ -1,21 +1,28 @@
-//! Hourly battle-plan operands over the shared ArmyOrders/group source census.
+//! Hourly battle-plan operands over the shared ArmyOrders/group source census,
+//! and the naval invasions' preparation operands over the same census.
 use crate::{
     sampling::qpc,
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
-use engine::{Memory, cfront, cfront_section, corder_instance, corders_group, walk::Outcome};
+use engine::{
+    Memory, cfront, cfront_section, corder_instance, corders_group, invasion_preparations,
+    modifier_definition::DefinitionMemo, walk::Outcome,
+};
 use replay::{
     frame::TableView,
-    rows::{ArmyOrderPlanRow, FrontRow, OrdersGroupPlanRow, TableId, tables},
+    rows::{
+        ArmyOrderPlanRow, FrontRow, InvasionPreparationRow, OrdersGroupPlanRow, TableId, tables,
+    },
 };
 use std::mem::size_of;
 
-pub const N: usize = 3;
+pub const N: usize = 4;
 pub const TABLES: [TableId; N] = [
     TableId::ArmyOrderPlans,
     TableId::OrdersGroupPlans,
     TableId::Fronts,
+    TableId::InvasionPreparations,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
@@ -31,6 +38,8 @@ pub struct Capacities {
     sections: usize,
     pairs: usize,
     handles: usize,
+    /// InvasionPreparations rows: the census's naval invasion orders.
+    invasions: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -45,6 +54,7 @@ impl Default for Capacities {
             sections: 4096,
             pairs: 65536,
             handles: 2048,
+            invasions: 256,
         }
     }
 }
@@ -52,6 +62,9 @@ pub struct Captured {
     plans: CaptureRows<corder_instance::PlanRow>,
     colors: CaptureRows<corders_group::PlanRow>,
     fronts: CaptureRows<cfront::Row>,
+    invasions: CaptureRows<invasion_preparations::Row>,
+    /// The invasion terms' modifier metadata, read once per pass.
+    memo: DefinitionMemo,
     assigned: Arena<u64>,
     links: Arena<u32>,
     /// ArmyOrderPlans' order-name bytes and OrdersGroupPlans' group-name bytes,
@@ -85,6 +98,7 @@ impl Captured {
             sections: 0,
             pairs: 0,
             handles: 0,
+            invasions: 0,
         })
     }
     pub fn with_capacities(c: &Capacities) -> Self {
@@ -92,6 +106,8 @@ impl Captured {
             plans: CaptureRows::new(c.plans),
             colors: CaptureRows::new(c.groups),
             fronts: CaptureRows::new(c.fronts),
+            invasions: CaptureRows::new(c.invasions),
+            memo: DefinitionMemo::with_capacity(3),
             assigned: Arena::new(c.assigned),
             links: Arena::new(c.links),
             names: Arena::new(c.names),
@@ -110,6 +126,8 @@ impl Captured {
         self.plans.reset();
         self.colors.reset();
         self.fronts.reset();
+        self.invasions.reset();
+        self.memo.clear();
         self.assigned.reset();
         self.links.reset();
         self.names.reset();
@@ -125,6 +143,8 @@ impl Captured {
         self.plans.allocated_bytes()
             + self.colors.allocated_bytes()
             + self.fronts.allocated_bytes()
+            + self.invasions.allocated_bytes()
+            + self.memo.allocated_bytes()
             + self.assigned.allocated_bytes()
             + self.links.allocated_bytes()
             + self.names.allocated_bytes()
@@ -139,6 +159,7 @@ impl Captured {
         self.plans.grow(&mut c.plans);
         self.colors.grow(&mut c.groups);
         self.fronts.grow(&mut c.fronts);
+        self.invasions.grow(&mut c.invasions);
         self.assigned.grow(&mut c.assigned);
         self.links.grow(&mut c.links);
         let mut group_names = c.names;
@@ -154,11 +175,13 @@ impl Captured {
     /// Called on the Orders worker, which may grow payloads from owned census
     /// lengths and the original native headers. `visits` and `successors` are
     /// the census of this same job; nothing from another hour is passed.
+    /// `game_state` is this pass's, for the invasions' countries and provinces.
     #[allow(clippy::too_many_arguments)]
     pub fn visit(
         &mut self,
         memory: &impl Memory,
         base: usize,
+        game_state: usize,
         roots: &[corders_group::Root],
         visits: &[corder_instance::Visit],
         successors: &corder_instance::SuccessorLists,
@@ -247,6 +270,18 @@ impl Captured {
         self.pairs.len = front.pairs;
         self.pairs.required = front.required_pairs;
         self.ticks[2] += qpc().saturating_sub(begin).max(0) as u64;
+        read_phase.select(TABLES[3]);
+        let begin = qpc();
+        self.invasions.outcome = invasion_preparations::walk(
+            memory,
+            base,
+            game_state,
+            visits,
+            order_source,
+            &self.memo,
+            &mut self.invasions.rows,
+        );
+        self.ticks[3] += qpc().saturating_sub(begin).max(0) as u64;
         let total = qpc().saturating_sub(begin_all).max(0) as u64;
         self.ticks[0] += total.saturating_sub(self.ticks.iter().sum::<u64>() - before);
         // The order records this job's census gathered for these plans.
@@ -260,6 +295,7 @@ impl Captured {
         self.plans.outcome = outcome;
         self.colors.outcome = outcome;
         self.fronts.outcome = outcome;
+        self.invasions.fail(outcome);
         self.assigned.len = 0;
         self.links.len = 0;
         self.names.len = 0;
@@ -278,6 +314,7 @@ impl Captured {
             self.plans.outcome = outcome;
             self.colors.outcome = outcome;
             self.fronts.outcome = outcome;
+            self.invasions.outcome = outcome;
         }
         self.ticks
     }
@@ -285,7 +322,12 @@ impl Captured {
         self.names.first[start..start + len].to_vec()
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.plans.outcome, self.colors.outcome, self.fronts.outcome]
+        [
+            self.plans.outcome,
+            self.colors.outcome,
+            self.fronts.outcome,
+            self.invasions.outcome,
+        ]
     }
     pub fn tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
@@ -355,6 +397,20 @@ impl Captured {
                     row.section_ends.push(row.province_pairs.len() as u32);
                 }
                 row
+            }),
+            table::<tables::InvasionPreparations, _>(outcomes[3], &self.invasions.rows, |r| {
+                InvasionPreparationRow {
+                    owner_group: r.owner_group,
+                    instance: r.instance,
+                    progress: r.progress,
+                    target: r.target,
+                    country_term: r.country_term,
+                    relation_term: r.relation_term,
+                    relation_bonus: r.relation_bonus,
+                    leader_term: r.leader_term,
+                    leader_applies: r.leader_applies,
+                    days_term: r.days_term,
+                }
             }),
         ]
     }
@@ -440,6 +496,7 @@ mod tests {
         c.visit(
             m,
             0,
+            0,
             &groups[..r.root_outcome.len()],
             &visits,
             &successors,
@@ -473,6 +530,7 @@ mod tests {
             [
                 Outcome::Rows { len: 1 },
                 Outcome::Rows { len: 1 },
+                Outcome::Rows { len: 0 },
                 Outcome::Rows { len: 0 }
             ]
         );
@@ -513,6 +571,35 @@ mod tests {
                 .iter()
                 .all(|v| matches!(v, Outcome::Unavailable { .. }))
         );
+    }
+
+    /// A naval invasion whose inputs cannot be read withholds only
+    /// InvasionPreparations; the plans of the same census are published.
+    #[test]
+    fn an_unreadable_invasion_withholds_only_its_own_table() {
+        let mut m = image();
+        m.u32(
+            ORDER + corder_instance::TYPE,
+            corder_instance::TYPE_INVASION as u32,
+        );
+        // An invasion is a named arrow: its name strings are read too.
+        for offset in corder_instance::NAME_STRINGS {
+            string(&mut m, ORDER + offset, b"", None);
+        }
+        let mut c = Captured::with_capacities(&Capacities::default());
+        pass(&m, &mut c);
+        c.capture();
+        let outcomes = c.outcomes();
+        assert_eq!(
+            &outcomes[..3],
+            &[
+                Outcome::Rows { len: 1 },
+                Outcome::Rows { len: 1 },
+                Outcome::Rows { len: 0 }
+            ]
+        );
+        assert!(matches!(outcomes[3], Outcome::Unavailable { .. }));
+        assert!(matches!(c.tables()[3], TableView::Unavailable { .. }));
     }
 
     /// A std::string header at `at`: inline when `heap` is `None`.
@@ -580,6 +667,7 @@ mod tests {
                 TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(plans)),
                 TableView::Complete(replay::rows::TableRows::OrdersGroupPlans(groups)),
                 _,
+                _,
             ] = c.tables()
             else {
                 panic!("plans unavailable: {:?}", c.outcomes());
@@ -632,6 +720,7 @@ mod tests {
             sections: 0,
             pairs: 0,
             handles: 0,
+            invasions: 0,
         };
         c.grow(&mut capacities);
         c.reset();
@@ -671,6 +760,7 @@ mod tests {
                 TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(plans)),
                 TableView::Complete(replay::rows::TableRows::OrdersGroupPlans(groups)),
                 _,
+                _,
             ] = c.tables()
             else {
                 panic!("plans unavailable: {:?}", c.outcomes());
@@ -702,6 +792,7 @@ mod tests {
             sections: 0,
             pairs: 0,
             handles: 0,
+            invasions: 0,
         };
         for (hour, (unique, unique_heap, group, group_heap)) in hours.into_iter().enumerate() {
             string(&mut m, unique_at, unique, unique_heap.then_some(UNIQUE));
@@ -791,6 +882,7 @@ mod l3b_bench {
             self.captured.visit(
                 memory,
                 base,
+                0,
                 roots,
                 &self.visits,
                 &self.successors,
@@ -890,8 +982,8 @@ mod l3b_bench {
                     .map(|table| bench_world::work(counts[table.index()]))
                     .collect();
                 println!(
-                    "plans-work countries={countries} named={named}: ArmyOrderPlans {}; OrdersGroupPlans {}; Fronts {}; ArmyOrders census {}",
-                    work[0], work[1], work[2], work[3]
+                    "plans-work countries={countries} named={named}: ArmyOrderPlans {}; OrdersGroupPlans {}; Fronts {}; InvasionPreparations {}; ArmyOrders census {}",
+                    work[0], work[1], work[2], work[3], work[4]
                 );
                 for source in ["slice", "live"] {
                     let (median, p95, per_table, census, gathers) = if source == "slice" {

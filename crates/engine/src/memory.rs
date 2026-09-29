@@ -1162,6 +1162,80 @@ impl Memory for LiveMemory {
     }
 }
 
+/// Test support for capture benches: counts the guarded calls a live reader
+/// would make (each top-level `copy`, `copy_scattered` and `copy_records` is
+/// one guard) and the bytes they read, forwarding to the wrapped memory.
+#[cfg(test)]
+pub(crate) struct CountingMemory<'a> {
+    pub inner: SliceMemory<'a>,
+    pub calls: std::cell::Cell<usize>,
+    pub bytes: std::cell::Cell<usize>,
+}
+
+#[cfg(test)]
+impl<'a> CountingMemory<'a> {
+    pub fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            inner: SliceMemory { base: 0, bytes },
+            calls: std::cell::Cell::new(0),
+            bytes: std::cell::Cell::new(0),
+        }
+    }
+
+    fn count(&self, bytes: usize) {
+        self.calls.set(self.calls.get() + 1);
+        self.bytes.set(self.bytes.get() + bytes);
+    }
+
+    /// Runs `walk` `runs` times and prints the median wall time with the
+    /// guarded calls and bytes of one run.
+    pub fn bench(&self, label: &str, runs: usize, mut walk: impl FnMut(&Self) -> String) {
+        let mut times = Vec::with_capacity(runs);
+        let mut summary = String::new();
+        for _ in 0..runs {
+            self.calls.set(0);
+            self.bytes.set(0);
+            let started = std::time::Instant::now();
+            summary = walk(self);
+            times.push(started.elapsed().as_secs_f64() * 1e3);
+        }
+        times.sort_by(f64::total_cmp);
+        println!(
+            "BENCH {label}: median {:.3} ms, {} guarded calls, {} bytes, {summary}",
+            times[times.len() / 2],
+            self.calls.get(),
+            self.bytes.get()
+        );
+    }
+}
+
+#[cfg(test)]
+impl Memory for CountingMemory<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.count(destination.len());
+        self.inner.copy(address, destination)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.count(destinations.iter().map(|d| d.len()).sum());
+        self.inner.copy_scattered(addresses, destinations)
+    }
+
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        self.count(destination.len());
+        self.inner.copy_records(sources, layout, destination)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;

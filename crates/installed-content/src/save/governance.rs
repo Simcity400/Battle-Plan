@@ -433,7 +433,7 @@ fn parse_decisions(items: &[Item]) -> io::Result<Decisions> {
     })
 }
 
-fn parse_dynamic_modifiers(items: &[Item]) -> io::Result<Vec<DynamicModifier>> {
+pub(crate) fn parse_dynamic_modifiers(items: &[Item]) -> io::Result<Vec<DynamicModifier>> {
     let Some(items) = optional_block(items, b"dynamic_modifier")? else {
         return Ok(Vec::new());
     };

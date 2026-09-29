@@ -50,7 +50,7 @@ use replay::{BranchId, Hour, container::Replay};
 
 use crate::{
     blocks::BlockReader,
-    document::{Content, Hour as HourView, PreparedOverlay},
+    document::{Content, Hour as HourView, OverlayTables, PreparedOverlay},
     map::{
         aircraft::AircraftPlan,
         border_pass::ClassPlan,
@@ -232,6 +232,9 @@ pub struct Layers {
     /// Shared by the hours whose named areas are the same.
     pub names: Arc<Placements>,
     pub overlay: PreparedOverlay,
+    /// The camera-independent tables `overlay` was laid out from, raid icons
+    /// included, so the window lays out other cameras without rebuilding them.
+    pub overlay_tables: OverlayTables,
 }
 
 /// One built hour.
@@ -253,7 +256,7 @@ pub struct Built {
 enum Part {
     Political(io::Result<(Arc<Political>, Arc<Borders>)>),
     Names(io::Result<Arc<Placements>>),
-    Overlay(io::Result<Box<PreparedOverlay>>),
+    Overlay(io::Result<Box<(PreparedOverlay, OverlayTables)>>),
     Rails(io::Result<Arc<Rails>>),
     Buildings(io::Result<(Arc<Shared<PreparedBuildings>>, Vec<String>)>),
     Movers(io::Result<Box<Movers>>),
@@ -478,6 +481,19 @@ impl Pool {
     }
 }
 
+/// The builders lend their turns to a batch split across threads
+/// ([`crate::parallel::Workers`]): a turn taken while the builders are busy
+/// waits in their queue, and the batch does not wait for it.
+impl crate::parallel::Spawn for Pool {
+    fn try_spawn(&self, job: Job) -> Result<(), Job> {
+        self.try_submit(job)
+    }
+
+    fn threads(&self) -> usize {
+        self.threads.len()
+    }
+}
+
 impl Drop for Pool {
     fn drop(&mut self) {
         self.jobs = None;
@@ -568,11 +584,20 @@ impl SharedDecoder {
     }
 }
 
+/// Builders for the processors this process may use
+/// ([`crate::parallel::usable_processors`]), not the machine's.
 fn builder_count() -> usize {
-    thread::available_parallelism()
-        .map_or(4, |count| count.get())
+    crate::parallel::usable_processors()
         .saturating_sub(8)
         .max(2)
+}
+
+/// A builder pool as the viewer starts one, lent as [`crate::parallel::Workers`].
+#[cfg(test)]
+pub(crate) fn builder_workers() -> io::Result<crate::parallel::Workers> {
+    Ok(crate::parallel::Workers::new(Arc::new(Pool::new(
+        builder_count(),
+    )?)))
 }
 
 /// An hour dispatched and not yet assembled.
@@ -583,7 +608,7 @@ struct Pending {
     started: Instant,
     political: Option<(Arc<Political>, Arc<Borders>)>,
     names: Option<Arc<Placements>>,
-    overlay: Option<PreparedOverlay>,
+    overlay: Option<(PreparedOverlay, OverlayTables)>,
     rails: Option<Arc<Rails>>,
     buildings: Option<(Arc<Shared<PreparedBuildings>>, Vec<String>)>,
     movers: Option<Movers>,
@@ -694,6 +719,7 @@ impl Pending {
         let (political, borders) = self.political.ok_or_else(missing)?;
         let movers = self.movers.ok_or_else(missing)?;
         let (intel, limitations, header) = self.fog.ok_or_else(missing)?;
+        let (overlay, overlay_tables) = self.overlay.ok_or_else(missing)?;
         let (buildings, building_warnings) = self.buildings.ok_or_else(missing)?;
         Ok(Layers {
             political,
@@ -711,7 +737,8 @@ impl Pending {
             limitations,
             header,
             names: self.names.ok_or_else(missing)?,
-            overlay: self.overlay.ok_or_else(missing)?,
+            overlay,
+            overlay_tables,
         })
     }
 }
@@ -1431,10 +1458,15 @@ impl Coordinator {
         submit(
             "overlay",
             Box::new(move |view| {
-                Part::Overlay(
-                    view.prepare_overlay(camera, viewport, ui_scale, &overlay_perspective)
-                        .map(Box::new),
-                )
+                Part::Overlay((|| {
+                    // Raid icons come from the window's raid lane
+                    // ([`crate::raid_lane`]), which chains hours.
+                    let tables =
+                        view.hour_tables_with_raids(&overlay_perspective, Arc::default())?;
+                    let overlay =
+                        view.prepare_overlay_cached(camera, viewport, ui_scale, &tables)?;
+                    Ok(Box::new((overlay, tables)))
+                })())
             }),
         );
         {
@@ -1478,11 +1510,15 @@ impl Coordinator {
             "movers",
             Box::new(move |view| {
                 Part::Movers((|| {
+                    // The raid arrows' units join the unit models.
+                    let orders = view.order_field(&movers_perspective)?;
+                    let mut units = view.prepare_unit_models(&movers_perspective)?;
+                    units.add_raid_units(&view.unit_models, &orders.raid_units);
                     Ok(Box::new(Movers {
                         trains: view.train_plan(&movers_perspective)?,
                         aircraft: view.aircraft_plan(&movers_perspective)?,
-                        units: view.prepare_unit_models(&movers_perspective)?,
-                        orders: view.order_field(&movers_perspective)?,
+                        units,
+                        orders,
                         effects: weather_effects::prepare(
                             &view.weather_effects,
                             weather_effects::field(view.frame)?,
@@ -1554,11 +1590,13 @@ pub struct Pipeline {
     epoch: u64,
     received: std::cell::Cell<u64>,
     requested: Arc<Mutex<Option<(u64, Want)>>>,
+    /// The builders' turns, which other work may borrow.
+    workers: crate::parallel::Workers,
 }
 
 impl Pipeline {
-    /// Starts the coordinator and a builder pool of all hardware threads
-    /// less eight, at least two, leaving the window's own frame, the GPU
+    /// Starts the coordinator and a builder pool of all the hardware threads
+    /// the process may use (its affinity mask) less eight, at least two, leaving the window's own frame, the GPU
     /// driver and the game's own threads theirs: on the sixteen-thread
     /// machine this is eight builders, and more finished hours no sooner
     /// while spiking the frames they arrived on.
@@ -1602,6 +1640,7 @@ impl Pipeline {
         // window dropping `results` releases a coordinator blocked on it.
         let (outbox, results) = mpsc::sync_channel(parallel);
         let requested = Arc::new(Mutex::new(None));
+        let workers = crate::parallel::Workers::new(Arc::clone(&pool) as _);
         let lane = match shared_decoder {
             Some(_) => None,
             None => {
@@ -1644,7 +1683,14 @@ impl Pipeline {
             epoch: 0,
             received: std::cell::Cell::new(0),
             requested,
+            workers,
         })
+    }
+
+    /// The builders' threads for work split across threads, such as a raid
+    /// batch ([`crate::parallel::Workers`]).
+    pub fn workers(&self) -> crate::parallel::Workers {
+        self.workers.clone()
     }
 
     /// Whether this pipeline builds for this content and replay.

@@ -10,6 +10,7 @@ mod map;
 mod parallel;
 mod playback;
 mod profiling;
+mod raid_lane;
 mod render;
 mod table_access;
 #[cfg(test)]
@@ -1196,6 +1197,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 order_field.vertices.len()
             );
         }
+        // raids: the viewing country's raid arrows, drawn with the plan
+        let raid_arrows = &order_field.report.raid_arrows;
+        println!(
+            "Raid arrows: {} non-ended raids of the viewing country, {} drawn, {} hidden by the raid filter, {} with no path or controls",
+            raid_arrows.raids, raid_arrows.drawn, raid_arrows.filtered, raid_arrows.empty
+        );
+        for warning in raid_arrows.warnings() {
+            println!("  {warning}");
+        }
+        for unit in &order_field.raid_units {
+            println!(
+                "  Raid unit {} ({}): at ({:.3}, {:.3}, {:.3}), arrow progress {:.5}, scale {:.3}",
+                unit.seed,
+                unit.entity.as_deref().unwrap_or("no entity"),
+                unit.position[0],
+                unit.position[1],
+                unit.position[2],
+                unit.progress,
+                unit.scale
+            );
+        }
         // close zoom
         let summary = document.sprawl.plan_summary;
         println!(
@@ -1348,14 +1370,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or("no human country")
         );
         println!(
-            "Raid icons: {} drawn, {} with no recorded raid, {} with no anchor, {} entry words dropped",
+            "Raid icons: {} ({} own, {} incoming, {} offers); {} offers with an unverified tint, {} withheld, {} with no anchor, {} targets with no province, {} byte counters wrapped, {} without their undeclared glyph, {} incoming with the unknown glyph",
             raid_report.icons,
-            raid_report.unbound,
+            raid_report.own,
+            raid_report.incoming,
+            raid_report.offers,
+            raid_report.unverified_tint,
+            raid_report.withheld,
             raid_report.unanchored,
-            raid_report.dropped_words
+            raid_report.unresolved,
+            raid_report.wrapped,
+            raid_report.missing_glyphs,
+            raid_report.unknown_glyphs,
         );
-        for (reason, count) in &raid_report.refused_tokens {
-            println!("  refused token: {reason} x{count}");
+        for (reason, count) in &raid_report.reasons {
+            println!("  raid icons: {reason} ({count})");
         }
         // counters
         println!(

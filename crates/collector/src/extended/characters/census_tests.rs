@@ -34,7 +34,8 @@ const STRIDES: [(usize, usize); 11] = [
     (ADVISOR_HEAD, 0x40),
     (ADVISOR_NODE, 0x60),
     (ADVISOR_ROLE, 0x100),
-    (UNIT, 0x1000),
+    // A CArmyLeader reaches past +0x1059 (its captured byte).
+    (UNIT, 0x2000),
     (TRAITS, 0x40),
     (EXPERIENCE, 0x100),
     (DEFINITION, 0x1000),
@@ -89,7 +90,7 @@ impl World {
     }
 
     pub fn unit(index: usize) -> Option<usize> {
-        (index % 4 == 1).then_some(UNIT + index * 0x1000)
+        (index % 4 == 1).then_some(UNIT + index * 0x2000)
     }
 
     pub fn leader_head(index: usize) -> usize {
@@ -456,6 +457,7 @@ pub(super) fn capacities() -> Capacities {
 pub(super) fn context(active: [bool; 6]) -> CharactersCopyContext {
     let capacities = capacities();
     CharactersCopyContext {
+        force_full: false,
         base: MODULE,
         game_state: GAME_STATE,
         active,
@@ -513,6 +515,7 @@ fn typed(memory: &impl Memory, part: usize) -> Captured {
         MODULE,
         GAME_STATE,
         captured.family().select(PART_MASKS[part]),
+        None,
         None,
     );
     captured.install_family(PART_MASKS[part], results);
@@ -747,8 +750,8 @@ fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
         LEADER_ROLE + 15 * 0x20,
         ADVISOR_NODE + 43 * 0x60 + character_advisor_node::KEY_HASH,
         ADVISOR_ROLE + 3 * 0x100 + cadvisor::SLOT,
-        UNIT + 5 * 0x1000 + cunit_leader::TRAIT_DATA,
-        UNIT + 9 * 0x1000 + cunit_leader::TRAIT_EXPERIENCE_DATA,
+        UNIT + 5 * 0x2000 + cunit_leader::TRAIT_DATA,
+        UNIT + 9 * 0x2000 + cunit_leader::TRAIT_EXPERIENCE_DATA,
         TRAITS + 13 * 0x40,
         EXPERIENCE + 17 * 0x100 + 16,
         DEFINITION + 2 * 0x1000,

@@ -1,23 +1,35 @@
 //! Hourly division companions. Reuses the existing authenticated source census;
-//! movement and counter reads retain separate costs and outcomes.
+//! movement and counter reads retain separate costs and outcomes. The
+//! commanders' retreat bans (DivisionRetreatBans) are the sliced
+//! `retreat_bans` family, read daily per roster owner with a constant print.
 use super::production::Sources;
 use crate::{
     projection::{Projection, project_table, scalar_table},
     sampling::qpc,
+    slicing::{SliceFingerprints, SliceSelection},
     spooling::unavailable,
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
 use engine::{
-    Memory, carmy, carmy::DivisionSeed, corders_group_member::MembershipCapacity, cprovince,
-    walk::Outcome,
+    Memory, carmy, carmy::DivisionSeed, ccountry, corders_group_member::MembershipCapacity,
+    cprovince, walk::Outcome,
 };
 use replay::{
     frame::TableInput,
-    rows::{DivisionAcclimatization, DivisionMovementRow, DivisionStatusRow, TableId, tables},
+    rows::{
+        DivisionAcclimatization, DivisionMovementRow, DivisionRetreatBanRow, DivisionStatusRow,
+        TableId, tables,
+    },
 };
 
-pub const N: usize = 2;
-pub const TABLES: [TableId; N] = [TableId::DivisionMovement, TableId::DivisionStatus];
+pub const N: usize = 3;
+/// DivisionRetreatBans' index in [`TABLES`] and the outcomes.
+pub const BANS: usize = 2;
+pub const TABLES: [TableId; N] = [
+    TableId::DivisionMovement,
+    TableId::DivisionStatus,
+    TableId::DivisionRetreatBans,
+];
 // Both depend on the shared division census; the combined source read group in
 // extended::read_groups includes their individually measured costs.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
@@ -26,6 +38,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub(crate) struct CaptureContext {
     pub base: usize,
     pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -37,6 +51,8 @@ pub(crate) struct CaptureReport {
 pub struct Capacities {
     movement: usize,
     status: usize,
+    /// DivisionRetreatBans rows: divisions whose commander bans retreat.
+    bans: usize,
     paths: usize,
     geometry: cprovince::GeometryCapacities,
     /// Shared DivisionStatus membership storage prepared for pooled packets.
@@ -48,6 +64,7 @@ impl Default for Capacities {
         Self {
             movement: 8192,
             status: 8192,
+            bans: 1024,
             paths: 128 * 1024,
             geometry: cprovince::GeometryCapacities::default(),
             membership: carmy::StatusCapacities::new(8192).membership,
@@ -63,6 +80,9 @@ fn status_packet(c: &Capacities) -> carmy::StatusPacket {
 pub struct Captured {
     movement: CaptureRows<carmy::MovementRow>,
     status: CaptureRows<carmy::StatusRow>,
+    bans: CaptureRows<carmy::RetreatBanRow>,
+    /// The roster owners whose DivisionRetreatBans rows this hour replaced.
+    bans_selection: SliceSelection,
     paths: Arena<u32>,
     movement_packet: carmy::MovementPacket,
     geometry: cprovince::GeometryPacket,
@@ -79,6 +99,8 @@ impl Captured {
         Self {
             movement: CaptureRows::new(0),
             status: CaptureRows::new(0),
+            bans: CaptureRows::new(0),
+            bans_selection: SliceSelection::new(false),
             paths: Arena::new(0),
             movement_packet: carmy::MovementPacket::new(0, 0),
             geometry: cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
@@ -97,6 +119,8 @@ impl Captured {
         Self {
             movement: CaptureRows::new(c.movement),
             status: CaptureRows::new(c.status),
+            bans: CaptureRows::new(c.bans),
+            bans_selection: SliceSelection::new(true),
             paths: Arena::new(c.paths),
             movement_packet: carmy::MovementPacket::new(c.movement, c.paths),
             geometry: cprovince::GeometryPacket::with_capacities(c.geometry),
@@ -111,6 +135,7 @@ impl Captured {
     pub fn reset(&mut self) {
         self.movement.reset();
         self.status.reset();
+        self.bans.reset();
         self.paths.reset();
         // Engine acquisition resets each owned packet in its measured scope.
         self.decode_pending = false;
@@ -119,6 +144,7 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.movement.allocated_bytes()
             + self.status.allocated_bytes()
+            + self.bans.allocated_bytes()
             + self.paths.allocated_bytes()
             + self.movement_packet.allocated_bytes()
             + self.geometry.allocated_bytes()
@@ -128,6 +154,7 @@ impl Captured {
     pub fn grow(&mut self, c: &mut Capacities) {
         self.movement.grow(&mut c.movement);
         self.status.grow(&mut c.status);
+        self.bans.grow(&mut c.bans);
         let membership = self.status_packet.membership_capacity();
         c.membership.queries = c.membership.queries.max(membership.queries);
         c.membership.groups = c.membership.groups.max(membership.groups);
@@ -170,16 +197,103 @@ impl Captured {
         memory: &impl Memory,
         context: CaptureContext,
         sources: Sources<'_, DivisionSeed>,
+        store: Option<&mut SliceFingerprints>,
     ) -> CaptureReport {
+        let (rows, outcome) = (sources.rows, sources.outcome);
+        let ticks = self.capture(memory, context.base, context.game_state, sources);
+        let bans = self.capture_bans(memory, context, Sources { rows, outcome }, store);
         CaptureReport {
-            ticks: self.capture(memory, context.base, context.game_state, sources),
+            ticks: [ticks[0], ticks[1], bans],
         }
+    }
+
+    /// Start a frame's bans selection at its hour; the capture resets it again.
+    pub(crate) fn reset_selection(&mut self, hour: i32, force_full: bool) {
+        self.bans_selection.reset(hour, force_full);
+    }
+
+    /// The roster owners whose DivisionRetreatBans rows this frame replaced.
+    pub(crate) fn bans_selection(&self) -> &SliceSelection {
+        &self.bans_selection
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_bans_outcome(&mut self, outcome: Outcome) {
+        self.bans.outcome = outcome;
+    }
+
+    /// DivisionRetreatBans for this hour's owner slice: the census scanned
+    /// into `store` with a constant print (a new owner, or the owner of an
+    /// unpublished read, joins the read), then every division of a read
+    /// owner. Without a store every owner is read.
+    fn capture_bans(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+        store: Option<&mut SliceFingerprints>,
+    ) -> u64 {
+        let _reads = crate::read_accounting::table(TableId::DivisionRetreatBans);
+        let start = qpc();
+        self.bans_selection
+            .reset(context.hour, context.force_full || store.is_none());
+        let reader = ccountry::Reader::new(memory, context.base, context.game_state);
+        if let Some(store) = store {
+            let scan = qpc();
+            let census = match &reader {
+                Err(_) => false,
+                Ok(countries) => {
+                    let mut complete = true;
+                    for slot in 1..countries.count() {
+                        match countries.at(slot) {
+                            Ok(Some(_)) => self.bans_selection.scan(store, slot, Some(0)),
+                            Ok(None) => {}
+                            Err(_) => complete = false,
+                        }
+                    }
+                    complete
+                }
+            };
+            store.finish_scan();
+            self.bans_selection.finish_pass(store, census);
+            self.bans_selection.scan_ticks = qpc().saturating_sub(scan).max(0) as u64;
+        }
+        self.bans.outcome = match &reader {
+            Err(reason) => Outcome::Unavailable { reason },
+            Ok(countries) => {
+                let selection = &self.bans_selection;
+                // An unlinked id has no owner; a link fault is unresolved,
+                // which withholds the read's rows (`retreat_bans`).
+                let owner = |raw: u32| {
+                    Ok(countries
+                        .link(raw)?
+                        .filter(|&slot| selection.contains(slot)))
+                };
+                let outcome = if sources.outcome.len() <= sources.rows.len() {
+                    sources.outcome
+                } else {
+                    Outcome::Unavailable {
+                        reason: "division presentation source count invalid",
+                    }
+                };
+                self.status_packet.retreat_bans(
+                    memory,
+                    context.base,
+                    sources.rows,
+                    outcome,
+                    &owner,
+                    &mut self.bans.rows,
+                )
+            }
+        };
+        qpc().saturating_sub(start).max(0) as u64
     }
 
     /// Finish an accepted worker failure without retrying the live acquisition.
     pub(crate) fn fail_owned_capture(&mut self, reason: &'static str) -> CaptureReport {
         self.movement.outcome = Outcome::Unavailable { reason };
         self.status.outcome = Outcome::Unavailable { reason };
+        self.bans.outcome = Outcome::Unavailable { reason };
         self.paths.len = 0;
         self.decode_pending = false;
         CaptureReport::default()
@@ -191,7 +305,7 @@ impl Captured {
         base: usize,
         state: usize,
         sources: Sources<'_, DivisionSeed>,
-    ) -> [u64; N] {
+    ) -> [u64; 2] {
         self.reset();
         let outcome = if sources.outcome.len() <= sources.rows.len() {
             sources.outcome
@@ -231,9 +345,9 @@ impl Captured {
     }
 
     /// Pure decode-worker projection from the current owned packets.
-    pub(crate) fn decode_inputs(&mut self) -> [u64; N] {
+    pub(crate) fn decode_inputs(&mut self) -> [u64; 2] {
         if !std::mem::take(&mut self.decode_pending) {
-            return [0; N];
+            return [0; 2];
         }
         let started = qpc();
         let movement = carmy::project_movement(
@@ -251,7 +365,7 @@ impl Captured {
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.movement.outcome, self.status.outcome]
+        [self.movement.outcome, self.status.outcome, self.bans.outcome]
     }
 
     pub(crate) fn table_inputs(
@@ -263,7 +377,18 @@ impl Captured {
                 unavailable("division presentation projection pending").into()
             });
         }
-        let [movement, mut status] = self.outcomes();
+        let [movement, mut status, bans] = self.outcomes();
+        let bans = scalar_table::<tables::DivisionRetreatBans, _>(
+            projection.as_deref_mut(),
+            bans,
+            &self.bans.rows,
+            |r| u128::from(r.division),
+            |r| DivisionRetreatBanRow {
+                division: r.division,
+                owner: r.owner,
+                bans: r.bans,
+            },
+        );
         let acclimatization = |r: &carmy::StatusRow| self.status_packet.acclimatization(r);
         if self
             .status
@@ -304,10 +429,11 @@ impl Captured {
                         weight: entry.weight,
                     })
                     .collect(),
+                move_flags: r.move_flags,
             },
         );
         let Some(paths) = self.paths.first.get(..self.paths.len) else {
-            return [unavailable("movement arena invalid").into(), status];
+            return [unavailable("movement arena invalid").into(), status, bans];
         };
         let span =
             |start: usize, len: usize| start.checked_add(len).and_then(|end| paths.get(start..end));
@@ -317,7 +443,7 @@ impl Captured {
                     || span(r.alternate_start, r.alternate_len).is_none()
             })
         }) {
-            return [unavailable("movement path spans invalid").into(), status];
+            return [unavailable("movement path spans invalid").into(), status, bans];
         }
         [
             project_table::<tables::DivisionMovement, _>(
@@ -360,6 +486,7 @@ impl Captured {
                 },
             ),
             status,
+            bans,
         ]
     }
     #[cfg(test)]
@@ -413,7 +540,7 @@ mod tests {
     fn vacant_presentation_has_no_owned_allocations_or_rows() {
         let mut capture = Captured::vacant();
         assert_eq!(capture.allocated_bytes(), 0);
-        assert_eq!(capture.decode_inputs(), [0; N]);
+        assert_eq!(capture.decode_inputs(), [0; 2]);
         assert!(
             capture
                 .tables()
@@ -442,6 +569,8 @@ mod tests {
         let context = CaptureContext {
             base: 0,
             game_state: 0x1000,
+            hour: 0,
+            force_full: true,
         };
         let sources = || Sources {
             rows: &seeds,
@@ -454,6 +583,7 @@ mod tests {
             let mut capture = Captured::with_capacities(&Capacities {
                 movement: 1,
                 status: 1,
+                bans: 1,
                 paths: 0,
                 geometry: cprovince::GeometryCapacities {
                     provinces: 1,
@@ -469,6 +599,7 @@ mod tests {
                 },
                 context,
                 sources(),
+                None,
             );
             let memory = PanicAt {
                 memory: engine::memory::SliceMemory {
@@ -479,13 +610,13 @@ mod tests {
             };
             assert!(
                 catch_unwind(AssertUnwindSafe(|| {
-                    capture.capture_owned(&memory, context, sources());
+                    capture.capture_owned(&memory, context, sources(), None);
                 }))
                 .is_err()
             );
             let report = capture.fail_owned_capture("worker failed");
             assert_eq!(report.ticks, [0; N]);
-            assert_eq!(capture.decode_inputs(), [0; N]);
+            assert_eq!(capture.decode_inputs(), [0; 2]);
             assert_eq!(
                 capture.outcomes(),
                 [Outcome::Unavailable {
@@ -500,7 +631,7 @@ mod tests {
             );
             capture.reset();
             capture.fail_owned_capture("worker stopped");
-            assert_eq!(capture.decode_inputs(), [0; N]);
+            assert_eq!(capture.decode_inputs(), [0; 2]);
             assert_eq!(
                 capture.outcomes(),
                 [Outcome::Unavailable {
@@ -515,6 +646,7 @@ mod tests {
         let capacity = Capacities {
             movement: 1,
             status: 0,
+            bans: 0,
             paths: 0,
             geometry: cprovince::GeometryCapacities {
                 provinces: 1,
@@ -568,7 +700,7 @@ mod tests {
             "projection runs once per capture"
         );
         capture.reset();
-        assert_eq!(capture.decode_inputs(), [0; N]);
+        assert_eq!(capture.decode_inputs(), [0; 2]);
     }
 
     #[test]
@@ -601,6 +733,7 @@ mod tests {
         let [
             TableView::Complete(TableRows::DivisionMovement(m)),
             TableView::Complete(TableRows::DivisionStatus(s)),
+            _,
         ] = capture.tables()
         else {
             panic!("complete companions");
@@ -640,16 +773,18 @@ mod tests {
             .unwrap();
         let mut scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        // The fixture has no country census, so the bans table is unavailable.
+        let [movement, status, bans] = capture.table_inputs(Some(&mut projection));
         assert!(
-            capture
-                .table_inputs(Some(&mut projection))
+            [movement, status]
                 .iter()
                 .all(|input| matches!(input, TableInput::ComparedEqual(_)))
         );
+        assert!(matches!(bans, TableInput::Sampled(TableView::Unavailable { .. })));
         // A path-only mutation and an independently changing status must both
         // defeat reuse, without changing their keys or arena spans.
         capture.paths.first[3] ^= 1;
-        let [movement, status] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _] = capture.table_inputs(Some(&mut projection));
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("changed movement must replace its freshly compared row");
         };
@@ -658,7 +793,7 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.paths.first[3] ^= 1;
         capture.status.rows[0].has_order = 1;
-        let [movement, status] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _] = capture.table_inputs(Some(&mut projection));
         assert!(matches!(movement, TableInput::ComparedEqual(_)));
         let TableInput::ComparedChanges { indices, rows, .. } = status else {
             panic!("changed status must replace its freshly compared row");
@@ -667,7 +802,7 @@ mod tests {
         assert_eq!(TableView::Complete(rows), capture.tables()[1]);
         capture.status.rows[0].has_order = 0;
         capture.movement.rows[0].alternate_start = usize::MAX;
-        let [movement, status] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _] = capture.table_inputs(Some(&mut projection));
         assert!(matches!(
             movement,
             TableInput::Sampled(TableView::Unavailable { .. })
@@ -682,6 +817,7 @@ mod tests {
         let mut capacity = Capacities {
             movement: 1,
             status: 1,
+            bans: 1,
             paths: 2,
             membership: MembershipCapacity::default(),
             ..Capacities::default()
@@ -703,7 +839,7 @@ mod tests {
             },
         );
         capture.decode_inputs();
-        assert_eq!(capture.outcomes(), [unavailable; N]);
+        assert_eq!(capture.outcomes()[..2], [unavailable; 2]);
         assert!(
             capture
                 .tables()
@@ -716,6 +852,6 @@ mod tests {
         assert!(capture.paths.first.len() >= 30);
         assert_eq!(capacity.membership, membership);
         capture.reset();
-        assert_eq!(capture.decode_inputs(), [0; N]);
+        assert_eq!(capture.decode_inputs(), [0; 2]);
     }
 }

@@ -2,6 +2,7 @@
 
 pub mod abilities;
 pub mod adjacencies;
+pub mod adjacency_rules;
 pub mod ambient;
 pub mod buildings;
 pub mod characters;
@@ -9,6 +10,7 @@ pub mod cities;
 pub mod content;
 pub mod country_names;
 pub mod defines;
+pub mod equipment;
 mod fields;
 pub mod fixed5;
 pub mod flags;
@@ -30,6 +32,8 @@ pub mod parser;
 pub mod particles;
 pub mod pdxshader;
 pub mod positions;
+pub mod province_geometry;
+pub mod province_graph;
 pub mod raids;
 pub mod railways;
 pub mod regions;
@@ -41,6 +45,8 @@ pub mod states;
 pub mod technology;
 pub mod terrain;
 pub mod train_gfx;
+pub mod triggers;
+pub mod unit_path;
 pub mod weather;
 
 pub use content::{

@@ -1891,8 +1891,12 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
-    for (refresh, payload) in job.characters_refresh.iter().zip(&job.characters_payload) {
-        let Some(payload) = payload.as_ref().filter(|_| *refresh) else {
+    for (refresh, payload) in job
+        .characters_refresh
+        .iter()
+        .zip(&mut job.characters_payload)
+    {
+        let Some(payload) = payload.as_mut().filter(|_| *refresh) else {
             continue;
         };
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
@@ -1900,6 +1904,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         let characters = frame.extended.characters_pilot();
         let before_bytes = characters.allocated_bytes();
         characters.decode_characters_payload(shared.base, payload, &mut decode_ticks);
+        characters.remember_templates(payload);
         shared.pool_bytes.fetch_add(
             characters.allocated_bytes().saturating_sub(before_bytes) as u64,
             Ordering::Relaxed,
@@ -3947,6 +3952,7 @@ mod tests {
         let pool_bytes_before = shared.pool_bytes.load(Ordering::Relaxed);
         let (trait_rows, trait_bytes) = direct.trait_capture_capacities();
         let ctx = CharactersCopyContext {
+            force_full: false,
             base: characters_test_kit::BASE,
             game_state: characters_test_kit::GAME_STATE,
             active: [true; 6],
@@ -4063,6 +4069,7 @@ mod tests {
                 let report = characters::copy_characters_refresh(
                     &memory,
                     CharactersCopyContext {
+                        force_full: false,
                         base: kit::BASE,
                         game_state: kit::GAME_STATE,
                         active: CHARACTER_MASKS[part],
@@ -4114,6 +4121,7 @@ mod tests {
             let report = characters::copy_characters_refresh(
                 &memory,
                 CharactersCopyContext {
+                    force_full: false,
                     base: kit::BASE,
                     game_state: kit::GAME_STATE,
                     active,
@@ -4166,9 +4174,14 @@ mod tests {
         let index = shared.free.pop().expect("pooled buffer");
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let capacities = crate::extended::projects::Capacities {
-            rows: [256; 12],
+            rows: [256; 16],
             program_names: 8192,
             program_candidates: 1024,
+            raid_type_tokens: 256,
+            raid_show_for: 256,
+            raid_transports: 16,
+            raid_equipment_items: 16,
+            raid_equipment_archetypes: 16,
         };
         let direct = projects_test_kit::direct(&memory, &capacities);
         let ctx = ProjectsCopyContext {

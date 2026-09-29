@@ -86,7 +86,9 @@ fn unit_scale_replay_layers() {
             });
             lap("names", camera_name, at, || hour.place_names());
             lap("overlay", camera_name, at, || {
-                hour.prepare_overlay(camera, [1920, 1080], 1.0, &perspective)
+                hour.hour_tables(&perspective).and_then(|tables| {
+                    hour.prepare_overlay_cached(camera, [1920, 1080], 1.0, &tables)
+                })
             });
             lap("rails", camera_name, at, || hour.rail_mesh());
             lap("buildings", camera_name, at, || {

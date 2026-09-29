@@ -9,8 +9,8 @@ publish.workspace = true
 crate-type = ["cdylib"]
 
 [features]
-# `opinion_verify` stays on by default until the opinion hooks' burn-in passes
-# (owner rule: verify stays on during burn-in).
+# `opinion_verify` stays on by default until the opinion hooks' burn-in
+# passes (owner rule: verify stays on during burn-in).
 default = ["portrait_changes", "advisor_changes", "opinion_changes", "opinion_verify"]
 advisor_changes = []
 # Bounded per-section wall/cycle measurements for diagnosing slow captures.

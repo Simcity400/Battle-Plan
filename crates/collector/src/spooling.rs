@@ -20,9 +20,9 @@ use replay::{
     frame::{BaselineToken, FrameEncoder, FrameInput, Metrics, TABLE_COUNT, TableInput, TableView},
     identity::SessionStart,
     rows::{
-        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow,
-        FactionRow, ProvinceRow, RowCodec, ScriptVariablesRow, StateRow, TableId, TableRows,
-        TableSchema, WarRelationRow, tables,
+        BorderConflictRow, CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow,
+        FactionMemberRow, FactionRow, ProvinceRow, RowCodec, ScriptVariablesRow, StateRow, TableId,
+        TableRows, TableSchema, WarRelationRow, tables,
     },
     spool::{ControlRecord, FileBackend, Record, SegmentBackend, SegmentedSpool},
 };
@@ -393,18 +393,31 @@ impl<B: SegmentBackend> Campaign<B> {
     /// A failed slice publishes its failure and keeps the earlier rows, whose
     /// read hours show their age once a later slice completes the table.
     /// SliceReads is assembled here: the read hour of every owner with rows
-    /// in each owned sliced table, replaced only for the owners read now.
+    /// in each owned sliced table, and of every owner a complete read covered
+    /// that returned none, replaced only for the owners read now.
+    ///
+    /// `walked` is whether the walk published rows for a table. Such a table
+    /// that conversion still made unavailable was never published although
+    /// the game thread saw a successful read, so its family is returned in
+    /// the second value (bit per [`crate::slicing::FAMILIES`] index) for the
+    /// game thread to forget ([`crate::slicing::SliceFingerprints::forget`]).
+    /// Frames already captured before that forget took effect trusted the
+    /// unpublished read, so the family's earlier rows are dropped here too:
+    /// until a full read replaces them, no hour merges rows from before the
+    /// failure, and a full refresh is requested.
     fn merge_sliced_inputs<'a>(
         &mut self,
         source: &mut FrameInput,
         selection: impl Fn(TableId) -> Option<&'a crate::slicing::SliceSelection>,
-    ) -> bool {
+        walked: impl Fn(TableId) -> bool,
+    ) -> (bool, u32) {
         if self.sliced_branch != Some(source.branch) {
             self.sliced_cache.clear();
             self.sliced_reads.clear();
             self.sliced_branch = Some(source.branch);
         }
         let mut retry = false;
+        let mut unpublished = 0_u32;
         // This frame's read hours: the cached ones, replaced below for every
         // owner a published read replaced.
         let mut frame_reads = self.sliced_reads.clone();
@@ -414,6 +427,13 @@ impl<B: SegmentBackend> Campaign<B> {
                 continue;
             }
             let input = &mut source.tables[table.index()];
+            if walked(table)
+                && matches!(input, TableInput::Sampled(TableView::Unavailable { reason })
+                    if *reason != replay::cadence::SKIPPED_REASON)
+                && let Some(family) = crate::slicing::family_of(table)
+            {
+                unpublished |= 1 << family;
+            }
             let Some(selection) = selection(table) else {
                 *input = TableInput::Sampled(unavailable("sliced table has no owner selection"));
                 continue;
@@ -459,6 +479,18 @@ impl<B: SegmentBackend> Campaign<B> {
                             );
                             if let Some(read) = read {
                                 frame_reads.insert((id, owner), read);
+                            }
+                        }
+                        // Owners without rows: those read now returned none;
+                        // an earlier such read stands while the owner lives.
+                        for owner in selection.read_owners() {
+                            frame_reads.entry((id, owner)).or_insert(hour);
+                        }
+                        for (&(_, owner), &read) in
+                            self.sliced_reads.range((id, 0)..=(id, u32::MAX))
+                        {
+                            if !selection.force_full && !captured(owner) && live(owner) {
+                                frame_reads.entry((id, owner)).or_insert(read);
                             }
                         }
                         // The complete merge is the next hour's base.
@@ -512,6 +544,19 @@ impl<B: SegmentBackend> Campaign<B> {
                 _ => {}
             }
         }
+        if unpublished != 0 {
+            for table in TableId::ALL {
+                if crate::slicing::family_of(table)
+                    .is_some_and(|family| unpublished & (1 << family) != 0)
+                {
+                    let id = table.index() as u32;
+                    self.sliced_cache.remove(&table);
+                    self.sliced_reads
+                        .retain(|&(read_table, _), _| read_table != id);
+                }
+            }
+            retry = true;
+        }
         source.tables[TableId::SliceReads.index()] =
             TableInput::SharedComplete(Arc::new(TableRows::SliceReads(
                 frame_reads
@@ -523,7 +568,7 @@ impl<B: SegmentBackend> Campaign<B> {
                     })
                     .collect(),
             )));
-        retry
+        (retry, unpublished)
     }
 
     // Spool-internal carry-forward keeps format-neutral byte-identical output.
@@ -1094,7 +1139,7 @@ impl SliceWork {
             "scan_ns": ns(self.scan_ticks),
             "scan_mean_ns": ns(self.scan_ticks).checked_div(self.frames).unwrap_or(0),
             "scan_max_ns": ns(self.scan_ticks_max),
-            "scope": "a sliced family reads one owner slice per hour plus owners whose change fingerprint changed (early reads); scan time is the fingerprint pass inside the family's worker job, not game-thread time; full frames read every owner; owners out of fingerprint range (ID >= 65536) are read in their slice only",
+            "scope": "a sliced family reads one owner slice per hour plus owners whose change fingerprint changed (early reads); scan time is the fingerprint pass inside the family's worker job, not game-thread time; full frames read every owner; owners out of fingerprint range (ID >= 65536) have no fingerprint and are read at every hour",
         })
     }
 }
@@ -1153,6 +1198,9 @@ struct Statistics {
     frame_encoding: Distribution,
     record_writes: Distribution,
     slices: BTreeMap<&'static str, SliceWork>,
+    /// Cumulative torn memo copies and refused raid rows.
+    raid_torn_memo_reads: u64,
+    raid_refused_leaders: u64,
 }
 
 impl Default for Statistics {
@@ -1192,6 +1240,8 @@ impl Default for Statistics {
             frame_encoding: Distribution::default(),
             record_writes: Distribution::default(),
             slices: BTreeMap::new(),
+            raid_torn_memo_reads: 0,
+            raid_refused_leaders: 0,
         }
     }
 }
@@ -1222,6 +1272,8 @@ pub(crate) struct PreparedFrame {
     qpc: i64,
     unknown: u64,
     retry_full: bool,
+    /// Sliced families whose read conversion withheld (bit per family).
+    unpublished_families: u32,
     skipped: [bool; TABLE_COUNT],
     work: WorkSample,
     pack_ticks: [Option<i64>; crate::extended::PACK_NAMES.len()],
@@ -1252,6 +1304,7 @@ struct CapturedStatistics {
     country_cache_status: engine::country_memory::SeedStatus,
     country_cache_entries: usize,
     country_cache_ns: u64,
+    raid_reads: crate::extended::RaidReadCounts,
 }
 
 impl CapturedStatistics {
@@ -1262,11 +1315,13 @@ impl CapturedStatistics {
         let map_bytes = captured.map.allocated_bytes();
         sampled_buffer_parts.push(("map", map_bytes));
         sampled_buffer_parts.push(("core", sampled_buffer_bytes - extended_bytes - map_bytes));
+        let raid_reads = captured.extended.raid_reads();
         let extended_outcomes = captured.extended.outcomes();
         let truncated_tables = [
             captured.countries_result,
             captured.links_result,
             captured.provinces_result,
+            captured.provinces.conflict_walk.outcome,
             captured.states_result,
             captured.divisions_result,
             captured.wars_result,
@@ -1290,6 +1345,7 @@ impl CapturedStatistics {
             country_cache_status: captured.country_cache_status,
             country_cache_entries: captured.country_cache_entries,
             country_cache_ns: captured.country_cache_ns,
+            raid_reads,
         }
     }
 
@@ -1308,6 +1364,12 @@ impl CapturedStatistics {
         stats.country_cache_status = self.country_cache_status;
         stats.country_cache_cost.record_ns(self.country_cache_ns);
         stats.truncated_tables = self.truncated_tables;
+        stats.raid_torn_memo_reads = stats
+            .raid_torn_memo_reads
+            .saturating_add(u64::from(self.raid_reads.torn_memo_reads));
+        stats.raid_refused_leaders = stats
+            .raid_refused_leaders
+            .saturating_add(u64::from(self.raid_reads.refused_leaders));
     }
 }
 
@@ -1360,6 +1422,9 @@ pub struct Processor {
     /// A staggered table truncated or a static table failed this hour; the
     /// runtime asks the collector to walk everything again next hour.
     retry_full: bool,
+    /// Sliced families a conversion withheld; the runtime has the collector
+    /// forget their fingerprint stores.
+    unpublished_families: u32,
 }
 
 impl Processor {
@@ -1375,6 +1440,7 @@ impl Processor {
             unknown_pending: 0,
             suppress_origin: false,
             retry_full: false,
+            unpublished_families: 0,
         })
     }
 
@@ -1550,9 +1616,17 @@ impl Processor {
             Some(&mut intel),
             Some(&mut projection),
         );
-        let sliced_retry = campaign.merge_sliced_inputs(&mut source, |table| {
-            captured.extended.slice_selection(table)
-        });
+        let outcomes = captured.extended.outcomes();
+        let (sliced_retry, unpublished_families) = campaign.merge_sliced_inputs(
+            &mut source,
+            |table| captured.extended.slice_selection(table),
+            |table| {
+                matches!(
+                    outcomes[table.index()],
+                    Outcome::Rows { .. } | Outcome::Truncated { .. }
+                )
+            },
+        );
         let retry_full = needs_retry(&source.tables) || sliced_retry;
         let skipped = campaign.apply_staggered_inputs(&mut source);
         if let Some(layout) = &captured.fixed_layout {
@@ -1569,6 +1643,7 @@ impl Processor {
             qpc: captured.qpc,
             unknown,
             retry_full,
+            unpublished_families,
             skipped,
             work,
             pack_ticks,
@@ -1585,12 +1660,14 @@ impl Processor {
             qpc,
             unknown,
             retry_full,
+            unpublished_families,
             skipped,
             mut work,
             pack_ticks,
             sampled,
             witness,
         } = prepared;
+        self.unpublished_families |= unpublished_families;
         let branch = source.branch;
         // Preparation already admitted this campaign. No other processor operation
         // may intervene between preparation and writing its baseline-bound input.
@@ -1712,6 +1789,12 @@ impl Processor {
         std::mem::take(&mut self.retry_full)
     }
 
+    /// Sliced families (bit per [`crate::slicing::FAMILIES`] index) whose
+    /// walked read a conversion withheld since the last call.
+    pub fn take_unpublished_families(&mut self) -> u32 {
+        std::mem::take(&mut self.unpublished_families)
+    }
+
     /// The campaign directories whose `spool.*` files `status.json` reports
     /// as `spool_bytes`. The status writer measures them off this thread.
     pub fn spool_directories(&self) -> Vec<std::path::PathBuf> {
@@ -1763,7 +1846,7 @@ impl Processor {
         let buildings_walk_ns = [
             stats.table_ns[replay::rows::TableId::StateBuildings.index()],
             stats.table_ns[replay::rows::TableId::ProvinceBuildings.index()],
-            stats.table_ns[replay::rows::TableId::BuildingDetection.index()],
+            stats.table_ns[replay::rows::TableId::RaidTargetStatuses.index()],
         ];
         // The owned war-vector acquisition is charged to WarRelations.
         let wars_walk_ns = [stats.table_ns[replay::rows::TableId::WarRelations.index()]];
@@ -1875,6 +1958,11 @@ impl Processor {
             },
             "dropped_frames": stats.dropped_frames,
             "truncated_tables": stats.truncated_tables,
+            "raid_reads": {
+                "torn_memo_reads": stats.raid_torn_memo_reads,
+                "refused_leader_rows": stats.raid_refused_leaders,
+                "scope": "cumulative over processed frames: raid path memo copies rejected because a game writer held its lock or changed its header during the copy (each retried, the table unavailable after three), and raid, cooldown and raid-target rows refused because their leader arm resolved to an object whose captor is not proven",
+            },
             "shared_read_groups": crate::extended::read_groups().into_iter().map(|(name, anchor, members)| {
                 // Game-thread copy-only for moved families: `table_ns` for
                 // moved tables carries copy ns only, while `decode_ns`
@@ -2228,7 +2316,7 @@ fn decoded_with_costs(
             scalar_table::<tables::Provinces, _>(
                 projection.as_deref_mut(),
                 captured.provinces_result,
-                &captured.provinces,
+                &captured.provinces.rows,
                 |province| u128::from(province.id),
                 |province| ProvinceRow {
                     id: province.id,
@@ -2237,6 +2325,8 @@ fn decoded_with_costs(
                     controller: province.controller,
                     victory_points: province.victory_points,
                     fort_positive: province.fort_positive,
+                    move_gate: province.move_gate,
+                    port_sea: province.port_sea,
                 },
             ),
             scalar_table::<tables::States, _>(
@@ -2314,6 +2404,7 @@ fn decoded_with_costs(
         for (destination, value) in tables.iter_mut().zip(core) {
             *destination = value;
         }
+        tables[TableId::BorderConflicts.index()] = border_conflicts_table(captured).into();
         pack_ticks = captured
             .extended
             .insert_tables(
@@ -2337,6 +2428,49 @@ fn decoded_with_costs(
         },
         pack_ticks,
     )
+}
+
+/// The BorderConflicts outcome after a Provinces walk: unavailable with it,
+/// and truncated with it, since a province the walk did not reach recorded
+/// no conflicts; otherwise the conflict walk's own outcome.
+fn border_conflicts_outcome(provinces: Outcome, conflicts: Outcome) -> Outcome {
+    match (provinces, conflicts) {
+        (Outcome::Unavailable { reason }, _) | (_, Outcome::Unavailable { reason }) => {
+            Outcome::Unavailable { reason }
+        }
+        (Outcome::Truncated { unread_rows, .. }, conflicts) => Outcome::Truncated {
+            len: conflicts.len(),
+            unread_rows: unread_rows.max(1).saturating_add(match conflicts {
+                Outcome::Truncated { unread_rows, .. } => unread_rows,
+                _ => 0,
+            }),
+        },
+        (Outcome::Rows { .. }, conflicts) => conflicts,
+    }
+}
+
+/// The border-conflict rows of the Provinces walk. They are complete only
+/// when that walk completed, and fail alone after it did.
+fn border_conflicts_table(captured: &Captured) -> TableView {
+    let province = &captured.provinces;
+    let outcome =
+        border_conflicts_outcome(captured.provinces_result, province.conflict_walk.outcome);
+    let Some(groups) = province.groups.get(..province.conflict_walk.groups_len) else {
+        return unavailable("border conflict group arena length invalid");
+    };
+    let list = |r: &engine::cprovince::ConflictRow| {
+        r.groups_start
+            .checked_add(r.groups_len)
+            .and_then(|end| groups.get(r.groups_start..end))
+    };
+    let rows = &province.conflicts[..outcome.len().min(province.conflicts.len())];
+    if rows.iter().any(|r| list(r).is_none()) {
+        return unavailable("border conflict groups outside captured arena");
+    }
+    table::<tables::BorderConflicts, _>(outcome, &province.conflicts, |r| BorderConflictRow {
+        province: r.province,
+        groups: list(r).unwrap().to_vec(),
+    })
 }
 
 fn unavailable_tables(reason: &'static str) -> [TableInput; TABLE_COUNT] {
@@ -2470,6 +2604,7 @@ mod tests {
             unknown_pending: 0,
             suppress_origin: false,
             retry_full: false,
+            unpublished_families: 0,
         };
         let mut source = Captured::new();
         source.wars_snapshot_sampled = true;
@@ -2638,6 +2773,7 @@ mod tests {
             unknown_pending: 0,
             suppress_origin: false,
             retry_full: false,
+            unpublished_families: 0,
         };
         for ns in [100, 200, 300] {
             processor.stats.callback.record_ns(ns);
@@ -2761,6 +2897,7 @@ mod tests {
             unknown_pending: 0,
             suppress_origin: false,
             retry_full: false,
+            unpublished_families: 0,
         };
         assert_eq!(processor.status()["table_reads_recorded"], false);
         let counts = ReadCounts {
@@ -2811,6 +2948,7 @@ mod tests {
             unknown_pending: 0,
             suppress_origin: false,
             retry_full: false,
+            unpublished_families: 0,
         };
         processor.stats.table_ns[replay::rows::TableId::ResearchTechnologies.index()] = 11;
         processor.stats.table_ns[replay::rows::TableId::ResearchSlots.index()] = 22;
@@ -2822,7 +2960,7 @@ mod tests {
         processor.stats.table_ns[replay::rows::TableId::WorldTension.index()] = 501;
         processor.stats.table_ns[replay::rows::TableId::WarRelations.index()] = 601;
         processor.stats.table_ns[replay::rows::TableId::StateBuildings.index()] = 701;
-        processor.stats.table_ns[replay::rows::TableId::BuildingDetection.index()] = 703;
+        processor.stats.table_ns[replay::rows::TableId::RaidTargetStatuses.index()] = 703;
         let status = processor.status();
         assert_eq!(status["buildings_walk_ns"], json!([701, 0, 703]));
         assert_eq!(status["research_walk_ns"], json!([11, 22, 33]));
@@ -2943,6 +3081,7 @@ mod tests {
             qpc: captured.qpc,
             unknown: 0,
             retry_full,
+            unpublished_families: 0,
             skipped: [false; TABLE_COUNT],
             work: WorkSample::default(),
             pack_ticks: [None; crate::extended::PACK_NAMES.len()],
@@ -3310,7 +3449,7 @@ mod tests {
             canonical_slot: 1,
         };
         captured.links_result = Outcome::Rows { len: 1 };
-        captured.provinces[0] = engine::cprovince::Row {
+        captured.provinces.rows[0] = engine::cprovince::Row {
             id: 6,
             state: 4,
             owner: 7,
@@ -3398,6 +3537,8 @@ mod tests {
                 controller: 2,
                 victory_points: i32::MIN,
                 fort_positive: 0,
+                move_gate: 0,
+                port_sea: 0,
             }]))
         );
         let value = &frame.complete::<tables::Clock>().unwrap()[0];
@@ -3470,6 +3611,39 @@ mod tests {
                 _ => unreachable!("fixture expected ordinary sampled rows"),
             })
         );
+    }
+
+    #[test]
+    fn border_conflicts_are_truncated_or_unavailable_with_their_provinces() {
+        let rows = |len| Outcome::Rows { len };
+        let truncated = |len, unread_rows| Outcome::Truncated { len, unread_rows };
+        let failed = Outcome::Unavailable {
+            reason: "conflicts",
+        };
+        let provinces = Outcome::Unavailable {
+            reason: "provinces",
+        };
+        assert_eq!(border_conflicts_outcome(rows(9), rows(3)), rows(3));
+        assert_eq!(border_conflicts_outcome(rows(9), failed), failed);
+        assert_eq!(border_conflicts_outcome(provinces, rows(3)), provinces);
+        // A truncated walk never reached some provinces' conflicts.
+        assert_eq!(
+            border_conflicts_outcome(truncated(9, 4), rows(3)),
+            truncated(3, 4)
+        );
+        assert_eq!(
+            border_conflicts_outcome(truncated(9, 4), truncated(3, 2)),
+            truncated(3, 6)
+        );
+        // Through a decoded frame.
+        let mut captured = captured(10);
+        captured.provinces_result = truncated(0, 5);
+        captured.provinces.conflict_walk.outcome = rows(0);
+        let frame = decoded(&captured, clock(10), 1);
+        assert!(matches!(
+            *frame.tables[TableId::BorderConflicts.index()],
+            TableView::Truncated { .. }
+        ));
     }
 
     #[test]
@@ -4079,6 +4253,7 @@ mod tests {
             unknown_pending: 0,
             suppress_origin: false,
             retry_full: false,
+            unpublished_families: 0,
         };
         let loss = LostObservation {
             campaign_id: text(b"../invalid"),
@@ -4153,7 +4328,132 @@ mod tests {
         input: &mut FrameInput,
         selection: crate::slicing::SliceSelection,
     ) -> bool {
-        campaign.merge_sliced_inputs(input, |_| Some(&selection))
+        campaign
+            .merge_sliced_inputs(input, |_| Some(&selection), |_| true)
+            .0
+    }
+
+    #[test]
+    fn a_walked_slice_that_fails_conversion_reports_its_family() {
+        use crate::slicing::{RESEARCH, SliceSelection};
+        let (mut campaign, _) = campaign();
+        let selection = SliceSelection::for_test(1, false, &[]);
+        let failed = || {
+            sliced_input(
+                1,
+                1,
+                TableView::Unavailable {
+                    reason: "walker produced duplicate engine ids".into(),
+                },
+            )
+        };
+        // The walk published rows, conversion withheld them: forget the family.
+        let (retry, unpublished) =
+            campaign.merge_sliced_inputs(&mut failed(), |_| Some(&selection), |_| true);
+        assert_eq!(unpublished, 1 << RESEARCH);
+        assert!(retry);
+        // A failed walk is invalidated by the collector itself.
+        let (_, unpublished) =
+            campaign.merge_sliced_inputs(&mut failed(), |_| Some(&selection), |_| false);
+        assert_eq!(unpublished, 0);
+        // A skipped table was never read.
+        let mut skipped = sliced_input(
+            1,
+            1,
+            TableView::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON.into(),
+            },
+        );
+        let (_, unpublished) =
+            campaign.merge_sliced_inputs(&mut skipped, |_| Some(&selection), |_| true);
+        assert_eq!(unpublished, 0);
+    }
+
+    /// A sliced table's first hour on a branch is a full read: it publishes
+    /// its complete rows with no earlier ones and records every owner's read
+    /// hour. Only a truncated first read has nothing to merge into, which is
+    /// why a full hour's capture must hold every row.
+    #[test]
+    fn a_first_full_hour_publishes_complete_sliced_rows_without_earlier_ones() {
+        use crate::slicing::SliceSelection;
+        let (mut first_campaign, _) = campaign();
+        let rows = research_rows(&[(1, 0, 5, 0), (2, 0, 6, 0)]);
+        let mut first = sliced_input(1, 0, TableView::Complete(rows.clone()));
+        assert!(!merge_with(
+            &mut first_campaign,
+            &mut first,
+            SliceSelection::for_test(0, true, &[]).with_census(&[1, 2])
+        ));
+        assert!(matches!(merged(&first), TableInput::SharedComplete(merged) if **merged == rows));
+        assert_eq!(reads(&first), [(1, 0), (2, 0)]);
+        let (mut fresh, _) = campaign();
+        let mut truncated = sliced_input(
+            1,
+            0,
+            TableView::Truncated {
+                rows: research_rows(&[(1, 0, 5, 0)]),
+                missing: 1,
+            },
+        );
+        assert!(merge_with(
+            &mut fresh,
+            &mut truncated,
+            SliceSelection::for_test(0, true, &[]).with_census(&[1, 2])
+        ));
+        assert!(matches!(
+            merged(&truncated),
+            TableInput::Sampled(TableView::Unavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn no_hour_merges_rows_from_before_an_unpublished_read() {
+        use crate::slicing::SliceSelection;
+        let (mut campaign, _) = campaign();
+        let full = |hour| {
+            sliced_input(
+                1,
+                hour,
+                TableView::Complete(research_rows(&[(1, 0, 5, hour), (2, 0, 6, hour)])),
+            )
+        };
+        assert!(!merge_with(
+            &mut campaign,
+            &mut full(0),
+            SliceSelection::for_test(0, true, &[])
+        ));
+        // Hour 1's read is withheld by conversion.
+        let mut failed = sliced_input(
+            1,
+            1,
+            TableView::Unavailable {
+                reason: "walker produced duplicate engine ids".into(),
+            },
+        );
+        let selection = SliceSelection::for_test(1, false, &[]);
+        let (_, unpublished) =
+            campaign.merge_sliced_inputs(&mut failed, |_| Some(&selection), |_| true);
+        assert_ne!(unpublished, 0);
+        // Hour 2 was captured before the game thread forgot: its slice is not
+        // merged onto hour 0's rows, and a full refresh is requested.
+        let mut slice = sliced_input(1, 2, TableView::Complete(research_rows(&[(2, 0, 7, 2)])));
+        assert!(merge_with(
+            &mut campaign,
+            &mut slice,
+            SliceSelection::for_test(2, false, &[])
+        ));
+        assert!(matches!(
+            merged(&slice),
+            TableInput::Sampled(TableView::Unavailable { .. })
+        ));
+        // The full read publishes again.
+        let mut refreshed = full(3);
+        assert!(!merge_with(
+            &mut campaign,
+            &mut refreshed,
+            SliceSelection::for_test(3, true, &[])
+        ));
+        assert!(matches!(merged(&refreshed), TableInput::SharedComplete(_)));
     }
 
     #[test]
@@ -4213,13 +4513,14 @@ mod tests {
         };
         assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
         assert_eq!(reads(&quiet), [(1, 1), (3, 1)]);
-        // A failed slice publishes its failure and keeps the earlier rows.
+        // A failed walk publishes its failure and keeps the earlier rows.
         let mut failed = sliced_input(1, 3, unavailable("research acquisition panicked"));
-        assert!(!merge_with(
-            &mut campaign,
-            &mut failed,
-            SliceSelection::for_test(3, false, &[])
-        ));
+        let selection = SliceSelection::for_test(3, false, &[]);
+        assert!(
+            !campaign
+                .merge_sliced_inputs(&mut failed, |_| Some(&selection), |_| false)
+                .0
+        );
         assert!(matches!(
             merged(&failed),
             TableInput::Sampled(TableView::Unavailable { .. })
@@ -4280,6 +4581,75 @@ mod tests {
             &mut other,
             SliceSelection::for_test(29, false, &[])
         ));
+    }
+
+    /// A walker that reads only some census owners (the building overrides
+    /// visit controllers only) stamps only the owners it read, including one
+    /// read with no rows; a census owner it never walked gets no read hour.
+    #[test]
+    fn a_tracking_walker_stamps_only_the_owners_it_read() {
+        use crate::slicing::SliceSelection;
+        let (mut campaign, _) = campaign();
+        let mut full = sliced_input(1, 0, TableView::Complete(research_rows(&[(2, 0, 20, 0)])));
+        let mut selection = SliceSelection::for_test(0, true, &[]).with_census(&[2, 3, 26]);
+        selection.track_reads();
+        // Owner 2 returned a row, 26 was read with none; 3 was never walked.
+        selection.mark_read(2);
+        selection.mark_read(26);
+        assert_eq!(selection.read_owners().collect::<Vec<_>>(), [2, 26]);
+        merge_with(&mut campaign, &mut full, selection);
+        assert_eq!(reads(&full), [(2, 0), (26, 0)]);
+        // Without tracking every covered census owner counts as read.
+        let untracked = SliceSelection::for_test(0, true, &[]).with_census(&[2, 3, 26]);
+        assert_eq!(untracked.read_owners().collect::<Vec<_>>(), [2, 3, 26]);
+    }
+
+    /// An owner a complete read covered that returned no rows still has its
+    /// read hour, kept while it lives and not read again; without a scan the
+    /// spool cannot know it was read, so it has none.
+    #[test]
+    fn owners_read_without_rows_keep_their_read_hour() {
+        use crate::slicing::SliceSelection;
+        let (mut campaign, _) = campaign();
+        let mut full = sliced_input(1, 0, TableView::Complete(research_rows(&[(2, 0, 20, 0)])));
+        merge_with(
+            &mut campaign,
+            &mut full,
+            SliceSelection::for_test(0, true, &[]).with_census(&[2, 26]),
+        );
+        assert_eq!(reads(&full), [(2, 0), (26, 0)]);
+        // Hour 2 reads slice 2 (owners 2 and 26); 26 again has no rows.
+        let mut slice = sliced_input(1, 2, TableView::Complete(research_rows(&[(2, 0, 21, 2)])));
+        merge_with(
+            &mut campaign,
+            &mut slice,
+            SliceSelection::for_test(2, false, &[]).with_census(&[2, 26]),
+        );
+        assert_eq!(reads(&slice), [(2, 2), (26, 2)]);
+        // Hour 3 reads neither; both keep their hours.
+        let mut quiet = sliced_input(1, 3, TableView::Complete(research_rows(&[])));
+        merge_with(
+            &mut campaign,
+            &mut quiet,
+            SliceSelection::for_test(3, false, &[]).with_census(&[2, 26]),
+        );
+        assert_eq!(reads(&quiet), [(2, 2), (26, 2)]);
+        // A census without 26 drops its read.
+        let mut gone = sliced_input(1, 4, TableView::Complete(research_rows(&[])));
+        merge_with(
+            &mut campaign,
+            &mut gone,
+            SliceSelection::for_test(4, false, &[]).with_census(&[2]),
+        );
+        assert_eq!(reads(&gone), [(2, 2)]);
+        // An early read of 26 without a scan does not know it returned no rows.
+        let mut unscanned = sliced_input(1, 27, TableView::Complete(research_rows(&[])));
+        merge_with(
+            &mut campaign,
+            &mut unscanned,
+            SliceSelection::for_test(27, false, &[26]),
+        );
+        assert_eq!(reads(&unscanned), [(2, 2)]);
     }
 
     #[test]

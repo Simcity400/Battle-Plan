@@ -12,6 +12,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::ArmyOrderPlans, |r| orders(frame, save, r));
     report.attempt_table(TableId::OrdersGroupPlans, |r| group_plans(frame, save, r));
     report.attempt_table(TableId::Fronts, |r| fronts(frame, save, r));
+    report.attempt_table(TableId::InvasionPreparations, |r| invasions(frame, save, r));
 }
 fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     // Only successors are serialized (COrderInstance::serialize@1410362c0);
@@ -270,12 +271,54 @@ fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
     Ok(())
 }
 
+/// InvasionPreparations against the saved naval invasions: one row per saved
+/// type-3 order, keyed as ArmyOrders, whose `progress` is the saved `time`
+/// (`COrderInstance+0xD8`, which `COrderInstance::serialize@1410362C0`
+/// writes only when nonzero) exactly.
+fn invasions(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    let mut rows: BTreeMap<_, _> = frame
+        .complete::<tables::InvasionPreparations>()?
+        .iter()
+        .map(|r| ((r.owner_group, r.instance), r))
+        .collect();
+    for (key, saved) in save
+        .plans
+        .orders
+        .iter()
+        .filter(|(_, order)| order.order_type == engine::corder_instance::TYPE_INVASION)
+    {
+        let label = format!("InvasionPreparations {}:{}", key.0, key.1);
+        let Some(row) = rows.remove(key) else {
+            report.difference(label, "absent", "present");
+            continue;
+        };
+        eq(
+            report,
+            &format!("{label}.progress"),
+            row.progress,
+            saved.preparation.as_ref().map_or(0, |time| time.raw),
+        );
+        report.compared("InvasionPreparations", 1);
+    }
+    for (key, _) in rows {
+        report.difference(
+            format!("InvasionPreparations {}:{}", key.0, key.1),
+            "present",
+            "absent",
+        );
+    }
+    report.limitation("GetRequiredInvasionPreparationHours@141016930's operands are live getter inputs the order serializer does not write: the target (the first path province's state controller), the country, relation and leader modifier terms, and whether the leader term counts (the HQ provider's root order) are not compared; the invasion census and the accumulated preparation are", "InvasionPreparations");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use replay::{
         frame::{Metrics, TABLE_COUNT},
-        rows::{ArmyOrderPlanRow, ArmyOrderRow, FrontRow, OrdersGroupPlanRow},
+        rows::{
+            ArmyOrderPlanRow, ArmyOrderRow, FrontRow, InvasionPreparationRow, OrdersGroupPlanRow,
+        },
     };
     #[test]
     fn every_saved_plan_operand_and_pair_order_can_fail_the_oracle() {
@@ -348,6 +391,8 @@ mod tests {
                 name: b"Army 1".to_vec(),
                 ..Default::default()
             }]));
+        *frame.tables[TableId::InvasionPreparations.index()] =
+            TableView::Complete(TableRows::InvasionPreparations(Vec::new()));
         let mut report = Report::default();
         compare(&frame, &saved, &mut report);
         assert!(report.differences.is_empty());
@@ -448,5 +493,61 @@ mod tests {
             .group_orders
             .insert(group, [vec![1, 5, 2, 9], vec![3]]);
         assert_eq!(run(&mut frame, &saved, group, vec![1, 9], vec![3]), 1);
+    }
+
+    #[test]
+    fn each_saved_invasion_needs_its_row_and_exact_progress() {
+        let (_, mut saved, _, _) = super::super::tests::fixture();
+        let group = (8_u64 << 32) | 53;
+        let invasion = |preparation: Option<&[u8]>| save::plans::Order {
+            order_type: 3,
+            preparation: preparation.map(|text| Decimal::parse(text).unwrap()),
+            ..Default::default()
+        };
+        saved
+            .plans
+            .orders
+            .insert((group, 1), invasion(Some(b"12.34567")));
+        // No saved time is zero progress; a move order has no row.
+        saved.plans.orders.insert((group, 2), invasion(None));
+        saved.plans.orders.insert(
+            (group, 3),
+            save::plans::Order {
+                order_type: 1,
+                ..Default::default()
+            },
+        );
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 0,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn::<_, TABLE_COUNT, _>(|_| TableView::Unavailable {
+                reason: "fixture".into(),
+            })
+            .map(Into::into),
+        };
+        let mut run = |rows: Vec<(u32, i64)>| {
+            *frame.tables[TableId::InvasionPreparations.index()] =
+                TableView::Complete(TableRows::InvasionPreparations(
+                    rows.into_iter()
+                        .map(|(instance, progress)| InvasionPreparationRow {
+                            owner_group: group,
+                            instance,
+                            progress,
+                            relation_term: Some(5),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ));
+            let mut report = Report::default();
+            invasions(&frame, &saved, &mut report).unwrap();
+            report.differences.len()
+        };
+        assert_eq!(run(vec![(1, 1_234_567), (2, 0)]), 0);
+        assert_eq!(run(vec![(1, 1_234_568), (2, 0)]), 1);
+        assert_eq!(run(vec![(1, 1_234_567)]), 1);
+        assert_eq!(run(vec![(1, 1_234_567), (2, 0), (3, 0)]), 1);
+        // A complete but empty table misses both saved invasions.
+        assert_eq!(run(Vec::new()), 2);
     }
 }

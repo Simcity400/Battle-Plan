@@ -42,12 +42,17 @@ const CHARACTER_PARTS: usize = extended::characters::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
 pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first, slot-hour Variants); 1 division inputs copy + divisions/intel dispatch + character roster, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated/character role dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/variants/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
-pub const INITIAL_CAPACITIES: [usize; 9] = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
+/// Core row capacities: countries, provinces, links, states, divisions, wars,
+/// factions, faction members, faction name bytes, border-conflict provinces and
+/// their admitted group handles.
+pub const INITIAL_CAPACITIES: [usize; 11] = [
+    512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384, 64, 256,
+];
 
 /// Countries has one row per canonical slot and CountryLinks one per raw
 /// link id; FactionMembers holds each country at most once. Order counters and
 /// the war snapshot follow the Countries capacity when the frame grows.
-pub fn raise_for_countries(core: &mut [usize; 9], slots: usize) {
+pub fn raise_for_countries(core: &mut [usize; 11], slots: usize) {
     let rows = crate::country_scale::rows(slots, 1);
     for index in [0, 2, 7] {
         crate::country_scale::raise(&mut core[index], rows);
@@ -238,7 +243,8 @@ pub struct Captured {
     pub clock: Option<Clock>,
     pub counters: Option<AllocationCounters>,
     pub countries: Vec<ccountry::Row>,
-    pub provinces: Vec<cprovince::Row>,
+    /// Provinces rows and the BorderConflicts rows of the same walk.
+    pub provinces: cprovince::Capture,
     pub states: Vec<cstate::Row>,
     pub divisions: Vec<carmy::Row>,
     /// A frame-owned spare for an input-stage capacity miss before any lease.
@@ -282,7 +288,7 @@ impl Captured {
     }
 
     pub(crate) fn with_capacities(
-        capacities: &[usize; 9],
+        capacities: &[usize; 11],
         map_capacities: &MapCapacities,
         extended_capacities: &extended::Capacities,
     ) -> Self {
@@ -305,7 +311,11 @@ impl Captured {
             clock: None,
             counters: None,
             countries: vec![ccountry::Row::default(); capacities[0]],
-            provinces: vec![cprovince::Row::default(); capacities[1]],
+            provinces: cprovince::Capture::with_capacity(
+                capacities[1],
+                capacities[9],
+                capacities[10],
+            ),
             states: vec![cstate::Row::default(); capacities[3]],
             divisions: vec![carmy::Row::default(); capacities[4]],
             division_fallback,
@@ -344,7 +354,7 @@ impl Captured {
             + self.wars_snapshot.allocated_bytes()
             + self.division_fallback.allocated_bytes() as usize
             + self.countries.capacity() * size_of::<ccountry::Row>()
-            + self.provinces.capacity() * size_of::<cprovince::Row>()
+            + self.provinces.allocated_bytes()
             + self.states.capacity() * size_of::<cstate::Row>()
             + self.divisions.capacity() * size_of::<carmy::Row>()
             + self.wars.capacity() * size_of::<cwar_relation::Row>()
@@ -410,7 +420,7 @@ impl Captured {
     }
 
     /// Only the spool thread grows a frame while it owns that frame's queue index.
-    pub fn grow(&mut self, capacities: &mut [usize; 9]) {
+    pub fn grow(&mut self, capacities: &mut [usize; 11]) {
         fn resize<T: Default + Clone>(rows: &mut Vec<T>, outcome: Outcome, capacity: &mut usize) {
             if let Outcome::Truncated { len, unread_rows } = outcome {
                 grow_capacity(capacity, len.saturating_add(unread_rows as usize));
@@ -425,10 +435,20 @@ impl Captured {
             &mut capacities[0],
         );
         resize(
-            &mut self.provinces,
+            &mut self.provinces.rows,
             self.provinces_result,
             &mut capacities[1],
         );
+        let conflicts = self.provinces.conflict_walk;
+        resize(
+            &mut self.provinces.conflicts,
+            conflicts.outcome,
+            &mut capacities[9],
+        );
+        grow_capacity(&mut capacities[10], conflicts.required_groups);
+        if self.provinces.groups.len() < capacities[10] {
+            self.provinces.groups.resize(capacities[10], 0);
+        }
         resize(&mut self.links, self.links_result, &mut capacities[2]);
         self.order_counters.grow(capacities[0]);
         self.wars_snapshot.grow(capacities[0]);
@@ -578,8 +598,6 @@ pub struct Shared {
     /// it after the hook is quiescent.
     pub pending: UnsafeCell<LossBatch>,
     cadence: UnsafeCell<CadenceState>,
-    /// Research assignment fingerprints; loaned to the Research job each hour.
-    /// Only the game thread takes and returns it.
     /// One store per sliced family (`slicing::FAMILIES`), loaned to that
     /// family's job each hour. Only the game thread takes and returns them.
     slice_fingerprints: [UnsafeCell<Option<Box<crate::slicing::SliceFingerprints>>>;
@@ -598,6 +616,10 @@ pub struct Shared {
     /// Set by the spool when a staggered table truncated or a static table
     /// failed: the next hour walks everything again, with grown buffers.
     pub force_next: AtomicBool,
+    /// Sliced families (bit per [`crate::slicing::FAMILIES`] index) whose
+    /// walked read the spool could not publish; the next hour forgets their
+    /// fingerprint stores, so every owner is read again.
+    pub forget_families: std::sync::atomic::AtomicU32,
     /// The lexer's maximum token id at the last dictionary walk; a change
     /// means tokens were appended and the static dictionary is walked again.
     pub lexical_max: AtomicI32,
@@ -715,6 +737,7 @@ impl Shared {
             template_models: Mutex::new(TemplateModelStats::default()),
             template_models_missed: AtomicU64::new(0),
             force_next: AtomicBool::new(false),
+            forget_families: std::sync::atomic::AtomicU32::new(0),
             lexical_max: AtomicI32::new(-1),
             fixed_layout: OnceLock::new(),
             modifier_table: [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)],
@@ -898,6 +921,19 @@ pub(crate) fn completed_callback_ticks(base: &AtomicI64, tail: &AtomicI64) -> Op
     (base > 0 && tail > 0).then(|| base.saturating_add(tail))
 }
 
+/// Forget the fingerprint stores of every family the spool could not publish.
+fn forget_unpublished_families(shared: &Shared) {
+    let families = shared.forget_families.swap(0, Ordering::AcqRel);
+    for (family, store) in shared.slice_fingerprints.iter().enumerate() {
+        if families & (1 << family) != 0 {
+            // SAFETY: game thread only, between callbacks' loans.
+            if let Some(store) = unsafe { &mut *store.get() }.as_mut() {
+                store.forget();
+            }
+        }
+    }
+}
+
 /// Take a sliced family's fingerprint store for this hour's job.
 ///
 /// # Safety
@@ -909,6 +945,18 @@ unsafe fn take_slice_store(
     unsafe { &mut *shared.slice_fingerprints[family].get() }
         .take()
         .expect("sliced family store returned by the previous callback")
+}
+
+/// Return a store [`take_slice_store`] lent.
+///
+/// # Safety
+/// Game thread only, in the callback that took it.
+unsafe fn return_slice_store(
+    shared: &Shared,
+    family: usize,
+    store: Box<crate::slicing::SliceFingerprints>,
+) {
+    unsafe { *shared.slice_fingerprints[family].get() = Some(store) };
 }
 
 /// Restore an owned frame's absorbed witnesses, record its lost hour and return
@@ -1131,6 +1179,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         };
         frame.countries_result = unavailable;
         frame.provinces_result = unavailable;
+        frame.provinces.conflict_walk = cprovince::ConflictWalk::default();
         frame.states_result = unavailable;
         frame.divisions_result = unavailable;
         frame.wars_result = unavailable;
@@ -1286,6 +1335,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             let cadence = unsafe { &mut *shared.cadence.get() };
             let continuous = cadence.continuous(&clock);
             let recovery = shared.force_next.swap(false, Ordering::AcqRel);
+            forget_unpublished_families(shared);
             let force_full = cadence.force_full(&clock) | recovery;
             // A periodic encoding keyframe does not interrupt native mutation
             // observation. Its freshly certified owned rows remain complete.
@@ -1457,9 +1507,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             frame.map.orders.walk_roots(&memory, shared.base);
             let naval_roots_ticks =
                 naval_job.capture_roots(frame.map.orders.roots(), frame.map.orders.root_outcome);
-            let orders_request = frame
-                .extended
-                .take_orders_request(&mut frame.map.orders, shared.base);
+            let orders_request =
+                frame
+                    .extended
+                    .take_orders_request(&mut frame.map.orders, shared.base, state);
             let orders_bytes = orders_request.allocated_bytes();
             let orders_pending = queue!(acquisition::Job::Orders(orders_request));
             let wing_limits = frame.extended.air_wing_pilot().wing_limits();
@@ -1814,6 +1865,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             let characters_ctx = extended::characters::CharactersCopyContext {
                 base: shared.base,
                 game_state: state,
+                force_full,
                 trait_rows,
                 trait_bytes,
                 active: decode::CHARACTERS
@@ -1875,6 +1927,45 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     .take_ordinary_request(&country_snapshot, shared.base, state);
             let ordinary_bytes = ordinary_request.allocated_bytes();
             let ordinary_pending = queue!(acquisition::Job::Ordinary(ordinary_request));
+            // SAFETY: only this callback takes and returns the stores.
+            let (launch_store, state_stores) = unsafe {
+                (
+                    take_slice_store(shared, crate::slicing::RAID_LAUNCH),
+                    crate::extended::RaidStateStores {
+                        states: take_slice_store(shared, crate::slicing::RAID_STATE),
+                        buildings: take_slice_store(shared, crate::slicing::RAID_BUILDINGS),
+                    },
+                )
+            };
+            let raid_state_pending = queue!(acquisition::Job::RaidState(
+                frame.extended.take_raid_state_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    state_stores,
+                )
+            ));
+            let raid_targets_pending = queue!(acquisition::Job::RaidTargets(
+                frame.extended.take_raid_targets_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                )
+            ));
+            let raid_launch_pending = queue!(acquisition::Job::RaidLaunch(
+                frame.extended.take_raid_launch_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    launch_store,
+                )
+            ));
             // The stability family's store travels with the Slow job. A missing
             // store only drops the fingerprint's early reads for this hour.
             // SAFETY: only this callback takes and returns the store.
@@ -2006,10 +2097,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     (queue!(acquisition::Job::Governance(request)), bytes)
                 }
             };
-            let presentation_request =
-                frame
-                    .extended
-                    .take_presentation_request(&country_snapshot, shared.base, state);
+            let presentation_request = frame.extended.take_presentation_request(
+                &country_snapshot,
+                shared.base,
+                state,
+                clock.hour,
+                force_full,
+                // SAFETY: only this callback takes and returns the store.
+                Some(unsafe { take_slice_store(shared, crate::slicing::RETREAT_BANS) }),
+            );
             let presentation_bytes = presentation_request.allocated_bytes();
             let presentation_pending = queue!(acquisition::Job::Presentation(presentation_request));
             let eta_ranges = frame.extended.plan_eta_input_ranges();
@@ -2568,6 +2664,31 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     }
                 }
             }
+            let (raid_state_request, _, raid_state_failure) =
+                completed!(raid_state_pending, RaidState);
+            let state_stores = frame
+                .extended
+                .restore_raid_state_request(raid_state_request, raid_state_failure.is_none());
+            let (raid_targets_request, _, raid_targets_failure) =
+                completed!(raid_targets_pending, RaidTargets);
+            frame
+                .extended
+                .restore_raid_targets_request(raid_targets_request, raid_targets_failure.is_none());
+            let (raid_launch_request, _, raid_launch_failure) =
+                completed!(raid_launch_pending, RaidLaunch);
+            let launch_store = frame
+                .extended
+                .restore_raid_launch_request(raid_launch_request, raid_launch_failure.is_none());
+            // SAFETY: only this callback takes and returns the stores.
+            unsafe {
+                return_slice_store(shared, crate::slicing::RAID_LAUNCH, launch_store);
+                return_slice_store(shared, crate::slicing::RAID_STATE, state_stores.states);
+                return_slice_store(
+                    shared,
+                    crate::slicing::RAID_BUILDINGS,
+                    state_stores.buildings,
+                );
+            };
             let (gated_request, _, gated_failure) = completed!(gated_pending, Gated);
             frame
                 .extended
@@ -2685,9 +2806,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 };
                 report
             });
-            frame
+            if let Some(store) = frame
                 .extended
-                .restore_presentation_request(presentation_request, presentation_report);
+                .restore_presentation_request(presentation_request, presentation_report)
+            {
+                // SAFETY: only this callback takes and returns the store.
+                unsafe { return_slice_store(shared, crate::slicing::RETREAT_BANS, store) };
+            }
             for pending in eta_inputs_pending.into_iter().flatten() {
                 // SAFETY: this thread still owns the live acquisition boundary.
                 let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
@@ -4843,6 +4968,40 @@ mod tests {
     }
 
     #[test]
+    fn a_family_the_spool_could_not_publish_is_read_in_full_next_hour() {
+        use crate::slicing::{RAID_STATE, RESEARCH, SliceSelection};
+        let shared = Shared::new(0, 0, 1);
+        // SAFETY: test thread only; nothing else holds the stores.
+        let store = |family: usize| {
+            unsafe { &mut *shared.slice_fingerprints[family].get() }
+                .as_mut()
+                .unwrap()
+        };
+        let early_at = |family: usize, hour: i32| {
+            let mut next = SliceSelection::for_test(hour, false, &[]);
+            for owner in [7, 9] {
+                next.scan(store(family), owner, Some(1));
+            }
+            store(family).finish_scan();
+            next.early_count
+        };
+        for family in [RESEARCH, RAID_STATE] {
+            early_at(family, 0);
+            assert_eq!(early_at(family, 1), 0);
+        }
+        // The spool withheld a converted research read.
+        shared
+            .forget_families
+            .fetch_or(1 << RESEARCH, Ordering::Release);
+        forget_unpublished_families(&shared);
+        assert_eq!(early_at(RESEARCH, 2), 2);
+        assert_eq!(early_at(RAID_STATE, 2), 0);
+        // Once only.
+        forget_unpublished_families(&shared);
+        assert_eq!(early_at(RESEARCH, 3), 0);
+    }
+
+    #[test]
     fn decode_queue_full_takes_the_existing_gap_branch_with_existing_counters() {
         let shared = Shared::new(0, 0, 1);
         let index = shared.free.pop().expect("pooled buffer");
@@ -5694,6 +5853,7 @@ mod tests {
         let [
             TableView::Complete(TableRows::DivisionMovement(movement)),
             TableView::Complete(TableRows::DivisionStatus(status)),
+            _,
         ] = &before
         else {
             panic!("complete presentation tables");

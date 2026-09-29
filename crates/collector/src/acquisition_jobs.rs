@@ -161,6 +161,40 @@ pub(crate) struct SlowRequest {
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SlowReport;
+pub(crate) struct RaidStateRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub packs: Box<crate::extended::RaidStatePacks>,
+    /// The state and building-resource families' stores, loaned for this hour.
+    pub stores: crate::extended::RaidStateStores,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RaidStateReport;
+pub(crate) struct RaidLaunchRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub packs: Box<crate::extended::RaidLaunchPacks>,
+    /// The launch family's store, loaned for this hour.
+    pub store: Box<crate::slicing::SliceFingerprints>,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RaidLaunchReport;
+pub(crate) struct RaidTargetsRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub packs: Box<crate::extended::RaidTargetPacks>,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RaidTargetsReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct OrdinaryReport;
 pub(crate) struct LateRequest {
@@ -177,6 +211,9 @@ pub(crate) struct LateReport;
 /// the first dispatch burst; the Late job reads the roots it leaves.
 pub(crate) struct OrdersRequest {
     pub base: usize,
+    /// This pass's game state, for the invasion preparations' countries and
+    /// provinces.
+    pub game_state: usize,
     pub orders: crate::map_capture::Orders,
     pub plans: crate::extended::plans::Captured,
 }
@@ -209,7 +246,7 @@ pub(crate) struct ProvinceUnitOrderRequest {
 }
 /// Independent core-map walk moved to the pool so its pointer chase overlaps the
 /// other readers. Owns its pre-sized row buffers; the callback restores them.
-pub(crate) type ProvincesRequest = GatherRequest<Vec<engine::cprovince::Row>>;
+pub(crate) type ProvincesRequest = GatherRequest<engine::cprovince::Capture>;
 pub(crate) type ProvincesReport = GatherReport;
 pub(crate) struct ShipModelsRequest {
     pub countries: Arc<engine::country_memory::Cache>,
@@ -233,6 +270,8 @@ pub(crate) struct PresentationRequest {
     pub context: division_presentation::CaptureContext,
     pub captured: division_presentation::Captured,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    /// The `retreat_bans` family's owner store, loaned for the hour.
+    pub store: Option<Box<crate::slicing::SliceFingerprints>>,
 }
 impl PresentationRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -320,6 +359,9 @@ pub(crate) enum Job {
     ProvinceUnitOrder(ProvinceUnitOrderRequest),
     Ordinary(OrdinaryRequest),
     Slow(SlowRequest),
+    RaidState(RaidStateRequest),
+    RaidLaunch(RaidLaunchRequest),
+    RaidTargets(RaidTargetsRequest),
     Late(LateRequest),
     Orders(OrdersRequest),
     Gated(GatedRequest),
@@ -364,6 +406,9 @@ pub(crate) enum Report {
     ProvinceUnitOrder(province_unit_order::CaptureReport),
     Ordinary(OrdinaryReport),
     Slow(SlowReport),
+    RaidState(RaidStateReport),
+    RaidLaunch(RaidLaunchReport),
+    RaidTargets(RaidTargetsReport),
     Late(LateReport),
     Orders(OrdersReport),
     Gated(GatedReport),
@@ -413,6 +458,9 @@ pub(crate) enum Role {
     ProvinceUnitOrder,
     Ordinary,
     Slow,
+    RaidState,
+    RaidLaunch,
+    RaidTargets,
     Late,
     Orders,
     Gated,
@@ -475,6 +523,9 @@ impl Role {
             Self::ProvinceUnitOrder => province_unit_order::TABLES[0],
             Self::Ordinary => T::LandCombatDetails,
             Self::Slow => T::ProvinceNames,
+            Self::RaidState => T::StateResourceInputs,
+            Self::RaidLaunch => T::RaidCountryInputs,
+            Self::RaidTargets => T::RaidTargetStatuses,
             Self::Late => T::WingEquipment,
             Self::Orders => T::ArmyOrders,
             Self::Gated => T::VolunteerHosts,
@@ -536,6 +587,9 @@ impl Role {
             | Self::Relations
             | Self::Ordinary
             | Self::Slow
+            | Self::RaidState
+            | Self::RaidLaunch
+            | Self::RaidTargets
             | Self::Gated
             | Self::Variants => 5,
             Self::Presentation | Self::EtaInputs => 6,
@@ -544,7 +598,7 @@ impl Role {
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 43;
+pub(crate) const ROLE_COUNT: usize = 46;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -579,6 +633,9 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::ProvinceUnitOrder,
     Role::Ordinary,
     Role::Slow,
+    Role::RaidState,
+    Role::RaidLaunch,
+    Role::RaidTargets,
     Role::Late,
     Role::Orders,
     Role::Gated,
@@ -628,6 +685,9 @@ impl Job {
             Self::ProvinceUnitOrder(..) => Role::ProvinceUnitOrder,
             Self::Ordinary(..) => Role::Ordinary,
             Self::Slow(..) => Role::Slow,
+            Self::RaidState(..) => Role::RaidState,
+            Self::RaidLaunch(..) => Role::RaidLaunch,
+            Self::RaidTargets(..) => Role::RaidTargets,
             Self::Late(..) => Role::Late,
             Self::Orders(..) => Role::Orders,
             Self::Gated(..) => Role::Gated,
@@ -1050,6 +1110,41 @@ fn run_with_memory(
             );
             Report::Slow(SlowReport)
         }
+        Job::RaidState(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.packs.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+                &mut request.stores,
+            );
+            Report::RaidState(RaidStateReport)
+        }
+        Job::RaidLaunch(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.packs.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+                &mut request.store,
+            );
+            Report::RaidLaunch(RaidLaunchReport)
+        }
+        Job::RaidTargets(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.packs.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+            );
+            Report::RaidTargets(RaidTargetsReport)
+        }
         Job::Late(request) => {
             request.packs.capture(
                 memory,
@@ -1066,6 +1161,7 @@ fn run_with_memory(
             request.plans.visit(
                 memory,
                 request.base,
+                request.game_state,
                 request.orders.roots(),
                 request.orders.visits(),
                 request.orders.successor_lists(),
@@ -1100,9 +1196,7 @@ fn run_with_memory(
         }
         Job::Provinces(request) => {
             let (base, game_state) = (request.base, request.game_state);
-            Report::Provinces(
-                request.run(|rows| engine::cprovince::walk(memory, base, game_state, rows)),
-            )
+            Report::Provinces(request.run(|capture| capture.walk(memory, base, game_state)))
         }
         Job::Factions(request) => Report::Factions(acquisition_factions::run(request, memory)),
         Job::Countries(request) => Report::Countries(request.run(memory)),
@@ -1121,6 +1215,7 @@ fn run_with_memory(
                     rows: inputs.map_or(&[], |inputs| inputs.seeds()),
                     outcome: inputs.map_or(missing, |inputs| inputs.outcome()),
                 },
+                request.store.as_deref_mut(),
             ))
         }
         Job::EtaInputs(request) => {
@@ -1828,6 +1923,7 @@ mod tests {
         let mut world = Some(Job::World(world_request()));
         let mut characters = Some(Job::Characters(CharactersRequest {
             context: CharactersCopyContext {
+                force_full: false,
                 base: 0,
                 game_state: 0x1000,
                 trait_rows: [0; 2],
@@ -1891,13 +1987,13 @@ mod tests {
                     Job::Provinces(ProvincesRequest {
                         base: 0,
                         game_state,
-                        payload: vec![engine::cprovince::Row::default(); 2],
+                        payload: engine::cprovince::Capture::with_capacity(2, 0, 0),
                     })
                 };
                 let mut accepted = Some(make());
                 let mut retained = Some(make());
                 let pointer = match retained.as_ref().unwrap() {
-                    Job::Provinces(request) => request.payload.as_ptr(),
+                    Job::Provinces(request) => request.payload.rows.as_ptr(),
                     _ => unreachable!(),
                 };
                 let mut batch = Batch::new(&pool);
@@ -1913,7 +2009,7 @@ mod tests {
                 let Job::Provinces(request) = &inline.request else {
                     panic!("province request routing changed");
                 };
-                assert_eq!(request.payload.as_ptr(), pointer);
+                assert_eq!(request.payload.rows.as_ptr(), pointer);
                 let mut job_reads = read_accounting::ZERO;
                 job_reads[TableId::Provinces.index()] = reads;
                 let mut expected = job_reads;

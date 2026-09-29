@@ -208,6 +208,17 @@ pub fn states(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
+/// The `human_ai` debug byte `CCountry::IsAIControlledOrOverride@1406F3240`
+/// ORs into every country's AI verdict; the console and debug UI toggle it.
+pub const HUMAN_AI_RVA: usize = 0x0331_7269;
+
+/// The `human_ai` byte.
+pub fn human_ai(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
+    base.checked_add(HUMAN_AI_RVA)
+        .and_then(|address| read(memory, address))
+        .ok_or("human_ai byte unreadable")
+}
+
 /// The simulation's DLC feature mask.
 pub fn dlc_mask(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
     base.checked_add(dlc_feature_state::MASK_RVA)

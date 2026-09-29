@@ -951,6 +951,7 @@ mod tests {
     }
     fn context() -> CharactersCopyContext {
         CharactersCopyContext {
+            force_full: false,
             base: IMAGE,
             game_state: ADDRESS,
             active: PART_MASKS[2],
@@ -965,6 +966,7 @@ mod tests {
             IMAGE,
             ADDRESS,
             captured.family().select(PART_MASKS[2]),
+            None,
             None,
         )[2];
         assert_eq!(cache.result.outcome, direct.outcome);
@@ -989,6 +991,7 @@ mod tests {
             IMAGE,
             ADDRESS,
             direct.family().select(PART_MASKS[2]),
+            None,
             None,
         )[2];
         assert_eq!(cache.result.outcome, expected.outcome);
@@ -1270,6 +1273,7 @@ mod tests {
                 IMAGE,
                 ADDRESS,
                 direct.family().select(PART_MASKS[2]),
+                None,
                 None,
             )[2];
             assert_eq!(direct_source.next.get(), 3);

@@ -1,18 +1,20 @@
-//! Persistent foreign-building detection bits, in the buildings' cadence.
+//! The raid system's target statuses: scope, `valid` and every country's
+//! persistent detection bits. Offers and foreign `need_detection` buildings
+//! read them for any viewer; hourly, as buildings are.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
-use engine::{Memory, building_detection as native, walk::Outcome};
+use engine::{Memory, raid_target_statuses as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
     frame::TableView,
-    rows::{BuildingDetectionRow, TableId, tables},
+    rows::{RaidScope, RaidTargetStatusRow, TableId, tables},
 };
 
 pub const N: usize = 1;
-pub const TABLES: [TableId; N] = [TableId::BuildingDetection];
+pub const TABLES: [TableId; N] = [TableId::RaidTargetStatuses];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,8 +43,8 @@ pub struct Captured {
     rows: CaptureRows<native::Row>,
     detected: Arena<u8>,
     required_rows: usize,
-    /// Country slots implied by the widest detection vector seen.
-    slots: usize,
+    /// Rows refused this hour for an unproven leader captor.
+    refused_leaders: u32,
 }
 
 impl Captured {
@@ -62,20 +64,25 @@ impl Captured {
             rows: CaptureRows::new(capacity.rows),
             detected: Arena::new(capacity.detected),
             required_rows: 0,
-            slots: 0,
+            refused_leaders: 0,
         }
     }
+    /// Rows refused this hour for an unproven leader captor.
+    pub(crate) fn refused_leaders(&self) -> u32 {
+        self.refused_leaders
+    }
+
     pub fn reset(&mut self) {
         self.rows.reset();
         self.detected.reset();
         self.required_rows = 0;
+        self.refused_leaders = 0;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes() + self.detected.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(&mut capacity.rows, self.required_rows);
-        capacity.raise_for_countries(self.slots);
         self.rows.grow(&mut capacity.rows);
         self.detected.grow(&mut capacity.detected);
     }
@@ -107,7 +114,7 @@ impl Captured {
         self.detected.len = walk.detected_len;
         self.detected.required = walk.required_detected;
         self.required_rows = walk.required_rows;
-        self.slots = walk.widest.saturating_mul(8);
+        self.refused_leaders = walk.refused_leaders;
         [qpc().saturating_sub(started).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -115,10 +122,10 @@ impl Captured {
     }
     pub fn tables(&self) -> [TableView; N] {
         let Some(bytes) = self.detected.first.get(..self.detected.len) else {
-            return [unavailable("building detection arena length invalid")];
+            return [unavailable("raid target detection arena length invalid")];
         };
         let Some(rows) = self.rows.rows.get(..self.rows.outcome.len()) else {
-            return [unavailable("building detection row count invalid")];
+            return [unavailable("raid target row count invalid")];
         };
         let bits = |row: &native::Row| {
             row.detected_start
@@ -126,20 +133,33 @@ impl Captured {
                 .and_then(|end| bytes.get(row.detected_start..end))
         };
         if rows.iter().any(|row| bits(row).is_none()) {
-            return [unavailable("building detection outside captured arena")];
+            return [unavailable("raid target detection outside captured arena")];
         }
-        [table::<tables::BuildingDetection, _>(
+        [table::<tables::RaidTargetStatuses, _>(
             self.rows.outcome,
             rows,
-            |row| BuildingDetectionRow {
+            |row| RaidTargetStatusRow {
                 ordinal: row.ordinal,
-                building_type: row.building_type,
-                location: row.location,
-                status_flags: row.status_flags,
-                country: row.country,
+                valid: row.valid,
+                scope: scope(&row.scope),
                 detected: bits(row).unwrap().to_vec(),
             },
         )]
+    }
+}
+
+/// The replay form of a native target scope.
+pub(crate) fn scope(row: &engine::craid_target::Row) -> RaidScope {
+    RaidScope {
+        province: row.province,
+        state: row.state,
+        leader_reference: row.leader_reference,
+        leader_province: row.leader_province,
+        building_type: row.building_type,
+        building_location: row.building_location,
+        building_flags: row.building_flags,
+        building_country: row.building_country,
+        leader_country: row.leader_country,
     }
 }
 
@@ -149,14 +169,12 @@ mod tests {
     use replay::rows::TableRows;
 
     #[test]
-    fn growth_sizes_detection_bits_for_every_country_slot() {
+    fn detection_capacity_sizes_every_row_for_every_country_slot() {
         let mut capacity = Capacities {
             rows: 100,
             detected: 1,
         };
-        let mut captured = Captured::with_capacities(&capacity);
-        captured.slots = 5_000;
-        captured.grow(&mut capacity);
+        capacity.raise_for_countries(5_000);
         assert_eq!(capacity.detected, 100 * 625);
     }
 
@@ -174,7 +192,7 @@ mod tests {
         captured.detected.first.copy_from_slice(&[4, 0x80]);
         captured.detected.len = 2;
         captured.rows.outcome = Outcome::Rows { len: 1 };
-        let [TableView::Complete(TableRows::BuildingDetection(rows))] = captured.tables() else {
+        let [TableView::Complete(TableRows::RaidTargetStatuses(rows))] = captured.tables() else {
             panic!("expected complete detection rows");
         };
         assert_eq!((rows[0].ordinal, rows[0].detected.as_slice()), (7, &[4, 0x80][..]));
