@@ -34,6 +34,7 @@ mod raw;
 mod raw_memory;
 mod raw_plan;
 mod read_accounting;
+mod relation_changes;
 mod roster;
 mod runtime;
 mod sampling;
@@ -44,6 +45,7 @@ mod status_writer;
 mod table_capture;
 #[cfg(test)]
 mod unit_scale_tests;
+mod watch_registry;
 
 use std::ffi::c_void;
 use windows_sys::Win32::{

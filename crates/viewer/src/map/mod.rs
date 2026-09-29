@@ -2,6 +2,8 @@
 //! that consume them; each module owns one intermediate or one pass.
 
 // counters
+mod air_participants;
+mod air_registry_sources;
 pub mod aircraft;
 pub mod allegiance;
 pub mod atlas_pages;

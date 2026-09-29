@@ -378,6 +378,7 @@ mod tests {
     const OBJECT: usize = 0x2000;
     const INTEL_TABLES: usize = 0x5000_0000;
     const INTEL_RECORDS: usize = 0x6000_0000;
+    const BLOC_LINKS: usize = 0x7000_0000;
 
     /// Computes every byte on demand, so thousands of countries need no
     /// multi-megabyte fixture: slot `s` is object `OBJECTS + s * OBJECT` with
@@ -388,6 +389,11 @@ mod tests {
         /// Every country owns a dense intel vector over every slot with all
         /// four lanes nonzero: the worst case for the sparse table.
         intel: bool,
+        /// Every country's shared diplomacy lists this many enemies and
+        /// wartime allies: a world split into two warring blocs.
+        bloc: Option<(u32, u32)>,
+        /// This slot's country lives in a second object, past the others.
+        relocated: Option<usize>,
     }
 
     impl World {
@@ -418,6 +424,26 @@ mod tests {
                     (BASE + engine::cdiplomacy_status::VTABLE_RVA) as u64,
                 );
             }
+            if let Some((enemies, allies)) = self.bloc {
+                for (field, count) in [
+                    (engine::cdiplomacy_status::ENEMY_COUNTRIES, enemies),
+                    (engine::cdiplomacy_status::WARTIME_ALLIES, allies),
+                ] {
+                    let at = DIPLOMACY + field;
+                    if (at..at + 16).contains(&address) {
+                        return match address - at {
+                            0..8 => word(at, BLOC_LINKS as u64),
+                            8..12 => word(at + 8, u64::from(count)),
+                            _ => word(at + 12, u64::from(count)),
+                        };
+                    }
+                }
+                // Both lists name slots 1.. in order.
+                if (BLOC_LINKS..BLOC_LINKS + self.slots * 4).contains(&address) {
+                    let index = (address - BLOC_LINKS) / 4;
+                    return word(BLOC_LINKS + index * 4, index as u64 + 1);
+                }
+            }
             for (field, pointer) in [
                 (gs::COUNTRIES, TABLE),
                 (gs::COUNTRY_LINKS, LINKS),
@@ -429,15 +455,25 @@ mod tests {
             }
             if (TABLE + 8..TABLE + self.slots * 8).contains(&address) {
                 let slot = (address - TABLE) / 8;
-                return word(TABLE + slot * 8, (OBJECTS + slot * OBJECT) as u64);
+                let object = if self.relocated == Some(slot) {
+                    self.slots
+                } else {
+                    slot
+                };
+                return word(TABLE + slot * 8, (OBJECTS + object * OBJECT) as u64);
             }
             if (LINKS + 4..LINKS + self.slots * 4).contains(&address) {
                 let id = (address - LINKS) / 4;
                 return word(LINKS + id * 4, id as u64);
             }
-            if (OBJECTS + OBJECT..OBJECTS + self.slots * OBJECT).contains(&address) {
-                let slot = (address - OBJECTS) / OBJECT;
-                let object = OBJECTS + slot * OBJECT;
+            let objects = self.slots + usize::from(self.relocated.is_some());
+            if (OBJECTS + OBJECT..OBJECTS + objects * OBJECT).contains(&address) {
+                let index = (address - OBJECTS) / OBJECT;
+                let object = OBJECTS + index * OBJECT;
+                let slot = match self.relocated {
+                    Some(slot) if index == self.slots => slot,
+                    _ => index,
+                };
                 let offset = address - object;
                 let capacity = ccountry::COSMETIC_TAG + msvc_string::CAPACITY;
                 let culture = ccountry::GRAPHICAL_CULTURE + msvc_string::CAPACITY;
@@ -497,6 +533,19 @@ mod tests {
                 output.fill(u8::from(self.intel));
                 return true;
             }
+            // So are the bloc lists' entries in a bloc-war walk.
+            if self.bloc.is_some()
+                && (BLOC_LINKS..BLOC_LINKS + self.slots * 4).contains(&address)
+                && address + output.len() <= BLOC_LINKS + self.slots * 4
+                && (address - BLOC_LINKS).is_multiple_of(4)
+                && output.len().is_multiple_of(4)
+            {
+                let first = (address - BLOC_LINKS) / 4;
+                for (index, entry) in output.chunks_exact_mut(4).enumerate() {
+                    entry.copy_from_slice(&(first as u32 + index as u32 + 1).to_le_bytes());
+                }
+                return true;
+            }
             for (index, byte) in output.iter_mut().enumerate() {
                 *byte = self.byte(address + index);
             }
@@ -509,6 +558,8 @@ mod tests {
         World {
             slots: COUNTRIES + 1,
             intel: false,
+            bloc: None,
+            relocated: None,
         }
     }
 
@@ -520,6 +571,8 @@ mod tests {
         let memory = World {
             slots: LIVE + 1,
             intel: true,
+            bloc: None,
+            relocated: None,
         };
         let native = observe_country_intel(&memory, BASE).unwrap();
         assert_eq!(native, LIVE * (LIVE + 1));
@@ -590,6 +643,420 @@ mod tests {
             snapshot.view(&memory).seed_status(),
             engine::country_memory::SeedStatus::Ready
         );
+    }
+
+    /// Notifications a test controls, lock-free like the hook registry: one
+    /// epoch, a revision the scenario bumps, and per-country sequences (the
+    /// shared diplomacy status never changes).
+    struct Notified {
+        revision: std::sync::atomic::AtomicU64,
+        countries: Vec<std::sync::atomic::AtomicU64>,
+        /// Registrations the watch table refuses: 0 none, a slot + 1, or
+        /// [`REFUSE_ALL`] for a table held for the next full hour.
+        refused: std::sync::atomic::AtomicUsize,
+    }
+
+    const REFUSE_ALL: usize = usize::MAX;
+
+    impl crate::relation_changes::Changes for Notified {
+        fn quiet(&self) -> Option<(u64, u64)> {
+            Some((1, self.revision.load(Ordering::Relaxed)))
+        }
+        fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+            if receiver == DIPLOMACY {
+                return Some((1, 0));
+            }
+            let slot = receiver.checked_sub(OBJECTS)? / OBJECT;
+            let refused = self.refused.load(Ordering::Relaxed);
+            if refused == REFUSE_ALL || refused == slot + 1 {
+                return None;
+            }
+            let sequence = self.countries.get(slot)?.load(Ordering::Relaxed);
+            (receiver != 0).then_some((1, sequence))
+        }
+    }
+
+    impl Notified {
+        fn new(slots: usize) -> Self {
+            Self {
+                revision: Default::default(),
+                countries: (0..slots).map(|_| Default::default()).collect(),
+                refused: Default::default(),
+            }
+        }
+
+        /// A writer touched these countries.
+        fn touch(&self, slots: impl IntoIterator<Item = usize>) {
+            self.revision.fetch_add(1, Ordering::Relaxed);
+            for slot in slots {
+                self.countries[slot].fetch_add(2, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// One relations hour: the parts' guarded calls and wall time (the
+    /// game-thread stall with a free worker per part), the countries copied,
+    /// then the decode thread's rows and time.
+    struct RelationsHour {
+        calls: usize,
+        wall: std::time::Duration,
+        copied: usize,
+        held: usize,
+        outcome: Outcome,
+        decode: std::time::Duration,
+    }
+
+    /// Counts guarded calls from every part's thread.
+    struct Counting<'a>(&'a World, std::sync::atomic::AtomicUsize);
+
+    impl Memory for Counting<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.copy(address, output)
+        }
+        fn copy_records(
+            &self,
+            sources: engine::memory::RecordSources<'_>,
+            layout: &engine::memory::RecordLayout<'_>,
+            destination: &mut [u8],
+        ) -> usize {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.copy_records(sources, layout, destination)
+        }
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            destinations: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            for (done, (address, destination)) in addresses
+                .into_iter()
+                .zip(destinations.iter_mut())
+                .enumerate()
+            {
+                if !destination.is_empty() && !self.0.copy(address, destination) {
+                    return done;
+                }
+            }
+            N
+        }
+    }
+
+    fn relations_hour(
+        world: &World,
+        changes: &Notified,
+        hour: &mut crate::extended::air_relations::hour::Hour,
+        at: i32,
+        threads: bool,
+    ) -> RelationsHour {
+        let memory = Counting(world, Default::default());
+        let started = std::time::Instant::now();
+        let wall = hour.run(&memory, BASE, STATE, changes, at, threads);
+        let decode = started.elapsed() - wall;
+        RelationsHour {
+            calls: memory.1.load(Ordering::Relaxed),
+            wall,
+            copied: hour.staged_countries(),
+            held: hour.held.rows(),
+            outcome: hour.emitted(),
+            decode,
+        }
+    }
+
+    /// `emitted` is exactly the rows of `slots` in a bloc world: each
+    /// country's wartime allies, then its enemies, both lists naming slots
+    /// 1.. in order.
+    fn assert_bloc_rows(
+        emitted: &[engine::air_participant_vectors::Row],
+        slots: &[u32],
+        (enemies, allies): (u32, u32),
+    ) {
+        use engine::air_participant_vectors::{ALLY, ENEMY, Row};
+        let expected = slots.iter().flat_map(|&country| {
+            [(ALLY, allies), (ENEMY, enemies)]
+                .into_iter()
+                .flat_map(move |(kind, count)| {
+                    (0..count).map(move |ordinal| Row {
+                        country,
+                        kind,
+                        ordinal,
+                        other: ordinal + 1,
+                    })
+                })
+        });
+        let mut len = 0;
+        for (index, row) in expected.enumerate() {
+            assert_eq!(emitted.get(index), Some(&row), "row {index}");
+            len += 1;
+        }
+        assert_eq!(emitted.len(), len);
+    }
+
+    /// Two blocs forming then going to war: the first hour (every country
+    /// with its bloc's allies), the declaration touching every country (its
+    /// copies outgrow the registry-sized staging, which grows in the hour),
+    /// a quiet hour at war, and one more declaration touching two countries,
+    /// whose vectors stay the same. Each hour runs its parts on their own
+    /// threads and, on a second domain, one after another; both copy the
+    /// same countries, hold every country's rows and emit exactly the first
+    /// two hours' changed countries and the later hours' slices.
+    fn bloc_war_relations(countries: usize) {
+        use crate::extended::air_relations::{PARTS, hour::Hour};
+        let enemies = countries as u32 / 2;
+        let mut world = World {
+            slots: countries + 1,
+            bloc: Some((0, enemies - 1)),
+            ..world()
+        };
+        let changes = Notified::new(countries + 1);
+        let rows = crate::country_scale::rows(countries + 1, 8);
+        let mut hour = Hour::new(rows, rows * 4 / PARTS);
+        let mut serial = Hour::new(rows, rows * 4 / PARTS);
+        let serial_changes = Notified::new(countries + 1);
+        // Spawning the part threads, which pool jobs do not pay.
+        let started = std::time::Instant::now();
+        std::thread::scope(|scope| {
+            for _ in 0..PARTS {
+                scope.spawn(|| ());
+            }
+        });
+        let spawn = started.elapsed();
+        // Every country is copied on the first hour and at the declaration;
+        // the quiet hour copies nothing and the next copies the two touched.
+        // The worst held-table case: a table held for the next full hour
+        // refuses every receiver a writer touched (its old registrations
+        // were dropped by the epoch before). Each hour then copies every
+        // country afresh, quiet or not, and the rows stay exact.
+        for (at, (label, touched, copied)) in [
+            ("first hour", vec![], countries),
+            ("bloc declaration", (1..=countries).collect(), countries),
+            ("quiet hour", vec![], 0),
+            ("single declaration", vec![1, 2], 2),
+            ("held table", (1..=countries).collect(), countries),
+            ("held table, quiet again", vec![], countries),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if label == "bloc declaration" {
+                world.bloc = Some((enemies, enemies - 1));
+            }
+            if label == "held table" {
+                changes.refused.store(REFUSE_ALL, Ordering::Relaxed);
+                serial_changes.refused.store(REFUSE_ALL, Ordering::Relaxed);
+            }
+            if !touched.is_empty() {
+                changes.touch(touched.iter().copied());
+                serial_changes.touch(touched);
+            }
+            let result = relations_hour(&world, &changes, &mut hour, at as i32, true);
+            let one = relations_hour(&world, &serial_changes, &mut serial, at as i32, false);
+            let emitted = match result.outcome {
+                Outcome::Rows { len } => len.to_string(),
+                other => format!("{other:?}"),
+            };
+            eprintln!(
+                "relations, {countries} countries, {label}: {} countries copied in {} guarded calls, {:?} wall over {PARTS} parts ({spawn:?} of it spawning), {:?} on one thread; decode {:?}, {emitted} of {} rows emitted",
+                result.copied, result.calls, result.wall, one.wall, result.decode, result.held
+            );
+            // The first hour is a full hour and the declaration changes every
+            // country; later hours emit their slice only.
+            let slice: Vec<u32> = (1..=countries as u32)
+                .filter(|&slot| {
+                    at < 2 || slot % replay::cadence::STAGGER_PERIOD as u32 == at as u32
+                })
+                .collect();
+            let bloc = world.bloc.unwrap();
+            let per_country = (bloc.0 + bloc.1) as usize;
+            for (run, pack) in [(&result, &hour), (&one, &serial)] {
+                assert_eq!(run.copied, copied, "{label}");
+                assert_eq!(run.held, countries * per_country, "{label}");
+                assert_eq!(
+                    run.outcome,
+                    Outcome::Rows {
+                        len: slice.len() * per_country
+                    },
+                    "{label}"
+                );
+                assert_bloc_rows(pack.emitted_rows(), &slice, bloc);
+            }
+            hour.grow();
+            serial.grow();
+        }
+    }
+
+    #[test]
+    fn relations_are_copied_only_for_touched_countries_and_emitted_by_slice() {
+        use crate::extended::air_relations::hour::Hour;
+        let mut world = World {
+            slots: 49,
+            bloc: Some((24, 23)),
+            ..world()
+        };
+        let changes = Notified::new(49);
+        let mut hour = Hour::new(4096, 4096);
+        let first = relations_hour(&world, &changes, &mut hour, 0, true);
+        assert_eq!(first.copied, 48);
+        assert_eq!(first.outcome, Outcome::Rows { len: 48 * 47 });
+        // A quiet hour copies nothing and emits one slice: slots 1 and 25.
+        let quiet = relations_hour(&world, &changes, &mut hour, 1, true);
+        // Only the slot checks read: this world has no roster cache, so each
+        // country lookup costs reads that production serves from the cache.
+        // Verify mode's fresh copies are reads too.
+        if !cfg!(feature = "relation_verify") {
+            assert!(quiet.calls <= 8 * 48, "{}", quiet.calls);
+        }
+        assert_eq!(quiet.copied, 0);
+        assert_eq!(quiet.outcome, Outcome::Rows { len: 2 * 47 });
+        // A touched country whose vectors did not change is copied, not emitted.
+        changes.touch([3]);
+        let unchanged = relations_hour(&world, &changes, &mut hour, 2, true);
+        assert_eq!(unchanged.copied, 1);
+        assert_eq!(unchanged.outcome, Outcome::Rows { len: 2 * 47 });
+        // A changed one is emitted at once, outside its slice.
+        world.bloc = Some((24, 22));
+        changes.touch([5]);
+        let changed = relations_hour(&world, &changes, &mut hour, 3, true);
+        assert_eq!(changed.copied, 1);
+        assert_eq!(changed.outcome, Outcome::Rows { len: 2 * 47 + 46 });
+        // A country object replaced at its slot is copied afresh, although
+        // no writer touched it.
+        world.relocated = Some(7);
+        changes.touch([3]);
+        let replaced = relations_hour(&world, &changes, &mut hour, 4, true);
+        assert_eq!(replaced.copied, 2);
+        // A staging buffer sized for the steady state grows; the hour stands.
+        world.bloc = Some((24, 23));
+        let mut small = Hour::new(4096, 64);
+        let grown = relations_hour(&world, &Notified::new(49), &mut small, 0, false);
+        assert_eq!(grown.outcome, Outcome::Rows { len: 48 * 47 });
+    }
+
+    /// A receiver the watch table refused is read afresh every hour, also
+    /// when no writer moved the domain revision; the others are reused.
+    #[test]
+    fn a_refused_receiver_is_copied_every_hour() {
+        use crate::extended::air_relations::hour::Hour;
+        let world = World {
+            slots: 49,
+            bloc: Some((24, 23)),
+            ..world()
+        };
+        let changes = Notified::new(49);
+        changes.refused.store(3 + 1, Ordering::Relaxed);
+        let mut hour = Hour::new(4096, 4096);
+        assert_eq!(
+            relations_hour(&world, &changes, &mut hour, 0, true).copied,
+            48
+        );
+        for at in 1..3 {
+            assert_eq!(
+                relations_hour(&world, &changes, &mut hour, at, true).copied,
+                1
+            );
+        }
+        changes.touch([5]);
+        assert_eq!(
+            relations_hour(&world, &changes, &mut hour, 3, true).copied,
+            2
+        );
+    }
+
+    /// `forget_unpublished_families` skips this family, whose fingerprints
+    /// live in the decode step, so an hour the spool withheld is recovered
+    /// only by the full hour the spool then forces (the hours captured in
+    /// between have no complete rows to merge into and are withheld too).
+    /// The withheld hour's changes are already in the fingerprints, so a
+    /// later non-full hour does not emit them again; the full hour emits
+    /// every held country, exactly the rows a fresh read of the same world
+    /// emits.
+    #[test]
+    fn a_forced_full_hour_re_emits_an_unpublished_hours_changes_exactly() {
+        use crate::extended::air_relations::hour::Hour;
+        let mut world = World {
+            slots: 49,
+            bloc: Some((24, 23)),
+            ..world()
+        };
+        let changes = Notified::new(49);
+        let mut hour = Hour::new(4096, 4096);
+        relations_hour(&world, &changes, &mut hour, 0, true);
+        // Every country changes at hour 1, whose frame the spool withholds.
+        world.bloc = Some((24, 22));
+        changes.touch(1..=48);
+        let withheld = relations_hour(&world, &changes, &mut hour, 1, true);
+        assert_eq!(withheld.outcome, Outcome::Rows { len: 48 * 46 });
+        // Hour 2 was captured before the recovery: only its slice, slots 2
+        // and 26.
+        let between = relations_hour(&world, &changes, &mut hour, 2, true);
+        assert_eq!(between.outcome, Outcome::Rows { len: 2 * 46 });
+        // The recovery hour copies nothing new yet emits every held row.
+        hour.force_full = true;
+        let recovered = relations_hour(&world, &changes, &mut hour, 3, true);
+        assert_eq!(recovered.copied, 0);
+        assert_eq!(recovered.outcome, Outcome::Rows { len: 48 * 46 });
+        let mut fresh = Hour::new(4096, 4096);
+        relations_hour(&world, &Notified::new(49), &mut fresh, 0, true);
+        assert_eq!(hour.emitted_rows(), fresh.emitted_rows());
+    }
+
+    #[test]
+    fn a_relation_vector_longer_than_the_country_links_fails_the_hour() {
+        use crate::extended::air_relations::hour::Hour;
+        let world = World {
+            slots: 49,
+            bloc: Some((0, 50)),
+            ..world()
+        };
+        let mut hour = Hour::new(4096, 4096);
+        let result = relations_hour(&world, &Notified::new(49), &mut hour, 0, false);
+        assert_eq!(
+            result.outcome,
+            Outcome::Unavailable {
+                reason: "air participant vector longer than the country links"
+            }
+        );
+    }
+
+    /// The bloc-war hours of the scale matrix, at a size the ordinary test
+    /// run affords.
+    #[test]
+    fn bloc_war_relations_at_200_countries() {
+        bloc_war_relations(200);
+    }
+
+    #[cfg(feature = "relation_verify")]
+    #[test]
+    fn verify_counts_a_change_no_writer_announced() {
+        use crate::extended::air_relations::hour::Hour;
+        let mut world = World {
+            slots: 49,
+            bloc: Some((24, 23)),
+            ..world()
+        };
+        let changes = Notified::new(49);
+        let mut hour = Hour::new(4096, 4096);
+        relations_hour(&world, &changes, &mut hour, 0, true);
+        let first = hour.verification();
+        assert_eq!((first.countries, first.mismatches), (48, 0));
+        // An announced change is copied, and the held rows stay exact.
+        world.bloc = Some((24, 22));
+        changes.touch(1..=48);
+        relations_hour(&world, &changes, &mut hour, 1, true);
+        assert_eq!(hour.verification().mismatches, 0);
+        // An unannounced one keeps stale rows, which the fresh copy exposes.
+        world.bloc = Some((24, 21));
+        relations_hour(&world, &changes, &mut hour, 2, true);
+        let stale = hour.verification();
+        assert_eq!((stale.countries, stale.mismatches), (48, 48));
+    }
+
+    /// The scale matrix: `cargo test -p collector --release -- --ignored`.
+    #[test]
+    #[ignore]
+    fn bloc_war_relations_at_1500_and_5000_countries() {
+        bloc_war_relations(1_500);
+        bloc_war_relations(5_000);
     }
 
     #[test]

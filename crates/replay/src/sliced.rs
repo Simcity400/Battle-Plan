@@ -19,7 +19,7 @@
 //! hour reads every roster and replaces the table.
 
 use crate::rows::{
-    AceRangeInputRow, CountryBuildingResourceRow, CountryStabilityInputRow,
+    AceRangeInputRow, AirCountryRelationRow, CountryBuildingResourceRow, CountryStabilityInputRow,
     CountryStabilityLineRow, DivisionRetreatBanRow, RaidAirSiteRow, RaidCountryInputRow,
     RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow, ResearchInputRow,
     ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
@@ -60,6 +60,8 @@ sliced_by!(
     RaidAirSiteRow,
     AceRangeInputRow
 );
+// Canonical country slots, held in the row's `country` field.
+sliced_by!(country: AirCountryRelationRow);
 // Native state IDs.
 sliced_by!(state: StateResourceInputRow, StateResourceRow, StateDynamicModifierRow, StateCoreRow);
 
@@ -93,6 +95,9 @@ macro_rules! dispatch {
             }
             (TableRows::ResearchModifiers($old), TableRows::ResearchModifiers($new)) => {
                 Ok(TableRows::ResearchModifiers($body?))
+            }
+            (TableRows::AirCountryRelations($old), TableRows::AirCountryRelations($new)) => {
+                Ok(TableRows::AirCountryRelations($body?))
             }
             (TableRows::RaidCountryInputs($old), TableRows::RaidCountryInputs($new)) => {
                 Ok(TableRows::RaidCountryInputs($body?))
@@ -267,6 +272,7 @@ pub fn owners(rows: &TableRows) -> Vec<u32> {
         TableRows::ResearchInputs(rows) => collect(rows),
         TableRows::ResearchAppliedBonuses(rows) => collect(rows),
         TableRows::ResearchModifiers(rows) => collect(rows),
+        TableRows::AirCountryRelations(rows) => collect(rows),
         TableRows::RaidCountryInputs(rows) => collect(rows),
         TableRows::StockpileArchetypes(rows) => collect(rows),
         TableRows::DivisionRetreatBans(rows) => collect(rows),

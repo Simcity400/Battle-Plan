@@ -467,6 +467,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
     let mut portrait_hooks = unsafe { crate::portrait_changes::Hooks::new(&memory, base) }?;
     let mut advisor_hooks = unsafe { crate::advisor_changes::Hooks::new(&memory, base) }?;
+    let mut relation_hooks = unsafe { crate::relation_changes::Hooks::new(&memory, base) }?;
     // A family whose sentinels differ is left uninstalled; it reads as before.
     let mut opinion_hooks = unsafe { crate::opinion_changes::Hooks::new(&memory, base) }?;
     // Size every country-proportional buffer from the live registry before
@@ -474,6 +475,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     // spool thread then raises capacities as soon as a save fills it.
     let slots = crate::country_scale::observe(&memory, base).unwrap_or(0);
     crate::country_scale::note_slots(slots);
+    crate::relation_changes::presize(slots);
     let mut sizing = crate::country_scale::Sizing::for_slots(slots);
     sizing.content = engine::cdlc_manager::observe_counts(&memory, base);
     if let Some(rows) = crate::country_scale::observe_country_intel(&memory, base) {
@@ -549,6 +551,13 @@ fn run(module: HMODULE) -> Result<(), String> {
             })
             .and_then(|ready| {
                 if ready {
+                    relation_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
                     opinion_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -608,6 +617,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     ];
     ranges.extend(portrait_hooks.executable_ranges());
     ranges.extend(advisor_hooks.executable_ranges());
+    ranges.extend(relation_hooks.executable_ranges());
     ranges.extend(opinion_hooks.executable_ranges());
     while spool_id.load(Ordering::Acquire) == 0 {
         std::thread::yield_now();
@@ -649,6 +659,18 @@ fn run(module: HMODULE) -> Result<(), String> {
                 let _ = fs::write(
                     dll_path.with_file_name("collector.error.txt"),
                     format!("advisor hook detach pending: {result:?}"),
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    loop {
+        match relation_hooks.set_enabled(false) {
+            Ok(true) => break,
+            result => {
+                let _ = fs::write(
+                    dll_path.with_file_name("collector.error.txt"),
+                    format!("relation hook detach pending: {result:?}"),
                 );
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -710,6 +732,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     drop(hook);
     drop(portrait_hooks);
     drop(advisor_hooks);
+    drop(relation_hooks);
     drop(opinion_hooks);
     drop(shared);
     if let Some(error) = installation_error {
@@ -831,6 +854,7 @@ fn add_decode_status(status: &mut Value) {
     status["decode_work"] = decode::calibration_json();
     status["portrait_changes"] = crate::portrait_changes::status();
     status["advisor_changes"] = crate::advisor_changes::status();
+    status["relation_changes"] = crate::relation_changes::status();
     status["opinion_changes"] = crate::opinion_changes::status();
     #[cfg(feature = "callback_profile")]
     {
@@ -966,6 +990,7 @@ fn wait_quiet(
         } else if ACTIVE.load(Ordering::SeqCst) != 0
             || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
             || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
+            || crate::relation_changes::active() != 0
             || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
         {
             Ok(false)
@@ -975,6 +1000,7 @@ fn wait_quiet(
                     if ACTIVE.load(Ordering::SeqCst) != 0
                         || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
                         || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
+                        || crate::relation_changes::active() != 0
                         || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
                     {
                         Ok(false)
@@ -1367,10 +1393,12 @@ fn spool_loop(
                 last_warning = Some(error.to_string());
             }
         }
+        crate::relation_changes::collect();
         // A save load rebuilds the country registry before its first hourly
         // tick; presize every buffer while the game is still loading.
         if let Some(slots) = registry.poll(&live, shared.base) {
             crate::country_scale::note_slots(slots);
+            crate::relation_changes::presize(slots);
             decode::presize_country_pools();
             let mut raised = crate::country_scale::Sizing {
                 core: capacities,

@@ -1,0 +1,393 @@
+//! Registered air missions in the order the flying-aircraft map visits them.
+//!
+//! `BuildRegionalAircraftScenarios@14122EFD0` scans each region's
+//! `CStrategicAir+0x98` mission vector in order. The sorted active-region IDs
+//! at +0xC8 index the nonempty vectors, and `_AllActiveMissions` at +0xB0
+//! counts the same registrations, so a missed region cannot pass as empty.
+
+use crate::{
+    Memory, ccountry,
+    cpdx_array::Array,
+    cstrategic_air,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read_slice,
+    walk::Outcome,
+};
+
+/// One wing from this hour's complete AirWings census, joined by its embedded
+/// CAirMission address. The pointer is acquisition context, never recorded.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WingIdentity {
+    pub mission_pointer: usize,
+    pub wing: u64,
+    pub owner: u32,
+    pub region: Option<u32>,
+    pub mission_mask: u32,
+    pub air_base: u64,
+    pub base_override: u64,
+    pub country_override: i32,
+}
+
+impl WingIdentity {
+    pub fn new(pointer: usize, row: &crate::cair_wing::Row) -> Result<Self, &'static str> {
+        Ok(Self {
+            mission_pointer: pointer
+                .checked_add(crate::cair_wing::MISSION)
+                .ok_or("air mission address overflow")?,
+            wing: row.id,
+            owner: row.owner,
+            region: row.mission_region,
+            mission_mask: row.mission_mask,
+            air_base: row.air_base,
+            base_override: row.base_override,
+            country_override: row.country_override,
+        })
+    }
+
+    /// `CAirWing::GetEffectiveCountryTag@140F45950`: a positive override wins.
+    pub fn effective_country(&self) -> u32 {
+        if self.country_override > 0 {
+            self.country_override as u32
+        } else {
+            self.owner
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub wing: u64,
+    pub ordinal: u32,
+}
+
+const BATCH: usize = 64;
+/// +0x98 outer header through the +0xC8 region header, one guarded copy.
+const HEADERS: usize =
+    cstrategic_air::ACTIVE_MISSION_REGIONS + 16 - cstrategic_air::REGIONAL_MISSIONS;
+
+/// The headers of [`BATCH`] country air objects per gather.
+const HEADER_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: cstrategic_air::REGIONAL_MISSIONS,
+    destination_offset: 0,
+    len: HEADERS,
+}];
+const HEADER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&HEADER_FIELDS, HEADERS).expect("valid layout");
+
+fn header(bytes: &[u8; HEADERS], offset: usize, stride: usize) -> Option<Array> {
+    let at = offset - cstrategic_air::REGIONAL_MISSIONS;
+    Array::from_header(bytes[at..at + 16].try_into().ok()?, stride)
+}
+
+/// `wings` must be this hour's complete AirWings census sorted by mission
+/// pointer. Every member must be a census wing of the root's country
+/// assigned to that region.
+pub fn walk(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    wings: &[WingIdentity],
+    output: &mut [Row],
+) -> Outcome {
+    let result = (|| {
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let mut len = 0;
+        let mut unread_rows = 0_u32;
+        // Roots are visited in slot order and their headers gathered
+        // [`BATCH`] at a time, then each is followed in that order.
+        let mut roots = [(0_usize, 0_u32); BATCH];
+        let mut pending = 0;
+        let mut flush = |roots: &[(usize, u32)]| -> Result<(), &'static str> {
+            let mut pointers = [0_usize; BATCH];
+            for (pointer, &(address, _)) in pointers.iter_mut().zip(roots) {
+                *pointer = address;
+            }
+            let mut headers = [[0_u8; HEADERS]; BATCH];
+            if memory.copy_records(
+                RecordSources::Pointers(&pointers[..roots.len()]),
+                &HEADER_LAYOUT,
+                headers
+                    .as_flattened_mut()
+                    .get_mut(..roots.len() * HEADERS)
+                    .unwrap(),
+            ) != roots.len()
+            {
+                return Err("regional mission headers unreadable");
+            }
+            for (bytes, &(_, canonical_slot)) in headers.iter().zip(roots) {
+                root_missions(
+                    memory,
+                    &countries,
+                    canonical_slot,
+                    bytes,
+                    wings,
+                    output,
+                    &mut len,
+                    &mut unread_rows,
+                )?;
+            }
+            Ok(())
+        };
+        cstrategic_air::visit(memory, base, game_state, |root| {
+            roots[pending] = (root.address, root.canonical_slot);
+            pending += 1;
+            if pending == BATCH {
+                flush(&roots)?;
+                pending = 0;
+            }
+            Ok(())
+        })?;
+        flush(&roots[..pending])?;
+        Ok(if unread_rows == 0 {
+            Outcome::Rows { len }
+        } else {
+            Outcome::Truncated { len, unread_rows }
+        })
+    })();
+    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+/// One country air object's registrations from its gathered headers.
+#[allow(clippy::too_many_arguments)]
+fn root_missions(
+    memory: &impl Memory,
+    countries: &ccountry::Reader<'_, impl Memory>,
+    canonical_slot: u32,
+    bytes: &[u8; HEADERS],
+    wings: &[WingIdentity],
+    output: &mut [Row],
+    len: &mut usize,
+    unread_rows: &mut u32,
+) -> Result<(), &'static str> {
+    let (Some(outer), Some(all), Some(regions)) = (
+        header(
+            bytes,
+            cstrategic_air::REGIONAL_MISSIONS,
+            crate::cpdx_array::STRIDE,
+        ),
+        header(bytes, cstrategic_air::ALL_ACTIVE_MISSIONS, 8),
+        header(bytes, cstrategic_air::ACTIVE_MISSION_REGIONS, 4),
+    ) else {
+        return Err("regional mission header invalid");
+    };
+    let mut registered = 0_u32;
+    let mut ids = [0_u32; BATCH];
+    let mut previous = None;
+    for first in (0..regions.count).step_by(BATCH) {
+        let count = (regions.count - first).min(BATCH as u32);
+        crate::cpdx_array::copy_u32s(
+            memory,
+            regions.slice(first, count, 4)?,
+            &mut ids[..count as usize],
+            "active mission regions unreadable",
+        )?;
+        for &region in &ids[..count as usize] {
+            if previous.is_some_and(|last| region <= last) {
+                return Err("active mission regions out of order");
+            }
+            previous = Some(region);
+            let missions = outer
+                .element(region, crate::cpdx_array::STRIDE)
+                .and_then(|at| Array::read(memory, at, 8))
+                .filter(|missions| missions.count != 0)
+                .ok_or("active mission region vector missing, invalid or empty")?;
+            registered = registered
+                .checked_add(missions.count)
+                .ok_or("regional mission count overflow")?;
+            let mut pointers = [0_u8; BATCH * 8];
+            for batch in (0..missions.count).step_by(BATCH) {
+                let n = (missions.count - batch).min(BATCH as u32) as usize;
+                let at = missions
+                    .element(batch, 8)
+                    .ok_or("regional mission address overflow")?;
+                if !read_slice(memory, at, &mut pointers[..n * 8]) {
+                    return Err("regional mission vector unreadable");
+                }
+                for (index, bytes) in pointers[..n * 8].chunks_exact(8).enumerate() {
+                    let pointer = usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))
+                        .map_err(|_| "regional mission pointer overflow")?;
+                    let wing = wings
+                        .binary_search_by_key(&pointer, |wing| wing.mission_pointer)
+                        .map(|index| &wings[index])
+                        .map_err(|_| "registered mission missing from AirWings")?;
+                    if wing.region != Some(region)
+                        || countries.link(wing.owner)? != Some(canonical_slot)
+                    {
+                        return Err("registered mission owner or region differs from AirWings");
+                    }
+                    if let Some(destination) = output.get_mut(*len) {
+                        *destination = Row {
+                            wing: wing.wing,
+                            ordinal: batch + index as u32,
+                        };
+                        *len += 1;
+                    } else {
+                        *unread_rows = unread_rows
+                            .checked_add(1)
+                            .ok_or("regional mission row count overflow")?;
+                    }
+                }
+            }
+        }
+    }
+    if registered != all.count {
+        return Err("regional and all-active mission counts differ");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{cair_wing, cstrategic_air_manager, memory::SliceMemory};
+
+    const GS: usize = 0x1000;
+    const COUNTRY: usize = 0x2000;
+    const COUNTRIES: usize = 0x4000;
+    const LINKS: usize = 0x4100;
+    const MANAGER: usize = 0x5000;
+    const OWNERS: usize = 0x6000;
+    const OWNER: usize = 0x7000;
+    const REGIONS: usize = 0x8000;
+    const IDS: usize = 0x9000;
+    const ALL: usize = 0xa000;
+    const MEMBERS: usize = 0xb000;
+    const WING_A: usize = 0xc000;
+    const WING_B: usize = 0xd000;
+
+    fn put32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    fn put64(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        put64(bytes, at, data as u64);
+        put32(bytes, at + 8, count);
+        put32(bytes, at + 12, count);
+    }
+    fn wing(pointer: usize, id: u64) -> WingIdentity {
+        WingIdentity {
+            mission_pointer: pointer + cair_wing::MISSION,
+            wing: id,
+            owner: 3,
+            region: Some(5),
+            ..Default::default()
+        }
+    }
+    fn fixture() -> (Vec<u8>, [WingIdentity; 2]) {
+        let mut bytes = vec![0; 0xe000];
+        array(&mut bytes, GS + 0x310, COUNTRIES, 4);
+        array(&mut bytes, GS + 0x340, LINKS, 4);
+        put64(&mut bytes, COUNTRIES + 8, COUNTRY as u64);
+        put32(&mut bytes, LINKS + 4, 1);
+        put32(&mut bytes, LINKS + 12, 1);
+        put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+        put32(&mut bytes, COUNTRY + 8, 3);
+        put64(&mut bytes, GS + 0x690, MANAGER as u64);
+        put64(
+            &mut bytes,
+            MANAGER,
+            cstrategic_air_manager::VTABLE_RVA as u64,
+        );
+        array(&mut bytes, MANAGER + 0x30, OWNERS, 4);
+        put64(&mut bytes, OWNERS + 8, OWNER as u64);
+        put64(&mut bytes, OWNER, cstrategic_air::VTABLE_RVA as u64);
+        put32(&mut bytes, OWNER + cstrategic_air::COUNTRY, 3);
+        array(
+            &mut bytes,
+            OWNER + cstrategic_air::REGIONAL_MISSIONS,
+            REGIONS,
+            6,
+        );
+        array(
+            &mut bytes,
+            OWNER + cstrategic_air::ACTIVE_MISSION_REGIONS,
+            IDS,
+            1,
+        );
+        put32(&mut bytes, IDS, 5);
+        array(
+            &mut bytes,
+            OWNER + cstrategic_air::ALL_ACTIVE_MISSIONS,
+            ALL,
+            2,
+        );
+        array(&mut bytes, REGIONS + 5 * 0x18, MEMBERS, 2);
+        put64(&mut bytes, MEMBERS, (WING_B + cair_wing::MISSION) as u64);
+        put64(
+            &mut bytes,
+            MEMBERS + 8,
+            (WING_A + cair_wing::MISSION) as u64,
+        );
+        (bytes, [wing(WING_A, 101), wing(WING_B, 202)])
+    }
+    fn capture(bytes: &[u8], wings: &[WingIdentity], output: &mut [Row]) -> Outcome {
+        walk(&SliceMemory { base: 0, bytes }, 0, GS, wings, output)
+    }
+
+    #[test]
+    fn registration_order_is_the_regional_vector_order() {
+        let (bytes, wings) = fixture();
+        let mut rows = [Row::default(); 2];
+        assert_eq!(capture(&bytes, &wings, &mut rows), Outcome::Rows { len: 2 });
+        assert_eq!(
+            rows,
+            [
+                Row {
+                    wing: 202,
+                    ordinal: 0
+                },
+                Row {
+                    wing: 101,
+                    ordinal: 1
+                }
+            ]
+        );
+        assert_eq!(
+            capture(&bytes, &wings, &mut rows[..1]),
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_missing_region_or_unknown_member_is_unavailable() {
+        let (mut bytes, wings) = fixture();
+        let mut rows = [Row::default(); 2];
+        // The all-active count still holds both registrations.
+        put32(
+            &mut bytes,
+            OWNER + cstrategic_air::ACTIVE_MISSION_REGIONS + 12,
+            0,
+        );
+        assert!(matches!(
+            capture(&bytes, &wings, &mut rows),
+            Outcome::Unavailable { .. }
+        ));
+        let (mut bytes, wings) = fixture();
+        put64(&mut bytes, MEMBERS, 0xdead_beef);
+        assert!(matches!(
+            capture(&bytes, &wings, &mut rows),
+            Outcome::Unavailable { .. }
+        ));
+        let (bytes, mut wings) = fixture();
+        wings[0].region = Some(6);
+        assert!(matches!(
+            capture(&bytes, &wings, &mut rows),
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn effective_country_prefers_a_positive_override() {
+        let mut identity = wing(WING_A, 1);
+        assert_eq!(identity.effective_country(), 3);
+        identity.country_override = 9;
+        assert_eq!(identity.effective_country(), 9);
+        identity.country_override = -1;
+        assert_eq!(identity.effective_country(), 3);
+    }
+}

@@ -74,6 +74,9 @@ pub const fn cadence(table: TableId) -> Cadence {
         // are the templates the hour's rosters reach, merged by handle; the
         // console command reloadtechnologies can rewrite them after a load.
         TableId::ResearchTechnologies | TableId::TechnologyDefinitions => Sliced,
+        // Held by the collector and certified by its native-writer hooks: a
+        // slice keeps each hour's copy small and a change is emitted at once.
+        TableId::AirCountryRelations => Sliced,
         // Stability and war-support breakdowns: one country slice per hour
         // plus every country whose change fingerprint moved (bases, stored
         // penalty and coastal terms, ruling party popularity, the war counter,

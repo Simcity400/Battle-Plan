@@ -159,6 +159,17 @@ pub(crate) struct SlowRequest {
     /// The stability family's only fingerprint store, loaned for this hour.
     pub stability_fingerprints: Option<Box<crate::slicing::SliceFingerprints>>,
 }
+/// One part of the hour's AirCountryRelations copies
+/// (`air_relations::PARTS`).
+pub(crate) struct AirRelationsRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub part: usize,
+    pub staging: crate::extended::air_relations::Staging,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct AirRelationsReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SlowReport;
 pub(crate) struct RaidStateRequest {
@@ -362,6 +373,7 @@ pub(crate) enum Job {
     RaidState(RaidStateRequest),
     RaidLaunch(RaidLaunchRequest),
     RaidTargets(RaidTargetsRequest),
+    AirRelations(AirRelationsRequest),
     Late(LateRequest),
     Orders(OrdersRequest),
     Gated(GatedRequest),
@@ -409,6 +421,7 @@ pub(crate) enum Report {
     RaidState(RaidStateReport),
     RaidLaunch(RaidLaunchReport),
     RaidTargets(RaidTargetsReport),
+    AirRelations(AirRelationsReport),
     Late(LateReport),
     Orders(OrdersReport),
     Gated(GatedReport),
@@ -461,6 +474,7 @@ pub(crate) enum Role {
     RaidState,
     RaidLaunch,
     RaidTargets,
+    AirRelations,
     Late,
     Orders,
     Gated,
@@ -474,7 +488,7 @@ pub(crate) enum Role {
 }
 
 impl Role {
-    fn worker_only(self) -> bool {
+    const fn worker_only(self) -> bool {
         matches!(
             self,
             Self::Governance
@@ -483,6 +497,7 @@ impl Role {
                 | Self::Ordinary
                 | Self::Presentation
                 | Self::EtaInputs
+                | Self::AirRelations
         )
     }
     /// Shared native work follows an hourly consumer in mixed families. Detail
@@ -526,6 +541,7 @@ impl Role {
             Self::RaidState => T::StateResourceInputs,
             Self::RaidLaunch => T::RaidCountryInputs,
             Self::RaidTargets => T::RaidTargetStatuses,
+            Self::AirRelations => T::AirCountryRelations,
             Self::Late => T::WingEquipment,
             Self::Orders => T::ArmyOrders,
             Self::Gated => T::VolunteerHosts,
@@ -587,6 +603,7 @@ impl Role {
             | Self::Relations
             | Self::Ordinary
             | Self::Slow
+            | Self::AirRelations
             | Self::RaidState
             | Self::RaidLaunch
             | Self::RaidTargets
@@ -598,7 +615,7 @@ impl Role {
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 46;
+pub(crate) const ROLE_COUNT: usize = 47;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -636,6 +653,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::RaidState,
     Role::RaidLaunch,
     Role::RaidTargets,
+    Role::AirRelations,
     Role::Late,
     Role::Orders,
     Role::Gated,
@@ -688,6 +706,7 @@ impl Job {
             Self::RaidState(..) => Role::RaidState,
             Self::RaidLaunch(..) => Role::RaidLaunch,
             Self::RaidTargets(..) => Role::RaidTargets,
+            Self::AirRelations(..) => Role::AirRelations,
             Self::Late(..) => Role::Late,
             Self::Orders(..) => Role::Orders,
             Self::Gated(..) => Role::Gated,
@@ -1110,6 +1129,19 @@ fn run_with_memory(
             );
             Report::Slow(SlowReport)
         }
+        Job::AirRelations(request) => {
+            let cached = request.countries.roster_view(memory);
+            crate::extended::air_relations::stage(
+                &cached,
+                request.base,
+                request.game_state,
+                request.part,
+                &crate::relation_changes::Observer,
+                &mut crate::extended::air_relations::certificates(request.part),
+                &mut request.staging,
+            );
+            Report::AirRelations(AirRelationsReport)
+        }
         Job::RaidState(request) => {
             let cached = request.countries.roster_view(memory);
             request.packs.capture(
@@ -1256,7 +1288,31 @@ fn run_with_memory(
     report
 }
 
-const WORKER_ONLY_JOBS: usize = 5 + division_eta_inputs::MAX_RANGES;
+impl Role {
+    /// Jobs of this role an hour can hold at once.
+    const fn jobs_per_hour(self) -> usize {
+        match self {
+            Self::AirRelations => crate::extended::air_relations::PARTS,
+            Self::EtaInputs => division_eta_inputs::MAX_RANGES,
+            _ => 1,
+        }
+    }
+}
+
+/// One reserved slot per worker-only job an hour can hold at once, derived
+/// from the roles so a new worker-only role or part count stays covered.
+const WORKER_ONLY_JOBS: usize = {
+    let mut jobs = 0;
+    let mut index = 0;
+    while index < ROLE_COUNT {
+        if ROLES[index].worker_only() {
+            jobs += ROLES[index].jobs_per_hour();
+        }
+        index += 1;
+    }
+    jobs
+};
+const _: () = assert!(WORKER_ONLY_JOBS < MAX_JOBS);
 
 pub(crate) struct Pool {
     executor: acquisition::Pool<Job, Report>,
@@ -1553,6 +1609,16 @@ mod tests {
             executor: acquisition::Pool::start(0, MAX_JOBS, run).unwrap(),
             calibration: Arc::new(SharedCalibration::default()),
         }
+    }
+
+    #[test]
+    fn every_worker_only_job_of_an_hour_has_a_reserved_slot() {
+        // Governance, Variants, Orders, Ordinary, Presentation, each ETA
+        // range and each relation part.
+        assert_eq!(
+            WORKER_ONLY_JOBS,
+            5 + division_eta_inputs::MAX_RANGES + crate::extended::air_relations::PARTS
+        );
     }
 
     #[test]

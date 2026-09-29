@@ -49,7 +49,8 @@ pub(crate) fn authenticate_owner(
     })
 }
 
-pub(crate) fn regional_operand(
+/// The country's regional mine level, raw fixed5; `CanLayMinesInRegion@140F65E40`
+pub fn regional_operand(
     memory: &impl Memory,
     base: usize,
     state: usize,

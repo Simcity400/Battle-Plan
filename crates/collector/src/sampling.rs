@@ -39,6 +39,7 @@ pub const BUFFERS: usize = 4;
 const ETA_INPUT_RANGES: usize = extended::division_eta_inputs::MAX_RANGES;
 const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
 const CHARACTER_PARTS: usize = extended::characters::PARTS;
+const AIR_RELATION_PARTS: usize = extended::air_relations::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
 pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first, slot-hour Variants); 1 division inputs copy + divisions/intel dispatch + character roster, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated/character role dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/variants/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
@@ -727,8 +728,12 @@ impl Shared {
             roster_ready: AtomicBool::new(false),
             pending: UnsafeCell::new(LossBatch::default()),
             cadence: UnsafeCell::new(CadenceState::default()),
-            slice_fingerprints: std::array::from_fn(|_| {
-                UnsafeCell::new(Some(Box::new(crate::slicing::SliceFingerprints::new())))
+            // The air-relation family's store belongs to its decode step.
+            slice_fingerprints: std::array::from_fn(|family| {
+                UnsafeCell::new(
+                    (family != crate::slicing::AIR_RELATIONS)
+                        .then(|| Box::new(crate::slicing::SliceFingerprints::new())),
+                )
             }),
             country_cache: UnsafeCell::new(country_cache),
             eta_cadence: std::array::from_fn(|_| UnsafeCell::new(Some(Box::default()))),
@@ -965,6 +970,7 @@ fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
     // The dropped hour's sliced reads are never published: read them again.
     // A clockless frame read nothing, and its selections belong to an older hour.
     let read = frame.clock.is_some();
+    frame.extended.drop_air_relations();
     for (family, fingerprints) in shared
         .slice_fingerprints
         .iter()
@@ -1345,6 +1351,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 crate::opinion_changes::invalidate();
                 extended::intel::forget_relation_opinions();
             }
+            // Before any capture of the hour, while this thread holds the game.
+            crate::relation_changes::boundary(!continuous || recovery);
             frame.extended.prepare_hour(clock.hour, force_full);
             let state = clock.game_state as usize;
             let cache_begin = qpc();
@@ -1979,6 +1987,18 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 force_full,
                 stability_store
             )));
+            let mut air_relations_pending: [Option<PendingAcquisition>; AIR_RELATION_PARTS] =
+                [const { None }; AIR_RELATION_PARTS];
+            for (part, pending) in air_relations_pending.iter_mut().enumerate() {
+                *pending = Some(queue!(acquisition::Job::AirRelations(
+                    frame.extended.take_air_relations_request(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        part,
+                    )
+                )));
+            }
             let mut supply_trains_pending: [Option<PendingAcquisition>; SUPPLY_PARTS] =
                 [const { None }; SUPPLY_PARTS];
             for (part, pending) in supply_trains_pending.iter_mut().enumerate() {
@@ -2443,6 +2463,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 naval_report.copy_ticks[0] += wings.membership_ticks;
 
                 air_wing_report.copy_ticks[0] += frame.map.install_owned_air(wings);
+                frame
+                    .extended
+                    .air_wing_pilot()
+                    .install_owned_mission_identities(wings);
                 if !naval_report.raw_ok && naval_failure.is_none() {
                     frame
                         .extended
@@ -2663,6 +2687,12 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                             .fetch_add(1, Ordering::Relaxed);
                     }
                 }
+            }
+            for pending in air_relations_pending.into_iter().flatten() {
+                let (request, _, failure) = completed!(pending, AirRelations);
+                frame
+                    .extended
+                    .restore_air_relations_request(request, failure.is_none());
             }
             let (raid_state_request, _, raid_state_failure) =
                 completed!(raid_state_pending, RaidState);
@@ -3618,6 +3648,23 @@ unsafe fn finish_acquisition(
                 return acquisition::Completion {
                     request,
                     report: Ok(acquisition::Report::Orders(report)),
+                    table_reads: crate::read_accounting::ZERO,
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                };
+            }
+            // An inline part could copy megabytes of vectors on the game
+            // thread; its countries are copied afresh at the next hour.
+            if let acquisition::Job::AirRelations(relations) = &mut request {
+                relations
+                    .staging
+                    .fail("air relation worker admission failed");
+                extended::air_relations::certificates(relations.part).forget();
+                return acquisition::Completion {
+                    request,
+                    report: Ok(acquisition::Report::AirRelations(
+                        acquisition::AirRelationsReport,
+                    )),
                     table_reads: crate::read_accounting::ZERO,
                     #[cfg(feature = "callback_profile")]
                     profile: Default::default(),

@@ -297,8 +297,10 @@ macro_rules! packs {
         }
     };
 }
+pub(crate) mod air_reference_witness;
 packs!(
     air,
+    air_relations,
     army_icon_inputs,
     naval_counters,
     railway_guns,
@@ -365,6 +367,7 @@ impl Capacities {
         self.raid_target_statuses.raise_for_countries(slots);
         self.raid_launch_inputs.raise_for_countries(slots);
         self.raid_state_inputs.raise_for_countries(slots);
+        self.air_relations.raise_for_countries(slots);
         self.model_inputs.raise_for_countries(slots);
         self.hired_advisors.raise_for_countries(slots);
         self.country_stability.raise_for_countries(slots);
@@ -423,6 +426,7 @@ impl Captured {
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         // A frame whose sliced job never runs must not report an older read.
         self.governance.reset_slice_selections(hour, force_full);
+        self.air_relations.prepare_hour(hour, force_full);
         self.raid_launch_inputs.reset_selection(hour, force_full);
         self.raid_state_inputs.reset_selections(hour, force_full);
         self.division_presentation.reset_selection(hour, force_full);
@@ -694,6 +698,7 @@ impl Captured {
             crate::slicing::RELATIONS => self.intel.relations_selection(),
             crate::slicing::STABILITY => self.country_stability.selection(),
             crate::slicing::RETREAT_BANS => self.division_presentation.bans_selection(),
+            crate::slicing::AIR_RELATIONS => self.air_relations.selection(),
             _ => unreachable!("unregistered sliced family {family}"),
         }
     }
@@ -1304,6 +1309,47 @@ impl Captured {
 
     fn swap_raid_state(&mut self, packs: &mut RaidStatePacks) {
         std::mem::swap(&mut self.raid_state_inputs, &mut packs.raid_state_inputs);
+    }
+
+    /// Loan one part of the AirCountryRelations copies to its job.
+    pub(crate) fn take_air_relations_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        part: usize,
+    ) -> crate::acquisition_jobs::AirRelationsRequest {
+        crate::acquisition_jobs::AirRelationsRequest {
+            countries: Arc::clone(countries),
+            base,
+            game_state: state,
+            part,
+            staging: self.air_relations.take_part(part),
+        }
+    }
+
+    /// An interrupted part is failed; the decode thread applies the rest.
+    pub(crate) fn restore_air_relations_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::AirRelationsRequest,
+        completed: bool,
+    ) {
+        if !completed {
+            request.staging.fail("air relation acquisition failed");
+            air_relations::certificates(request.part).forget();
+        }
+        self.air_relations
+            .restore_part(request.part, request.staging);
+    }
+
+    /// Decode thread: turn this frame's staged relation copies into rows.
+    pub(crate) fn decode_air_relations(&mut self) {
+        self.air_relations.decode();
+    }
+
+    /// The frame is dropped before decoding.
+    pub(crate) fn drop_air_relations(&mut self) {
+        self.air_relations.dropped();
     }
 
     fn swap_slow(&mut self, packs: &mut SlowPacks) {
@@ -2083,6 +2129,13 @@ impl Captured {
         } else {
             staggered!(raid_launch_inputs);
         }
+        // The parts' copies are decoded later, off the game thread.
+        let cost = if self.air_relations.staged() {
+            self.air_relations.ticks()
+        } else {
+            self.air_relations.unstaged()
+        };
+        scatter(&air_relations::TABLES, cost, &mut ticks);
         if let Some(done) = self.gated_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
