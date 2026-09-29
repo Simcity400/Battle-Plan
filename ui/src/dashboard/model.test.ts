@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryMetadata } from '../shell/api';
 import type { DashboardSource } from './client';
-import { bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, pinTime, resolveWindow } from './model.ts';
+import { bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, pinTime, rebaseWidget, resolveWindow } from './model.ts';
+import { setOption } from './options.ts';
+import type { OptionField } from './options';
 import { parseTemplate } from './storage.ts';
 import { registerWidgets, widgetUnavailable } from './definitions.ts';
 import '../widgets/definitions.ts';
@@ -12,6 +14,30 @@ registerWidgets([
   { kind: 'current', version: 1, title: 'Test moment data', icon: 'grid', timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
   { kind: 'history', version: 1, title: 'Test history data', icon: 'grid', timeModes: ['follow', 'pin', 'range', 'campaign'], defaultTime: 'campaign', scope: 'history', data: true, history: true, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
 ]);
+
+test('two settings changed from the same drawn widget both stay', () => {
+  const fields: OptionField[] = [
+    { key: 'layers', section: 'options', label: 'Layers', kind: 'choice', default: '5', choices: [{ value: '5', label: '5' }, { value: '8', label: '8' }] },
+    { key: 'markers', section: 'options', label: 'Markers', kind: 'toggle', default: true },
+  ];
+  const drawn = { ...createWidget('history', 'main', 'w'), options: { markers: false } };
+  // Both controls act on the widget as drawn, before it is drawn again.
+  const first = { ...drawn, options: setOption(fields, drawn.options, 'layers', '8')! };
+  const second = { ...drawn, options: setOption(fields, drawn.options, 'markers', true)! };
+  // Applied in turn to the latest widget, as the dashboard does.
+  let current = rebaseWidget(drawn, drawn, first);
+  current = rebaseWidget(current, drawn, second);
+  assert.deepEqual(current.options, { layers: '8' });
+  // Before the fix the second replaced the whole widget and lost the first:
+  assert.deepEqual(second.options, {});
+  // Other fields rebase too; an unchanged field keeps the latest value.
+  const renamed = rebaseWidget({ ...current, contentScale: 150 }, drawn, { ...drawn, title: 'Renamed' });
+  assert.equal(renamed.title, 'Renamed');
+  assert.equal(renamed.contentScale, 150);
+  assert.deepEqual(renamed.options, { layers: '8' });
+  // A reset (a fresh widget) clears what the drawn widget had.
+  assert.equal(rebaseWidget(current, current, createWidget('history', 'main', 'w')).options, undefined);
+});
 
 function country(id = '1', tag = 'GER'): CountryMetadata {
   return { id, tag, name: tag, observedBranchId: '7', observedHour: 1000 };

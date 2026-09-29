@@ -174,6 +174,27 @@ export function migrateWidget(widget: WidgetSpec): WidgetSpec {
   return migrated && migrated.id === widget.id && migrated.kind === widget.kind ? { ...migrated, configVersion: definition.version } : widget;
 }
 
+/** A widget change (`base`, the widget a control was drawn from, to `next`) applied
+ * on top of the widget as it is now (`current`): only what the change altered is
+ * taken, options key by key, so two changes made from the same drawn widget before
+ * it is drawn again (two option controls, or a widget saving two options at once)
+ * both stay, instead of the second replacing the first. */
+export function rebaseWidget(current: WidgetSpec, base: WidgetSpec, next: WidgetSpec): WidgetSpec {
+  const merged: WidgetSpec = { ...current };
+  const keys = new Set([...Object.keys(base), ...Object.keys(next)]) as Set<keyof WidgetSpec>;
+  for (const key of keys) {
+    if (key === 'options' || stableJson(base[key]) === stableJson(next[key])) continue;
+    if (Object.hasOwn(next, key)) Object.assign(merged, { [key]: next[key] }); else delete merged[key];
+  }
+  const options: Record<string, NonNullable<WidgetSpec['options']>[string]> = { ...current.options };
+  for (const key of new Set([...Object.keys(base.options ?? {}), ...Object.keys(next.options ?? {})])) {
+    if (stableJson(base.options?.[key]) === stableJson(next.options?.[key])) continue;
+    if (next.options && Object.hasOwn(next.options, key)) options[key] = next.options[key]; else delete options[key];
+  }
+  if (Object.keys(options).length) merged.options = options; else delete merged.options;
+  return merged;
+}
+
 /** The settings-panel choices that save at once, without waiting for Save. Only
  * what this change altered (`previous` to `next`, both drafts) is saved, so other
  * unsaved edits to the widget, such as a Reset layout, stay drafts. A campaign or

@@ -7,7 +7,7 @@ import type { MapOptions, ReplayMetadata } from '../shell/api';
 import MapControls from '../components/MapControls';
 import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
-import { addGridItem, addGridItemBelow, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, seekPositionFor, stableJson } from './model';
+import { addGridItem, addGridItemBelow, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseTemplate, saveLayouts } from './storage';
 import { PlaybackController } from './playback';
@@ -155,8 +155,11 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     setLibrary(next);
   }, []);
   const applyWidget = useCallback((widget: WidgetSpec, view = false) => {
+    // The widget the change was made from, as last drawn: only what the change altered
+    // is applied to the latest one, so a second change made before it is drawn again
+    // (two options saved at once) never undoes the first.
     const before = templateRef.current.widgets.find(item => item.id === widget.id);
-    update((previous) => ({ ...previous, widgets: previous.widgets.map((item) => item.id === widget.id ? widget : item) }));
+    update((previous) => ({ ...previous, widgets: previous.widgets.map((item) => item.id === widget.id ? (before ? rebaseWidget(item, before, widget) : widget) : item) }));
     if (view && before) persistView(before, widget);
   }, [update, persistView]);
   const removeWidget = useCallback((id: string) => update((previous) => ({ ...previous,
