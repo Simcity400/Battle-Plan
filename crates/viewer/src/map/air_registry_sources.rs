@@ -4,7 +4,10 @@
 //! resolved handle and carries the base's own fields where the roster lacks
 //! it, so a registry miss stays distinct from a base missing from the roster.
 
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use replay::{
     frame::DecodedFrame,
@@ -20,6 +23,10 @@ fn invalid(reason: &'static str) -> io::Error {
 #[derive(Debug, Default)]
 pub(super) struct AirRegistrySources {
     pub(super) bases: BTreeMap<u64, AirBaseRow>,
+    /// A stateless base's host task-force roster owner, when the host resolves.
+    pub(super) host_owners: BTreeMap<u64, u32>,
+    /// Stateless bases whose host ship resolves with a null task force.
+    pub(super) hosts_without_task_force: BTreeSet<u64>,
 }
 
 impl AirRegistrySources {
@@ -59,6 +66,12 @@ impl AirRegistrySources {
                     .ok_or_else(|| invalid("handle-only air base witness has no AirBases row"))?
                     .clone(),
             };
+            if let Some(owner) = row.host_owner {
+                sources.host_owners.insert(row.handle, owner);
+            }
+            if row.host_without_task_force {
+                sources.hosts_without_task_force.insert(row.handle);
+            }
             sources.bases.insert(row.handle, base);
         }
         Ok(sources)
@@ -68,6 +81,16 @@ impl AirRegistrySources {
     /// base resolves.
     pub(super) fn transfer_resolves(&self, handle: u64) -> bool {
         handle != 0 && self.bases.contains_key(&handle)
+    }
+
+    /// A stateless base's controller: its host's roster owner, or zero (the
+    /// native null controller) when the host does not resolve. `None` for a
+    /// null task force, which `GetTaskForceOwnerTag@140C215C0` dereferences.
+    pub(super) fn host_owner(&self, base: u64) -> Option<u32> {
+        if self.hosts_without_task_force.contains(&base) {
+            return None;
+        }
+        Some(self.host_owners.get(&base).copied().unwrap_or(0))
     }
 }
 
@@ -93,6 +116,14 @@ mod tests {
                 handle: 11,
                 base_kind: Some(0),
                 host: Some(77),
+                host_owner: Some(3),
+                ..Default::default()
+            },
+            AirReferenceWitnessRow {
+                handle: 12,
+                base_kind: Some(0),
+                host: Some(78),
+                host_without_task_force: true,
                 ..Default::default()
             },
         ];
@@ -100,7 +131,11 @@ mod tests {
         assert_eq!(sources.bases[&10].capacity, 5);
         assert_eq!(sources.bases[&11].host, 77);
         assert!(sources.transfer_resolves(11));
-        assert!(!sources.transfer_resolves(12));
+        assert!(!sources.transfer_resolves(13));
+        assert_eq!(
+            [10, 11, 12].map(|base| sources.host_owner(base)),
+            [Some(0), Some(3), None]
+        );
         assert!(AirRegistrySources::from_rows(&witnesses, None).is_err());
     }
 }

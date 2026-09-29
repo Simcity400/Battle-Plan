@@ -29,9 +29,14 @@ use replay::{
     rows::{self, TableId, tables},
 };
 
-use super::air_reference_witness::{self, BaseWitness};
+use super::{
+    air_reference_witness::{self, BaseWitness},
+    air_sorties::{self, Sorties},
+};
 
-pub const N: usize = 10;
+pub const N: usize = 15;
+/// The tables `Capacities::rows` sizes; the sortie tables size themselves.
+pub const SIZED: usize = 10;
 pub const TABLES: [TableId; N] = [
     TableId::WingEquipment,
     TableId::AirBases,
@@ -43,6 +48,11 @@ pub const TABLES: [TableId; N] = [
     TableId::AirRegionalMissions,
     TableId::AirReferenceWitnesses,
     TableId::NavalMineLevels,
+    TableId::AirMissionInputs,
+    TableId::AirSortieBaseCountries,
+    TableId::AirSortieModifiers,
+    TableId::AirSortieSpecialBases,
+    TableId::AirSortieModifierMetadata,
 ];
 
 /// The regional source walk is charged to history. Owned wing acquisition is charged to
@@ -55,10 +65,11 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] =
 pub struct Capacities {
     /// History/damage capacities count native entries, before off-thread grouping.
     /// Witnesses count probed base handles.
-    pub rows: [usize; N],
+    pub rows: [usize; SIZED],
     pub ace_names: usize,
     /// The wing census joined to missions, and its base-handle scratch.
     pub wings: usize,
+    pub sorties: air_sorties::Capacities,
 }
 
 impl Default for Capacities {
@@ -67,14 +78,19 @@ impl Default for Capacities {
             rows: [8192, 2048, 4096, 8192, 16_384, 1024, 2048, 4096, 1024, 64],
             ace_names: 65_536,
             wings: 8192,
+            sorties: Default::default(),
         }
     }
 }
 
 /// The exact invocation context from the shared authenticated AirWings visitor.
-/// It is never retained. The pool pointer is unnecessary for these two fields.
+/// The wing and pool pointers go into this hour's `WingIdentity` census,
+/// which lives only for the acquisition: the sortie capture reads each pool's
+/// definition map flags through the pool pointer. No pointer reaches the
+/// replay.
 pub struct WingSource<'a> {
     pub pointer: usize,
+    pub pool: usize,
     pub row: &'a cair_wing::Row,
 }
 
@@ -98,6 +114,7 @@ pub struct Captured {
     /// wings' pool bases and every transfer base.
     handles: Vec<u64>,
     references: CaptureRows<BaseWitness>,
+    sorties: Sorties,
     mines: CaptureRows<rows::NavalMineLevelRow>,
     wing_ticks: [u64; 2],
     /// Game-thread time installing the owned census, charged to
@@ -149,6 +166,8 @@ impl Captured {
         self.cumulative.fail(failed(self.active[2], reason));
         self.registrations.fail(failed(self.active[7], reason));
         self.references.fail(failed(self.active[8], reason));
+        self.sorties
+            .fail(failed(self.active[10], reason), failed(self.active[14], reason));
         self.mines.fail(failed(self.active[9], reason));
         if !self.bases_raw_mode {
             self.bases.fail(failed(self.active[1], reason));
@@ -166,9 +185,16 @@ impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {
-            rows: [0; N],
+            rows: [0; SIZED],
             ace_names: 0,
             wings: 0,
+            sorties: air_sorties::Capacities {
+                missions: 0,
+                reached: 0,
+                rows: 0,
+                keys: 0,
+                hosts: 0,
+            },
         })
     }
 
@@ -188,6 +214,7 @@ impl Captured {
             registrations: CaptureRows::new(capacity.rows[7]),
             handles: vec![0; capacity.wings * 2],
             references: CaptureRows::new(capacity.rows[8]),
+            sorties: Sorties::with_capacities(&capacity.sorties),
             mines: CaptureRows::new(capacity.rows[9]),
             wing_ticks: [0; 2],
             identity_ticks: 0,
@@ -222,6 +249,7 @@ impl Captured {
     fn reset_missions(&mut self) {
         self.registrations.reset();
         self.references.reset();
+        self.sorties.reset();
         self.mines.reset();
     }
 
@@ -238,6 +266,7 @@ impl Captured {
             + self.registrations.allocated_bytes()
             + self.handles.capacity() * size_of::<u64>()
             + self.references.allocated_bytes()
+            + self.sorties.allocated_bytes()
             + self.mines.allocated_bytes()
     }
 
@@ -258,6 +287,7 @@ impl Captured {
         );
         self.registrations.grow(&mut capacity.rows[7]);
         self.references.grow(&mut capacity.rows[8]);
+        self.sorties.grow(&mut capacity.sorties);
         self.mines.grow(&mut capacity.rows[9]);
     }
 
@@ -283,11 +313,11 @@ impl Captured {
         self.identity_ticks = 0;
     }
 
-    fn push_identity(&mut self, pointer: usize, row: &cair_wing::Row) {
+    fn push_identity(&mut self, pointer: usize, pool: usize, row: &cair_wing::Row) {
         if matches!(self.identity_outcome, Outcome::Unavailable { .. }) {
             return;
         }
-        let identity = match WingIdentity::new(pointer, row) {
+        let identity = match WingIdentity::new(pointer, pool, row) {
             Ok(identity) => identity,
             Err(reason) => {
                 self.identity_outcome = Outcome::Unavailable { reason };
@@ -323,7 +353,7 @@ impl Captured {
         match job.source_outcome {
             Outcome::Rows { len } if len <= job.sources.len() => {
                 for source in &job.sources[..len] {
-                    self.push_identity(source.pointer, &source.row);
+                    self.push_identity(source.pointer, source.pool, &source.row);
                 }
             }
             _ => {
@@ -337,7 +367,7 @@ impl Captured {
     /// Extension failure never changes the map row. Equipment retains full
     /// native references and amounts, with no transient pointers in pooled rows.
     pub fn visit_wing(&mut self, memory: &impl Memory, base: usize, source: WingSource<'_>) {
-        self.push_identity(source.pointer, source.row);
+        self.push_identity(source.pointer, source.pool, source.row);
         let mut reads = read_accounting::table(TableId::WingEquipment);
         let begin = qpc();
         let outcome = &mut self.equipment.outcome;
@@ -513,6 +543,7 @@ impl Captured {
             capture_references(
                 memory,
                 base,
+                game_state,
                 wings,
                 registered,
                 &mut self.handles,
@@ -521,6 +552,32 @@ impl Captured {
             .unwrap_or_else(|reason| Outcome::Unavailable { reason })
         };
         ticks[8] = elapsed(begin);
+        let begin = qpc();
+        if !self.active[10] {
+            self.sorties.fail(SKIPPED, SKIPPED);
+        } else if let Outcome::Rows { len } = self.references.outcome {
+            let _reads = read_accounting::table(TableId::AirMissionInputs);
+            match registered_wings(wings, registered) {
+                Ok(missions) => self.sorties.capture(
+                    memory,
+                    base,
+                    game_state,
+                    self.active[14],
+                    missions,
+                    &self.references.rows[..len],
+                ),
+                Err(reason) => self
+                    .sorties
+                    .fail(Outcome::Unavailable { reason }, failed(self.active[14], reason)),
+            }
+        } else {
+            let reason = "air sortie inputs lack the complete base witnesses";
+            self.sorties.fail(
+                Outcome::Unavailable { reason },
+                failed(self.active[14], reason),
+            );
+        }
+        ticks[10] = elapsed(begin);
         let begin = qpc();
         self.mines.outcome = if !self.active[9] {
             SKIPPED
@@ -542,6 +599,7 @@ impl Captured {
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
+        let sorties = self.sorties.outcomes();
         [
             self.equipment.outcome,
             self.bases.outcome,
@@ -553,11 +611,17 @@ impl Captured {
             self.registrations.outcome,
             self.references.outcome,
             self.mines.outcome,
+            sorties[0],
+            sorties[1],
+            sorties[2],
+            sorties[3],
+            sorties[4],
         ]
     }
 
     pub fn tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
+        let [missions, containers, modifiers, special_bases, metadata] = self.sorties.tables();
         [
             table::<tables::WingEquipment, _>(outcomes[0], &self.equipment.rows, Clone::clone),
             table::<tables::AirBases, _>(outcomes[1], &self.bases.rows, |r| rows::AirBaseRow {
@@ -602,6 +666,11 @@ impl Captured {
                 },
             ),
             table::<tables::NavalMineLevels, _>(outcomes[9], &self.mines.rows, Clone::clone),
+            missions,
+            containers,
+            modifiers,
+            special_bases,
+            metadata,
         ]
     }
 
@@ -674,12 +743,13 @@ fn registered_wings<'a>(
 }
 
 /// Probe each registered wing's pool base, each unregistered training wing's
-/// pool base (`14122EFD0`'s training pass) and every transfer base once. A
-/// wing is registered only with a region, so the scratch's two entries per
-/// wing cover every probe.
+/// pool base (`14122EFD0`'s training pass) and every transfer base once, and
+/// a stateless base's host. A wing is registered only with a region, so the
+/// scratch's two entries per wing cover every probe.
 fn capture_references(
     memory: &impl Memory,
     base: usize,
+    game_state: usize,
     wings: &[WingIdentity],
     registered: Option<&[cair_regional_mission::Row]>,
     handles: &mut [u64],
@@ -725,9 +795,21 @@ fn capture_references(
             continue;
         }
         previous = handle;
+        let reference = map_air_base_reference::read_base(memory, base, game_state, handle)?;
+        let host = match reference {
+            Some(source) if source.state.is_none() && source.host != 0 => {
+                map_air_base_reference::read_host_owner(memory, base, source.host)?
+            }
+            _ => map_air_base_reference::Host::Unresolved,
+        };
         let witness = BaseWitness {
             handle,
-            base: map_air_base_reference::read_base(memory, base, handle)?,
+            base: reference,
+            host_owner: match host {
+                map_air_base_reference::Host::Owner(owner) => Some(owner),
+                _ => None,
+            },
+            host_without_task_force: host == map_air_base_reference::Host::NoTaskForce,
         };
         match output.get_mut(len) {
             Some(slot) => {
@@ -1262,8 +1344,8 @@ fn copy_air_pass(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
         &mut job.map_rows[..ctx.limits[0]],
         &mut job.sources,
         naval_limit,
-        |pointer, _, row, admitted| {
-            let wing = WingSource { pointer, row };
+        |pointer, pool, row, admitted| {
+            let wing = WingSource { pointer, pool, row };
             if admitted.sources && !matches!(equipment, Outcome::Unavailable { .. }) {
                 source.mask.set(1);
                 let next = read_equipment(
@@ -4010,9 +4092,10 @@ mod tests {
 
     fn small() -> (Capacities, Captured) {
         let capacity = Capacities {
-            rows: [3; N],
+            rows: [3; SIZED],
             ace_names: 8,
             wings: 8192,
+            sorties: Default::default(),
         };
         let captured = Captured::with_capacities(&capacity);
         (capacity, captured)
@@ -4061,6 +4144,7 @@ mod tests {
         };
         let source = WingSource {
             pointer: WING,
+            pool: 0,
             row: &row,
         };
         let mut output = std::array::from_fn::<_, 2, _>(|_| rows::WingEquipmentRow::default());
@@ -4388,6 +4472,7 @@ mod tests {
                 rows: [3, 0, if cumulative { 2 } else { 0 }, 0, 0, 0, 0, 4096, 1024, 64],
                 ace_names: 0,
                 wings: 8192,
+                sorties: Default::default(),
             });
             decode_air_payload(&mut captured, &job, &mut [0; WING_PACK_N]);
             assert_eq!(captured.equipment.outcome, job.equipment_outcome);
@@ -4507,6 +4592,7 @@ mod tests {
                 rows: [equipment, 2048, cumulative, 8192, 16384, 1024, 2048, 4096, 1024, 64],
                 ace_names: 65536,
                 wings: 8192,
+                sorties: Default::default(),
             };
             let direct = kit::direct_with(&memory, &capacity);
             let (split, report, _) = kit::split_with(&memory, &capacity);
@@ -4521,6 +4607,7 @@ mod tests {
             rows: [3, 2048, 2, 8192, 16384, 1024, 2048, 4096, 1024, 64],
             ace_names: 65536,
             wings: 8192,
+            sorties: Default::default(),
         };
         let (split, _, _) = kit::split_with(&memory, &capacity);
         assert_eq!(split.equipment_outcome, Outcome::Rows { len: 3 });
@@ -4769,6 +4856,7 @@ mod tests {
                 rows: [8192, 2048, 4096, 8192, 16384, 1024, rows, 4096, 1024, 64],
                 ace_names: 65536,
                 wings: 8192,
+                sorties: Default::default(),
             };
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
@@ -4779,6 +4867,7 @@ mod tests {
             rows: [8192, 2048, 4096, 8192, 16384, 1024, 2, 4096, 1024, 64],
             ace_names: 65536,
             wings: 8192,
+            sorties: Default::default(),
         };
         let (split, _, _) = kit::split(&memory, &capacities);
         assert_eq!(split.outcome, Outcome::Rows { len: 2 });
@@ -5043,8 +5132,8 @@ mod tests {
             // Keep unrelated bases/aces admitted: their zero-capacity walkers
             // skip validation reads and have a different acquisition contract.
             if matches!(direct.regs.outcome, Outcome::Unavailable { .. }) {
-                let direct = kit::collect_typed(&memory, [8; N], 256, 0, 0);
-                let (split, _, job) = kit::collect_split(&memory, [8; N], 256, 0, 0);
+                let direct = kit::collect_typed(&memory, [8; SIZED], 256, 0, 0);
+                let (split, _, job) = kit::collect_split(&memory, [8; SIZED], 256, 0, 0);
                 kit::assert_matches_direct(&split, &direct);
                 assert_eq!(job.registration_demand.filter(|_| !job.log.fault[1]), None);
             }
@@ -5071,10 +5160,10 @@ mod tests {
             kit::put32(&mut bytes, header + 12, count as u32);
         }
         let memory = kit::memory(&bytes);
-        let expected = kit::collect_typed(&memory, [8; N], 256, 4, 12);
+        let expected = kit::collect_typed(&memory, [8; SIZED], 256, 4, 12);
         for capacity in [0, 1] {
             let (split, report, mut job) =
-                kit::collect_split(&memory, [8; N], 256, capacity, capacity);
+                kit::collect_split(&memory, [8; SIZED], 256, capacity, capacity);
             assert!(report.raw_ok);
             assert_eq!(job.registration_demand, Some([4, 12]));
             kit::assert_matches_direct(&split, &expected);
@@ -5096,8 +5185,8 @@ mod tests {
         // original acquisition already saw the container and pool counts.
         kit::put64(&mut bytes, kit::W0 + cair_wing::REFERENCE_TYPE, 0);
         let memory = kit::memory(&bytes);
-        let direct = kit::collect_typed(&memory, [8; N], 256, 0, 0);
-        let (split, _, job) = kit::collect_split(&memory, [8; N], 256, 0, 0);
+        let direct = kit::collect_typed(&memory, [8; SIZED], 256, 0, 0);
+        let (split, _, job) = kit::collect_split(&memory, [8; SIZED], 256, 0, 0);
         assert!(matches!(split.regs.outcome, Outcome::Unavailable { .. }));
         assert_eq!(job.registration_demand, None);
         kit::assert_matches_direct(&split, &direct);
@@ -6649,7 +6738,7 @@ pub(crate) mod wing_test_kit {
     const C0: usize = 0x20000;
     const MANAGER: usize = 0x30000;
     const OWNER_AIR: usize = 0x31000;
-    const POOL: usize = 0x32000;
+    pub(crate) const POOL: usize = 0x32000;
     pub(crate) const WING: usize = 0x33000;
     const WING2: usize = 0x34000;
     pub(crate) const ENTRIES: usize = 0x35000;
@@ -6754,7 +6843,6 @@ pub(crate) mod wing_test_kit {
             p64(&mut bytes, wing + cair_wing::POOL, POOL as u64);
             p64(&mut bytes, wing + cair_wing::BASE_OVERRIDE, 0);
             p32(&mut bytes, wing + cair_wing::PLANE_COUNT, 10);
-            p32(&mut bytes, wing + cair_wing::EFFECTIVE_PLANES, 8);
             p32(
                 &mut bytes,
                 wing + cair_wing::MISSION + engine::air_mission::ENABLED_MASK,
@@ -6830,20 +6918,21 @@ pub(crate) mod wing_test_kit {
         // exactly like the game thread's Sources::air sequence.
         captured.begin_wings();
         // Re-walk collecting (pointer,row) for the visitor (typed, no raw).
-        let mut collected: Vec<(usize, cair_wing::Row)> = Vec::new();
+        let mut collected: Vec<(usize, usize, cair_wing::Row)> = Vec::new();
         let mut wing_rows = vec![cair_wing::Row::default(); 8192];
         let outcome = cair_wing::walk_with(
             memory,
             BASE,
             GAME_STATE,
             &mut wing_rows,
-            |pointer, _, row| {
-                collected.push((pointer, *row));
+            |pointer, pool, row| {
+                collected.push((pointer, pool, *row));
             },
         );
-        for (pointer, row) in &collected {
+        for (pointer, pool, row) in &collected {
             let source = super::WingSource {
                 pointer: *pointer,
+                pool: *pool,
                 row,
             };
             captured.visit_wing(memory, BASE, source);
@@ -6934,6 +7023,7 @@ pub(crate) mod wing_test_kit {
             rows: [1, 2048, 1, 8192, 16384, 1024, 2048, 4096, 1024, 64],
             ace_names: 65536,
             wings: 8192,
+            sorties: Default::default(),
         };
         collect_typed(memory, &capacity)
     }
@@ -6955,6 +7045,7 @@ pub(crate) mod wing_test_kit {
             rows: [1, 2048, 1, 8192, 16384, 1024, 2048, 4096, 1024, 64],
             ace_names: 65536,
             wings: 8192,
+            sorties: Default::default(),
         };
         let mut captured = Captured::with_capacities(&capacity);
         let mut ticks = [0u64; 2];
@@ -7343,6 +7434,7 @@ mod air_bases_memo_tests {
             rows: [0, cap[0], 0, 0, 0, cap[1], 0, 4096, 1024, 64],
             ace_names: cap[2],
             wings: 8192,
+            sorties: Default::default(),
         });
         let mut fog =
             super::super::fog::Captured::with_capacities(&super::super::fog::Capacities {
@@ -8028,7 +8120,7 @@ pub(crate) mod air_bases_test_kit {
 
     pub(super) fn collect_typed(
         memory: &impl Memory,
-        air_rows: [usize; super::N],
+        air_rows: [usize; super::SIZED],
         ace_names: usize,
         fog_rows: usize,
         fog_wings: usize,
@@ -8038,6 +8130,7 @@ pub(crate) mod air_bases_test_kit {
             rows: air_rows,
             ace_names,
             wings: 8192,
+            sorties: Default::default(),
         };
         let mut captured = Captured::with_capacities(&capacities);
         let walked = cair_base::walk(memory, BASE, GAME_STATE, &mut captured.bases.rows);
@@ -8070,7 +8163,7 @@ pub(crate) mod air_bases_test_kit {
 
     pub(super) fn collect_split(
         memory: &impl Memory,
-        air_rows: [usize; super::N],
+        air_rows: [usize; super::SIZED],
         ace_names: usize,
         fog_rows: usize,
         fog_wings: usize,
@@ -8085,6 +8178,7 @@ pub(crate) mod air_bases_test_kit {
             rows: air_rows,
             ace_names,
             wings: 8192,
+            sorties: Default::default(),
         };
         let mut air = Captured::with_capacities(&capacities);
         let mut fog =
@@ -8395,6 +8489,7 @@ pub(crate) mod air_history_test_kit {
             rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048, 4096, 1024, 64],
             ace_names: 65_536,
             wings: 8192,
+            sorties: Default::default(),
         };
         let mut captured = Captured::with_capacities(&capacities);
         let walked = cair_region_combat_data::walk_world(
@@ -8432,6 +8527,7 @@ pub(crate) mod air_history_test_kit {
             rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048, 4096, 1024, 64],
             ace_names: 65_536,
             wings: 8192,
+            sorties: Default::default(),
         };
         let mut captured = Captured::with_capacities(&capacities);
         let mut first = AirHistoryJob::new();

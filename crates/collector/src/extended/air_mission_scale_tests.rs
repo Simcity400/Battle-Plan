@@ -20,14 +20,22 @@
 //! of the registered wings lay mines; some of them fly for another country
 //! (a positive override), so (country, region) pairs repeat.
 //!
+//! A stateless base's host is a carrier with a task force, a carrier
+//! without one, or a handle the registry does not hold. A state base without
+//! a cached province takes the first province of its state's list for its
+//! kind (`CAirBase::GetProvince@140C44050`); a fourth of those lists are
+//! empty.
+//!
 //! Memory is two windows: a heap holding every object, and the reference
 //! registry's low-type root cells in the module. Anything else, including the
 //! wings themselves (the joins never read a wing), is unreadable.
 
 use super::*;
 use engine::{
-    cgame_state as gs, creference_registry as registry, cstrategic_air, cstrategic_navy,
-    map_air_base_reference::BaseReference, reference_bucket as bucket,
+    cgame_state as gs, creference_registry as registry, cship, cstrategic_air, cstrategic_navy,
+    ctask_force, cunit,
+    map_air_base_reference::{BaseReference, Host},
+    reference_bucket as bucket,
 };
 use replay::rows::{AirReferenceWitnessRow, TableSchema};
 use std::{
@@ -55,23 +63,50 @@ fn handle(id: u64) -> u64 {
     id << 32 | u64::from(cair_base::TYPE)
 }
 
-/// The fields a registered base's object holds.
+fn province_id(index: u64) -> u32 {
+    100 + 3 * (index % PROVINCES) as u32
+}
+
+/// The first province of a state's list for a base kind, if it has one.
+fn first_province(state: u32, kind: i32) -> Option<u32> {
+    let (state, kind) = (u64::from(state), kind as u64);
+    (!(state + kind).is_multiple_of(4)).then(|| province_id(state * 7 + kind * 101))
+}
+
+/// The fields a registered base's object holds, as the reference reads
+/// them (without the object's address).
 fn reference(id: u64) -> BaseReference {
-    let state = Some(1 + (id % STATES) as u32);
-    let province = Some(100 + 3 * (id % PROVINCES) as u32);
+    let kind = (id % 3) as i32;
+    let state = 1 + (id % STATES) as u32;
     let (state, province) = match id % 10 {
         // Stateless: a hosted base, whose cached province is ignored.
         3 => (None, None),
-        7 => (state, None),
-        _ => (state, province),
+        // No cached province: the state's first one for the kind.
+        7 => (Some(state), first_province(state, kind)),
+        _ => (Some(state), Some(province_id(id))),
     };
     BaseReference {
         state,
         province,
-        host: id << 8 | 0x33,
-        kind: (id % 3) as i32,
+        host: id << 32 | u64::from(cship::HANDLE_TYPE),
+        kind,
+        ..Default::default()
     }
 }
+
+/// A stateless base's host: a carrier in a task force, a carrier without
+/// one, or a handle that does not resolve.
+fn host(id: u64) -> Host {
+    match id / 10 % 3 {
+        0 => Host::Owner(1 + (id % u64::from(COUNTRIES)) as u32),
+        1 => Host::NoTaskForce,
+        _ => Host::Unresolved,
+    }
+}
+
+/// A probed handle's witness: the base, its host's owner and whether the
+/// host has no task force.
+type Witness = (u64, Option<BaseReference>, Option<u32>, bool);
 
 /// A country's raw regional mine level; zero for a fifth of the pairs.
 fn mines(slot: u32, region: u32) -> i64 {
@@ -96,6 +131,8 @@ struct World {
     states: Vec<usize>,
     /// Each registered base's object, by handle.
     bases: BTreeMap<u64, usize>,
+    /// Each registered carrier host, by handle.
+    ships: BTreeMap<u64, usize>,
 }
 
 impl World {
@@ -133,6 +170,52 @@ impl World {
         let object = self.alloc(len);
         self.u64(object, (BASE + vtable_rva) as u64);
         object
+    }
+
+    /// A reference registry table of `kind` holding `objects` by handle,
+    fn registry(&mut self, kind: u32, objects: &BTreeMap<u64, usize>) {
+        let exponent = (objects.len() * 2)
+            .next_power_of_two()
+            .trailing_zeros()
+            .max(registry::MINIMUM_EXPONENT);
+        let mask = (1_u32 << exponent) - 1;
+        let overflow = exponent + 2;
+        let terminal = (mask + 1 + overflow) as usize;
+        let mut cells = vec![(0_u32, 0_u64, 0_usize); terminal + 1];
+        for (&handle, &object) in objects {
+            let hash = handle
+                .rotate_left(32)
+                .wrapping_mul(registry::HASH_MULTIPLIER);
+            let mut index = (((hash >> 32) as u32 ^ hash as u32) & mask) as usize;
+            let mut entry = (1, handle, object);
+            while cells[index].0 != 0 {
+                if cells[index].0 < entry.0 {
+                    std::mem::swap(&mut cells[index], &mut entry);
+                }
+                index += 1;
+                entry.0 += 1;
+                assert!(index < terminal);
+            }
+            cells[index] = entry;
+        }
+        assert!(cells.iter().all(|cell| cell.0 <= overflow + 1));
+        cells[terminal].0 = 255;
+        let entries = self.alloc(cells.len() * bucket::STRIDE);
+        for (index, &(distance, handle, object)) in cells.iter().enumerate() {
+            let cell = entries + index * bucket::STRIDE;
+            self.put(cell + bucket::DISTANCE, &[distance as u8]);
+            self.u64(cell + bucket::TYPE, handle);
+            self.u64(cell + bucket::OBJECT, object as u64);
+        }
+        let root = self.alloc(registry::SIZE);
+        self.u64(root + registry::ENTRIES, entries as u64);
+        self.u32(root + registry::COUNT, objects.len() as u32);
+        self.u32(root + registry::MASK, mask);
+        self.put(root + registry::OVERFLOW_DISTANCE, &[overflow as u8]);
+        self.u64(
+            BASE + registry::LOW_ROOTS_RVA + kind as usize * 8,
+            root as u64,
+        );
     }
 }
 
@@ -185,6 +268,7 @@ impl Scale {
             navies: BTreeMap::new(),
             states: Vec::new(),
             bases: BTreeMap::new(),
+            ships: BTreeMap::new(),
         };
         let state = world.alloc(0x800);
         world.game_state = state;
@@ -367,10 +451,40 @@ impl Scale {
         let provinces: Vec<usize> = (0..PROVINCES)
             .map(|index| {
                 let object = world.object(0xa8, cprovince::VTABLE_RVA);
-                world.u32(object + cprovince::ID, 100 + 3 * index as u32);
+                world.u32(object + cprovince::ID, province_id(index));
                 object
             })
             .collect();
+        // The province roster by id, and each kind's state province lists.
+        let ids = province_id(PROVINCES - 1) as usize + 1;
+        let roster = world.alloc(ids * 8);
+        world.array(state + gs::PROVINCES, roster, ids as u32);
+        for (index, &object) in provinces.iter().enumerate() {
+            world.u64(
+                roster + province_id(index as u64) as usize * 8,
+                object as u64,
+            );
+        }
+        for (kind, lists) in [
+            cstrategic_air_manager::DEFAULT_STATE_PROVINCE_LISTS,
+            cstrategic_air_manager::KIND1_STATE_PROVINCE_LISTS,
+            cstrategic_air_manager::KIND2_STATE_PROVINCE_LISTS,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let stride = engine::cpdx_array::STRIDE;
+            let states = world.alloc((STATES as usize + 1) * stride);
+            world.array(manager + lists, states, STATES as u32 + 1);
+            for id in 1..=STATES as u32 {
+                if let Some(first) = first_province(id, kind as i32) {
+                    let list = world.alloc(8);
+                    world.u32(list, first);
+                    world.u32(list + 4, province_id(u64::from(first)));
+                    world.array(states + id as usize * stride, list, 2);
+                }
+            }
+        }
         let ids: Vec<u64> = (1..=TRANSFER_BASES)
             .filter(|id| !id.is_multiple_of(97))
             .chain(unique_bases)
@@ -390,47 +504,31 @@ impl Scale {
             }
             world.u32(object + cair_base::KIND, fields.kind as u32);
             world.bases.insert(handle(id), object);
-        }
-        let exponent = (ids.len() * 2).next_power_of_two().trailing_zeros();
-        let mask = (1_u32 << exponent) - 1;
-        let overflow = exponent + 2;
-        let terminal = (mask + 1 + overflow) as usize;
-        let mut cells = vec![(0_u32, 0_u64, 0_usize); terminal + 1];
-        for (&handle, &object) in &world.bases {
-            let hash = handle
-                .rotate_left(32)
-                .wrapping_mul(registry::HASH_MULTIPLIER);
-            let mut index = (((hash >> 32) as u32 ^ hash as u32) & mask) as usize;
-            let mut entry = (1, handle, object);
-            while cells[index].0 != 0 {
-                if cells[index].0 < entry.0 {
-                    std::mem::swap(&mut cells[index], &mut entry);
-                }
-                index += 1;
-                entry.0 += 1;
-                assert!(index < terminal);
+            if fields.state.is_some() {
+                continue;
             }
-            cells[index] = entry;
+            let task_force = match host(id) {
+                Host::Unresolved => continue,
+                Host::NoTaskForce => 0,
+                Host::Owner(owner) => {
+                    let task_force = world.object(0x1e0, ctask_force::VTABLE_RVA);
+                    world.u64(
+                        task_force + ctask_force::SECONDARY_BASE,
+                        (BASE + ctask_force::SECONDARY_VTABLE_RVA) as u64,
+                    );
+                    world.u32(task_force + cunit::ROSTER_OWNER, owner);
+                    task_force
+                }
+            };
+            let ship = world.object(cship::TASK_FORCE + 8, cship::VTABLE_RVA);
+            world.u64(ship + cship::HANDLE, fields.host);
+            world.u64(ship + cship::TASK_FORCE, task_force as u64);
+            world.ships.insert(fields.host, ship);
         }
-        assert!(cells.iter().all(|cell| cell.0 <= overflow + 1));
-        cells[terminal].0 = 255;
-        let entries = world.alloc(cells.len() * bucket::STRIDE);
-        for (index, &(distance, handle, object)) in cells.iter().enumerate() {
-            let cell = entries + index * bucket::STRIDE;
-            world.put(cell + bucket::DISTANCE, &[distance as u8]);
-            world.u64(cell + bucket::TYPE, handle);
-            world.u64(cell + bucket::OBJECT, object as u64);
-        }
-        let root = world.alloc(registry::SIZE);
-        world.u64(root + registry::ENTRIES, entries as u64);
-        world.u32(root + registry::COUNT, ids.len() as u32);
-        world.u32(root + registry::MASK, mask);
-        world.put(root + registry::OVERFLOW_DISTANCE, &[overflow as u8]);
-        world.u64(
-            BASE + registry::LOW_ROOTS_RVA + cair_base::TYPE as usize * 8,
-            root as u64,
-        );
-
+        let bases = world.bases.clone();
+        world.registry(cair_base::TYPE, &bases);
+        let ships = world.ships.clone();
+        world.registry(cship::HANDLE_TYPE, &ships);
         // The navies of the registered countries and their mine levels.
         let navies = world.object(0x20, cstrategic_navy_manager::VTABLE_RVA);
         world.u64(state + gs::STRATEGIC_NAVY_MANAGER, navies as u64);
@@ -488,7 +586,7 @@ impl Scale {
     /// Every registered pool base, every unregistered training wing's pool
     /// base and every transfer base, each once in handle order, with the
     /// fields of those the registry resolves.
-    fn witnesses(&self) -> Vec<(u64, Option<BaseReference>)> {
+    fn witnesses(&self) -> Vec<Witness> {
         let probes: BTreeSet<u64> = self
             .registered_wings()
             .map(|wing| wing.air_base)
@@ -513,8 +611,22 @@ impl Scale {
         probes
             .into_iter()
             .map(|handle| {
-                let resolved = self.world.bases.contains_key(&handle);
-                (handle, resolved.then(|| reference(handle >> 32)))
+                let Some(&object) = self.world.bases.get(&handle) else {
+                    return (handle, None, None, false);
+                };
+                let base = BaseReference {
+                    object,
+                    ..reference(handle >> 32)
+                };
+                let host = match base.state {
+                    Some(_) => Host::Unresolved,
+                    None => host(handle >> 32),
+                };
+                let owner = match host {
+                    Host::Owner(owner) => Some(owner),
+                    _ => None,
+                };
+                (handle, Some(base), owner, host == Host::NoTaskForce)
             })
             .collect()
     }
@@ -644,10 +756,10 @@ fn complete<S: TableSchema>(table: &TableView) -> &[S::Row] {
     rows.rows::<S>().unwrap()
 }
 
-fn witness_rows(witnesses: &[(u64, Option<BaseReference>)]) -> Vec<AirReferenceWitnessRow> {
+fn witness_rows(witnesses: &[Witness]) -> Vec<AirReferenceWitnessRow> {
     witnesses
         .iter()
-        .filter_map(|&(handle, base)| {
+        .filter_map(|&(handle, base, host_owner, host_without_task_force)| {
             let base = base?;
             Some(AirReferenceWitnessRow {
                 handle,
@@ -655,15 +767,24 @@ fn witness_rows(witnesses: &[(u64, Option<BaseReference>)]) -> Vec<AirReferenceW
                 state: base.state,
                 province: base.province,
                 host: base.state.is_none().then_some(base.host),
+                host_owner,
+                host_without_task_force,
             })
         })
         .collect()
 }
 
-fn witnessed(output: &[BaseWitness]) -> Vec<(u64, Option<BaseReference>)> {
+fn witnessed(output: &[BaseWitness]) -> Vec<Witness> {
     output
         .iter()
-        .map(|witness| (witness.handle, witness.base))
+        .map(|witness| {
+            (
+                witness.handle,
+                witness.base,
+                witness.host_owner,
+                witness.host_without_task_force,
+            )
+        })
         .collect()
 }
 
@@ -789,7 +910,7 @@ fn mission_tables_grow_from_the_defaults_to_5000_countries() {
 
     let outcomes = scale.hour(&scale.census, &mut air);
     assert_eq!(
-        outcomes[7..],
+        outcomes[7..10],
         [
             Outcome::Unavailable {
                 reason: "registered missions lack the complete wing census"
@@ -804,7 +925,7 @@ fn mission_tables_grow_from_the_defaults_to_5000_countries() {
     let outcomes = scale.hour(&scale.census, &mut air);
     let rows = capacity.rows[7];
     assert_eq!(
-        outcomes[7..],
+        outcomes[7..10],
         [
             Outcome::Truncated {
                 len: rows,
@@ -821,7 +942,7 @@ fn mission_tables_grow_from_the_defaults_to_5000_countries() {
     let outcomes = scale.hour(&scale.census, &mut air);
     let (probes, pairs) = (capacity.rows[8], capacity.rows[9]);
     assert_eq!(
-        outcomes[7..],
+        outcomes[7..10],
         [
             Outcome::Rows {
                 len: registrations.len()
@@ -861,7 +982,7 @@ fn mission_tables_grow_from_the_defaults_to_5000_countries() {
     // AirBases is complete and empty, so every witness keeps its fields.
     assert_eq!(outcomes[1], Outcome::Rows { len: 0 });
     assert_eq!(
-        outcomes[7..],
+        outcomes[7..10],
         [
             Outcome::Rows {
                 len: registrations.len()
@@ -895,7 +1016,7 @@ fn mission_tables_grow_from_the_defaults_to_5000_countries() {
     census.remove(scale.registered[0].regions[0].1[0]);
     let outcomes = scale.hour(&census, &mut air);
     assert_eq!(
-        outcomes[7..],
+        outcomes[7..10],
         [
             Outcome::Unavailable {
                 reason: "registered mission missing from AirWings"
@@ -914,11 +1035,28 @@ fn mission_tables_grow_from_the_defaults_to_5000_countries() {
 fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     let mut scale = Scale::new();
     let expected = scale.witnesses();
-    let resolved = expected.iter().filter(|(_, base)| base.is_some()).count();
+    let resolved = expected.iter().filter(|(_, base, ..)| base.is_some()).count();
     assert!(resolved > 2_500 && expected.len() - resolved > 100);
     // Shared pool bases, shared and unregistered transfer bases.
     let registered = scale.registered_wings().count();
     assert!(expected.len() < registered);
+    // Stateless bases hosted by a task-force carrier, a carrier without a
+    // task force and an unresolved host; state bases without a cached
+    // province, with and without a first province for their kind.
+    let stateless = |host_owner: bool, bare: bool| {
+        expected.iter().any(|&(_, base, owner, without)| {
+            base.is_some_and(|base| base.state.is_none())
+                && owner.is_some() == host_owner
+                && without == bare
+        })
+    };
+    assert!(stateless(true, false) && stateless(false, true) && stateless(false, false));
+    let uncached = |province: bool| {
+        expected.iter().any(|&(handle, base, ..)| {
+            (handle >> 32) % 10 == 7 && base.is_some_and(|base| base.province.is_some() == province)
+        })
+    };
+    assert!(uncached(true) && uncached(false));
     let mut air = Captured::with_capacities(&ample());
     let outcomes = scale.hour(&scale.census, &mut air);
     assert_eq!(
@@ -935,6 +1073,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     let outcome = capture_references(
         &memory,
         BASE,
+        scale.world.game_state,
         &wings,
         Some(&registrations),
         &mut handles,
@@ -950,8 +1089,8 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     assert_eq!(memory.roots.get(), expected.len());
     let fields: BTreeMap<usize, usize> = expected
         .iter()
-        .filter(|(_, base)| base.is_some())
-        .map(|(handle, _)| (scale.world.bases[handle], 1))
+        .filter(|(_, base, ..)| base.is_some())
+        .map(|(handle, ..)| (scale.world.bases[handle], 1))
         .collect();
     assert_eq!(*memory.fields.borrow(), fields);
 
@@ -962,6 +1101,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     let outcome = capture_references(
         &memory,
         BASE,
+        scale.world.game_state,
         &wings,
         Some(&registrations),
         &mut handles,
@@ -998,6 +1138,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         capture_references(
             &memory,
             BASE,
+            scale.world.game_state,
             &wings,
             Some(&registrations),
             &mut handles[..probes - 1],
@@ -1020,6 +1161,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         capture_references(
             &scale.world,
             BASE,
+            scale.world.game_state,
             &null,
             Some(&registrations),
             &mut handles,
@@ -1029,16 +1171,38 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         Some("registered wing has a null pool base")
     );
 
+    // A task-force carrier host whose stored handle differs is an error.
+    let (_, base, ..) = expected
+        .iter()
+        .find(|(_, _, owner, _)| owner.is_some())
+        .unwrap();
+    let ship = scale.world.ships[&base.unwrap().host];
+    scale.world.u64(ship + cship::HANDLE, 0);
+    assert_eq!(
+        capture_references(
+            &scale.world,
+            BASE,
+            scale.world.game_state,
+            &wings,
+            Some(&registrations),
+            &mut handles,
+            &mut output,
+        )
+        .err(),
+        Some("carrier host reference handle mismatch")
+    );
+    scale.world.u64(ship + cship::HANDLE, base.unwrap().host);
+
     // The last probed state base's state fails authentication: the table
     // fails, even when the output ends long before it.
     let id = expected
         .iter()
         .rev()
-        .find_map(|(_, base)| base.and_then(|base| base.state))
+        .find_map(|(_, base, ..)| base.and_then(|base| base.state))
         .unwrap();
     let first = expected
         .iter()
-        .position(|(_, base)| base.is_some_and(|base| base.state == Some(id)))
+        .position(|(_, base, ..)| base.is_some_and(|base| base.state == Some(id)))
         .unwrap();
     assert!(first > 0);
     let state = scale.world.states[id as usize - 1];
@@ -1048,6 +1212,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         capture_references(
             &scale.world,
             BASE,
+            scale.world.game_state,
             &wings,
             Some(&registrations),
             &mut handles,
@@ -1190,7 +1355,7 @@ fn mine_levels_at_scale_are_one_row_per_pair_in_key_order() {
     layer.row.country_override = scale.empty as i32;
     let outcomes = scale.hour(&census, &mut air);
     assert_eq!(
-        outcomes[7..],
+        outcomes[7..10],
         [
             Outcome::Rows {
                 len: registrations.len()

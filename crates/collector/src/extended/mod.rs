@@ -298,6 +298,7 @@ macro_rules! packs {
     };
 }
 pub(crate) mod air_reference_witness;
+pub(crate) mod air_sorties;
 packs!(
     air,
     air_relations,
@@ -2328,16 +2329,18 @@ impl<M: Memory> MapSources for Sources<'_, M> {
         self.captured.air.begin_wings();
         self.attribute_overhead(TableId::WingEquipment, begin, 0)
     }
-    fn air(&mut self, pointer: usize, _: usize, row: &cair_wing::Row) -> u64 {
+    fn air(&mut self, pointer: usize, pool: usize, row: &cair_wing::Row) -> u64 {
         if self.air_raw && self.naval_raw {
             return 0;
         }
         let begin = qpc();
         let before = self.wing_ticks();
         if !self.air_raw {
-            self.captured
-                .air
-                .visit_wing(self.memory, self.base, air::WingSource { pointer, row });
+            self.captured.air.visit_wing(
+                self.memory,
+                self.base,
+                air::WingSource { pointer, pool, row },
+            );
         }
         if !self.naval_raw {
             self.captured
@@ -5096,6 +5099,7 @@ mod tests {
                             0,
                             air::WingSource {
                                 pointer: air::wing_test_kit::WING,
+                                pool: air::wing_test_kit::POOL,
                                 row: &row,
                             },
                         );

@@ -44,15 +44,22 @@
 //! viewer and array A and a separate set for array B, and the builder draws
 //! wings from each at random with a wall-clock seed. Here the wings of both
 //! sides are taken as one stream in visit order (the first wings fill each
-//! scenario limit) with a fixed seed. Training (0x800) is not a registered
-//! category: the builder draws the viewer's own training wings in a separate
-//! pass by their pool base's region, which is not ported here, so a training
-//! wing without a registration is not drawn (its pool base is witnessed for
-//! that pass). L6c ports the separate side arrays. The replay does not record
-//! mission eligibility/current sorties, target province, hostile air-intel
-//! estimates, designer/graphical/cosmetic overrides, scenario roster/outcome or
-//! clock. We use positive recorded effective_planes, recorded region/mask,
-//! largest recorded variant, and default scenario outcome.
+//! scenario limit) with a fixed seed. L6c ports the separate side arrays.
+//!
+//! Each wing then passes
+//! `IsAirWingScenarioEligible@140F66100`'s own gates and target scans and the
+//! native count law on the recorded mission, base, modifier and content
+//! operands (`aircraft_count`, `air_reachability`). The tactical target scan
+//! needs the land-combat country sets and is not yet decided, so CAS and
+//! tactical-bomber wings stay omitted with a diagnostic. Training (0x800) is
+//! not a registered-mission category: `14122EFD0` draws the viewer's own
+//! training wings by their base's region, only in a region with no other
+//! flight, as planes / TRANSPORT_DIVISION_FACTOR fighter patrols. That pass
+//! is not ported, so training wings are not drawn (their pool bases are
+//! witnessed for it). The replay does not
+//! record hostile air-intel estimates, designer/graphical/cosmetic overrides,
+//! scenario roster/outcome or clock; we use the largest recorded variant and
+//! the default scenario outcome.
 //! Seed 0x41495250, XOR wing ID/region/scenario ordinal, supplies the engine's
 //! integer mixer, province, orientation and phase. This is a stable per-hour
 //! presentation, not recovered game state. Opposing fighter/bomber pairing,
@@ -80,22 +87,35 @@ use std::{collections::BTreeMap, io};
 
 use installed_content::{
     ResolvedLayers,
+    defines::Defines,
+    map::{MapData, ProvinceKind},
     mesh::{self, Transform},
+    regions::StrategicRegion,
 };
 use replay::{
     frame::DecodedFrame,
-    rows::{AirCountryRelationRow, AirWingRow, tables},
+    rows::{
+        AIR_MISSION_LAY_MINES, AIR_MISSION_ZERO_PLANE_FLAGS, AirCountryRelationRow,
+        AirMissionInputRow, AirWingRow, tables,
+    },
 };
 
 use super::{
     air_participants::{AirParticipants, CountryRelations, CountryVectors, ordered_participants},
+    air_reachability::{
+        self, Category, Causes, MineTargetSources, MissionCountry, NavalCombatTargetSources,
+        NavalOccupantSources, PortTargetSources, RegionFractions, ScoutTargetSources,
+        StrategicTargetSources, TargetAdmission, TargetPredicates, Wars,
+    },
     air_registry_sources::AirRegistrySources,
+    aircraft_count::{SortieDefines, SortieSources},
     borders::HeightField,
     counters::CounterContent,
     models::{ModelField, ModelInstance, ModelLibrary},
     orders::ProvinceGeometry,
     perspective::Vision,
     tables::{Available, core, rows},
+    visibility::Families,
 };
 
 pub const SEED: u32 = 0x4149_5250;
@@ -126,6 +146,12 @@ pub struct AircraftAssets {
     /// Equipment names by the lexer's token identity.
     keys: crate::table_access::TokenKeys,
     rigs: BTreeMap<String, Rig>,
+    /// Each strategic region's provinces, from content.
+    region_provinces: BTreeMap<u32, Vec<u32>>,
+    /// CStrategicRegion+0x98/+0xA0 land and sea fractions.
+    region_fractions: BTreeMap<u32, RegionFractions>,
+    province_kinds: BTreeMap<u32, ProvinceKind>,
+    sortie_defines: Result<SortieDefines, String>,
 }
 
 /// The exact suffix ladder under each available prefix. Missing recorded
@@ -151,7 +177,13 @@ pub(crate) fn candidates(tag: &str, name: &str, archetype: &str, sprite: &str) -
 }
 
 impl AircraftAssets {
-    pub fn load(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> io::Result<Self> {
+    pub fn load(
+        layers: &ResolvedLayers,
+        map: &MapData,
+        defines: &Defines,
+        regions: &BTreeMap<u32, StrategicRegion>,
+        warnings: &mut Vec<String>,
+    ) -> io::Result<Self> {
         // The content's equipment types, `duplicate_archetypes` copies
         // included: each copy's archetype and parent name other copies, and
         // a duplicate's own sprite replaces its copies' (`140C84DD0`).
@@ -315,11 +347,27 @@ impl AircraftAssets {
             .cloned()
             .collect();
         let library = ModelLibrary::load(layers, &descriptors, &names, warnings)?;
+        let province_kinds: BTreeMap<_, _> = map
+            .definitions
+            .iter()
+            .map(|(&id, definition)| (id, definition.kind))
+            .collect();
+        let (region_provinces, region_fractions) = region_membership(
+            regions
+                .iter()
+                .map(|(&id, region)| (id, region.provinces.clone())),
+            &province_kinds,
+            warnings,
+        );
         Ok(Self {
             library,
             keys: crate::table_access::TokenKeys::new(equipment.keys()),
             equipment,
             rigs,
+            region_provinces,
+            region_fractions,
+            province_kinds,
+            sortie_defines: SortieDefines::load(defines).map_err(|error| error.to_string()),
         })
     }
 
@@ -478,23 +526,190 @@ pub struct AircraftPlan {
     pub diagnostics: Vec<String>,
 }
 
-/// A mission category, following the mask priority at 14122eb00. Predicates
-/// that require the unrecorded current target are conservatively named in the
-/// registry; this function only classifies the recorded assignment.
-fn family(mask: u32) -> Option<(&'static str, &'static str)> {
-    if mask & (1 << 17) != 0 {
-        return None;
+type RegionMembership = (BTreeMap<u32, Vec<u32>>, BTreeMap<u32, RegionFractions>);
+
+/// `CStrategicRegion::AddProvince@140E0F2B0` skips a listed ID the province
+/// table does not hold and counts every other listing, duplicates included,
+/// in the region's total and its land (kind bit 0) or sea (bits 0 and 1
+/// clear) count. The skips are counted in one warning.
+fn region_membership(
+    regions: impl Iterator<Item = (u32, Vec<u32>)>,
+    kinds: &BTreeMap<u32, ProvinceKind>,
+    warnings: &mut Vec<String>,
+) -> RegionMembership {
+    let (mut members, mut fractions) = (BTreeMap::new(), BTreeMap::new());
+    let mut skipped = 0_usize;
+    for (region, listed) in regions {
+        let before = listed.len();
+        let provinces: Vec<u32> = listed
+            .into_iter()
+            .filter(|province| kinds.contains_key(province))
+            .collect();
+        skipped += before - provinces.len();
+        let count = |wanted| {
+            provinces
+                .iter()
+                .filter(|province| kinds.get(province) == Some(&wanted))
+                .count() as u64
+        };
+        let region_fractions = air_reachability::region_fractions(
+            provinces.len() as u64,
+            count(ProvinceKind::Land),
+            count(ProvinceKind::Sea),
+        );
+        fractions.insert(region, region_fractions);
+        members.insert(region, provinces);
     }
-    if mask & (1 << 10) != 0 {
-        return Some(("transport", "supplying"));
+    if skipped != 0 {
+        warnings.push(format!(
+            "strategic regions list {skipped} provinces missing from the map definitions; the game skips them"
+        ));
     }
-    if mask & (1 << 14) != 0 {
-        return Some(("scout", "patrol"));
+    (members, fractions)
+}
+
+/// This hour's F66100 target scans, built once and shared by every wing,
+/// with the content fractions, the DLC mask and the mine cap they meet.
+struct Scans<'a> {
+    port: Option<PortTargetSources<'a>>,
+    strategic: Option<StrategicTargetSources<'a>>,
+    scout: Option<ScoutTargetSources<'a>>,
+    naval_combat: Option<NavalCombatTargetSources<'a>>,
+    occupants: Option<NavalOccupantSources<'a>>,
+    mine: Option<MineTargetSources<'a>>,
+    fractions: &'a BTreeMap<u32, RegionFractions>,
+    dlc_mask: Option<u32>,
+    mine_maximum_raw: i64,
+}
+
+impl Scans<'_> {
+    /// F66100's target chain for a wing over its mission region.
+    fn admission(
+        &self,
+        wing: &AirWingRow,
+        country: MissionCountry,
+        region: u32,
+        inputs: &AirMissionInputRow,
+    ) -> TargetAdmission {
+        air_reachability::target_admission(
+            wing.mission_mask,
+            inputs.reached_count,
+            self.fractions.get(&region).copied(),
+            self.dlc_mask,
+            self.predicates(wing, country, region, inputs),
+        )
     }
-    if mask & 0x1f7fa != 0 && mask & 0x80 == 0 {
-        return Some(("bomber", if mask & 0x202 != 0 { "CAS" } else { "bombing" }));
+
+    /// Only the scans `target_admission` reads for this wing's mask run.
+    fn predicates(
+        &self,
+        wing: &AirWingRow,
+        country: MissionCountry,
+        region: u32,
+        inputs: &AirMissionInputRow,
+    ) -> TargetPredicates {
+        let mask = air_reachability::scanned_bits(wing.mission_mask);
+        let reached = &inputs.reached_provinces;
+        let mut targets = TargetPredicates::default();
+        if inputs.reached_count == 0 {
+            return targets;
+        }
+        if mask & (1 << 8) != 0 {
+            targets.port = self
+                .port
+                .as_ref()
+                .and_then(|scan| scan.admit(country, reached));
+        }
+        if mask & 0x1_0008 != 0
+            && let Some(scan) = &self.strategic
+        {
+            let strategic = scan.admit(country, region, reached);
+            targets.strategic = strategic.found;
+            targets.strategic_railway_gun = strategic.railway_gun;
+        }
+        if mask & (1 << 14) != 0 {
+            targets.scout = self
+                .scout
+                .as_ref()
+                .and_then(|scan| scan.admit(wing, region, inputs.definition_map_flags));
+        }
+        if mask & 0x90 != 0 {
+            targets.naval_combat = self
+                .naval_combat
+                .as_ref()
+                .and_then(|scan| scan.admit_combat(country, reached));
+            targets.naval_occupants = self
+                .occupants
+                .as_ref()
+                .map(|scan| scan.admit(country, reached))
+                .unwrap_or_default();
+        }
+        if mask & AIR_MISSION_LAY_MINES != 0 {
+            targets.mine = self
+                .mine
+                .as_ref()
+                .and_then(|scan| scan.admit(wing, region, self.mine_maximum_raw));
+        }
+        targets
     }
-    (mask & (0x85 | 0x800) != 0).then_some(("fighter", "patrol"))
+}
+
+/// Wings omitted for an undecided target, counted by reason.
+#[derive(Default)]
+struct Undecided {
+    by_reason: BTreeMap<&'static str, usize>,
+    railway_gun_only: usize,
+}
+
+impl Undecided {
+    fn record(&mut self, causes: Causes) {
+        self.railway_gun_only += usize::from(causes.railway_gun_only());
+        for cause in causes.iter() {
+            *self.by_reason.entry(cause.reason()).or_default() += 1;
+        }
+    }
+
+    fn diagnostics(&self) -> impl Iterator<Item = String> + '_ {
+        self.by_reason
+            .iter()
+            .map(|(reason, count)| {
+                format!("{count} wings omitted: mission target admission unknown: {reason}")
+            })
+            .chain((self.railway_gun_only != 0).then(|| {
+                format!(
+                    "{} wings omitted only for the unrecorded railway-gun target arms",
+                    self.railway_gun_only
+                )
+            }))
+    }
+}
+
+/// `14122EB00`'s scenario family; base-equipment missions do not fly.
+fn family(
+    mask: u32,
+    last_target: i32,
+    definition_flags: u64,
+) -> Option<(&'static str, &'static str)> {
+    match air_reachability::category(mask, last_target, definition_flags)? {
+        Category::Transport => Some(("transport", "supplying")),
+        Category::Scout => Some(("scout", "patrol")),
+        Category::BomberFlight => {
+            Some(("bomber", if mask & 0x202 != 0 { "CAS" } else { "bombing" }))
+        }
+        Category::Fighter => Some(("fighter", "patrol")),
+        Category::BaseEquipment => None,
+    }
+}
+
+/// F66100's direct rejections before its target scans: no mission, the veto,
+/// the counter over its limit, or an inactive regional mission (training
+/// flies without one).
+fn passes_initial_gate(wing: &AirWingRow) -> bool {
+    wing.mission_mask != 0
+        && wing.eligibility_veto == 0
+        && wing.eligibility_counter <= wing.eligibility_limit
+        && ((wing.mission_region.is_some() && wing.mission_active != 0)
+            || wing.mission_mask & 0x800 != 0)
 }
 
 /// A whole wing batch; the regional cap is checked before calling this.
@@ -716,13 +931,92 @@ impl AircraftPlan {
             );
             return Ok(out);
         };
+        let sources = match SortieSources::read(frame)? {
+            Ok(sources) => sources,
+            Err(reason) => {
+                out.diagnostics
+                    .push(format!("flying aircraft omitted: {reason}"));
+                return Ok(out);
+            }
+        };
+        let defines = match &assets.sortie_defines {
+            Ok(defines) => defines,
+            Err(error) => {
+                out.diagnostics.push(format!(
+                    "flying aircraft omitted: content sortie defines unavailable: {error}"
+                ));
+                return Ok(out);
+            }
+        };
+        let dlc_mask = match rows::<tables::SimulationFeatures>(frame)? {
+            Available::Complete([features]) => Some(features.dlc_mask),
+            _ => None,
+        };
+        let mission_countries =
+            air_reachability::MissionCountrySources::read(frame, &links, &registry)?;
+        // Shared by every scan: one war census and one family set per hour.
+        let wars = Wars::read(frame, &links)?;
+        let families = Families::read(frame, &links).ok();
+        let fog_families = families
+            .clone()
+            .and_then(|families| families.with_attaches(frame, &links).ok());
+        let needs = |bits: u32| {
+            wings
+                .iter()
+                .any(|wing| air_reachability::scanned_bits(wing.mission_mask) & bits != 0)
+        };
+        let scans = Scans {
+            port: needs(1 << 8)
+                .then(|| PortTargetSources::read(frame, &wars))
+                .transpose()?,
+            strategic: needs(0x1_0008)
+                .then(|| StrategicTargetSources::read(frame, &wars, &assets.region_provinces))
+                .transpose()?,
+            scout: needs(1 << 14)
+                .then(|| {
+                    ScoutTargetSources::read(
+                        frame,
+                        &links,
+                        &wars,
+                        fog_families.as_ref(),
+                        &assets.region_provinces,
+                    )
+                })
+                .transpose()?,
+            naval_combat: needs(0x90)
+                .then(|| NavalCombatTargetSources::read(frame, &links, &wars, families.as_ref()))
+                .transpose()?,
+            occupants: needs(0x90)
+                .then(|| NavalOccupantSources::read(frame, &wars, &assets.province_kinds))
+                .transpose()?,
+            mine: needs(AIR_MISSION_LAY_MINES)
+                .then(|| MineTargetSources::read(frame, &links))
+                .transpose()?,
+            fractions: &assets.region_fractions,
+            dlc_mask,
+            mine_maximum_raw: defines.mine_maximum_raw,
+        };
         let mut counts: BTreeMap<(u32, String), usize> = BTreeMap::new();
+        let mut undecided = Undecided::default();
         for (slot, region, wing) in visit_order(wings, registrations, &links, ours, &participants)?
         {
-            if wing.effective_planes <= 0 {
+            if !passes_initial_gate(wing) {
                 continue;
             }
-            let Some((family, mission)) = family(wing.mission_mask) else {
+            let Some(inputs) = sources.mission(wing.id) else {
+                out.diagnostics
+                    .push(format!("wing {} lacks its mission operands", wing.id));
+                continue;
+            };
+            // F66100 lets a wing without planes fly only for these definitions.
+            if wing.planes == 0 && inputs.definition_map_flags & AIR_MISSION_ZERO_PLANE_FLAGS == 0 {
+                continue;
+            }
+            let Some((family, mission)) = family(
+                wing.mission_mask,
+                inputs.last_target_province,
+                inputs.definition_map_flags,
+            ) else {
                 continue;
             };
             let owner = if wing.country_override > 0 {
@@ -746,6 +1040,48 @@ impl AircraftPlan {
                     .push(format!("wing {} pool base does not resolve", wing.id));
                 continue;
             };
+            let Some(mission_country) = mission_countries.resolve(wing) else {
+                out.diagnostics.push(format!(
+                    "wing {} mission country cannot be derived from this hour's sources",
+                    wing.id
+                ));
+                continue;
+            };
+            let planes = match sources.count(
+                wing,
+                inputs,
+                base,
+                mission_country.slot,
+                (owner, model_slot),
+                defines,
+            ) {
+                Ok(planes) => planes,
+                Err(reason) => {
+                    out.diagnostics
+                        .push(format!("wing {} count omitted: {reason}", wing.id));
+                    continue;
+                }
+            };
+            if planes <= 0 {
+                continue;
+            }
+            match sources.host_admits(wing, base) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(reason) => {
+                    out.diagnostics
+                        .push(format!("wing {} omitted: {reason}", wing.id));
+                    continue;
+                }
+            }
+            match scans.admission(wing, mission_country, region, inputs) {
+                TargetAdmission::Allowed => {}
+                TargetAdmission::Blocked => continue,
+                TargetAdmission::Unknown(causes) => {
+                    undecided.record(causes);
+                    continue;
+                }
+            }
             let Some(start) = base.state.and_then(|state| content.air_base(state)) else {
                 out.diagnostics.push(format!(
                     "wing {} has no authored land-base slot (carrier/missing base)",
@@ -788,7 +1124,7 @@ impl AircraftPlan {
                 ));
                 continue;
             };
-            let (formation, batches) = formation_count(wing.effective_planes.min(wing.planes));
+            let (formation, batches) = formation_count(planes);
             let key = format!("{family}_{formation}_{mission}");
             let Some(rig) = assets.rigs.get(&key) else {
                 out.diagnostics.push(format!("missing scenario {key}"));
@@ -859,6 +1195,7 @@ impl AircraftPlan {
                 out.flights.extend(group);
             }
         }
+        out.diagnostics.extend(undecided.diagnostics());
         Ok(out)
     }
 
@@ -1288,11 +1625,546 @@ mod tests {
         assert_eq!(formation_count(400), (3, 4));
     }
     #[test]
-    fn supported_missions_follow_priority_and_training_is_separate() {
-        assert_eq!(family(4), Some(("fighter", "patrol")));
-        assert_eq!(family(2 | 8), Some(("bomber", "CAS")));
-        assert_eq!(family(1 << 14), Some(("scout", "patrol")));
-        assert_eq!(family(1 << 10), Some(("transport", "supplying")));
-        assert_eq!(family(0), None);
+    fn supported_missions_follow_priority_and_training_does_not_fly_here() {
+        assert_eq!(family(0x800, 17, 0), None);
+        assert_eq!(family(4, 0, 0), Some(("fighter", "patrol")));
+        assert_eq!(family(2 | 8, 17, 0), Some(("bomber", "CAS")));
+        assert_eq!(family(1 << 14, 17, 0), Some(("scout", "patrol")));
+        assert_eq!(family(1 << 10, 17, 0), Some(("transport", "supplying")));
+        assert_eq!(family(1 << 10, 0, 0), None);
+        assert_eq!(family(0, 0, 0), None);
+    }
+
+    #[test]
+    fn regions_skip_undefined_provinces_and_count_duplicates() {
+        let kinds = BTreeMap::from([
+            (1, ProvinceKind::Land),
+            (2, ProvinceKind::Sea),
+            (3, ProvinceKind::Lake),
+        ]);
+        let mut warnings = Vec::new();
+        let (members, fractions) = region_membership(
+            [(7, vec![1, 2, 2, 3, 99]), (8, vec![98])].into_iter(),
+            &kinds,
+            &mut warnings,
+        );
+        assert_eq!(members[&7], [1, 2, 2, 3]);
+        assert!(members[&8].is_empty());
+        assert_eq!(
+            fractions[&7],
+            RegionFractions {
+                land_raw: 25_000,
+                sea_raw: 50_000
+            }
+        );
+        assert_eq!(fractions[&8], RegionFractions::default());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("list 2 provinces"));
+    }
+
+    mod scans {
+        use super::*;
+        use replay::{
+            frame::{Metrics, TableView},
+            rows::{
+                CountryRow, DivisionRow, NavalBaseRow, NavalCombatDetailsRow, NavalCombatRow,
+                NavalCombatShipRow, NavalMineLevelRow, ProvinceRow, ProvinceUnitOrderRow, StateRow,
+                TableId, TableRows, TableSchema, TaskForceRow, WarRelationRow,
+            },
+        };
+
+        const LAND: RegionFractions = RegionFractions {
+            land_raw: 100_000,
+            sea_raw: 0,
+        };
+        const SEA: RegionFractions = RegionFractions {
+            land_raw: 0,
+            sea_raw: 100_000,
+        };
+
+        fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
+            *frame.tables[T::ID.index()] = TableView::Complete(TableRows::from_rows::<T>(rows));
+        }
+
+        /// Complete empty tables, with `countries` slots owning their numbers.
+        fn frame(countries: u32) -> DecodedFrame {
+            let mut frame = DecodedFrame {
+                branch: 1,
+                hour: 101,
+                tables: std::array::from_fn(|index| {
+                    TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+                }),
+                metrics: Metrics::default(),
+            };
+            set::<tables::Countries>(
+                &mut frame,
+                (1..=countries)
+                    .map(|slot| CountryRow {
+                        id: slot,
+                        canonical_slot: slot,
+                        ..Default::default()
+                    })
+                    .collect(),
+            );
+            frame
+        }
+
+        fn war(first_country: u32, second_country: u32) -> WarRelationRow {
+            WarRelationRow {
+                first_country,
+                second_country,
+                ..Default::default()
+            }
+        }
+
+        /// A hostile port at 412 and a region-7 mine level for country 1.
+        fn port_and_mines() -> DecodedFrame {
+            let mut frame = frame(3);
+            set::<tables::Provinces>(
+                &mut frame,
+                vec![ProvinceRow {
+                    id: 412,
+                    controller: 3,
+                    ..Default::default()
+                }],
+            );
+            set::<tables::NavalBases>(
+                &mut frame,
+                vec![NavalBaseRow {
+                    province: 412,
+                    ..Default::default()
+                }],
+            );
+            set::<tables::ProvinceUnitOrder>(
+                &mut frame,
+                vec![ProvinceUnitOrderRow {
+                    province: 412,
+                    naval: vec![42],
+                    ..Default::default()
+                }],
+            );
+            set::<tables::TaskForces>(
+                &mut frame,
+                vec![TaskForceRow {
+                    id: 42,
+                    province: 412,
+                    logical_owner: 3,
+                    ..Default::default()
+                }],
+            );
+            set::<tables::WarRelations>(&mut frame, vec![war(1, 3)]);
+            set::<tables::NavalMineLevels>(
+                &mut frame,
+                vec![NavalMineLevelRow {
+                    country: 1,
+                    region: 7,
+                    raw_mines: 0,
+                }],
+            );
+            frame
+        }
+
+        fn inputs(reached: Vec<u32>) -> AirMissionInputRow {
+            AirMissionInputRow {
+                reached_count: reached.len() as i32,
+                reached_provinces: reached,
+                ..Default::default()
+            }
+        }
+
+        const COUNTRY: MissionCountry = MissionCountry { slot: 1 };
+
+        #[test]
+        fn predicates_reach_only_the_wings_whose_mask_reads_them() {
+            let frame = port_and_mines();
+            let links = BTreeMap::from([(1, 1), (3, 3)]);
+            let wars = Wars::read(&frame, &links).unwrap();
+            let fractions = BTreeMap::from([(7, LAND)]);
+            let scans = Scans {
+                port: Some(PortTargetSources::read(&frame, &wars).unwrap()),
+                strategic: None,
+                scout: None,
+                naval_combat: None,
+                occupants: None,
+                mine: Some(MineTargetSources::read(&frame, &links).unwrap()),
+                fractions: &fractions,
+                dlc_mask: Some(0x10),
+                mine_maximum_raw: 100_000,
+            };
+            let wing = |mission_mask| AirWingRow {
+                owner: 1,
+                mission_mask,
+                ..Default::default()
+            };
+            let reached = inputs(vec![412]);
+            let port = scans.predicates(&wing(1 << 8), COUNTRY, 7, &reached);
+            assert_eq!((port.port, port.mine), (Some(true), None));
+            let mines = scans.predicates(&wing(AIR_MISSION_LAY_MINES), COUNTRY, 7, &reached);
+            assert_eq!((mines.port, mines.mine), (None, Some(true)));
+            // 14122EB00's count gate and the bit-6 bypass read no scan.
+            let empty = scans.predicates(&wing(1 << 8), COUNTRY, 7, &inputs(Vec::new()));
+            assert_eq!(empty.port, None);
+            let bypass = scans.predicates(&wing((1 << 8) | (1 << 6)), COUNTRY, 7, &reached);
+            assert_eq!(bypass.port, None);
+            // Past the bit 9/10 bypass F66100 reads no bit 12..16 scan, but
+            // still the earlier ones.
+            let transport = (1 << 10) | (1 << 8) | AIR_MISSION_LAY_MINES;
+            let transport = scans.predicates(&wing(transport), COUNTRY, 7, &reached);
+            assert_eq!((transport.port, transport.mine), (Some(true), None));
+        }
+
+        #[test]
+        fn admission_takes_the_mission_regions_fractions() {
+            let frame = port_and_mines();
+            let links = BTreeMap::from([(1, 1), (3, 3)]);
+            let wars = Wars::read(&frame, &links).unwrap();
+            let fractions = BTreeMap::from([(7, LAND), (8, SEA)]);
+            let scans = Scans {
+                port: Some(PortTargetSources::read(&frame, &wars).unwrap()),
+                strategic: None,
+                scout: None,
+                naval_combat: None,
+                occupants: None,
+                mine: None,
+                fractions: &fractions,
+                dlc_mask: Some(0),
+                mine_maximum_raw: 100_000,
+            };
+            let wing = AirWingRow {
+                owner: 1,
+                mission_mask: 1 << 8,
+                ..Default::default()
+            };
+            let reached = inputs(vec![412]);
+            assert_eq!(
+                scans.admission(&wing, COUNTRY, 7, &reached),
+                TargetAdmission::Allowed
+            );
+            assert_eq!(
+                scans.admission(&wing, COUNTRY, 8, &reached),
+                TargetAdmission::Blocked
+            );
+            let TargetAdmission::Unknown(causes) = scans.admission(&wing, COUNTRY, 9, &reached)
+            else {
+                panic!("a region without fractions is undecided");
+            };
+            assert!(causes.iter().eq([air_reachability::Cause::Port]));
+        }
+
+        #[test]
+        fn undecided_wings_are_one_diagnostic_per_reason_and_railway_guns_are_counted() {
+            let railway = air_reachability::target_admission(
+                (1 << 3) | (1 << 4),
+                1,
+                Some(RegionFractions {
+                    land_raw: 50_000,
+                    sea_raw: 50_000,
+                }),
+                Some(0x10),
+                TargetPredicates {
+                    strategic_railway_gun: true,
+                    naval_combat: Some(false),
+                    naval_occupants: air_reachability::NavalOccupants {
+                        task_force: Some(false),
+                        embarked: Some(false),
+                        railway_gun: None,
+                    },
+                    ..Default::default()
+                },
+            );
+            let tactical = air_reachability::target_admission(
+                1 << 1,
+                1,
+                Some(LAND),
+                Some(0),
+                Default::default(),
+            );
+            let mut undecided = Undecided::default();
+            for admission in [railway, railway, tactical] {
+                let TargetAdmission::Unknown(causes) = admission else {
+                    panic!("{admission:?}");
+                };
+                undecided.record(causes);
+            }
+            let lines: Vec<_> = undecided.diagnostics().collect();
+            assert_eq!(lines.len(), 4);
+            assert!(lines.iter().any(|line| line.starts_with("2 wings omitted")
+                && line.contains(air_reachability::Cause::NavalRailwayGun.reason())));
+            assert!(lines.iter().any(|line| line.starts_with("1 wings omitted")
+                && line.contains(air_reachability::Cause::Tactical.reason())));
+            assert_eq!(
+                lines.last().unwrap(),
+                "2 wings omitted only for the unrecorded railway-gun target arms"
+            );
+        }
+
+        /// A synthetic hour at campaign density: 13,000 provinces (a third
+        /// sea), 170 regions, 1,500 active countries with 60 wars per 100, 200
+        /// naval combats of 40 ships, 2,000 naval bases, two task forces and
+        /// 20 divisions per active country, and 5,000 registered missions of
+        /// 16 reached provinces. 3,500 more countries without units, wars or
+        /// provinces must not change a single war test or admission. Prints
+        /// the scan build and per-hour predicate time; run with
+        /// `--release --nocapture` to measure.
+        #[test]
+        fn target_scans_scale_with_missions_not_countries() {
+            let run = |countries: u32| {
+                let (frame, links, regions, wings) = dense_hour(countries);
+                let kinds: BTreeMap<u32, ProvinceKind> = (1..=13_000)
+                    .map(|id| {
+                        (
+                            id,
+                            if id % 3 == 0 {
+                                ProvinceKind::Sea
+                            } else {
+                                ProvinceKind::Land
+                            },
+                        )
+                    })
+                    .collect();
+                let fractions: BTreeMap<u32, RegionFractions> = regions
+                    .keys()
+                    .map(|&region| {
+                        (
+                            region,
+                            RegionFractions {
+                                land_raw: 66_666,
+                                sea_raw: 33_333,
+                            },
+                        )
+                    })
+                    .collect();
+                let begin = std::time::Instant::now();
+                let wars = Wars::read(&frame, &links).unwrap();
+                let families = Families::read(&frame, &links).ok();
+                let fog = families
+                    .clone()
+                    .and_then(|families| families.with_attaches(&frame, &links).ok());
+                let scans = Scans {
+                    port: Some(PortTargetSources::read(&frame, &wars).unwrap()),
+                    strategic: Some(StrategicTargetSources::read(&frame, &wars, &regions).unwrap()),
+                    scout: Some(
+                        ScoutTargetSources::read(&frame, &links, &wars, fog.as_ref(), &regions)
+                            .unwrap(),
+                    ),
+                    naval_combat: Some(
+                        NavalCombatTargetSources::read(&frame, &links, &wars, families.as_ref())
+                            .unwrap(),
+                    ),
+                    occupants: Some(NavalOccupantSources::read(&frame, &wars, &kinds).unwrap()),
+                    mine: Some(MineTargetSources::read(&frame, &links).unwrap()),
+                    fractions: &fractions,
+                    dlc_mask: Some(0x10),
+                    mine_maximum_raw: 100_000,
+                };
+                let built = begin.elapsed();
+                let begin = std::time::Instant::now();
+                let admissions: Vec<_> = wings
+                    .iter()
+                    .map(|(wing, input)| {
+                        let country = MissionCountry { slot: wing.owner };
+                        scans.admission(wing, country, wing.mission_region.unwrap(), input)
+                    })
+                    .collect();
+                let scanned = begin.elapsed();
+                let allowed = admissions
+                    .iter()
+                    .filter(|&&admission| admission == TargetAdmission::Allowed)
+                    .count();
+                println!(
+                    "{countries} countries, {} missions: build {built:?}, admission {scanned:?}, {allowed} allowed",
+                    wings.len()
+                );
+                (wars.tests.get(), admissions)
+            };
+            let (tests, admissions) = run(1_500);
+            assert!(tests > 0);
+            assert!(admissions.contains(&TargetAdmission::Allowed));
+            assert_eq!(run(5_000), (tests, admissions));
+        }
+
+        type Hour = (
+            DecodedFrame,
+            BTreeMap<u32, u32>,
+            BTreeMap<u32, Vec<u32>>,
+            Vec<(AirWingRow, AirMissionInputRow)>,
+        );
+
+        fn dense_hour(countries: u32) -> Hour {
+            const PROVINCES: u32 = 13_000;
+            const ACTIVE: u32 = 1_500;
+            let mut frame = frame(countries);
+            let links = (1..=countries).map(|slot| (slot, slot)).collect();
+            let owner = |id: u32| id % ACTIVE + 1;
+            set::<tables::Provinces>(
+                &mut frame,
+                (1..=PROVINCES)
+                    .map(|id| ProvinceRow {
+                        id,
+                        state: id / 10 + 1,
+                        controller: owner(id / 10),
+                        ..Default::default()
+                    })
+                    .collect(),
+            );
+            set::<tables::States>(
+                &mut frame,
+                (1..=PROVINCES / 10 + 1)
+                    .map(|id| StateRow {
+                        id,
+                        controller: owner(id - 1),
+                        ..Default::default()
+                    })
+                    .collect(),
+            );
+            let mut wars: Vec<_> = (1..=ACTIVE)
+                .step_by(5)
+                .flat_map(|first| {
+                    (1..=3).map(move |step| war(first, (first + step * 7) % ACTIVE + 1))
+                })
+                .collect();
+            wars.sort_unstable_by_key(|row| (row.first_country, row.second_country));
+            wars.dedup_by_key(|row| (row.first_country, row.second_country));
+            set::<tables::WarRelations>(&mut frame, wars);
+            let sea = |index: u32| (index * 3) % PROVINCES + 3;
+            let mut combats: Vec<_> = (0..200_u32)
+                .map(|index| NavalCombatRow {
+                    id: u64::from(index + 1),
+                    province: sea(index * 17),
+                    ..Default::default()
+                })
+                .collect();
+            combats.sort_unstable_by_key(|row| row.id);
+            let details = combats
+                .iter()
+                .map(|combat| {
+                    let mut detail = NavalCombatDetailsRow {
+                        combat: combat.id,
+                        province: combat.province,
+                        ..Default::default()
+                    };
+                    detail.sides[0].summary.countries = vec![owner(combat.id as u32)];
+                    detail.sides[1].summary.countries = vec![owner(combat.id as u32 * 7)];
+                    detail
+                })
+                .collect();
+            let mut ships: Vec<_> = combats
+                .iter()
+                .flat_map(|combat| {
+                    (0..40_u32).map(move |slot| NavalCombatShipRow {
+                        combat: combat.id,
+                        side: (slot % 2) as u8,
+                        battle_slot: slot,
+                        state: 1,
+                        detection_state: i32::from(slot % 3 == 0),
+                        ..Default::default()
+                    })
+                })
+                .collect();
+            ships.sort_unstable_by_key(|row| (row.combat, row.side, row.battle_slot));
+            set::<tables::NavalCombats>(&mut frame, combats);
+            set::<tables::NavalCombatDetails>(&mut frame, details);
+            set::<tables::NavalCombatShips>(&mut frame, ships);
+            let mut bases: Vec<_> = (0..2_000_u32)
+                .map(|index| NavalBaseRow {
+                    province: index * 6 + 1,
+                    ..Default::default()
+                })
+                .collect();
+            bases.sort_unstable_by_key(|row| row.province);
+            set::<tables::NavalBases>(&mut frame, bases);
+            let task_forces: Vec<_> = (0..ACTIVE * 2)
+                .map(|index| TaskForceRow {
+                    id: u64::from(index) + 1,
+                    province: sea(index),
+                    logical_owner: owner(index),
+                    ..Default::default()
+                })
+                .collect();
+            let divisions: Vec<_> = (0..ACTIVE * 20)
+                .map(|index| DivisionRow {
+                    id: 1_000_000 + u64::from(index),
+                    province: index % PROVINCES + 1,
+                    logical_owner: owner(index),
+                    ..Default::default()
+                })
+                .collect();
+            let mut orders = BTreeMap::<u32, ProvinceUnitOrderRow>::new();
+            for task_force in &task_forces {
+                let order = orders.entry(task_force.province).or_default();
+                order.province = task_force.province;
+                order.naval.push(task_force.id);
+                order.mixed.push(task_force.id);
+            }
+            for division in &divisions {
+                let order = orders.entry(division.province).or_default();
+                order.province = division.province;
+                order.mixed.push(division.id);
+            }
+            set::<tables::ProvinceUnitOrder>(&mut frame, orders.into_values().collect());
+            set::<tables::TaskForces>(&mut frame, task_forces);
+            set::<tables::Divisions>(&mut frame, divisions);
+            let regions: BTreeMap<u32, Vec<u32>> = (1..=170)
+                .map(|region| {
+                    (
+                        region,
+                        (0..PROVINCES / 170)
+                            .map(|index| index * 170 + region)
+                            .collect(),
+                    )
+                })
+                .collect();
+            let masks = [
+                1 << 4,
+                1 << 8,
+                1 << 3,
+                1 << 14,
+                AIR_MISSION_LAY_MINES,
+                1 << 2,
+            ];
+            let wings = (0..5_000_u32)
+                .map(|index| {
+                    let region = index % 170 + 1;
+                    let wing = AirWingRow {
+                        id: u64::from(index) + 1,
+                        owner: owner(index),
+                        mission_mask: masks[index as usize % masks.len()],
+                        mission_region: Some(region),
+                        ..Default::default()
+                    };
+                    let reached = (0..16)
+                        .map(|step| (index * 31 + step * 13) % PROVINCES + 1)
+                        .collect();
+                    (wing, inputs(reached))
+                })
+                .collect();
+            (frame, links, regions, wings)
+        }
+    }
+
+    #[test]
+    fn the_initial_gate_uses_the_wings_own_operands() {
+        let mut wing = AirWingRow {
+            mission_mask: 4,
+            mission_region: Some(90),
+            mission_active: 1,
+            eligibility_counter: 3,
+            eligibility_limit: 3,
+            ..AirWingRow::default()
+        };
+        assert!(passes_initial_gate(&wing));
+        wing.mission_active = 0;
+        assert!(!passes_initial_gate(&wing));
+        wing.mission_active = 1;
+        wing.eligibility_veto = 1;
+        assert!(!passes_initial_gate(&wing));
+        wing.eligibility_veto = 0;
+        wing.eligibility_counter = 4;
+        assert!(!passes_initial_gate(&wing));
+        wing.eligibility_counter = 3;
+        wing.mission_region = None;
+        assert!(!passes_initial_gate(&wing));
+        wing.mission_mask = 0x800;
+        assert!(passes_initial_gate(&wing));
     }
 }

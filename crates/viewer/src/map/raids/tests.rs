@@ -334,6 +334,38 @@ fn the_raid_priority_is_the_define_as_a_signed_byte() {
     assert!(map_icon_priority(30.5).is_err());
 }
 
+/// The batch as the loader `1409846E0` leaves it: the integer getter's 0 for
+/// a missing or non-number value, and every value below 1, becomes 1.
+#[test]
+fn the_target_batch_is_at_least_one() {
+    let batch = |source: &str| {
+        let defines = installed_content::defines::Defines::new().unwrap();
+        defines
+            .load("common/defines/00_defines.lua", source.as_bytes())
+            .unwrap();
+        target_batch(&defines)
+    };
+    assert_eq!(
+        batch("NDefines = { NRaids = { MAX_TARGETS_TO_UPDATE_PER_FRAME = 100 } }"),
+        Ok(100)
+    );
+    assert_eq!(batch("NDefines = { NRaids = {} }"), Ok(1));
+    assert_eq!(
+        batch(r#"NDefines = { NRaids = { MAX_TARGETS_TO_UPDATE_PER_FRAME = "100" } }"#),
+        Ok(1)
+    );
+    for below in ["0", "-7", "0.5"] {
+        assert_eq!(
+            batch(&format!(
+                "NDefines = {{ NRaids = {{ MAX_TARGETS_TO_UPDATE_PER_FRAME = {below} }} }}"
+            )),
+            Ok(1)
+        );
+    }
+    // A section the reader cannot reach is still a refusal, not a clamp.
+    assert!(batch("NDefines = {}").is_err());
+}
+
 #[test]
 fn membership_follows_ownership_detection_and_show_for() {
     let assets = assets();

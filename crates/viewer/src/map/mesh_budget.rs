@@ -68,7 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mod_stack_define_controls_creation_and_missing_is_refused() {
+    fn mod_stack_define_controls_creation_and_missing_reads_zero() {
         let root = std::env::temp_dir().join(format!("hoi4_mesh_budget_{}", std::process::id()));
         let base = root.join("base");
         let addon = root.join("mod");
@@ -96,12 +96,9 @@ mod tests {
                 b"NDefines.NGraphics.MAX_MESHES_LOADED_PER_FRAME=nil",
             )
             .unwrap();
-        assert!(
-            Budget::read(&defines)
-                .unwrap_err()
-                .to_string()
-                .contains("MAX_MESHES_LOADED_PER_FRAME")
-        );
+        // The native integer getter stores 0 for a nil define, which
+        // creates nothing live.
+        assert_eq!(Budget::read(&defines).unwrap(), 0);
         std::fs::remove_dir_all(root).unwrap();
     }
 

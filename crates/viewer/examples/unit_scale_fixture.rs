@@ -197,7 +197,6 @@ fn main() -> io::Result<()> {
     {
         for row in rows {
             row.planes = 10;
-            row.effective_planes = 10;
         }
     }
     // Recorded combats stay; out-of-combat divisions, spread over every owner,

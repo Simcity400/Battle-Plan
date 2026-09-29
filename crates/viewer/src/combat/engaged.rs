@@ -746,7 +746,7 @@ mod tests {
     }
 
     fn relations(allied: bool) -> Relations {
-        Relations::factions_for_tests(if allied { &[(1, 2)] } else { &[] })
+        Relations::factions_for_tests(if allied { &[(1, 2)] } else { &[][..] })
     }
 
     fn side(units: &[u64], primary: &[u32]) -> Side {

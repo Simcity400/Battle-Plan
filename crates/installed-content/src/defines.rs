@@ -171,9 +171,13 @@ impl Defines {
 
     /// `NDefines.<section>.<name>` through the native integer getter
     /// (`LuaTable_ReadInt32`, `14205b690`): CVTTSD2SI to 64 bits, whose
-    /// out-of-range result is `i64::MIN`, then the low 32 bits.
+    /// out-of-range result is `i64::MIN`, then the low 32 bits. A missing or
+    /// non-number value stores 0, as the getter does for a non-`LUA_TNUMBER`.
     pub fn int32(&self, section: &str, name: &str) -> io::Result<i32> {
-        let value = self.number(section, name)?.trunc();
+        let Some(value) = number(self.value(section, name)?) else {
+            return Ok(0);
+        };
+        let value = value.trunc();
         let wide = if (-(2.0_f64.powi(63))..2.0_f64.powi(63)).contains(&value) {
             value as i64
         } else {

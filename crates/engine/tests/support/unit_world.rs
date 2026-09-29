@@ -234,10 +234,6 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
                 wing + cair_wing::PLANE_COUNT,
                 (shape.planes / shape.wings) as u32,
             );
-            h.u32(
-                wing + cair_wing::EFFECTIVE_PLANES,
-                (shape.planes / shape.wings) as u32,
-            );
             wings.push(wing);
         }
         h.array(pool + cair_wing_pool::WINGS, &wings);

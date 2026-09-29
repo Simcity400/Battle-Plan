@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 222] = [
+const DOMAIN_TABLES: [TableId; 227] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -243,6 +243,11 @@ const DOMAIN_TABLES: [TableId; 222] = [
     TableId::AirCountryRelations,
     TableId::AirReferenceWitnesses,
     TableId::NavalMineLevels,
+    TableId::AirMissionInputs,
+    TableId::AirSortieBaseCountries,
+    TableId::AirSortieModifiers,
+    TableId::AirSortieSpecialBases,
+    TableId::AirSortieModifierMetadata,
     TableId::ModifierDefinitions,
     TableId::HiredAdvisors,
     TableId::CountryStabilityInputs,
@@ -478,6 +483,7 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 province: tick as u32,
                 mission: [0, u32::MAX, 7][tick % 3],
                 route_count: [0, -1, i32::MAX][(tick + 2) % 3],
+                combat_references: [0, i32::MIN, 1][tick % 3],
             },
         );
         push_map::<tables::Ships>(
@@ -528,11 +534,14 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 base_override: [u64::MAX, FACTION_A, 0][tick % 3],
                 country_override: [i32::MIN, -1, i32::MAX][tick % 3],
                 planes: [i32::MIN, 0, i32::MAX][tick % 3],
-                effective_planes: [i32::MAX, i32::MIN, 0][tick % 3],
                 mission_mask: [0, u32::MAX, 0x8000_0001][tick % 3],
                 mission_region: [None, Some(0), Some(u32::MAX)][tick % 3],
                 base_range_raw: [i64::MIN, 0, i64::MAX][tick % 3],
                 ace: [0, u64::MAX, FACTION_A][tick % 3],
+                mission_active: [0, 1, u8::MAX][tick % 3],
+                eligibility_veto: [1, 0, u8::MAX][tick % 3],
+                eligibility_counter: [i32::MIN, 0, i32::MAX][tick % 3],
+                eligibility_limit: [i32::MAX, -1, 0][tick % 3],
             },
         );
         push_map::<tables::ArmyOrders>(

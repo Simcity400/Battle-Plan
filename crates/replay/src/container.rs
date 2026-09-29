@@ -1414,6 +1414,10 @@ mod tests {
             TableView::Complete(TableRows::SimulationFeatures(vec![
                 crate::rows::SimulationFeatureRow::default(),
             ]));
+        tables[TableId::AirSortieModifierMetadata.index()] =
+            TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
+                crate::rows::AirSortieModifierMetadataRow::default(),
+            ]));
         DecodedFrame {
             branch,
             hour,

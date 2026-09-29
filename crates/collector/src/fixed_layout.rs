@@ -90,6 +90,7 @@ mod tests {
                     | TableId::SunkShips
                     | TableId::WorldTension
                     | TableId::SimulationFeatures
+                    | TableId::AirSortieModifierMetadata
             ) {
                 TableInput::Sampled(TableView::Unavailable {
                     reason: "fixture has no clock or campaign".into(),

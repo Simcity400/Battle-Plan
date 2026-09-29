@@ -1032,6 +1032,11 @@ mod tests {
                             Default::default(),
                         ]))
                     }
+                    TableId::AirSortieModifierMetadata => {
+                        TableUpdate::Snapshot(TableRows::AirSortieModifierMetadata(vec![
+                            Default::default(),
+                        ]))
+                    }
                     _ => TableUpdate::Snapshot(TableRows::empty(TableId::ALL[index])),
                 }),
             })

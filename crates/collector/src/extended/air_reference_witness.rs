@@ -14,6 +14,10 @@ use crate::spooling::table;
 pub(super) struct BaseWitness {
     pub handle: u64,
     pub base: Option<BaseReference>,
+    /// A stateless base's host task-force owner; None when the host misses
+    /// or its task force is null, which the flag marks.
+    pub host_owner: Option<u32>,
+    pub host_without_task_force: bool,
 }
 
 /// `witnesses` are this hour's probes and `outcome` says whether they are
@@ -45,6 +49,8 @@ pub(super) fn table_view(
             Some(if listed {
                 AirReferenceWitnessRow {
                     handle: witness.handle,
+                    host_owner: witness.host_owner,
+                    host_without_task_force: witness.host_without_task_force,
                     ..Default::default()
                 }
             } else {
@@ -54,6 +60,8 @@ pub(super) fn table_view(
                     state: base.state,
                     province: base.province,
                     host: base.state.is_none().then_some(base.host),
+                    host_owner: witness.host_owner,
+                    host_without_task_force: witness.host_without_task_force,
                 }
             })
         })
@@ -97,6 +105,8 @@ mod tests {
                     province: Some(5),
                     ..Default::default()
                 }),
+                host_owner: None,
+                host_without_task_force: false,
             },
             BaseWitness {
                 handle: 9,
@@ -104,10 +114,23 @@ mod tests {
                     host: 77,
                     ..Default::default()
                 }),
+                host_owner: Some(3),
+                host_without_task_force: false,
             },
             BaseWitness {
                 handle: 10,
                 base: None,
+                host_owner: None,
+                host_without_task_force: false,
+            },
+            BaseWitness {
+                handle: 11,
+                base: Some(BaseReference {
+                    host: 78,
+                    ..Default::default()
+                }),
+                host_owner: None,
+                host_without_task_force: true,
             },
         ];
         let rows = rows(table_view(
@@ -115,9 +138,14 @@ mod tests {
             &witnesses,
             Some(&manager),
         ));
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!((rows[0].handle, rows[0].base_kind), (8, None));
         assert_eq!((rows[1].handle, rows[1].host), (9, Some(77)));
+        assert_eq!(rows[1].host_owner, Some(3));
+        assert_eq!(
+            (rows[2].host_owner, rows[2].host_without_task_force),
+            (None, true)
+        );
     }
 
     #[test]
@@ -129,6 +157,8 @@ mod tests {
                 kind: 2,
                 ..Default::default()
             }),
+            host_owner: None,
+            host_without_task_force: false,
         }];
         let rows = rows(table_view(Outcome::Rows { len: 0 }, &witnesses, None));
         assert_eq!((rows[0].base_kind, rows[0].state), (Some(2), Some(4)));

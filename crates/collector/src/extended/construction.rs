@@ -1863,6 +1863,7 @@ fn building(row: &cbuilding::Row) -> rows::BuildingRow {
         level: row.level,
         healthy_level: row.healthy_level,
         partial_health: row.partial_health,
+        active: row.active,
     }
 }
 
@@ -2778,6 +2779,7 @@ mod tests {
             level: i16::MIN,
             healthy_level: i16::MAX,
             partial_health: i64::MIN,
+            active: true,
         };
         captured.buildings.province_buildings.rows[0] = cbuilding::Row {
             location: 12,
@@ -2910,6 +2912,7 @@ mod tests {
             complete::<tables::ProvinceBuildings>(&views[1])[0].status_flags,
             1
         );
+        assert!(complete::<tables::StateBuildings>(&views[0])[0].active);
         assert_eq!(
             complete::<tables::StateBaseResources>(&views[2])[0].amount,
             i64::MIN + 1

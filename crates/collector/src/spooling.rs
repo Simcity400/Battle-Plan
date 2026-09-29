@@ -4811,6 +4811,10 @@ mod tests {
             TableView::Complete(TableRows::SimulationFeatures(vec![
                 replay::rows::SimulationFeatureRow::default(),
             ]));
+        tables[TableId::AirSortieModifierMetadata.index()] =
+            TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
+                replay::rows::AirSortieModifierMetadataRow::default(),
+            ]));
         if skip {
             for table in TableId::ALL {
                 if replay::cadence::is_staggered(table) {

@@ -227,6 +227,7 @@ fn task_forces(
             province: row.province,
             mission: row.mission,
             route_count: row.route_count,
+            combat_references: row.combat_references,
         },
     )
 }
@@ -323,11 +324,14 @@ fn air_wings(
             air_base: row.air_base,
             base_override: row.base_override,
             planes: row.planes,
-            effective_planes: row.effective_planes,
             mission_mask: row.mission_mask,
             mission_region: row.mission_region,
             base_range_raw: row.base_range_raw,
             ace: row.ace,
+            mission_active: row.mission_active,
+            eligibility_veto: row.eligibility_veto,
+            eligibility_counter: row.eligibility_counter,
+            eligibility_limit: row.eligibility_limit,
         },
     )
 }
@@ -537,6 +541,7 @@ mod tests {
                 province: u32::MAX,
                 mission: u32::MAX - 1,
                 route_count: -1,
+                combat_references: i32::MIN,
             }],
         );
         set(
@@ -584,11 +589,14 @@ mod tests {
                 air_base: u64::MAX - 1,
                 base_override: u64::MAX - 2,
                 planes: i32::MIN,
-                effective_planes: i32::MAX,
                 mission_mask: u32::MAX,
                 mission_region: Some(0),
                 base_range_raw: i64::MIN,
                 ace: u64::MAX,
+                mission_active: 1,
+                eligibility_veto: u8::MAX,
+                eligibility_counter: i32::MIN,
+                eligibility_limit: i32::MAX,
             }],
         );
         set(
@@ -648,6 +656,7 @@ mod tests {
                 province: u32::MAX,
                 mission: u32::MAX - 1,
                 route_count: -1,
+                combat_references: i32::MIN,
             }]),
             TableRows::Ships(vec![ShipRow {
                 id: u64::MAX,
@@ -682,11 +691,14 @@ mod tests {
                 air_base: u64::MAX - 1,
                 base_override: u64::MAX - 2,
                 planes: i32::MIN,
-                effective_planes: i32::MAX,
                 mission_mask: u32::MAX,
                 mission_region: Some(0),
                 base_range_raw: i64::MIN,
                 ace: u64::MAX,
+                mission_active: 1,
+                eligibility_veto: u8::MAX,
+                eligibility_counter: i32::MIN,
+                eligibility_limit: i32::MAX,
             }]),
             TableRows::ArmyOrders(vec![ArmyOrderRow {
                 owner_group: u64::MAX,

@@ -19,6 +19,7 @@ use crate::{
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WingIdentity {
     pub mission_pointer: usize,
+    pub pool: usize,
     pub wing: u64,
     pub owner: u32,
     pub region: Option<u32>,
@@ -29,11 +30,16 @@ pub struct WingIdentity {
 }
 
 impl WingIdentity {
-    pub fn new(pointer: usize, row: &crate::cair_wing::Row) -> Result<Self, &'static str> {
+    pub fn new(
+        pointer: usize,
+        pool: usize,
+        row: &crate::cair_wing::Row,
+    ) -> Result<Self, &'static str> {
         Ok(Self {
             mission_pointer: pointer
                 .checked_add(crate::cair_wing::MISSION)
                 .ok_or("air mission address overflow")?,
+            pool,
             wing: row.id,
             owner: row.owner,
             region: row.mission_region,

@@ -196,6 +196,17 @@ pub(super) fn buildings(
             Some(row.partial_health),
             Some(&saved.partial_health),
         );
+        // The active vector is not serialized. It is rebuilt from the
+        // building list (+0x38) as the positive levels in native order
+        // (`rebuild_active_buildings@1411641D0`) at the end of every status
+        // block and on every zero crossing of `set_level@1410C71A0`. It is
+        // recorded because it is the stored value the F61B40 scan reads.
+        value(
+            report,
+            &format!("{subject}.active"),
+            row.active,
+            saved.level > 0,
+        );
     }
     let mut saved_counts = BTreeMap::<u32, usize>::new();
     for key in saved.keys() {
@@ -218,7 +229,7 @@ pub(super) fn buildings(
         );
     }
     report.compared(table, matched);
-    report.limitation("building serializers preserve list order, levels and partial health; raw CBuildingStatus flags and country field are not serialized", table);
+    report.limitation("building serializers preserve list order, levels and partial health; raw CBuildingStatus flags, country field and active vector are not serialized, so the active vector is compared with the positive saved levels it is rebuilt from", table);
     Ok(())
 }
 
@@ -2079,6 +2090,25 @@ mod tests {
         buildings(&rows, &saved.province_buildings, true, &names, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["ProvinceBuildings"], 2);
+
+        // A positive saved level must be in the active vector.
+        let mut report = Report::default();
+        buildings(
+            &[replay::rows::BuildingRow {
+                location: 7,
+                building_type: 92,
+                level: 9,
+                healthy_level: 9,
+                ..Default::default()
+            }],
+            &saved.state_buildings,
+            false,
+            &names,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("active"));
 
         let mut changed = rows.clone();
         changed[0].partial_health = 1;

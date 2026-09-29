@@ -87,7 +87,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         // a change of only those reaches the rows at the country's slice.
         TableId::CountryStabilityInputs | TableId::CountryStabilityLines => Sliced,
         // Cannot change after the save loads (the DLC set included).
-        TableId::LexicalTokens => Static,
+        TableId::LexicalTokens | TableId::AirSortieModifierMetadata => Static,
         // Modifier definitions are registered only by database loaders; the
         // collector also re-reads them whenever the table's data pointer or
         // count changes, as it does the lexer on a new maximum token.
