@@ -22,8 +22,9 @@ pub const APPLIED_DAYS: usize = 0x28;
 pub const RESEARCH_SPEED: usize = 0x38;
 /// CResearchSlot native i32 ordinal; EBDB60 stores int, and the walker rejects negative/out-of-range bits against the positive array count.
 pub const INDEX: usize = 0x40;
-/// `CResearchSlot::SetTechnology@140ECE4F0` writes this lexer `empty` token
-/// to slot+8 when slot+0x18 has no technology; `fixed_layout` checks its spelling.
+/// `CResearchSlot::SetTechnology@140ECE4F0` stores this lexer `empty` token
+/// to slot+8 at 140ECE9BC when slot+0x18 has no technology; `fixed_layout`
+/// checks its spelling and static range.
 pub const IDLE_HANDLE: u32 = 0x2a4e;
 /// CResearchSlot multiplier scale; ECE4F0 resets to 100000 and divides the days product by 100000.
 pub const RESEARCH_SPEED_SCALE: i64 = 100_000;
@@ -144,4 +145,26 @@ pub struct Raw {
     pub owner: [u8; 16],
     pub speed_index: [u8; 12],
     pub days: [u8; 16],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_slot_requires_the_shared_empty_handle() {
+        let mut raw = Raw::default();
+        raw.header[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        raw.header[8..].copy_from_slice(&IDLE_HANDLE.to_le_bytes());
+        let idle = decode_raw(0, 0, 7, &raw, None).unwrap();
+        assert_eq!(idle.technology_handle, IDLE_HANDLE);
+        assert_eq!(idle.technology_present, 0);
+        for handle in [0, IDLE_HANDLE - 1, IDLE_HANDLE + 1] {
+            raw.header[8..].copy_from_slice(&handle.to_le_bytes());
+            assert_eq!(
+                decode_raw(0, 0, 7, &raw, None),
+                Err("idle research slot handle mismatch")
+            );
+        }
+    }
 }

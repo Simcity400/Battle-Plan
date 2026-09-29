@@ -46,10 +46,11 @@ pub(crate) fn status(report: Option<&Report>) -> Value {
     };
     let refusals: Vec<_> = refusals(&Ok(*report)).collect();
     json!({
-        "state": if refusals.is_empty() { "verified" } else { "refused" },
+        "state": if report.is_verified() { "verified" } else { "refused" },
         "static_token_maximum": report.static_token_maximum,
-        "modifier_keys_checked": engine::modifier_keys::ALL.len(),
+        "modifier_keys_checked": engine::modifier_keys::NAMES.len(),
         "static_tokens_checked": engine::fixed_layout::TOKENS.len(),
+        "layout_failures": report.failures().map(|failure| failure.to_string()).collect::<Vec<_>>(),
         "refusals": refusals.into_iter().map(|(family, reason)| json!({
             "tables": family.tables.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(),
             "reason": reason,
@@ -60,7 +61,11 @@ pub(crate) fn status(report: Option<&Report>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{cpdx_lexer, cresearch_slot, fixed_layout::TOKENS, modifier_keys};
+    use engine::{
+        cpdx_lexer, cresearch_slot,
+        fixed_layout::{GAP, TOKENS},
+        modifier_keys,
+    };
     use replay::{
         fixed_layout::{MOVEMENT, RESEARCH_IDLE},
         frame::{DecodedFrame, FrameDecoder, FrameEncoder, FrameInput, Metrics},
@@ -71,7 +76,7 @@ mod tests {
         Report {
             static_token_maximum: 0x6000,
             gap: Ok(()),
-            modifiers: [Ok(()); modifier_keys::ALL.len()],
+            modifiers: [Ok(()); modifier_keys::NAMES.len()],
             tokens: [Ok(()); TOKENS.len()],
         }
     }
@@ -103,29 +108,45 @@ mod tests {
         matches!(input[table.index()], TableInput::SharedComplete(_))
     }
 
-    #[test]
-    fn mismatch_refuses_only_dependent_tables_and_survives_encoding() {
+    fn mismatched(index: usize) -> Report {
         let mut report = valid();
-        let position = modifier_keys::ALL
+        report.modifiers[index] = Err("definition token spells a different script name");
+        report
+    }
+
+    /// Every fixed-key family's tables are refused naming `text`; no other
+    /// table is touched.
+    fn assert_key_families_refused(input: &[TableInput; TABLE_COUNT], text: &str) {
+        let keyed: Vec<_> = FAMILIES
             .iter()
-            .position(|key| key.index == modifier_keys::ARMY_SPEED_FACTOR)
-            .unwrap();
-        report.modifiers[position] = Err("definition token spells a different script name");
+            .filter(|family| !family.keys.is_empty())
+            .flat_map(|family| family.tables)
+            .collect();
+        let fresh = inputs();
+        for table in TableId::ALL {
+            if keyed.contains(&&table) {
+                assert!(refused(input, table, text), "{table:?}");
+            } else if untouched(&fresh, table) {
+                assert!(untouched(input, table), "{table:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_used_key_mismatch_refuses_every_key_family_and_survives_encoding() {
+        let report = mismatched(modifier_keys::ARMY_SPEED_FACTOR as usize);
         let mut input = inputs();
         apply(&mut input, &Ok(report));
-        for table in [TableId::DivisionEtaInputs, TableId::LandCombatDivisions] {
-            assert!(refused(
-                &input,
-                table,
-                "army_speed_factor (0x2b): definition token spells a different script name"
-            ));
-        }
+        assert_key_families_refused(
+            &input,
+            "army_speed_factor (0x2b): definition token spells a different script name",
+        );
         for table in [
             TableId::DivisionMovement,
             TableId::Countries,
             TableId::ModifierDefinitions,
             TableId::LexicalTokens,
-            TableId::ResearchModifiers,
+            TableId::ResearchSlots,
         ] {
             assert!(untouched(&input, table), "{table:?}");
         }
@@ -143,6 +164,7 @@ mod tests {
         ));
         let status = status(Some(&report));
         assert_eq!(status["state"], "refused");
+        assert_eq!(status["layout_failures"].as_array().unwrap().len(), 1);
         let refusals = status["refusals"].as_array().unwrap();
         assert!(!refusals.is_empty());
         assert!(refusals.iter().all(|refusal| {
@@ -153,127 +175,23 @@ mod tests {
         }));
     }
 
+    /// A built-in no reader uses is part of the same index contract: after a
+    /// patch moves or renames it, every fixed key is refused by its name.
     #[test]
-    fn a_retreat_ban_key_mismatch_withholds_only_the_retreat_bans() {
-        for key in [
-            modifier_keys::CANNOT_RETREAT_WHILE_DEFENDING,
-            modifier_keys::CANNOT_RETREAT_WHILE_ATTACKING,
-        ] {
-            let mut report = valid();
-            let position = modifier_keys::ALL
-                .iter()
-                .position(|expected| expected.index == key)
-                .unwrap();
-            report.modifiers[position] = Err("definition token spells a different script name");
-            let mut input = inputs();
-            apply(&mut input, &Ok(report));
-            let name = modifier_keys::ALL[position].name;
-            assert!(refused(
-                &input,
-                TableId::DivisionRetreatBans,
-                &format!("commander retreat bans refused: {name} ({key:#x})")
-            ));
-            for table in [
-                TableId::DivisionStatus,
-                TableId::DivisionMovement,
-                TableId::LandCombats,
-            ] {
-                assert!(untouched(&input, table), "{table:?}");
-            }
-        }
-    }
-
-    /// A command power key or an ace country modifier withholds only
-    /// CountryCommandPower; a launch key only the launch inputs and ace
-    /// ranges; the ace speed key only RaidSpeedInputs.
-    #[test]
-    fn launch_command_power_and_raid_speed_keys_withhold_their_own_tables() {
-        let refuse = |key: u32| {
-            let mut report = valid();
-            let position = modifier_keys::ALL
-                .iter()
-                .position(|expected| expected.index == key)
-                .unwrap();
-            report.modifiers[position] = Err("definition token spells a different script name");
-            let mut input = inputs();
-            apply(&mut input, &Ok(report));
-            input
-        };
-        for (key, family) in [
-            (modifier_keys::MAX_COMMAND_POWER, "command power refused"),
-            (
-                modifier_keys::AIR_ACE_BONUSES_FACTOR,
-                "country ace modifiers refused",
-            ),
-            (
-                modifier_keys::ACE_EFFECTIVENESS_FACTOR,
-                "country ace modifiers refused",
-            ),
-        ] {
-            let power = refuse(key);
+    fn an_unused_builtin_mismatch_refuses_every_key_family_by_name() {
+        for index in [0, GAP as usize - 1] {
             assert!(
-                refused(&power, TableId::CountryCommandPower, family),
-                "{key:#x}"
+                modifier_keys::ALL
+                    .iter()
+                    .all(|key| key.index as usize != index)
             );
-            for table in [
-                TableId::RaidCountryInputs,
-                TableId::AceRangeInputs,
-                TableId::RaidSpeedInputs,
-            ] {
-                assert!(untouched(&power, table), "{key:#x} {table:?}");
-            }
-        }
-        let launch = refuse(modifier_keys::NAVAL_COMMANDO_RAID_DISTANCE);
-        for table in [TableId::RaidCountryInputs, TableId::AceRangeInputs] {
-            assert!(refused(&launch, table, "raid launch refused"), "{table:?}");
-        }
-        for table in [TableId::CountryCommandPower, TableId::RaidSpeedInputs] {
-            assert!(untouched(&launch, table), "{table:?}");
-        }
-        let speed = refuse(modifier_keys::AIR_MAXIMUM_SPEED_FACTOR);
-        assert!(refused(
-            &speed,
-            TableId::RaidSpeedInputs,
-            "raid unit speed refused"
-        ));
-        for table in [
-            TableId::CountryCommandPower,
-            TableId::RaidCountryInputs,
-            TableId::AceRangeInputs,
-        ] {
-            assert!(untouched(&speed, table), "{table:?}");
-        }
-    }
-
-    /// Each invasion preparation key withholds only InvasionPreparations.
-    #[test]
-    fn invasion_preparation_keys_withhold_only_their_table() {
-        for key in [
-            modifier_keys::INVASION_PREPARATION,
-            modifier_keys::NAVAL_INVASION_PREP_DAYS,
-            modifier_keys::INVASION_PREPARATION_AGAINST,
-        ] {
-            let mut report = valid();
-            let position = modifier_keys::ALL
-                .iter()
-                .position(|expected| expected.index == key)
-                .unwrap();
-            report.modifiers[position] = Err("definition token spells a different script name");
+            let name = modifier_keys::NAMES[index];
+            let report = mismatched(index);
             let mut input = inputs();
             apply(&mut input, &Ok(report));
-            let name = modifier_keys::ALL[position].name;
-            assert!(refused(
-                &input,
-                TableId::InvasionPreparations,
-                &format!("invasion preparation refused: {name} ({key:#x})")
-            ));
-            for table in TableId::ALL
-                .into_iter()
-                .filter(|&table| table != TableId::InvasionPreparations)
-                .filter(|&table| untouched(&inputs(), table))
-            {
-                assert!(untouched(&input, table), "{table:?}");
-            }
+            assert_key_families_refused(&input, &format!("{name} ({index:#x})"));
+            let status = status(Some(&report));
+            assert_eq!(status["layout_failures"].as_array().unwrap().len(), 1);
         }
     }
 
@@ -297,16 +215,8 @@ mod tests {
         };
         let mut input = inputs();
         apply(&mut input, &Ok(report));
-        for family in FAMILIES.iter().filter(|family| !family.keys.is_empty()) {
-            for &table in family.tables {
-                assert!(
-                    refused(&input, table, "modifier definition gap (0x29a)"),
-                    "{table:?}"
-                );
-            }
-        }
+        assert_key_families_refused(&input, "modifier definition gap (0x29a)");
         assert!(untouched(&input, TableId::ResearchSlots));
-        assert!(untouched(&input, TableId::Countries));
     }
 
     #[test]

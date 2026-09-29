@@ -1,13 +1,14 @@
 //! Consumers of the fixed literals in `engine::modifier_keys` and
-//! `engine::fixed_layout::TOKENS`. Recording refuses a failed family's tables;
-//! playback checks its own literals against the recording. Dynamic modifier
-//! keys are not constrained.
+//! `engine::fixed_layout::TOKENS`. Recording refuses a family's tables when
+//! the built-in modifier layout or one of its tokens fails; playback checks
+//! its own literals against the recording. Dynamic modifier keys are not
+//! constrained.
 
 use crate::{
     frame::DecodedFrame,
     rows::{TableId, tables},
 };
-use engine::{cpdx_lexer, cresearch_slot, modifier_keys as keys};
+use engine::{cbuilding_database, cpdx_lexer, cresearch_slot, modifier_keys as keys};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Family {
@@ -268,6 +269,14 @@ pub const ORACLE_FIXED15: Family = Family {
     tables: &[],
 };
 
+/// State-resource save comparison selects the engine's infrastructure token.
+pub const ORACLE_INFRASTRUCTURE: Family = Family {
+    name: "save oracle infrastructure",
+    keys: &[],
+    tokens: &[cbuilding_database::INFRASTRUCTURE_TOKEN],
+    tables: &[],
+};
+
 pub const FAMILIES: &[Family] = &[
     MOVEMENT,
     NAVAL_TRANSFER,
@@ -291,6 +300,7 @@ pub const FAMILIES: &[Family] = &[
     INVASION_PREPARATION,
     RESEARCH_IDLE,
     ORACLE_FIXED15,
+    ORACLE_INFRASTRUCTURE,
 ];
 
 /// Playback authenticates its own modifier literals, even in a recording made

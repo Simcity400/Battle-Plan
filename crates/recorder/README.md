@@ -54,7 +54,7 @@ The counter oracle compares each country's ordered `volunteers_sent` handles wit
 
 ## Live checks and performance
 
-After the first recorded hour, `status.json.fixed_layout.state` should be `verified`; `refused` lists each failed key or token with the tables it withholds, and `unverified` means no check has completed yet. Refused tables are unavailable in the recording with the reason preserved. Text saves cannot certify the native modifier layout, so the live status and the synthetic mismatch tests cover it.
+After the first recorded hour, `status.json.fixed_layout.state` should be `verified`; `refused` names every mismatch in `layout_failures` and lists each withheld table family in `refusals`, and `unverified` means no check has completed yet. A mismatch anywhere in the built-in modifier layout withholds every table that reads a fixed modifier key. Refused tables are unavailable in the recording with the reason preserved. Text saves cannot certify the native modifier layout, so the live status and the synthetic mismatch tests cover it.
 
 [AGENTS.md](../../AGENTS.md) lists local checks. `tools/smoke.ps1` is the existing end-to-end driver; inspect its help before use. It requires coordinated game ownership, the selected local save, an isolated text-save user directory, matching continue selection, calibrated UI settings and a new output directory. It drives the game separately from the passive recorder, then checks finalization, the oracle and reference renders. Keep all outputs out of Git.
 

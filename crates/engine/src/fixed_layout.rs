@@ -3,10 +3,12 @@
 //! at startup, `1405FF750` appends dynamic keys above the gap and `1424A87E0`
 //! computes the static token maximum once. A consistent check is therefore
 //! final for the attachment; an interrupted one is repeated on a later hour.
+//! It runs in the hourly callback, not at injection: a recorder waiting for
+//! the game injects during startup, while registration may still be running.
 
 use crate::{
-    Memory, cpdx_lexer, cresearch_slot, modifier_definition as definition, modifier_keys,
-    msvc_string, read,
+    Memory, cbuilding_database, cpdx_lexer, cresearch_slot, modifier_definition as definition,
+    modifier_keys, msvc_string, read,
 };
 
 /// Default row between built-ins and dynamic definitions (`140548F00`;
@@ -21,7 +23,14 @@ pub struct Token {
 
 /// Static lexer tokens the executable hard-codes and readers compare by id.
 /// Dynamic ids follow load order, so each must be static and spell its name.
+/// Each cites its binding in the static token registrar `140082CB0`.
 pub const TOKENS: &[Token] = &[
+    // Registered at 1400EB6AC.
+    Token {
+        id: cbuilding_database::INFRASTRUCTURE_TOKEN,
+        name: "infrastructure",
+    },
+    // Registered at 1400A6D6C and 140088997, respectively.
     Token {
         id: cresearch_slot::IDLE_HANDLE,
         name: "empty",
@@ -51,7 +60,7 @@ impl std::fmt::Display for Failure {
 pub struct Report {
     pub static_token_maximum: u32,
     pub gap: Result<(), &'static str>,
-    pub modifiers: [Result<(), &'static str>; modifier_keys::ALL.len()],
+    pub modifiers: [Result<(), &'static str>; modifier_keys::NAMES.len()],
     pub tokens: [Result<(), &'static str>; TOKENS.len()],
 }
 
@@ -60,34 +69,55 @@ impl Report {
         self.gap.is_ok() && self.modifiers.iter().chain(&self.tokens).all(Result::is_ok)
     }
 
-    /// The first failure among modifier `keys` and static `tokens`; a changed
-    /// gap fails every modifier key.
-    pub fn failure(&self, keys: &[u32], tokens: &[u32]) -> Option<Failure> {
-        if let (false, Err(reason)) = (keys.is_empty(), self.gap) {
-            return Some(Failure {
-                name: "modifier definition gap",
-                index: GAP,
-                reason,
-            });
-        }
-        let modifiers = modifier_keys::ALL
+    /// Every mismatch: the gap and each built-in row, then the static tokens.
+    pub fn failures(&self) -> impl Iterator<Item = Failure> + '_ {
+        self.layout_failures().chain(self.token_failures())
+    }
+
+    fn layout_failures(&self) -> impl Iterator<Item = Failure> + '_ {
+        let gap = self.gap.err().map(|reason| Failure {
+            name: "modifier definition gap",
+            index: GAP,
+            reason,
+        });
+        let rows = modifier_keys::NAMES
             .iter()
-            .map(|key| (key.index, key.name))
             .zip(&self.modifiers)
-            .filter(|((index, _), _)| keys.contains(index));
-        let static_tokens = TOKENS
-            .iter()
-            .map(|token| (token.id, token.name))
-            .zip(&self.tokens)
-            .filter(|((id, _), _)| tokens.contains(id));
-        modifiers
-            .chain(static_tokens)
-            .find_map(|((index, name), result)| {
+            .enumerate()
+            .filter_map(|(index, (&name, result))| {
                 result.err().map(|reason| Failure {
                     name,
-                    index,
+                    index: index as u32,
                     reason,
                 })
+            });
+        gap.into_iter().chain(rows)
+    }
+
+    fn token_failures(&self) -> impl Iterator<Item = Failure> + '_ {
+        TOKENS
+            .iter()
+            .zip(&self.tokens)
+            .filter_map(|(token, result)| {
+                result.err().map(|reason| Failure {
+                    name: token.name,
+                    index: token.id,
+                    reason,
+                })
+            })
+    }
+
+    /// The failure that refuses a consumer of modifier `keys` and static
+    /// `tokens`. The built-in layout is one contract: a changed gap or any
+    /// mismatched built-in row, used or not, means the executable's index
+    /// assignment moved, so it fails every modifier key. Tokens fail alone.
+    pub fn failure(&self, keys: &[u32], tokens: &[u32]) -> Option<Failure> {
+        (!keys.is_empty())
+            .then(|| self.layout_failures().next())
+            .flatten()
+            .or_else(|| {
+                self.token_failures()
+                    .find(|failure| tokens.contains(&failure.index))
             })
     }
 }
@@ -121,9 +151,10 @@ pub fn check(memory: &impl Memory, base: usize) -> Result<Report, &'static str> 
             }
         }
     };
-    let mut modifiers = [Ok(()); modifier_keys::ALL.len()];
-    for (result, key) in modifiers.iter_mut().zip(modifier_keys::ALL) {
-        let Some(address) = table.element(key.index, definition::STRIDE) else {
+    let mut modifiers = [Ok(()); modifier_keys::NAMES.len()];
+    for (key, (result, &name)) in modifiers.iter_mut().zip(modifier_keys::NAMES).enumerate() {
+        let key = key as u32;
+        let Some(address) = table.element(key, definition::STRIDE) else {
             *result = Err("definition row missing");
             continue;
         };
@@ -131,9 +162,9 @@ pub fn check(memory: &impl Memory, base: usize) -> Result<Report, &'static str> 
             .ok_or("definition index/token unreadable")?;
         let index = u32::from_le_bytes(words[..4].try_into().unwrap());
         let token = u32::from_le_bytes(words[4..].try_into().unwrap());
-        if index != key.index || token == 0 {
+        if index != key || token == 0 {
             *result = Err("definition index/token inconsistent");
-        } else if !spells(token, key.name)? {
+        } else if !spells(token, name)? {
             *result = Err("definition token spells a different script name");
         }
     }
@@ -161,9 +192,9 @@ pub fn check(memory: &impl Memory, base: usize) -> Result<Report, &'static str> 
 const fn longest_name() -> usize {
     let mut result = 0;
     let mut index = 0;
-    while index < modifier_keys::ALL.len() {
-        if modifier_keys::ALL[index].name.len() > result {
-            result = modifier_keys::ALL[index].name.len();
+    while index < modifier_keys::NAMES.len() {
+        if modifier_keys::NAMES[index].len() > result {
+            result = modifier_keys::NAMES[index].len();
         }
         index += 1;
     }
@@ -228,15 +259,16 @@ mod tests {
             lexer[60..64].copy_from_slice(&0x6001_u32.to_le_bytes());
             result.put(cpdx_lexer::INITIALIZED_RVA, &lexer);
             result.maximum(0x5000);
-            for key in modifier_keys::ALL {
+            for (index, &name) in modifier_keys::NAMES.iter().enumerate() {
+                let index = index as u32;
                 let mut row = [0; 8];
-                row[..4].copy_from_slice(&key.index.to_le_bytes());
-                row[4..].copy_from_slice(&(KEY_TOKENS + key.index).to_le_bytes());
+                row[..4].copy_from_slice(&index.to_le_bytes());
+                row[4..].copy_from_slice(&(KEY_TOKENS + index).to_le_bytes());
                 result.put(
-                    TABLE + key.index as usize * definition::STRIDE + definition::INDEX,
+                    TABLE + index as usize * definition::STRIDE + definition::INDEX,
                     &row,
                 );
-                result.name(KEY_TOKENS + key.index, key.name.as_bytes());
+                result.name(KEY_TOKENS + index, name.as_bytes());
             }
             for token in TOKENS {
                 result.name(token.id, token.name.as_bytes());
@@ -270,23 +302,30 @@ mod tests {
         }
     }
 
+    /// Any built-in row, including one no reader uses, fails every fixed key
+    /// by its own name, and only the static tokens' consumers survive it.
     #[test]
-    fn every_fixed_key_is_verified_and_mismatch_names_the_exact_key() {
+    fn every_builtin_is_verified_and_a_mismatch_fails_every_fixed_key_by_name() {
         let mut fixture = Fixture::new();
         let valid = check(&fixture, 0).unwrap();
         assert!(valid.is_verified());
         assert_eq!(valid.static_token_maximum, 0x5000);
-        for (position, &key) in modifier_keys::ALL.iter().enumerate() {
-            let mut wrong = key.name.as_bytes().to_vec();
+        for (index, &name) in modifier_keys::NAMES.iter().enumerate() {
+            let index = index as u32;
+            let mut wrong = name.as_bytes().to_vec();
             wrong[0] = b'!';
-            fixture.name(KEY_TOKENS + key.index, &wrong);
+            fixture.name(KEY_TOKENS + index, &wrong);
             let report = check(&fixture, 0).unwrap();
-            let failure = report.failure(&[key.index], &[]).unwrap();
-            assert_eq!((failure.name, failure.index), (key.name, key.index));
-            assert!(failure.to_string().contains("different script name"));
+            assert!(!report.is_verified());
             assert_eq!(report.modifiers.iter().filter(|r| r.is_err()).count(), 1);
-            assert!(report.modifiers[position].is_err());
-            fixture.name(KEY_TOKENS + key.index, key.name.as_bytes());
+            for key in [modifier_keys::ALL[0].index, modifier_keys::NAVY_ORG] {
+                let failure = report.failure(&[key], &[]).unwrap();
+                assert_eq!((failure.name, failure.index), (name, index));
+                assert!(failure.to_string().contains("different script name"));
+            }
+            assert_eq!(report.failure(&[], &[cresearch_slot::IDLE_HANDLE]), None);
+            assert_eq!(report.failures().collect::<Vec<_>>().len(), 1);
+            fixture.name(KEY_TOKENS + index, name.as_bytes());
         }
     }
 
@@ -330,42 +369,52 @@ mod tests {
         let mut fixture = Fixture::new();
         fixture.put(address, &0_u32.to_le_bytes());
         assert_eq!(
-            check(&fixture, 0).unwrap().modifiers[0],
+            check(&fixture, 0).unwrap().modifiers[key.index as usize],
             Err("definition index/token inconsistent")
         );
         fixture.put(address, &key.index.to_le_bytes());
         fixture.put(address + 4, &0_u32.to_le_bytes());
         assert_eq!(
-            check(&fixture, 0).unwrap().modifiers[0],
+            check(&fixture, 0).unwrap().modifiers[key.index as usize],
             Err("definition index/token inconsistent")
         );
         fixture.put(definition::TABLE_RVA + 12, &key.index.to_le_bytes());
         assert_eq!(
-            check(&fixture, 0).unwrap().modifiers[0],
+            check(&fixture, 0).unwrap().modifiers[key.index as usize],
             Err("definition row missing")
         );
     }
 
     #[test]
     fn static_tokens_must_spell_their_name_within_the_inclusive_maximum() {
-        let mut fixture = Fixture::new();
-        fixture.maximum(cresearch_slot::IDLE_HANDLE);
-        assert!(check(&fixture, 0).unwrap().is_verified());
-        fixture.maximum(cresearch_slot::IDLE_HANDLE - 1);
-        let report = check(&fixture, 0).unwrap();
-        assert_eq!(report.static_token_maximum, cresearch_slot::IDLE_HANDLE - 1);
-        let failure = report
-            .failure(
-                &[],
-                &[cresearch_slot::IDLE_HANDLE, cpdx_lexer::FIXED15_TOKEN],
-            )
-            .unwrap();
-        assert_eq!(
-            failure.to_string(),
-            "empty (0x2a4e): exceeds the static token maximum"
-        );
-        assert_eq!(report.failure(&[modifier_keys::NAVY_ORG], &[]), None);
         for (position, token) in TOKENS.iter().enumerate() {
+            let mut fixture = Fixture::new();
+            // A token exactly at the inclusive static maximum is accepted,
+            // even with later dynamic tokens in the reverse dictionary.
+            fixture.put(cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, &token.id.to_le_bytes());
+            fixture.put(cpdx_lexer::MAX_TOKEN_ID_RVA, &0x5000_u32.to_le_bytes());
+            fixture.put(
+                cpdx_lexer::DYNAMIC_COUNT_RVA,
+                &(0x5000 - token.id).to_le_bytes(),
+            );
+            fixture.put(cpdx_lexer::DYNAMIC_CAPACITY_RVA, &0x5000_u32.to_le_bytes());
+            fixture.put(cpdx_lexer::DYNAMIC_TOKENS_RVA, &0x800000_u64.to_le_bytes());
+            assert_eq!(check(&fixture, 0).unwrap().tokens[position], Ok(()));
+            fixture.put(
+                cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA,
+                &(token.id - 1).to_le_bytes(),
+            );
+            fixture.put(
+                cpdx_lexer::DYNAMIC_COUNT_RVA,
+                &(0x5001 - token.id).to_le_bytes(),
+            );
+            let report = check(&fixture, 0).unwrap();
+            assert_eq!(report.static_token_maximum, token.id - 1);
+            let failure = report.failure(&[], &[token.id]).unwrap();
+            assert_eq!(failure.name, token.name);
+            assert_eq!(failure.reason, "exceeds the static token maximum");
+            assert!(report.failures().any(|item| item == failure));
+
             let mut fixture = Fixture::new();
             fixture.name(token.id, b"renumbered");
             let report = check(&fixture, 0).unwrap();
@@ -412,14 +461,26 @@ mod tests {
 
     #[test]
     fn registry_has_unique_indices_and_names_and_excludes_gap() {
+        assert_eq!(modifier_keys::NAMES.len(), GAP as usize);
+        for (index, name) in modifier_keys::NAMES.iter().enumerate() {
+            assert!(!name.is_empty());
+            assert!(!modifier_keys::NAMES[..index].contains(name));
+        }
         for (i, key) in modifier_keys::ALL.iter().enumerate() {
-            assert!(key.index < GAP);
-            assert!(!key.name.is_empty());
             assert!(
                 modifier_keys::ALL[..i]
                     .iter()
                     .all(|other| other.index != key.index && other.name != key.name)
             );
         }
+    }
+
+    #[test]
+    fn appended_dynamic_rows_do_not_change_the_builtin_layout() {
+        let mut fixture = Fixture::new();
+        fixture.put(definition::TABLE_RVA + 8, &(GAP + 2).to_le_bytes());
+        fixture.put(definition::TABLE_RVA + 12, &(GAP + 2).to_le_bytes());
+        // An unreadable dynamic row is intentionally outside this check.
+        assert!(check(&fixture, 0).unwrap().is_verified());
     }
 }

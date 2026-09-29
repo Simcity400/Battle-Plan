@@ -1783,6 +1783,28 @@ mod tests {
         assert!(report.differences.is_empty());
     }
 
+    #[test]
+    fn shared_idle_handle_matches_saved_empty_without_a_technology_definition() {
+        let (mut frame, _, country) = fixture();
+        let links = BTreeMap::from([(11, &country)]);
+        let document =
+            installed_content::parser::parse(br#"countries={AAA={technology={slots={empty={points=3}}}}}"#)
+                .unwrap();
+        let pack = saved::parse(&document.items).unwrap();
+        *frame.tables[TableId::ResearchSlots.index()] =
+            TableView::Complete(TableRows::ResearchSlots(vec![ResearchSlotRow {
+                country: 11,
+                technology_handle: engine::cresearch_slot::IDLE_HANDLE,
+                research_speed_raw: engine::cresearch_slot::RESEARCH_SPEED_SCALE,
+                banked_days_raw: 300_000,
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        compare_research_slots(&frame, &pack, &links, &BTreeMap::new(), &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.compared_tables.get("ResearchSlots"), Some(&1));
+    }
+
     fn sharing_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
         let (mut frame, mut pack, country) = fixture();
         pack.tech_sharing = [b"first".as_slice(), b"second"]

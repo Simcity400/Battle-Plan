@@ -22,7 +22,7 @@ The struct files hold offsets, native widths and evidence. Do not recreate the o
 
 ## Adding or changing a reader
 
-Built-in modifier keys that readers use by index live only in [modifier_keys.rs](src/modifier_keys.rs), with the native registration callsite beside each entry; hard-coded static lexer tokens are listed in [fixed_layout.rs](src/fixed_layout.rs). Its check confirms, through the witnessed lexer dictionary, that each key's definition row spells the expected script name, that the gap row after the built-ins is default-constructed, and that each token is static and spells its name. Dynamic definitions remain sized and resolved from live data.
+Built-in modifier names live in [modifier_keys/builtins.rs](src/modifier_keys/builtins.rs), with each native registration callsite; the fixed-key constants in [modifier_keys.rs](src/modifier_keys.rs) take their names from that catalog. Hard-coded static lexer tokens are listed in [fixed_layout.rs](src/fixed_layout.rs). Its check confirms, through the witnessed lexer dictionary, that every built-in row spells its script name, that the gap row after the built-ins is default-constructed, and that each token is within the static range and spells its name. A mismatch anywhere in the built-in layout fails every fixed key by name. Dynamic definitions remain sized and resolved from live data.
 
 Keep one source file per engine struct. Put a short evidence comment beside each constant: the native function or structure that establishes it and how it was confirmed. There is no arbitrary file-count cap.
 

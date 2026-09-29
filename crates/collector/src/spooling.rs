@@ -4848,13 +4848,10 @@ mod tests {
         let mut report = engine::fixed_layout::Report {
             static_token_maximum: 0x6000,
             gap: Ok(()),
-            modifiers: [Ok(()); engine::modifier_keys::ALL.len()],
+            modifiers: [Ok(()); engine::modifier_keys::NAMES.len()],
             tokens: [Ok(()); engine::fixed_layout::TOKENS.len()],
         };
-        report.modifiers[engine::modifier_keys::ALL
-            .iter()
-            .position(|entry| entry.index == key)
-            .unwrap()] = Err("definition token spells a different script name");
+        report.modifiers[key as usize] = Err("definition token spells a different script name");
         let mut decoder = FrameDecoder::new();
         for (hour, skip, force_keyframe) in [(0, false, true), (1, true, false), (2, true, true)] {
             let mut source: FrameInput = staggered_frame(branch, hour, skip).into();
