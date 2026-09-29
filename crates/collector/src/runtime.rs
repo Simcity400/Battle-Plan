@@ -59,6 +59,8 @@ struct Config {
     content_order_note: Option<String>,
     #[serde(default)]
     expected_mounts: Vec<String>,
+    #[serde(default)]
+    mod_descriptors: Vec<String>,
 }
 
 struct Event(HANDLE);
@@ -1306,6 +1308,7 @@ fn spool_loop(
                 let _ = roster.verify(
                     &mut session.identity,
                     &config.expected_mounts,
+                    &config.mod_descriptors,
                     config.content_order_note.as_deref(),
                 );
                 let diagnostic =

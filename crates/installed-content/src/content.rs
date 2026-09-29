@@ -157,6 +157,9 @@ pub struct GatheredContent {
     /// Expected successful physical search roots, highest priority first.
     /// Includes built-in roots and the user directory; never serialized.
     pub expected_mounts: Vec<String>,
+    /// Each mod's descriptor file name under `mod/`, in `mods` order: the
+    /// name the game's mod map holds while the mod is active.
+    pub mod_descriptors: Vec<String>,
 }
 
 impl GatheredContent {
@@ -1256,6 +1259,99 @@ fn mod_id(document: &Document, descriptor: &Path) -> io::Result<String> {
         ))
 }
 
+/// Enabled mods, each with its requested descriptor path and parsed descriptor,
+/// in the order the engine mounts them, lowest priority first. The launcher's
+/// list order is not used: 1420614B0 selects each descriptor whose path (+0x48) equals a
+/// requested path byte for byte and gives it weight 10000 (DLC 0). Then, until
+/// nothing changes, an entry whose display name (+0x8) another entry's
+/// `dependencies` (+0xA8; CDLCDescriptor::vf4 142065EF0 appends every block)
+/// lists loses one weight while it is not below that entry's. A dependency that
+/// is not enabled changes nothing. 14205EF20 (14205F050 above 32 entries) sorts
+/// by weight, then descriptor path bytes (String_Less 1401FEEA0), and 1424C86E0
+/// prepends each mount, so later layers win. The collector's live mount check
+/// confirms the result for every recording.
+fn native_mod_order<T>(
+    selected: Vec<(String, T, Document)>,
+    notes: &mut Vec<String>,
+) -> io::Result<Vec<(String, T, Document)>> {
+    const MOD_WEIGHT: i64 = 10_000;
+    let mut names = Vec::new();
+    let mut dependencies = Vec::new();
+    for (path, _, document) in &selected {
+        let name = required(document, b"name").map_err(|error| named_error("Mod", path, error))?;
+        let mut listed = Vec::new();
+        for value in document.get_all(b"dependencies") {
+            let items = value
+                .items()
+                .ok_or_else(|| invalid(format!("Mod {path}: dependencies is not a list")))?;
+            for item in items {
+                match (&item.key, item.value.scalar_str()) {
+                    (None, Some(dependency)) => listed.push(dependency.to_owned()),
+                    _ => {
+                        return Err(invalid(format!(
+                            "Mod {path}: dependencies lists something other than a name"
+                        )));
+                    }
+                }
+            }
+        }
+        names.push(name);
+        dependencies.push(listed);
+    }
+    let mut by_name = BTreeMap::<&str, Vec<usize>>::new();
+    for (index, name) in names.iter().enumerate() {
+        by_name.entry(name).or_default().push(index);
+    }
+    // The engine keys descriptors by display name and keeps the first
+    // (1420610F0 -> 14205F2D0), so it mounts only one of a same-named set.
+    for (name, indices) in &by_name {
+        if indices.len() > 1 {
+            notes.push(format!(
+                "enabled mods {} share the display name {name:?}; the engine mounts only one",
+                indices
+                    .iter()
+                    .map(|&index| selected[index].0.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    let count = i64::try_from(selected.len()).map_err(|_| invalid("too many enabled mods"))?;
+    let mut weights = vec![MOD_WEIGHT; selected.len()];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (dependent, listed) in dependencies.iter().enumerate() {
+            let weight = weights[dependent];
+            for dependency in listed {
+                for &index in by_name.get(dependency.as_str()).into_iter().flatten() {
+                    if weight <= weights[index] {
+                        weights[index] -= 1;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        // Acyclic dependencies settle above 10000 - count, still above the
+        // DLC; the engine never finishes a cycle.
+        if let Some(index) = weights
+            .iter()
+            .position(|&weight| weight <= (MOD_WEIGHT - count).max(0))
+        {
+            return Err(invalid(format!(
+                "Mod {}: dependency cycle or chain the engine cannot order",
+                selected[index].0
+            )));
+        }
+    }
+    let mut weighted = weights.into_iter().zip(selected).collect::<Vec<_>>();
+    weighted.sort_by(|(left, (left_path, ..)), (right, (right_path, ..))| {
+        left.cmp(right)
+            .then_with(|| left_path.as_bytes().cmp(right_path.as_bytes()))
+    });
+    Ok(weighted.into_iter().map(|(_, entry)| entry).collect())
+}
+
 fn named_error(kind: &str, id: &str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{kind} {id}: {error}"))
 }
@@ -1638,24 +1734,31 @@ fn gather_selected(
                     .to_owned(),
             );
         }
-        if recorded.is_none() && !launcher.enabled_mods.is_empty() {
-            order_notes.push(
-            "Mod dependency ordering and duplicate display-name selection have not been measured"
-                .to_owned(),
-        );
-        }
-        let order_note = (!order_notes.is_empty()).then(|| order_notes.join("; "));
-        let mut mods = Vec::new();
-        let mut mod_ids = BTreeSet::new();
+        let mut selected = Vec::new();
         for (index, descriptor) in launcher.enabled_mods.into_iter().enumerate() {
             let descriptor = normalize_relative(&descriptor)?;
             let path = user_dir.join(&descriptor);
             let requested_id = recorded
                 .map(|identity| identity.mods[index].id.as_str())
                 .unwrap_or(&descriptor);
-            let (mut layer, document) = descriptor_layer(String::new(), path, &user_dir, true)
+            let (layer, document) = descriptor_layer(String::new(), path, &user_dir, true)
                 .map_err(|error| named_error("Mod", requested_id, error))?;
+            selected.push((descriptor, layer, document));
+        }
+        // A replay keeps its recorded order; a new recording takes the engine's.
+        if recorded.is_none() {
+            selected = native_mod_order(selected, &mut order_notes)?;
+        }
+        let order_note = (!order_notes.is_empty()).then(|| order_notes.join("; "));
+        let mut mods = Vec::new();
+        let mut mod_ids = BTreeSet::new();
+        let mut mod_descriptors = Vec::new();
+        for (index, (descriptor, mut layer, document)) in selected.into_iter().enumerate() {
             let id = mod_id(&document, Path::new(&descriptor))?;
+            let file = Path::new(&descriptor)
+                .file_name()
+                .ok_or_else(|| invalid(format!("Mod {id}: descriptor has no file name")))?;
+            mod_descriptors.push(text_path(Path::new(file))?.to_owned());
             if !mod_ids.insert(id.clone()) {
                 return Err(invalid(format!("duplicate enabled mod id: {id}")));
             }
@@ -1736,6 +1839,7 @@ fn gather_selected(
             stats,
             order_note,
             expected_mounts,
+            mod_descriptors,
         })
     })();
     // Preserve successfully hashed files even when a later descriptor is bad.
@@ -2242,5 +2346,170 @@ mod tests {
         assert!(error.contains("DLC dlc034_no_step_back"));
         assert!(error.contains(&"07".repeat(32)));
         assert!(error.contains(&"08".repeat(32)));
+    }
+
+    fn mod_order(mods: &[(&str, &str)]) -> (io::Result<Vec<String>>, Vec<String>) {
+        let mut notes = Vec::new();
+        let selected = mods
+            .iter()
+            .map(|(path, text)| {
+                (
+                    path.to_string(),
+                    (),
+                    parser::parse(text.as_bytes()).unwrap(),
+                )
+            })
+            .collect();
+        let order = native_mod_order(selected, &mut notes)
+            .map(|mods| mods.into_iter().map(|(path, ..)| path).collect());
+        (order, notes)
+    }
+
+    #[test]
+    fn mods_mount_in_the_engines_dependency_then_path_order() {
+        // The launcher's order is ignored; equal weights sort by path bytes.
+        let (order, notes) = mod_order(&[
+            ("mod/b.mod", r#"name="B""#),
+            ("mod/a.mod", r#"name="A" dependencies={}"#),
+            ("mod/B.mod", r#"name="C""#),
+        ]);
+        assert_eq!(order.unwrap(), ["mod/B.mod", "mod/a.mod", "mod/b.mod"]);
+        assert!(notes.is_empty());
+        // A dependency mounts below everything that needs it, through chains
+        // and diamonds; blocks append, and a name not enabled changes nothing.
+        let (order, _) = mod_order(&[
+            (
+                "mod/a.mod",
+                r#"name="Top" dependencies={"Absent"} dependencies={"Left" "Right"}"#,
+            ),
+            ("mod/b.mod", r#"name="Left" dependencies={"Base"}"#),
+            ("mod/c.mod", r#"name="Right" dependencies={"Base"}"#),
+            ("mod/d.mod", r#"name="Base""#),
+            ("mod/0.mod", r#"name="Alone""#),
+        ]);
+        assert_eq!(
+            order.unwrap(),
+            [
+                "mod/d.mod",
+                "mod/b.mod",
+                "mod/c.mod",
+                "mod/0.mod",
+                "mod/a.mod"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
+        let root = std::env::temp_dir().join(format!("hoi4_mod_order_{}", std::process::id()));
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        write("game/hoi4.exe", "synthetic executable");
+        write("game/common/file.txt", "vanilla");
+        write(
+            "game/dlc/dlc_synthetic/content.dlc",
+            r#"name="Synthetic DLC" path="dlc/dlc_synthetic""#,
+        );
+        write("game/dlc/dlc_synthetic/common/file.txt", "DLC");
+        write("user/settings.txt", "language=l_english");
+        // The launcher lists the top mod first; the engine mounts its
+        // dependency first, whatever the paths' byte order.
+        write(
+            "user/dlc_load.json",
+            r#"{"enabled_mods":["mod/a_top.mod","mod/b_base.mod"],"disabled_dlcs":[]}"#,
+        );
+        write(
+            "user/mod/a_top.mod",
+            r#"name="Top" remote_file_id=42 path="layers/top" dependencies={"Base"}"#,
+        );
+        write("user/mod/b_base.mod", r#"name="Base" path="layers/base""#);
+        write("user/layers/top/common/file.txt", "top");
+        write("user/layers/base/common/file.txt", "base");
+        let (game_dir, user_dir, cache_dir) =
+            (root.join("game"), root.join("user"), root.join("cache"));
+        let gathered = gather(&GatherOptions {
+            game_dir: game_dir.clone(),
+            user_dir: user_dir.clone(),
+            cache_dir: cache_dir.clone(),
+            dlc_order: None,
+        })
+        .unwrap();
+        assert_eq!(gathered.order_note, None);
+        assert_eq!(gathered.mod_descriptors, ["b_base.mod", "a_top.mod"]);
+        assert_eq!(gathered.layers.read("common/file.txt").unwrap(), b"top");
+        let identity = gathered
+            .identity(
+                "build".into(),
+                Sha256::digest(b"synthetic executable").into(),
+                20,
+                "test".into(),
+                [0; 32],
+            )
+            .unwrap();
+        let ids = identity.mods.iter().map(|layer| layer.id.as_str());
+        assert_eq!(ids.collect::<Vec<_>>(), ["b_base.mod", "42"]);
+        // A replay resolves its recorded order, whatever the launcher says now.
+        write("user/dlc_load.json", "not JSON");
+        let options = ResolveOptions {
+            game_dir,
+            user_dir,
+            cache_dir,
+        };
+        let resolved = resolve(&identity, &options).unwrap();
+        let layers = resolved.layers.layers.iter().map(|layer| layer.id.as_str());
+        assert!(layers.collect::<Vec<_>>().ends_with(&["b_base.mod", "42"]));
+        assert_eq!(resolved.layers.read("common/file.txt").unwrap(), b"top");
+        write("user/layers/base/common/file.txt", "changed");
+        let error = resolve(&identity, &options).unwrap_err().to_string();
+        assert!(
+            error.contains("Mod b_base.mod: content hash mismatch"),
+            "{error}"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn mod_forms_the_engine_cannot_order_are_named() {
+        let (_, notes) = mod_order(&[
+            ("mod/a.mod", r#"name="Same""#),
+            ("mod/b.mod", r#"name="Same""#),
+        ]);
+        assert_eq!(
+            notes,
+            [
+                r#"enabled mods mod/a.mod, mod/b.mod share the display name "Same"; the engine mounts only one"#
+            ]
+        );
+        for (mods, refusal) in [
+            (
+                &[
+                    ("mod/a.mod", r#"name="A" dependencies={"B"}"#),
+                    ("mod/b.mod", r#"name="B" dependencies={"A"}"#),
+                ][..],
+                "dependency cycle",
+            ),
+            (
+                &[("mod/a.mod", r#"name="A" dependencies={"A"}"#)],
+                "Mod mod/a.mod: dependency cycle",
+            ),
+            (
+                &[("mod/a.mod", r#"name="A" dependencies="B""#)],
+                "Mod mod/a.mod: dependencies is not a list",
+            ),
+            (
+                &[("mod/a.mod", r#"name="A" dependencies={x=y}"#)],
+                "other than a name",
+            ),
+            (
+                &[("mod/a.mod", r#"dependencies={}"#)],
+                "Mod mod/a.mod: descriptor lacks name",
+            ),
+        ] {
+            let error = mod_order(mods).0.unwrap_err().to_string();
+            assert!(error.contains(refusal), "{error}");
+        }
     }
 }

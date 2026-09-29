@@ -317,7 +317,7 @@ fn capture(pid: u32, output: &Path, user: &Path) -> Result<bool, String> {
     let done = Event::new(&done_name)?;
     let cancel_file = bin.join("collector.cancel");
     let expected_mounts = &content.expected_mounts;
-    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":output,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts});
+    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":output,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors});
     write_json(&bin.join("collector.json"), &config)?;
     struct DetachOnDrop<'a> {
         event: &'a Event,

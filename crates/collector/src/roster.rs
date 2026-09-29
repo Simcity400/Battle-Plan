@@ -158,12 +158,15 @@ impl Roster {
     /// Worker only. `expected_mounts` is the complete successful search path in
     /// highest-priority-first order, resolved from the identity's content layers
     /// and known roots with no covered content. Paths never enter the replay.
+    /// `mod_descriptors` names the descriptor file each of the identity's mods
+    /// was resolved and hashed from, in the same order.
     /// `None` means the caller found no unresolved ordering or coverage limitation.
     /// Every failure is recorded and returned without discarding captured state.
     pub fn verify(
         &self,
         identity: &mut Identity,
         expected_mounts: &[String],
+        mod_descriptors: &[String],
         content_order_note: Option<&str>,
     ) -> Result<(), String> {
         let launcher = identity.roster();
@@ -204,16 +207,19 @@ impl Roster {
                 &mut reasons,
             ),
         };
-        if !memory.mods.is_empty()
-            || !launcher.mods.is_empty()
-            || !pass.observation.requested_mods.is_empty()
-        {
-            reasons.push(
-                "mod descriptor to content ID mapping is not proven by this collector".to_owned(),
-            );
+        // Memory names a mod by its descriptor file, not its Workshop or local
+        // content ID. The recorder resolved and hashed each recorded mod from
+        // one such file, so the active set must be exactly those files; the
+        // mount check below then proves their order and mounted sources.
+        if mod_descriptors.len() != launcher.mods.len() {
+            reasons.push(format!(
+                "{} mod descriptor files supplied for {} recorded mods",
+                mod_descriptors.len(),
+                launcher.mods.len()
+            ));
         }
         if !same_membership(&memory.dlc, &launcher.dlc)
-            || !same_membership(&memory.mods, &launcher.mods)
+            || !same_membership(&memory.mods, mod_descriptors)
         {
             reasons.push("launcher and in-memory content membership differ".to_owned());
         }
@@ -227,9 +233,9 @@ impl Roster {
             reasons.push(format!("content loading order is unverified: {note}"));
         }
         if reasons.is_empty() {
-            // The diagnostic map is ordered by display name. Successful mounts
+            // The diagnostic maps are ordered by display name. Successful mounts
             // independently matched the identity's layer order, so record that
-            // proven order after checking exact diagnostic membership as well.
+            // proven order, in content IDs, after checking exact membership.
             memory.dlc.clone_from(&launcher.dlc);
             memory.mods.clone_from(&launcher.mods);
             identity.verification = Verification::Verified { launcher, memory };
@@ -398,7 +404,7 @@ fn mod_id(bytes: &[u8]) -> Result<String, &'static str> {
 mod tests {
     use super::*;
     use engine::msvc_string::Text;
-    use replay::identity::{COVERAGE_POLICY_VERSION, Dlc};
+    use replay::identity::{COVERAGE_POLICY_VERSION, Dlc, Mod};
 
     fn identity(ids: &[&str]) -> Identity {
         Identity {
@@ -473,7 +479,7 @@ mod tests {
             .map(|layer| format!("F:/game/dlc/{}", layer.id))
             .chain(std::iter::once("F:/game".to_owned()))
             .collect();
-        roster.verify(identity, &expected, note)
+        roster.verify(identity, &expected, &[], note)
     }
 
     #[test]
@@ -546,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn mods_and_failed_reads_remain_explicitly_unverified() {
+    fn unexpected_mods_and_failed_reads_remain_explicitly_unverified() {
         let mut roster = captured(&[]);
         roster.pass.observation.mods = Outcome::Rows { len: 1 };
         roster.pass.mods[0].descriptor = text(b"mod/ugc_123.mod");
@@ -555,7 +561,7 @@ mod tests {
         assert!(
             check(&roster, &mut value, None)
                 .unwrap_err()
-                .contains("mapping is not proven")
+                .contains("membership differ")
         );
         value.validate().unwrap();
         roster.pass.observation.requested_mods = Outcome::Unavailable {
@@ -571,6 +577,74 @@ mod tests {
                 .unwrap_err()
                 .contains("not sampled")
         );
+    }
+
+    #[test]
+    fn mods_verify_by_their_resolved_descriptor_files_and_mount_order() {
+        let mut roster = captured(&[b"dlc/dlc_a/a.dlc"]);
+        let mounts = [
+            "C:/mods/top",
+            "C:/mods/base",
+            "F:/game/dlc/dlc_a",
+            "F:/game",
+        ];
+        roster.pass.mount_outcome = Outcome::Rows { len: mounts.len() };
+        for (row, path) in roster.pass.mounts.iter_mut().zip(mounts) {
+            *row = text(path.as_bytes());
+        }
+        roster.pass.observation.mods = Outcome::Rows { len: 2 };
+        // The mod map is ordered by display name and holds descriptor files.
+        for (row, descriptor) in roster
+            .pass
+            .mods
+            .iter_mut()
+            .zip([b"mod/ugc_42.mod".as_slice(), b"mod/base.mod"])
+        {
+            row.descriptor = text(descriptor);
+            row.reported_active = true;
+        }
+        let mut value = identity(&["dlc_a"]);
+        value.mods = ["base.mod", "42"]
+            .map(|id| Mod {
+                id: id.into(),
+                display_name: id.into(),
+                declared_version: String::new(),
+                hash: [0; 32],
+            })
+            .into();
+        let expected = mounts.map(str::to_owned);
+        let files = ["base.mod".to_owned(), "ugc_42.mod".to_owned()];
+        roster.verify(&mut value, &expected, &files, None).unwrap();
+        value.validate().unwrap();
+        let Verification::Verified { memory, .. } = &value.verification else {
+            panic!("a proven modded stack must verify")
+        };
+        assert_eq!(memory.mods, ["base.mod", "42"]);
+
+        let other = ["base.mod".to_owned(), "ugc_43.mod".to_owned()];
+        for (files, mounts, reason) in [
+            (&other[..], &expected, "membership differ"),
+            (
+                &[][..],
+                &expected,
+                "0 mod descriptor files supplied for 2 recorded mods",
+            ),
+            (
+                &files[..],
+                &[
+                    "C:/mods/base",
+                    "C:/mods/top",
+                    "F:/game/dlc/dlc_a",
+                    "F:/game",
+                ]
+                .map(str::to_owned),
+                "priority order",
+            ),
+        ] {
+            let error = roster.verify(&mut value, mounts, files, None).unwrap_err();
+            assert!(error.contains(reason), "{error}");
+            value.validate().unwrap();
+        }
     }
 
     #[test]

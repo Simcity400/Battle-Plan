@@ -10,6 +10,10 @@ Resolve content in recorded order: vanilla, DLC and mods. Support folder/archive
 
 Content identity uses the versioned coverage policy and layer hashes. A local cache can avoid redundant hashing, but it must not weaken verification. Machine paths are local configuration, not portable replay identity.
 
+A new recording takes the engine's mod order, not the launcher's list order: dependencies first, then descriptor path bytes (`native_mod_order` in [content.rs](src/content.rs), with the native addresses). Enabled mods that share a display name, which the engine mounts only one of, are an order note and leave the session unverified. The recording keeps the ordered DLC IDs and hashes, and each mod's Workshop `remote_file_id` (or local descriptor filename), display name, declared version and hash.
+
+The collector verifies a session, modded or not, only when the game's successful search path equals the recorded layers in priority order, and the active DLC and mods are exactly the recorded ones. Memory names a mod by its descriptor file, so the recorder passes the file it resolved and hashed each mod from (`GatheredContent::mod_descriptors`), and the active set must be exactly those files. A verified session records the proven rosters in content IDs. Mount paths and descriptor files stay in the local `content.json` sidecar and collector configuration, outside the portable identity.
+
 ## Refuse mismatches clearly
 
 The viewer must refuse missing or mismatching recorded content. An unverified identity is also refused unless the user explicitly enables `--allow-unverified-content`. That override does not waive hash checks. Its warning shows in the viewer's diagnostics mode and in the machine-readable outputs, and exported and captured images keep their UNVERIFIED CONTENT banner (owner decision, 2026-09-25).
