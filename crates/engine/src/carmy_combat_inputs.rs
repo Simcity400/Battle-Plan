@@ -11,28 +11,16 @@ pub const ARMOUR: usize = 0x298;
 pub const AIR_ATTACK: usize = 0x220;
 /// Width getter140C6E270 traverses one term per native subunit type/count.
 pub const WIDTH_TERM_LIMIT: usize = 64;
-pub const MANPOWER_TERM_LIMIT: usize = 64;
-/// CArmy primary virtual+68 ->140C72F00 returns *(army+340)+60.
-/// Committed1415BA240 and reserve1415BAC10 bind this to their name widget.
-pub const DISPLAY_NAME_OWNER: usize = 0x340;
-pub const DISPLAY_NAME: usize = 0x60;
+/// The division's `CNameGroupMember`: 140C72F00 returns its generated +0x60
+/// name, which committed 1415BA240 and reserve 1415BAC10 entries draw.
+pub const NAME_GROUP_MEMBER: usize = 0x340;
+/// 141298E00 groups attacking units with a positive value here into one direction.
+pub const DIRECTION_GROUP: usize = 0x4a8;
 /// Raw contextual keys used by width140C6E270 and reinforcement140C6D610.
 pub const CONTEXT_MODIFIER_KEYS: [u32; 3] = [
     crate::modifier_keys::LAND_REINFORCE_RATE,
     crate::modifier_keys::COMBAT_WIDTH_FACTOR,
     crate::modifier_keys::INITIATIVE_FACTOR,
-];
-/// Reinforcement width penalty/cap, base chance, initiative/speed coefficients,
-/// and speed baseline:140C6D610 and140C76E90.
-pub const CONTEXT_DEFINE_RVAS: [usize; 8] = [
-    0x0331_ccf8,
-    0x0331_cd90,
-    0x0331_a260,
-    0x0331_dd20,
-    0x0331_a310,
-    0x0331_e020,
-    0x0293_c980,
-    0x0293_c978,
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -40,13 +28,6 @@ pub struct WidthTerm {
     pub subunit: u32,
     pub count: i32,
     pub width: i64,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct ManpowerTerm {
-    /// Raw first word; source-country meaning is not proven for CArmy instances.
-    pub source: u32,
-    pub amount: i32,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +39,6 @@ pub struct ContextModifier {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ContextRow {
     pub template: u64,
-    pub effective_owner: u32,
     /// Selected native context source:0 absent,1 leader+408,2 leader+4C8.
     pub leader_modifier_kind: u8,
     pub country_modifiers: [ContextModifier; 3],
@@ -70,8 +50,6 @@ pub struct ContextRow {
     pub eligibility_callback: u8,
     /// Cached movement speed operand; reinforcement applies current terrain etc.
     pub base_speed: i64,
-    /// Last two entries: minimum fighting strength/organisation140C684A0.
-    pub defines: [i64; 8],
     pub width_term_count: usize,
 }
 
@@ -85,21 +63,17 @@ pub struct Modifier {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub division: u64,
-    pub name: crate::msvc_string::Text<256>,
-    pub strength: i64,
+    /// Spans index the caller's name arena. `None`: a player's name or group
+    /// key did not fit it; its bytes were counted for growth and the division
+    /// is omitted this hour.
+    pub naming: Option<crate::cname_group_member::Inputs>,
     /// Committed strength bar multiplies raw [`carmy::STRENGTH_FACTOR`] (140C6F8B0).
     pub strength_combat_factor: i64,
-    /// Fuel icon140C6F960: CArmy+620,stat+120,define33197D0; all raw fixed5.
-    pub fuel_inputs: [i64; 3],
-    pub organisation: i64,
-    pub experience: i64,
-    pub entrenchment: i64,
-    pub entrenchment_cap: i64,
-    pub retreat: u8,
+    /// Fuel icon 140C6F960: CArmy+620 and stat+120, raw fixed5; the define
+    /// comes from the content.
+    pub fuel_inputs: [i64; 2],
     /// Defense, breakthrough, hardness, soft attack, hard attack; all raw fixed5.
     pub stat_values: [i64; 5],
-    pub max_organisation: i64,
-    pub max_strength: i64,
     pub armour: i64,
     pub piercing: i64,
     pub air_attack: i64,
@@ -111,6 +85,16 @@ pub struct Row {
     pub commander: u64,
     /// Attack accumulator, defense accumulator, attack base, defense base.
     pub scales: [i64; 4],
+    /// Raw CUnit+0x4A8 latch word for the direction count.
+    pub direction_group: i32,
+    /// The equipment category mask of the unit's stat block
+    /// (`*(CUnit+0x138)+0x5A8`), which CEquipmentTypeTrigger::vf23
+    /// (141390370) ANDs with a category trigger's mask (140F731B0) for each
+    /// unit of a CLandCombatant (+0x20). A division's block is its own
+    /// (CUnit ctor 140BE9620 -> 141003A50 zeroes it; update_active_stats
+    /// 140C7DEB0 -> CalculateStatsFromEquipment 140B8BBE0 leaves it), so it
+    /// is recorded as stored rather than derived from content.
+    pub categories: u64,
 }
 
 fn bytes<const N: usize>(
@@ -149,6 +133,8 @@ fn copy_input_spans<const N: usize>(
 
 /// The caller supplies the authenticated combat/side/role membership.
 /// CArmy, stat-block and formation leader identities are authenticated on entry.
+/// Strength, organisation and their maxima are the Divisions and DivisionStatus
+/// values and are not read again here.
 ///
 /// On success the division, its handle and its stat block are recorded in
 /// `sources`, so the same division's later readers in the pass skip those
@@ -159,6 +145,8 @@ pub fn capture_stats(
     sources: &mut crate::combat_sources::Sources,
     pointer: usize,
     expected_handle: u64,
+    groups: &mut crate::cname_group_member::GroupKeys,
+    names: &mut crate::cname_group_member::Names<'_>,
 ) -> Result<Row, &'static str> {
     let identity = bytes::<8>(memory, pointer, 0)?;
     let expected_vtable = base
@@ -185,90 +173,67 @@ pub fn capture_stats(
         return Err("land combat division stat identity mismatch");
     }
     sources.verified = None;
-    let (mut current, mut entrenchment, mut maxima, mut armour, mut group_pointer) =
-        ([0; 24], [0; 16], [0; 16], [0; 16], [0; 8]);
+    // Every remaining CArmy and stat-block operand in one guarded scatter; the
+    // commander and name reads depend only on its group and member pointers.
+    let (mut armour, mut group_pointer, mut member_pointer) = ([0; 16], [0; 8], [0; 8]);
+    let (mut strength_factor, mut fuel, mut fuel_capacity, mut stats, mut air_attack) =
+        ([0; 8], [0; 8], [0; 8], [0; 40], [0; 8]);
+    let (mut reconnaissance, mut initiative, mut scales, mut direction_group, mut categories) =
+        ([0; 8], [0; 8], [0; 32], [0; 4], [0; 8]);
     copy_input_spans(
         memory,
         [
-            (pointer, carmy::STRENGTH),
-            (pointer, carmy::ENTRENCHMENT),
-            (stat, csub_unit_definition::MAXIMUM_ORGANISATION),
             (stat, ARMOUR),
             (pointer, carmy::ORDERS_GROUP),
-        ]
-        .map(|(p, offset)| {
-            p.checked_add(offset)
-                .ok_or("land combat division inputs unreadable")
-        }),
-        &mut [
-            &mut current,
-            &mut entrenchment,
-            &mut maxima,
-            &mut armour,
-            &mut group_pointer,
-        ],
-    )?;
-    let current = values::<3>(&current);
-    let entrenchment = values::<2>(&entrenchment);
-    let maxima = values::<2>(&maxima);
-    let armour = values::<2>(&armour);
-    let group = u64::from_le_bytes(group_pointer) as usize;
-    let commander = commander(memory, base, group)?;
-    let name = display_name(memory, pointer)?;
-    let (mut strength_factor, mut fuel, mut fuel_capacity, mut fuel_define, mut retreat) =
-        ([0; 8], [0; 8], [0; 8], [0; 8], [0; 1]);
-    let (mut stats, mut air_attack, mut reconnaissance, mut initiative, mut scales) =
-        ([0; 40], [0; 8], [0; 8], [0; 8], [0; 32]);
-    copy_input_spans(
-        memory,
-        [
+            (pointer, NAME_GROUP_MEMBER),
             (pointer, carmy::STRENGTH_FACTOR),
             (pointer, 0x620),
             (stat, 0x120),
-            (base, 0x0331_97d0),
-            (pointer, carmy::RETREAT),
             (stat, csub_unit_definition::DEFENSE),
             (stat, AIR_ATTACK),
             (stat, 0xd0),
             (stat, 0xe0),
             (pointer, cunit::ATTACK_ACCUMULATOR),
+            (pointer, DIRECTION_GROUP),
+            (stat, csub_unit_definition::AIR_FLAGS),
         ]
         .map(|(p, offset)| {
             p.checked_add(offset)
                 .ok_or("land combat division inputs unreadable")
         }),
         &mut [
+            &mut armour,
+            &mut group_pointer,
+            &mut member_pointer,
             &mut strength_factor,
             &mut fuel,
             &mut fuel_capacity,
-            &mut fuel_define,
-            &mut retreat,
             &mut stats,
             &mut air_attack,
             &mut reconnaissance,
             &mut initiative,
             &mut scales,
+            &mut direction_group,
+            &mut categories,
         ],
     )?;
+    let armour = values::<2>(&armour);
+    let group = u64::from_le_bytes(group_pointer) as usize;
+    let commander = commander(memory, base, group)?;
+    let naming = naming(
+        memory,
+        base,
+        u64::from_le_bytes(member_pointer),
+        groups,
+        names,
+    )?;
     sources.verified = Some((pointer, expected_handle, stat));
-    let row = Row {
+    Ok(Row {
         division: expected_handle,
-        name,
-        strength: current[0],
+        naming,
         strength_combat_factor: i64::from_le_bytes(strength_factor),
-        fuel_inputs: [
-            i64::from_le_bytes(fuel),
-            i64::from_le_bytes(fuel_capacity),
-            i64::from_le_bytes(fuel_define),
-        ],
-        organisation: current[1],
-        experience: current[2],
-        entrenchment: entrenchment[0],
-        entrenchment_cap: entrenchment[1],
-        retreat: retreat[0],
+        fuel_inputs: [i64::from_le_bytes(fuel), i64::from_le_bytes(fuel_capacity)],
         stat_values: values(&stats),
-        max_organisation: maxima[0],
-        max_strength: maxima[1],
         armour: armour[0],
         piercing: armour[1],
         air_attack: i64::from_le_bytes(air_attack),
@@ -276,33 +241,186 @@ pub fn capture_stats(
         initiative: i64::from_le_bytes(initiative),
         commander,
         scales: values(&scales),
-    };
-    Ok(row)
+        direction_group: i32::from_le_bytes(direction_group),
+        categories: u64::from_le_bytes(categories),
+    })
 }
 
-fn display_name(
+fn naming(
     memory: &impl Memory,
-    pointer: usize,
-) -> Result<crate::msvc_string::Text<256>, &'static str> {
-    let owner = bytes::<8>(memory, pointer, DISPLAY_NAME_OWNER)?;
-    let source = usize::try_from(u64::from_le_bytes(owner))
+    base: usize,
+    member: u64,
+    groups: &mut crate::cname_group_member::GroupKeys,
+    names: &mut crate::cname_group_member::Names<'_>,
+) -> Result<Option<crate::cname_group_member::Inputs>, &'static str> {
+    use crate::cname_group_member::Naming;
+    let member = usize::try_from(member)
         .ok()
         .filter(|p| *p != 0)
-        .and_then(|p| p.checked_add(DISPLAY_NAME))
         .ok_or("land combat division name pointer invalid")?;
-    let descriptor = crate::msvc_string::Descriptor::read(memory, source).map_err(|reason| {
-        if reason == "string header unreadable" {
-            "land combat division inputs unreadable"
-        } else {
-            reason
+    Ok(
+        match crate::cname_group_member::inputs(memory, base, member, groups, names)? {
+            Naming::Row(row) => Some(row),
+            Naming::DoesNotFit => None,
+        },
+    )
+}
+
+/// `CReferencedDivisionTemplate+0x1F8`, the saved origin type: 0 master host,
+/// 1 subject, 2 exile. `CArmy::IsExiled` (140C79AC0) tests it for exactly 2.
+pub const TEMPLATE_ORIGIN_TYPE: usize = 0x1f8;
+/// The origin `CArmy::IsExiled` (140C79AC0) compares `+0x1F8` with.
+pub const EXILE_ORIGIN: i32 = 2;
+/// `+0x1F4` is the template country when positive, else `+0x1EC` (140C770A0).
+pub const TEMPLATE_COUNTRY: usize = 0x1f4;
+pub const TEMPLATE_COUNTRY_FALLBACK: usize = 0x1ec;
+/// The occupier set 14129FAD0/14129FB60 search: a `CPdxArray<u32>` at the
+/// exile country's diplomacy status (`CCountry+0xF88`) plus 0x140.
+pub const OCCUPIER_SET: usize = 0x140;
+
+/// The operands 1415CA660's exile frames 14 and 15 read for one committed
+/// division whose template is exiled (origin [`EXILE_ORIGIN`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ExileRow {
+    pub origin_type: i32,
+    pub country: i32,
+    pub country_fallback: i32,
+    /// Spans of the caller's tag destination: the location state's cores, then
+    /// the exile country's occupier set.
+    pub cores: (usize, usize),
+    pub occupiers: (usize, usize),
+}
+
+/// One committed division's exile acquisition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exile {
+    /// No template, or one whose origin is not [`EXILE_ORIGIN`] (140C79AC0).
+    Absent,
+    /// Spans index the destination slice the caller supplied.
+    Row(ExileRow),
+    /// Both lists are valid and within their bound, but together need
+    /// `required` tag slots; nothing was copied. The caller grows its arena
+    /// from this count off the game thread and omits the division meanwhile.
+    DoesNotFit { required: usize },
+}
+
+/// A counted `CPdxArray<u32>` of country tags; a nonpositive signed count holds
+/// no entries, as the native loops test `0 < count`. Tags name countries, so a
+/// list longer than the live country table (sentinel included) is refused
+/// before any entry is copied or any destination is sized from it.
+fn country_list(memory: &impl Memory, address: usize, limit: usize) -> Result<Array, &'static str> {
+    let header = read::<[u8; 16]>(memory, address).ok_or("exile country list unreadable")?;
+    if i32::from_le_bytes(header[12..16].try_into().unwrap()) <= 0 {
+        return Ok(Array { data: 0, count: 0 });
+    }
+    let list = Array::from_header(header, 4).ok_or("exile country list header invalid")?;
+    if list.count as usize > limit {
+        return Err("exile country list exceeds the live country count");
+    }
+    Ok(list)
+}
+
+/// Copies a validated list in 64-tag guarded batches.
+fn copy_tags(memory: &impl Memory, list: Array, tags: &mut [u32]) -> Result<(), &'static str> {
+    let mut batch = [0_u8; 64 * 4];
+    for (index, tags) in tags.chunks_mut(64).enumerate() {
+        let source = list
+            .data
+            .checked_add(index * batch.len())
+            .ok_or("exile country list entry unreadable")?;
+        let bytes = &mut batch[..tags.len() * 4];
+        if !read_slice(memory, source, bytes) {
+            return Err("exile country list entry unreadable");
         }
-    })?;
-    let mut result = crate::msvc_string::Text {
-        len: descriptor.len,
-        ..Default::default()
+        for (tag, raw) in tags.iter_mut().zip(bytes.chunks_exact(4)) {
+            *tag = u32::from_le_bytes(raw.try_into().unwrap());
+        }
+    }
+    Ok(())
+}
+
+/// Reads one committed division's exile operands into `tags`, which the caller
+/// preallocated; nothing here allocates. `countries` is the pass's country
+/// reader: it resolves the exile country and bounds both lists by the live
+/// country count.
+pub fn capture_exile(
+    memory: &impl Memory,
+    countries: &crate::ccountry::Reader<'_, impl Memory>,
+    pointer: usize,
+    tags: &mut [u32],
+) -> Result<Exile, &'static str> {
+    let template =
+        u64::from_le_bytes(bytes::<8>(memory, pointer, carmy::STANDARD_TEMPLATE)?) as usize;
+    if template == 0 {
+        return Ok(Exile::Absent);
+    }
+    // Fallback country +0x1EC, a padding word, primary +0x1F4, origin +0x1F8.
+    let operands = bytes::<16>(memory, template, TEMPLATE_COUNTRY_FALLBACK)?;
+    let word = |at: usize| i32::from_le_bytes(operands[at..at + 4].try_into().unwrap());
+    let mut row = ExileRow {
+        country_fallback: word(0),
+        country: word(TEMPLATE_COUNTRY - TEMPLATE_COUNTRY_FALLBACK),
+        origin_type: word(TEMPLATE_ORIGIN_TYPE - TEMPLATE_COUNTRY_FALLBACK),
+        ..ExileRow::default()
     };
-    descriptor.copy(memory, &mut result.bytes)?;
-    Ok(result)
+    // 140C79AC0: a nonnull template is exiled exactly when its origin is 2;
+    // every other value takes the ordinary-owner path.
+    if row.origin_type != EXILE_ORIGIN {
+        return Ok(Exile::Absent);
+    }
+    let limit = countries.count() as usize;
+    let country = if row.country >= 1 {
+        row.country
+    } else {
+        row.country_fallback
+    } as u32;
+    let province = u64::from_le_bytes(bytes::<8>(memory, pointer, cunit::LOCATION)?) as usize;
+    let state = if province == 0 {
+        0
+    } else {
+        u64::from_le_bytes(bytes::<8>(memory, province, crate::cprovince::STATE)?) as usize
+    };
+    let cores = if state == 0 {
+        Array { data: 0, count: 0 }
+    } else {
+        country_list(
+            memory,
+            state
+                .checked_add(crate::cstate::CORES)
+                .ok_or("exile core list address overflow")?,
+            limit,
+        )?
+    };
+    // 14129FAD0/14129FB60 resolve the exile country (140BA56A0) and read its
+    // diplomacy status with no null test, so an exiled division's country
+    // always resolves in the game: a failure here is a read or identity
+    // fault and fails the division with its reason.
+    let object = countries.resolve(country)?;
+    let status = u64::from_le_bytes(bytes::<8>(
+        memory,
+        object.pointer,
+        crate::ccountry::DIPLOMACY_STATUS,
+    )?) as usize;
+    if status == 0 {
+        return Err("exile country diplomacy status missing");
+    }
+    let occupiers = country_list(
+        memory,
+        status
+            .checked_add(OCCUPIER_SET)
+            .ok_or("exile occupier set address overflow")?,
+        limit,
+    )?;
+    let (core_count, occupier_count) = (cores.count as usize, occupiers.count as usize);
+    let required = core_count + occupier_count;
+    if required > tags.len() {
+        return Ok(Exile::DoesNotFit { required });
+    }
+    copy_tags(memory, cores, &mut tags[..core_count])?;
+    copy_tags(memory, occupiers, &mut tags[core_count..required])?;
+    row.cores = (0, core_count);
+    row.occupiers = (core_count, occupier_count);
+    Ok(Exile::Row(row))
 }
 
 /// Independent modifier acquisition: no stat-block or commander dependency.
@@ -355,71 +473,18 @@ pub fn capture_modifiers(
     Ok(count)
 }
 
-/// Label tooltip1415BC060 sums all signed manpower amounts through140C5A040 /
-/// 140C5A0F0. Preserve original terms; do not reduce them to a derived total.
-pub fn capture_manpower(
-    memory: &impl Memory,
-    base: usize,
-    sources: &crate::combat_sources::Sources,
-    pointer: usize,
-    expected_handle: u64,
-    terms: &mut [ManpowerTerm],
-) -> Result<usize, &'static str> {
-    if !sources
-        .verified
-        .is_some_and(|(verified, handle, _)| verified == pointer && handle == expected_handle)
-    {
-        let identity = bytes::<8>(memory, pointer, 0)?;
-        let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
-        if expected_handle == 0
-            || u64::from_le_bytes(handle) != expected_handle
-            || Some(u64::from_le_bytes(identity))
-                != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
-        {
-            return Err("land combat manpower division identity mismatch");
-        }
-    }
-    let container_identity = bytes::<8>(memory, pointer, 0x3d8)?;
-    if Some(u64::from_le_bytes(container_identity))
-        != base
-            .checked_add(crate::carmy_manpower_values::VTABLE_RVA)
-            .map(|p| p as u64)
-    {
-        return Err("land combat manpower container identity mismatch");
-    }
-    let header = bytes::<16>(memory, pointer, carmy::MANPOWER_DATA)?;
-    let array = Array::from_header(header, 8).ok_or("land combat manpower header invalid")?;
-    let count = array.count as usize;
-    if count > MANPOWER_TERM_LIMIT {
-        return Err("land combat manpower term bound exceeded");
-    }
-    if count > terms.len() {
-        return Err("land combat manpower arena full");
-    }
-    let mut packed = [0; MANPOWER_TERM_LIMIT * 8];
-    if !read_slice(memory, array.data, &mut packed[..count * 8]) {
-        return Err("land combat manpower terms unreadable");
-    }
-    for (output, input) in terms[..count].iter_mut().zip(packed.chunks_exact(8)) {
-        *output = ManpowerTerm {
-            source: u32::from_le_bytes(input[..4].try_into().unwrap()),
-            amount: i32::from_le_bytes(input[4..].try_into().unwrap()),
-        };
-    }
-    Ok(count)
-}
-
 /// Width composition and contextual reinforcement operands. Terms preserve
 /// native order, signed multiplicities and unscaled definition widths. No
-/// width, chance, modifier clamp or speed bonus is calculated here.
+/// width, chance, modifier clamp or speed bonus is calculated here. The caller
+/// supplies the pass's country reader rather than rebuilding one per division.
 ///
 /// Per-source reads are shared through `sources` for the pass
 /// ([`crate::combat_sources`]): every read a division still makes, and every
-/// failure, comes at main's point with main's reason.
+/// failure, comes at the unshared reader's point with its reason.
 pub fn capture_context(
     memory: &impl Memory,
     base: usize,
-    state: usize,
+    countries: &crate::ccountry::Reader<'_, impl Memory>,
     sources: &mut crate::combat_sources::Sources,
     pointer: usize,
     expected_handle: u64,
@@ -446,7 +511,6 @@ pub fn capture_context(
         u32::from_le_bytes(owners[4..].try_into().unwrap()),
     ];
     let owner = if tags[1] as i32 > 0 { tags[1] } else { tags[0] };
-    let countries = ccountry::Reader::new(memory, base, state)?;
     let country = countries.resolve(owner)?;
     let country_accumulator = country
         .pointer
@@ -501,9 +565,6 @@ pub fn capture_context(
         }
     };
     let base_speed = i64::from_le_bytes(bytes(memory, stat_pointer, 0x290)?);
-    let defines = (*sources
-        .context_defines
-        .get_or_insert_with(|| context_defines(memory, base)))?;
     let template_pointer =
         u64::from_le_bytes(bytes(memory, pointer, carmy::STANDARD_TEMPLATE)?) as usize;
     let mut template_handle = 0;
@@ -523,7 +584,6 @@ pub fn capture_context(
     }
     Ok(ContextRow {
         template: template_handle,
-        effective_owner: owner,
         leader_modifier_kind,
         country_modifiers,
         leader_modifiers,
@@ -531,7 +591,6 @@ pub fn capture_context(
         feature_flags,
         eligibility_callback,
         base_speed,
-        defines,
         width_term_count: count,
     })
 }
@@ -582,20 +641,6 @@ fn context_metadata(memory: &impl Memory, base: usize) -> Result<ContextMetadata
         eligibility_callback,
         feature_flags,
     })
-}
-
-/// The context's define scalars ([`CONTEXT_DEFINE_RVAS`]), read once a pass.
-fn context_defines(memory: &impl Memory, base: usize) -> Result<[i64; 8], &'static str> {
-    let mut defines = [[0; 8]; 8];
-    copy_input_spans(
-        memory,
-        CONTEXT_DEFINE_RVAS.map(|offset| {
-            base.checked_add(offset)
-                .ok_or("land combat division inputs unreadable")
-        }),
-        &mut defines.each_mut().map(|raw| raw.as_mut_slice()),
-    )?;
-    Ok(defines.map(i64::from_le_bytes))
 }
 
 /// One template's width composition: its handle and term count, then its
@@ -719,7 +764,19 @@ fn commander(memory: &impl Memory, base: usize, group: usize) -> Result<u64, &'s
     if group == 0 {
         return Ok(0);
     }
-    let group_identity = bytes::<16>(memory, group, 0)?;
+    // The identity and leader pointer share one guarded scatter; an identity
+    // mismatch still takes precedence over an unreadable leader word.
+    let (mut group_identity, mut leader) = ([0_u8; 16], [0_u8; 8]);
+    let copied = memory.copy_scattered_prefetched(
+        [
+            group,
+            group.checked_add(crate::corders_group::LEADER).unwrap_or(0),
+        ],
+        &mut [&mut group_identity, &mut leader],
+    );
+    if copied == 0 {
+        return Err("land combat division inputs unreadable");
+    }
     let vtable = u64::from_le_bytes(group_identity[..8].try_into().unwrap());
     let group_handle = u64::from_le_bytes(group_identity[8..].try_into().unwrap());
     if ![
@@ -733,7 +790,10 @@ fn commander(memory: &impl Memory, base: usize, group: usize) -> Result<u64, &'s
     {
         return Err("land combat division group identity mismatch");
     }
-    let leader = u64::from_le_bytes(bytes(memory, group, crate::corders_group::LEADER)?) as usize;
+    if copied != 2 {
+        return Err("land combat division inputs unreadable");
+    }
+    let leader = u64::from_le_bytes(leader) as usize;
     if leader == 0 {
         return Ok(0);
     }
@@ -756,6 +816,68 @@ mod tests {
     use super::*;
     use crate::memory::SliceMemory;
     use std::cell::{Cell, RefCell};
+
+    /// A pass-sized naming context for tests.
+    struct NameArena {
+        groups: crate::cname_group_member::GroupKeys,
+        bytes: Vec<u8>,
+    }
+    impl NameArena {
+        fn new() -> Self {
+            Self {
+                groups: crate::cname_group_member::GroupKeys::with_capacity(64, 64),
+                bytes: vec![0; 4096],
+            }
+        }
+        fn stats(
+            &mut self,
+            memory: &impl Memory,
+            base: usize,
+            pointer: usize,
+            handle: u64,
+        ) -> Result<Row, &'static str> {
+            let mut names = crate::cname_group_member::Names {
+                bytes: &mut self.bytes,
+                len: 0,
+                required: 0,
+            };
+            capture_stats(
+                memory,
+                base,
+                &mut crate::combat_sources::Sources::new(),
+                pointer,
+                handle,
+                &mut self.groups,
+                &mut names,
+            )
+        }
+        fn text(&self, span: (usize, usize)) -> &[u8] {
+            &self.bytes[span.0..span.0 + span.1]
+        }
+    }
+
+    /// The pre-hoist call shape: builds the country reader over the same
+    /// memory, immediately before the division reads, as the pass does.
+    fn capture_context_at(
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        sources: &mut crate::combat_sources::Sources,
+        pointer: usize,
+        expected_handle: u64,
+        terms: &mut [WidthTerm],
+    ) -> Result<ContextRow, &'static str> {
+        let countries = crate::ccountry::Reader::new(memory, base, state)?;
+        capture_context(
+            memory,
+            base,
+            &countries,
+            sources,
+            pointer,
+            expected_handle,
+            terms,
+        )
+    }
 
     struct Observed<'a, M> {
         source: &'a M,
@@ -851,50 +973,53 @@ mod tests {
         {
             return Err("land combat division stat identity mismatch");
         }
-        let current = values::<3>(&bytes::<24>(memory, pointer, carmy::STRENGTH)?);
-        let entrenchment = values::<2>(&bytes::<16>(memory, pointer, carmy::ENTRENCHMENT)?);
-        let maxima = values::<2>(&bytes::<16>(
-            memory,
-            stat,
-            csub_unit_definition::MAXIMUM_ORGANISATION,
-        )?);
         let armour = values::<2>(&bytes::<16>(memory, stat, ARMOUR)?);
-        let group_pointer = bytes::<8>(memory, pointer, carmy::ORDERS_GROUP)?;
-        let group = u64::from_le_bytes(group_pointer) as usize;
+        let group = u64::from_le_bytes(bytes::<8>(memory, pointer, carmy::ORDERS_GROUP)?) as usize;
+        let member = u64::from_le_bytes(bytes::<8>(memory, pointer, NAME_GROUP_MEMBER)?);
+        let strength_combat_factor = i64::from_le_bytes(bytes(memory, pointer, 0x468)?);
+        let fuel_inputs = [
+            i64::from_le_bytes(bytes(memory, pointer, 0x620)?),
+            i64::from_le_bytes(bytes(memory, stat, 0x120)?),
+        ];
+        let stat_values = values(&bytes::<40>(memory, stat, csub_unit_definition::DEFENSE)?);
+        let air_attack = i64::from_le_bytes(bytes(memory, stat, AIR_ATTACK)?);
+        let reconnaissance = i64::from_le_bytes(bytes(memory, stat, 0xd0)?);
+        let initiative = i64::from_le_bytes(bytes(memory, stat, 0xe0)?);
+        let scales = values(&bytes::<32>(memory, pointer, cunit::ATTACK_ACCUMULATOR)?);
+        let direction_group = i32::from_le_bytes(bytes(memory, pointer, DIRECTION_GROUP)?);
+        let categories = u64::from_le_bytes(bytes(memory, stat, csub_unit_definition::AIR_FLAGS)?);
         let commander = commander(memory, base, group)?;
-        let row = Row {
+        Ok(Row {
             division: expected_handle,
-            name: display_name(memory, pointer)?,
-            strength: current[0],
-            strength_combat_factor: i64::from_le_bytes(bytes(memory, pointer, 0x468)?),
-            fuel_inputs: [
-                i64::from_le_bytes(bytes(memory, pointer, 0x620)?),
-                i64::from_le_bytes(bytes(memory, stat, 0x120)?),
-                i64::from_le_bytes(bytes(memory, base, 0x0331_97d0)?),
-            ],
-            organisation: current[1],
-            experience: current[2],
-            entrenchment: entrenchment[0],
-            entrenchment_cap: entrenchment[1],
-            retreat: bytes::<1>(memory, pointer, carmy::RETREAT)?[0],
-            stat_values: values(&bytes::<40>(memory, stat, csub_unit_definition::DEFENSE)?),
-            max_organisation: maxima[0],
-            max_strength: maxima[1],
+            naming: naming(
+                memory,
+                base,
+                member,
+                &mut crate::cname_group_member::GroupKeys::with_capacity(64, 64),
+                &mut crate::cname_group_member::Names {
+                    bytes: &mut [0; 4096],
+                    len: 0,
+                    required: 0,
+                },
+            )?,
+            strength_combat_factor,
+            fuel_inputs,
+            stat_values,
             armour: armour[0],
             piercing: armour[1],
-            air_attack: i64::from_le_bytes(bytes(memory, stat, AIR_ATTACK)?),
-            reconnaissance: i64::from_le_bytes(bytes(memory, stat, 0xd0)?),
-            initiative: i64::from_le_bytes(bytes(memory, stat, 0xe0)?),
+            air_attack,
+            reconnaissance,
+            initiative,
             commander,
-            scales: values(&bytes::<32>(memory, pointer, cunit::ATTACK_ACCUMULATOR)?),
-        };
-        Ok(row)
+            scales,
+            direction_group,
+            categories,
+        })
     }
 
     #[test]
     fn stats_scatter_matches_scalar_first_values_and_every_fault() {
         let mut source = context_fixture();
-        source.u64(0x0331_97d0, i64::MIN as u64);
         source.u64(0x10c0, 0xe000);
         source.u64(0xe000, crate::corders_group::VTABLE_RVA as u64);
         source.u64(0xe008, 1_u64 << 32 | 53);
@@ -902,9 +1027,6 @@ mod tests {
         source.u64(0xf000, crate::carmy_leader::VTABLE_RVA as u64);
         source.u64(0xf008, 77_u64 << 32 | 4713);
         for (index, (address, count)) in [
-            (0x1420, 3),
-            (0x1458, 2),
-            (0x2280, 2),
             (0x2298, 2),
             (0x1468, 1),
             (0x1620, 1),
@@ -925,43 +1047,40 @@ mod tests {
                 );
             }
         }
-        source.put(0x124c, &[0xff]);
+        source.put(0x1000 + DIRECTION_GROUP, &(-3_i32).to_le_bytes());
+        source.u64(
+            0x2000 + csub_unit_definition::AIR_FLAGS,
+            0x8000_0000_0000_0020,
+        );
         let expected = Observed::new(&source);
         let actual = Observed::new(&source);
         let row = scalar_stats(&expected, 0, 0x1000, 0x1234_0000_0033).unwrap();
-        assert_eq!(
-            capture_stats(
-                &actual,
-                0,
-                &mut crate::combat_sources::Sources::new(),
-                0x1000,
-                row.division
-            ),
-            Ok(row)
-        );
+        assert_eq!(row.direction_group, -3);
+        assert_eq!(row.categories, 0x8000_0000_0000_0020);
+        let capture =
+            |memory: &Observed<'_, _>, handle| NameArena::new().stats(memory, 0, 0x1000, handle);
+        assert_eq!(capture(&actual, row.division), Ok(row));
         assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
         assert_eq!(
             *actual.scatters.borrow(),
             [
                 vec![
-                    (0x1420, 24),
-                    (0x1458, 16),
-                    (0x2280, 16),
                     (0x2298, 16),
-                    (0x10c0, 8)
-                ],
-                vec![
+                    (0x10c0, 8),
+                    (0x1000 + NAME_GROUP_MEMBER, 8),
                     (0x1468, 8),
                     (0x1620, 8),
                     (0x2120, 8),
-                    (0x0331_97d0, 8),
-                    (0x124c, 1),
                     (0x20a8, 40),
                     (0x2220, 8),
                     (0x20d0, 8),
                     (0x20e0, 8),
-                    (0x1000 + cunit::ATTACK_ACCUMULATOR, 32)
+                    (0x1000 + cunit::ATTACK_ACCUMULATOR, 32),
+                    (0x1000 + DIRECTION_GROUP, 4),
+                    (0x2000 + csub_unit_definition::AIR_FLAGS, 8)
                 ],
+                // The commander's group identity and leader word.
+                vec![(0xe000, 16), (0xe000 + crate::corders_group::LEADER, 8)],
             ]
         );
         let trace = expected.reads.into_inner();
@@ -977,13 +1096,7 @@ mod tests {
                     actual.fault = expected.fault;
                 }
                 assert_eq!(
-                    capture_stats(
-                        &actual,
-                        0,
-                        &mut crate::combat_sources::Sources::new(),
-                        0x1000,
-                        row.division
-                    ),
+                    capture(&actual, row.division),
                     scalar_stats(&expected, 0, 0x1000, row.division),
                     "ordinal {ordinal}, change {change}"
                 );
@@ -1005,13 +1118,7 @@ mod tests {
         for fault in [None, Some(0)] {
             let mut actual = Observed::new(&source);
             actual.fault = fault;
-            let result = capture_stats(
-                &actual,
-                usize::MAX,
-                &mut crate::combat_sources::Sources::new(),
-                0x1000,
-                0x1234_0000_0033,
-            );
+            let result = NameArena::new().stats(&actual, usize::MAX, 0x1000, 0x1234_0000_0033);
             assert_eq!(
                 result,
                 Err(if fault.is_some() {
@@ -1023,24 +1130,16 @@ mod tests {
             assert_eq!(*actual.reads.borrow(), [(0x1000, 8)]);
             assert!(actual.scatters.borrow().is_empty());
         }
-        let stat = usize::MAX - 0x290;
+        // An unreadable armour span fails before the group read.
+        let stat = usize::MAX - 0x2a0;
         source.u64(0x1138, stat as u64);
         source.u64(stat, csub_unit_definition::VTABLE_RVA as u64);
-        source.put(stat + 0x280, &[0x31; 16]);
         let actual = Observed::new(&source);
         let expected = Observed::new(&source);
         assert_eq!(
-            capture_stats(
-                &actual,
-                0,
-                &mut crate::combat_sources::Sources::new(),
-                0x1000,
-                0x1234_0000_0033
-            ),
+            NameArena::new().stats(&actual, 0, 0x1000, 0x1234_0000_0033),
             scalar_stats(&expected, 0, 0x1000, 0x1234_0000_0033)
         );
-        assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
-        assert_eq!(actual.reads.borrow().last(), Some(&(stat + 0x280, 16)));
         assert!(!actual.reads.borrow().contains(&(0x10c0, 8)));
     }
 
@@ -1093,7 +1192,7 @@ mod tests {
         let source = context_fixture();
         let baseline = Observed::new(&source);
         let mut terms = [WidthTerm::default(); 2];
-        let row = capture_context(
+        let row = capture_context_at(
             &baseline,
             0,
             0x5000,
@@ -1103,17 +1202,15 @@ mod tests {
             &mut terms,
         )
         .unwrap();
-        assert_eq!(row.defines, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(row.template, 1_u64 << 32 | 52);
         let metadata: Vec<_> = CONTEXT_MODIFIER_KEYS
             .map(|key| (0x10000 + key as usize * md::STRIDE + md::FLAGS, 12))
             .into();
-        let defines: Vec<_> = CONTEXT_DEFINE_RVAS.map(|p| (p, 8)).into();
         assert!(baseline.scatters.borrow().contains(&metadata));
-        assert!(baseline.scatters.borrow().contains(&defines));
         let trace = baseline.reads.into_inner();
-        assert_eq!(trace.len(), 41);
-        assert_eq!(trace.iter().map(|(_, len)| len).sum::<usize>(), 428);
-        for group in [&metadata, &defines] {
+        assert_eq!(trace.len(), 33);
+        assert_eq!(trace.iter().map(|(_, len)| len).sum::<usize>(), 364);
+        for group in [&metadata] {
             let start = trace
                 .windows(group.len())
                 .position(|p| p == group.as_slice())
@@ -1123,7 +1220,7 @@ mod tests {
                 memory.fault = Some(ordinal);
                 let mut out = [WidthTerm::default(); 2];
                 assert_eq!(
-                    capture_context(
+                    capture_context_at(
                         &memory,
                         0,
                         0x5000,
@@ -1168,7 +1265,7 @@ mod tests {
             source.put(first, &[0x17; 12]);
             let memory = Observed::new(&source);
             assert_eq!(
-                capture_context(
+                capture_context_at(
                     &memory,
                     0,
                     0x5000,
@@ -1184,7 +1281,7 @@ mod tests {
             let mut failed = Observed::new(&source);
             failed.fault = Some(trace.len() - 1);
             assert_eq!(
-                capture_context(
+                capture_context_at(
                     &failed,
                     0,
                     0x5000,
@@ -1220,10 +1317,14 @@ mod tests {
         put(0x1000, carmy::VTABLE_RVA as u64);
         put(0x1018, 0x1234_0000_0033);
         put(0x1138, 0x2000);
+        // The division's name member: order i32::MAX and a one-byte custom name.
         put(0x1340, 0x3800);
-        put(0x3860, 0xff);
-        put(0x3870, 1);
-        put(0x3878, 15);
+        put(0x3800, crate::cname_group_member::VTABLE_RVA as u64);
+        put(0x3880, i32::MAX as u64);
+        put(0x3888, 0xff);
+        put(0x3898, 1);
+        put(0x38a0, 15);
+        put(0x38a8, 1);
         put(0x1170, 0x3000);
         put(0x1178, (count as u64) << 32 | count as u64);
         put(0x2000, csub_unit_definition::VTABLE_RVA as u64);
@@ -1238,8 +1339,7 @@ mod tests {
 
     #[test]
     fn preserves_signed_values_order_and_raw_maximum_with_bounded_copy_cost() {
-        let mut image = fixture(2);
-        image.resize(0x0331_97d8, 0);
+        let image = fixture(2);
         let memory = Counted {
             inner: SliceMemory {
                 base: 0,
@@ -1249,21 +1349,15 @@ mod tests {
             bytes: Cell::new(0),
         };
         let mut modifiers = [Modifier::default(); 2];
-        let row = capture_stats(
-            &memory,
-            0,
-            &mut crate::combat_sources::Sources::new(),
-            0x1000,
-            0x1234_0000_0033,
-        )
-        .unwrap();
+        let mut arena = NameArena::new();
+        let row = arena.stats(&memory, 0, 0x1000, 0x1234_0000_0033).unwrap();
         assert_eq!(
             capture_modifiers(&memory, 0, 0x1000, 0x1234_0000_0033, &mut modifiers).unwrap(),
             2
         );
-        assert_eq!(row.strength, -123);
-        assert_eq!(row.name.as_bytes(), &[255]);
-        assert_eq!(row.max_organisation, 1);
+        let naming = row.naming.unwrap();
+        assert_eq!(arena.text(naming.custom), &[255]);
+        assert_eq!(naming.order, i32::MAX);
         assert_eq!(
             modifiers[0],
             Modifier {
@@ -1273,8 +1367,10 @@ mod tests {
             }
         );
         assert_eq!(modifiers[1].id, 2);
-        assert_eq!(memory.copies.get(), 25);
-        assert_eq!(memory.bytes.get(), 361);
+        // Four identity words, one thirteen-span scatter, one 0xAA name-member
+        // copy and four modifier copies: 22 observations, 446 bytes.
+        assert_eq!(memory.copies.get(), 22);
+        assert_eq!(memory.bytes.get(), 446);
         println!(
             "division stats/name plus two modifiers: {} logical copy observations / {} bytes",
             memory.copies.get(),
@@ -1317,13 +1413,7 @@ mod tests {
             bytes: &image,
         };
         assert_eq!(
-            capture_stats(
-                &memory,
-                0,
-                &mut crate::combat_sources::Sources::new(),
-                0x1000,
-                0x1234_0000_0033
-            ),
+            NameArena::new().stats(&memory, 0, 0x1000, 0x1234_0000_0033),
             Err("land combat division stat identity mismatch")
         );
         let mut modifiers = [Modifier::default(); 2];
@@ -1400,9 +1490,6 @@ mod tests {
             crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
             &0_u32.to_le_bytes(),
         );
-        for (index, offset) in CONTEXT_DEFINE_RVAS.into_iter().enumerate() {
-            memory.u64(offset, index as u64 + 1);
-        }
         memory.u64(0x13b8, 0xb000);
         memory.u64(
             0xb000,
@@ -1424,7 +1511,7 @@ mod tests {
     fn width_context_preserves_order_signed_counts_and_raw_modifiers() {
         let memory = context_fixture();
         let mut terms = [WidthTerm::default(); 2];
-        let row = capture_context(
+        let row = capture_context_at(
             &memory,
             0,
             0x5000,
@@ -1452,10 +1539,9 @@ mod tests {
         );
         assert_eq!(row.country_modifiers.map(|v| v.raw), [-111, -112, -113]);
         assert_eq!(row.leader_modifiers, [ContextModifier::default(); 3]);
-        assert_eq!(row.defines, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(row.template, 1_u64 << 32 | 52);
-        assert_eq!(memory.copies.get(), 41);
-        assert_eq!(memory.copied.get(), 428);
+        assert_eq!(memory.copies.get(), 33);
+        assert_eq!(memory.copied.get(), 364);
     }
 
     #[test]
@@ -1463,7 +1549,7 @@ mod tests {
         let mut memory = context_fixture();
         let mut sources = crate::combat_sources::Sources::new();
         let mut terms = [WidthTerm::default(); 2];
-        let first = capture_context(
+        let first = capture_context_at(
             &memory,
             0,
             0x5000,
@@ -1475,7 +1561,7 @@ mod tests {
         .unwrap();
         let first_terms = terms;
         let before = (memory.copies.get(), memory.copied.get());
-        let second = capture_context(
+        let second = capture_context_at(
             &memory,
             0,
             0x5000,
@@ -1494,7 +1580,7 @@ mod tests {
 
         memory.u64(0xa008, 170);
         sources.clear();
-        let current = capture_context(
+        let current = capture_context_at(
             &memory,
             0,
             0x5000,
@@ -1563,10 +1649,122 @@ mod tests {
     }
 
     #[test]
+    fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
+        let mut memory = context_fixture();
+        // A committed division on an exile template (origin 2) of tag 1.
+        memory.put(0xb000 + TEMPLATE_COUNTRY, &1_i32.to_le_bytes());
+        memory.put(0xb000 + TEMPLATE_ORIGIN_TYPE, &2_i32.to_le_bytes());
+        memory.u64(0x1000 + cunit::LOCATION, 0x7000);
+        memory.u64(0x7000 + crate::cprovince::STATE, 0x7800);
+        memory.array(0x7800 + crate::cstate::CORES, 0x7c00, 2);
+        memory.put(0x7c00, &[1, 0, 0, 0, 2, 0, 0, 0]);
+        memory.u64(0x9000 + crate::ccountry::DIPLOMACY_STATUS, 0xe800);
+        memory.array(0xe800 + OCCUPIER_SET, 0xec00, 1);
+        memory.put(0xec00, &2_u32.to_le_bytes());
+        let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
+        assert_eq!(countries.count(), 2);
+        let mut tags = [0; 3];
+        assert_eq!(
+            capture_exile(&memory, &countries, 0x1000, &mut tags),
+            Ok(Exile::Row(ExileRow {
+                origin_type: 2,
+                country: 1,
+                country_fallback: 0,
+                cores: (0, 2),
+                occupiers: (2, 1),
+            }))
+        );
+        assert_eq!(tags, [1, 2, 2]);
+        // A short destination copies nothing and reports its demand.
+        let mut short = [0; 2];
+        assert_eq!(
+            capture_exile(&memory, &countries, 0x1000, &mut short),
+            Ok(Exile::DoesNotFit { required: 3 })
+        );
+        assert_eq!(short, [0; 2]);
+        // Longer than the country table, up to a count that would have
+        // reserved gigabytes: refused before any entry is read.
+        for count in [3, i32::MAX as u32] {
+            memory.array(0x7800 + crate::cstate::CORES, 0x7c00, count);
+            let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
+            let before = memory.copies.get();
+            assert_eq!(
+                capture_exile(&memory, &countries, 0x1000, &mut [0; 8]),
+                Err("exile country list exceeds the live country count")
+            );
+            // Template, operands, location, state and the list header only.
+            assert_eq!(memory.copies.get() - before, 5);
+        }
+        // 140C79AC0 is exactly `origin == 2`: every other value, including
+        // ones outside 0..=2, is not exiled and reads nothing further.
+        for origin in [0, 1, 3, 7, -1, i32::MIN, i32::MAX] {
+            memory.put(0xb000 + TEMPLATE_ORIGIN_TYPE, &origin.to_le_bytes());
+            let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
+            let before = memory.copies.get();
+            assert_eq!(
+                capture_exile(&memory, &countries, 0x1000, &mut []),
+                Ok(Exile::Absent),
+                "origin {origin}"
+            );
+            // Template pointer and operands only.
+            assert_eq!(memory.copies.get() - before, 2, "origin {origin}");
+        }
+    }
+
+    /// An exiled division's country always resolves in the game (14129FB60
+    /// reads its diplomacy status unguarded), so a resolution or read fault is
+    /// the division's failure, never an empty occupier set. The exile country
+    /// here differs from the division's ordinary owner, which resolves.
+    #[test]
+    fn exile_country_faults_fail_the_division_with_their_reason() {
+        let mut memory = context_fixture();
+        memory.put(0x1000 + cunit::ROSTER_OWNER, &1_u32.to_le_bytes());
+        memory.put(0xb000 + TEMPLATE_ORIGIN_TYPE, &2_i32.to_le_bytes());
+        memory.put(0xb000 + TEMPLATE_COUNTRY, &1_i32.to_le_bytes());
+        memory.u64(0x9000 + crate::ccountry::DIPLOMACY_STATUS, 0xe800);
+        let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
+        assert!(matches!(
+            capture_exile(&memory, &countries, 0x1000, &mut [0; 4]),
+            Ok(Exile::Row(_))
+        ));
+        // A tag outside the link table.
+        memory.put(0xb000 + TEMPLATE_COUNTRY, &5_i32.to_le_bytes());
+        let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
+        let unlinked = capture_exile(&memory, &countries, 0x1000, &mut [0; 4]);
+        assert_eq!(unlinked, countries.resolve(5).map(|_| Exile::Absent));
+        assert!(unlinked.is_err());
+        // The exile country's diplomacy status unreadable, then null.
+        memory.put(0xb000 + TEMPLATE_COUNTRY, &1_i32.to_le_bytes());
+        memory.u64(0x9000 + crate::ccountry::DIPLOMACY_STATUS, 0);
+        let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
+        assert_eq!(
+            capture_exile(&memory, &countries, 0x1000, &mut [0; 4]),
+            Err("exile country diplomacy status missing")
+        );
+        let status = 0x9000 + crate::ccountry::DIPLOMACY_STATUS;
+        memory.u64(status, 0xe800);
+        let mut observed = Observed::new(&memory);
+        let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
+        let _ = capture_exile(&observed, &countries, 0x1000, &mut [0; 4]);
+        let ordinal = observed
+            .reads
+            .borrow()
+            .iter()
+            .position(|&(at, _)| at == status)
+            .unwrap();
+        observed = Observed::new(&memory);
+        observed.fault = Some(ordinal);
+        assert_eq!(
+            capture_exile(&observed, &countries, 0x1000, &mut [0; 4]),
+            Err("land combat division inputs unreadable")
+        );
+    }
+
+    #[test]
     fn width_context_reports_short_arena_and_modifier_bound() {
         let mut memory = context_fixture();
         assert_eq!(
-            capture_context(
+            capture_context_at(
                 &memory,
                 0,
                 0x5000,
@@ -1579,7 +1777,7 @@ mod tests {
         );
         memory.array(0x9000 + crate::ccountry::MODIFIER_ACCUMULATOR, 0xa000, 4097);
         assert_eq!(
-            capture_context(
+            capture_context_at(
                 &memory,
                 0,
                 0x5000,
@@ -1604,7 +1802,7 @@ mod tests {
         memory.array(0xf418, 0xa100, 1);
         memory.put(0xa100, &0x10f_u32.to_le_bytes());
         memory.u64(0xa108, (-777_i64) as u64);
-        let row = capture_context(
+        let row = capture_context_at(
             &memory,
             0,
             0x5000,
@@ -1630,62 +1828,609 @@ mod tests {
         );
     }
 
-    #[test]
-    fn manpower_preserves_every_signed_term_without_summing() {
-        let mut image = fixture(2);
-        image[0x13d8..0x13e0]
-            .copy_from_slice(&(crate::carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes());
-        image[0x13e0..0x13e8].copy_from_slice(&0x4000_u64.to_le_bytes());
-        image[0x13e8..0x13f0].copy_from_slice(&(2_u64 << 32 | 2).to_le_bytes());
-        image[0x4000..0x4004].copy_from_slice(&123_u32.to_le_bytes());
-        image[0x4004..0x4008].copy_from_slice(&(-123_i32).to_le_bytes());
-        image[0x4008..0x400c].copy_from_slice(&456_u32.to_le_bytes());
-        image[0x400c..0x4010].copy_from_slice(&i32::MAX.to_le_bytes());
-        let memory = Counted {
-            inner: SliceMemory {
-                base: 0,
-                bytes: &image,
-            },
-            copies: Cell::new(0),
-            bytes: Cell::new(0),
-        };
-        let mut terms = [ManpowerTerm::default(); 2];
-        assert_eq!(
-            capture_manpower(
-                &memory,
-                0,
-                &crate::combat_sources::Sources::new(),
-                0x1000,
-                0x1234_0000_0033,
-                &mut terms
-            ),
-            Ok(2)
-        );
-        assert_eq!(
-            terms,
-            [
-                ManpowerTerm {
-                    source: 123,
-                    amount: -123
-                },
-                ManpowerTerm {
-                    source: 456,
-                    amount: i32::MAX
+    /// Synthetic scale benchmark over guarded in-process reads (LiveMemory's
+    /// SEH copies against heap objects laid out like the native graph). It
+    /// measures reader cost only, never live gameplay speed.
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    mod scale {
+        use super::*;
+        use crate::{cname_group_member as name, creference_registry as registry};
+
+        const ARMY: usize = 0x700;
+        const STAT: usize = 0x2c0;
+        const MEMBER: usize = 0xb0;
+        const HEAP_NAME: usize = 0x40;
+        const GROUPS: usize = 100;
+        const NAME_GROUPS: usize = 8;
+
+        pub(super) struct World {
+            module: Vec<u8>,
+            heap: Vec<u8>,
+            pub(super) armies: Vec<(usize, u64)>,
+        }
+
+        impl World {
+            pub(super) fn base(&self) -> usize {
+                self.module.as_ptr() as usize
+            }
+            fn at(&mut self, address: usize) -> &mut [u8] {
+                let module = self.module.as_ptr() as usize;
+                let heap = self.heap.as_ptr() as usize;
+                if (heap..heap + self.heap.len()).contains(&address) {
+                    &mut self.heap[address - heap..]
+                } else {
+                    &mut self.module[address - module..]
                 }
-            ]
-        );
-        assert_eq!(memory.copies.get(), 5);
-        assert_eq!(memory.bytes.get(), 56);
-        assert_eq!(
-            capture_manpower(
-                &memory,
-                0,
-                &crate::combat_sources::Sources::new(),
-                0x1000,
-                0x1234_0000_0033,
-                &mut []
-            ),
-            Err("land combat manpower arena full")
-        );
+            }
+            fn put(&mut self, address: usize, bytes: &[u8]) {
+                self.at(address)[..bytes.len()].copy_from_slice(bytes);
+            }
+            fn u64(&mut self, address: usize, value: u64) {
+                self.put(address, &value.to_le_bytes());
+            }
+            fn string(&mut self, address: usize, text: &[u8], heap: usize) {
+                if text.len() <= 15 {
+                    self.put(address, text);
+                    self.put(address + text.len(), &[0]);
+                    self.u64(address + 24, 15);
+                } else {
+                    self.put(heap, text);
+                    self.put(heap + text.len(), &[0]);
+                    self.u64(address, heap as u64);
+                    self.u64(address + 24, 63);
+                }
+                self.u64(address + 16, text.len() as u64);
+            }
+
+            /// `templates` distinct division templates share the divisions
+            /// round-robin; the registry keeps a load factor of at most one half.
+            pub(super) fn new(count: usize, template_count: usize) -> Self {
+                let capacity = (template_count * 2).next_power_of_two().max(1024);
+                let overflow = capacity.trailing_zeros() as usize + 2;
+                let module = vec![0_u8; registry::LOW_ROOTS_RVA + 0x1000];
+                let sizes = [
+                    count * ARMY,
+                    count * STAT,
+                    count * MEMBER,
+                    count * HEAP_NAME,
+                    GROUPS * 0x100,
+                    GROUPS * 0x20,
+                    template_count * 0x200,
+                    NAME_GROUPS * 0x40,
+                    0x40,
+                    (capacity + overflow + 1) * 24,
+                ];
+                let heap = vec![0_u8; sizes.iter().sum::<usize>() + 64];
+                let mut world = Self {
+                    module,
+                    heap,
+                    armies: Vec::with_capacity(count),
+                };
+                let base = world.base();
+                let mut next = (world.heap.as_ptr() as usize).next_multiple_of(16);
+                let mut region = |size: usize| {
+                    let start = next;
+                    next += size;
+                    start
+                };
+                let [
+                    armies,
+                    stats,
+                    members,
+                    names,
+                    groups,
+                    leaders,
+                    templates,
+                    name_groups,
+                    table,
+                    entries,
+                ] = sizes.map(&mut region);
+                for g in 0..GROUPS {
+                    let (group, leader) = (groups + g * 0x100, leaders + g * 0x20);
+                    world.u64(group, (base + crate::corders_group::VTABLE_RVA) as u64);
+                    world.u64(group + 8, (g as u64 + 1) << 32 | 53);
+                    world.u64(group + crate::corders_group::LEADER, leader as u64);
+                    world.u64(leader, (base + crate::carmy_leader::VTABLE_RVA) as u64);
+                    world.u64(leader + 8, (g as u64 + 1) << 32 | 4713);
+                }
+                for n in 0..NAME_GROUPS {
+                    let group = name_groups + n * 0x40;
+                    world.u64(group, (base + name::GROUP_VTABLE_RVA) as u64);
+                    world.string(group + name::GROUP_KEY, format!("GRP_{n}").as_bytes(), 0);
+                }
+                // A valid robin-hood reference table holding every template.
+                world.u64(base + registry::LOW_ROOTS_RVA + 52 * 8, table as u64);
+                world.u64(table + registry::ENTRIES, entries as u64);
+                world.put(
+                    table + registry::COUNT,
+                    &(template_count as u32).to_le_bytes(),
+                );
+                world.put(table + registry::MASK, &(capacity as u32 - 1).to_le_bytes());
+                world.put(table + registry::OVERFLOW_DISTANCE, &[overflow as u8]);
+                world.put(entries + (capacity + overflow) * 24 + 4, &[255]);
+                for t in 0..template_count {
+                    let template = templates + t * 0x200;
+                    let handle = (t as u64 + 1) << 32 | 52;
+                    world.u64(
+                        template,
+                        (base + crate::creferenced_division_template::VTABLE_RVA) as u64,
+                    );
+                    world.u64(template + 8, handle);
+                    world.u64(
+                        template + name::TEMPLATE_NAME_GROUP,
+                        (name_groups + (t % NAME_GROUPS) * 0x40) as u64,
+                    );
+                    let hash = handle
+                        .rotate_left(32)
+                        .wrapping_mul(registry::HASH_MULTIPLIER);
+                    let mut index = (((hash >> 32) as u32 ^ hash as u32) as usize) & (capacity - 1);
+                    let (mut key, mut object, mut distance) = (handle, template as u64, 1_u8);
+                    loop {
+                        let cell = entries + index * 24;
+                        let stored = world.at(cell)[4];
+                        if stored == 0 {
+                            world.put(cell + 4, &[distance]);
+                            world.u64(cell + 8, key);
+                            world.u64(cell + 16, object);
+                            break;
+                        }
+                        if stored < distance {
+                            let word = |world: &mut Self, at: usize| {
+                                u64::from_le_bytes(world.at(at)[..8].try_into().unwrap())
+                            };
+                            let (old_key, old_object) =
+                                (word(&mut world, cell + 8), word(&mut world, cell + 16));
+                            world.put(cell + 4, &[distance]);
+                            world.u64(cell + 8, key);
+                            world.u64(cell + 16, object);
+                            (key, object, distance) = (old_key, old_object, stored);
+                        }
+                        index += 1;
+                        distance += 1;
+                        assert!(
+                            index < capacity + overflow && usize::from(distance) <= overflow + 1
+                        );
+                    }
+                }
+                for i in 0..count {
+                    let (army, stat, member) =
+                        (armies + i * ARMY, stats + i * STAT, members + i * MEMBER);
+                    let handle = (i as u64 + 1) << 32 | 0x33;
+                    world.u64(army, (base + carmy::VTABLE_RVA) as u64);
+                    world.u64(army + cunit::HANDLE, handle);
+                    world.u64(army + cunit::STAT_BLOCK, stat as u64);
+                    world.u64(
+                        army + carmy::ORDERS_GROUP,
+                        (groups + (i % GROUPS) * 0x100) as u64,
+                    );
+                    world.u64(army + NAME_GROUP_MEMBER, member as u64);
+                    world.u64(army + carmy::STRENGTH_FACTOR, 100_000);
+                    world.u64(stat, (base + csub_unit_definition::VTABLE_RVA) as u64);
+                    world.u64(stat + ARMOUR, 5 << 20);
+                    world.u64(member, (base + name::VTABLE_RVA) as u64);
+                    // Odd multiples of 13 have no template, so a null group.
+                    if i % 26 != 13 {
+                        world.u64(
+                            member + name::TEMPLATE_REFERENCE,
+                            (((i % template_count) as u64) + 1) << 32 | 52,
+                        );
+                    }
+                    world.put(member + name::ORDER, &(i as i32 + 1).to_le_bytes());
+                    world.put(member + name::FLAG_A, &[1, u8::from(i % 13 == 0)]);
+                    world.u64(member + name::OVERRIDE_NAME + 24, 15);
+                    // Custom names: some inline, some on the heap; programmatic
+                    // copies hold generated text, which the game shows (and
+                    // the reader takes) only for a null group (1409B5640).
+                    if i % 20 == 0 || i % 13 == 0 {
+                        world.string(member + name::OVERRIDE_NAME, b"Guards", 0);
+                    } else if i % 97 == 0 {
+                        world.string(
+                            member + name::OVERRIDE_NAME,
+                            b"Guards Rifle Division of the Line",
+                            names + i * HEAP_NAME,
+                        );
+                    }
+                    world.armies.push((army, handle));
+                }
+                world
+            }
+        }
+
+        struct Counted<M> {
+            inner: M,
+            calls: Cell<usize>,
+            bytes: Cell<usize>,
+        }
+        impl<M: Memory> Memory for Counted<M> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.calls.set(self.calls.get() + 1);
+                self.bytes.set(self.bytes.get() + destination.len());
+                self.inner.copy(address, destination)
+            }
+            fn copy_scattered<const N: usize>(
+                &self,
+                addresses: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                self.calls.set(self.calls.get() + 1);
+                self.bytes
+                    .set(self.bytes.get() + destinations.iter().map(|d| d.len()).sum::<usize>());
+                self.inner.copy_scattered(addresses, destinations)
+            }
+            fn copy_scattered_prefetched<const N: usize>(
+                &self,
+                addresses: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                self.copy_scattered(addresses, destinations)
+            }
+        }
+
+        /// Naming operands with their text, as the replay row projects them.
+        #[derive(Debug, PartialEq, Eq)]
+        struct Plain {
+            kind: i32,
+            order: i32,
+            ordered: u8,
+            programmatic: u8,
+            custom: crate::msvc_string::Text<256>,
+            group: crate::msvc_string::Text<256>,
+        }
+
+        /// The pre-batching naming reader: one guarded read per field, the
+        /// full registry walk and the group identity on every division; like
+        /// the original, only the key text is reused within a pass.
+        fn reference_naming(
+            memory: &impl Memory,
+            base: usize,
+            member: usize,
+            keys: &mut std::collections::BTreeMap<usize, crate::msvc_string::Text<256>>,
+        ) -> Result<Plain, &'static str> {
+            let order = name::order(memory, base, member)?;
+            let kind = read::<i32>(memory, member + name::TYPE).ok_or("type")?;
+            let [ordered, programmatic] =
+                read::<[u8; 2]>(memory, member + name::FLAG_A).ok_or("flags")?;
+            let mut row = Plain {
+                kind,
+                order,
+                ordered,
+                programmatic,
+                custom: Default::default(),
+                group: Default::default(),
+            };
+            if programmatic == 0 {
+                let (source, len, _, _) = name::custom(memory, base, member)?;
+                row.custom.len = len;
+                name::copy_custom(memory, source, len, &mut row.custom.bytes, 0)?;
+            }
+            if kind == 0 && row.custom.len == 0 {
+                let template =
+                    read::<u64>(memory, member + name::TEMPLATE_REFERENCE).ok_or("template")?;
+                let mut null = true;
+                if template != 0
+                    && let Some(object) = registry::resolve(memory, base, template)?
+                {
+                    assert_eq!(
+                        crate::creferenced_division_template::identity(memory, base, object)?,
+                        template
+                    );
+                    let group = read::<u64>(memory, object + name::TEMPLATE_NAME_GROUP)
+                        .ok_or("group")? as usize;
+                    if group != 0 {
+                        null = false;
+                        assert_eq!(
+                            read::<u64>(memory, group),
+                            Some((base + name::GROUP_VTABLE_RVA) as u64)
+                        );
+                        row.group = match keys.get(&group) {
+                            Some(key) => *key,
+                            None => {
+                                let key =
+                                    crate::msvc_string::read_text(memory, group + name::GROUP_KEY)
+                                        .ok_or("key")?;
+                                *keys.entry(group).or_insert(key)
+                            }
+                        };
+                    }
+                }
+                // 1409B5640 shows a programmatic stored name for a null group.
+                if null && programmatic != 0 {
+                    let (source, len, _, _) = name::custom(memory, base, member)?;
+                    row.custom.len = len;
+                    name::copy_custom(memory, source, len, &mut row.custom.bytes, 0)?;
+                }
+            }
+            Ok(row)
+        }
+
+        /// One pass's naming context, as the collector owns it.
+        struct Pass {
+            groups: name::GroupKeys,
+            bytes: Vec<u8>,
+            sources: crate::combat_sources::Sources,
+        }
+        impl Pass {
+            fn new(world: &World) -> Self {
+                Self::with(world, world.armies.len(), 1024)
+            }
+            fn with(world: &World, templates: usize, groups: usize) -> Self {
+                Self {
+                    groups: name::GroupKeys::with_capacity(templates, groups),
+                    bytes: vec![0; world.armies.len() * 64 + 4096],
+                    sources: crate::combat_sources::Sources::new(),
+                }
+            }
+            fn plain(&self, row: name::Inputs) -> Plain {
+                let text = |(start, len): (usize, usize)| {
+                    let mut text = crate::msvc_string::Text::<256>::default();
+                    text.bytes[..len].copy_from_slice(&self.bytes[start..start + len]);
+                    text.len = len;
+                    text
+                };
+                Plain {
+                    kind: row.kind,
+                    order: row.order,
+                    ordered: row.ordered,
+                    programmatic: row.programmatic,
+                    custom: text(row.custom),
+                    group: text(row.group),
+                }
+            }
+        }
+
+        /// Every division of one pass, committing each player's name as the
+        /// collector does on admission. Returns the named divisions.
+        fn pass(memory: &impl Memory, world: &World, context: &mut Pass) -> usize {
+            context.groups.reset();
+            let mut names = name::Names {
+                bytes: &mut context.bytes,
+                len: 0,
+                required: 0,
+            };
+            let mut named = 0;
+            for &(army, handle) in &world.armies {
+                let row = capture_stats(
+                    memory,
+                    world.base(),
+                    &mut context.sources,
+                    army,
+                    handle,
+                    &mut context.groups,
+                    &mut names,
+                )
+                .unwrap();
+                let naming = row.naming.unwrap();
+                names.len += naming.custom.1;
+                named += usize::from(naming.group.1 != 0 || naming.custom.1 != 0);
+            }
+            named
+        }
+
+        /// Every division's naming text, read with `context` over two passes
+        /// so the second runs on stale, generation-stamped memo entries.
+        fn read_all(live: &impl Memory, world: &World, context: &mut Pass) -> Vec<Plain> {
+            let mut rows = Vec::new();
+            for _ in 0..2 {
+                context.groups.reset();
+                rows.clear();
+                let mut names = name::Names {
+                    bytes: &mut context.bytes,
+                    len: 0,
+                    required: 0,
+                };
+                let mut spans = Vec::new();
+                for &(army, handle) in &world.armies {
+                    let row = capture_stats(
+                        live,
+                        world.base(),
+                        &mut context.sources,
+                        army,
+                        handle,
+                        &mut context.groups,
+                        &mut names,
+                    )
+                    .unwrap()
+                    .naming
+                    .unwrap();
+                    names.len += row.custom.1;
+                    spans.push(row);
+                }
+                rows.extend(spans.into_iter().map(|row| context.plain(row)));
+            }
+            rows
+        }
+
+        #[test]
+        fn batched_naming_matches_the_per_field_reader_over_guarded_memory() {
+            for templates in [64, 500] {
+                let world = World::new(2_000, templates);
+                // SAFETY: the synthetic graph is immutable, owned storage.
+                let live = unsafe { crate::memory::LiveMemory::new() };
+                let mut keys = Default::default();
+                let expected: Vec<_> = world
+                    .armies
+                    .iter()
+                    .map(|&(army, _)| {
+                        let member = read::<u64>(&live, army + NAME_GROUP_MEMBER).unwrap() as usize;
+                        reference_naming(&live, world.base(), member, &mut keys).unwrap()
+                    })
+                    .collect();
+                // An unbounded memo, the collector's default sizing and a
+                // memo of one slot per table, which is full after the first
+                // template: all three name every division alike.
+                for (templates, groups) in [(world.armies.len(), 1024), (1 << 16, 1 << 16), (1, 1)]
+                {
+                    let mut context = Pass::with(&world, templates, groups);
+                    assert_eq!(
+                        read_all(&live, &world, &mut context),
+                        expected,
+                        "{templates}/{groups}"
+                    );
+                }
+                let mut kinds = [0; 4];
+                for row in &expected {
+                    kinds[match (row.programmatic, row.custom.len) {
+                        (0, 0) => 0,
+                        (0, _) => 1,
+                        (_, 0) => 2,
+                        _ => 3,
+                    }] += 1;
+                }
+                // Historical, custom (inline and heap) and programmatic
+                // members, with a group and with a null one.
+                assert!(kinds.iter().all(|count| *count > 0), "{kinds:?}");
+            }
+        }
+
+        #[test]
+        fn a_key_that_does_not_fit_is_counted_once_per_pass() {
+            // Divisions 1 to 3 are historical members of the one template.
+            let world = World::new(4, 1);
+            // SAFETY: the synthetic graph is immutable, owned storage.
+            let live = unsafe { crate::memory::LiveMemory::new() };
+            let mut groups = name::GroupKeys::with_capacity(4, 4);
+            for pass in 0..2 {
+                groups.reset();
+                let mut names = name::Names {
+                    bytes: &mut [0; 2],
+                    len: 0,
+                    required: 0,
+                };
+                for &(army, _) in &world.armies[1..] {
+                    let member = read::<u64>(&live, army + NAME_GROUP_MEMBER).unwrap() as usize;
+                    assert_eq!(
+                        name::inputs(&live, world.base(), member, &mut groups, &mut names),
+                        Ok(name::Naming::DoesNotFit),
+                        "pass {pass}"
+                    );
+                }
+                // "GRP_0": five bytes, however many divisions share it.
+                assert_eq!((names.len, names.required), (0, 5), "pass {pass}");
+            }
+        }
+
+        #[test]
+        fn a_second_division_of_a_template_costs_only_the_member_copy() {
+            let world = World::new(3, 1);
+            // SAFETY: the synthetic graph is immutable, owned storage.
+            let counted = Counted {
+                inner: unsafe { crate::memory::LiveMemory::new() },
+                calls: Cell::new(0),
+                bytes: Cell::new(0),
+            };
+            let mut context = Pass::new(&world);
+            let mut names = name::Names {
+                bytes: &mut context.bytes,
+                len: 0,
+                required: 0,
+            };
+            let mut costs = Vec::new();
+            // Divisions 1 and 2 are historical members of the one template.
+            for &(army, _) in &world.armies[1..] {
+                let member = read::<u64>(&counted, army + NAME_GROUP_MEMBER).unwrap() as usize;
+                let before = counted.calls.get();
+                let row = name::inputs(
+                    &counted,
+                    world.base(),
+                    member,
+                    &mut context.groups,
+                    &mut names,
+                );
+                assert!(matches!(row, Ok(name::Naming::Row(row)) if row.group.1 != 0));
+                costs.push(counted.calls.get() - before);
+            }
+            assert!(costs[0] > 1);
+            assert_eq!(costs[1], 1);
+        }
+
+        #[test]
+        #[ignore = "timing benchmark: cargo test -p engine --release scale -- --ignored --nocapture"]
+        fn division_stats_and_naming_capture_cost_at_scale() {
+            for (count, templates) in [(5_000, 64), (5_000, 1_250), (10_000, 64), (10_000, 2_500)] {
+                let world = World::new(count, templates);
+                let members: Vec<usize> = world
+                    .armies
+                    .iter()
+                    .map(|&(army, _)| {
+                        // SAFETY: the synthetic graph is immutable, owned storage.
+                        let live = unsafe { crate::memory::LiveMemory::new() };
+                        read::<u64>(&live, army + NAME_GROUP_MEMBER).unwrap() as usize
+                    })
+                    .collect();
+                let context = std::cell::RefCell::new(Pass::new(&world));
+                // Three passes over the same graph: the whole stats/name read,
+                // the batched name read alone and the per-field name reader.
+                // Timing runs through the counting adapter, which forwards
+                // every copy to LiveMemory's guarded entries.
+                type Run<'a> = (
+                    &'a str,
+                    &'a dyn Fn(&Counted<crate::memory::LiveMemory>) -> usize,
+                );
+                let runs: [Run<'_>; 3] = [
+                    (
+                        "capture_stats (identity, one 12-span scatter, commander, name)",
+                        &|m| pass(m, &world, &mut context.borrow_mut()),
+                    ),
+                    ("batched name read", &|m| {
+                        let mut context = context.borrow_mut();
+                        let context = &mut *context;
+                        context.groups.reset();
+                        let mut names = name::Names {
+                            bytes: &mut context.bytes,
+                            len: 0,
+                            required: 0,
+                        };
+                        let mut named = 0;
+                        for &member in &members {
+                            if let Ok(name::Naming::Row(row)) = name::inputs(
+                                m,
+                                world.base(),
+                                member,
+                                &mut context.groups,
+                                &mut names,
+                            ) {
+                                names.len += row.custom.1;
+                                named += 1;
+                            }
+                        }
+                        named
+                    }),
+                    ("per-field name reader (before)", &|m| {
+                        let mut keys = Default::default();
+                        members
+                            .iter()
+                            .map(|&member| {
+                                usize::from(
+                                    reference_naming(m, world.base(), member, &mut keys).is_ok(),
+                                )
+                            })
+                            .sum()
+                    }),
+                ];
+                for (label, run) in runs {
+                    // SAFETY: the synthetic graph is immutable, owned storage.
+                    let counted = Counted {
+                        inner: unsafe { crate::memory::LiveMemory::new() },
+                        calls: Cell::new(0),
+                        bytes: Cell::new(0),
+                    };
+                    assert_eq!(run(&counted), count, "{label}");
+                    let (calls, bytes) = (counted.calls.get(), counted.bytes.get());
+                    let mut best = u128::MAX;
+                    for _ in 0..7 {
+                        let started = std::time::Instant::now();
+                        std::hint::black_box(run(&counted));
+                        best = best.min(started.elapsed().as_nanos());
+                    }
+                    println!(
+                        "{count} divisions, {templates} templates, {label}: {:.3} ms/pass best of 7, {:.0} ns/division, {:.2} guarded calls and {:.0} bytes per division",
+                        best as f64 / 1e6,
+                        best as f64 / count as f64,
+                        calls as f64 / count as f64,
+                        bytes as f64 / count as f64,
+                    );
+                }
+            }
+        }
     }
 }

@@ -16,14 +16,19 @@
 use super::{
     CountryParams, LoadContext, Product,
     idea_format::{LocalisedText, ModifierFormat},
-    politics_content::{PoliticsContent, RecordedName, politics_content},
+    politics_content::{IdeaCountry, PoliticsContent, RecordedName, politics_content},
 };
 use crate::{
     Artwork, Source,
+    catalogue::View,
     metadata::{TaggedCountry, branch_bounds, link_slot, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
 };
-use installed_content::modifiers::{Amount, Modifier};
+use installed_content::{
+    characters::BuiltTemplate,
+    coverage::Gap,
+    modifiers::{Modifier, Modifiers},
+};
 use replay::{container::Replay, frame::FrameDecoder, rows::tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -68,19 +73,19 @@ pub struct IdeaCharacter {
     pub name: String,
 }
 
-/// One authored effect line, before formatting: a modifier and its value, or
-/// its authored text when the value is scripted.
+/// One modifier as the game stores it (installed_content::modifiers), before
+/// formatting: one line per modifier, its last value.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectLine {
+    /// The modifier, as the game identifies it: its key folded (1424A7A90,
+    /// FindTokenNoCase 1424A7060); the formats are keyed the same way.
     pub key: String,
-    pub value: Option<f64>,
-    /// The value as the engine reads the authored text: fixed point with five
-    /// decimals, truncated, as a decimal string; None when not a number.
-    pub fixed5: Option<String>,
-    /// The authored text of a value this reader does not evaluate.
-    pub unsupported: Option<String>,
-    /// Applied without showing in the game's own tooltip.
+    /// The stored value in fixed point with five decimals, as a decimal
+    /// string: the CRT conversion of the authored text into a zeroed
+    /// destination (1406042A0, 1424B0480).
+    pub fixed5: String,
+    /// Named in `hidden_modifier`: applied, never listed (14054F6D0).
     pub hidden: bool,
 }
 
@@ -92,6 +97,9 @@ pub struct EffectGroup {
     /// An equipment bonus that applies at once to existing equipment.
     pub instant: bool,
     pub lines: Vec<EffectLine>,
+    /// A targeted modifier's custom tooltip keys, in the order its CModifier
+    /// lists them (14054E050); none for an equipment bonus.
+    pub tooltips: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
@@ -101,6 +109,9 @@ pub struct TraitEffects {
     /// Content defines the trait. When it does not, its effects are unknown and
     /// the lists below are empty for that reason, not because it has none.
     pub known: bool,
+    /// Why content cannot say whether it defines the trait (a file that
+    /// could stops short); None when it can.
+    pub unknown: Option<String>,
     pub name: Option<String>,
     pub lines: Vec<EffectLine>,
     pub targeted: Vec<EffectGroup>,
@@ -132,6 +143,9 @@ pub struct IdeaInfo {
     /// effects. When not (an advisor placed only by its recorded seat), they are
     /// empty because they are unknown, not because it has none.
     pub effects_known: bool,
+    /// Why content cannot say what the idea is (a file that could define it
+    /// stops short); None when it can.
+    pub unknown: Option<String>,
 }
 
 /// One slot of a category, as the category lists it.
@@ -209,6 +223,12 @@ pub struct ScannedIdeas {
     pub spans: Vec<IdeaSpan>,
     pub unobserved: Vec<HourSpan>,
     pub identity_starts: Vec<i32>,
+    /// For each identity start, the country as idea naming reads it
+    /// (140FBCF90).
+    pub(crate) identity_naming: Vec<super::NamingCountry>,
+    /// Each recorded advisor holder's template (CCharacter+0x20), by
+    /// character id, or why the recording does not give it.
+    pub(crate) templates: BTreeMap<u32, Result<BuiltTemplate, String>>,
     pub warnings: Vec<String>,
 }
 
@@ -242,6 +262,12 @@ pub fn scan(
         TableId::HiredAdvisors,
         TableId::Characters,
         TableId::LexicalTokens,
+        TableId::CountryAppearance,
+        // Whether a dynamic country is in civil war (super::civil_war).
+        TableId::CountryCivilWars,
+        TableId::CountryWars,
+        TableId::WarRelations,
+        TableId::CountryCounterInputs,
     ];
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Idea request cancelled");
     let mut result = ScannedIdeas::default();
@@ -311,6 +337,9 @@ pub fn scan(
             last = Some((identity, hour));
             if !continues {
                 result.identity_starts.push(hour);
+                result
+                    .identity_naming
+                    .push(super::NamingCountry::read(decoded, country));
             }
             let owner = |raw: u32| link_slot(links, raw) == Some(slot);
             // Each appointed advisor's idea with its recorded seat and character.
@@ -340,6 +369,21 @@ pub fn scan(
                 let name = row
                     .and_then(|row| std::str::from_utf8(&row.token).ok())
                     .unwrap_or_default();
+                // Only a build or a save load sets CCharacter+0x20, so the
+                // first template read stands.
+                if !matches!(result.templates.get(&advisor.character), Some(Ok(_))) {
+                    let template = match (characters, row) {
+                        (_, Some(row)) => super::built_template(row, lexical),
+                        (Some(_), None) => Err(format!(
+                            "character {} has no Characters row at hour {hour}",
+                            advisor.character
+                        )),
+                        (None, None) => {
+                            Err(format!("the Characters table is incomplete at hour {hour}"))
+                        }
+                    };
+                    result.templates.insert(advisor.character, template);
+                }
                 roles.insert(
                     advisor.idea.as_slice(),
                     (
@@ -418,17 +462,18 @@ pub fn scan(
 }
 
 fn line(modifier: &Modifier, hidden: bool) -> EffectLine {
-    let (value, unsupported) = match &modifier.amount {
-        Amount::Number(number) => (Some(*number), None),
-        Amount::Flag(flag) => (Some(f64::from(u8::from(*flag))), None),
-        Amount::Unsupported(text) => (None, Some(text.clone())),
-    };
     EffectLine {
-        key: modifier.key.clone(),
-        value,
-        fixed5: modifier.fixed5.map(|raw| raw.to_string()),
-        unsupported,
+        key: modifier.name.clone(),
+        fixed5: modifier.value.to_string(),
         hidden,
+    }
+}
+
+/// A lookup's answer, and the gap's text when content cannot say.
+fn known<'a, T>(found: Result<Option<&'a T>, &Gap>) -> (Option<&'a T>, Option<String>) {
+    match found {
+        Ok(found) => (found, None),
+        Err(gap) => (None, Some(gap.to_string())),
     }
 }
 
@@ -436,12 +481,15 @@ fn line(modifier: &Modifier, hidden: bool) -> EffectLine {
 pub struct Joined<'a> {
     pub ideas: &'a installed_content::ideas::IdeaContent,
     pub characters: &'a installed_content::characters::Characters,
-    pub traits: &'a BTreeMap<String, installed_content::leader_traits::LeaderTrait>,
-    pub localise: &'a dyn Fn(&str) -> Option<String>,
+    pub traits: &'a installed_content::leader_traits::LeaderTraits,
+    pub localise: &'a dyn Fn(&str, View) -> Option<String>,
 }
 
 impl<'a> Joined<'a> {
-    fn of(content: &'a PoliticsContent, localise: &'a dyn Fn(&str) -> Option<String>) -> Self {
+    fn of(
+        content: &'a PoliticsContent,
+        localise: &'a dyn Fn(&str, View) -> Option<String>,
+    ) -> Self {
         Self {
             ideas: &content.ideas,
             characters: &content.characters,
@@ -457,7 +505,8 @@ fn targeted(groups: &[installed_content::modifiers::TargetedModifier]) -> Vec<Ef
         .map(|group| EffectGroup {
             target: group.tag.clone(),
             instant: false,
-            lines: group.values.iter().map(|m| line(m, false)).collect(),
+            lines: lines(&group.modifiers),
+            tooltips: group.modifiers.tooltips(),
         })
         .collect()
 }
@@ -469,41 +518,71 @@ fn equipment(bonuses: &[installed_content::modifiers::EquipmentBonus]) -> Vec<Ef
             target: Some(bonus.equipment.clone()),
             instant: bonus.instant,
             lines: bonus.values.iter().map(|m| line(m, false)).collect(),
+            tooltips: Vec::new(),
         })
         .collect()
 }
 
-fn lines(modifiers: &installed_content::modifiers::Modifiers) -> Vec<EffectLine> {
+/// A CModifier's lines: one per stored modifier, a hidden one marked. Its
+/// `added_modifier` children are not listed (FormatDescription 14054E050
+/// reads the values and the tooltip table only).
+fn lines(modifiers: &Modifiers) -> Vec<EffectLine> {
     modifiers
         .values
         .iter()
-        .map(|m| line(m, false))
-        .chain(modifiers.hidden.iter().map(|m| line(m, true)))
+        .map(|m| line(m, modifiers.hidden.contains(&m.name)))
         .collect()
 }
 
 /// Joins an idea to content: category, slot and effects. The seat and character
 /// the recording gives an advisor idea are on its spans; `recorded_seat` is the
 /// latest of them, used first, so an advisor whose authored role content cannot
-/// resolve (conditional alternatives) is still placed. Otherwise the slot comes
-/// from content (the character's advisor role, or the idea's own group).
-pub fn info(content: &Joined, token: &str, recorded_seat: Option<&str>) -> IdeaInfo {
+/// resolve is still placed. Otherwise the slot comes from content (the
+/// character's advisor role, or the idea's own group). `built` is the latest
+/// holder's template, which decides a role the character's alternatives
+/// disagree on ([`installed_content::characters::Characters::held_advisor`]), or why
+/// it is not known.
+pub fn info(
+    content: &Joined,
+    token: &str,
+    recorded_seat: Option<&str>,
+    built: Result<&BuiltTemplate, &str>,
+) -> IdeaInfo {
     let tags = &content.ideas.tags;
-    let idea = content.ideas.ideas.get(token);
-    let authored_role = content.characters.advisors.get(token);
+    let mut unknown = Vec::new();
+    let (idea, gap) = known(content.ideas.idea(token));
+    unknown.extend(gap);
+    let authored_role = content
+        .characters
+        .held_advisor(token, built)
+        .inspect_err(|reason| unknown.push(reason.clone()))
+        .ok()
+        .flatten();
+    // The idea's group resolves to its category as 140A33240 finds it: by
+    // the category's name (a national spirit's) or by a slot it holds.
+    let (group_category, gap) = match idea {
+        Some(idea) => known(tags.resolve(&idea.group)),
+        None => (None, None),
+    };
+    unknown.extend(gap.clone());
+    let named = group_category
+        .zip(idea)
+        .is_some_and(|(category, idea)| category.name == idea.group);
     let slot = recorded_seat
         .map(str::to_owned)
         .or_else(|| authored_role.map(|role| role.slot.clone()))
         .or_else(|| {
-            idea.filter(|idea| tags.category(&idea.group).is_none())
+            idea.filter(|_| !named && gap.is_none())
                 .map(|idea| idea.group.clone())
         });
-    let category = match (idea, &slot) {
-        (Some(idea), _) if tags.category(&idea.group).is_some() => Some(idea.group.clone()),
-        (_, Some(slot)) => tags
-            .category_of_slot(slot)
-            .map(|category| category.name.clone()),
-        _ => None,
+    let category = match (group_category, &slot) {
+        (Some(category), None) => Some(category.name.clone()),
+        (_, Some(slot)) => {
+            let (category, gap) = known(tags.resolve(slot));
+            unknown.extend(gap);
+            category.map(|category| category.name.clone())
+        }
+        (None, None) => None,
     };
     let trait_tokens = idea
         .map(|idea| idea.traits.clone())
@@ -512,11 +591,18 @@ pub fn info(content: &Joined, token: &str, recorded_seat: Option<&str>) -> IdeaI
     let traits = trait_tokens
         .iter()
         .map(|trait_token| {
-            let found = content.traits.get(trait_token);
+            let (found, unknown) = known(content.traits.get(trait_token));
             TraitEffects {
                 token: trait_token.clone(),
                 known: found.is_some(),
-                name: (content.localise)(trait_token),
+                unknown,
+                // 140711C80 localises the selected trait's stored name,
+                // whose spelling can differ from the reference (140710200).
+                name: found.and_then(|found| (content.localise)(&found.token, View::Plain)),
+                // The trait's command fields are no lines of the trait: the
+                // per-trait formatter (140711C80 -> 1407104A0) never reads
+                // them; an advisor shows their sum with its own cost
+                // (14128BA50, 14128FDD0, 14128A780).
                 lines: found
                     .map(|found| lines(&found.modifiers))
                     .unwrap_or_default(),
@@ -527,45 +613,50 @@ pub fn info(content: &Joined, token: &str, recorded_seat: Option<&str>) -> IdeaI
                     .map(|found| equipment(&found.equipment_bonuses))
                     .unwrap_or_default(),
                 tooltips: found
-                    .map(|found| found.modifiers.tooltips.clone())
+                    .map(|found| found.modifiers.tooltips())
                     .unwrap_or_default(),
             }
         })
         .collect();
+    // An idea's effects, else its advisor role's (CAdvisorTemplate 1413CA970
+    // keeps `modifier` and `research_bonus`).
+    let modifiers = idea
+        .map(|idea| &idea.modifiers)
+        .or_else(|| authored_role.map(|role| &role.modifiers));
+    let research = idea
+        .map(|idea| &idea.research_bonuses)
+        .or_else(|| authored_role.map(|role| &role.research_bonuses));
+    let effects_known = idea.is_some() || authored_role.is_some();
     IdeaInfo {
         token: token.to_owned(),
         category,
         slot,
         law: idea.is_some_and(|idea| idea.law),
         designer: idea.is_some_and(|idea| idea.designer),
-        effects: idea.map(|idea| lines(&idea.modifiers)).unwrap_or_default(),
+        effects: modifiers.map(lines).unwrap_or_default(),
         targeted: idea
             .map(|idea| targeted(&idea.targeted))
             .unwrap_or_default(),
         equipment: idea
             .map(|idea| equipment(&idea.equipment_bonuses))
             .unwrap_or_default(),
-        research: idea
-            .map(|idea| {
-                idea.research_bonuses
-                    .iter()
-                    .map(|m| line(m, false))
-                    .collect()
-            })
+        research: research
+            .map(|bonuses| bonuses.iter().map(|m| line(m, false)).collect())
             .unwrap_or_default(),
         traits,
-        tooltips: idea
-            .map(|idea| idea.modifiers.tooltips.clone())
-            .unwrap_or_default(),
-        effects_known: idea.is_some() || authored_role.is_some(),
+        tooltips: modifiers.map(Modifiers::tooltips).unwrap_or_default(),
+        effects_known,
+        unknown: (!effects_known || !unknown.is_empty())
+            .then(|| unknown.join("; "))
+            .filter(|text| !text.is_empty()),
     }
 }
 
+/// Every category read, in load order. When a file that could declare one
+/// stops short the list may be incomplete: [`IdeaHistory`] warns.
 pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
-    content
-        .ideas
-        .tags
-        .categories
+    let (categories, _) = content.ideas.tags.categories();
+    categories
         .iter()
         .map(|category| {
             let mut slots: Vec<SlotInfo> = category
@@ -573,15 +664,15 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
                 .iter()
                 .map(|slot| SlotInfo {
                     token: slot.clone(),
-                    name: (content.localise)(slot),
+                    // Slot names are plain (140FBD700).
+                    name: (content.localise)(slot, View::Plain),
                     character: false,
                     seats: 1,
                     laws: content
                         .ideas
-                        .order
-                        .iter()
-                        .filter_map(|token| content.ideas.ideas.get(token))
-                        .filter(|idea| idea.law && idea.group == *slot)
+                        .laws(slot)
+                        .0
+                        .into_iter()
                         .map(|idea| idea.token.clone())
                         .collect(),
                 })
@@ -594,7 +685,8 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
                     Some(slot) => slot.seats += 1,
                     None => slots.push(SlotInfo {
                         token: seat.clone(),
-                        name: (content.localise)(seat),
+                        // Seat names are plain (141D09EF0).
+                        name: (content.localise)(seat, View::Plain),
                         character: true,
                         seats: 1,
                         laws: Vec::new(),
@@ -603,7 +695,8 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
             }
             CategoryInfo {
                 token: category.name.clone(),
-                name: (content.localise)(&category.name),
+                // Category names are plain (1406708A0).
+                name: (content.localise)(&category.name, View::Plain),
                 kind: category.kind.clone(),
                 hidden: category.hidden,
                 politics_tab: category.politics_tab,
@@ -685,10 +778,18 @@ impl Product for IdeaHistory {
             .iter()
             .map(|span| span.token.as_str())
             .collect();
-        let localise = |key: &str| content.localise(key);
+        let localise = |key: &str, view: View| content.localised(key, view);
         let joined = Joined::of(&content, &localise);
         let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned()];
         warnings.extend(content.warnings.iter().cloned());
+        // A file that could declare a category or law stops short.
+        let (_, category_gap) = content.ideas.tags.categories();
+        let (_, law_gap) = content.ideas.laws("");
+        for gap in category_gap.into_iter().chain(law_gap) {
+            warnings.push(format!(
+                "Idea categories and laws may be incomplete: {gap}."
+            ));
+        }
         warnings.extend(scanned.warnings.iter().cloned());
         let mut artwork = Vec::new();
         let mut holders = Vec::new();
@@ -702,22 +803,56 @@ impl Product for IdeaHistory {
                 ));
             }
             let latest = scanned.spans.iter().rev().find(|span| span.token == token);
-            let found = info(&joined, token, latest.and_then(|span| span.slot.as_deref()));
+            // The identity the latest span belongs to names the idea.
+            let naming = latest
+                .and_then(|span| {
+                    let index = scanned
+                        .identity_starts
+                        .partition_point(|start| *start <= span.first_hour);
+                    index
+                        .checked_sub(1)
+                        .and_then(|index| scanned.identity_naming.get(index))
+                })
+                .cloned()
+                .unwrap_or_default();
+            let country = if latest.is_some() {
+                naming.for_tag(&params.tag)
+            } else {
+                IdeaCountry {
+                    tag: &params.tag,
+                    slot: 0,
+                    look: None,
+                }
+            };
+            let built = match latest
+                .and_then(|span| span.character.as_ref())
+                .map(|holder| scanned.templates.get(&holder.id))
+            {
+                Some(Some(Ok(template))) => Ok(template),
+                Some(Some(Err(reason))) => Err(reason.as_str()),
+                Some(None) | None => Err("no recorded holder names its template"),
+            };
+            let found = info(
+                &joined,
+                token,
+                latest.and_then(|span| span.slot.as_deref()),
+                built,
+            );
             if found.category.is_none() {
                 unplaced.push(token.to_owned());
             }
             // A holder's artwork: the content's for its script token, named as recorded.
             let holder_art = |script: Option<&str>, saved: &str| {
-                let (mut art, problem) = content.idea_artwork(token, script);
+                let (mut art, problem) = content.idea_artwork(token, script, country);
                 // Without a script token the content cannot say whose portrait
                 // this is; the idea's authored advisor may be someone else.
                 if script.is_none() {
                     art.icon = None;
                 }
                 // The saved name first, so a renamed character shows its current name.
-                match content.recorded_name(saved, script) {
+                match content.recorded_name(saved) {
                     RecordedName::Named(name) => art.name = Some(name),
-                    RecordedName::Unresolved => art.name = None,
+                    RecordedName::Unresolved(_) => art.name = None,
                     RecordedName::None => {}
                 }
                 (art, problem)
@@ -729,7 +864,7 @@ impl Product for IdeaHistory {
                     (!holder.token.is_empty()).then_some(holder.token.as_str()),
                     &holder.name,
                 ),
-                None => content.idea_artwork(token, None),
+                None => content.idea_artwork(token, None, country),
             };
             artwork.push(art);
             warnings.extend(problem);
@@ -780,6 +915,11 @@ impl Product for IdeaHistory {
                     .map(|line| line.key.clone()),
             );
             text_keys.extend(tooltips.iter().cloned());
+            text_keys.extend(
+                targeted
+                    .iter()
+                    .flat_map(|group| group.tooltips.iter().cloned()),
+            );
         };
         for idea in &ideas {
             effects(&idea.effects, &idea.targeted, &idea.tooltips);
@@ -809,6 +949,8 @@ impl Product for IdeaHistory {
         )?;
         warnings.extend(format_warnings);
         let texts = super::idea_format::texts(&content, &text_keys);
+        // Names left out for a localisation refusal, by reason and key.
+        warnings.extend(content.catalogue.refusal_lines());
         Ok(IdeaHistoryReply {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),

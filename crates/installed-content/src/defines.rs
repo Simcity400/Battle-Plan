@@ -221,6 +221,22 @@ impl Defines {
             .collect()
     }
 
+    /// A string-vector define's strings in `lua_next` order, as its native
+    /// loader (`14205c200`) walks the table.
+    pub fn strings(&self, section: &str, name: &str) -> io::Result<Vec<String>> {
+        let refuse = |what: &str| invalid(format!("NDefines.{section}.{name} {what}"));
+        let Value::Table(table) = self.value(section, name)? else {
+            return Err(refuse("is not a table"));
+        };
+        table
+            .pairs::<Value, Value>()
+            .map(|pair| match pair.map_err(lua_error)?.1 {
+                Value::String(text) => Ok(text.to_str().map_err(lua_error)?.to_owned()),
+                _ => Err(refuse("holds a non-string")),
+            })
+            .collect()
+    }
+
     /// A table define through the native fixed-point array loader (`142059cf0`).
     pub fn fixed5_array(&self, section: &str, name: &str) -> io::Result<Vec<i64>> {
         self.numbers(section, name)?

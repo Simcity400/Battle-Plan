@@ -1362,6 +1362,8 @@ impl Product for Research {
             }
         }
         warnings.push("Research dates are observation bounds. Elapsed durations use observed assignments across slots; initial progress and gaps can leave the full duration unknown. Base duration is derived separately from recorded cost operands. Technologies without observed slot assignments are not assigned to a column.".into());
+        // Names left out for a localisation refusal, by reason and key.
+        warnings.extend(art.refusal_lines());
         Ok(ResearchReply {
             history,
             artwork,

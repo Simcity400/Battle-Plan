@@ -71,6 +71,13 @@ pub struct Assets {
     pub tactic_pictures: BTreeMap<String, String>,
     pub convoy_weapon_bound: Option<i64>,
     pub text_colors: fonts::TextColors,
+    /// The land window's defines, or why the content lacks them.
+    pub(crate) land_defines: Result<super::defines::LandDefines, String>,
+    /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF` (1415B06C0),
+    /// fixed5, or why they are unavailable.
+    pub(crate) naval_name_defines: Result<[i64; 2], String>,
+    /// Authored division name groups, which render the recorded selection.
+    pub(crate) division_names: installed_content::division_names::Database,
     pub warnings: Vec<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -314,13 +321,16 @@ impl Assets {
         }
         // Inventory literal portrait references once per content set, never by
         // decoding every historical hour. DDS compression stays intact on upload.
+        // Each file as the characters reader reads it (the reader replay).
         let mut direct_portraits = BTreeSet::new();
         for file in layers
             .paths()
             .filter(|p| p.starts_with("common/characters/") && p.ends_with(".txt"))
         {
             portrait_paths(
-                &installed_content::parser::parse(&layers.read(file)?)?.items,
+                &installed_content::characters::read_file(&layers.read(file)?)
+                    .0
+                    .items,
                 &mut direct_portraits,
             );
         }
@@ -458,7 +468,7 @@ impl Assets {
             wanted.insert(name.clone());
         }
         let mut sprites = BTreeMap::new();
-        let mut warnings = Vec::new();
+        let (division_names, mut warnings) = installed_content::division_names::read(layers)?;
         let mut decoded = BTreeMap::new();
         let mut uncovered_portraits = false;
         // Resolve every wanted sprite's reads up front; the first textures
@@ -638,6 +648,15 @@ impl Assets {
             tactic_pictures,
             convoy_weapon_bound: super::naval_environment::convoy_weapon_bound(layers)?,
             text_colors: fonts::read_text_colors(layers)?,
+            land_defines: super::defines::LandDefines::read(defines)
+                .map_err(|error| error.to_string()),
+            naval_name_defines: ["BATTLE_NAME_VP_FACTOR", "BATTLE_NAME_VP_CUTOFF"]
+                .map(|name| defines.fixed5("NNavy", name))
+                .into_iter()
+                .collect::<io::Result<Vec<_>>>()
+                .map(|values| [values[0], values[1]])
+                .map_err(|error| error.to_string()),
+            division_names,
             warnings,
         })
     }

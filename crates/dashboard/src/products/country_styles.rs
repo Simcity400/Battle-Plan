@@ -221,7 +221,10 @@ impl HourStyles {
                 None => (None, None),
                 // Names are plain text for charts: the game's colour codes are removed.
                 Some(names) => match names.name(country.canonical_slot) {
-                    Ok(name) => (Some(plain_text(&name)), None),
+                    Ok(name) => match plain_text(&name) {
+                        Ok(name) => (Some(name), None),
+                        Err(reason) => (None, Some(format!("its name holds {reason}"))),
+                    },
                     Err(reason) => (None, Some(reason)),
                 },
             };

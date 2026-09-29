@@ -57,10 +57,6 @@ keys! {
     NAVAL_ENEMY_POSITIONING_IN_INITIAL_ATTACK = 0x5a;
     /// Register@1405aa75d (token global 0x1427bff08).
     OUT_OF_SUPPLY_FACTOR = 0x5e;
-    /// Register@1405aafa7 (token global 0x1427bff14).
-    OFFENCE = 0x5f;
-    /// Register@1405ab3cc (token global 0x1427bff18).
-    DEFENCE = 0x60;
     /// Register@14058B36B (token global 0x1427bffa8).
     AIR_DEFENCE_FACTOR = 0x70;
     /// Register@14058BBB5 (token global 0x1427bffac).

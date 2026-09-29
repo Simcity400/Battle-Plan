@@ -39,15 +39,15 @@ impl TerrainDatabase {
 
     /// The movement cost of a terrain bitmap palette index. An index no entry
     /// writes selects the null terrain, whose cost is zero.
-    pub fn cost(&self, index: u8) -> Result<i64, String> {
+    pub fn cost(&self, index: u8) -> i64 {
         match self
             .definitions
             .palette
             .get(&index)
             .and_then(|entry| entry.category)
         {
-            Some(at) => self.definitions.categories[at].movement_cost.clone(),
-            None => Ok(0),
+            Some(at) => self.definitions.categories[at].movement_cost,
+            None => 0,
         }
     }
 }
@@ -72,16 +72,16 @@ mod tests {
             "categories={later={movement_cost=3} none={}} terrain={b={type=later color={2 4 300}} c={type=none color={5}} d={color={6}}}",
         ]);
         // A type resolves against the categories read so far, first match.
-        assert_eq!(costs.cost(1), Ok(0));
-        assert_eq!(costs.cost(2), Ok(300_000));
-        assert_eq!(costs.cost(4), Ok(300_000));
-        assert_eq!(costs.cost(5), Ok(0));
-        assert_eq!(costs.cost(6), Ok(0));
-        assert_eq!(costs.cost(0), Ok(0));
-        assert_eq!(costs.cost(255), Ok(0));
+        assert_eq!(costs.cost(1), 0);
+        assert_eq!(costs.cost(2), 300_000);
+        assert_eq!(costs.cost(4), 300_000);
+        assert_eq!(costs.cost(5), 0);
+        assert_eq!(costs.cost(6), 0);
+        assert_eq!(costs.cost(0), 0);
+        assert_eq!(costs.cost(255), 0);
         assert_eq!(
             database(&["categories={x={movement_cost=1} X={movement_cost=9}} terrain={a={type=X color={0}}}"]).cost(0),
-            Ok(100_000)
+            100_000
         );
         // Ordinals are one-based across files; a repeated name keeps its own.
         assert_eq!(costs.ordinal(b"first"), 1);
@@ -89,7 +89,9 @@ mod tests {
         assert_eq!(costs.ordinal(b"missing"), 0);
         let invalid =
             database(&["categories={bad={movement_cost=bad}} terrain={a={type=bad color={0}}}"]);
-        assert!(invalid.cost(0).is_err());
+        // A cost that does not convert keeps the constructor's zero, which
+        // the category then clamps to 0.01 (14142D0A0).
+        assert_eq!(invalid.cost(0), 1_000);
     }
 
     #[test]

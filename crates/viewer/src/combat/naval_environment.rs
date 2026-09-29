@@ -619,24 +619,23 @@ fn weather_icons(out: &mut Bindings, document: &Document, weather: &WeatherRegio
         if active == 0 {
             continue;
         }
-        let Some(token) = document.names.localisation.get(key) else {
-            continue;
-        };
-        // 141D8A180 resolves localisation to "sprite:one-based-frame".
-        let (sprite, frame) = token.split_once(':').map_or((token, 0), |(s, f)| {
-            (s, f.parse::<u32>().unwrap_or(1).saturating_sub(1))
-        });
-        if document.icons.combat.has_sprite(sprite) {
-            let mut values = Values::new();
-            values.insert(
-                "icon".into(),
-                Widget {
-                    sprite: Some(sprite.into()),
-                    frame: Some(frame),
-                    ..Widget::default()
-                },
-            );
-            entries.push(values);
+        match weather_icon(&document.names.localisation, key, |sprite| {
+            document.icons.combat.has_sprite(sprite)
+        }) {
+            Ok(None) => (),
+            Ok(Some((sprite, frame))) => {
+                let mut values = Values::new();
+                values.insert(
+                    "icon".into(),
+                    Widget {
+                        sprite: Some(sprite),
+                        frame: Some(frame),
+                        ..Widget::default()
+                    },
+                );
+                entries.push(values);
+            }
+            Err(reason) => out.refuse(format!("Naval weather icon {key} is hidden: {reason}.")),
         }
     }
     out.values.insert(
@@ -648,10 +647,61 @@ fn weather_icons(out: &mut Bindings, document: &Document, weather: &WeatherRegio
         },
     );
 }
+/// 141D8A180 for one weather key: localised through 142230F20 (a key the
+/// content lacks is its own bytes), no icon for an empty result, otherwise
+/// "sprite:one-based-frame". The error names why the icon is refused.
+fn weather_icon(
+    localisation: &installed_content::localisation::Localisation,
+    key: &str,
+    has_sprite: impl Fn(&str) -> bool,
+) -> Result<Option<(String, u32)>, String> {
+    let token = localisation
+        .localise(key.as_bytes())
+        .map_err(|refusal| refusal.to_string())?;
+    if token.is_empty() {
+        return Ok(None);
+    }
+    let (sprite, frame) = token.split_once(':').map_or((&*token, 0), |(s, f)| {
+        (s, f.parse::<u32>().unwrap_or(1).saturating_sub(1))
+    });
+    if !has_sprite(sprite) {
+        return Err(format!("its sprite {sprite} is missing from the content"));
+    }
+    Ok(Some((sprite.to_owned(), frame)))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A weather key goes through the game's localiser (141D8A180 ->
+    /// 142230F20): a key the content lacks is its own bytes, so its sprite
+    /// is looked up by that name and refused by name when missing.
+    #[test]
+    fn a_weather_icon_is_localised_and_a_missing_key_is_its_bytes() {
+        let localisation = crate::map::labels::tests::loaded(concat!(
+            "l_english:\n",
+            " snow_icon:0 \"GFX_weather:3\"\n",
+            " rain_light_icon:0 \"\"\n",
+        ));
+        let sprites = |sprite: &str| ["GFX_weather", "blizzard_icon"].contains(&sprite);
+        assert_eq!(
+            weather_icon(&localisation, "snow_icon", sprites),
+            Ok(Some(("GFX_weather".to_owned(), 2)))
+        );
+        assert_eq!(
+            weather_icon(&localisation, "rain_light_icon", sprites),
+            Ok(None)
+        );
+        assert_eq!(
+            weather_icon(&localisation, "blizzard_icon", sprites),
+            Ok(Some(("blizzard_icon".to_owned(), 0)))
+        );
+        assert_eq!(
+            weather_icon(&localisation, "arctic_water_icon", sprites),
+            Err("its sprite arctic_water_icon is missing from the content".to_owned())
+        );
+    }
     #[test]
     fn weather_picture_uses_ui_precedence_and_terrain_fallback() {
         let mut w = WeatherRegionRow {

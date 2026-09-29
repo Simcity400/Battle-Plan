@@ -11,6 +11,7 @@
 
 use super::politics_content::PoliticsContent;
 use crate::{catalogue, metadata::validate_campaign};
+use installed_content::localisation::{Argument, Localisation};
 use replay::{
     container::Replay,
     frame::{FrameDecoder, SharedView, TableView},
@@ -61,9 +62,10 @@ pub struct LocalisedText {
     pub text: Option<String>,
 }
 
-/// The recorded definitions by script name, from the branch's last hour that
-/// holds both the definitions and the lexer names complete. Blocks are read
-/// from the last back, decoding only those two tables.
+/// The recorded definitions by the modifier each names (its script name
+/// folded, as the lexer looks a key up, 1424A7A90), from the branch's last
+/// hour that holds both the definitions and the lexer names complete. Blocks
+/// are read from the last back, decoding only those two tables.
 fn recorded(
     replay: &Replay,
     branch: u64,
@@ -127,7 +129,7 @@ fn recorded(
             let at = lexical.binary_search_by_key(&token, |row| row.token).ok()?;
             std::str::from_utf8(&lexical[at].literal)
                 .ok()
-                .map(str::to_owned)
+                .map(str::to_ascii_lowercase)
         };
         return Ok(Some(
             rows.iter()
@@ -138,83 +140,34 @@ fn recorded(
     Ok(None)
 }
 
-/// `name_key` localised with its `$ARG$` (GetLocalizedName@1405505D0).
-fn localised_name(content: &PoliticsContent, key: &str, argument: &str) -> Option<String> {
-    let localisation = &content.catalogue.localisation;
-    let mut text = localisation.get(key)?.to_owned();
-    // `$ARG$` may sit inside a referenced text, and a reference may carry a format
-    // (`$KEY|Y$`): references are expanded and the argument filled in, level by
-    // level, as far as `resolve_text` would go, and no longer than it allows.
-    for _ in 0..8 {
-        let filled = if argument.is_empty() {
-            text.clone()
-        } else {
-            substitute(&text, "ARG", argument)
-        };
-        let expanded = expand_once(&filled, localisation)?;
-        if expanded == text {
-            break;
-        }
-        text = expanded;
-    }
-    catalogue::resolve_text(&text, localisation).text()
+/// `key` as `modifier_definition::GetLocalizedName` (1405505D0) localises
+/// it: through the game's localiser with its stored argument as the string
+/// `ARG` (type 1) when it has one, else with none. A key the content lacks is
+/// its own bytes (142230940); the error names why the text cannot be shown.
+fn localised_name(
+    localisation: &Localisation,
+    key: &str,
+    argument: &str,
+) -> Result<String, String> {
+    let arguments = [("ARG", Argument::Text(argument))];
+    let arguments: &[_] = if argument.is_empty() { &[] } else { &arguments };
+    // Idea effects are listed by FormatScopedModifierDescription (14054E520
+    // -> 1410CF560), which expands them.
+    catalogue::localised_with(localisation, key, arguments, catalogue::View::Scripted)
 }
 
-/// Longest text a label may expand to, as `catalogue::resolve_text` allows.
-const MAX_LABEL: usize = 8192;
-
-/// Replaces each `$KEY$` (or `$KEY|format$`) the localisation defines with its
-/// text; None once the result would pass [`MAX_LABEL`].
-fn expand_once(text: &str, localisation: &installed_content::localisation::Localisation) -> Option<String> {
-    let mut result = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find('$') {
-        let Some(length) = rest[start + 1..].find('$') else {
-            break;
-        };
-        let inner = &rest[start + 1..start + 1 + length];
-        result.push_str(&rest[..start]);
-        match inner
-            .split('|')
-            .next()
-            .and_then(|name| localisation.get(name))
-        {
-            Some(value) => result.push_str(value),
-            None => result.push_str(&rest[start..start + length + 2]),
-        }
-        if result.len() > MAX_LABEL {
-            return None;
-        }
-        rest = &rest[start + length + 2..];
-    }
-    result.push_str(rest);
-    (result.len() <= MAX_LABEL).then_some(result)
+/// [`localised_name`], a refusal noted in the catalogue by key.
+fn label(content: &PoliticsContent, key: &str, argument: &str) -> Option<String> {
+    localised_name(&content.catalogue.localisation, key, argument)
+        .inspect_err(|reason| content.catalogue.refuse(reason, key))
+        .ok()
 }
 
-/// Replaces `$NAME$` and `$NAME|format$` with `value`.
-fn substitute(text: &str, name: &str, value: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find('$') {
-        let Some(length) = rest[start + 1..].find('$') else {
-            break;
-        };
-        let inner = &rest[start + 1..start + 1 + length];
-        result.push_str(&rest[..start]);
-        if inner.split('|').next() == Some(name) {
-            result.push_str(value);
-        } else {
-            result.push_str(&rest[start..start + length + 2]);
-        }
-        rest = &rest[start + length + 2..];
-    }
-    result.push_str(rest);
-    result
-}
-
-/// The formats of `keys`: recorded first, else scripted in content. Also says
-/// whether a recorded argument (text the game localised in its own language
-/// when it loaded) was used.
+/// The formats of `keys`, each a modifier as the game identifies it (its
+/// name folded, installed_content::modifiers::Modifier::name): recorded first, else
+/// scripted in content, whose definition the lexer finds whatever its case.
+/// Also says whether a recorded argument (text the game localised in its own
+/// language when it loaded) was used.
 pub fn modifier_formats(
     replay: &Replay,
     branch: u64,
@@ -244,9 +197,9 @@ pub fn modifier_formats(
             formats.push(ModifierFormat {
                 key: key.clone(),
                 index: Some(row.index),
-                label: localised_name(content, &String::from_utf8_lossy(&row.name_key), &argument),
+                label: label(content, &String::from_utf8_lossy(&row.name_key), &argument),
                 postfix: (!postfix.is_empty())
-                    .then(|| content.localise(&postfix))
+                    .then(|| content.localised(&postfix, catalogue::View::Scripted))
                     .flatten(),
                 postfix_key: (!postfix.is_empty()).then(|| postfix.into_owned()),
                 flags: row.flags,
@@ -256,35 +209,23 @@ pub fn modifier_formats(
             });
             continue;
         }
-        // LoadScriptModifierDefinitions@1406025E0 and its reader's defaults.
+        // LoadScriptModifierDefinitions@1406025E0 as it stored the
+        // definition first registered under the key's name
+        // (FindOrRegisterDynamicModifierDefinition 1405FF750), which a key
+        // finds folded (1424A7A90, 1424A5EE0).
         if let Some(definition) = content.modifier_definitions.get(key) {
-            let colour = match definition.color_type.as_deref() {
-                Some("good") => 0x2,
-                Some("neutral") => 0x4,
-                _ => 0,
-            };
-            let value = match definition.value_type.as_deref() {
-                Some("percentage") => 0x1,
-                Some("percentage_in_hundred") => 0x80,
-                Some("yes_no") => 0x20,
-                _ => 0,
-            };
-            let postfix = match definition.postfix.as_deref() {
-                Some("days") => Some("MOD_DAYS"),
-                Some("hours") => Some("MOD_HOUR"),
-                Some("daily") => Some("MOD_DAILY"),
-                _ => None,
-            };
+            let postfix = definition.postfix_key();
             formats.push(ModifierFormat {
                 key: key.clone(),
                 index: None,
-                label: localised_name(content, key, ""),
-                postfix: postfix.and_then(|key| content.localise(key)),
+                // Its name is its localisation key, as first registered.
+                label: label(content, &definition.token, ""),
+                postfix: postfix.and_then(|key| content.localised(key, catalogue::View::Scripted)),
                 postfix_key: postfix.map(str::to_owned),
-                flags: colour | value,
+                flags: definition.flags,
                 // Scripted definitions register with no feature (FindOrRegisterDynamicModifierDefinition).
                 feature: 0,
-                precision: definition.precision.unwrap_or(2),
+                precision: definition.precision,
                 source: "content".into(),
             });
         }
@@ -303,68 +244,51 @@ pub fn texts(content: &PoliticsContent, keys: &BTreeSet<String>) -> Vec<Localise
     keys.iter()
         .map(|key| LocalisedText {
             key: key.clone(),
-            text: content.localise(key),
+            // The idea tooltip's lines (140FBC770 -> 14054E520 -> 1410CF560).
+            text: content.localised(key, catalogue::View::Scripted),
         })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::substitute;
+    use super::localised_name;
 
+    /// The game's localiser fills `ARG` at every nested level (142230940), a
+    /// `$KEY|format$` that is no argument looks up the whole operand, which no
+    /// key is, and writes nothing, and a key the content lacks is its own
+    /// bytes.
     #[test]
-    fn an_argument_fills_a_placeholder_inside_a_referenced_text() {
-        let localisation: installed_content::localisation::Localisation = [
-            ("NAME".to_owned(), "$SHARED_LABEL$".to_owned()),
-            ("SHARED_LABEL".to_owned(), "$ARG$ speed".to_owned()),
-        ]
-        .into_iter()
-        .collect();
-        let mut text = localisation.get("NAME").unwrap().to_owned();
-        for _ in 0..8 {
-            let expanded =
-                super::expand_once(&substitute(&text, "ARG", "Aircraft"), &localisation).unwrap();
-            if expanded == text {
-                break;
-            }
-            text = expanded;
-        }
-        assert_eq!(text, "Aircraft speed");
-    }
-
-    #[test]
-    fn expansion_is_bounded_and_formatted_references_expand() {
-        let localisation: installed_content::localisation::Localisation = [
-            ("L".to_owned(), "$L$".repeat(20)),
-            ("LABEL".to_owned(), "Speed".to_owned()),
-        ]
-        .into_iter()
-        .collect();
-        let mut text = "$L$".to_owned();
-        let mut refused = false;
-        for _ in 0..8 {
-            match super::expand_once(&text, &localisation) {
-                Some(expanded) => text = expanded,
-                None => {
-                    refused = true;
-                    break;
-                }
-            }
-        }
-        assert!(refused && text.len() <= super::MAX_LABEL);
+    fn a_modifier_label_is_localised_with_its_argument() {
+        let localisation = crate::catalogue::tests::loaded(concat!(
+            "l_english:\n",
+            " NAME:0 \"$SHARED_LABEL$\"\n",
+            " SHARED_LABEL:0 \"$ARG$ speed\"\n",
+            " FORMATTED:0 \"x$LABEL|Y$y\"\n",
+            " LABEL:0 \"Speed\"\n",
+            " GAP:0 \"a¤b\"\n",
+        ));
         assert_eq!(
-            super::expand_once("$LABEL|Y$", &localisation).as_deref(),
-            Some("Speed")
+            localised_name(&localisation, "NAME", "Luftstreitkräfte"),
+            Ok("Luftstreitkräfte speed".into())
         );
-    }
-
-    #[test]
-    fn an_argument_fills_its_placeholder_with_or_without_a_format() {
-        assert_eq!(substitute("$ARG$ speed", "ARG", "Army"), "Army speed");
         assert_eq!(
-            substitute("x $ARG|Y$ y $OTHER$", "ARG", "A"),
-            "x A y $OTHER$"
+            localised_name(&localisation, "NAME", ""),
+            Ok(" speed".into())
         );
-        assert_eq!(substitute("no end $ARG", "ARG", "A"), "no end $ARG");
+        assert_eq!(
+            localised_name(&localisation, "FORMATTED", ""),
+            Ok("xy".into())
+        );
+        assert_eq!(
+            localised_name(&localisation, "GAP", ""),
+            Err(
+                "localisation GAP holds the control byte 0x14 (an authored `¤`), which plain text cannot show".into()
+            )
+        );
+        assert_eq!(
+            localised_name(&localisation, "ABSENT", "x").as_deref(),
+            Ok("ABSENT")
+        );
     }
 }

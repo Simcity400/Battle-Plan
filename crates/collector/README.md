@@ -36,7 +36,7 @@ A failed or short read is not an empty table, a zero value or a complete row. Ne
 
 ## Scheduling, buffers and failures
 
-Keep typed walks in pool jobs. Document necessary game-thread exceptions beside the code; for example, the state-flags walk depends on the States rows. Dispatch according to dependencies, not merely available workers:
+Keep typed walks in pool jobs. Document necessary game-thread exceptions beside the code; for example, the state-flags walk depends on the States rows. The States job also copies each state's two display-name strings (CState+0x38 and +0xE8, `cstate::read_names`) into the frame's own name arena at their native lengths; a row that does not fit truncates the table for that hour and the spool thread grows the arena, as it does for faction names. Dispatch according to dependencies, not merely available workers:
 
 | Dependency | Dispatch rule |
 |---|---|

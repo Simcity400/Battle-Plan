@@ -506,6 +506,8 @@ impl Product for NationalFocus {
                 "Focus progress is too large to keep in full; it is unavailable from hour {hour}."
             ));
         }
+        // Names left out for a localisation refusal, by reason and key.
+        warnings.extend(art.refusal_lines());
         Ok(FocusReply {
             history,
             artwork,

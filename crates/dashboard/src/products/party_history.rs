@@ -30,6 +30,7 @@ use super::{
 };
 use crate::{
     Source,
+    catalogue::View,
     metadata::{link_slot, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
 };
@@ -110,21 +111,26 @@ pub struct PartyNaming {
     pub key: Option<String>,
 }
 
-/// The game's name for a party, through `defines` (the existence check) and
-/// `localise`. None when it cannot be known: the tag or original tag is not
-/// recorded, or the text needs runtime scope.
+/// The game's name for a party (`CPoliticalParty::GetLocalizedName`
+/// 14118F860), through `defines` (the existence check) and `localise`, the
+/// game's localiser, which copies a key localisation lacks as its raw bytes
+/// (142230940; only the loader's stored controls, 14238C1A0, are colour, so a
+/// raw `§` shows). None when it cannot be known: the tag or original tag is
+/// not recorded, or `localise` refused the text (it notes why).
 pub fn party_name(
     naming: &PartyNaming,
     defines: impl Fn(&str) -> bool,
     localise: impl Fn(&str) -> Option<String>,
 ) -> Option<String> {
+    localise(&party_key(naming, defines)?)
+}
+
+/// The key [`party_name`] localises: the stored key, else
+/// `<TAG>_<group>_party`, `<ORIGTAG>_<group>_party`, then the group token
+/// (14118EAD0). None when the tag or original tag is not recorded.
+pub fn party_key(naming: &PartyNaming, defines: impl Fn(&str) -> bool) -> Option<String> {
     if let Some(key) = &naming.key {
-        // The game shows a key localisation lacks as itself (its colour codes as colour).
-        return if defines(key) {
-            localise(key)
-        } else {
-            Some(crate::catalogue::plain_text(key))
-        };
+        return Some(key.clone());
     }
     let own = format!("{}_{}_party", naming.tag.as_deref()?, naming.token);
     let key = if defines(&own) {
@@ -135,13 +141,11 @@ pub fn party_name(
             original => format!("{original}_{}_party", naming.token),
         }
     };
-    if defines(&key) {
-        localise(&key)
-    } else if defines(&naming.token) {
-        localise(&naming.token)
+    Some(if defines(&key) {
+        key
     } else {
-        Some(crate::catalogue::plain_text(&naming.token))
-    }
+        naming.token.clone()
+    })
 }
 
 /// An ideology group as content names and colours it.
@@ -150,8 +154,17 @@ pub fn party_name(
 pub struct IdeologyInfo {
     pub token: String,
     pub name: Option<String>,
-    /// sRGB bytes; null when content gives no usable colour.
+    /// sRGB bytes ([`chart_color`]); null when the content's colour is
+    /// refused (the warnings name why).
     pub color: Option<[u8; 3]>,
+}
+
+/// The chart's bytes of an ideology group's CColor (red, green, blue,
+/// alpha, as installed_content::ideologies reads it): the widget draws its own
+/// chart, so each channel is the stored float clamped to 0..1 and scaled to
+/// a byte, rounded; the alpha is not drawn.
+fn chart_color(color: [f32; 4]) -> [u8; 3] {
+    [color[0], color[1], color[2]].map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
 /// A sub-ideology a recorded leader holds, as content names it.
@@ -634,14 +647,17 @@ impl Product for PartyHistory {
             }
         };
         let ideologies = politics.as_ref().map_or_else(Vec::new, |politics| {
-            politics
-                .ideologies
-                .groups
+            let (groups, gap) = politics.ideologies.groups();
+            if let Some(gap) = gap {
+                warnings.push(format!("Ideologies may be missing or out of date: {gap}."));
+            }
+            groups
                 .iter()
                 .map(|group| IdeologyInfo {
                     token: group.token.clone(),
-                    name: politics.localise(&group.token),
-                    color: group.color,
+                    // Ideology names are plain (140616BC0).
+                    name: politics.localised(&group.token, View::Plain),
+                    color: group.color.as_ref().ok().map(|color| chart_color(*color)),
                 })
                 .collect()
         });
@@ -657,7 +673,7 @@ impl Product for PartyHistory {
                 token: token.to_owned(),
                 name: politics
                     .as_ref()
-                    .and_then(|politics| politics.localise(token)),
+                    .and_then(|politics| politics.localised(token, View::Plain)),
             })
             .collect();
         let mut people = Vec::with_capacity(scanned.people.len());
@@ -707,7 +723,8 @@ impl Product for PartyHistory {
                     party_name(
                         naming,
                         |key| politics.defines(key),
-                        |key| politics.localise(key),
+                        // Party names are plain (14118F860).
+                        |key| politics.localised(key, View::Plain),
                     )
                 })
             })
@@ -720,6 +737,10 @@ impl Product for PartyHistory {
                 "{}: no recorded parties in this branch",
                 params.tag
             ));
+        }
+        // Names left out for a localisation refusal, by reason and key.
+        if let Some(politics) = &politics {
+            warnings.extend(politics.catalogue.refusal_lines());
         }
         Ok(PartyHistoryReply {
             branch_id: params.branch_id.clone(),
@@ -746,25 +767,24 @@ mod tests {
 
     #[test]
     fn a_party_is_named_as_the_game_names_it() {
-        let text = [
-            ("GER_fascism_party", "NSDAP"),
-            (
-                "GER_fascism_party_long",
-                "Nationalsozialistische Deutsche Arbeiterpartei",
-            ),
-            ("SOV_x_party", "VKP(b)"),
-            ("fascism", "Fascism"),
-            ("scoped_party", ""),
-        ];
+        let loc = crate::catalogue::tests::loaded(concat!(
+            "l_english:\n",
+            " GER_fascism_party:0 \"NSDAP\"\n",
+            " GER_fascism_party_long:0 \"Nationalsozialistische Deutsche Arbeiterpartei\"\n",
+            " SOV_x_party:0 \"VKP(b)\"\n",
+            " fascism:0 \"Fascism\"\n",
+            " scoped_party:0 \"[ROOT.GetAdjective] Party\"\n",
+            " gap_party:0 \"Front¤Populaire\"\n",
+        ));
+        let refused = std::cell::RefCell::new(crate::catalogue::Refusals::default());
         let name = |naming: &PartyNaming| {
             party_name(
                 naming,
-                |key| text.iter().any(|(k, _)| *k == key),
+                |key| loc.get(key).is_some(),
                 |key| {
-                    text.iter()
-                        .find(|(k, _)| *k == key)
-                        .map(|(_, v)| v.to_string())
-                        .filter(|v| !v.is_empty())
+                    crate::catalogue::localised(&loc, key, crate::catalogue::View::Plain)
+                        .inspect_err(|reason| refused.borrow_mut().note(reason.clone(), key))
+                        .ok()
                 },
             )
         };
@@ -807,14 +827,28 @@ mod tests {
             name(&naming("x", Some("GER"), None, Some("MOD_key"))).as_deref(),
             Some("MOD_key")
         );
-        // A literal name loses its colour codes, as a localised one does.
+        // A literal name is its raw bytes: an authored `§` is not a stored colour control.
         assert_eq!(
             name(&naming("x", Some("GER"), None, Some("§YCustom Party§!"))).as_deref(),
-            Some("Custom Party")
+            Some("§YCustom Party§!")
+        );
+        assert!(refused.borrow().lines("x").is_empty());
+        // Party names reach their text boxes plain (14118F860): brackets
+        // are glyphs.
+        assert_eq!(
+            name(&naming("x", Some("GER"), None, Some("scoped_party"))).as_deref(),
+            Some("[ROOT.GetAdjective] Party")
+        );
+        // A refused name is not shown, and why is noted by key.
+        assert_eq!(
+            name(&naming("x", Some("GER"), None, Some("gap_party"))),
+            None
         );
         assert_eq!(
-            name(&naming("x", Some("GER"), None, Some("scoped_party"))),
-            None
+            refused.borrow().lines("party names are"),
+            [
+                "1 party names are not shown: localisation gap_party holds the control byte 0x14 (an authored `¤`), which plain text cannot show; gap_party",
+            ]
         );
     }
     use replay::rows::{CharacterPortrait, CharacterPortraitRow};

@@ -100,7 +100,7 @@ impl Context<'_, '_> {
             .iter()
             .find(|row| row.id == state)
             .ok_or("target state is absent")?;
-        if row.primary_name_length != 0 || row.secondary_name_length != 0 {
+        if !row.custom_name.is_empty() || !row.owner_name.is_empty() {
             return Err(format!(
                 "state {state} has a runtime localised name without a retained localisation key (1409CC380, 140310B50)"
             ));
@@ -110,7 +110,9 @@ impl Context<'_, '_> {
             .tooltip
             .state_names
             .get(&state)
-            .ok_or("state has no content name")?;
+            .ok_or("state has no content name")?
+            .as_ref()
+            .map_err(|reason| format!("state {state}'s name key: {reason}"))?;
         localise(self.loc, key, &[])
     }
     fn victory_point(&self, province: u32) -> Result<Option<String>> {
@@ -811,7 +813,10 @@ mod tests {
             .unwrap_or(1500);
         let mut assets = assets();
         let mut frame = frame();
-        assets.tooltip.state_names.insert(10, "state_name".into());
+        assets
+            .tooltip
+            .state_names
+            .insert(10, Ok("state_name".into()));
         put::<tables::Countries>(
             &mut frame,
             (0..countries)

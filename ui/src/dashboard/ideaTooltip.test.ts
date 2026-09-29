@@ -41,8 +41,9 @@ test('each flag changes the value as the game shows it', () => {
 });
 
 const idea = (extra: Partial<IdeaInfo>): IdeaInfo => ({ token: 'idea', category: 'country', slot: null, law: false, designer: false,
-  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, ...extra });
-const line = (key: string, value: number | null, hidden = false) => ({ key, value, fixed5: value == null ? null : String(fixed5Of(value)), unsupported: value == null ? '@var' : null, hidden });
+  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, ...extra });
+/** One modifier as the dashboard sends it: merged by the game's identity, its stored value. */
+const line = (key: string, value: number, hidden = false) => ({ key, fixed5: String(fixed5Of(value)), hidden });
 const sources = ideaTooltipSources({
   modifiers: [STABILITY, POWER, EXPORT, CONSUMER],
   texts: [{ key: 'YES', text: 'Yes' }, { key: 'NO', text: 'No' }, { key: 'industry_research', text: 'Industry' },
@@ -51,22 +52,23 @@ const sources = ideaTooltipSources({
 
 test('an idea lists its effects in key order, hides what the game hides, and marks what it cannot format', () => {
   const { rows, note } = ideaEffectRows(idea({
-    effects: [line('stability_factor', 0.1), line('political_power_gain', 0.5), line('political_power_gain', 0.2), line('min_export', 0),
-      line('consumer_goods_factor', 0, true), line('mod_key', 0.3), line('stability_factor', null)],
+    // A value the game's conversion cannot read is stored as 0 (1424B0480): stability is not shown.
+    effects: [line('stability_factor', 0), line('political_power_gain', 0.2), line('min_export', 0),
+      line('consumer_goods_factor', 0, true), line('mod_key', 0.3)],
     tooltips: ['MY_TOOLTIP'],
-    targeted: [{ target: 'POL', instant: false, lines: [line('stability_factor', 0.5)] }],
+    targeted: [{ target: 'POL', instant: false, lines: [line('stability_factor', 0.5)], tooltips: ['MY_TOOLTIP'] }],
     research: [line('industry', 0.1)],
-    equipment: [{ target: 'small_plane_airframe', instant: false, lines: [line('build_cost_ic', -0.05)] }],
+    equipment: [{ target: 'small_plane_airframe', instant: false, lines: [line('build_cost_ic', -0.05)], tooltips: [] }],
   }), sources);
   assert.deepEqual(rows.map(row => [row.label, row.value ?? null, row.tone ?? null]), [
-    // Ascending index: political_power_gain (0x25), stability_factor (0x8d), min_export (0xe0); the last repeat wins.
+    // Ascending index: political_power_gain (0x25), stability_factor (0x8d), min_export (0xe0).
     ['Political Power Gain:', '+0.20', 'positive'],
-    ['Stability:', '@var', 'muted'],
     ['Resources to Market:', '0%', 'neutral'],
     ['mod_key:', '0.3', 'muted'],
     ['Something happens', null, null],
     ['Against Poland:', null, null],
     ['Stability:', '+50.00%', 'positive'],
+    ['Something happens', null, null],
     ['Industry:', '+10%', 'positive'],
     ['Small Airframe:', null, null],
     ['build_cost_ic:', '-0.05', 'muted'],
@@ -76,17 +78,17 @@ test('an idea lists its effects in key order, hides what the game hides, and mar
 
 test('traits come first, and a trait content does not define says so', () => {
   const { rows } = ideaEffectRows(idea({ traits: [
-    { token: 'captain_of_industry', known: true, name: 'Captain of Industry', lines: [line('political_power_gain', 0.1)], targeted: [], equipment: [], tooltips: [] },
-    { token: 'mystery', known: false, name: null, lines: [], targeted: [], equipment: [], tooltips: [] },
+    { token: 'captain_of_industry', known: true, unknown: null, name: 'Captain of Industry', lines: [line('political_power_gain', 0.1)], targeted: [], equipment: [], tooltips: [] },
+    { token: 'mystery', known: false, unknown: null, name: null, lines: [], targeted: [], equipment: [], tooltips: [] },
   ], effects: [line('stability_factor', 0.02)] }), sources);
   assert.deepEqual(rows.map(row => row.label), ['Captain of Industry', 'Political Power Gain:', 'mystery', 'Effects', 'Stability:']);
   assert.ok(rows[0].strong && rows[0].divider);
 });
 
 test('a trait keeps its targeted modifiers apart and shows its equipment bonuses', () => {
-  const { rows } = ideaEffectRows(idea({ traits: [{ token: 'designer', known: true, name: 'Designer', lines: [], tooltips: [],
-    targeted: [{ target: 'POL', instant: false, lines: [line('stability_factor', 0.1)] }, { target: 'AAA', instant: false, lines: [line('stability_factor', 0.2)] }],
-    equipment: [{ target: 'small_plane_airframe', instant: false, lines: [line('armor_value', 0.05)] }] }] }), sources);
+  const { rows } = ideaEffectRows(idea({ traits: [{ token: 'designer', known: true, unknown: null, name: 'Designer', lines: [], tooltips: [],
+    targeted: [{ target: 'POL', instant: false, lines: [line('stability_factor', 0.1)], tooltips: [] }, { target: 'AAA', instant: false, lines: [line('stability_factor', 0.2)], tooltips: [] }],
+    equipment: [{ target: 'small_plane_airframe', instant: false, lines: [line('armor_value', 0.05)], tooltips: [] }] }] }), sources);
   assert.deepEqual(rows.map(row => [row.label, row.value ?? null]), [
     ['Designer', null], ['Against Poland:', null], ['Stability:', '+10.00%'], ['Against AAA:', null], ['Stability:', '+20.00%'],
     ['Small Airframe:', null], ['armor_value:', '0.05'],
@@ -104,10 +106,10 @@ test('an authored zero without a format stays, and targets are named as they wer
   const { rows } = ideaEffectRows(idea({ effects: [line('mod_key', 0)] }), sources);
   assert.deepEqual(rows.map(row => [row.label, row.value]), [['mod_key:', '0']]);
   // Unformatted, the engine's exact value: 0.099999999999999999 reads as 0.09999.
-  const exactRow = ideaEffectRows(idea({ effects: [{ key: 'mod_key', value: 0.1, fixed5: '9999', unsupported: null, hidden: false }] }), sources);
+  const exactRow = ideaEffectRows(idea({ effects: [{ key: 'mod_key', fixed5: '9999', hidden: false }] }), sources);
   assert.equal(exactRow.rows[0].value, '0.09999');
   const dated = ideaTooltipSources({ modifiers: [STABILITY], texts: [] }, tag => tag, (tag, hour) => `${tag} in ${hour}`);
-  const tip = ideaTooltip({ title: 'Idea' }, idea({ targeted: [{ target: 'POL', instant: false, lines: [line('stability_factor', 0.1)] }] }), dated, null, [], undefined, 500);
+  const tip = ideaTooltip({ title: 'Idea' }, idea({ targeted: [{ target: 'POL', instant: false, lines: [line('stability_factor', 0.1)], tooltips: [] }] }), dated, null, [], undefined, 500);
   assert.equal(tip.rows[0].label, 'Against POL in 500:');
 });
 
@@ -143,7 +145,7 @@ test('the row budget counts wrapped labels, and the exact authored value wins', 
   // three fit the eleven lines left beside the count, the rest are counted.
   assert.equal(tip.rows.length, 4);
   assert.equal(tip.rows[3].label, '7 more effects');
-  const exact = ideaEffectRows(idea({ effects: [{ key: 'stability_factor', value: 0.1, fixed5: '9999', unsupported: null, hidden: false }] }), sources);
+  const exact = ideaEffectRows(idea({ effects: [{ key: 'stability_factor', fixed5: '9999', hidden: false }] }), sources);
   assert.equal(exact.rows[0].value, '+9.99%');
 });
 
@@ -167,14 +169,17 @@ test('the engine clamps, hides every hidden key, and marks modifiers that need a
   const gated = { ...format('agency_upgrade_time', 0x60, 1, 2, 'Agency upgrade time'), feature: 0x20 };
   const engine = ideaTooltipSources({ modifiers: [clamped, gated, STABILITY], texts: [] }, tag => tag);
   const { rows, note } = ideaEffectRows(idea({ effects: [line('clamped', 1.5), line('agency_upgrade_time', -0.1),
-    line('stability_factor', 0.1), line('stability_factor', 0.2, true)] }), engine);
+    line('stability_factor', 0.2, true)] }), engine);
   // Clamped to 100% (bad without the good flag); stability left out entirely (a hidden key); the gated one marked.
   assert.deepEqual(rows.map(row => [row.label, row.value, row.tone]), [['Clamped:', '+100.00%', 'negative'], ['Agency upgrade time:', '-10.00% *', 'muted']]);
   assert.match(note!, /game feature/);
   assert.equal(ideaEffectRows(idea({ effects: [line('clamped', -0.5)] }), engine).rows.length, 0);
 });
 
-test('unknown effects are said to be unknown', () => {
+test('unknown effects are said to be unknown, with why when content cannot say', () => {
   const { rows } = ideaEffectRows(idea({ effectsKnown: false }), sources);
   assert.deepEqual(rows.map(row => [row.label, row.value]), [['Effects', 'not in the content files']]);
+  const gap = 'common/ideas/b.txt is unknown from line 3: x, so what it defines there is unknown';
+  const refused = ideaEffectRows(idea({ effectsKnown: false, unknown: gap }), sources);
+  assert.deepEqual(refused.rows.map(row => [row.label, row.value]), [['Effects', gap]]);
 });

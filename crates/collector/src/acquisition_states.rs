@@ -6,7 +6,32 @@ use engine::{Memory, cstate, walk::Outcome};
 
 pub(crate) struct Request {
     pub census: acquisition_gather::Request<Vec<cstate::Row>>,
+    pub names: Names,
     pub visitor: state_flags::Captured,
+}
+
+/// The frame's state display-name arena, owned by the request while it runs.
+#[derive(Default)]
+pub(crate) struct Names {
+    bytes: Vec<u8>,
+    len: usize,
+    required: usize,
+}
+
+impl Names {
+    pub(crate) fn take(bytes: &mut Vec<u8>) -> Self {
+        Self {
+            bytes: std::mem::take(bytes),
+            len: 0,
+            required: 0,
+        }
+    }
+
+    /// Returns the bytes copied and the bytes every row needs.
+    pub(crate) fn restore(self, bytes: &mut Vec<u8>) -> (usize, usize) {
+        *bytes = self.bytes;
+        (self.len, self.required)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -27,7 +52,11 @@ impl Report {
 impl Request {
     pub(crate) fn run(&mut self, memory: &impl Memory) -> Report {
         let _reads = crate::read_accounting::table(replay::rows::TableId::States);
-        let Self { census, visitor } = self;
+        let Self {
+            census,
+            names,
+            visitor,
+        } = self;
         let (base, game_state) = (census.base, census.game_state);
         let begin = sampling::qpc();
         let report = census.run(|rows| {
@@ -35,7 +64,12 @@ impl Request {
                 visitor.visit(source)
             });
             visitor.finish(outcome);
-            cstate::read_movement_infrastructure(memory, base, game_state, outcome, rows)
+            let outcome =
+                cstate::read_movement_infrastructure(memory, base, game_state, outcome, rows);
+            let walk = cstate::read_names(memory, game_state, outcome, rows, &mut names.bytes);
+            names.len = walk.bytes_len;
+            names.required = walk.required_bytes;
+            walk.outcome
         });
         Report {
             census: report,
@@ -110,6 +144,13 @@ pub(crate) mod tests {
                 row.controller.to_le_bytes(),
             );
             bytes[pointer + cstate::DEMILITARIZED] = flag;
+            for field in [cstate::PRIMARY_DISPLAY_NAME, cstate::SECONDARY_DISPLAY_NAME] {
+                put(
+                    &mut bytes,
+                    pointer + field + engine::msvc_string::CAPACITY,
+                    15_u64.to_le_bytes(),
+                );
+            }
         }
         bytes
     }
@@ -176,6 +217,11 @@ pub(crate) mod tests {
                 game_state: STATE,
                 payload: vec![cstate::Row::default(); capacity],
             },
+            names: Names {
+                bytes: vec![0; 64],
+                len: 0,
+                required: 0,
+            },
             visitor: state_flags::Captured::with_capacities(&Default::default()),
         }
     }
@@ -214,7 +260,21 @@ pub(crate) mod tests {
             request.visitor.visit(source)
         });
         request.visitor.finish(outcome);
-        cstate::read_movement_infrastructure(memory, 0, STATE, outcome, &mut request.census.payload)
+        let outcome = cstate::read_movement_infrastructure(
+            memory,
+            0,
+            STATE,
+            outcome,
+            &mut request.census.payload,
+        );
+        cstate::read_names(
+            memory,
+            STATE,
+            outcome,
+            &mut request.census.payload,
+            &mut request.names.bytes,
+        )
+        .outcome
     }
 
     #[test]

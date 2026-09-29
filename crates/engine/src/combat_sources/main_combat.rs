@@ -1,8 +1,9 @@
-//! TEST ONLY: main's carmy_combat_inputs readers,
-//! copied verbatim from origin/main c53208146b, except that its row types
-//! are the current module's (they are unchanged), so outputs compare
-//! directly. The sharing equivalence tests run this as the baseline:
-//! every read in main's order, every failure with main's reason.
+//! TEST ONLY: L4b's carmy_combat_inputs readers before per-pass sharing,
+//! copied verbatim from political/l4b-combat-window 1077912ad3 (which is main's
+//! readers of the time plus L4b's changes), except that its row types are the
+//! current module's (they are unchanged), and the exile reader, which shares
+//! nothing, is left out. The sharing equivalence tests run this as the
+//! baseline: every read in the unshared order, every failure with its reason.
 #![allow(dead_code, clippy::all)]
 
 use crate::{Memory, carmy, cpdx_array::Array, csub_unit_definition, cunit, read, read_slice};
@@ -15,29 +16,15 @@ pub const ARMOUR: usize = 0x298;
 pub const AIR_ATTACK: usize = 0x220;
 /// Width getter140C6E270 traverses one term per native subunit type/count.
 pub const WIDTH_TERM_LIMIT: usize = 64;
-pub const MANPOWER_TERM_LIMIT: usize = 64;
-/// CArmy primary virtual+68 ->140C72F00 returns *(army+340)+60.
-/// Committed1415BA240 and reserve1415BAC10 bind this to their name widget.
-pub const DISPLAY_NAME_OWNER: usize = 0x340;
-pub const DISPLAY_NAME: usize = 0x60;
+/// The division's `CNameGroupMember`: 140C72F00 returns its generated +0x60
+/// name, which committed 1415BA240 and reserve 1415BAC10 entries draw.
+pub const NAME_GROUP_MEMBER: usize = 0x340;
+/// 141298E00 groups attacking units with a positive value here into one direction.
+pub const DIRECTION_GROUP: usize = 0x4a8;
 /// Raw contextual keys used by width140C6E270 and reinforcement140C6D610.
 pub const CONTEXT_MODIFIER_KEYS: [u32; 3] = [0xfb, 0x10f, 0x250];
-/// Reinforcement width penalty/cap, base chance, initiative/speed coefficients,
-/// and speed baseline:140C6D610 and140C76E90.
-pub const CONTEXT_DEFINE_RVAS: [usize; 8] = [
-    0x0331_ccf8,
-    0x0331_cd90,
-    0x0331_a260,
-    0x0331_dd20,
-    0x0331_a310,
-    0x0331_e020,
-    0x0293_c980,
-    0x0293_c978,
-];
 
-pub use crate::carmy_combat_inputs::{
-    ContextModifier, ContextRow, ManpowerTerm, Modifier, Row, WidthTerm,
-};
+pub use crate::carmy_combat_inputs::{ContextModifier, ContextRow, Modifier, Row, WidthTerm};
 
 fn bytes<const N: usize>(
     memory: &impl Memory,
@@ -75,11 +62,15 @@ fn copy_input_spans<const N: usize>(
 
 /// The caller supplies the authenticated combat/side/role membership.
 /// CArmy, stat-block and formation leader identities are authenticated on entry.
+/// Strength, organisation and their maxima are the Divisions and DivisionStatus
+/// values and are not read again here.
 pub fn capture_stats(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
     expected_handle: u64,
+    groups: &mut crate::cname_group_member::GroupKeys,
+    names: &mut crate::cname_group_member::Names<'_>,
 ) -> Result<Row, &'static str> {
     let identity = bytes::<8>(memory, pointer, 0)?;
     let expected_vtable = base
@@ -105,89 +96,66 @@ pub fn capture_stats(
     {
         return Err("land combat division stat identity mismatch");
     }
-    let (mut current, mut entrenchment, mut maxima, mut armour, mut group_pointer) =
-        ([0; 24], [0; 16], [0; 16], [0; 16], [0; 8]);
+    // Every remaining CArmy and stat-block operand in one guarded scatter; the
+    // commander and name reads depend only on its group and member pointers.
+    let (mut armour, mut group_pointer, mut member_pointer) = ([0; 16], [0; 8], [0; 8]);
+    let (mut strength_factor, mut fuel, mut fuel_capacity, mut stats, mut air_attack) =
+        ([0; 8], [0; 8], [0; 8], [0; 40], [0; 8]);
+    let (mut reconnaissance, mut initiative, mut scales, mut direction_group, mut categories) =
+        ([0; 8], [0; 8], [0; 32], [0; 4], [0; 8]);
     copy_input_spans(
         memory,
         [
-            (pointer, carmy::STRENGTH),
-            (pointer, carmy::ENTRENCHMENT),
-            (stat, csub_unit_definition::MAXIMUM_ORGANISATION),
             (stat, ARMOUR),
             (pointer, carmy::ORDERS_GROUP),
-        ]
-        .map(|(p, offset)| {
-            p.checked_add(offset)
-                .ok_or("land combat division inputs unreadable")
-        }),
-        &mut [
-            &mut current,
-            &mut entrenchment,
-            &mut maxima,
-            &mut armour,
-            &mut group_pointer,
-        ],
-    )?;
-    let current = values::<3>(&current);
-    let entrenchment = values::<2>(&entrenchment);
-    let maxima = values::<2>(&maxima);
-    let armour = values::<2>(&armour);
-    let group = u64::from_le_bytes(group_pointer) as usize;
-    let commander = commander(memory, base, group)?;
-    let name = display_name(memory, pointer)?;
-    let (mut strength_factor, mut fuel, mut fuel_capacity, mut fuel_define, mut retreat) =
-        ([0; 8], [0; 8], [0; 8], [0; 8], [0; 1]);
-    let (mut stats, mut air_attack, mut reconnaissance, mut initiative, mut scales) =
-        ([0; 40], [0; 8], [0; 8], [0; 8], [0; 32]);
-    copy_input_spans(
-        memory,
-        [
+            (pointer, NAME_GROUP_MEMBER),
             (pointer, carmy::STRENGTH_FACTOR),
             (pointer, 0x620),
             (stat, 0x120),
-            (base, 0x0331_97d0),
-            (pointer, carmy::RETREAT),
             (stat, csub_unit_definition::DEFENSE),
             (stat, AIR_ATTACK),
             (stat, 0xd0),
             (stat, 0xe0),
             (pointer, cunit::ATTACK_ACCUMULATOR),
+            (pointer, DIRECTION_GROUP),
+            (stat, csub_unit_definition::AIR_FLAGS),
         ]
         .map(|(p, offset)| {
             p.checked_add(offset)
                 .ok_or("land combat division inputs unreadable")
         }),
         &mut [
+            &mut armour,
+            &mut group_pointer,
+            &mut member_pointer,
             &mut strength_factor,
             &mut fuel,
             &mut fuel_capacity,
-            &mut fuel_define,
-            &mut retreat,
             &mut stats,
             &mut air_attack,
             &mut reconnaissance,
             &mut initiative,
             &mut scales,
+            &mut direction_group,
+            &mut categories,
         ],
     )?;
-    let row = Row {
+    let armour = values::<2>(&armour);
+    let group = u64::from_le_bytes(group_pointer) as usize;
+    let commander = commander(memory, base, group)?;
+    let naming = naming(
+        memory,
+        base,
+        u64::from_le_bytes(member_pointer),
+        groups,
+        names,
+    )?;
+    Ok(Row {
         division: expected_handle,
-        name,
-        strength: current[0],
+        naming,
         strength_combat_factor: i64::from_le_bytes(strength_factor),
-        fuel_inputs: [
-            i64::from_le_bytes(fuel),
-            i64::from_le_bytes(fuel_capacity),
-            i64::from_le_bytes(fuel_define),
-        ],
-        organisation: current[1],
-        experience: current[2],
-        entrenchment: entrenchment[0],
-        entrenchment_cap: entrenchment[1],
-        retreat: retreat[0],
+        fuel_inputs: [i64::from_le_bytes(fuel), i64::from_le_bytes(fuel_capacity)],
         stat_values: values(&stats),
-        max_organisation: maxima[0],
-        max_strength: maxima[1],
         armour: armour[0],
         piercing: armour[1],
         air_attack: i64::from_le_bytes(air_attack),
@@ -195,33 +163,29 @@ pub fn capture_stats(
         initiative: i64::from_le_bytes(initiative),
         commander,
         scales: values(&scales),
-    };
-    Ok(row)
+        direction_group: i32::from_le_bytes(direction_group),
+        categories: u64::from_le_bytes(categories),
+    })
 }
 
-fn display_name(
+fn naming(
     memory: &impl Memory,
-    pointer: usize,
-) -> Result<crate::msvc_string::Text<256>, &'static str> {
-    let owner = bytes::<8>(memory, pointer, DISPLAY_NAME_OWNER)?;
-    let source = usize::try_from(u64::from_le_bytes(owner))
+    base: usize,
+    member: u64,
+    groups: &mut crate::cname_group_member::GroupKeys,
+    names: &mut crate::cname_group_member::Names<'_>,
+) -> Result<Option<crate::cname_group_member::Inputs>, &'static str> {
+    use crate::cname_group_member::Naming;
+    let member = usize::try_from(member)
         .ok()
         .filter(|p| *p != 0)
-        .and_then(|p| p.checked_add(DISPLAY_NAME))
         .ok_or("land combat division name pointer invalid")?;
-    let descriptor = crate::msvc_string::Descriptor::read(memory, source).map_err(|reason| {
-        if reason == "string header unreadable" {
-            "land combat division inputs unreadable"
-        } else {
-            reason
-        }
-    })?;
-    let mut result = crate::msvc_string::Text {
-        len: descriptor.len,
-        ..Default::default()
-    };
-    descriptor.copy(memory, &mut result.bytes)?;
-    Ok(result)
+    Ok(
+        match crate::cname_group_member::inputs(memory, base, member, groups, names)? {
+            Naming::Row(row) => Some(row),
+            Naming::DoesNotFit => None,
+        },
+    )
 }
 
 /// Independent modifier acquisition: no stat-block or commander dependency.
@@ -274,54 +238,6 @@ pub fn capture_modifiers(
     Ok(count)
 }
 
-/// Label tooltip1415BC060 sums all signed manpower amounts through140C5A040 /
-/// 140C5A0F0. Preserve original terms; do not reduce them to a derived total.
-pub fn capture_manpower(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    expected_handle: u64,
-    terms: &mut [ManpowerTerm],
-) -> Result<usize, &'static str> {
-    let identity = bytes::<8>(memory, pointer, 0)?;
-    let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
-    if expected_handle == 0
-        || u64::from_le_bytes(handle) != expected_handle
-        || Some(u64::from_le_bytes(identity))
-            != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
-    {
-        return Err("land combat manpower division identity mismatch");
-    }
-    let container_identity = bytes::<8>(memory, pointer, 0x3d8)?;
-    if Some(u64::from_le_bytes(container_identity))
-        != base
-            .checked_add(crate::carmy_manpower_values::VTABLE_RVA)
-            .map(|p| p as u64)
-    {
-        return Err("land combat manpower container identity mismatch");
-    }
-    let header = bytes::<16>(memory, pointer, carmy::MANPOWER_DATA)?;
-    let array = Array::from_header(header, 8).ok_or("land combat manpower header invalid")?;
-    let count = array.count as usize;
-    if count > MANPOWER_TERM_LIMIT {
-        return Err("land combat manpower term bound exceeded");
-    }
-    if count > terms.len() {
-        return Err("land combat manpower arena full");
-    }
-    let mut packed = [0; MANPOWER_TERM_LIMIT * 8];
-    if !read_slice(memory, array.data, &mut packed[..count * 8]) {
-        return Err("land combat manpower terms unreadable");
-    }
-    for (output, input) in terms[..count].iter_mut().zip(packed.chunks_exact(8)) {
-        *output = ManpowerTerm {
-            source: u32::from_le_bytes(input[..4].try_into().unwrap()),
-            amount: i32::from_le_bytes(input[4..].try_into().unwrap()),
-        };
-    }
-    Ok(count)
-}
-
 /// Last complete country and leader modifier inputs within one acquisition
 /// pass. Construct a fresh value for every pass; no observation crosses hours.
 /// Each slot keeps only the three raw values and presence bits, never a partial
@@ -334,11 +250,12 @@ pub struct ContextModifiers {
 
 /// Width composition and contextual reinforcement operands. Terms preserve
 /// native order, signed multiplicities and unscaled definition widths. No
-/// width, chance, modifier clamp or speed bonus is calculated here.
+/// width, chance, modifier clamp or speed bonus is calculated here. The caller
+/// supplies the pass's country reader rather than rebuilding one per division.
 pub fn capture_context(
     memory: &impl Memory,
     base: usize,
-    state: usize,
+    countries: &crate::ccountry::Reader<'_, impl Memory>,
     pointer: usize,
     expected_handle: u64,
     terms: &mut [WidthTerm],
@@ -362,7 +279,6 @@ pub fn capture_context(
         u32::from_le_bytes(owners[4..].try_into().unwrap()),
     ];
     let owner = if tags[1] as i32 > 0 { tags[1] } else { tags[0] };
-    let countries = ccountry::Reader::new(memory, base, state)?;
     let country = countries.resolve(owner)?;
     let country_modifiers = context_modifiers(
         memory,
@@ -439,16 +355,6 @@ pub fn capture_context(
         return Err("land combat context stat identity mismatch");
     }
     let base_speed = i64::from_le_bytes(bytes(memory, stat_pointer, 0x290)?);
-    let mut defines = [[0; 8]; 8];
-    copy_input_spans(
-        memory,
-        CONTEXT_DEFINE_RVAS.map(|offset| {
-            base.checked_add(offset)
-                .ok_or("land combat division inputs unreadable")
-        }),
-        &mut defines.each_mut().map(|raw| raw.as_mut_slice()),
-    )?;
-    let defines = defines.map(i64::from_le_bytes);
     let template_pointer =
         u64::from_le_bytes(bytes(memory, pointer, carmy::STANDARD_TEMPLATE)?) as usize;
     let mut template_handle = 0;
@@ -498,7 +404,6 @@ pub fn capture_context(
     }
     Ok(ContextRow {
         template: template_handle,
-        effective_owner: owner,
         leader_modifier_kind,
         country_modifiers,
         leader_modifiers,
@@ -506,7 +411,6 @@ pub fn capture_context(
         feature_flags,
         eligibility_callback,
         base_speed,
-        defines,
         width_term_count: count,
     })
 }
@@ -565,7 +469,19 @@ fn commander(memory: &impl Memory, base: usize, group: usize) -> Result<u64, &'s
     if group == 0 {
         return Ok(0);
     }
-    let group_identity = bytes::<16>(memory, group, 0)?;
+    // The identity and leader pointer share one guarded scatter; an identity
+    // mismatch still takes precedence over an unreadable leader word.
+    let (mut group_identity, mut leader) = ([0_u8; 16], [0_u8; 8]);
+    let copied = memory.copy_scattered_prefetched(
+        [
+            group,
+            group.checked_add(crate::corders_group::LEADER).unwrap_or(0),
+        ],
+        &mut [&mut group_identity, &mut leader],
+    );
+    if copied == 0 {
+        return Err("land combat division inputs unreadable");
+    }
     let vtable = u64::from_le_bytes(group_identity[..8].try_into().unwrap());
     let group_handle = u64::from_le_bytes(group_identity[8..].try_into().unwrap());
     if ![
@@ -579,7 +495,10 @@ fn commander(memory: &impl Memory, base: usize, group: usize) -> Result<u64, &'s
     {
         return Err("land combat division group identity mismatch");
     }
-    let leader = u64::from_le_bytes(bytes(memory, group, crate::corders_group::LEADER)?) as usize;
+    if copied != 2 {
+        return Err("land combat division inputs unreadable");
+    }
+    let leader = u64::from_le_bytes(leader) as usize;
     if leader == 0 {
         return Ok(0);
     }

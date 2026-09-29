@@ -2156,6 +2156,46 @@ pub(crate) fn table_iter<S: TableSchema, T>(
     }
 }
 
+/// States with both display names from the frame's name arena; a span outside
+/// the bytes the walk copied denies the table.
+fn state_table(
+    captured: &Captured,
+    projection: Option<&mut crate::projection::Projection<'_>>,
+) -> replay::frame::TableInput {
+    let copied = captured
+        .state_names
+        .get(..captured.state_names_len)
+        .filter(|_| captured.states_result.len() <= captured.states.len());
+    let Some(names) = copied else {
+        return unavailable("state name arena length invalid").into();
+    };
+    let text = |span: engine::cstate::NameSpan| {
+        span.start
+            .checked_add(span.len)
+            .and_then(|end| names.get(span.start..end))
+    };
+    if captured.states[..captured.states_result.len()]
+        .iter()
+        .any(|row| text(row.custom_name).is_none() || text(row.owner_name).is_none())
+    {
+        return unavailable("state name lies outside the captured byte arena").into();
+    }
+    scalar_table::<tables::States, _>(
+        projection,
+        captured.states_result,
+        &captured.states,
+        |state| u128::from(state.id),
+        |state| StateRow {
+            id: state.id,
+            owner: state.owner,
+            controller: state.controller,
+            movement_infrastructure: state.movement_infrastructure,
+            custom_name: text(state.custom_name).unwrap_or_default().to_vec(),
+            owner_name: text(state.owner_name).unwrap_or_default().to_vec(),
+        },
+    )
+}
+
 fn faction_table(captured: &Captured) -> TableView {
     if captured.faction_names_len > captured.faction_names.len()
         || captured.factions_result.len() > captured.factions.len()
@@ -2337,20 +2377,7 @@ fn decoded_with_costs(
                     port_sea: province.port_sea,
                 },
             ),
-            scalar_table::<tables::States, _>(
-                projection.as_deref_mut(),
-                captured.states_result,
-                &captured.states,
-                |state| u128::from(state.id),
-                |state| StateRow {
-                    id: state.id,
-                    owner: state.owner,
-                    controller: state.controller,
-                    movement_infrastructure: state.movement_infrastructure,
-                    primary_name_length: state.primary_name_length,
-                    secondary_name_length: state.secondary_name_length,
-                },
-            ),
+            state_table(captured, projection.as_deref_mut()),
             scalar_table::<tables::Divisions, _>(
                 projection.as_deref_mut(),
                 captured.divisions_result,
@@ -3560,8 +3587,7 @@ mod tests {
                 owner: 7,
                 controller: u32::MAX,
                 movement_infrastructure: 0,
-                primary_name_length: 0,
-                secondary_name_length: 0,
+                ..Default::default()
             }]))
         );
     }

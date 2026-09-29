@@ -2015,12 +2015,11 @@ mod tests {
                     }])),
                     TableView::Complete(TableRows::Provinces(vec![province(1, 7), province(2, 2)])),
                     TableView::Complete(TableRows::States(vec![StateRow {
-                        primary_name_length: 0,
-                        secondary_name_length: 0,
                         id: 8,
                         owner: 7,
                         controller: 2,
                         movement_infrastructure: 0,
+                        ..StateRow::default()
                     }])),
                     TableView::Complete(TableRows::Divisions(vec![division(
                         0x1234_5678_0000_0035,
@@ -2416,12 +2415,11 @@ mod tests {
             if hour > 0 {
                 *expected.tables[state_index] =
                     TableView::Complete(TableRows::States(vec![StateRow {
-                        primary_name_length: 0,
-                        secondary_name_length: 0,
                         id: 8,
                         owner: 0,
                         controller: u32::MAX,
                         movement_infrastructure: 0,
+                        ..StateRow::default()
                     }]));
             }
             if hour == 2 {
@@ -2431,12 +2429,11 @@ mod tests {
             } else if hour == 4 {
                 *expected.tables[state_index] = TableView::Truncated {
                     rows: TableRows::States(vec![StateRow {
-                        primary_name_length: 0,
-                        secondary_name_length: 0,
                         id: 8,
                         owner: 0,
                         controller: 2,
                         movement_infrastructure: 0,
+                        ..StateRow::default()
                     }]),
                     missing: 10,
                 };

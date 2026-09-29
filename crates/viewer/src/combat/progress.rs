@@ -23,8 +23,9 @@ use std::{collections::BTreeMap, io};
 /// Fixed point over 100 000.
 pub(crate) const FIXED: i64 = 100_000;
 
-/// The attacker's progress per combat, fixed point over [`FIXED`].
-pub(crate) struct Progresses(BTreeMap<u64, i64>);
+/// The attacker's progress per combat, fixed point over [`FIXED`], or the
+/// first ordered member (attackers, then defenders) with no `Divisions` row.
+pub(crate) struct Progresses(BTreeMap<u64, Result<i64, u64>>);
 
 impl Progresses {
     /// A combat whose members are not all in `Divisions` has no progress; both
@@ -37,40 +38,45 @@ impl Progresses {
             .collect();
         let sum = |members: &[u64]| {
             members.iter().try_fold(0_i64, |total, id| {
-                Some(total.wrapping_add(*organisation.get(id)?))
+                Ok(total.wrapping_add(*organisation.get(id).ok_or(*id)?))
             })
         };
         Ok(Self(
             rows::<tables::LandCombats>(frame)?
                 .rows()
                 .iter()
-                .filter_map(|combat| {
-                    let progress =
-                        attacker_progress(sum(&combat.attackers)?, sum(&combat.defenders)?)?;
-                    Some((combat.id, progress))
+                .map(|combat| {
+                    let progress = sum(&combat.attackers).and_then(|attacker| {
+                        Ok(attacker_progress(attacker, sum(&combat.defenders)?))
+                    });
+                    (combat.id, progress)
                 })
                 .collect(),
         ))
     }
 
     pub(crate) fn attacker(&self, combat: u64) -> Option<i64> {
-        self.0.get(&combat).copied()
+        self.0.get(&combat)?.ok()
+    }
+
+    /// The first ordered member of `combat` with no `Divisions` row this
+    /// hour, which leaves its progress unknown.
+    pub(crate) fn unrecorded(&self, combat: u64) -> Option<u64> {
+        self.0.get(&combat)?.err()
     }
 }
 
 /// `1413CCB10`'s qword arithmetic, including its guard for extreme sums.
-fn attacker_progress(attacker: i64, defender: i64) -> Option<i64> {
+fn attacker_progress(attacker: i64, defender: i64) -> i64 {
     let total = attacker.wrapping_add(defender);
     if total < 1 {
-        return Some(FIXED / 2);
+        return FIXED / 2;
     }
     if (attacker as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
-        return Some(FIXED);
+        return FIXED;
     }
-    attacker
-        .wrapping_mul(FIXED)
-        .checked_div(total)
-        .map(|value| value.clamp(0, FIXED))
+    // A positive divisor: the quotient cannot overflow.
+    (attacker.wrapping_mul(FIXED) / total).clamp(0, FIXED)
 }
 
 /// The land marker's reason when [`defending`] cannot decide, one per cause.
@@ -234,6 +240,11 @@ mod tests {
         assert_eq!(Progresses::read(&full).unwrap().attacker(62), Some(33_333));
         let short = frame(vec![(1, 1), (3, 6)]);
         assert_eq!(Progresses::read(&short).unwrap().attacker(62), None);
+        // The first unrecorded member in attacker-then-defender order.
+        assert_eq!(Progresses::read(&short).unwrap().unrecorded(62), Some(2));
+        let defender = frame(vec![(1, 1), (2, 2)]);
+        assert_eq!(Progresses::read(&defender).unwrap().unrecorded(62), Some(3));
+        assert_eq!(Progresses::read(&full).unwrap().unrecorded(62), None);
     }
 
     #[test]
@@ -311,7 +322,7 @@ mod tests {
             (i64::MAX, 1, 50_000),
             (i64::MAX / 2, 1, 0),
         ] {
-            assert_eq!(attacker_progress(attacker, defender), Some(expected));
+            assert_eq!(attacker_progress(attacker, defender), expected);
         }
     }
 }

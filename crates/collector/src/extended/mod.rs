@@ -360,6 +360,7 @@ impl Capacities {
     pub fn raise_for_countries(&mut self, slots: usize) {
         self.country_appearance.raise_for_countries(slots);
         self.country_counters.raise_for_countries(slots);
+        self.combat_details.raise_for_countries(slots);
         self.economy.raise_for_countries(slots);
         self.governance.raise_for_countries(slots);
         self.intel.raise_for_countries(slots);

@@ -253,7 +253,7 @@ pub fn raise(capacity: &mut usize, required: usize) {
 /// Every capture capacity the frame pool is built from.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Sizing {
-    pub core: [usize; 11],
+    pub core: [usize; 12],
     pub map: MapCapacities,
     pub extended: extended::Capacities,
     pub country_cells: usize,

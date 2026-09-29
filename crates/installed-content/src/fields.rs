@@ -268,7 +268,10 @@ mod tests {
         );
         let raw = Item {
             key: Some(vec![0xff, 0xfe]),
+            key_quoted: false,
+            operator: Default::default(),
             value: Value::Scalar(b"1".to_vec()),
+            kind: crate::parser::Kind::Bare,
         };
         assert!(key_str(&raw, "test").is_err());
     }

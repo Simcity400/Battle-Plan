@@ -438,31 +438,43 @@ token: string,
  * changes it, so it comes before the authored name.
  */
 name: string, };
-export type EffectLine = { key: string, value: number | null,
+export type EffectLine = {
 /**
- * The value as the engine reads the authored text: fixed point with five
- * decimals, truncated, as a decimal string; None when not a number.
+ * The modifier, as the game identifies it: its key folded (1424A7A90,
+ * FindTokenNoCase 1424A7060); the formats are keyed the same way.
  */
-fixed5: string | null,
+key: string,
 /**
- * The authored text of a value this reader does not evaluate.
+ * The stored value in fixed point with five decimals, as a decimal
+ * string: the CRT conversion of the authored text into a zeroed
+ * destination (1406042A0, 1424B0480).
  */
-unsupported: string | null,
+fixed5: string,
 /**
- * Applied without showing in the game's own tooltip.
+ * Named in `hidden_modifier`: applied, never listed (14054F6D0).
  */
 hidden: boolean, };
 export type EffectGroup = { target: string | null,
 /**
  * An equipment bonus that applies at once to existing equipment.
  */
-instant: boolean, lines: Array<EffectLine>, };
+instant: boolean, lines: Array<EffectLine>,
+/**
+ * A targeted modifier's custom tooltip keys, in the order its CModifier
+ * lists them (14054E050); none for an equipment bonus.
+ */
+tooltips: Array<string>, };
 export type TraitEffects = { token: string,
 /**
  * Content defines the trait. When it does not, its effects are unknown and
  * the lists below are empty for that reason, not because it has none.
  */
-known: boolean, name: string | null, lines: Array<EffectLine>, targeted: Array<EffectGroup>, equipment: Array<EffectGroup>, tooltips: Array<string>, };
+known: boolean,
+/**
+ * Why content cannot say whether it defines the trait (a file that
+ * could stops short); None when it can.
+ */
+unknown: string | null, name: string | null, lines: Array<EffectLine>, targeted: Array<EffectGroup>, equipment: Array<EffectGroup>, tooltips: Array<string>, };
 export type HolderArtwork = { token: string,
 /**
  * The recorded character id, as on the span.
@@ -536,7 +548,12 @@ tooltips: Array<string>,
  * effects. When not (an advisor placed only by its recorded seat), they are
  * empty because they are unknown, not because it has none.
  */
-effectsKnown: boolean, };
+effectsKnown: boolean,
+/**
+ * Why content cannot say what the idea is (a file that could define it
+ * stops short); None when it can.
+ */
+unknown: string | null, };
 export type SlotInfo = { token: string, name: string | null,
 /**
  * A character seat (advisors) rather than an idea slot (laws, designers).
@@ -629,7 +646,8 @@ portrait: string | null,
 portraitMissing: string | null, };
 export type IdeologyInfo = { token: string, name: string | null,
 /**
- * sRGB bytes; null when content gives no usable colour.
+ * sRGB bytes ([`chart_color`]); null when the content's colour is
+ * refused (the warnings name why).
  */
 color: [number, number, number] | null, };
 export type PartyHistoryReply = { branchId: string, tag: string, decimals: number, parties: Array<PartySeries>, ruling: Array<RulingRun>,

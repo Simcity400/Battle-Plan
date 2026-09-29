@@ -87,8 +87,13 @@ pub struct StabilityPartsReply {
     pub warnings: Vec<String>,
 }
 
-/// A character line's character as recorded: script token and saved name.
-type Character = (Option<String>, String);
+/// A character line's character as recorded: script token, saved name and
+/// template.
+type Character = (
+    Option<String>,
+    String,
+    Result<installed_content::characters::BuiltTemplate, String>,
+);
 
 /// One part's value at a read.
 #[derive(Clone)]
@@ -146,7 +151,7 @@ fn parts_of(
                     ("unpaired", _) => {
                         format!("unpaired:{}", line.text.as_deref().unwrap_or_default())
                     }
-                    (_, Some((script, saved))) => format!(
+                    (_, Some((script, saved, _))) => format!(
                         "line:{}:{}:{}:{}:{}:{saved}",
                         line.kind,
                         line.identity,
@@ -198,6 +203,8 @@ struct Part {
     term: Option<String>,
     line: Option<BreakdownLine>,
     character: Option<Character>,
+    /// The line's country at its hour, which idea names need.
+    country: super::NamingCountry,
     runs: Vec<FixedRun>,
 }
 
@@ -208,7 +215,14 @@ struct Measure {
 }
 
 impl Measure {
-    fn record(&mut self, hour: i32, joined: bool, values: &[Value], runs: &mut usize) {
+    fn record(
+        &mut self,
+        hour: i32,
+        joined: bool,
+        values: &[Value],
+        country: &super::NamingCountry,
+        runs: &mut usize,
+    ) {
         match self.observed.last_mut() {
             Some(span) if joined && span.last_hour.checked_add(1) == Some(hour) => {
                 span.last_hour = hour;
@@ -224,6 +238,7 @@ impl Measure {
             if value.line.is_some() {
                 part.line.clone_from(&value.line);
                 part.character.clone_from(&value.character);
+                part.country.clone_from(country);
             }
             let raw = value.raw.to_string();
             match part.runs.last_mut() {
@@ -272,6 +287,12 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
         TableId::SliceReads,
         TableId::Characters,
         TableId::LexicalTokens,
+        TableId::CountryAppearance,
+        // Whether a dynamic country is in civil war (super::civil_war).
+        TableId::CountryCivilWars,
+        TableId::CountryWars,
+        TableId::WarRelations,
+        TableId::CountryCounterInputs,
     ];
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Stability request cancelled");
     let mut result = Scanned::default();
@@ -370,7 +391,11 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
                         return None;
                     }
                     let found = country_stability::recorded_character(line, characters, lexical)?;
-                    Some((found.script.map(str::to_owned), found.saved.to_owned()))
+                    Some((
+                        found.script.map(str::to_owned),
+                        found.saved.to_owned(),
+                        found.template,
+                    ))
                 };
                 let values = [
                     (&breakdown.stability, LINES_OF[0]),
@@ -383,9 +408,10 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
             let Some((_, _, values)) = current.as_ref() else {
                 continue;
             };
+            let naming = super::NamingCountry::read(decoded, country);
             for (measure, values) in result.measures.iter_mut().zip(values.iter()) {
                 if let Some(values) = values {
-                    measure.record(hour, joined, values, &mut runs);
+                    measure.record(hour, joined, values, &naming, &mut runs);
                 }
             }
             if runs > MAX_RUNS {
@@ -406,19 +432,23 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
 
 /// Names each line part from content, a character as it was recorded for that
 /// part, as the hover breakdown names it.
-fn named(measure: &Measure, content: Option<&PoliticsContent>) -> MeasureParts {
+fn named(measure: &Measure, content: Option<&PoliticsContent>, tag: &str) -> MeasureParts {
     let mut parts = Vec::with_capacity(measure.parts.len());
     for (id, part) in &measure.parts {
         let mut line = part.line.clone();
         if let (Some(line), Some(content)) = (line.as_mut(), content) {
-            let character = part.character.as_ref().map(|(script, saved)| {
+            let character = part.character.as_ref().map(|(script, saved, template)| {
                 country_stability::RecordedCharacter {
                     script: script.as_deref(),
                     saved,
+                    template: template.clone(),
                 }
             });
-            line.label = country_stability::line_name(line, content, character);
-            (line.group, line.group_kind) = country_stability::line_group(line, content);
+            (line.group, line.group_kind) =
+                country_stability::line_group(line, content, character.as_ref());
+            // No single hour here: a closed `[...]` is refused (see line_name).
+            let country = part.country.for_tag(tag);
+            line.label = country_stability::line_name(line, content, character, None, country);
         }
         parts.push(StabilityPart {
             id: id.clone(),
@@ -503,12 +533,18 @@ impl Product for StabilityParts {
             None => None,
         };
         let [stability, war_support] = &scanned.measures;
+        let stability = named(stability, content.as_deref(), &params.tag);
+        let war_support = named(war_support, content.as_deref(), &params.tag);
+        // Line names left out for a localisation refusal, by reason and key.
+        if let Some(content) = &content {
+            warnings.extend(content.catalogue.refusal_lines());
+        }
         Ok(StabilityPartsReply {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
             decimals: 5,
-            stability: named(stability, content.as_deref()),
-            war_support: named(war_support, content.as_deref()),
+            stability,
+            war_support,
             warnings,
         })
     }
@@ -523,8 +559,8 @@ pub(crate) fn scan_parts(
     let scanned = scan(replay, branch, tag, &AtomicBool::new(false))?;
     let [stability, war_support] = &scanned.measures;
     Ok((
-        named(stability, None),
-        named(war_support, None),
+        named(stability, None, tag),
+        named(war_support, None, tag),
         scanned.warnings.clone(),
     ))
 }

@@ -1,7 +1,7 @@
 //! Hourly commander presentation, with native portrait and assigned-trait selection.
 use super::{
     Selection, Values, Widget,
-    binding::{Bindings, hide, sprite},
+    binding::{Bindings, SPRITE, hide, sprite},
 };
 use crate::{document::Document, map::tables::rows};
 use replay::{
@@ -107,32 +107,62 @@ pub(super) fn select_portrait(
     Ok(PortraitAsset::Declaration("GFX_leader_unknown".into()))
 }
 
+/// A present commander's portrait. ResolveLeaderPortrait (140B3A100)
+/// selects it ([`select_portrait`], `GFX_leader_unknown` when nothing is
+/// set) and sets it by name: CIcon::SetSpriteByName (1422E6410) does nothing
+/// when the content does not declare the sprite, so the widget keeps what it
+/// showed before. The viewer then leaves the widget unbound (the .gui's own
+/// sprite shows) and names the gap. A portrait whose selection the port
+/// cannot settle is hidden with the named refusal.
 fn portrait(
     out: &mut Bindings,
-    document: &Document,
+    has_sprite: &dyn Fn(&str) -> bool,
     key: &str,
     presentation: &CombatCommanderPresentation,
     category: i32,
 ) {
-    // A present leader whose portrait cannot resolve uses this native default,
-    // not land combat's distinct no-commander silhouette (140B3A100).
-    if document.icons.combat.has_sprite("GFX_leader_unknown") {
-        sprite(&mut out.values, key, "GFX_leader_unknown".into());
-        out.values.entry(key.into()).or_default().hidden = false;
-    }
     match select_portrait(presentation, category) {
-        Ok(asset) if document.icons.combat.has_sprite(&asset.key()) => {
-            sprite(&mut out.values, key, asset.key());
-            out.values.entry(key.into()).or_default().hidden = false;
-        }
-        Ok(asset) => out.warnings.push(format!(
-            "Combat portrait {key}: {} is absent from the verified static asset inventory; the unknown portrait remains. Runtime texture loading and native generated fallback are UNVERIFIED.",
-            asset.key()
+        Ok(asset) if has_sprite(&asset.key()) => out.bind(key, SPRITE, Ok(asset.key())),
+        Ok(PortraitAsset::Declaration(name)) => out.refuse(format!(
+            "Combat portrait {key}: the content does not declare sprite {name}, so the game's sprite setter (1422E6410) keeps the widget's previous image; the viewer shows the window's own sprite"
         )),
-        Err(reason) => out.warnings.push(format!(
-            "Combat portrait {key}: {reason}; the unknown portrait remains. Matching static picker evidence and a same-hour format-22 portrait capture would settle this."
-        )),
+        Ok(asset) => out.bind(
+            key,
+            SPRITE,
+            Err(format!(
+                "Combat portrait {key} is hidden: texture {} cannot be drawn (what the game's loader 1423F2BB0 gives for it is unverified)",
+                asset.key()
+            )),
+        ),
+        Err(reason) => out.bind(
+            key,
+            SPRITE,
+            Err(format!("Combat portrait {key} is hidden: {reason}")),
+        ),
     }
+}
+
+/// A side's tactic picture (`{prefix}_tactic`) for a selected combat tactic
+/// (kind 2): its authored picture when the content has the sprite, else the
+/// widget is hidden with the named refusal.
+fn tactic(
+    out: &mut Bindings,
+    has_sprite: &dyn Fn(&str) -> bool,
+    pictures: &std::collections::BTreeMap<String, String>,
+    key: &str,
+    token: &[u8],
+) {
+    let token = String::from_utf8_lossy(token);
+    let value = match pictures.get(token.as_ref()) {
+        Some(picture) if has_sprite(picture) => Ok(picture.clone()),
+        Some(picture) => Err(format!(
+            "Combat tactic picture {key} is hidden: the content lacks sprite {picture} for tactic {token}"
+        )),
+        None => Err(format!(
+            "Combat tactic picture {key} is hidden: the content declares no picture for tactic {token}"
+        )),
+    };
+    out.bind(key, SPRITE, value);
 }
 
 fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandCombatCommanderTrait]) {
@@ -146,7 +176,7 @@ fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandComb
             // The current context does not record that exile-country operand.
             // Retain its slot but leave it empty instead of inventing a flag.
             hide(&mut entry, "Background");
-            out.warnings.push("Combat trait: exile flag source leader+ED4 is unavailable; its assigned slot remains empty. UNVERIFIED until that source is recorded and the exile entry is captured.".into());
+            out.refuse("Combat trait: the exile trait's flag is hidden: its country (leader+ED4) is not recorded, so its assigned slot stays empty.".into());
         } else {
             let token = String::from_utf8_lossy(&value.token);
             let requested = format!("GFX_trait_{token}");
@@ -176,6 +206,7 @@ pub(super) fn bind(
     frame: &DecodedFrame,
     selection: Selection,
 ) -> io::Result<()> {
+    let has_sprite = |name: &str| document.icons.combat.has_sprite(name);
     match selection {
         Selection::Land(id) => {
             let details = rows::<tables::LandCombatDetails>(frame)?;
@@ -187,7 +218,7 @@ pub(super) fn bind(
                 if side.commander != 0 {
                     portrait(
                         out,
-                        document,
+                        &has_sprite,
                         &format!("{prefix}_leader"),
                         &side.presentation,
                         side.commander_category,
@@ -199,21 +230,14 @@ pub(super) fn bind(
                     &format!("{prefix}_traits_grid"),
                     &side.traits,
                 );
-                let key = format!("{prefix}_tactic");
                 if side.tactic_kind == 2 {
-                    let token = String::from_utf8_lossy(&side.tactic_token);
-                    if let Some(picture) = document
-                        .icons
-                        .combat
-                        .tactic_pictures
-                        .get(token.as_ref())
-                        .filter(|name| document.icons.combat.has_sprite(name))
-                    {
-                        sprite(&mut out.values, &key, picture.clone());
-                        out.values.entry(key).or_default().hidden = false;
-                    } else {
-                        out.warnings.push(format!("Combat tactic {token}: matching verified picture is unavailable; widget remains empty."));
-                    }
+                    tactic(
+                        out,
+                        &has_sprite,
+                        &document.icons.combat.tactic_pictures,
+                        &format!("{prefix}_tactic"),
+                        &side.tactic_token,
+                    );
                 }
                 // 1406B3670 compares this tactic's counter id to the other id.
                 // Null and CNullCombatTactic are distinct recorded kinds; neither
@@ -237,7 +261,7 @@ pub(super) fn bind(
                     if commander.commander != 0 {
                         portrait(
                             out,
-                            document,
+                            &has_sprite,
                             &format!("header_container/leader_{prefix}"),
                             &commander.presentation,
                             commander.category,
@@ -263,7 +287,7 @@ pub(super) fn bind(
                     if commander.commander != 0 {
                         portrait(
                             out,
-                            document,
+                            &has_sprite,
                             &format!("{root}/leader_portrait"),
                             &commander.presentation,
                             commander.category,
@@ -283,7 +307,7 @@ pub(super) fn bind(
                     out.values.entry(root.clone()).or_default().hidden = false;
                     portrait(
                         out,
-                        document,
+                        &has_sprite,
                         &format!("{root}/hq_leader_portrait"),
                         &commander.presentation,
                         commander.category,
@@ -298,6 +322,49 @@ pub(super) fn bind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refused tactic picture clears the sprite bound before it and hides
+    /// the widget; an undeclared portrait sprite leaves the widget as it was
+    /// (1422E6410). Both are named and counted.
+    #[test]
+    fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
+        let mut out = Bindings::default();
+        let has = |name: &str| name == "GFX_known" || name == "GFX_tactic_a";
+        sprite(&mut out.values, "leader", "GFX_earlier".into());
+        sprite(&mut out.values, "tactic", "GFX_earlier".into());
+        let value = CombatCommanderPresentation {
+            character_state: 2,
+            portraits: vec![CombatCommanderPortraitEntry {
+                role: 1,
+                size: 1,
+                is_set: 1,
+                kind: 0,
+                text: b"GFX_missing".to_vec(),
+            }],
+            ..Default::default()
+        };
+        // An undeclared sprite: the setter keeps the widget as it was.
+        portrait(&mut out, &has, "leader", &value, 2);
+        assert_eq!(out.values["leader"].sprite.as_deref(), Some("GFX_earlier"));
+        let pictures = std::collections::BTreeMap::from([
+            ("a".to_owned(), "GFX_tactic_a".to_owned()),
+            ("b".to_owned(), "GFX_tactic_b".to_owned()),
+        ]);
+        tactic(&mut out, &has, &pictures, "tactic", b"b");
+        assert_eq!(out.values["tactic"].sprite, None);
+        assert!(out.values["tactic"].hidden);
+        let refused: Vec<_> = out.refused().keys().cloned().collect();
+        assert_eq!(
+            refused,
+            [
+                "Combat portrait leader: the content does not declare sprite GFX_missing, so the game's sprite setter (1422E6410) keeps the widget's previous image; the viewer shows the window's own sprite",
+                "Combat tactic picture tactic is hidden: the content lacks sprite GFX_tactic_b for tactic b",
+            ]
+        );
+        tactic(&mut out, &has, &pictures, "tactic", b"a");
+        assert_eq!(out.values["tactic"].sprite.as_deref(), Some("GFX_tactic_a"));
+        assert!(!out.values["tactic"].hidden);
+    }
 
     #[test]
     fn portrait_role_fallback_stays_at_the_requested_size() {

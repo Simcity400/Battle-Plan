@@ -45,16 +45,16 @@ const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
 pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first, slot-hour Variants); 1 division inputs copy + divisions/intel dispatch + character roster, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated/character role dispatch + Naval join + owned wing install + AirMissions dispatch; 7 map sample; 8 AirMissions dispatch after a typed wing census + Orders and AirMissions joins + Late and history-part dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/variants/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late and history-part joins + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
 /// Core row capacities: countries, provinces, links, states, divisions, wars,
-/// factions, faction members, faction name bytes, border-conflict provinces and
-/// their admitted group handles.
-pub const INITIAL_CAPACITIES: [usize; 11] = [
-    512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384, 64, 256,
+/// factions, faction members, faction name bytes, border-conflict provinces,
+/// their admitted group handles, and state name bytes.
+pub const INITIAL_CAPACITIES: [usize; 12] = [
+    512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384, 64, 256, 32_768,
 ];
 
 /// Countries has one row per canonical slot and CountryLinks one per raw
 /// link id; FactionMembers holds each country at most once. Order counters and
 /// the war snapshot follow the Countries capacity when the frame grows.
-pub fn raise_for_countries(core: &mut [usize; 11], slots: usize) {
+pub fn raise_for_countries(core: &mut [usize; 12], slots: usize) {
     let rows = crate::country_scale::rows(slots, 1);
     for index in [0, 2, 7] {
         crate::country_scale::raise(&mut core[index], rows);
@@ -248,6 +248,10 @@ pub struct Captured {
     /// Provinces rows and the BorderConflicts rows of the same walk.
     pub provinces: cprovince::Capture,
     pub states: Vec<cstate::Row>,
+    /// Both display names of every state row, spanned by `cstate::Row`.
+    pub state_names: Vec<u8>,
+    pub state_names_len: usize,
+    pub state_names_required: usize,
     pub divisions: Vec<carmy::Row>,
     /// A frame-owned spare for an input-stage capacity miss before any lease.
     division_fallback: crate::division_census::Census,
@@ -290,7 +294,7 @@ impl Captured {
     }
 
     pub(crate) fn with_capacities(
-        capacities: &[usize; 11],
+        capacities: &[usize; 12],
         map_capacities: &MapCapacities,
         extended_capacities: &extended::Capacities,
     ) -> Self {
@@ -319,6 +323,9 @@ impl Captured {
                 capacities[10],
             ),
             states: vec![cstate::Row::default(); capacities[3]],
+            state_names: vec![0; capacities[11]],
+            state_names_len: 0,
+            state_names_required: 0,
             divisions: vec![carmy::Row::default(); capacities[4]],
             division_fallback,
             wars: vec![cwar_relation::Row::default(); capacities[5]],
@@ -358,6 +365,7 @@ impl Captured {
             + self.countries.capacity() * size_of::<ccountry::Row>()
             + self.provinces.allocated_bytes()
             + self.states.capacity() * size_of::<cstate::Row>()
+            + self.state_names.capacity()
             + self.divisions.capacity() * size_of::<carmy::Row>()
             + self.wars.capacity() * size_of::<cwar_relation::Row>()
             + self.factions.capacity() * size_of::<cfaction::Row>()
@@ -373,6 +381,7 @@ impl Captured {
     ) -> acquisition_states::Request {
         acquisition_states::Request {
             census: acquisition::GatherRequest::take(base, game_state, &mut self.states),
+            names: acquisition_states::Names::take(&mut self.state_names),
             visitor: self.extended.take_state_visitor(),
         }
     }
@@ -388,6 +397,8 @@ impl Captured {
             acquisition_states::Report::failed(reason)
         });
         request.census.restore(&mut self.states);
+        (self.state_names_len, self.state_names_required) =
+            request.names.restore(&mut self.state_names);
         self.extended.restore_state_visitor(request.visitor);
         self.states_result = report.census.result;
         report
@@ -422,7 +433,7 @@ impl Captured {
     }
 
     /// Only the spool thread grows a frame while it owns that frame's queue index.
-    pub fn grow(&mut self, capacities: &mut [usize; 11]) {
+    pub fn grow(&mut self, capacities: &mut [usize; 12]) {
         fn resize<T: Default + Clone>(rows: &mut Vec<T>, outcome: Outcome, capacity: &mut usize) {
             if let Outcome::Truncated { len, unread_rows } = outcome {
                 grow_capacity(capacity, len.saturating_add(unread_rows as usize));
@@ -475,6 +486,8 @@ impl Captured {
         );
         grow_capacity(&mut capacities[8], self.faction_names_required);
         self.faction_names.resize(capacities[8], 0);
+        grow_capacity(&mut capacities[11], self.state_names_required);
+        self.state_names.resize(capacities[11], 0);
     }
 }
 
@@ -1202,6 +1215,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         frame.provinces_result = unavailable;
         frame.provinces.conflict_walk = cprovince::ConflictWalk::default();
         frame.states_result = unavailable;
+        frame.state_names_len = 0;
+        frame.state_names_required = 0;
         frame.divisions_result = unavailable;
         frame.wars_result = unavailable;
         frame.wars_snapshot_sampled = false;
@@ -5482,11 +5497,15 @@ mod tests {
             unread_rows: 3,
         };
         frame.faction_names_required = 20_000;
+        // The state display-name arena grows to what the walk asked for.
+        frame.state_names_required = 40_000;
         frame.grow(&mut capacities);
         assert_eq!(frame.wars.len(), 2048);
         assert_eq!(frame.factions.len(), 128);
         assert_eq!(frame.faction_members.len(), 2048);
         assert_eq!(frame.faction_names.len(), 32768);
+        assert!(frame.state_names.len() >= 40_000);
+        assert_eq!(frame.state_names.len(), capacities[11]);
         assert!(frame.allocated_bytes() > before);
         let mut idle = Captured::new();
         idle.grow(&mut capacities);

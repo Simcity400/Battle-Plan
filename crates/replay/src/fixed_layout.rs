@@ -69,13 +69,6 @@ pub const LAND_COMBAT_DIVISIONS: Family = Family {
     tables: &[TableId::LandCombatDivisions],
 };
 
-pub const LAND_COMMANDERS: Family = Family {
-    name: "land combat commanders",
-    keys: &[keys::OFFENCE, keys::DEFENCE],
-    tokens: &[],
-    tables: &[TableId::LandCombatDetails],
-};
-
 pub const DIVISION_STATUS: Family = Family {
     name: "division status",
     keys: &[keys::UNIT_UPKEEP_ATTRITION_FACTOR],
@@ -313,7 +306,6 @@ pub const FAMILIES: &[Family] = &[
     MOVEMENT,
     NAVAL_TRANSFER,
     LAND_COMBAT_DIVISIONS,
-    LAND_COMMANDERS,
     DIVISION_STATUS,
     RETREAT_BANS,
     SHIP_ORGANISATION,

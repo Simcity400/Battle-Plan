@@ -1071,7 +1071,7 @@ impl Viewer {
             warnings.extend(placements.warnings.iter().cloned());
         }
         warnings.extend(self.label_report.warnings());
-        // Land combats whose marker is undecided (for example while the engaged
+        // Combats whose icon is undecided (for example while the engaged
         // index has not yet covered a session-start branch's hour).
         warnings.extend(self.counter_report.combat_gap_lines());
         // The overlay's refused tokens: the raid icons' as laid out for this
@@ -3022,9 +3022,15 @@ impl Viewer {
         if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.combat.close();
         }
+        let engaged = self
+            .hours
+            .as_ref()
+            .map(|hours| hours.engaged(&self.perspective.country))
+            .transpose()
+            .map_err(|error| error.to_string())?;
         let combat_geometry = self
             .combat
-            .draw(document, extent, &self.perspective)
+            .draw(document, extent, &self.perspective, engaged.as_deref())
             .map_err(|error| error.to_string())?;
         let point = response
             .hover_pos()
@@ -3359,9 +3365,15 @@ impl Viewer {
         let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
         laps.lap("overlay_draw");
         let mut combat_batch;
+        let engaged = self
+            .hours
+            .as_ref()
+            .map(|hours| hours.engaged(&self.perspective.country))
+            .transpose()
+            .map_err(|error| error.to_string())?;
         let label_batch = if let Some(drawn) = self
             .combat
-            .draw(document, extent, &self.perspective)
+            .draw(document, extent, &self.perspective, engaged.as_deref())
             .map_err(|error| error.to_string())?
         {
             if build_warnings {
@@ -3559,11 +3571,14 @@ impl Viewer {
                     .rev()
                     .find(|hit| hit.contains(point))?;
                 let arrival = map::counter_eta::arrival(document.playback.hour(), hit.remaining)?;
-                map::counter_eta::sentence(
-                    &document.names.localisation,
-                    &arrival,
-                    hit.ours,
-                    &date(arrival.hour),
+                Some(
+                    map::counter_eta::sentence(
+                        &document.names.localisation,
+                        &arrival,
+                        hit.ours,
+                        &date(arrival.hour),
+                    )
+                    .unwrap_or_else(|reason| format!("Arrival line refused: {reason}.")),
                 )
             });
             let text = arrival.unwrap_or_else(|| "Drag to pan · Scroll to zoom".into());

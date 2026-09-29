@@ -8,16 +8,15 @@
 //! 4. frame 12, the division's own leader is not the side's selected commander;
 //! 5. frame 16, fuel below full (140C6F960);
 //! 6. frame 13, anti-air above 0.01 (141297FD0) on a side with flag 0x4000;
-//! 7. frame 14, an opposing committed owner in our template country's set;
-//! 8. frame 15, our template country in the location province's `+0xC0` list.
+//! 7. frame 14, an opposing committed owner occupies our exile country;
+//! 8. frame 15, our exile country cores the location state.
 //!
-//! Frames 14 and 15 arrive recorded: the collector evaluates 140C79AC0, the
-//! 14129FB60/14129FAD0 country-set search and the province `+0xC0` scan live
-//! and stores the two bits on the division row. Older formats decode them as
-//! zero, so those icons stay absent there exactly as before. The grid takes
-//! the frames in this order, so an undecidable step ends the list rather than
-//! shifting later icons into its place, and the entry reports the suffix it
-//! omitted ([`Omitted`]), the template-country frames 14 and 15 included.
+//! [`super::template_icons`] decides frames 14 and 15 from the recorded exile
+//! operands. The grid takes the frames in this order, so an undecidable step
+//! ends the list rather than shifting later icons into its place, and the
+//! entry reports the suffix it omitted ([`Omitted`]), the exile frames 14 and
+//! 15 included.
+use super::defines::LandDefines;
 use replay::rows::{LandCombatDetailsRow, LandCombatDivisionRow};
 
 const SCALE: i64 = 100_000;
@@ -57,12 +56,12 @@ fn fixed_limit(define: f32) -> i64 {
 
 /// Frames 11/10 and 9/8 from the whole opposing committed array.
 fn armour_frames(
-    detail: &LandCombatDetailsRow,
+    content: &LandDefines,
     unit: &LandCombatDivisionRow,
     opponents: &[&LandCombatDivisionRow],
 ) -> [Option<u32>; 2] {
-    let thresholds = &detail.piercing_thresholds;
-    let defines = detail.armour_icon_defines.map(f32::from_bits);
+    let thresholds = &content.piercing_thresholds;
+    let defines = content.armour_icons;
     let mut ours = vec![0_i32; thresholds.len()];
     let mut theirs = vec![0_i32; thresholds.len()];
     let mut armoured = 0_i32;
@@ -133,25 +132,31 @@ fn fuel_ratio([fuel, capacity, define]: [i64; 3]) -> i64 {
 /// undecidable step and every frame after it are omitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Omitted {
-    /// No `LandCombatDetails` row: frames 8 to 16 need its thresholds,
-    /// defines and selected commanders.
+    /// No `LandCombatDetails` row: frames 8 to 16 need its selected
+    /// commanders.
     Details,
     /// An opposing committed `LandCombatDivisions` row is missing: the armour
     /// frames read the whole opposing array.
     Opponent,
+    /// The content's land defines are unavailable: the armour, fuel and
+    /// anti-air frames read them.
+    Defines,
     /// 141297FD0's anti-air value cannot be computed, for this reason.
     AirDefense(&'static str),
     /// The anti-air value passes but the side's flags (`LandCombatSides`)
     /// are missing, so frame 13's 0x4000 test is undecided.
     SideFlags,
+    /// An exile frame (14 or 15) is undecided; its cause is reported with
+    /// the divisions it covers.
+    Exile(u32),
 }
 
 impl Omitted {
     /// What is omitted and why.
     pub(super) fn reason(self) -> String {
-        const FROM_ARMOUR: &str = "armour 8 to 11, leader 12, fuel 16, anti-air 13 and the template-country icons 14 and 15";
-        const FROM_AIR: &str =
-            "the anti-air icon 13 and the template-country icons 14 and 15 after it";
+        const FROM_ARMOUR: &str =
+            "armour 8 to 11, leader 12, fuel 16, anti-air 13 and the exile icons 14 and 15";
+        const FROM_AIR: &str = "the anti-air icon 13 and the exile icons 14 and 15 after it";
         match self {
             Self::Details => format!(
                 "the combat has no LandCombatDetails row, so every derived icon after the recorded kinds is omitted: {FROM_ARMOUR}"
@@ -159,12 +164,20 @@ impl Omitted {
             Self::Opponent => format!(
                 "an opposing committed LandCombatDivisions row is missing, so every icon from armour on is omitted: {FROM_ARMOUR}"
             ),
+            Self::Defines => format!(
+                "the content's land combat defines are unavailable, so every derived icon after the recorded kinds is omitted: {FROM_ARMOUR}"
+            ),
             Self::AirDefense(cause) => format!(
                 "the anti-air value (141297FD0) cannot be computed ({cause}), so {FROM_AIR} are omitted"
             ),
             Self::SideFlags => format!(
                 "the combat has no LandCombatSides row, so the side flag 0x4000 that decides the anti-air icon is unknown and {FROM_AIR} are omitted"
             ),
+            Self::Exile(14) => {
+                "the exile icon 14 is undecided, so it and the exile icon 15 after it are omitted"
+                    .into()
+            }
+            Self::Exile(frame) => format!("the exile icon {frame} is undecided and omitted"),
         }
     }
 }
@@ -172,13 +185,16 @@ impl Omitted {
 /// Every frame the recording decides for one committed entry, in grid order,
 /// and why the list ends early, if it does. `opponents` is `None` when an
 /// opposing committed row is missing, which leaves the armour frames and
-/// everything after them undecided.
+/// everything after them undecided. `content` is `None` when the content's
+/// defines are unavailable, and each `exile` answer `None` when undecidable.
 pub(super) fn frames(
     recorded: impl Iterator<Item = u32>,
     detail: Option<(&LandCombatDetailsRow, usize)>,
     own_flags: Option<u32>,
     unit: &LandCombatDivisionRow,
     opponents: Option<&[&LandCombatDivisionRow]>,
+    content: Option<&LandDefines>,
+    exile: [Option<bool>; 2],
 ) -> (Vec<u32>, Option<Omitted>) {
     let mut out: Vec<u32> = recorded
         .filter_map(|kind| RECORDED_KINDS.iter().position(|k| *k == kind))
@@ -190,18 +206,26 @@ pub(super) fn frames(
     let Some(opponents) = opponents else {
         return (out, Some(Omitted::Opponent));
     };
-    out.extend(armour_frames(detail, unit, opponents).into_iter().flatten());
+    let Some(content) = content else {
+        return (out, Some(Omitted::Defines));
+    };
+    out.extend(
+        armour_frames(content, unit, opponents)
+            .into_iter()
+            .flatten(),
+    );
     let own = &detail.sides[side];
     if unit.commander != 0 && unit.commander != own.commander {
         out.push(12);
     }
-    if fuel_ratio(unit.fuel_inputs) < SCALE {
+    let [fuel, capacity] = unit.fuel_inputs;
+    if fuel_ratio([fuel, capacity, content.fuel_penalty_start_ratio]) < SCALE {
         out.push(16);
     }
     match engine::csub_unit_definition::movement_air_defense_value(
         unit.air_attack,
-        detail.air_defines[3],
-        detail.air_defines[4],
+        content.air_superiority[0],
+        content.air_superiority[1],
     ) {
         Ok(value) if value > 1000 => match own_flags {
             Some(flags) if flags & 0x4000 != 0 => out.push(13),
@@ -211,14 +235,12 @@ pub(super) fn frames(
         Ok(_) => (),
         Err(cause) => return (out, Some(Omitted::AirDefense(cause))),
     }
-    // Frames 14 and 15 are recorded bits (see the module docs), pushed
-    // independently exactly as 1415CA660 pushes them; a zero bit is a
-    // decided absence, never an undecidable step.
-    if unit.template_frames & 1 != 0 {
-        out.push(14);
-    }
-    if unit.template_frames & 2 != 0 {
-        out.push(15);
+    for (frame, shown) in [14, 15].into_iter().zip(exile) {
+        match shown {
+            Some(true) => out.push(frame),
+            Some(false) => (),
+            None => return (out, Some(Omitted::Exile(frame))),
+        }
     }
     (out, None)
 }
@@ -242,16 +264,21 @@ mod tests {
     use super::*;
 
     const THRESHOLDS: [i64; 4] = [100_000, 75_000, 50_000, 0];
-    // The pinned defines recorded at pairL: 0.6, 0.25, 0.6, 0.25.
-    const DEFINES: [u32; 4] = [1_058_642_330, 1_048_576_000, 1_058_642_330, 1_048_576_000];
+
+    // The pinned vanilla defines at pairL.
+    fn content() -> LandDefines {
+        LandDefines {
+            armour_icons: [0.6, 0.25, 0.6, 0.25],
+            piercing_thresholds: THRESHOLDS.to_vec(),
+            air_superiority: [62_500_000, 75_000],
+            fuel_penalty_start_ratio: 25_000,
+            recon_skill_impact: 0,
+            exile_against_occupier: [0; 2],
+        }
+    }
 
     fn detail() -> LandCombatDetailsRow {
-        let mut detail = LandCombatDetailsRow {
-            piercing_thresholds: THRESHOLDS.to_vec(),
-            armour_icon_defines: DEFINES,
-            air_defines: [300_000, 250_000, 75_000, 62_500_000, 75_000],
-            ..Default::default()
-        };
+        let mut detail = LandCombatDetailsRow::default();
         detail.sides[1].commander = 1_254_130_455_145;
         detail
     }
@@ -261,9 +288,27 @@ mod tests {
             armour,
             piercing,
             side: 1,
-            fuel_inputs: [0, 0, 25_000],
             ..Default::default()
         }
+    }
+
+    fn icons(
+        recorded: &[u32],
+        detail: Option<&LandCombatDetailsRow>,
+        flags: u32,
+        unit: &LandCombatDivisionRow,
+        opponents: Option<&[&LandCombatDivisionRow]>,
+        exile: [Option<bool>; 2],
+    ) -> (Vec<u32>, Option<Omitted>) {
+        frames(
+            recorded.iter().copied(),
+            detail.map(|detail| (detail, 1)),
+            Some(flags),
+            unit,
+            opponents,
+            Some(&content()),
+            exile,
+        )
     }
 
     #[test]
@@ -282,48 +327,48 @@ mod tests {
 
     #[test]
     fn armour_frames_follow_the_opposing_committed_array() {
-        let detail = detail();
+        let content = content();
         // pairL: no armour on either side gives no armour icon.
         let infantry = unit(0, 4_861_568);
         let enemy = unit(0, 481_327);
         assert_eq!(
-            armour_frames(&detail, &infantry, &[&enemy, &enemy]),
+            armour_frames(&content, &infantry, &[&enemy, &enemy]),
             [None, None]
         );
         // Piercing 0.2 of two tanks' armour: nothing pierced to half.
         let tank = unit(2_000_000, 400_000);
         let piercer = unit(0, 400_000);
         assert_eq!(
-            armour_frames(&detail, &piercer, &[&tank, &tank]),
+            armour_frames(&content, &piercer, &[&tank, &tank]),
             [None, None]
         );
         // 0.6 of both tanks, and an unarmoured opponent that counts as pierced
         // without counting as armoured: 3 / 2 >= 0.6.
         let piercer = unit(0, 1_200_000);
         assert_eq!(
-            armour_frames(&detail, &piercer, &[&tank, &tank, &enemy])[0],
+            armour_frames(&content, &piercer, &[&tank, &tank, &enemy])[0],
             Some(11)
         );
         let partial = unit(0, 1_000_000);
         let heavy = unit(10_000_000, 0);
         // One of two armoured opponents pierced to at least half: 0.5 >= 0.25.
         assert_eq!(
-            armour_frames(&detail, &partial, &[&tank, &heavy])[0],
+            armour_frames(&content, &partial, &[&tank, &heavy])[0],
             Some(10)
         );
         // Our armour against piercing under half: no fully pierced weight, so
         // the ratio defaults to one and the gold shield shows.
         let armoured = unit(5_000_000, 0);
-        assert_eq!(armour_frames(&detail, &armoured, &[&enemy])[1], Some(9));
+        assert_eq!(armour_frames(&content, &armoured, &[&enemy])[1], Some(9));
         // The 0.75 bucket: (1 - 0.75) / 0.75 = 0.333, the grey shield.
         let medium = unit(1_000_000, 0);
         let pierce_three_quarters = unit(0, 800_000);
         assert_eq!(
-            armour_frames(&detail, &medium, &[&pierce_three_quarters])[1],
+            armour_frames(&content, &medium, &[&pierce_three_quarters])[1],
             Some(8)
         );
         // No opposing committed units: the ratio defaults to one.
-        assert_eq!(armour_frames(&detail, &infantry, &[]), [None, Some(9)]);
+        assert_eq!(armour_frames(&content, &infantry, &[]), [None, Some(9)]);
     }
 
     #[test]
@@ -334,43 +379,44 @@ mod tests {
         assert_eq!(fuel_ratio([-5, 1_000_000, 25_000]), 0);
         let detail = detail();
         let enemy = unit(0, 0);
+        let decided = [Some(false); 2];
         // pairL 169th: its own leader, anti-air 21.27 (0.10176 > 0.01), side
         // flags 0x80200C9 without 0x4000: only the general.
         let mut madison = unit(0, 4_861_568);
         madison.commander = 4_140_348_478_057;
         madison.air_attack = 2_127_473;
         assert_eq!(
-            frames(
-                [].into_iter(),
-                Some((&detail, 1)),
-                Some(0x80200C9),
+            icons(
+                &[],
+                Some(&detail),
+                0x80200C9,
                 &madison,
-                Some(&[&enemy])
+                Some(&[&enemy]),
+                decided
             ),
             (vec![12], None)
         );
-        madison.fuel_inputs = [100_000, 1_000_000, 25_000];
+        madison.fuel_inputs = [100_000, 1_000_000];
         assert_eq!(
-            frames(
-                [27, 3].into_iter(),
-                Some((&detail, 1)),
-                Some(0x4000),
+            icons(
+                &[27, 3],
+                Some(&detail),
+                0x4000,
                 &madison,
-                Some(&[&enemy])
+                Some(&[&enemy]),
+                decided
             ),
             (vec![4, 12, 16, 13], None)
         );
-        // Without the details row or an opposing row only recorded kinds
-        // remain, and the entry says which step ended it.
+        // Without the details row, an opposing row or the content only
+        // recorded kinds remain, and the entry says which step ended it.
         assert_eq!(
-            frames(
-                [2].into_iter(),
-                None,
-                Some(0x4000),
-                &madison,
-                Some(&[&enemy])
-            ),
+            icons(&[2], None, 0x4000, &madison, Some(&[&enemy]), decided),
             (vec![0], Some(Omitted::Details))
+        );
+        assert_eq!(
+            icons(&[2], Some(&detail), 0x4000, &madison, None, decided),
+            (vec![0], Some(Omitted::Opponent))
         );
         assert_eq!(
             frames(
@@ -378,36 +424,39 @@ mod tests {
                 Some((&detail, 1)),
                 Some(0x4000),
                 &madison,
-                None
+                Some(&[&enemy]),
+                None,
+                decided
             ),
-            (vec![0], Some(Omitted::Opponent))
+            (vec![0], Some(Omitted::Defines))
+        );
+        // Above the anti-air limit the missing side flags decide frame 13,
+        // so the list ends there and the exile frames after it are omitted.
+        assert_eq!(
+            frames(
+                [].into_iter(),
+                Some((&detail, 1)),
+                None,
+                &madison,
+                Some(&[&enemy]),
+                Some(&content()),
+                [Some(true); 2]
+            ),
+            (vec![12, 16], Some(Omitted::SideFlags))
         );
         madison.air_attack = 158_327; // 0.00237 after 141297FD0: below 1000.
         madison.commander = detail.sides[1].commander;
         assert_eq!(
-            frames(
-                [].into_iter(),
-                Some((&detail, 1)),
-                Some(0x4000),
+            icons(
+                &[],
+                Some(&detail),
+                0x4000,
                 &madison,
-                Some(&[&enemy])
+                Some(&[&enemy]),
+                decided
             ),
             (vec![16], None)
         );
-        // Recorded template bits append frames 14 and 15 independently.
-        for (bits, expected) in [(1, vec![16, 14]), (2, vec![16, 15]), (3, vec![16, 14, 15])] {
-            madison.template_frames = bits;
-            assert_eq!(
-                frames(
-                    [].into_iter(),
-                    Some((&detail, 1)),
-                    Some(0x4000),
-                    &madison,
-                    Some(&[&enemy])
-                ),
-                (expected, None)
-            );
-        }
         // Below the anti-air limit the missing side flags decide nothing.
         assert_eq!(
             frames(
@@ -415,43 +464,47 @@ mod tests {
                 Some((&detail, 1)),
                 None,
                 &madison,
-                Some(&[&enemy])
+                Some(&[&enemy]),
+                Some(&content()),
+                [Some(true); 2]
             ),
             (vec![16, 14, 15], None)
         );
-        // Above it they decide frame 13, so the list ends there and the
-        // recorded template frames 14 and 15 after it are omitted too.
-        madison.air_attack = 2_127_473;
-        assert_eq!(
-            frames(
-                [].into_iter(),
-                Some((&detail, 1)),
-                None,
-                &madison,
-                Some(&[&enemy])
-            ),
-            (vec![16], Some(Omitted::SideFlags))
-        );
+        // Exile frames append independently; an undecidable one ends the list.
+        for (exile, expected) in [
+            ([Some(true), Some(false)], (vec![16, 14], None)),
+            ([Some(false), Some(true)], (vec![16, 15], None)),
+            ([Some(true), Some(true)], (vec![16, 14, 15], None)),
+            ([None, Some(true)], (vec![16], Some(Omitted::Exile(14)))),
+            ([Some(true), None], (vec![16, 14], Some(Omitted::Exile(15)))),
+        ] {
+            assert_eq!(
+                icons(&[], Some(&detail), 0x4000, &madison, Some(&[&enemy]), exile),
+                expected
+            );
+        }
     }
 
     /// Each cause is one warning with its entry count, naming the omitted
-    /// template-country icons.
+    /// exile icons.
     #[test]
     fn omissions_are_counted_per_cause_and_name_the_omitted_suffix() {
-        let omitted =
-            std::collections::BTreeMap::from([(Omitted::SideFlags, 3), (Omitted::Opponent, 1)]);
+        let omitted = std::collections::BTreeMap::from([
+            (Omitted::SideFlags, 3),
+            (Omitted::Opponent, 1),
+            (Omitted::Exile(14), 2),
+        ]);
         let lines: Vec<_> = omission_warnings(62, &omitted).collect();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with(
             "Land division icons: 1 committed entries of combat 62 end early: an opposing committed LandCombatDivisions row is missing"
         ));
         assert!(lines[1].starts_with(
             "Land division icons: 3 committed entries of combat 62 end early: the combat has no LandCombatSides row"
         ));
-        assert!(
-            lines
-                .iter()
-                .all(|line| line.contains("template-country icons 14 and 15"))
-        );
+        assert!(lines[2].starts_with(
+            "Land division icons: 2 committed entries of combat 62 end early: the exile icon 14 is undecided"
+        ));
+        assert!(lines.iter().all(|line| line.contains("exile icon")));
     }
 }

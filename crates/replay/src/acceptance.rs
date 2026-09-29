@@ -645,22 +645,26 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
     }
     let mut states: Vec<_> = (0..=2)
         .map(|id| StateRow {
-            primary_name_length: 0,
-            secondary_name_length: 0,
             id,
             owner: [2, 19][(index / 37 + id as usize) % 2],
             controller: [0, 7, 19][(index / 5 + id as usize) % 3],
             movement_infrastructure: [i64::MIN, 0, 100_000, i64::MAX][(index + id as usize) % 4],
+            // Empty, ASCII and non-UTF-8 names, changing on their own cadence.
+            custom_name: match (index / 11 + id as usize) % 3 {
+                0 => Vec::new(),
+                1 => format!("Renamed {id}").into_bytes(),
+                _ => vec![0xff, b'x', 0],
+            },
+            owner_name: match (index / 7 + id as usize) % 2 {
+                0 => Vec::new(),
+                _ => format!("Owner name {}", index % 3).into_bytes(),
+            },
         })
         .collect();
     if index % 17 < 5 {
         states.push(StateRow {
-            primary_name_length: 0,
-            secondary_name_length: 0,
             id: u32::MAX,
-            owner: 0,
-            controller: 0,
-            movement_infrastructure: 0,
+            ..StateRow::default()
         });
     }
     let native_value = |tick: usize| match tick % 31 {

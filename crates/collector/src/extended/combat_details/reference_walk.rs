@@ -1,16 +1,17 @@
-//! Tests only: the land combat walk as main's readers read, sharing nothing
-//! between readers (no census members, commander selections, pass shares or
-//! division images) nor between divisions (the division sources are cleared
-//! before each). These are copies of `Destination::visit` and
-//! `Destination::detail` with every share dropped; the family tests compare
-//! the walk with them, table by table and failure by failure.
+//! Tests only: the land combat walk as unshared readers read, sharing nothing
+//! between readers (no census members, commander selections or division
+//! images) nor between divisions (the division sources and the country
+//! reader are rebuilt before each; the naming memo, which decides the name
+//! arena's layout, is kept). These are copies of
+//! `Destination::visit` and `Destination::detail` with every share dropped;
+//! the family tests compare the walk with them, table by table and failure by
+//! failure.
 use super::*;
 
 impl Destination<'_> {
     /// Before each combat reader: forget every share.
     fn forget_shares(&mut self) {
         self.commanders = cland_combat::Commanders::default();
-        self.combat.clear();
     }
 
     pub(super) fn visit_reference(
@@ -21,52 +22,17 @@ impl Destination<'_> {
         source: cland_combat::Source,
         members: cland_combat::Members<'_>,
     ) {
-        self.current_window = None;
         // Selections are the combat's own.
         self.commanders = cland_combat::Commanders::default();
         // The census authenticated every participant moments ago in this pass.
         let _ = members;
         let members = cland_combat::Members::none();
         self.forget_shares();
-        {
-            let _reads = crate::read_accounting::table(TABLES[1]);
-            let started = qpc();
-            // The census has already retained every participant in this combat.
-            // Its original counts bound both destinations without another read.
-            let bound =
-                (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
-            self.window_progress.required += bound;
-            let start = self.window_progress.len;
-            grow_vec(self.window, start + bound);
-            grow_vec(self.divisions, self.progress[1].required + bound);
-            match cland_combat::read_window_operands(
-                memory,
-                base,
-                state,
-                source,
-                &members,
-                &mut self.commanders,
-                self.combat,
-                &mut self.window[start..],
-            ) {
-                Ok(operands) => {
-                    let len = operands.divisions_len;
-                    self.window_progress.len += len;
-                    self.current_window = Some((source.id, start, len, operands.hq_unit));
-                }
-                Err(reason) => {
-                    // Fail the consuming tables closed: a missing HQ unit
-                    // would invent a hidden badge, missing operands icons.
-                    if self.progress[0].failure.is_none() {
-                        self.progress[0].failure = Some(reason);
-                    }
-                    if self.progress[1].failure.is_none() {
-                        self.progress[1].failure = Some(reason);
-                    }
-                }
-            }
-            self.ticks[1] += elapsed(started);
-        }
+        // The census has already retained every participant in this combat;
+        // its counts bound the division destination without another read.
+        let bound =
+            (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
+        grow_vec(self.divisions, self.progress[1].required + bound);
         {
             let started = qpc();
             self.detail_reference(memory, base, state, source, &members);
@@ -94,7 +60,9 @@ impl Destination<'_> {
                         }
                     }
                 }
-                Err(reason) => self.progress[2].failure = Some(reason),
+                Err(reason) => {
+                    self.progress[2].failure = Some(reason);
+                }
             }
             self.ticks[2] += elapsed(started);
         }
@@ -107,7 +75,6 @@ impl Destination<'_> {
         // The unit visit's storage, lent while the visitor borrows `self`.
         let mut shares = std::mem::take(self.combat);
         {
-            // The country sets share nothing: the same reader as the walk.
             let _reads = crate::read_accounting::table(TABLES[3]);
             let started = qpc();
             self.combat_sides(memory, base, source);
@@ -134,118 +101,58 @@ impl Destination<'_> {
                         let _reads = crate::read_accounting::table(TABLES[1]);
                         let started = qpc();
                         self.progress[1].required += 1;
-                        // The window walk in visit() covers every full
-                        // participant, so every visited handle joins. A miss
-                        // fails the table closed rather than zero-filling
-                        // operands the viewer would draw as absent icons.
-                        let operand = match self.current_window {
-                            Some((combat, start, len, _)) if combat == source.id => self.window
-                                [start..start + len]
-                                .get(row)
-                                .filter(|row| row.handle == handle)
-                                .copied(),
-                            _ => None,
-                        };
-                        if operand.is_none() && self.progress[1].failure.is_none() {
-                            self.progress[1].failure = Some("land window operands missing");
-                        }
-                        if self.progress[1].failure.is_none()
-                            && let Some(operand) = operand
-                        {
+                        if self.progress[1].failure.is_none() {
                             // Enemy transport terms go straight into the arena
                             // past its admitted length; the reader grows it on
                             // this worker, one successfully read term at a time.
                             let transport_start = self.reinforcement_progress[3].len;
+                            // Exile tags go straight into the preallocated arena
+                            // past its admitted length; an overflow is counted
+                            // for the spool's growth, never allocated here.
+                            let exile_start = self.exile_progress.len;
+                            // Nothing carries over from another division: its
+                            // sources or the country reader. The naming memo is
+                            // storage, not a read share: it keeps each shared
+                            // group key once in the arena, as the walk does.
                             self.sources.clear();
+                            let countries = engine::ccountry::Reader::new(memory, base, state);
                             let result = read_division(
                                 divisional,
                                 base,
                                 state,
+                                &countries,
                                 self.sources,
                                 self.scratch,
-                                self.transport_terms,
-                                transport_start,
+                                DivisionOutputs {
+                                    name_groups: self.name_groups,
+                                    names: &mut self.names,
+                                    exile_tags: &mut self.exile_tags[exile_start..],
+                                    transport_terms: self.transport_terms,
+                                    transport_start,
+                                },
+                                role,
                                 pointer,
                                 handle,
                             );
                             match result {
-                                Ok((stats, context, reinforcement, manpower_len)) => {
-                                    let commander_input =
-                                        self.commander(memory, base, stats.commander);
-                                    self.manpower_progress.required += manpower_len;
-                                    let manpower_start = self.manpower_progress.len;
-                                    self.width_progress.required += context.width_term_count;
-                                    let start = self.width_progress.len;
-                                    let count = context.width_term_count;
-                                    let counts = [
-                                        reinforcement.modifier_count,
-                                        reinforcement.supply_term_count,
-                                        reinforcement.acclimatization_count,
-                                        reinforcement.transport_term_count,
-                                    ];
-                                    let starts = self.reinforcement_progress.map(|p| p.len);
-                                    for (p, count) in
-                                        self.reinforcement_progress.iter_mut().zip(counts)
-                                    {
-                                        p.required += count;
-                                    }
-                                    if stats.commander == 0 || commander_input.is_some() {
-                                        // Every prefix was read successfully above. Grow from
-                                        // those exact counts and retain it now, without retrying
-                                        // native reads or dropping the containing division.
-                                        grow_vec(self.width_terms, start + count);
-                                        grow_vec(self.manpower, manpower_start + manpower_len);
-                                        grow_vec(
-                                            self.reinforcement_modifiers,
-                                            starts[0] + counts[0],
-                                        );
-                                        grow_vec(self.supply_terms, starts[1] + counts[1]);
-                                        grow_vec(self.acclimatization, starts[2] + counts[2]);
-                                        let scratch = &*self.scratch;
-                                        self.reinforcement_modifiers
-                                            [starts[0]..starts[0] + counts[0]]
-                                            .copy_from_slice(
-                                                &scratch.reinforcement_modifiers[..counts[0]],
-                                            );
-                                        self.supply_terms[starts[1]..starts[1] + counts[1]]
-                                            .copy_from_slice(&scratch.supply[..counts[1]]);
-                                        self.acclimatization[starts[2]..starts[2] + counts[2]]
-                                            .copy_from_slice(&scratch.acclimatization[..counts[2]]);
-                                        // Transport terms were written in place at
-                                        // starts[3]; admission only advances the length.
-                                        for (p, count) in
-                                            self.reinforcement_progress.iter_mut().zip(counts)
-                                        {
-                                            p.len += count;
-                                        }
-                                        self.width_terms[start..start + count]
-                                            .copy_from_slice(&scratch.widths[..count]);
-                                        self.width_progress.len += count;
-                                        self.manpower
-                                            [manpower_start..manpower_start + manpower_len]
-                                            .copy_from_slice(&scratch.manpower[..manpower_len]);
-                                        self.manpower_progress.len += manpower_len;
-                                        self.divisions[self.progress[1].len] = Division {
-                                            combat: source.id,
-                                            side,
-                                            ordinal,
-                                            province,
-                                            role,
-                                            stats,
-                                            direction: operand.direction,
-                                            direction_group: operand.direction_group,
-                                            template_frames: operand.template_frames,
-                                            commander_input,
-                                            context,
-                                            width_start: start,
-                                            manpower_start,
-                                            manpower_len,
-                                            reinforcement,
-                                            reinforcement_starts: starts,
-                                        };
-                                        self.progress[1].len += 1;
-                                    }
-                                }
+                                Ok((stats, exile, context, reinforcement)) => self.admit(
+                                    memory,
+                                    base,
+                                    Placement {
+                                        combat: source.id,
+                                        side,
+                                        ordinal,
+                                        province,
+                                        role,
+                                        exile_start,
+                                    },
+                                    Acquired {
+                                        stats,
+                                        exile,
+                                        context,
+                                        reinforcement,
+                                    },
+                                ),
                                 Err(reason) => self.progress[1].failure = Some(reason),
                             }
                         }
@@ -279,6 +186,8 @@ impl Destination<'_> {
         *self.combat = shares;
         *self.images = images;
     }
+    /// The country sets with the marker's indicator and flag words, which
+    /// `read_country_sets` reads itself.
     fn detail_reference(
         &mut self,
         memory: &impl Memory,
@@ -307,6 +216,9 @@ impl Destination<'_> {
             Outcome::Truncated { .. } => return,
             Outcome::Rows { .. } => {}
         }
+        // Selected commanders' texts share the commander text arena; they stay
+        // committed only if this combat's row is kept.
+        let texts = self.commander_names.len;
         self.forget_shares();
         match cland_combat::read_details(
             memory,
@@ -315,8 +227,13 @@ impl Destination<'_> {
             members,
             &mut self.commanders,
             &mut self.scratch.rosters,
+            &mut self.commander_names,
         ) {
-            Ok((mut row, count)) => {
+            Ok(cland_combat::Details {
+                mut row,
+                participants: count,
+                texts_fit,
+            }) => {
                 self.arenas[0].required += count;
                 self.forget_shares();
                 let mut context = land_tactic_inputs::capture_context(
@@ -332,25 +249,22 @@ impl Destination<'_> {
                 match context.outcome {
                     Outcome::Unavailable { reason } => {
                         self.progress[0].failure = Some(reason);
+                        self.commander_names.len = texts;
                         return;
                     }
-                    Outcome::Truncated { .. } => return,
+                    Outcome::Truncated { .. } => {
+                        self.commander_names.len = texts;
+                        return;
+                    }
                     Outcome::Rows { .. } => {}
                 }
-                if self.progress[0].len == self.details.len()
+                // A text that did not fit was counted for growth: the whole
+                // combat is omitted this hour, as for a full roster arena.
+                if !texts_fit
+                    || self.progress[0].len == self.details.len()
                     || count > self.rosters.len().saturating_sub(self.arenas[0].len)
                 {
-                    return;
-                }
-                // The window walk ran before this detail in visit(); without
-                // its HQ row the badge would be invented hidden. Fail closed.
-                let Some((window_combat, window_start, window_len, hq_unit)) = self.current_window
-                else {
-                    self.progress[0].failure = Some("land window operands missing");
-                    return;
-                };
-                if window_combat != source.id {
-                    self.progress[0].failure = Some("land window operands mismatch");
+                    self.commander_names.len = texts;
                     return;
                 }
                 let start = self.arenas[0].len;
@@ -366,9 +280,6 @@ impl Destination<'_> {
                 self.details[self.progress[0].len] = Detail {
                     row,
                     tactic_context: context.row,
-                    hq_unit,
-                    window_start,
-                    window_len,
                 };
                 self.tactic_unlock_progress.len += unlock_count;
                 self.progress[0].len += 1;

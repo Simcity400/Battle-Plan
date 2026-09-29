@@ -895,8 +895,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .icons
                     .counters
                     .census(&label_batch, &document.icons.fonts, ui_scale);
-            // The same land combat lines the dump prints, so the export says
-            // which markers were undecided or drawn with load-rebuilt flags.
+            // The same combat lines the dump prints, so the export names the
+            // combats whose icons were undecided or drawn with a limited value.
             census["combat_diagnostics"] =
                 serde_json::json!(counter_report.combat_gap_lines().collect::<Vec<_>>());
             std::fs::write(path, serde_json::to_vec_pretty(&census)?)?;
@@ -912,6 +912,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &document,
                     map::ui_scale::extent(options.size, ui_scale),
                     &options.perspective,
+                    None,
                 )?;
                 document.icons.lazy.settle();
                 if document.icons.lazy.version() == before {
@@ -1367,7 +1368,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("  {}", name.summary());
         }
         println!(
-            "Labels: {} icons, {} texts ({} scripted names refused) in {} quads; allegiance measured against {}",
+            "Labels: {} icons, {} texts ({} names refused by the localiser) in {} quads; allegiance measured against {}",
             label_report.icons,
             label_report.texts,
             label_report.refused_names,

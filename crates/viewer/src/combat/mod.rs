@@ -1,9 +1,12 @@
 //! Game-authored land and naval combat windows, shared by playback and PNG export.
 mod assets;
+mod battle_name;
 mod binding;
+mod defines;
 mod details;
 mod division_icons;
 pub(crate) mod engaged;
+mod hq;
 pub(crate) mod icon_frames;
 pub(crate) mod land_details;
 mod layout;
@@ -11,6 +14,7 @@ mod naval_details;
 mod naval_environment;
 mod presentation;
 pub(crate) mod progress;
+mod template_icons;
 pub(crate) mod texture;
 
 use crate::{
@@ -19,11 +23,13 @@ use crate::{
 };
 pub use assets::Assets;
 use assets::Sprite;
+pub(crate) use battle_name::battle_name_candidates;
 use binding::Bindings;
+use installed_content::localisation::{Piece, pieces};
 /// The one screen-rectangle hit test; the map's counter hits share it.
 pub(crate) use layout::contains;
 use layout::{Node, number, string};
-use std::{collections::BTreeMap, io};
+use std::{borrow::Cow, collections::BTreeMap, io};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -137,13 +143,49 @@ pub struct Window {
     pub offset: [f32; 2],
     pub scroll: [usize; 4],
     pub dragging: bool,
+    /// The bindings for (branch, hour, selection, perspective), whether the
+    /// engaged index covered that hour, and whether the window shows.
     cached: Option<(
         replay::BranchId,
         i32,
         Selection,
         crate::map::perspective::Choice,
         Bindings,
+        bool,
+        bool,
     )>,
+}
+
+/// 1415C8950 hides an active land window when 1413CD880 finds neither side
+/// engaged. An undecided flag keeps the window, whose marker reports the gap.
+fn visible(
+    frame: &replay::frame::DecodedFrame,
+    selection: Selection,
+    ours: u32,
+    engaged: Option<&crate::engaged_index::EngagedIndex>,
+) -> io::Result<bool> {
+    use crate::map::tables::rows;
+    use replay::rows::tables;
+    let Selection::Land(id) = selection else {
+        return Ok(true);
+    };
+    let links: BTreeMap<u32, u32> = rows::<tables::CountryLinks>(frame)?
+        .rows()
+        .iter()
+        .map(|row| (row.id, row.canonical_slot))
+        .collect();
+    let relations = crate::map::visibility::Relations::read(frame, &links);
+    // A load-rebuilt flag's provenance is named with the hour's marker lines
+    // (CounterReport::combat_limits), which cover this combat too.
+    let (flags, _) = crate::engaged_index::combats(
+        frame,
+        crate::engaged_index::LAND,
+        ours,
+        &links,
+        relations.as_ref().map_err(|reason| *reason),
+        engaged,
+    )?;
+    Ok(flags.get(&id) != Some(&engaged::Engaged::No))
 }
 impl Window {
     /// What the open window cannot show exactly: its bindings' gaps and the
@@ -168,33 +210,49 @@ impl Window {
     }
     /// Lays the open window out on a frame of `extent` interface pixels; the
     /// batch and every hit rectangle are in interface pixels too
-    /// ([`crate::map::ui_scale`]).
-    pub fn draw(
+    /// ([`crate::map::ui_scale`]). `engaged` is the window's engaged-flag
+    /// index; without it (a dump) the flag is what a load at this hour
+    /// rebuilds.
+    pub(crate) fn draw(
         &mut self,
         document: &Document,
         extent: [f32; 2],
         perspective: &crate::map::perspective::Choice,
+        engaged: Option<&crate::engaged_index::EngagedIndex>,
     ) -> io::Result<Option<Drawn>> {
         let Some(selection) = self.selection else {
             return Ok(None);
         };
         let branch = document.playback.branch();
         let hour = document.playback.hour();
-        if !self.cached.as_ref().is_some_and(|(b, h, s, p, _)| {
-            (*b, *h, *s) == (branch, hour, selection) && p == perspective
+        let covered = engaged.is_some_and(|index| index.covers(branch, hour));
+        if !self.cached.as_ref().is_some_and(|(b, h, s, p, _, c, _)| {
+            (*b, *h, *s, *c) == (branch, hour, selection, covered) && p == perspective
         }) {
-            let mut bindings =
-                Bindings::read(document, selection, &*document.vision(perspective)?)?;
-            if let Some((_, _, previous, _, shown)) = &self.cached
+            let vision = document.vision(perspective)?;
+            let window_shown = visible(document.frame()?, selection, vision.ours(), engaged)?;
+            let mut bindings = Bindings::read(document, selection, &vision)?;
+            if let Some((_, _, previous, _, shown, _, _)) = &self.cached
                 && *previous == selection
             {
                 for (next, shown) in bindings.entries.iter_mut().zip(&shown.entries) {
                     keep_list_order(next, shown);
                 }
             }
-            self.cached = Some((branch, hour, selection, perspective.clone(), bindings));
+            self.cached = Some((
+                branch,
+                hour,
+                selection,
+                perspective.clone(),
+                bindings,
+                covered,
+                window_shown,
+            ));
         }
-        let bindings = &self.cached.as_ref().expect("bound above").4;
+        let (.., bindings, _, shown) = self.cached.as_ref().expect("bound above");
+        if !shown {
+            return Ok(None);
+        }
         let assets = &document.icons.combat;
         let root = &assets.windows[match selection {
             Selection::Land(_) => "landcombatview",
@@ -529,14 +587,53 @@ pub(crate) fn naval_bubble_progress(
 }
 /// Native inline country flag marker (`0x12` followed by the country), which
 /// CCombatantEntry (1415BA240) writes into land division names. Bindings put
-/// the resolved flag-atlas key after it, ended by a space or the string end.
+/// the resolved flag-atlas key after it, ended by a space or the string end;
+/// an authored 0x12 in bound text is refused ([`binding::displayable`]), so
+/// every one the painter sees is the viewer's own.
 pub(crate) const INLINE_FLAG: char = '\u{12}';
+/// CGameBitmapFont::text_icon_lookup (14162E880) reads an icon name as the
+/// part before its first `|` and, after it, a frame counted from one: digits
+/// only, else the first frame; no digits, or `0`, give frame -1.
+fn icon_name(name: &str) -> (&str, i64) {
+    let Some((base, digits)) = name.split_once('|') else {
+        return (name, 0);
+    };
+    let mut value: i32 = 0;
+    for digit in digits.bytes() {
+        if !digit.is_ascii_digit() {
+            return (base, 0);
+        }
+        value = value.wrapping_mul(10).wrapping_add(i32::from(digit - b'0'));
+    }
+    if value < 0 {
+        return (base, 0);
+    }
+    (base, i64::from(value) - 1)
+}
+/// The sprite of a text icon and the frame it selects: `GFX_<name>` first,
+/// then `<name>` (14162E880). `None` is an icon the content lacks, which
+/// the game draws as nothing with no advance (14162EB10, 14162EFE0).
+fn text_icon<'a>(assets: &'a Assets, name: &str) -> Option<(Cow<'a, Sprite>, i64)> {
+    let (base, frame) = icon_name(name);
+    let sprite = assets
+        .sprite(&format!("GFX_{base}"))
+        .or_else(|| assets.sprite(base))?;
+    Some((sprite, frame))
+}
 /// pairJ_land_5.png: right-aligned "<flag> 169th 'Madison' Division" (117 px
 /// of Arial12 text) starts 129 px before its box edge, and "<flag> 900
 /// Infantry Division" (101 px) 113 px before it. An attacker's trailing flag
 /// starts exactly at the pen after "name ".
 const INLINE_FLAG_ADVANCE: f32 = 12.0;
 pub(crate) enum Chunk {
+    Text(String, [f32; 4]),
+    /// A text icon's sprite and frame.
+    Icon(Box<Sprite>, u32),
+    Flag(String),
+}
+/// A run of #163's raid tooltip markup ([`text_chunks`]): its own parser,
+/// until the tooltips move onto the combat window's text path.
+pub(crate) enum TextChunk {
     Text(String, [f32; 4]),
     Icon(String),
     Flag(String),
@@ -546,14 +643,14 @@ pub(crate) fn text_chunks(
     colors: &installed_content::fonts::TextColors,
     base: [f32; 4],
     color: &mut [f32; 4],
-) -> Vec<Chunk> {
+) -> Vec<TextChunk> {
     let mut chunks = Vec::new();
     let mut run = String::new();
     let mut chars = raw.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '§' || ch == '£' || ch == INLINE_FLAG {
             if !run.is_empty() {
-                chunks.push(Chunk::Text(std::mem::take(&mut run), *color));
+                chunks.push(TextChunk::Text(std::mem::take(&mut run), *color));
             }
             if ch == '§' {
                 if let Some(code) = chars.next() {
@@ -580,7 +677,7 @@ pub(crate) fn text_chunks(
                     key.push(c);
                     chars.next();
                 }
-                chunks.push(Chunk::Flag(key));
+                chunks.push(TextChunk::Flag(key));
             } else {
                 let mut name = String::from("GFX_");
                 while let Some(c) = chars
@@ -594,14 +691,14 @@ pub(crate) fn text_chunks(
                 if chars.peek() == Some(&'£') {
                     chars.next();
                 }
-                chunks.push(Chunk::Icon(name));
+                chunks.push(TextChunk::Icon(name));
             }
         } else {
             run.push(ch);
         }
     }
     if !run.is_empty() {
-        chunks.push(Chunk::Text(run, *color));
+        chunks.push(TextChunk::Text(run, *color));
     }
     chunks
 }
@@ -870,7 +967,7 @@ impl Painter<'_> {
         align: text::Align,
         width: Option<f32>,
     ) {
-        if !value.contains(['\n', '£', '§', INLINE_FLAG]) {
+        if !value.contains(['\n', '\u{11}', '\u{13}', INLINE_FLAG]) {
             self.drawn.batch.text(
                 &text::layout(font, value, origin, align, width),
                 font.color(),
@@ -896,13 +993,11 @@ impl Painter<'_> {
                     .batch
                     .at_layer(window_layer(self.drawn.batch.quads.len()));
                 match &chunk {
-                    Chunk::Icon(name) => {
-                        if remaining.is_none_or(|w| w >= advance)
-                            && let Some(sprite) = self.assets.sprite(name)
-                        {
+                    Chunk::Icon(sprite, frame) => {
+                        if remaining.is_none_or(|w| w >= advance) {
                             self.drawn.batch.scaled(
                                 &sprite.sheet,
-                                0,
+                                *frame,
                                 [x, y],
                                 sprite.size,
                                 [1.0; 4],
@@ -932,13 +1027,65 @@ impl Painter<'_> {
             }
         }
     }
-    /// One line of rich text: colour runs, `£icon£` sprites and inline flags.
+    /// One line of rich text as the game's text layout reads it (1422894D0,
+    /// through [`pieces`]): colour codes, text icons and the viewer's
+    /// resolved inline flags ([`INLINE_FLAG`]).
     fn chunks(&self, font: &text::Font, raw: &str, color: &mut [f32; 4]) -> Vec<Chunk> {
-        text_chunks(raw, &self.assets.text_colors, font.color(), color)
+        let mut chunks = Vec::new();
+        let mut run = String::new();
+        let flush = |run: &mut String, chunks: &mut Vec<Chunk>, color: [f32; 4]| {
+            if !run.is_empty() {
+                chunks.push(Chunk::Text(std::mem::take(run), color));
+            }
+        };
+        for (index, mut segment) in raw.split(INLINE_FLAG).enumerate() {
+            if index > 0 {
+                let end = segment
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(segment.len());
+                flush(&mut run, &mut chunks, *color);
+                chunks.push(Chunk::Flag(segment[..end].to_owned()));
+                segment = &segment[end..];
+            }
+            for piece in pieces(segment) {
+                match piece {
+                    Piece::Text(text) => run.push_str(text),
+                    Piece::Colour(code) => {
+                        flush(&mut run, &mut chunks, *color);
+                        *color = if code == '!' {
+                            font.color()
+                        } else if let Some(rgb) = self.assets.text_colors.get(&code) {
+                            [
+                                rgb[0] as f32 / 255.0,
+                                rgb[1] as f32 / 255.0,
+                                rgb[2] as f32 / 255.0,
+                                1.0,
+                            ]
+                        } else {
+                            *color
+                        };
+                    }
+                    Piece::Icon(name) => {
+                        flush(&mut run, &mut chunks, *color);
+                        // A frame outside the sprite is refused when bound
+                        // (binding::displayable).
+                        if let Some((sprite, frame)) = text_icon(self.assets, name)
+                            && let Ok(frame) = u32::try_from(frame)
+                        {
+                            chunks.push(Chunk::Icon(Box::new(sprite.into_owned()), frame));
+                        }
+                    }
+                    // Refused when bound (binding::displayable).
+                    Piece::Flag(_) | Piece::Control14 | Piece::Control1A(_) => (),
+                }
+            }
+        }
+        flush(&mut run, &mut chunks, *color);
+        chunks
     }
     fn length(&self, font: &text::Font, chunk: &Chunk) -> f32 {
         match chunk {
-            Chunk::Icon(name) => self.assets.sprite(name).map_or(0.0, |s| s.size[0]),
+            Chunk::Icon(sprite, _) => sprite.size[0],
             Chunk::Flag(_) => INLINE_FLAG_ADVANCE,
             Chunk::Text(run, _) => text::measure(font, run),
         }
@@ -946,7 +1093,7 @@ impl Painter<'_> {
     /// The text a `fixedsize` box shows: [`fit`] with this font's metrics.
     fn fit(&self, font: &text::Font, value: &str, width: f32, height: f32) -> String {
         use crate::map::names::GlyphMetrics;
-        if value.contains(['\n', '§', '£']) {
+        if value.contains(['\n', '\u{11}', '\u{13}']) {
             return value.into();
         }
         let mut color = font.color();
@@ -1115,7 +1262,7 @@ where
         match chunk {
             Chunk::Text(run, _) => units.extend(run.chars().map(Unit::Char)),
             Chunk::Flag(key) => units.push(Unit::Flag(key)),
-            Chunk::Icon(_) => return None,
+            Chunk::Icon(..) => return None,
         }
     }
     let laid = lay_out(&units, width, height, true, false, glyphs);

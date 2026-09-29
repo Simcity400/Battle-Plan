@@ -109,7 +109,6 @@ pub struct Sources {
     pub(crate) width_arena: Vec<crate::carmy_combat_inputs::WidthTerm>,
     pub(crate) context_metadata:
         Option<Result<crate::carmy_combat_inputs::ContextMetadata, &'static str>>,
-    pub(crate) context_defines: Option<Result<[i64; 8], &'static str>>,
     pub(crate) context_modifiers: Shared<usize, [crate::carmy_combat_inputs::ContextModifier; 3]>,
     /// The division `capture_stats` authenticated last: its pointer, handle
     /// and stat block. The same division's later readers skip those reads.
@@ -149,7 +148,6 @@ impl Sources {
         self.widths.clear();
         self.width_arena.clear();
         self.context_metadata = None;
-        self.context_defines = None;
         self.context_modifiers.clear();
         self.verified = None;
         self.leader = None;
@@ -226,14 +224,13 @@ const fn span(start: usize, end: usize, destination: usize) -> RecordField {
 }
 
 /// The CArmy spans one division's readers read (stats, context,
-/// reinforcement, manpower, the modifier member and the leader chain), packed
-/// in order: identity/class/handle; formation and supply bytes; the orders
-/// group; the stat block; modifier data and attack accumulator; owners,
-/// location and route; retreat flags; the transfer membership; the name
-/// owner; the template; manpower; strength and organisation; entrenchment and
-/// strength factor; supply days; acclimatization; supply and fuel. Small gaps
-/// inside a span are the same object's bytes.
-const ARMY_FIELDS: [RecordField; 17] = [
+/// reinforcement, the modifier member and the leader chain), packed in order:
+/// identity/class/handle; formation and supply bytes; the orders group; the
+/// stat block; modifier data and attack accumulator; owners, location and
+/// route; retreat flags; the transfer membership; the name member; the
+/// template; the strength factor; the direction groups; supply days;
+/// acclimatization; supply and fuel. Small gaps inside a span are the same object's bytes.
+const ARMY_FIELDS: [RecordField; 16] = [
     span(0x000, 0x020, 0x000),
     span(0x028, 0x060, 0x020),
     span(0x0c0, 0x0c8, 0x058),
@@ -245,24 +242,27 @@ const ARMY_FIELDS: [RecordField; 17] = [
     span(0x2f8, 0x300, 0x0e0),
     span(0x340, 0x348, 0x0e8),
     span(0x3b8, 0x3c0, 0x0f0),
-    span(0x3d8, 0x3f0, 0x0f8),
-    span(0x420, 0x438, 0x110),
-    span(0x458, 0x470, 0x128),
-    span(0x498, 0x49c, 0x140),
-    span(0x4c0, 0x4f8, 0x148),
-    span(0x600, 0x628, 0x180),
+    span(0x468, 0x470, 0x0f8),
+    span(0x498, 0x49c, 0x100),
+    // The direction group (`carmy_combat_inputs::DIRECTION_GROUP`), which the
+    // stat reader's naming scatter reads.
+    span(0x4a8, 0x4ac, 0x104),
+    span(0x4c0, 0x4f8, 0x108),
+    span(0x600, 0x628, 0x140),
 ];
-const ARMY_STRIDE: usize = 0x1a8;
+const ARMY_STRIDE: usize = 0x168;
 /// The stat block spans the readers read: identity; defence to initiative;
-/// fuel capacity; anti-air; maxima, base speed, armour and piercing.
-const STAT_FIELDS: [RecordField; 5] = [
+/// fuel capacity; anti-air; base speed, armour and piercing.
+const STAT_FIELDS: [RecordField; 6] = [
     span(0x000, 0x008, 0x000),
     span(0x0a8, 0x0e8, 0x008),
     span(0x120, 0x128, 0x048),
     span(0x220, 0x228, 0x050),
-    span(0x280, 0x2a8, 0x058),
+    span(0x290, 0x2a8, 0x058),
+    // The equipment category mask (`csub_unit_definition::AIR_FLAGS`).
+    span(0x5a8, 0x5b0, 0x070),
 ];
-const STAT_STRIDE: usize = 0x80;
+const STAT_STRIDE: usize = 0x78;
 const ARMY_LAYOUT: RecordLayout<'static> = RecordLayout::new(&ARMY_FIELDS, ARMY_STRIDE).unwrap();
 const STAT_LAYOUT: RecordLayout<'static> = RecordLayout::new(&STAT_FIELDS, STAT_STRIDE).unwrap();
 /// Where the army record keeps the stat block pointer (`cunit::STAT_BLOCK`).
@@ -1096,20 +1096,14 @@ mod tests {
             let owner = owners[index % owners.len()];
             w.u32(army + cunit::ROSTER_OWNER, owner);
             w.u32(army + cunit::LOGICAL_OWNER, owner);
+            // A generated name (programmatic override flag set), of a
+            // nonzero type every other division; neither reads further.
             let name = w.alloc(0x100);
-            w.u64(army + inputs::DISPLAY_NAME_OWNER, name as u64);
-            w.u64(name + inputs::DISPLAY_NAME + 0x18, 15);
-            w.u64(
-                army + 0x3d8,
-                crate::carmy_manpower_values::VTABLE_RVA as u64,
-            );
-            let manpower = index % 3;
-            let terms = w.alloc(manpower.max(1) * 8);
-            for term in 0..manpower {
-                w.u32(terms + term * 8, owner);
-                w.u32(terms + term * 8 + 4, (index * 10 + term) as u32);
-            }
-            w.array(army + carmy::MANPOWER_DATA, terms, manpower as u32);
+            w.u64(army + inputs::NAME_GROUP_MEMBER, name as u64);
+            w.u64(name, crate::cname_group_member::VTABLE_RVA as u64);
+            w.u32(name + crate::cname_group_member::TYPE, (index % 2) as u32);
+            w.u32(name + crate::cname_group_member::ORDER, index as u32);
+            w.put(name + crate::cname_group_member::FLAG_B, &[1]);
             // Every other division bypasses core supply (+0x2E); the rest ask
             // the predicate, which half of them fail.
             w.put(army + 0x2e, &[u8::from(index % 2 == 0)]);
@@ -1170,7 +1164,6 @@ mod tests {
         supply: Vec<reinforcement::SupplyTerm>,
         acclimatization: Vec<reinforcement::AcclimatizationTerm>,
         transport: Vec<reinforcement::TransportTerm>,
-        manpower: Vec<inputs::ManpowerTerm>,
     }
 
     type Walked = Vec<Result<Captured, &'static str>>;
@@ -1184,8 +1177,9 @@ mod tests {
         modifiers: [reinforcement::ModifierTerm; reinforcement::MODIFIER_LIMIT],
         supply: [reinforcement::SupplyTerm; reinforcement::SUPPLY_TERM_LIMIT],
         acclimatization: [reinforcement::AcclimatizationTerm; reinforcement::ACCLIMATIZATION_LIMIT],
-        manpower: [inputs::ManpowerTerm; inputs::MANPOWER_TERM_LIMIT],
         transport: Vec<reinforcement::TransportTerm>,
+        groups: crate::cname_group_member::GroupKeys,
+        names: Vec<u8>,
     }
 
     impl Scratch {
@@ -1195,8 +1189,9 @@ mod tests {
                 modifiers: [Default::default(); reinforcement::MODIFIER_LIMIT],
                 supply: [Default::default(); reinforcement::SUPPLY_TERM_LIMIT],
                 acclimatization: [Default::default(); reinforcement::ACCLIMATIZATION_LIMIT],
-                manpower: [Default::default(); inputs::MANPOWER_TERM_LIMIT],
                 transport: Vec::new(),
+                groups: crate::cname_group_member::GroupKeys::with_capacity(64, 64),
+                names: vec![0; 4096],
             }
         }
         fn captured(
@@ -1204,7 +1199,6 @@ mod tests {
             stats: inputs::Row,
             context: inputs::ContextRow,
             row: reinforcement::ContextRow,
-            manpower: usize,
         ) -> Captured {
             Captured {
                 stats,
@@ -1215,25 +1209,38 @@ mod tests {
                 acclimatization: self.acclimatization[..row.acclimatization_count].to_vec(),
                 transport: self.transport[..row.transport_term_count].to_vec(),
                 reinforcement: row,
-                manpower: self.manpower[..manpower].to_vec(),
             }
         }
     }
 
-    /// Main's per-division chain, as main's collector ran it: main's readers
-    /// and its per-pass context memo, every division read in full.
+    /// The unshared per-division chain, as the collector ran it before
+    /// sharing: those readers, one country reader for the combat and the
+    /// per-pass context memo, every division read in full.
     fn walk_main(memory: &World, divisions: &[(usize, u64)]) -> Walked {
         use super::{main_combat as combat, main_reinforcement as reinforcement};
         let mut memo = combat::ContextModifiers::default();
         let mut s = Scratch::new();
+        let countries = crate::ccountry::Reader::new(memory, 0, GAME);
         divisions
             .iter()
             .map(|&(army, handle)| {
-                let stats = combat::capture_stats(memory, 0, army, handle)?;
+                let stats = combat::capture_stats(
+                    memory,
+                    0,
+                    army,
+                    handle,
+                    &mut s.groups,
+                    &mut crate::cname_group_member::Names {
+                        bytes: &mut s.names,
+                        len: 0,
+                        required: 0,
+                    },
+                )?;
+                let countries = countries.as_ref().map_err(|reason| *reason)?;
                 let context = combat::capture_context(
                     memory,
                     0,
-                    GAME,
+                    countries,
                     army,
                     handle,
                     &mut s.widths,
@@ -1251,8 +1258,7 @@ mod tests {
                     &mut s.transport,
                     0,
                 )?;
-                let manpower = combat::capture_manpower(memory, 0, army, handle, &mut s.manpower)?;
-                Ok(s.captured(stats, context, row, manpower))
+                Ok(s.captured(stats, context, row))
             })
             .collect()
     }
@@ -1262,6 +1268,7 @@ mod tests {
     fn walk_shared(memory: &World, sources: &mut Sources, divisions: &[(usize, u64)]) -> Walked {
         sources.clear();
         let mut s = Scratch::new();
+        let countries = crate::ccountry::Reader::new(memory, 0, GAME);
         let mut images = Images::default();
         divisions
             .iter()
@@ -1279,9 +1286,29 @@ mod tests {
                 }
                 let image = images.division(memory, row, army);
                 let memory = &image;
-                let stats = inputs::capture_stats(memory, 0, sources, army, handle)?;
-                let context =
-                    inputs::capture_context(memory, 0, GAME, sources, army, handle, &mut s.widths)?;
+                let stats = inputs::capture_stats(
+                    memory,
+                    0,
+                    sources,
+                    army,
+                    handle,
+                    &mut s.groups,
+                    &mut crate::cname_group_member::Names {
+                        bytes: &mut s.names,
+                        len: 0,
+                        required: 0,
+                    },
+                )?;
+                let countries = countries.as_ref().map_err(|reason| *reason)?;
+                let context = inputs::capture_context(
+                    memory,
+                    0,
+                    countries,
+                    sources,
+                    army,
+                    handle,
+                    &mut s.widths,
+                )?;
                 let row = reinforcement::capture_context(
                     memory,
                     0,
@@ -1295,9 +1322,7 @@ mod tests {
                     &mut s.transport,
                     0,
                 )?;
-                let manpower =
-                    inputs::capture_manpower(memory, 0, sources, army, handle, &mut s.manpower)?;
-                Ok(s.captured(stats, context, row, manpower))
+                Ok(s.captured(stats, context, row))
             })
             .collect()
     }
@@ -1372,9 +1397,9 @@ mod tests {
         }
     }
 
-    /// Sharing changes no output: every division's stats, context, width,
-    /// reinforcement, modifier, supply, acclimatization, transport and
-    /// manpower terms equal main's, over divisions sharing owners, templates,
+    /// Sharing changes no output: every division's stats, naming, context,
+    /// width, reinforcement, modifier, supply, acclimatization and transport
+    /// terms equal the unshared walk's, over divisions sharing owners, templates,
     /// states, provinces, regions and leaders, with routes, air entries,
     /// relation walks, weather, core supply and transport divisions; with and
     /// without the authenticated roster. And it reads far less.
@@ -1420,7 +1445,7 @@ mod tests {
                     .any(|term| term.scope == 6 && term.present == 1)
             }));
             assert!(rows.iter().any(|row| !row.acclimatization.is_empty()));
-            assert!(rows.iter().any(|row| row.manpower.len() == 2));
+            assert!(rows.iter().any(|row| row.stats.naming.unwrap().kind == 1));
             assert!(rows.iter().all(|row| !row.widths.is_empty()));
             assert!(rows.iter().any(|row| !row.supply.is_empty()));
             assert!(
@@ -1600,9 +1625,10 @@ mod tests {
             .map(|&army| w.get_u64(army + cunit::STAT_BLOCK) as usize)
             .collect();
         // Division 2's army and division 4's stat block fail inside a span.
-        w.poisoned
-            .borrow_mut()
-            .extend([(armies[2] + carmy::STRENGTH, 8), (stats[4] + 0x280, 8)]);
+        w.poisoned.borrow_mut().extend([
+            (armies[2] + carmy::STRENGTH_FACTOR, 8),
+            (stats[4] + 0x298, 8),
+        ]);
         let mut images = Images::default();
         w.copies.set(0);
         *w.log.borrow_mut() = Some(Vec::new());

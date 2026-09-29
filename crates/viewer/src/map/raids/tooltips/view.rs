@@ -2,7 +2,7 @@
 //! main's combat parser and assets; image decoding stays on the hover worker.
 use super::Tooltip;
 use crate::{
-    combat::{self, Chunk},
+    combat::{self, TextChunk},
     map::sprites::MapIcons,
 };
 use eframe::egui;
@@ -35,13 +35,13 @@ pub fn prepare(mut tooltip: Tooltip, icons: &MapIcons) -> Prepared {
     // Queue inline flags/portraits before draining the shared loader once.
     for chunk in chunks.iter().flatten() {
         match chunk {
-            Chunk::Flag(key) => {
+            TextChunk::Flag(key) => {
                 icons.combat.inline_flag(key);
             }
-            Chunk::Icon(name) => {
+            TextChunk::Icon(name) => {
                 icons.combat.sprite(name);
             }
-            Chunk::Text(..) => {}
+            TextChunk::Text(..) => {}
         }
     }
     icons.lazy.settle();
@@ -52,18 +52,18 @@ pub fn prepare(mut tooltip: Tooltip, icons: &MapIcons) -> Prepared {
         let mut line = Vec::new();
         for chunk in chunks {
             let (name, source) = match chunk {
-                Chunk::Text(value, color) => {
+                TextChunk::Text(value, color) => {
                     line.push(Run::Text(value, color));
                     continue;
                 }
-                Chunk::Flag(key) => {
+                TextChunk::Flag(key) => {
                     let source = icons
                         .combat
                         .inline_flag(&key)
                         .map(|(id, uv)| (id, uv, icons.combat.inline_flag_size));
                     (format!("inline flag {key}"), source)
                 }
-                Chunk::Icon(name) => {
+                TextChunk::Icon(name) => {
                     let source = icons
                         .combat
                         .sprite(&name)

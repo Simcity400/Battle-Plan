@@ -1206,7 +1206,7 @@ fn strategic_regions(memory: &impl engine::Memory, base: usize) -> usize {
 /// Grow every idle frame to the current capacities under its queue lease.
 fn grow_idle_frames(
     shared: &Shared,
-    capacities: &mut [usize; 11],
+    capacities: &mut [usize; 12],
     map_capacities: &mut crate::map_capture::MapCapacities,
     extended_capacities: &mut crate::extended::Capacities,
 ) {

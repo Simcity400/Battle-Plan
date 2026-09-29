@@ -17,9 +17,7 @@
 
 use super::{LoadContext, Product};
 use crate::{
-    Source,
-    catalogue::{self, Localised},
-    content,
+    Source, catalogue, content,
     metadata::{branch_bounds, validate_campaign},
 };
 use installed_content::localisation::Localisation;
@@ -226,18 +224,23 @@ impl Product for CountryGroups {
                 None
             }
         };
+        let mut refused = catalogue::Refusals::default();
         let factions = scan
             .factions
             .iter()
             .map(|(id, faction)| FactionGroup {
                 id: id.to_string(),
-                name: faction_name(&faction.name, localisation.as_deref()),
+                name: faction_name(&faction.name, localisation.as_deref())
+                    .inspect_err(|reason| refused.note(reason.clone(), format!("faction {id}")))
+                    .ok()
+                    .flatten(),
                 first_hour: faction.first_hour,
                 last_hour: faction.last_hour,
                 members: faction.members.clone(),
                 incomplete: faction.incomplete.clone(),
             })
             .collect();
+        warnings.extend(refused.lines("faction names are"));
         warnings.extend(scan.warnings.iter().cloned());
         Ok(CountryGroupReply {
             branch_id: params.branch_id.clone(),
@@ -254,17 +257,23 @@ impl Product for CountryGroups {
 }
 
 /// The engine stores either a localisation key or the literal name a player
-/// typed. A key is shown localised; a key whose text needs runtime scope has no
-/// name rather than showing the key; anything the localisation does not know is
-/// the recorded literal name.
-pub fn faction_name(recorded: &str, localisation: Option<&Localisation>) -> Option<String> {
+/// typed. Both go through the game's localiser, which localises a key and
+/// copies anything the content does not define as its own bytes (142230940);
+/// without content the recorded name is shown as recorded. `Err` names why the
+/// name cannot be shown.
+pub fn faction_name(
+    recorded: &str,
+    localisation: Option<&Localisation>,
+) -> Result<Option<String>, String> {
     if recorded.is_empty() {
-        return None;
+        return Ok(None);
     }
-    match localisation.map(|localisation| catalogue::localise(localisation, recorded)) {
-        Some(Localised::Text(text)) => Some(text),
-        Some(Localised::NeedsScope) => None,
-        Some(Localised::Missing) | None => Some(recorded.to_owned()),
+    match localisation {
+        // CFaction::display_name (140D77360) reaches its text boxes plain.
+        Some(localisation) => {
+            catalogue::localised(localisation, recorded, catalogue::View::Plain).map(Some)
+        }
+        None => Ok(Some(recorded.to_owned())),
     }
 }
 
@@ -339,7 +348,7 @@ fn extend<K: Ord, R: HourRun>(
 /// only when the raw start is below the raw end, so a row whose end is not after
 /// its start has no end; the viewer reads it the same way (`allegiance::ongoing`
 /// in the viewer crate, verified by the recorder's war-relation oracle).
-fn war_ongoing(start_hour: i32, end_hour: i32, hour: i32) -> bool {
+pub(super) fn war_ongoing(start_hour: i32, end_hour: i32, hour: i32) -> bool {
     end_hour <= start_hour || hour < end_hour
 }
 

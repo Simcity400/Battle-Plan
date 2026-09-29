@@ -1,0 +1,490 @@
+//! Exiled-division combat badges and entry flags from the exile operands the
+//! combat row records for its committed divisions.
+//!
+//! 1415CA660 draws frame 14 when an opposing committed unit's owner occupies
+//! the exile country (14129FAD0 attacking, 14129FB60 defending) and frame 15
+//! when the division stands in a state the exile country cores. No displayed
+//! frame is recorded.
+use crate::table_access::{Available, rows};
+use replay::{
+    frame::DecodedFrame,
+    rows::{DivisionRow, LandCombatDetailsRow, LandCombatDivisionRow, TableSchema, tables},
+};
+use std::{collections::BTreeMap, fmt, io};
+
+/// The template origin `CArmy::IsExiled` (140C79AC0) tests for.
+const EXILE_ORIGIN: i32 = 2;
+
+/// Why a table this hour holds no row for a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Gap<'a> {
+    /// The table is complete and has no row for the key.
+    Absent,
+    /// The table is truncated and its walk did not reach the key.
+    Unreached,
+    /// The table failed this hour, with the collector's reason.
+    Unavailable(&'a str),
+}
+
+/// The recorded row a native operand of an entry flag or exile badge comes
+/// from, missing this hour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Refused<'a> {
+    /// A division's owner (its own, or an opposing committed unit's).
+    Division { division: u64, gap: Gap<'a> },
+    /// A country's canonical slot, which 1401AFD40 compares.
+    CountryLink { country: u32, gap: Gap<'a> },
+}
+
+impl fmt::Display for Refused<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (table, key, gap) = match self {
+            Self::Division { division, gap } => ("Divisions", format!("division {division}"), gap),
+            Self::CountryLink { country, gap } => {
+                ("CountryLinks", format!("country {country}"), gap)
+            }
+        };
+        match gap {
+            Gap::Absent => write!(f, "the {table} table has no row for {key}"),
+            Gap::Unreached => write!(f, "the truncated {table} table did not reach {key}"),
+            Gap::Unavailable(reason) => {
+                write!(
+                    f,
+                    "the {table} table is unavailable ({reason}), so {key} is unknown"
+                )
+            }
+        }
+    }
+}
+
+/// Whether any candidate passes `test`. A pass decides even when another
+/// candidate is undecided; otherwise the first undecided candidate leaves the
+/// answer undecided. Used by `Inputs::contains` and by 1415CA660's opponent
+/// loop, which shows frame 14 when any opponent qualifies.
+fn any<'a, T>(
+    candidates: impl IntoIterator<Item = T>,
+    mut test: impl FnMut(T) -> Result<bool, Refused<'a>>,
+) -> Result<bool, Refused<'a>> {
+    let mut undecided = None;
+    for candidate in candidates {
+        match test(candidate) {
+            Ok(true) => return Ok(true),
+            Ok(false) => (),
+            Err(refused) => {
+                undecided.get_or_insert(refused);
+            }
+        }
+    }
+    undecided.map_or(Ok(false), Err)
+}
+
+/// A keyed table and what its absence of a key means.
+struct Keyed<'a, K, V> {
+    rows: BTreeMap<K, V>,
+    gap: Gap<'a>,
+}
+
+impl<'a, K: Ord, V: Copy> Keyed<'a, K, V> {
+    fn read<T: TableSchema>(
+        available: Available<'a, T>,
+        entry: impl Fn(&'a T::Row) -> (K, V),
+    ) -> Self {
+        let gap = match &available {
+            Available::Complete(_) => Gap::Absent,
+            Available::Truncated { .. } => Gap::Unreached,
+            Available::Unavailable { reason } => Gap::Unavailable(reason),
+        };
+        Self {
+            rows: available.rows().iter().map(entry).collect(),
+            gap,
+        }
+    }
+
+    fn get(&self, key: &K) -> Result<V, Gap<'a>> {
+        self.rows.get(key).copied().ok_or(self.gap)
+    }
+}
+
+pub(super) struct Inputs<'a> {
+    divisions: Keyed<'a, u64, &'a DivisionRow>,
+    aliases: Keyed<'a, u32, u32>,
+}
+
+impl<'a> Inputs<'a> {
+    pub(super) fn read(frame: &'a DecodedFrame) -> io::Result<Self> {
+        Ok(Self {
+            divisions: Keyed::read(rows::<tables::Divisions>(frame)?, |row| (row.id, row)),
+            aliases: Keyed::read(rows::<tables::CountryLinks>(frame)?, |row| {
+                (row.id, row.canonical_slot)
+            }),
+        })
+    }
+
+    /// 140C79AC0 then 140C770A0: the exile country of an exiled template, the
+    /// primary operand when positive. 140C79AC0 is exactly `origin == 2`;
+    /// every other origin is not exiled and takes the ordinary-owner path.
+    fn exile_country(row: &LandCombatDivisionRow) -> Option<u32> {
+        let exile = row.exile.as_ref()?;
+        (exile.origin_type == EXILE_ORIGIN).then_some(if exile.country >= 1 {
+            exile.country as u32
+        } else {
+            exile.country_fallback as u32
+        })
+    }
+
+    /// A unit's owner for these tests: the expeditionary owner when positive,
+    /// else the roster owner.
+    fn owner(&self, division: u64) -> Result<u32, Refused<'a>> {
+        let unit = self
+            .divisions
+            .get(&division)
+            .map_err(|gap| Refused::Division { division, gap })?;
+        Ok(if (unit.expeditionary_owner as i32) >= 1 {
+            unit.expeditionary_owner
+        } else {
+            unit.roster_owner
+        })
+    }
+
+    /// 1415BA240's inline flag country for a committed entry: an exiled
+    /// template's country, else the division's owner.
+    pub(super) fn entry_owner(&self, row: &LandCombatDivisionRow) -> Result<u32, Refused<'a>> {
+        match Self::exile_country(row) {
+            Some(country) => Ok(country),
+            None => self.owner(row.division),
+        }
+    }
+
+    /// 1401AFD40: raw equality first; distinct nonzero references compare
+    /// canonical slots. Zero never goes through the alias lookup.
+    fn equal(&self, first: u32, second: u32) -> Result<bool, Refused<'a>> {
+        if first == second {
+            Ok(true)
+        } else if first == 0 || second == 0 {
+            Ok(false)
+        } else {
+            let slot = |country| {
+                self.aliases
+                    .get(&country)
+                    .map_err(|gap| Refused::CountryLink { country, gap })
+            };
+            Ok(slot(first)? == slot(second)?)
+        }
+    }
+
+    /// Whether any of `countries` equals `country`. A match decides even when
+    /// another candidate's link is missing; otherwise the first missing link
+    /// leaves the answer undecided.
+    fn contains(&self, countries: &[u32], country: u32) -> Result<bool, Refused<'a>> {
+        any(countries, |candidate| self.equal(*candidate, country))
+    }
+
+    /// Frame 14: an opposing committed unit whose owner occupies the exile
+    /// country, gated on this side's positive occupier bonus (attack, defence).
+    /// 1415CA660 counts every qualifying opponent (14129FAD0/14129FB60) and
+    /// shows the frame when the count is positive, so one qualifying opponent
+    /// decides even when another's owner or link is unknown.
+    fn against_occupier(
+        &self,
+        row: &LandCombatDivisionRow,
+        detail: &LandCombatDetailsRow,
+        bonuses: &[i64; 2],
+    ) -> Result<bool, Refused<'a>> {
+        let (Some(_), Some(exile)) = (Self::exile_country(row), &row.exile) else {
+            return Ok(false);
+        };
+        let side = usize::from(row.side);
+        let opponents = &detail.sides[1 - side].committed;
+        if opponents.is_empty() || bonuses[side] <= 0 {
+            return Ok(false);
+        }
+        any(opponents, |opponent| {
+            self.contains(&exile.occupiers, self.owner(*opponent)?)
+        })
+    }
+
+    /// Frame 15: the division's location state is a core of the exile country.
+    fn on_core(&self, row: &LandCombatDivisionRow) -> Result<bool, Refused<'a>> {
+        let (Some(country), Some(exile)) = (Self::exile_country(row), &row.exile) else {
+            return Ok(false);
+        };
+        self.contains(&exile.location_cores, country)
+    }
+
+    /// Both badges of a committed division, in frame order.
+    pub(super) fn frames(
+        &self,
+        row: &LandCombatDivisionRow,
+        detail: &LandCombatDetailsRow,
+        bonuses: &[i64; 2],
+    ) -> [Result<bool, Refused<'a>>; 2] {
+        [
+            self.against_occupier(row, detail, bonuses),
+            self.on_core(row),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay::{
+        frame::TableView,
+        rows::{CountryLinkRow, LandCombatExileInputs, TableId, TableRows},
+    };
+
+    const BONUSES: [i64; 2] = [10_000, 10_000];
+
+    fn frame() -> DecodedFrame {
+        let mut frame = DecodedFrame {
+            branch: 0,
+            hour: 1,
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "missing".into(),
+                }
+                .into()
+            }),
+            metrics: Default::default(),
+        };
+        *frame.tables[TableId::Divisions.index()] =
+            TableView::Complete(TableRows::Divisions(vec![
+                DivisionRow {
+                    id: 2,
+                    roster_owner: 6,
+                    expeditionary_owner: 8,
+                    logical_owner: 9,
+                    ..Default::default()
+                },
+                DivisionRow {
+                    id: 3,
+                    roster_owner: 8,
+                    expeditionary_owner: u32::MAX,
+                    ..Default::default()
+                },
+                DivisionRow {
+                    id: 4,
+                    roster_owner: 6,
+                    ..Default::default()
+                },
+            ]));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(
+                [(5, 1), (7, 1), (8, 2), (6, 3), (9, 4)]
+                    .into_iter()
+                    .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+                    .collect(),
+            ));
+        frame
+    }
+
+    fn exiled(origin_type: i32, country: i32) -> LandCombatDivisionRow {
+        LandCombatDivisionRow {
+            division: 1,
+            exile: Some(LandCombatExileInputs {
+                origin_type,
+                country,
+                country_fallback: 5,
+                location_cores: vec![7],
+                occupiers: vec![8],
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn detail(opponents: Vec<u64>) -> LandCombatDetailsRow {
+        let mut detail = LandCombatDetailsRow::default();
+        detail.sides[1].committed = opponents;
+        detail.sides[1].reserves = vec![999];
+        detail
+    }
+
+    #[test]
+    fn a_host_or_subject_template_has_no_badges_and_flies_the_owner_flag() {
+        let frame = frame();
+        let inputs = Inputs::read(&frame).unwrap();
+        let row = LandCombatDivisionRow {
+            division: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            inputs.frames(&row, &detail(vec![3]), &BONUSES),
+            [Ok(false); 2]
+        );
+        // A positive expeditionary owner wins; -1 is not positive.
+        assert_eq!(inputs.entry_owner(&row), Ok(8));
+        let reserve = LandCombatDivisionRow {
+            division: 3,
+            ..Default::default()
+        };
+        assert_eq!(inputs.entry_owner(&reserve), Ok(8));
+    }
+
+    #[test]
+    fn an_exile_template_flies_its_primary_country_or_the_fallback() {
+        let frame = frame();
+        let inputs = Inputs::read(&frame).unwrap();
+        assert_eq!(inputs.entry_owner(&exiled(EXILE_ORIGIN, 9)), Ok(9));
+        assert_eq!(inputs.entry_owner(&exiled(EXILE_ORIGIN, 0)), Ok(5));
+        assert_eq!(inputs.entry_owner(&exiled(EXILE_ORIGIN, -3)), Ok(5));
+    }
+
+    #[test]
+    fn the_occupier_badge_needs_a_committed_occupying_opponent_and_a_bonus() {
+        let frame = frame();
+        let inputs = Inputs::read(&frame).unwrap();
+        let row = exiled(EXILE_ORIGIN, 0);
+        // Opponent 2's expeditionary owner 8 occupies; the reserve does not count.
+        assert_eq!(
+            inputs.frames(&row, &detail(vec![4, 2]), &BONUSES)[0],
+            Ok(true)
+        );
+        assert_eq!(
+            inputs.frames(&row, &detail(vec![4]), &BONUSES)[0],
+            Ok(false)
+        );
+        assert_eq!(inputs.frames(&row, &detail(vec![]), &BONUSES)[0], Ok(false));
+        let unbonused = [0, 10_000];
+        assert_eq!(
+            inputs.frames(&row, &detail(vec![2]), &unbonused)[0],
+            Ok(false)
+        );
+        // The defending side reads its own bonus and the attackers.
+        let mut defending = row.clone();
+        defending.side = 1;
+        let mut swapped = detail(vec![]);
+        swapped.sides[0].committed = vec![2];
+        assert_eq!(inputs.frames(&defending, &swapped, &unbonused)[0], Ok(true));
+        // The refusal names the opposing unit whose owner is unknown.
+        assert_eq!(
+            inputs.frames(&row, &detail(vec![77]), &BONUSES)[0],
+            Err(Refused::Division {
+                division: 77,
+                gap: Gap::Absent
+            })
+        );
+    }
+
+    /// 1415CA660 shows frame 14 when any opposing committed unit qualifies:
+    /// a later occupying opponent decides although an earlier opponent's
+    /// owner is unknown; without one, the first unknown opponent is named.
+    #[test]
+    fn a_later_occupying_opponent_decides_past_an_unknown_one() {
+        let frame = frame();
+        let inputs = Inputs::read(&frame).unwrap();
+        let row = exiled(EXILE_ORIGIN, 0);
+        assert_eq!(
+            inputs.frames(&row, &detail(vec![77, 4, 2]), &BONUSES)[0],
+            Ok(true)
+        );
+        let unknown = Err(Refused::Division {
+            division: 77,
+            gap: Gap::Absent,
+        });
+        assert_eq!(
+            inputs.frames(&row, &detail(vec![77, 4]), &BONUSES)[0],
+            unknown
+        );
+        let all = inputs.frames(&row, &detail(vec![77, 78]), &BONUSES)[0];
+        assert_eq!(all, unknown);
+        assert_eq!(
+            all.unwrap_err().to_string(),
+            "the Divisions table has no row for division 77"
+        );
+        // An opponent whose owner has no CountryLinks row is undecided too.
+        let mut unlinked = row.clone();
+        unlinked.exile.as_mut().unwrap().occupiers = vec![99];
+        assert_eq!(
+            inputs.frames(&unlinked, &detail(vec![4]), &BONUSES)[0],
+            Err(Refused::CountryLink {
+                country: 99,
+                gap: Gap::Absent
+            })
+        );
+        unlinked.exile.as_mut().unwrap().occupiers = vec![99, 8];
+        assert_eq!(
+            inputs.frames(&unlinked, &detail(vec![4, 2]), &BONUSES)[0],
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn the_core_badge_compares_the_location_cores_through_country_links() {
+        let frame = frame();
+        let inputs = Inputs::read(&frame).unwrap();
+        // Core 7 and exile country 5 share canonical slot 1.
+        assert_eq!(
+            inputs.frames(&exiled(EXILE_ORIGIN, 0), &detail(vec![]), &BONUSES)[1],
+            Ok(true)
+        );
+        let mut elsewhere = exiled(EXILE_ORIGIN, 0);
+        elsewhere.exile.as_mut().unwrap().location_cores = vec![0, 6];
+        assert_eq!(
+            inputs.frames(&elsewhere, &detail(vec![]), &BONUSES)[1],
+            Ok(false)
+        );
+        // The refusal names the core without a CountryLinks row.
+        elsewhere.exile.as_mut().unwrap().location_cores = vec![99];
+        let refused = inputs.frames(&elsewhere, &detail(vec![]), &BONUSES)[1];
+        assert_eq!(
+            refused,
+            Err(Refused::CountryLink {
+                country: 99,
+                gap: Gap::Absent
+            })
+        );
+        assert_eq!(
+            refused.unwrap_err().to_string(),
+            "the CountryLinks table has no row for country 99"
+        );
+        assert_eq!(inputs.contains(&[0], 0), Ok(true));
+        // A later match decides although an earlier link is missing.
+        assert_eq!(inputs.contains(&[99, 7], 5), Ok(true));
+    }
+
+    /// 140C79AC0 is exactly `origin == 2`: any other recorded origin, 0 and
+    /// 1 or outside 0..=2, is not exiled, so the entry flies the division's
+    /// owner flag and neither badge is drawn.
+    #[test]
+    fn only_origin_two_is_exiled() {
+        let frame = frame();
+        let inputs = Inputs::read(&frame).unwrap();
+        for origin in [0, 1, 3, 5, -1, i32::MIN, i32::MAX] {
+            let mut row = exiled(origin, 9);
+            row.division = 2;
+            assert_eq!(inputs.entry_owner(&row), Ok(8), "origin {origin}");
+            assert_eq!(
+                inputs.frames(&row, &detail(vec![2]), &BONUSES),
+                [Ok(false); 2],
+                "origin {origin}"
+            );
+        }
+    }
+
+    /// A missing operand names its table, its key and why the table lacks it.
+    #[test]
+    fn refusals_name_the_table_key_and_gap() {
+        let mut frame = frame();
+        *frame.tables[TableId::Divisions.index()] = TableView::Truncated {
+            rows: TableRows::Divisions(Vec::new()),
+            missing: 3,
+        };
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+            reason: "country registry unreadable".into(),
+        };
+        let inputs = Inputs::read(&frame).unwrap();
+        let owner = inputs.entry_owner(&LandCombatDivisionRow {
+            division: 2,
+            ..Default::default()
+        });
+        assert_eq!(
+            owner.unwrap_err().to_string(),
+            "the truncated Divisions table did not reach division 2"
+        );
+        let core = inputs.frames(&exiled(EXILE_ORIGIN, 0), &detail(vec![]), &BONUSES)[1];
+        assert_eq!(
+            core.unwrap_err().to_string(),
+            "the CountryLinks table is unavailable (country registry unreadable), so country 7 is unknown"
+        );
+    }
+}

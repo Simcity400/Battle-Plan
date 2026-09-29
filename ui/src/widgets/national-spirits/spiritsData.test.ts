@@ -4,7 +4,7 @@ import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 import { activeAt, endedBy, historyLanes, spiritState, spirits, startUnseen } from './spiritsData.ts';
 
 const info = (token: string, category: string): IdeaInfo => ({ token, category, slot: null, law: false, designer: false,
-  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true });
+  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null });
 const REPLY: IdeaHistoryReply = {
   branchId: '1', tag: 'GER', unobserved: [], identityStarts: [], modifiers: [], texts: [], warnings: [],
   categories: [

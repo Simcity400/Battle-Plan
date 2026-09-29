@@ -178,7 +178,17 @@ mod tests {
         bytes[SOURCE.pointer + cstate::ID..SOURCE.pointer + cstate::ID + 4]
             .copy_from_slice(&SOURCE.id.to_le_bytes());
         bytes[SOURCE.pointer + cstate::DEMILITARIZED] = 255;
+        empty_names(&mut bytes, SOURCE.pointer);
         bytes
+    }
+
+    /// Empty MSVC strings (capacity 15) at both display-name fields, as every
+    /// live CState holds them.
+    fn empty_names(bytes: &mut [u8], state: usize) {
+        for field in [cstate::PRIMARY_DISPLAY_NAME, cstate::SECONDARY_DISPLAY_NAME] {
+            let capacity = state + field + engine::msvc_string::CAPACITY;
+            bytes[capacity..capacity + 8].copy_from_slice(&15_u64.to_le_bytes());
+        }
     }
 
     fn seed(captured: &mut Captured) {
@@ -390,6 +400,7 @@ mod tests {
         bytes[0x4000..0x4008].copy_from_slice(&(cstate::VTABLE_RVA as u64).to_le_bytes());
         bytes[0x4000 + cstate::ID..0x4004 + cstate::ID].copy_from_slice(&3_u32.to_le_bytes());
         bytes[0x4000 + cstate::DEMILITARIZED] = 2;
+        empty_names(&mut bytes, 0x4000);
         // The census job also runs the movement pass, whose module globals the
         // overlay supplies above this dense fixture.
         let memory = Movement(SliceMemory {
@@ -408,6 +419,7 @@ mod tests {
                     game_state: STATE,
                     payload: vec![cstate::Row::default(); core_capacity],
                 },
+                names: crate::acquisition_states::Names::take(&mut vec![0; 64]),
                 visitor,
             };
             let report = request.run(&memory);

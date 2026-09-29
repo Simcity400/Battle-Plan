@@ -29,6 +29,7 @@ impl Content {
         layers: &ResolvedLayers,
         default_map: &DefaultMap,
         provinces: &BTreeMap<u32, ProvinceDefinition>,
+        defines: &installed_content::defines::Defines,
     ) -> io::Result<Self> {
         let continents = continent_names(&layers.read(&default_map.file("continent")?)?)?;
         let continent = |province: &u32| {
@@ -38,7 +39,9 @@ impl Content {
         Ok(Self {
             // CStateTemplate::vf8 (140AAE7A0) walks the template's province
             // vector, not a sorted set or the province owning the capital VP.
-            continent_by_state: states::read(layers)?
+            // document.rs reports the state id conflicts once.
+            continent_by_state: states::read(layers, defines, provinces)?
+                .0
                 .into_iter()
                 .map(|(id, state)| (id, state.provinces.iter().find_map(continent)))
                 .collect(),

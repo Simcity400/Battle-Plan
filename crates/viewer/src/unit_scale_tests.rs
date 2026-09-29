@@ -15,7 +15,7 @@ use replay::{
     rows::{TableId, tables},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     path::PathBuf,
     sync::Arc,
@@ -156,35 +156,46 @@ fn unit_scale_replay_layers() {
                 println!("UNIT_ENGAGED hour={at} flags={counts:?}");
                 // The fixture covers the engaged index, not every marker:
                 // its added combats have no LandCombatDetails row, so a seen
-                // one draws no tint. Every tint gap must be one of those.
+                // one draws no plate or wedge. Every combat such a gap names
+                // must be one of those.
                 let tables = hour.hour_tables(&perspective, Some(&*engaged)).unwrap();
                 let (gaps, limits) = tables.land_combat_gaps();
-                let details: std::collections::BTreeSet<u64> =
-                    core::<tables::LandCombatDetails>(&frame)
-                        .map(|rows| rows.iter().map(|row| row.combat).collect())
-                        .unwrap_or_default();
-                let without_details = core::<tables::LandCombats>(&frame)
+                let details: BTreeSet<u64> = core::<tables::LandCombatDetails>(&frame)
+                    .map(|rows| rows.iter().map(|row| row.combat).collect())
+                    .unwrap_or_default();
+                let without_details: BTreeSet<u64> = core::<tables::LandCombats>(&frame)
                     .unwrap()
                     .iter()
-                    .filter(|combat| !details.contains(&combat.id))
-                    .count();
+                    .map(|combat| combat.id)
+                    .filter(|id| !details.contains(id))
+                    .collect();
+                let sizes = |causes: &BTreeMap<String, BTreeSet<u64>>| {
+                    causes
+                        .iter()
+                        .map(|(cause, combats)| (cause.clone(), combats.len()))
+                        .collect::<BTreeMap<_, _>>()
+                };
                 println!(
-                    "UNIT_LAND_MARKERS hour={at} without_details={without_details} gaps={gaps:?} limits={limits:?}"
+                    "UNIT_LAND_MARKERS hour={at} without_details={} gaps={:?} limits={:?}",
+                    without_details.len(),
+                    sizes(gaps),
+                    sizes(limits)
                 );
-                let tint = gaps
-                    .get("tint (survival estimate unknown)")
-                    .copied()
-                    .unwrap_or(0);
-                assert!(
-                    tint <= without_details,
-                    "{tint} tint gaps, only {without_details} combats without details"
-                );
+                for (cause, combats) in gaps {
+                    if cause.starts_with("plate and wedge omitted") {
+                        assert!(
+                            combats.is_subset(&without_details),
+                            "{cause}: {combats:?} has a combat with details"
+                        );
+                    }
+                }
                 // The covering index answers every flag: no load-rebuilt
                 // provenance. (Marker value limits, such as an unseen
                 // icon's withheld frame, are not provenance.)
                 assert!(
                     !limits.keys().any(|limit| limit.starts_with("engaged flag")),
-                    "the covering index answers: {limits:?}"
+                    "the covering index answers: {:?}",
+                    sizes(limits)
                 );
             }
             lap("engaged_indexed", camera_name, at, || {

@@ -47,57 +47,42 @@ pub fn arrival(recorded_hour: i32, remaining: i64) -> Option<Arrival> {
 
 /// The game's own sentence in the viewer's language: `UNIT_MOVING_HOURS` or
 /// `UNIT_MOVING_DAYS_HOURS`, with the `_NONPLAYER` pair for a stack the viewing
-/// country does not own, `$DAYS$`/`$HOURS$` filled and the colour codes
+/// country does not own, localised with the integer arguments `HOURS`, and
+/// `DAYS` for the days keys, as 1418C00D0 passes them (Localisation_FormatValue
+/// 1402E2E60, LocalizeWithTwoIntegers 1406BABB0), and the colour codes
 /// stripped. `at` is [`Arrival::hour`] already written as a date, appended as
-/// the viewer's projected arrival. `None` when the content lacks the key.
+/// the viewer's projected arrival. A key the content lacks is its own bytes
+/// (142230940). The error names the key and why the line is refused: text the
+/// localiser cannot produce, or a control the hover does not draw.
 pub fn sentence(
     localisation: &installed_content::localisation::Localisation,
     arrival: &Arrival,
     ours: bool,
     at: &str,
-) -> Option<String> {
+) -> Result<String, String> {
+    use installed_content::localisation::Argument;
     let key = match (arrival.days == 0, ours) {
         (true, true) => "UNIT_MOVING_HOURS",
         (false, true) => "UNIT_MOVING_DAYS_HOURS",
         (true, false) => "UNIT_MOVING_HOURS_NONPLAYER",
         (false, false) => "UNIT_MOVING_DAYS_HOURS_NONPLAYER",
     };
-    let text = substitute(
-        localisation.get(key)?,
-        &[
-            ("DAYS", arrival.days.to_string()),
-            ("HOURS", arrival.hours.to_string()),
-        ],
-    );
-    Some(format!("{} ({at})", super::text::strip_color_codes(&text)))
-}
-
-/// Replaces each `$NAME$` or `$NAME|format$` placeholder with its value; any
-/// other placeholder is kept as written.
-fn substitute(text: &str, values: &[(&str, String)]) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find('$') {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 1..];
-        let Some(end) = after.find('$') else {
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let token = &after[..end];
-        let name = token.split('|').next().unwrap_or(token);
-        match values.iter().find(|(key, _)| *key == name) {
-            Some((_, value)) => out.push_str(value),
-            None => {
-                out.push('$');
-                out.push_str(token);
-                out.push('$');
-            }
-        }
-        rest = &after[end + 1..];
+    let hours = ("HOURS", Argument::Int32(arrival.hours));
+    let days = ("DAYS", Argument::Int32(arrival.days));
+    let arguments: &[_] = if arrival.days == 0 {
+        &[hours]
+    } else {
+        &[days, hours]
+    };
+    let text = localisation
+        .localise_with(key.as_bytes(), arguments)
+        .map_err(|refusal| refusal.to_string())?;
+    if let Some(control) = super::text::unsupported_control(&text) {
+        return Err(format!(
+            "localisation {key} holds {control}, which the hover does not draw"
+        ));
     }
-    out.push_str(rest);
-    out
+    Ok(format!("{} ({at})", super::text::strip_color_codes(&text)))
 }
 
 #[cfg(test)]
@@ -161,18 +146,32 @@ mod tests {
         };
         assert_eq!(
             sentence(&localisation, &one, true, "1936-09-30  01:00").as_deref(),
-            Some("Arrives at its destination in 5 hour(s). (1936-09-30  01:00)")
+            Ok("Arrives at its destination in 5 hour(s). (1936-09-30  01:00)")
         );
         let two = Arrival {
             days: 1,
             hours: 5,
             hour: 7,
         };
+        // `$OTHER$` is no argument and no key: the localiser writes nothing.
         assert_eq!(
             sentence(&localisation, &two, false, "d").as_deref(),
-            Some("Next province in 1 day(s) and 5 h, $OTHER$. (d)")
+            Ok("Next province in 1 day(s) and 5 h, . (d)")
         );
-        // A key the content lacks draws no line rather than a vanilla one.
-        assert_eq!(sentence(&localisation, &one, false, "d"), None);
+        // A key the content lacks is drawn as its bytes (142230940).
+        assert_eq!(
+            sentence(&localisation, &one, false, "d").as_deref(),
+            Ok("UNIT_MOVING_HOURS_NONPLAYER (d)")
+        );
+        let icon: installed_content::localisation::Localisation = [(
+            "UNIT_MOVING_DAYS_HOURS".to_owned(),
+            "£time $DAYS$".to_owned(),
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            sentence(&icon, &two, true, "d"),
+            Err("localisation UNIT_MOVING_DAYS_HOURS holds the icon 0x13 \"time\" (an authored `£`), which the hover does not draw".into())
+        );
     }
 }

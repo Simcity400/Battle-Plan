@@ -89,33 +89,19 @@ export function sourcesAt(sources: IdeaTooltipSources, hour: number | undefined)
 interface Section { rows: TooltipRow[]; authored: boolean; featured?: boolean }
 
 /** Modifier lines as the game lists them (FormatDescription@14054E050): in
- * ascending key index (a scripted modifier after every built-in one), the last
- * value of a repeated key, every key a `hidden_modifier` names left out entirely
- * (the engine keeps a hidden-key set), zero values only where the definition
- * shows them. */
+ * ascending key index (a scripted modifier after every built-in one), one line
+ * per modifier as the game stores it (its last value), every modifier a
+ * `hidden_modifier` names left out entirely (FormatLine@14054F6D0 skips the
+ * hidden-key set), zero values only where the definition shows them. */
 function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): Section {
-  const hidden = new Set(lines.filter(line => line.hidden).map(line => line.key));
-  const latest = new Map<string, EffectLine>();
-  for (const line of lines) if (!hidden.has(line.key)) latest.set(line.key, line);
   const words = { yes: sources.text('YES') ?? 'Yes', no: sources.text('NO') ?? 'No' };
   const order = (key: string) => sources.formats.get(key)?.index ?? Number.MAX_SAFE_INTEGER;
   let authored = false;
   let featured = false;
   const rows: TooltipRow[] = [];
-  for (const line of [...latest.values()].sort((a, b) => order(a.key) - order(b.key) || a.key.localeCompare(b.key))) {
+  const listed = lines.filter(line => !line.hidden);
+  for (const line of [...listed].sort((a, b) => order(a.key) - order(b.key) || a.key.localeCompare(b.key))) {
     const format = sources.formats.get(line.key);
-    if (line.value == null) {
-      authored = true;
-      rows.push({ label: `${format?.label ?? line.key}:`, value: line.unsupported ?? 'not evaluated', tone: 'muted' });
-      continue;
-    }
-    // A number the engine's script conversion cannot read (such as `.5`) has no
-    // game value: it is shown as written, not given one.
-    if (line.fixed5 == null) {
-      authored = true;
-      rows.push({ label: `${format?.label ?? line.key}:`, value: `${line.value} (not read by the game)`, tone: 'muted' });
-      continue;
-    }
     // The accumulator's getter clamps a flag-0x10 modifier to [0, 1] (modifier_accumulator::value@140551820).
     const authoredRaw = BigInt(line.fixed5);
     const raw = format && format.flags & 0x10 ? (authoredRaw < 0n ? 0n : authoredRaw > 100_000n ? 100_000n : authoredRaw) : authoredRaw;
@@ -153,16 +139,19 @@ function section(heading: string | null, rows: readonly TooltipRow[]): TooltipRo
  * modifiers and equipment bonuses, each in its own group as the idea's are. */
 function traitSection(found: TraitEffects, sources: IdeaTooltipSources): Section {
   const name = found.name ?? found.token;
-  if (!found.known) return { rows: section(name, [{ label: 'Effects', value: 'not in the content files', tone: 'muted' }]), authored: false };
+  if (!found.known) return { rows: section(name, [{ label: 'Effects', value: found.unknown ?? 'not in the content files', tone: 'muted' }]), authored: false };
   const own = modifierRows(found.lines, sources);
   const groups = [...found.targeted.map(group => targetedSection(group, sources)), ...found.equipment.map(group => equipmentSection(group, sources))];
   return { rows: [...section(name, [...own.rows, ...found.tooltips.map(key => ({ label: sources.text(key) ?? key }))]), ...groups.flatMap(group => group.rows)],
     authored: own.authored || groups.some(group => group.authored), featured: own.featured || groups.some(group => group.featured) };
 }
 
+/** A targeted modifier: its own CModifier's lines, then its custom tooltips
+ * (FormatScopedModifierDescription@14054E520 per target in FUN_140FBC770). */
 function targetedSection(group: EffectGroup, sources: IdeaTooltipSources): Section {
   const lines = modifierRows(group.lines, sources);
-  return { rows: section(group.target ? `Against ${sources.countryName(group.target)}:` : 'Against a country:', lines.rows), authored: lines.authored, featured: lines.featured };
+  const rows = [...lines.rows, ...group.tooltips.map(key => ({ label: sources.text(key) ?? key }))];
+  return { rows: section(group.target ? `Against ${sources.countryName(group.target)}:` : 'Against a country:', rows), authored: lines.authored, featured: lines.featured };
 }
 
 /** An equipment bonus: its stats are named and formatted by an engine table the
@@ -170,7 +159,7 @@ function targetedSection(group: EffectGroup, sources: IdeaTooltipSources): Secti
 function equipmentSection(group: EffectGroup, sources: IdeaTooltipSources): Section {
   const name = group.target ? sources.text(group.target) ?? group.target : 'Equipment';
   const rows = group.lines.filter(line => !line.hidden).map(line => ({ label: `${line.key}:`, tone: 'muted' as const,
-    value: line.value == null ? line.unsupported ?? 'not evaluated' : line.fixed5 != null ? fixed5Text(BigInt(line.fixed5), -1) : `${line.value} (not read by the game)` }));
+    value: fixed5Text(BigInt(line.fixed5), -1) }));
   return { rows: section(`${name}${group.instant ? ' (at once)' : ''}:`, rows), authored: rows.length > 0 };
 }
 
@@ -179,8 +168,6 @@ function equipmentSection(group: EffectGroup, sources: IdeaTooltipSources): Sect
 function researchRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): TooltipRow[] {
   return lines.filter(line => !line.hidden).map(line => {
     const label = `${sources.text(`${line.key}_research`) ?? line.key}:`;
-    if (line.value == null) return { label, value: line.unsupported ?? 'not evaluated', tone: 'muted' as const };
-    if (line.fixed5 == null) return { label, value: `${line.value} (not read by the game)`, tone: 'muted' as const };
     const raw = BigInt(line.fixed5);
     return { label, value: `${raw > 0n ? '+' : ''}${fixed5Text(raw * 100n, 0)}%`, tone: raw < 0n ? 'negative' as const : 'positive' as const };
   });
@@ -191,7 +178,7 @@ function researchRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
  * bonuses. `note` says when some are shown as authored. */
 export function ideaEffectRows(info: IdeaInfo, sources: IdeaTooltipSources): { rows: TooltipRow[]; note?: string } {
   // Unknown effects are said to be unknown, never shown as none.
-  if (!info.effectsKnown) return { rows: section(null, [{ label: 'Effects', value: 'not in the content files', tone: 'muted' }]) };
+  if (!info.effectsKnown) return { rows: section(null, [{ label: 'Effects', value: info.unknown ?? 'not in the content files', tone: 'muted' }]) };
   const sections: Section[] = [
     ...info.traits.map(found => traitSection(found, sources)),
   ];

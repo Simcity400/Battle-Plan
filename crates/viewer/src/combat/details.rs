@@ -1,12 +1,24 @@
-//! Format-22 operands override legacy gaps, without substituting a save or live state.
+//! Combat window operands from recorded simulation state and matching content.
 use super::{
     INLINE_FLAG, Selection, Values, Widget,
-    binding::{Bindings, fill, hide, sprite, text},
+    binding::{
+        Bindings, FILL, FLAG, SPRITE, TEXT, TextIcons, builtin, country_flag, displayable, fill,
+        hide, text, token,
+    },
+    land_details::{Condition, conditions},
+    template_icons,
 };
-use crate::{document::Document, map::tables::rows};
+use crate::{
+    document::Document,
+    map::tables::{Available, rows},
+};
+use installed_content::{
+    division_names::{Database, Unresolved},
+    localisation::Argument,
+};
 use replay::{
     frame::DecodedFrame,
-    rows::{LandCombatDivisionRow, tables},
+    rows::{LandCombatDivisionRow, TableSchema, tables},
 };
 use std::{collections::BTreeMap, io};
 
@@ -30,13 +42,106 @@ pub(super) fn bind(
 fn show(values: &mut Values, key: &str) {
     values.entry(key.into()).or_default().hidden = false;
 }
-fn flag(values: &mut Values, key: &str, country: u32, flags: &BTreeMap<u32, String>) {
-    if let Some(flag) = flags.get(&country) {
-        values.entry(key.into()).or_default().flag = Some(flag.clone());
+
+/// The land window facts decided once per bind, here and nowhere else: the
+/// terrain picture (1415C7520) and each side's flag (1415C9860). Each binds
+/// through [`Bindings::bind`], so a refusal hides the widget.
+fn pictures(
+    out: &mut Bindings,
+    frame: &DecodedFrame,
+    id: u64,
+    terrain: &BTreeMap<u32, String>,
+    has_sprite: &dyn Fn(&str) -> bool,
+    flags: &BTreeMap<u32, String>,
+) -> io::Result<()> {
+    let details = rows::<tables::LandCombatDetails>(frame)?;
+    let detail = details.rows().iter().find(|row| row.combat == id);
+    let province = match detail {
+        Some(detail) => Some(detail.province),
+        None => rows::<tables::LandCombats>(frame)?
+            .rows()
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| row.province),
+    };
+    let picture = terrain_picture(frame, id, province, terrain, has_sprite)?;
+    out.bind("terrain_picture", SPRITE, picture);
+    for (side, prefix) in ["attacker", "defender"].into_iter().enumerate() {
+        // 1415C9860 hands the country 1415C5F10 returns to the flag widget
+        // (country_icon_presentation_functions::render 140B35990): the
+        // selected commander's country (+0x120), else the first entry of the
+        // side's primary country set (+0x38, count +0x48), else the attacked
+        // province's controller (+0x188). The recorder keeps that country as
+        // `commander_country` with or without a commander.
+        let flag = match detail {
+            Some(detail) => country_flag(flags, detail.sides[side].commander_country),
+            None => Err(format!(
+                "LandCombatDetails has no row for the combat ({}), so the side country 1415C5F10 selects (the commander's, else the first primary country, else the province controller) is unknown",
+                absence(&details)
+            )),
+        }
+        .map_err(|reason| format!("Land combat {id} {prefix} flag is hidden: {reason}."));
+        out.bind(&format!("{prefix}_flag"), FLAG, flag);
+    }
+    Ok(())
+}
+
+/// 1415C7520's terrain picture: `GFX_terrain_<category>` of the combat
+/// province, with `_winter` when that province's weather snow
+/// (SWeatherPerProvince+0x40 through 140F04D50, recorded as
+/// `WeatherProvinces.snow`) is positive. Missing weather is not zero snow:
+/// without the province's row summer and winter are undecided. Natively a
+/// missing sprite is logged ("Missing spriteType") and the widget keeps
+/// whatever it showed before; the viewer has no such earlier native state,
+/// so it refuses by name.
+fn terrain_picture(
+    frame: &DecodedFrame,
+    id: u64,
+    province: Option<u32>,
+    terrain: &BTreeMap<u32, String>,
+    has_sprite: &dyn Fn(&str) -> bool,
+) -> io::Result<Result<String, String>> {
+    let refused = |reason: String| {
+        Ok(Err(format!(
+            "Land combat {id} terrain picture is hidden: {reason}."
+        )))
+    };
+    let Some(province) = province else {
+        return refused(
+            "neither LandCombatDetails nor LandCombats records the combat's province".into(),
+        );
+    };
+    let Some(category) = terrain.get(&province) else {
+        return refused(format!(
+            "province {province} has no terrain category in the content"
+        ));
+    };
+    let weather = rows::<tables::WeatherProvinces>(frame)?;
+    let Some(weather_row) = weather.rows().iter().find(|row| row.id == province) else {
+        return refused(format!(
+            "WeatherProvinces has no row for province {province} ({}), so its snow and the summer or `_winter` picture are unknown",
+            absence(&weather)
+        ));
+    };
+    let name = format!(
+        "GFX_terrain_{category}{}",
+        if weather_row.snow > 0 { "_winter" } else { "" }
+    );
+    if has_sprite(&name) {
+        Ok(Ok(name))
+    } else {
+        refused(format!("the content lacks sprite {name} (1415C7520)"))
     }
 }
-fn bytes(value: &[u8]) -> String {
-    String::from_utf8_lossy(value).into_owned()
+/// Why a table this hour holds no row for a key, from the table's state.
+fn absence<T: TableSchema>(table: &Available<'_, T>) -> String {
+    match table {
+        Available::Complete(_) => "the complete table lacks it".to_owned(),
+        Available::Truncated { missing, .. } => {
+            format!("the table is truncated, {missing} rows unread")
+        }
+        Available::Unavailable { reason } => format!("the table is unavailable: {reason}"),
+    }
 }
 // Native signed qword multiplication precedes the fixed5 division.
 fn mul(a: i64, b: i64) -> i64 {
@@ -45,43 +150,168 @@ fn mul(a: i64, b: i64) -> i64 {
 fn fraction(value: i64, maximum: i64) -> f32 {
     ((value as f64 / maximum.max(100) as f64).clamp(0.0, 1.0)) as f32
 }
+/// Why a division's name cannot be rendered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Unnamed {
+    CustomNotText,
+    /// The name holds a control the painter does not draw ([`displayable`]).
+    Control(String),
+    /// CArmy's constructor 140C5DD30 builds its member with 1409B3070 (type
+    /// 0), and SetTemplate/SelectFakeIntelDivisionTemplate bind it to a
+    /// template. ResolveNameGroup 1409B7290's other types (1 ship/variant, 2
+    /// operative, 3 railway gun, 4 the other constructors' unassigned
+    /// default) have no content form for a division; only a save whose
+    /// `division_name` type was edited (read verbatim by 1409BB290) yields one.
+    ForeignType(i32),
+    Unresolved(Unresolved),
+}
+
+impl std::fmt::Display for Unnamed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CustomNotText => f.write_str("the custom name is not UTF-8"),
+            Self::Control(reason) => write!(f, "the name holds {reason}"),
+            Self::ForeignType(kind) => write!(
+                f,
+                "the name type is {kind}, a ship, operative or railway-gun naming form no division content produces"
+            ),
+            Self::Unresolved(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+/// 1409B5640: the stored name where the game shows it, which is exactly
+/// where the capture records one (with +0xA9 clear, or set and a null
+/// group), else the selected historical name of a type-zero member from the
+/// content's name groups.
+fn division_name(row: &LandCombatDivisionRow, names: &Database) -> Result<String, Unnamed> {
+    if !row.name_custom.is_empty() {
+        return std::str::from_utf8(&row.name_custom)
+            .map(str::to_owned)
+            .map_err(|_| Unnamed::CustomNotText);
+    }
+    if row.name_type != 0 {
+        return Err(Unnamed::ForeignType(row.name_type));
+    }
+    names
+        .resolve(&row.name_group, row.name_order, row.name_ordered != 0)
+        .map_err(Unnamed::Unresolved)
+}
+
+/// [`division_name`] as the entry draws it: the text path (1422894D0) reads
+/// its control bytes, so one the painter does not draw is refused.
+fn shown_name(
+    row: &LandCombatDivisionRow,
+    names: &Database,
+    icons: &impl TextIcons,
+) -> Result<String, Unnamed> {
+    division_name(row, names).and_then(|name| displayable(icons, name).map_err(Unnamed::Control))
+}
+
+/// One warning per cause for a combat's divisions whose names are
+/// unavailable, naming each division with its group and ordinal.
+fn unnamed_warnings<'a>(
+    combat: u64,
+    rows: impl Iterator<Item = &'a LandCombatDivisionRow>,
+    names: &Database,
+    icons: &impl TextIcons,
+) -> Vec<String> {
+    let mut causes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        if let Err(cause) = shown_name(row, names, icons) {
+            causes.entry(cause.to_string()).or_default().push(format!(
+                "division {} (group {}, {} {})",
+                row.division,
+                row.name_group.escape_ascii(),
+                if row.name_ordered != 0 {
+                    "ordered"
+                } else {
+                    "unordered"
+                },
+                row.name_order
+            ));
+        }
+    }
+    causes
+        .into_iter()
+        .map(|(cause, divisions)| {
+            format!(
+                "Land combat {combat}: {} division names are unavailable because {cause}: {}.",
+                divisions.len(),
+                divisions.join("; ")
+            )
+        })
+        .collect()
+}
+
 /// CCombatantEntry (1415BA240) names a committed division "name 0x12TAG" for
 /// the attacker and "0x12TAG name" for the defender; the reserve entry
-/// (1415BAC10) uses the bare name. The country is the division's owner
-/// (+0x1DC when positive, else +0x1D8), recorded as `effective_owner`. The
-/// 140C79AC0 alternative owner branch is not recorded: UNVERIFIED for units
-/// whose +0x3B8 parent reports state 2.
-fn entry_name(row: &LandCombatDivisionRow, committed: bool, flag: Option<&String>) -> String {
-    let name = bytes(&row.name);
+/// (1415BAC10) uses the bare name.
+fn entry_name(name: String, side: u8, committed: bool, flag: Option<&String>) -> String {
     match flag.filter(|_| committed) {
-        Some(flag) if row.side == 0 => format!("{name} {INLINE_FLAG}{flag}"),
+        Some(flag) if side == 0 => format!("{name} {INLINE_FLAG}{flag}"),
         Some(flag) => format!("{INLINE_FLAG}{flag} {name}"),
         None => name,
     }
 }
+
+/// An entry's strength and organisation bars; without the division's
+/// condition both are hidden and the refusal counted. A bar whose maximum is
+/// unknown is hidden alone; `status_gap` says why `DivisionStatus` lacks it.
+fn condition_bars(
+    out: &mut Bindings,
+    values: &mut Values,
+    row: &LandCombatDivisionRow,
+    committed: bool,
+    bars: Result<Condition, String>,
+    status_gap: &str,
+) {
+    let bars = match bars {
+        Ok(bars) => bars,
+        Err(refusal) => return out.withhold_in(values, &["str_bar", "org_bar"], refusal),
+    };
+    let unbounded = |bar: &str, maximum: &str| {
+        format!(
+            "Land combat {} division {}: its DivisionStatus row is missing ({status_gap}), so its {maximum} maximum is unknown; its {bar} bar is hidden.",
+            row.combat, row.division
+        )
+    };
+    let strength = bars
+        .max_strength
+        .map(|maximum| fraction(bars.strength, maximum))
+        .ok_or_else(|| unbounded("strength", "hit points"));
+    out.bind_in(
+        values,
+        "str_bar",
+        FILL,
+        strength.map(|strength| {
+            if committed {
+                (strength * row.strength_combat_factor as f32 / 100_000.0).clamp(0.0, 1.0)
+            } else {
+                strength
+            }
+        }),
+    );
+    let organisation = bars
+        .max_organisation
+        .map(|maximum| fraction(bars.organisation, maximum))
+        .ok_or_else(|| unbounded("organisation", "organisation"));
+    out.bind_in(values, "org_bar", FILL, organisation);
+}
+
 fn entry(
     row: &LandCombatDivisionRow,
+    name: Option<String>,
     committed: bool,
     bonus: Option<i64>,
     flag: Option<&String>,
     mut values: Values,
 ) -> Values {
-    text(&mut values, "name", entry_name(row, committed, flag));
-    let strength = fraction(row.strength, row.max_strength);
-    fill(
-        &mut values,
-        "str_bar",
-        if committed {
-            (strength * row.strength_combat_factor as f32 / 100_000.0).clamp(0.0, 1.0)
-        } else {
-            strength
-        },
-    );
-    fill(
-        &mut values,
-        "org_bar",
-        fraction(row.organisation, row.max_organisation),
-    );
+    // An unavailable name is cleared and hidden; `unnamed_warnings` reports
+    // it once per cause with every division it covers.
+    let name_widget = values.entry("name".into()).or_default();
+    name_widget.hidden = name.is_none();
+    name_widget.text = name.map(|name| entry_name(name, row.side, committed, flag));
     if committed {
         // 1415C7E00 -> 140BECA30/140BECB50, then side bonus and cached stats.
         let attack = bonus.map(|bonus| {
@@ -106,9 +336,15 @@ fn entry(
             ),
         ] {
             if let Some(raw) = raw {
-                // Reference07 / pairJ_land_5: 369.58320 * .99000 displays
-                // 365, not366. The native integer widget truncates fixed5.
-                text(&mut values, key, (raw / 100_000).to_string());
+                // 1415C7E00 sets each stat box through Fixed5ToString
+                // (1424B6200) at precision 0, so the whole part is
+                // truncated: Reference07 / pairJ_land_5, 369.58320 * .99000,
+                // shows 365, not 366.
+                text(
+                    &mut values,
+                    key,
+                    installed_content::fixed5::fixed5_to_string(raw, 0),
+                );
             } else {
                 values.entry(key.into()).or_default().text = None;
             }
@@ -135,27 +371,6 @@ fn icons(values: &mut Values, key: &str, template: &str, frames: impl Iterator<I
             ..Widget::default()
         },
     );
-}
-
-/// 1415C5F10 formats the selected commander's skill through the
-/// `UNIT_LEADER_SKILL` key (`$SKILL|Y$` in the pinned English files), so the
-/// digit carries the key's colour code rather than the font's colour.
-fn skill_text(template: &str, skill: i32) -> String {
-    let Some(start) = template.find("$SKILL") else {
-        return template.to_owned();
-    };
-    let rest = &template[start + "$SKILL".len()..];
-    let Some(end) = rest.find('$') else {
-        return template.to_owned();
-    };
-    let value = match rest[..end]
-        .strip_prefix('|')
-        .and_then(|format| format.chars().find(char::is_ascii_alphabetic))
-    {
-        Some(colour) => format!("§{colour}{skill}§!"),
-        None => skill.to_string(),
-    };
-    format!("{}{value}{}", &template[..start], &rest[end + 1..])
 }
 
 /// The side whose `*_leader_initiative_overlay_glow` 1415C8950 shows. 1412990E0
@@ -205,26 +420,22 @@ fn role_rosters<'a>(
 }
 
 /// CLandCombatant vtable+F8 (1413CD7E0): true once two of the side's units
-/// (CCombatant+0x20, the full LandCombats roster in order) stand in different
-/// provinces. A unit's province is its location (+0x1F0), or its movement
-/// source (+0x1F8) when it stands in the combat province and has one.
-/// CLandBorderWarCombatant's slot (14011CD10) always returns false.
+/// (CCombatant+0x20, the full LandCombats roster in order) have different
+/// direction keys. CLandBorderWarCombatant's slot (14011CD10) always returns
+/// false.
 fn several_directions(
     combat: &replay::rows::LandCombatRow,
+    border_war: bool,
     divisions: &BTreeMap<(u8, u64), &LandCombatDivisionRow>,
     movement: &BTreeMap<u64, u32>,
 ) -> Option<bool> {
+    if border_war {
+        return Some(false);
+    }
     let mut first = None;
     for unit in &combat.attackers {
         let row = divisions.get(&(0, *unit))?;
-        let province = if row.province == combat.province {
-            match *movement.get(unit)? {
-                0 => row.province,
-                source => source,
-            }
-        } else {
-            row.province
-        };
+        let province = super::land_details::direction_key(row, combat.province, movement)?;
         match first {
             None => first = Some(province),
             Some(seen) if seen != province => return Some(true),
@@ -232,6 +443,16 @@ fn several_directions(
         }
     }
     Some(false)
+}
+
+/// Whether the combat is a CLandBorderWarCombat, whose type token 0x39A5
+/// (1413D8470) selects both the window title (1415C7520) and the combatant
+/// class above. Only a border war records border values on its modifier
+/// rows, so without any row for the combat the class stays undecided.
+pub(super) fn border_war(rows: &[replay::rows::LandCombatModifierRow], id: u64) -> Option<bool> {
+    rows.iter()
+        .find(|row| row.combat == id)
+        .map(|row| row.border_values.is_some())
 }
 
 fn land(
@@ -256,11 +477,39 @@ fn land(
     let modifiers = rows::<tables::LandCombatModifiers>(frame)?;
     let marker = rows::<tables::LandCombatSides>(frame)?;
     let marker = marker.rows().iter().find(|row| row.combat == id);
+    let bars = conditions(frame)?;
+    let division_gap = absence(&rows::<tables::Divisions>(frame)?);
+    let status_gap = absence(&rows::<tables::DivisionStatus>(frame)?);
+    let exiles = template_icons::Inputs::read(frame)?;
+    let content = document.icons.combat.land_defines.as_ref();
+    if let Err(reason) = content {
+        out.warnings.push(format!("Land combat defines are unavailable ({reason}); derived division icons and the initiative glow are omitted."));
+    }
+    let content = content.ok();
+    let names = &document.icons.combat.division_names;
+    out.warnings.extend(unnamed_warnings(
+        id,
+        divisions.values().copied(),
+        names,
+        &document.icons.combat,
+    ));
+    // Undecided entry flags and exile badges by widget and cause, with the
+    // committed divisions each cause leaves undecided: one warning per cause.
+    let mut undecided: BTreeMap<(&str, String), Vec<u64>> = BTreeMap::new();
     let movement: BTreeMap<_, _> = rows::<tables::DivisionMovement>(frame)?
         .rows()
         .iter()
         .map(|row| (row.division, row.source))
         .collect();
+    let has_sprite = |name: &str| document.icons.combat.has_sprite(name);
+    pictures(
+        out,
+        frame,
+        id,
+        &document.counters.combat_terrain,
+        &has_sprite,
+        flags,
+    )?;
     if detail.is_none()
         && divisions.is_empty()
         && !modifiers.rows().iter().any(|row| row.combat == id)
@@ -271,21 +520,6 @@ fn land(
         .retain(|s| !s.starts_with("Combat UI: LandCombatDetails/"));
     // Committed entries whose icon list ended early, per cause.
     let mut omitted = BTreeMap::new();
-    if let Some(detail) = detail {
-        let snow = rows::<tables::WeatherProvinces>(frame)?
-            .rows()
-            .iter()
-            .find(|r| r.id == detail.province)
-            .is_some_and(|r| r.snow > 0);
-        let terrain = format!(
-            "GFX_terrain_{}{}",
-            bytes(&detail.terrain_name),
-            if snow { "_winter" } else { "" }
-        );
-        if document.icons.combat.has_sprite(&terrain) {
-            sprite(&mut out.values, "terrain_picture", terrain);
-        }
-    }
     for side in 0..2 {
         let prefix = if side == 0 { "attacker" } else { "defender" };
         let old_ids = combat.map(|c| {
@@ -318,8 +552,30 @@ fn land(
                     hide(&mut widgets, "unit_icon");
                 }
                 if let Some(row) = divisions.get(&(side as u8, *unit)) {
+                    let flag = if committed {
+                        let cause = match exiles.entry_owner(row) {
+                            Ok(owner) => match flags.get(&owner) {
+                                Some(flag) => Ok(flag),
+                                None => Err(format!(
+                                    "no combat flag resolves for its owner country {owner}"
+                                )),
+                            },
+                            Err(refused) => Err(refused.to_string()),
+                        };
+                        cause
+                            .map_err(|cause| {
+                                undecided
+                                    .entry(("entry flag", cause))
+                                    .or_default()
+                                    .push(*unit)
+                            })
+                            .ok()
+                    } else {
+                        None
+                    };
                     widgets = entry(
                         row,
+                        shown_name(row, names, &document.icons.combat).ok(),
                         committed,
                         detail.map(|detail| {
                             if side == 0 {
@@ -328,9 +584,15 @@ fn land(
                                 detail.defender_bonus
                             }
                         }),
-                        flags.get(&row.context.effective_owner),
+                        flag,
                         widgets,
                     );
+                    let condition = bars.get(unit).copied().ok_or_else(|| {
+                        format!(
+                            "Land combat {id} division {unit}: its Divisions row is missing ({division_gap}); its strength and organisation bars are hidden."
+                        )
+                    });
+                    condition_bars(out, &mut widgets, row, committed, condition, &status_gap);
                 } else {
                     out.warnings.push(format!("LandCombatDivisions: missing combat {id} side {side} division {unit}; entry values remain unknown."));
                 }
@@ -346,12 +608,35 @@ fn land(
                             .map(|enemy| divisions.get(&(1 - side as u8, *enemy)).copied())
                             .collect()
                     });
+                    let exile = match (detail, content) {
+                        (Some(detail), Some(content)) => {
+                            let [occupier, core] =
+                                exiles.frames(row, detail, &content.exile_against_occupier);
+                            [
+                                ("exile occupier badge (frame 14)", occupier),
+                                ("exile core badge (frame 15)", core),
+                            ]
+                            .map(|(badge, frame)| {
+                                frame
+                                    .map_err(|refused| {
+                                        undecided
+                                            .entry((badge, refused.to_string()))
+                                            .or_default()
+                                            .push(*unit)
+                                    })
+                                    .ok()
+                            })
+                        }
+                        _ => [None; 2],
+                    };
                     let (frames, cut) = super::division_icons::frames(
                         modifier.entries.iter().map(|m| m.id),
                         detail.map(|detail| (detail, side)),
                         marker.map(|marker| marker.flags[side]),
                         row,
                         opponents.as_deref(),
+                        content,
+                        exile,
                     );
                     if let Some(cause) = cut {
                         *omitted.entry(cause).or_insert(0_usize) += 1;
@@ -362,6 +647,15 @@ fn land(
                         "modifier_icon_entry",
                         frames.into_iter(),
                     );
+                } else if committed && divisions.contains_key(&(side as u8, *unit)) {
+                    out.refuse(match modifier {
+                        None => format!(
+                            "Land combat {id} side {side} division modifier icons are omitted: no LandCombatModifiers row records the side."
+                        ),
+                        Some(_) => format!(
+                            "Land combat {id} division {unit}: its side's LandCombatModifiers row does not list it; its modifier icons are omitted."
+                        ),
+                    });
                 }
                 out.entries[target].push((*unit, widgets));
             }
@@ -370,79 +664,87 @@ fn land(
             } else {
                 ("reserves", "COMBAT_RESERVES_LABEL")
             };
-            let fallback = if committed {
-                "$COUNT$ Divisions"
+            // 1415C9860: COUNT is the side's committed (+0xD4) or reserve
+            // (+0xEC) count as a string argument (Int32ToString 1424B56A0,
+            // LocalizeWithMovedStringArgument 1402E30F0). An unknown count
+            // takes the viewer's unknown dash.
+            let count = if detail.is_some() || (roles_known && divisions_complete) {
+                ids.len().to_string()
             } else {
-                "$COUNT$ Reserves"
+                "—".into()
             };
-            let label = document
-                .names
-                .localisation
-                .get(label)
-                .unwrap_or(fallback)
-                .replace(
-                    "$COUNT$",
-                    &if detail.is_some() || (roles_known && divisions_complete) {
-                        ids.len().to_string()
-                    } else {
-                        "—".into()
-                    },
-                );
-            text(
-                &mut out.values,
-                &format!("{prefix}_window/{prefix}_{kind}_label"),
+            let text = builtin(
+                &document.icons.combat,
+                &document.names.localisation,
                 label,
+                &[("COUNT", Argument::Text(&count))],
+            )
+            .map_err(|reason| format!("Land combat {prefix} {kind} label is hidden: {reason}."));
+            out.bind(
+                &format!("{prefix}_window/{prefix}_{kind}_label"),
+                TEXT,
+                text,
             );
         }
         if let Some(detail) = detail {
             let value = &detail.sides[side];
-            text(
-                &mut out.values,
-                &format!("{prefix}_leader_name"),
-                if value.commander == 0 {
-                    document
-                        .names
-                        .localisation
-                        .get("UNIT_LEADER_NO_LEADER")
-                        .unwrap_or("No Commander")
-                        .to_owned()
-                } else {
-                    bytes(&value.commander_name)
-                },
-            );
-            if value.commander != 0 {
-                text(
-                    &mut out.values,
-                    &format!("{prefix}_leader_skill"),
-                    skill_text(
-                        document
-                            .names
-                            .localisation
-                            .get("UNIT_LEADER_SKILL")
-                            .unwrap_or("$SKILL$"),
-                        value.commander_skill,
-                    ),
-                );
-                flag(
-                    &mut out.values,
-                    &format!("{prefix}_flag"),
-                    value.commander_country,
-                    flags,
-                );
+            // 1415C5F10: a commander's name is its localised name token
+            // (140C16FB0 into 142230F20); no commander is UNIT_LEADER_NO_LEADER.
+            let name = if value.commander == 0 {
+                builtin(
+                    &document.icons.combat,
+                    &document.names.localisation,
+                    "UNIT_LEADER_NO_LEADER",
+                    &[],
+                )
             } else {
-                // 1415C5F10 writes an empty skill beside UNIT_LEADER_NO_LEADER.
-                text(&mut out.values, &format!("{prefix}_leader_skill"), "");
-                sprite(
-                    &mut out.values,
-                    &format!("{prefix}_leader"),
-                    "GFX_no_combat_leader".into(),
-                );
+                token(
+                    &document.icons.combat,
+                    &document.names.localisation,
+                    &value.commander_name_token,
+                )
             }
-            // 1415C5F10 shows the HQ badge (attacker/defender_leader_army_hq_icon)
-            // exactly for the recorded HQ unit; zero hides it for any reason and
-            // the committed-membership test stays native.
-            if value.hq_unit != 0 && value.committed.contains(&value.hq_unit) {
-                show(&mut out.values, &format!("{prefix}_leader_army_hq_icon"));
+            .map_err(|reason| {
+                format!("Land combat {id} {prefix} commander name is hidden: {reason}.")
+            });
+            out.bind(&format!("{prefix}_leader_name"), TEXT, name);
+            // The side flag is bound in `pictures`, with or without a
+            // commander.
+            if value.commander != 0 {
+                // 1415C5F10: UNIT_LEADER_SKILL with the integer argument SKILL
+                // (Localisation_FormatValue 1402E2E60, type 5).
+                let skill = builtin(
+                    &document.icons.combat,
+                    &document.names.localisation,
+                    "UNIT_LEADER_SKILL",
+                    &[("SKILL", Argument::Int32(value.commander_skill))],
+                )
+                .map_err(|reason| {
+                    format!("Land combat {id} {prefix} commander skill is hidden: {reason}.")
+                });
+                out.bind(&format!("{prefix}_leader_skill"), TEXT, skill);
+            } else {
+                // 1415C5F10 writes an empty skill beside UNIT_LEADER_NO_LEADER
+                // and sets the sprite it names on the portrait button.
+                out.bind(&format!("{prefix}_leader_skill"), TEXT, Ok(String::new()));
+                let name = "GFX_no_combat_leader";
+                let portrait = if document.icons.combat.has_sprite(name) {
+                    Ok(name.to_owned())
+                } else {
+                    Err(format!(
+                        "Land combat {id} {prefix} commander portrait is hidden: the content lacks sprite {name} (1415C5F10)."
+                    ))
+                };
+                out.bind(&format!("{prefix}_leader"), SPRITE, portrait);
+            }
+            // The badge is hidden in `Bindings::land` and shown only here.
+            match super::hq::unit(frame, value)? {
+                Ok(0) => {}
+                Ok(_) => show(&mut out.values, &format!("{prefix}_leader_army_hq_icon")),
+                Err(reason) => out.withhold(
+                    &[&format!("{prefix}_leader_army_hq_icon")],
+                    format!("Land combat {id} {prefix} HQ badge is hidden: {reason}."),
+                ),
             }
             if !detail.sides[0].air_counts.is_empty() || !detail.sides[1].air_counts.is_empty() {
                 for key in ["air_icon", "air_count"] {
@@ -480,12 +782,19 @@ fn land(
             ] {
                 if mask == 0 {
                     if side == 0 {
-                        match combat.map(|combat| {
-                            several_directions(combat, &divisions, &movement)
-                        }) {
-                            Some(Some(true)) => kinds.push(kind),
-                            Some(Some(false)) => (),
-                            _ => out.warnings.push("Land attacker multiple-direction icon: an attacker's LandCombatDivisions location or DivisionMovement source is missing; the icon is omitted rather than guessed.".into()),
+                        match (border_war(modifiers.rows(), id), combat) {
+                            (Some(border_war), Some(combat)) => match several_directions(
+                                combat,
+                                border_war,
+                                &divisions,
+                                &movement,
+                            ) {
+                                Some(true) => kinds.push(kind),
+                                Some(false) => (),
+                                None => out.warnings.push("Land attacker multiple-direction icon: an attacker's LandCombatDivisions location or DivisionMovement source is missing; the icon is omitted rather than guessed.".into()),
+                            },
+                            (None, _) => out.warnings.push(format!("Land combat {id} multiple-direction icon: no LandCombatModifiers row records whether this is a border war, so the combatant class and its direction test are undecided; the icon is omitted.")),
+                            (_, None) => out.warnings.push(format!("Land combat {id} multiple-direction icon: the LandCombats roster is missing; the icon is omitted rather than guessed.")),
                         }
                     }
                 } else if marker.flags[side] & mask != 0 {
@@ -498,6 +807,10 @@ fn land(
                 "global_modifier_icon_entry",
                 kinds.into_iter(),
             );
+        } else {
+            out.refuse(format!(
+                "Land combat {id} {prefix} global modifier icons are omitted: its LandCombatSides row is missing."
+            ));
         }
     }
     if let (Some(detail), Some(combat)) = (detail, combat) {
@@ -509,11 +822,12 @@ fn land(
         match (
             reconnaissance(0, &combat.attackers),
             reconnaissance(1, &combat.defenders),
+            content,
         ) {
-            (Some(attacker), Some(defender)) => {
+            (Some(attacker), Some(defender), Some(content)) => {
                 let skills = detail.sides.each_ref().map(|side| side.commander_skill);
                 if let Some(side) =
-                    initiative_side(skills, [attacker, defender], detail.recon_skill_impact)
+                    initiative_side(skills, [attacker, defender], content.recon_skill_impact)
                 {
                     show(
                         &mut out.values,
@@ -524,15 +838,22 @@ fn land(
                     );
                 }
             }
+            (_, _, None) => (),
             _ => out.warnings.push("Land initiative glow: a participant's LandCombatDivisions reconnaissance is missing; neither glow is drawn rather than guessed.".into()),
         }
+    }
+    for ((widget, cause), units) in &undecided {
+        out.warnings.push(format!(
+            "Land combat {id}: {} committed division {widget}(s) omitted because {cause}; divisions {units:?}.",
+            units.len()
+        ));
     }
     out.warnings
         .extend(super::division_icons::omission_warnings(id, &omitted));
     if detail.is_none() {
         out.warnings.push("LandCombatDetails unavailable: recorded LandCombatDivisions names, HP/org bars, commitment roles and defence/breakthrough remain bound independently, as do LandCombatModifiers icons. Side attack bonuses, selected commanders, tactics, CAS, maximum width and heading remain unknown; division commanders do not substitute for selected-side commanders.".into());
     }
-    out.warnings.push("Format-22 land: available row-level names, bars, roles and modifier kinds are independent of the parent-detail table. Defence/breakthrough uses recorded scales and truncates to whole units, as observed in reference07. Side-dependent attack, selected commander skill, CAS, the committed/reserve array order and the derived division icons require LandCombatDetails; icons 14/15 and the HQ marker additionally require format-25 rows and stay absent on older files. Reinforcement and modifier tooltips, learning traits and possible-tactics menus remain unported; unsupported widgets stay empty/dash.".into());
+    out.warnings.push("Land window: names, bars, roles and modifier kinds bind without the parent-detail table. Defence/breakthrough uses recorded scales and truncates to whole units, as observed in reference07. Side-dependent attack, selected commander skill, CAS, the committed/reserve array order and the derived division icons require LandCombatDetails. Reinforcement and modifier tooltips, learning traits and possible-tactics menus remain unported; unsupported widgets stay empty/dash.".into());
     Ok(())
 }
 
@@ -559,52 +880,70 @@ fn naval(
                 ("capital", value.capital_screening),
                 ("carrier", value.carrier_screening),
             ] {
+                // 1417D9C60: FormatFixed5Percent at precision 0 times 100
+                // (1417DA098, 1417DA0C1).
                 text(
                     &mut out.values,
                     &format!("{wnd}_wnd_{key}_screening_efficiency"),
-                    format!("{}%", raw / 1000),
+                    installed_content::fixed5::fixed5_percent(raw, 0, true),
                 );
             }
+            // 1417D9C60: positioning as the screening (1417DA0F8), anti-air
+            // through Fixed5ToString at precision 1 (1417DA133), truncating.
             text(
                 &mut out.values,
                 &format!("header_container/{wnd}_wnd/stat_positioning"),
-                format!("{}%", value.positioning / 1000),
+                installed_content::fixed5::fixed5_percent(value.positioning, 0, true),
             );
             text(
                 &mut out.values,
                 &format!("header_container/{wnd}_wnd/stat_anti_air"),
-                format!("{:.1}", value.anti_air as f64 / 100_000.0),
+                installed_content::fixed5::fixed5_to_string(value.anti_air, 1),
             );
-            if let Some(country) = value.summary.countries.first() {
-                flag(
-                    &mut out.values,
-                    &format!("header_container/flag_{label}"),
-                    *country,
-                    flags,
-                );
-            }
+            let flag = value
+                .summary
+                .countries
+                .first()
+                .ok_or_else(|| "NavalCombatDetails lists no country for the side".to_owned())
+                .and_then(|country| country_flag(flags, *country))
+                .map_err(|reason| format!("Naval combat {id} {label} flag is hidden: {reason}."));
+            out.bind(&format!("header_container/flag_{label}"), FLAG, flag);
+            let name_key = format!("header_container/leader_{label}_name");
             if value.commander == 0 {
-                text(
-                    &mut out.values,
-                    &format!("header_container/leader_{label}_name"),
-                    document
-                        .names
-                        .localisation
-                        .get("UNIT_LEADER_NO_LEADER")
-                        .unwrap_or("No Commander"),
-                );
-                sprite(
-                    &mut out.values,
+                // 1417DCE40 (from RefreshCombatDetails 1417DA2F0).
+                let name = builtin(
+                    &document.icons.combat,
+                    &document.names.localisation,
+                    "UNIT_LEADER_NO_LEADER",
+                    &[],
+                )
+                .map_err(|reason| {
+                    format!("Naval combat {id} {label} commander name is hidden: {reason}.")
+                });
+                out.bind(&name_key, TEXT, name);
+                // portrait button; land's GFX_no_combat_leader is not used.
+                let sprite = "GFX_leader_unknown";
+                let portrait = if document.icons.combat.has_sprite(sprite) {
+                    Ok(sprite.to_owned())
+                } else {
+                    Err(format!(
+                        "Naval combat {id} {label} commander portrait is hidden: the content lacks sprite {sprite} (1417DCE40)."
+                    ))
+                };
+                out.bind(
                     &format!("header_container/leader_{label}"),
-                    "GFX_no_combat_leader".into(),
+                    SPRITE,
+                    portrait,
                 );
             } else if let Some(commander) = &value.commander_inputs {
                 show(&mut out.values, &format!("header_container/{label}_stats"));
-                text(
-                    &mut out.values,
-                    &format!("header_container/leader_{label}_name"),
-                    bytes(&commander.name),
-                );
+                let name = std::str::from_utf8(&commander.name)
+                    .map_err(|_| "it is not UTF-8".to_owned())
+                    .and_then(|name| displayable(&document.icons.combat, name.to_owned()))
+                    .map_err(|reason| {
+                        format!("Naval combat {id} {label} commander name is hidden: {reason}.")
+                    });
+                out.bind(&name_key, TEXT, name);
                 for (index, stat) in ["attack", "defense", "maneuvering", "coordination"]
                     .iter()
                     .enumerate()
@@ -615,6 +954,15 @@ fn naval(
                         commander.skills[index + 1].to_string(),
                     );
                 }
+            } else {
+                // The skills box stays hidden from `Bindings::naval`.
+                out.withhold(
+                    &[&name_key],
+                    format!(
+                        "Naval combat {id} {label} commander name and skills are hidden: NavalCombatDetails holds no inputs for commander {}.",
+                        value.commander
+                    ),
+                );
             }
         }
         out.warnings.push("Format-22 naval: progress, screening, positioning, AA, ordered side flags and commander name/skills are bound. Air groups, perspective-dependent progress skin and tooltips remain unported; the environment binder supplies recorded weather and weapon summaries. Phase has no separate scalar widget in navalcombat.gui; retreat/engagement operands are not relabelled as a guessed phase.".into());
@@ -624,20 +972,35 @@ fn naval(
 #[cfg(test)]
 mod tests {
     use super::*;
+    const HALF: Condition = Condition {
+        strength: 50_000,
+        max_strength: Some(100_000),
+        organisation: 30_000,
+        max_organisation: Some(60_000),
+    };
+
     #[test]
     fn committed_strength_and_side_attack_use_distinct_native_operands() {
         let row = LandCombatDivisionRow {
-            strength: 50_000,
-            max_strength: 100_000,
             strength_combat_factor: 50_000,
-            organisation: 30_000,
-            max_organisation: 60_000,
             scales: [200_000, 50_000, 150_000, 100_000],
             stat_values: [8_000_000, 6_000_000, 0, 10_000_000, 2_000_000],
             ..Default::default()
         };
-        let active = entry(&row, true, Some(10_000), None, Values::new());
-        let reserve = entry(&row, false, Some(10_000), None, Values::new());
+        let entry = |committed| {
+            let mut values = entry(&row, None, committed, Some(10_000), None, Values::new());
+            condition_bars(
+                &mut Bindings::default(),
+                &mut values,
+                &row,
+                committed,
+                Ok(HALF),
+                "",
+            );
+            values
+        };
+        let active = entry(true);
+        let reserve = entry(false);
         assert_eq!(active["str_bar"].fill, Some(0.25));
         assert_eq!(reserve["str_bar"].fill, Some(0.5));
         assert_eq!(active["org_bar"].fill, Some(0.5));
@@ -652,17 +1015,21 @@ mod tests {
         // Reference07, hour60828492: 169th 'Madison' Division shows365.
         let row = LandCombatDivisionRow {
             side: 1,
-            name: b"169th 'Madison' Division".to_vec(),
-            strength: 50_000,
-            max_strength: 100_000,
             strength_combat_factor: 100_000,
-            organisation: 30_000,
-            max_organisation: 60_000,
             scales: [99_000, 99_000, 100_000, 100_000],
             stat_values: [36_958_320, 7_635_582, 833, 23_127_045, 5_736_750],
             ..Default::default()
         };
-        let active = entry(&row, true, None, None, Values::new());
+        let mut out = Bindings::default();
+        let mut active = entry(
+            &row,
+            Some("169th 'Madison' Division".into()),
+            true,
+            None,
+            None,
+            Values::new(),
+        );
+        condition_bars(&mut out, &mut active, &row, true, Ok(HALF), "");
         assert_eq!(
             active["name"].text.as_deref(),
             Some("169th 'Madison' Division")
@@ -672,36 +1039,238 @@ mod tests {
         assert_eq!(active["defense"].text.as_deref(), Some("365"));
         assert_eq!(active["soft_attack"].text, None);
         assert_eq!(active["hard_attack"].text, None);
+        // The same entry bound again without its name or condition keeps
+        // neither earlier value: both are cleared and hidden, the bars'
+        // refusal counted once per bind.
+        let mut stale = entry(&row, None, true, None, None, active);
+        for _ in 0..2 {
+            condition_bars(
+                &mut out,
+                &mut stale,
+                &row,
+                true,
+                Err("Land combat 5 division 9: bars refused.".into()),
+                "",
+            );
+        }
+        assert!(stale["name"].hidden && stale["name"].text.is_none());
+        for bar in ["str_bar", "org_bar"] {
+            assert!(stale[bar].hidden && stale[bar].fill.is_none(), "{bar}");
+        }
+        assert_eq!(
+            out.refused()
+                .get("Land combat 5 division 9: bars refused.")
+                .copied(),
+            Some(2)
+        );
+    }
+
+    /// A division with its Divisions row but no DivisionStatus row keeps a
+    /// condition; each bar is hidden only for its own missing maximum, and
+    /// the refusal names the table's state.
+    #[test]
+    fn a_missing_status_row_hides_each_bar_by_its_own_maximum() {
+        use replay::rows::DivisionRow;
+        let mut frame = window_frame(None, None);
+        *frame.tables[TableId::Divisions.index()] =
+            TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+                id: 9,
+                hit_points: 50_000,
+                organisation: 30_000,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::DivisionStatus.index()] = TableView::Truncated {
+            rows: TableRows::DivisionStatus(Vec::new()),
+            missing: 2,
+        };
+        let bars = conditions(&frame).unwrap();
+        let status_gap = absence(&rows::<tables::DivisionStatus>(&frame).unwrap());
+        let row = LandCombatDivisionRow {
+            combat: COMBAT,
+            division: 9,
+            ..Default::default()
+        };
+        let mut out = Bindings::default();
+        let mut values = Values::new();
+        condition_bars(
+            &mut out,
+            &mut values,
+            &row,
+            false,
+            Ok(bars[&9]),
+            &status_gap,
+        );
+        for bar in ["str_bar", "org_bar"] {
+            assert!(values[bar].hidden && values[bar].fill.is_none(), "{bar}");
+        }
+        assert!(refused(
+            &out,
+            "Land combat 62 division 9: its DivisionStatus row is missing (the table is truncated, 2 rows unread), so its hit points maximum is unknown; its strength bar is hidden."
+        ));
+        assert!(refused(
+            &out,
+            "so its organisation maximum is unknown; its organisation bar is hidden."
+        ));
+        // A known maximum binds its own bar although the other is missing.
+        let mut values = Values::new();
+        let strength_only = Condition {
+            max_strength: Some(100_000),
+            ..bars[&9]
+        };
+        condition_bars(
+            &mut out,
+            &mut values,
+            &row,
+            false,
+            Ok(strength_only),
+            &status_gap,
+        );
+        assert_eq!(values["str_bar"].fill, Some(0.5));
+        assert!(!values["str_bar"].hidden);
+        assert!(values["org_bar"].hidden && values["org_bar"].fill.is_none());
     }
 
     #[test]
     fn committed_names_carry_the_owner_flag_on_the_side_the_native_entry_writes() {
-        let mut row = LandCombatDivisionRow {
-            name: b"144ya Strelkovaya Diviziya".to_vec(),
-            ..Default::default()
-        };
+        let name = || "144ya Strelkovaya Diviziya".to_owned();
         let flag = "SOV_communism".to_string();
         assert_eq!(
-            entry_name(&row, true, Some(&flag)),
+            entry_name(name(), 0, true, Some(&flag)),
             format!("144ya Strelkovaya Diviziya {INLINE_FLAG}SOV_communism")
         );
         assert_eq!(
-            entry_name(&row, false, Some(&flag)),
+            entry_name(name(), 0, false, Some(&flag)),
             "144ya Strelkovaya Diviziya"
         );
-        row.side = 1;
         assert_eq!(
-            entry_name(&row, true, Some(&flag)),
+            entry_name(name(), 1, true, Some(&flag)),
             format!("{INLINE_FLAG}SOV_communism 144ya Strelkovaya Diviziya")
         );
-        assert_eq!(entry_name(&row, true, None), "144ya Strelkovaya Diviziya");
+        assert_eq!(
+            entry_name(name(), 1, true, None),
+            "144ya Strelkovaya Diviziya"
+        );
     }
 
     #[test]
-    fn skill_uses_the_localised_colour() {
-        // pairL_land_danzig.png: yellow 4 and 5 from UNIT_LEADER_SKILL.
-        assert_eq!(skill_text("$SKILL|Y$", 5), "§Y5§!");
-        assert_eq!(skill_text("Skill $SKILL$", 4), "Skill 4");
+    fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
+        let names = installed_content::division_names::parse(
+            br#"SOV_INF_01 = { ordered = { 144 = { "%dya Strelkovaya Diviziya" } } }"#,
+        )
+        .unwrap();
+        let mut row = LandCombatDivisionRow {
+            name_group: b"SOV_INF_01".to_vec(),
+            name_order: 144,
+            name_ordered: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            division_name(&row, &names).as_deref(),
+            Ok("144ya Strelkovaya Diviziya")
+        );
+        row.name_custom = b"Guards".to_vec();
+        assert_eq!(division_name(&row, &names).as_deref(), Ok("Guards"));
+        // A programmatic member with a group: the capture records no stored
+        // name, and the group's entry is shown.
+        row.name_programmatic = 1;
+        row.name_custom.clear();
+        assert_eq!(
+            division_name(&row, &names).as_deref(),
+            Ok("144ya Strelkovaya Diviziya")
+        );
+        // With a null group the capture records the stored name, which
+        // 1409B5640 shows.
+        row.name_group.clear();
+        row.name_custom = b"1-ya Strelkovaya".to_vec();
+        assert_eq!(
+            division_name(&row, &names).as_deref(),
+            Ok("1-ya Strelkovaya")
+        );
+        // Without one the game builds the legacy name.
+        row.name_custom.clear();
+        assert_eq!(
+            division_name(&row, &names),
+            Err(Unnamed::Unresolved(Unresolved::NoGroup))
+        );
+        row.name_group = b"SOV_INF_01".to_vec();
+        row.name_type = 1;
+        assert_eq!(division_name(&row, &names), Err(Unnamed::ForeignType(1)));
+    }
+
+    /// Each cause is one warning naming every division it leaves unnamed,
+    /// with its group and ordinal.
+    #[test]
+    fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
+        let names = installed_content::division_names::parse(
+            br#"INF = { ordered = { 1 = { "First" } } unordered = { loose = { "Loose" } } }"#,
+        )
+        .unwrap();
+        let row = |division, group: &[u8], order, ordered: u8| LandCombatDivisionRow {
+            division,
+            name_group: group.to_vec(),
+            name_order: order,
+            name_ordered: ordered,
+            ..Default::default()
+        };
+        let rows = [
+            row(1, b"INF", 1, 1),
+            row(2, b"INF", 0, 1),
+            row(3, b"INF", 2, 1),
+            row(4, b"INF", 1, 0),
+            row(5, b"GER\xff", 1, 1),
+            row(6, b"ABSENT", 3, 1),
+            LandCombatDivisionRow {
+                name_custom: b"\xffGuards".to_vec(),
+                ..row(7, b"INF", 1, 1)
+            },
+            LandCombatDivisionRow {
+                name_type: 2,
+                ..row(8, b"INF", 1, 1)
+            },
+            // A player's name holding the stored flag control 0x12.
+            LandCombatDivisionRow {
+                name_custom: b"\x12GER Guards".to_vec(),
+                ..row(10, b"INF", 1, 1)
+            },
+        ];
+        struct NoIcons;
+        impl TextIcons for NoIcons {
+            fn icon(&self, _: &str) -> Option<(u32, i64)> {
+                None
+            }
+        }
+        let warnings = unnamed_warnings(9, rows.iter(), &names, &NoIcons);
+        let expected = [
+            (Unnamed::CustomNotText, "division 7 (group INF, ordered 1)"),
+            (Unnamed::ForeignType(2), "division 8 (group INF, ordered 1)"),
+            (
+                Unnamed::Unresolved(Unresolved::GroupAbsent),
+                "division 5 (group GER\\xff, ordered 1); division 6 (group ABSENT, ordered 3)",
+            ),
+            (
+                Unnamed::Unresolved(Unresolved::NoFallback),
+                "division 3 (group INF, ordered 2); division 4 (group INF, unordered 1)",
+            ),
+            (
+                Unnamed::Unresolved(Unresolved::UnassignedOrder),
+                "division 2 (group INF, ordered 0)",
+            ),
+            (
+                Unnamed::Control(
+                    "the inline flag 0x12 \"GER\" (an authored `@`), which the viewer does not draw"
+                        .into(),
+                ),
+                "division 10 (group INF, ordered 1)",
+            ),
+        ];
+        assert_eq!(warnings.len(), expected.len(), "{warnings:#?}");
+        for (cause, divisions) in expected {
+            let count = divisions.split("; ").count();
+            let warning = format!(
+                "Land combat 9: {count} division names are unavailable because {cause}: {divisions}."
+            );
+            assert!(warnings.contains(&warning), "{warning}\n{warnings:#?}");
+        }
     }
 
     #[test]
@@ -738,8 +1307,13 @@ mod tests {
         let mut movement = BTreeMap::new();
         // pairJ_land_5.png: 144ya at 9263 and 2-p Morit at 389 show the icon.
         assert_eq!(
-            several_directions(&combat, &divisions, &movement),
+            several_directions(&combat, false, &divisions, &movement),
             Some(true)
+        );
+        // A border war never has several directions.
+        assert_eq!(
+            several_directions(&combat, true, &divisions, &movement),
+            Some(false)
         );
         let entered = [
             LandCombatDivisionRow {
@@ -754,15 +1328,40 @@ mod tests {
             },
         ];
         divisions = entered.iter().map(|r| ((0, r.division), r)).collect();
-        assert_eq!(several_directions(&combat, &divisions, &movement), None);
+        assert_eq!(
+            several_directions(&combat, false, &divisions, &movement),
+            None
+        );
         movement.insert(1, 9263);
         assert_eq!(
-            several_directions(&combat, &divisions, &movement),
+            several_directions(&combat, false, &divisions, &movement),
             Some(false)
         );
         movement.insert(1, 0);
         assert_eq!(
-            several_directions(&combat, &divisions, &movement),
+            several_directions(&combat, false, &divisions, &movement),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_missing_modifier_row_leaves_the_combat_class_undecided() {
+        use replay::rows::LandCombatModifierRow;
+        let row = |combat, side, border_values| LandCombatModifierRow {
+            combat,
+            side,
+            border_values,
+            ..Default::default()
+        };
+        assert_eq!(border_war(&[], 5), None);
+        assert_eq!(border_war(&[row(4, 0, Some([0; 3]))], 5), None);
+        // Either side's row decides; a projected-out side does not matter.
+        assert_eq!(border_war(&[row(5, 1, None)], 5), Some(false));
+        assert_eq!(
+            border_war(
+                &[row(4, 0, None), row(5, 1, Some([0, 100_000, 100_000]))],
+                5
+            ),
             Some(true)
         );
     }
@@ -804,5 +1403,199 @@ mod tests {
         ];
         assert_eq!(role_rosters(&rows, 0), [vec![60, 90], vec![80]]);
         assert_eq!(role_rosters(&rows, 1), [vec![50], vec![]]);
+    }
+
+    use replay::{
+        frame::{Metrics, TableView},
+        rows::{
+            LandCombatDetailsRow, LandCombatRow, LandCombatSideDetails, TableId, TableRows,
+            WeatherProvinceRow,
+        },
+    };
+
+    const COMBAT: u64 = 62;
+    const PROVINCE: u32 = 3_000;
+
+    fn window_frame(
+        detail: Option<LandCombatDetailsRow>,
+        weather: Option<TableView>,
+    ) -> DecodedFrame {
+        let mut frame = DecodedFrame {
+            branch: 0,
+            hour: 7,
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "not recorded".into(),
+                }
+                .into()
+            }),
+            metrics: Metrics::default(),
+        };
+        *frame.tables[TableId::LandCombats.index()] =
+            TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
+                id: COMBAT,
+                province: PROVINCE,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::LandCombatDetails.index()] =
+            TableView::Complete(TableRows::LandCombatDetails(detail.into_iter().collect()));
+        if let Some(weather) = weather {
+            *frame.tables[TableId::WeatherProvinces.index()] = weather;
+        }
+        frame
+    }
+
+    fn snow(snow: i64) -> Option<TableView> {
+        Some(TableView::Complete(TableRows::WeatherProvinces(vec![
+            WeatherProvinceRow {
+                id: PROVINCE,
+                snow,
+                ..Default::default()
+            },
+        ])))
+    }
+
+    /// The window as an earlier binding left it: a first-member flag on each
+    /// side and the summer terrain picture.
+    fn stale() -> Bindings {
+        let mut out = Bindings::default();
+        for key in ["attacker_flag", "defender_flag"] {
+            out.bind(key, FLAG, Ok("SOV".into()));
+        }
+        out.bind("terrain_picture", SPRITE, Ok("GFX_terrain_plains".into()));
+        out
+    }
+
+    fn bind_pictures(frame: &DecodedFrame, sprites: &[&str]) -> Bindings {
+        let terrain = BTreeMap::from([(PROVINCE, "plains".to_owned())]);
+        let flags = BTreeMap::from([(7, "GER".to_owned())]);
+        let has_sprite = |name: &str| sprites.contains(&name);
+        let mut out = stale();
+        pictures(&mut out, frame, COMBAT, &terrain, &has_sprite, &flags).unwrap();
+        out
+    }
+
+    fn refused(out: &Bindings, fragment: &str) -> bool {
+        out.refused()
+            .keys()
+            .any(|refusal| refusal.contains(fragment))
+    }
+
+    /// 1415C5F10 returns the side's country with or without a commander, and
+    /// 1415C9860 binds the flag from it: without a commander the recorded
+    /// first primary country (or province controller) replaces the earlier
+    /// first-member flag; a country without artwork hides the flag.
+    #[test]
+    fn a_side_without_a_commander_takes_its_recorded_country_flag() {
+        let detail = LandCombatDetailsRow {
+            combat: COMBAT,
+            province: PROVINCE,
+            sides: [
+                LandCombatSideDetails {
+                    commander: 0,
+                    commander_country: 7,
+                    ..Default::default()
+                },
+                LandCombatSideDetails {
+                    commander: 0,
+                    commander_country: 9,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let out = bind_pictures(
+            &window_frame(Some(detail), snow(0)),
+            &["GFX_terrain_plains"],
+        );
+        let attacker = &out.values["attacker_flag"];
+        assert_eq!(attacker.flag.as_deref(), Some("GER"));
+        assert!(!attacker.hidden);
+        let defender = &out.values["defender_flag"];
+        assert_eq!(defender.flag, None, "the earlier SOV flag is cleared");
+        assert!(defender.hidden);
+        assert!(refused(
+            &out,
+            "Land combat 62 defender flag is hidden: no combat flag resolves for country 9"
+        ));
+        // Without LandCombatDetails the side country is unknown: neither the
+        // earlier flag nor a first-member guess is kept.
+        let out = bind_pictures(&window_frame(None, snow(0)), &["GFX_terrain_plains"]);
+        for key in ["attacker_flag", "defender_flag"] {
+            assert!(out.values[key].hidden && out.values[key].flag.is_none());
+        }
+        assert!(refused(
+            &out,
+            "attacker flag is hidden: LandCombatDetails has no row for the combat"
+        ));
+    }
+
+    /// 1415C7520 adds `_winter` for positive province snow. A missing winter
+    /// sprite or a missing weather row hides the picture and names the gap,
+    /// rather than keeping the earlier summer picture or assuming no snow.
+    #[test]
+    fn the_terrain_picture_is_decided_once_and_hidden_on_refusal() {
+        let both = ["GFX_terrain_plains", "GFX_terrain_plains_winter"];
+        let picture = |out: &Bindings| {
+            let widget = &out.values["terrain_picture"];
+            (widget.sprite.clone(), widget.hidden)
+        };
+        let out = bind_pictures(&window_frame(None, snow(0)), &both);
+        assert_eq!(picture(&out), (Some("GFX_terrain_plains".into()), false));
+        let out = bind_pictures(&window_frame(None, snow(1)), &both);
+        assert_eq!(
+            picture(&out),
+            (Some("GFX_terrain_plains_winter".into()), false)
+        );
+        // Snow with no winter sprite: the summer picture bound earlier goes.
+        let out = bind_pictures(&window_frame(None, snow(1)), &["GFX_terrain_plains"]);
+        assert_eq!(picture(&out), (None, true));
+        assert!(refused(
+            &out,
+            "Land combat 62 terrain picture is hidden: the content lacks sprite GFX_terrain_plains_winter (1415C7520)."
+        ));
+        // Missing weather is not zero snow, whatever the table's state.
+        for (weather, state) in [
+            (None, "the table is unavailable: not recorded"),
+            (
+                Some(TableView::Complete(TableRows::WeatherProvinces(Vec::new()))),
+                "the complete table lacks it",
+            ),
+            (
+                Some(TableView::Truncated {
+                    rows: TableRows::WeatherProvinces(Vec::new()),
+                    missing: 4,
+                }),
+                "the table is truncated, 4 rows unread",
+            ),
+        ] {
+            let out = bind_pictures(&window_frame(None, weather), &both);
+            assert_eq!(picture(&out), (None, true), "{state}");
+            assert!(
+                refused(
+                    &out,
+                    &format!(
+                        "WeatherProvinces has no row for province 3000 ({state}), so its snow and the summer or `_winter` picture are unknown"
+                    )
+                ),
+                "{:?}",
+                out.refused()
+            );
+        }
+    }
+
+    /// A value bound after a refusal shows the widget again; a repeated
+    /// refusal is counted, not repeated.
+    #[test]
+    fn a_binding_after_a_refusal_shows_the_widget_again() {
+        let mut out = Bindings::default();
+        out.bind("name", TEXT, Ok("early".into()));
+        out.bind("name", TEXT, Err("name refused".into()));
+        out.bind("name", TEXT, Err("name refused".into()));
+        assert!(out.values["name"].hidden && out.values["name"].text.is_none());
+        assert_eq!(out.refused().get("name refused").copied(), Some(2));
+        out.bind("name", TEXT, Ok("late".into()));
+        assert!(!out.values["name"].hidden);
+        assert_eq!(out.values["name"].text.as_deref(), Some("late"));
     }
 }

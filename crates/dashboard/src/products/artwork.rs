@@ -89,13 +89,40 @@ impl Context {
         })
     }
 
-    /// The localised text for a key, cleaned of colour codes; None when the
-    /// text needs runtime scope evaluation or is missing.
+    /// The localised text for a key as plain text, a key the content lacks
+    /// being its own bytes (the game's localiser, [`Catalogue::localised`]);
+    /// None when refused, which the catalogue notes.
     pub fn localise(&self, key: &str) -> Option<String> {
+        self.catalogue.localised(key, self.view())
+    }
+
+    /// Focus names and descriptions go through 1412B9CA0 (1402D2250,
+    /// 1402D21E0); technology names are plain (140EC9B40 -> 140BBAA50).
+    fn view(&self) -> catalogue::View {
+        match self.kind {
+            Kind::Focus => catalogue::View::Scripted,
+            Kind::Technology => catalogue::View::Plain,
+        }
+    }
+
+    /// The texts refused so far, one warning per reason.
+    pub fn refusal_lines(&self) -> Vec<String> {
+        self.catalogue.refusal_lines()
+    }
+
+    /// The first of `keys` the content defines, else the first key, localised:
+    /// a focus names one key, which 1402D2250 and 1402D21E0 localise without
+    /// a probe, so a key the content lacks is its own bytes (142230940). A
+    /// technology's equipment rung is not traced (140BBAA50 probes only
+    /// `TAG_key_short`, `key_short` and `TAG_key`).
+    fn first_defined(&self, keys: impl IntoIterator<Item = String>) -> Option<String> {
         let localisation = &self.catalogue.localisation;
-        catalogue::resolve_text(localisation.get(key).unwrap_or(key), localisation)
-            .text()
-            .filter(|name| name.len() <= 4096)
+        let mut keys = keys.into_iter().peekable();
+        let first = keys.peek()?.clone();
+        let key = keys
+            .find(|key| localisation.get(key).is_some())
+            .unwrap_or(first);
+        self.catalogue.localised(&key, self.view())
     }
 
     fn description(&self, token: &str) -> Option<String> {
@@ -104,15 +131,11 @@ impl Context {
             .get(token)
             .map(|d| d.description.clone())
             .unwrap_or_else(|| format!("{token}_desc"));
-        let localisation = &self.catalogue.localisation;
-        localisation
-            .get(&key)
-            .or_else(|| {
-                self.technology_equipment
-                    .get(token)
-                    .and_then(|equipment| localisation.get(&format!("{equipment}_desc")))
-            })
-            .and_then(|text| catalogue::resolve_text(text, localisation).text())
+        let equipment = self
+            .technology_equipment
+            .get(token)
+            .map(|equipment| format!("{equipment}_desc"));
+        self.first_defined(std::iter::once(key).chain(equipment))
     }
 
     fn base_duration_days(&self, token: &str) -> Option<f64> {
@@ -123,15 +146,8 @@ impl Context {
     fn name(&self, token: &str) -> Option<String> {
         let definition = self.definitions.get(token);
         let key = definition.map(|d| d.localisation.as_str()).unwrap_or(token);
-        let localisation = &self.catalogue.localisation;
-        localisation
-            .get(key)
-            .or_else(|| {
-                self.technology_equipment
-                    .get(token)
-                    .and_then(|equipment| localisation.get(equipment))
-            })
-            .and_then(|s| catalogue::resolve_text(s, localisation).text())
+        let equipment = self.technology_equipment.get(token).cloned();
+        self.first_defined(std::iter::once(key.to_owned()).chain(equipment))
     }
 
     fn artwork(&self, token: &str) -> io::Result<Artwork> {

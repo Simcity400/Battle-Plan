@@ -131,6 +131,8 @@ struct CommanderSaveView<'a> {
     category: Option<i32>,
     skill: i32,
     experience: Option<i64>,
+    /// The raw name token at leader+20, which the save writes as `name`.
+    name_token: Option<&'a [u8]>,
     traits: &'a [replay::rows::LandCombatCommanderTrait],
 }
 fn commander_values(
@@ -168,10 +170,15 @@ fn commander_values(
     if let Some(v) = a.experience {
         equal(r, format!("{label} experience"), v, b.experience.raw);
     }
-    r.limitation(
-        "the combat display name at leader+40 is distinct from the saved leader name at +20",
-        label,
-    );
+    match a.name_token {
+        Some(token) => {
+            optional_text_value(r, &format!("{label} name token"), token, b.name.as_deref())
+        }
+        None => r.limitation(
+            "the combat display name at leader+40 is distinct from the saved leader name at +20",
+            label,
+        ),
+    }
     equal(
         r,
         format!("{label} assigned trait count"),
@@ -202,6 +209,7 @@ fn naval_commander_values(
             category: Some(a.category),
             skill: a.skills[0],
             experience: Some(a.experience),
+            name_token: None,
             traits: &a.traits,
         },
         save,
@@ -221,12 +229,9 @@ fn naval_commander_values(
     }
     Ok(())
 }
-/// Each saved formation's resolved HQ unit, keyed by its leader handle.
-///
-/// 140BDFD90 accessor the recorder resolves live) and omits it exactly when
-/// the provider is null. Army groups carry no leader and never match a side
-/// commander, so only leader-bearing definitions join.
-fn hq_formations(save: &Save) -> io::Result<BTreeMap<u64, Option<u64>>> {
+/// writes `leader` exactly when the +0x88 pointer is set; army groups carry
+/// no leader and never match a side commander.
+fn formations(save: &Save) -> io::Result<BTreeMap<u64, u64>> {
     let mut formations = BTreeMap::new();
     let countries = save
         .naval_history
@@ -237,7 +242,7 @@ fn hq_formations(save: &Save) -> io::Result<BTreeMap<u64, Option<u64>>> {
         for theatre in &rows.land {
             for definition in &theatre.definitions {
                 if let Some(leader) = definition.leader
-                    && formations.insert(leader, definition.leader_unit).is_some()
+                    && formations.insert(leader, definition.id).is_some()
                 {
                     return Err(invalid("saved leader commands more than one formation"));
                 }
@@ -247,43 +252,23 @@ fn hq_formations(save: &Save) -> io::Result<BTreeMap<u64, Option<u64>>> {
     Ok(formations)
 }
 
-/// The badge records a gated provider handle. The save contains the provider,
-/// but omits the runtime DLC/formation gates that can hide it.
-fn hq_unit(
+/// The commander's forward formation reference (`CArmyLeader+0x1048`) against
+/// the saved group that names it as leader, the reverse pointer.
+fn formation(
     r: &mut Report,
     label: &str,
     side: &replay::rows::LandCombatSideDetails,
-    formations: &BTreeMap<u64, Option<u64>>,
+    formations: &BTreeMap<u64, u64>,
 ) {
-    let actual = side.hq_unit;
+    let actual = side.commander_formation;
     if side.commander == 0 || (side.commander_category as u32) >= 2 {
-        equal(r, format!("{label} hq_unit"), actual, 0);
+        equal(r, format!("{label} commander formation"), actual, 0);
         return;
     }
-    if actual != 0 {
-        equal(
-            r,
-            format!("{label} hq_unit committed membership"),
-            side.committed.contains(&actual),
-            true,
-        );
-    }
     match formations.get(&side.commander) {
-        Some(saved) => {
-            let expected = saved.unwrap_or(0);
-            if expected == 0 || !side.committed.contains(&expected) {
-                equal(r, format!("{label} hq_unit"), actual, 0);
-            } else if actual != 0 {
-                equal(r, format!("{label} hq_unit"), actual, expected);
-            } else {
-                r.limitation(
-                    "a saved committed HQ provider does not prove badge visibility: runtime DLC and formation gates are not serialized; a hidden badge is not exactly comparable",
-                    label,
-                );
-            }
-        }
+        Some(&saved) => equal(r, format!("{label} commander formation"), actual, saved),
         None => r.limitation(
-            "side commander has no saved formation; a same-hour reorganisation after the sampled tick moves leaders between groups, so the HQ handle is not comparable this hour",
+            "side commander leads no saved formation; its forward reference has no text-save counterpart this hour",
             label,
         ),
     }
@@ -291,7 +276,7 @@ fn hq_unit(
 
 fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDetails>()?;
-    let formations = hq_formations(save)?;
+    let formations = formations(save)?;
     let mut seen = BTreeSet::new();
     for row in rows {
         if !seen.insert(row.combat) {
@@ -324,6 +309,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                     category: Some(actual.commander_category),
                     skill: actual.commander_skill,
                     experience: Some(actual.commander_experience),
+                    name_token: Some(&actual.commander_name_token),
                     traits: &actual.traits,
                 },
                 save,
@@ -352,7 +338,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 (actual.tactic_kind == 2).then_some(actual.tactic_id),
                 side.tactic,
             );
-            hq_unit(r, &label, actual, &formations);
+            formation(r, &label, actual, &formations);
             positive_decimal(
                 r,
                 &format!("{label} anti_air_attack"),
@@ -383,12 +369,6 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             }
             equal(
                 r,
-                format!("{label} org_loss_summary_index"),
-                Some(actual.organisation_loss_index),
-                side.organisation_loss_index,
-            );
-            equal(
-                r,
                 format!("{label} num_org_losses"),
                 Some(actual.organisation_loss_count),
                 side.organisation_loss_count,
@@ -409,7 +389,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         r.difference(format!("LandCombatDetails {id}"), "absent", "present");
     }
     r.compared("LandCombatDetails", rows.len());
-    r.limitation("Hourly samples cannot reproduce every tick or battles beginning and ending between samples. Ordered committed/reserve handles, air counts, positive damage/anti-air/kill fields, valid tactic ids and mature organisation-loss rings are compared. A positive-only omitted scalar proves only nonpositive, not its exact raw value. Before 24 organisation-loss observations the window does not consume the ring and the recording leaves its values unsampled; only index/count are compared. Saved terrain is compared to its separately captured stored terrain cache, never to the independent province-derived window terrain. Phase, width/bonus inputs, tactic definition metadata, commander runtime modifiers/traits and other presentation caches are not validated by these save matches", "LandCombatDetails");
+    r.limitation("Hourly samples cannot reproduce every tick or battles beginning and ending between samples. Ordered committed/reserve handles, air counts, positive damage/anti-air/kill fields, valid tactic ids, commander name tokens and formation references, and mature organisation-loss rings are compared; the saved loss-ring index has no recorded counterpart (no window or tooltip reads it: only serialization and 1412A2AA0's count test touch +0x1A8/+0x1AC). A positive-only omitted scalar proves only nonpositive, not its exact raw value. Before 24 organisation-loss observations the window does not consume the ring and the recording leaves its values unsampled; only the count is compared. Saved terrain is compared to its separately captured stored terrain cache, never to the independent province-derived window terrain. Phase, width/bonus inputs, tactic definition metadata, commander runtime modifiers/traits and other presentation caches are not validated by these save matches", "LandCombatDetails");
     Ok(())
 }
 
@@ -444,10 +424,11 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
                 r,
                 &format!("{label} commander"),
                 CommanderSaveView {
-                    reference: commander.handle,
+                    reference: row.commander,
                     category: None,
                     skill: commander.skill,
                     experience: None,
+                    name_token: Some(&commander.name_token),
                     traits: &commander.traits,
                 },
                 save,
@@ -471,18 +452,6 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         };
         equal(
             r,
-            format!("{label} strength"),
-            row.strength,
-            unit.hit_points.raw,
-        );
-        equal(
-            r,
-            format!("{label} organisation"),
-            row.organisation,
-            unit.organisation.raw,
-        );
-        equal(
-            r,
             format!("{label} province"),
             Some(row.province),
             unit.province,
@@ -493,28 +462,7 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
             row.context.template,
             unit.template.unwrap_or(0),
         );
-        for (name, actual, saved) in [
-            (
-                "entrenchment",
-                row.entrenchment,
-                unit.presentation.dig_in.as_ref(),
-            ),
-            (
-                "entrenchment_cap",
-                row.entrenchment_cap,
-                unit.presentation.dig_in_cap.as_ref(),
-            ),
-        ] {
-            if let Some(saved) = saved {
-                equal(r, format!("{label} {name}"), actual, saved.raw);
-            } else if actual > 0 {
-                r.difference(
-                    format!("{label} {name}"),
-                    actual,
-                    "omitted nonpositive field",
-                );
-            }
-        }
+        naming(r, &label, row, unit, &save.division_templates);
     }
     for (&combat, saved) in &save.land_combats {
         for (side, members) in [(0, &saved.attackers), (1, &saved.defenders)] {
@@ -530,8 +478,104 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         }
     }
     r.compared("LandCombatDivisions", rows.len());
-    r.limitation("Only participant order/full handles, current HP/organisation, province, template, committed/reserve role and serialized entrenchment operands are compared. Direction keys, direction latch words and template-frame bits are live 141298E00/1415CA660 presentation operands with no text-save counterpart and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names and combat commander names/skills/traits are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
+    r.limitation("Only participant order/full handles, province, template, committed/reserve role, division commander name tokens and the naming operands are compared; hit points, organisation and entrenchment are the Divisions and DivisionStatus oracle's. The naming type, order word, ordered and programmatic flags and a player's custom name are compared against the saved division_name block (1409BCC70), and the selected group key against the saved division_names_group of the member's template (140B977F0); a programmatic override is compared where the game shows it (a type-zero member whose group is null, 1409B5640) and is otherwise generated text the game does not show, never recorded. Direction latch words, exile operands and the stat block's equipment category mask (`categories`, *(CUnit+0x138)+0x5A8, read by CEquipmentTypeTrigger 141390370) are live 141298E00/1415CA660/141390370 inputs with no text-save counterpart (the per-unit stat block is rebuilt, not saved) and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names and combat commander names/skills/traits are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
     Ok(())
+}
+
+/// CArmy C80E00 saves the +0x340 CNameGroupMember as `division_name` through
+/// 1409BCC70, whose emission rules fix what each omitted key proves: `type` is
+/// always written, `name_order` only when nonzero, `is_name_ordered` (as `no`)
+/// only when +0xA8 is clear, `override` only for a nonempty +0x88 string and
+/// `override_set_programmatically` only when +0xA9 is set.
+fn naming(
+    r: &mut Report,
+    label: &str,
+    row: &replay::rows::LandCombatDivisionRow,
+    unit: &save::Division,
+    templates: &BTreeMap<u64, save::DivisionTemplate>,
+) {
+    let Some(saved) = &unit.presentation.division_name else {
+        r.difference(format!("{label} division_name"), "present", "absent");
+        return;
+    };
+    equal(r, format!("{label} name type"), row.name_type, saved.kind);
+    equal(
+        r,
+        format!("{label} name_order"),
+        row.name_order,
+        saved.order.unwrap_or(0),
+    );
+    equal(
+        r,
+        format!("{label} is_name_ordered"),
+        row.name_ordered != 0,
+        saved.ordered.unwrap_or(true),
+    );
+    equal(
+        r,
+        format!("{label} override_set_programmatically"),
+        row.name_programmatic != 0,
+        saved.programmatic.unwrap_or(false),
+    );
+    // SetTemplate 140C7EE00 and SelectFakeIntelDivisionTemplate 140C7E8C0
+    // bind the member (1409BBC40) to the fake-intel template when set, else
+    // the standard one; C80E00 saves those as the two template ids, and
+    // 140B977F0 writes a template's division_names_group only for a set
+    // group. `None` when the template has no saved entry.
+    let group = match unit.alternate_template.or(unit.template) {
+        None => Some(None),
+        Some(template) => templates
+            .get(&template)
+            .map(|saved| saved.names_group.as_deref()),
+    };
+    // 1409B5640 shows the stored +0x88 name with +0xA9 clear, or with it set
+    // for a type-zero member whose group is null; the capture records it
+    // exactly there.
+    if row.name_programmatic == 0 || (row.name_type == 0 && group == Some(None)) {
+        optional_text_value(
+            r,
+            &format!("{label} override"),
+            &row.name_custom,
+            saved.custom.as_deref(),
+        );
+    } else if row.name_type != 0 {
+        equal(
+            r,
+            format!("{label} override"),
+            row.name_custom.as_slice(),
+            b"".as_slice(),
+        );
+        r.limitation(
+            "a programmatic override of a nonzero name type is shown only when its ship, operative or railway-gun group is null (1409B7290), which the capture does not read, so it is not recorded; only its flag is compared",
+            label,
+        );
+    } else if group.is_none() {
+        r.limitation(
+            "the name member's template has no saved division_templates entry, so whether the game shows its programmatic override, and its group key, are not comparable",
+            label,
+        );
+        return;
+    } else {
+        // The group is set: 1409B5640 shows its entry, not the stored text.
+        equal(
+            r,
+            format!("{label} override"),
+            row.name_custom.as_slice(),
+            b"".as_slice(),
+        );
+    }
+    // The capture reads the group of a type-zero member whose stored name
+    // is not shown.
+    if row.name_type != 0 || !row.name_custom.is_empty() {
+        return;
+    }
+    match group {
+        Some(group) => optional_text_value(r, &format!("{label} name group"), &row.name_group, group),
+        None => r.limitation(
+            "the name member's template has no saved division_templates entry; its group key is not comparable",
+            label,
+        ),
+    }
 }
 
 fn modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
@@ -1463,39 +1507,244 @@ mod tests {
         assert_eq!(report.differences.len(), 1);
     }
     #[test]
-    fn hq_badge_checks_comparable_handles_and_reports_unsaved_visibility() {
-        let formations = BTreeMap::from([(7_u64, Some(11_u64)), (9, None)]);
-        let side = |commander, hq_unit| replay::rows::LandCombatSideDetails {
-            commander,
-            hq_unit,
-            commander_category: 0,
-            committed: vec![11, 12],
+    fn division_naming_follows_the_division_name_writer_and_member_template() {
+        let (standard, fake) = (1_u64 << 32 | 52, 2_u64 << 32 | 52);
+        let template = |group: Option<&[u8]>| save::DivisionTemplate {
+            template: 0,
+            country: b"SOV".to_vec(),
+            name: Vec::new(),
+            custom_icon: 0,
+            custom_icon_nato: false,
+            foreign_template_tag: None,
+            composition: BTreeMap::new(),
+            names_group: group.map(<[u8]>::to_vec),
+        };
+        let templates = BTreeMap::from([
+            (standard, template(Some(b"SOV_INF_01"))),
+            (fake, template(None)),
+        ]);
+        let unit = |name: Option<save::DivisionName>, alternate| save::Division {
+            id: 7,
+            roster_owner: b"SOV".to_vec(),
+            logical_owner: b"SOV".to_vec(),
+            expeditionary_owner: None,
+            province: Some(1),
+            template: Some(standard),
+            alternate_template: alternate,
+            separate_counter: false,
+            hit_points: Decimal::parse(b"1").unwrap(),
+            organisation: Decimal::parse(b"1").unwrap(),
+            country_intel: Vec::new(),
+            presentation: save::DivisionPresentation {
+                division_name: name,
+                ..Default::default()
+            },
+        };
+        // An ordered historical member: every conditional key is omitted.
+        let row = replay::rows::LandCombatDivisionRow {
+            name_order: 0,
+            name_ordered: 1,
+            name_group: b"SOV_INF_01".to_vec(),
             ..Default::default()
         };
         let mut report = Report::default();
-        hq_unit(&mut report, "shown", &side(7, 11), &formations);
-        hq_unit(&mut report, "no provider", &side(9, 0), &formations);
-        hq_unit(&mut report, "no commander", &side(0, 0), &formations);
-        hq_unit(&mut report, "runtime hidden", &side(7, 0), &formations);
-        hq_unit(&mut report, "reorganised", &side(13, 0), &formations);
-        assert!(report.differences.is_empty());
-        assert!(!report.limitations.is_empty());
-        hq_unit(&mut report, "wrong provider", &side(7, 12), &formations);
-        hq_unit(&mut report, "no provider", &side(9, 11), &formations);
-        hq_unit(&mut report, "no commander", &side(0, 11), &formations);
-        assert_eq!(report.differences.len(), 3);
-        let mut uncommitted = side(7, 11);
-        uncommitted.committed.clear();
-        hq_unit(&mut report, "not committed", &uncommitted, &formations);
-        assert_eq!(report.differences.len(), 5);
-        let mut ineligible = side(7, 11);
-        ineligible.commander_category = 2;
-        hq_unit(
+        let saved = Some(save::DivisionName::default());
+        naming(
             &mut report,
-            "ineligible commander",
-            &ineligible,
-            &formations,
+            "ordered",
+            &row,
+            &unit(saved.clone(), None),
+            &templates,
         );
-        assert_eq!(report.differences.len(), 6);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        // A fake-intel template supplies the member's group instead.
+        naming(
+            &mut report,
+            "fake intel",
+            &row,
+            &unit(saved.clone(), Some(fake)),
+            &templates,
+        );
+        assert_eq!(report.differences.len(), 1);
+        // A player's name, an unordered member and a nonzero order word.
+        let custom = replay::rows::LandCombatDivisionRow {
+            name_order: -1,
+            name_custom: b"Guards".to_vec(),
+            ..Default::default()
+        };
+        let named = save::DivisionName {
+            order: Some(-1),
+            ordered: Some(false),
+            custom: Some(b"Guards".to_vec()),
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        naming(
+            &mut report,
+            "custom",
+            &custom,
+            &unit(Some(named.clone()), None),
+            &templates,
+        );
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        // A programmatic override with a set group is not shown (1409B5640)
+        // and not recorded: the group is compared instead.
+        let programmatic = replay::rows::LandCombatDivisionRow {
+            name_programmatic: 1,
+            name_custom: Vec::new(),
+            name_group: b"SOV_INF_01".to_vec(),
+            ..custom.clone()
+        };
+        let generated = save::DivisionName {
+            programmatic: Some(true),
+            custom: Some(b"1. Strelkovaya".to_vec()),
+            ..named.clone()
+        };
+        naming(
+            &mut report,
+            "generated",
+            &programmatic,
+            &unit(Some(generated.clone()), None),
+            &templates,
+        );
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(report.limitations.is_empty());
+        // With a null group (the fake-intel template saves none) the game
+        // shows it, and it is compared.
+        let shown = replay::rows::LandCombatDivisionRow {
+            name_custom: b"1. Strelkovaya".to_vec(),
+            name_group: Vec::new(),
+            ..programmatic.clone()
+        };
+        naming(
+            &mut report,
+            "shown",
+            &shown,
+            &unit(Some(generated.clone()), Some(fake)),
+            &templates,
+        );
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        for (label, row, alternate) in [
+            // Not recorded where the game shows it.
+            ("unrecorded", &programmatic, Some(fake)),
+            // Recorded where the game shows the group's entry.
+            ("recorded", &shown, None),
+        ] {
+            let mut report = Report::default();
+            naming(
+                &mut report,
+                label,
+                row,
+                &unit(Some(generated.clone()), alternate),
+                &templates,
+            );
+            assert!(
+                report
+                    .differences
+                    .iter()
+                    .any(|difference| difference.contains("override")),
+                "{label}: {:?}",
+                report.differences
+            );
+        }
+        // A nonzero type's group is not read: a named limitation.
+        let mut report = Report::default();
+        naming(
+            &mut report,
+            "ship",
+            &replay::rows::LandCombatDivisionRow {
+                name_type: 1,
+                ..programmatic.clone()
+            },
+            &unit(
+                Some(save::DivisionName {
+                    kind: 1,
+                    ..generated
+                }),
+                None,
+            ),
+            &templates,
+        );
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.limitations.len(), 1);
+        // Each operand difference and a missing block are reported, not waived.
+        for (label, saved) in [
+            (
+                "type",
+                save::DivisionName {
+                    kind: 1,
+                    ..named.clone()
+                },
+            ),
+            (
+                "order",
+                save::DivisionName {
+                    order: None,
+                    ..named.clone()
+                },
+            ),
+            (
+                "ordered",
+                save::DivisionName {
+                    ordered: None,
+                    ..named.clone()
+                },
+            ),
+            (
+                "custom",
+                save::DivisionName {
+                    custom: None,
+                    ..named.clone()
+                },
+            ),
+            (
+                "programmatic",
+                save::DivisionName {
+                    programmatic: Some(true),
+                    ..named.clone()
+                },
+            ),
+        ] {
+            let mut report = Report::default();
+            naming(
+                &mut report,
+                label,
+                &custom,
+                &unit(Some(saved), None),
+                &templates,
+            );
+            assert_eq!(report.differences.len(), 1, "{label}");
+        }
+        let mut report = Report::default();
+        naming(
+            &mut report,
+            "absent",
+            &custom,
+            &unit(None, None),
+            &templates,
+        );
+        assert_eq!(report.differences.len(), 1);
+    }
+    #[test]
+    fn commander_formations_match_the_saved_leader_group() {
+        let formations = BTreeMap::from([(7_u64, 11_u64)]);
+        let side = |commander, commander_formation| replay::rows::LandCombatSideDetails {
+            commander,
+            commander_formation,
+            commander_category: 0,
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        formation(&mut report, "led", &side(7, 11), &formations);
+        formation(&mut report, "no commander", &side(0, 0), &formations);
+        formation(&mut report, "unsaved", &side(13, 5), &formations);
+        assert!(report.differences.is_empty());
+        assert_eq!(report.limitations.len(), 1);
+        formation(&mut report, "wrong group", &side(7, 12), &formations);
+        formation(&mut report, "no commander", &side(0, 11), &formations);
+        let mut navy = side(7, 11);
+        navy.commander_category = 2;
+        formation(&mut report, "navy leader", &navy, &formations);
+        assert_eq!(report.differences.len(), 3);
     }
 }

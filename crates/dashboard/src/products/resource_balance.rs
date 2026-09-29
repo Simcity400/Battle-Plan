@@ -58,6 +58,7 @@ use crate::{
     metadata::{link_slot, slot_read, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
 };
+use installed_content::localisation::Localisation;
 use replay::{
     container::Replay,
     frame::FrameDecoder,
@@ -582,9 +583,38 @@ pub fn ordinals(resources: &[(u32, String)]) -> Vec<u32> {
         .collect()
 }
 
+/// A resource's name as the game shows it. GetLocalizedResourceName
+/// (140BBC360), which the trade view (1415EA940), the state resource tooltip
+/// (141DADF30) and the other resource texts call, localises
+/// `PRODUCTION_MATERIALS_` (14293AF98) followed by the token upper-cased by the
+/// C runtime's toupper (1424B87F0 -> 14254F1FC), through the plain localiser
+/// (142230F20) only: brackets are glyphs ([`catalogue::View::Plain`]).
+/// `None`, with the reason in `warnings`, when there is no name to show.
+fn resource_name(
+    localisation: &Localisation,
+    token: &str,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let upper = match installed_content::localisation::crt_case_text(token, true, false) {
+        Ok(upper) => upper,
+        Err(reason) => {
+            warnings.push(format!(
+                "{token}: no name: its key needs {reason}, which is not reproduced."
+            ));
+            return None;
+        }
+    };
+    let key = format!("PRODUCTION_MATERIALS_{upper}");
+    // An empty text is shown empty, as the game's text box shows it; a key
+    // the content lacks is its own bytes (142230940).
+    catalogue::localised(localisation, &key, catalogue::View::Plain)
+        .inspect_err(|reason| warnings.push(format!("{token}: no name: {reason}")))
+        .ok()
+}
+
 /// Names and icons for `wanted` declarations (token, ordinal) from content: the name
-/// the game's resource texts use (`state_resource_<token>`) and the declaration's
-/// frame of the trade view's icon.
+/// the game's resource texts use ([`resource_name`]) and the declaration's frame of
+/// the trade view's icon.
 fn resource_content(
     catalogue: &Catalogue,
     wanted: &[(String, u32)],
@@ -616,10 +646,12 @@ fn resource_content(
                 "Resource request cancelled",
             ));
         }
-        let name = catalogue
-            .localise(&format!("state_resource_{token}"))
-            .text()
-            .filter(|name| !name.is_empty() && name.len() <= 256);
+        // The name is the token's; its notes are given once, with the first declaration.
+        let mut notes = Vec::new();
+        let name = resource_name(&catalogue.localisation, token, &mut notes);
+        if *ordinal == 1 {
+            warnings.extend(notes);
+        }
         let icon = match icons.as_ref().map(|icons| {
             let frame = icons
                 .icon_frames
@@ -650,9 +682,6 @@ fn resource_content(
             }
             None => None,
         };
-        if name.is_none() && *ordinal == 1 {
-            warnings.push(format!("{token}: no name in the recorded content."));
-        }
         cached.insert((token.clone(), *ordinal), Declared { name, icon });
     }
     Ok(())
@@ -825,5 +854,49 @@ impl Product for ResourceBalance {
             trades: scanned.trades.clone(),
             warnings,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resource_name;
+
+    /// The name is `PRODUCTION_MATERIALS_` and the upper-cased token through
+    /// the plain localiser (140BBC360 -> 142230F20), loaded as content loads.
+    #[test]
+    fn a_resource_is_named_as_the_games_resource_texts_name_it() {
+        let localisation = crate::catalogue::tests::loaded(concat!(
+            "l_english:\n",
+            " PRODUCTION_MATERIALS_OIL:0 \"Oil [ROOT.GetName]\"\n",
+            " PRODUCTION_MATERIALS_STEEL:0 \"\"\n",
+            " PRODUCTION_MATERIALS_COAL:0 \"a¤b\"\n",
+            " state_resource_oil:0 \"Not the name\"\n",
+        ));
+        let mut warnings = Vec::new();
+        // Mixed case: toupper folds the token, so both name the same key.
+        for token in ["oil", "Oil"] {
+            assert_eq!(
+                resource_name(&localisation, token, &mut warnings).as_deref(),
+                Some("Oil [ROOT.GetName]")
+            );
+        }
+        assert_eq!(
+            resource_name(&localisation, "steel", &mut warnings).as_deref(),
+            Some("")
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            resource_name(&localisation, "tungsten", &mut warnings).as_deref(),
+            Some("PRODUCTION_MATERIALS_TUNGSTEN")
+        );
+        assert_eq!(resource_name(&localisation, "coal", &mut warnings), None);
+        assert_eq!(resource_name(&localisation, "stål", &mut warnings), None);
+        assert_eq!(
+            warnings,
+            [
+                "coal: no name: localisation PRODUCTION_MATERIALS_COAL holds the control byte 0x14 (an authored `¤`), which plain text cannot show",
+                "stål: no name: its key needs the C runtime's case change of a byte above 0x7F, which its locale decides (14254F1FC, 14254F1D0), which is not reproduced.",
+            ]
+        );
     }
 }

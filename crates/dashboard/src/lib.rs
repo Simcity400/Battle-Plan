@@ -10,6 +10,8 @@ pub mod map_settings;
 pub mod metadata;
 pub mod products;
 pub mod protocol;
+pub mod scope;
+pub mod scripted_text;
 pub mod service;
 pub mod source;
 pub mod transport;

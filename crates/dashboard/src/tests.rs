@@ -794,12 +794,11 @@ fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
     }
     *frame.tables[TableId::States.index()] =
         TableView::Complete(TableRows::States(vec![replay::rows::StateRow {
-            primary_name_length: 0,
-            secondary_name_length: 0,
             id: 1,
             owner,
             controller: 55,
             movement_infrastructure: 0,
+            ..Default::default()
         }]));
     frame
 }
@@ -938,12 +937,11 @@ fn land_owners_keep_partial_positive_evidence_and_do_not_reuse_lost_baselines() 
     let mut partial = ownership_frame(1, 102, 66);
     *partial.tables[TableId::States.index()] = TableView::Truncated {
         rows: TableRows::States(vec![replay::rows::StateRow {
-            primary_name_length: 0,
-            secondary_name_length: 0,
             id: 1,
             owner: 66,
             controller: 55,
             movement_infrastructure: 0,
+            ..Default::default()
         }]),
         missing: 1,
     };
@@ -1339,12 +1337,11 @@ fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
     *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         (0..count)
             .map(|index| replay::rows::StateRow {
-                primary_name_length: 0,
-                secondary_name_length: 0,
                 id: index + 1,
                 owner: 100_000 + index,
                 controller: 100_000 + index,
                 movement_infrastructure: 0,
+                ..Default::default()
             })
             .collect(),
     ));
@@ -1836,26 +1833,33 @@ fn country_groups_leave_out_unknown_countries_and_localise_faction_keys() {
             .iter()
             .any(|w| w.starts_with("2 recorded country references"))
     );
-    assert_eq!(faction_name("", None), None);
-    assert_eq!(faction_name("My Pact", None).as_deref(), Some("My Pact"));
-    let localisation: installed_content::localisation::Localisation = [
-        ("AXIS_NAME".to_owned(), "Axis".to_owned()),
-        (
-            "SCOPED_NAME".to_owned(),
-            "[ROOT.GetAdjective] Pact".to_owned(),
-        ),
-    ]
-    .into_iter()
-    .collect();
+    assert_eq!(faction_name("", None), Ok(None));
+    assert_eq!(faction_name("My Pact", None), Ok(Some("My Pact".into())));
+    let localisation = crate::catalogue::tests::loaded(concat!(
+        "l_english:\n",
+        " AXIS_NAME:0 \"Achse\"\n",
+        " SCOPED_NAME:0 \"[ROOT.GetAdjective] Pact\"\n",
+        " PRICE_NAME:0 \"Pakt $$ ]\"\n",
+    ));
     assert_eq!(
-        faction_name("AXIS_NAME", Some(&localisation)).as_deref(),
-        Some("Axis")
+        faction_name("AXIS_NAME", Some(&localisation)),
+        Ok(Some("Achse".into()))
     );
-    // A key that needs runtime scope has no name rather than showing the key.
-    assert_eq!(faction_name("SCOPED_NAME", Some(&localisation)), None);
+    // Faction names reach their text boxes plain (140D77360): brackets are
+    // glyphs.
     assert_eq!(
-        faction_name("My Pact", Some(&localisation)).as_deref(),
-        Some("My Pact")
+        faction_name("SCOPED_NAME", Some(&localisation)),
+        Ok(Some("[ROOT.GetAdjective] Pact".into()))
+    );
+    // The game's localiser: `$$` is one `$` and a lone `]` a glyph.
+    assert_eq!(
+        faction_name("PRICE_NAME", Some(&localisation)),
+        Ok(Some("Pakt $ ]".into()))
+    );
+    // A typed name is copied as its bytes.
+    assert_eq!(
+        faction_name("Pacte d'Acier", Some(&localisation)),
+        Ok(Some("Pacte d'Acier".into()))
     );
 }
 
@@ -2125,60 +2129,155 @@ fn idea_history_spans_break_at_gaps_and_advisors_keep_their_recorded_role() {
 }
 
 #[test]
+fn advisor_traits_select_the_first_native_name_match() {
+    use crate::products::idea_history::{Joined, info};
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/country_leader/a.txt",
+            "leader_traits = { Brilliant = { army_morale_factor = 0.1 } brilliant = { army_morale_factor = 0.2 } \
+             1trait = { army_morale_factor = 0.3 } 2trait = { army_morale_factor = 0.4 } }",
+        ),
+        (
+            "common/country_leader/b.txt",
+            "leader_traits = { BRILLIANT = { army_morale_factor = 0.5 } lost = { odd = { } } }",
+        ),
+        (
+            "common/country_leader/c.txt",
+            "leader_traits = { Later = { army_morale_factor = 0.6 } }",
+        ),
+        (
+            "localisation/traits_l_english.yml",
+            "\u{feff}l_english:\n Brilliant:0 \"First trait\"\n bRiLLiant:0 \"Reference spelling\"\n",
+        ),
+    ]);
+    let (traits, _) = installed_content::leader_traits::read(&catalogue.content.layers).unwrap();
+    let characters = installed_content::characters::parse(
+        b"characters = { holder = { advisor = { slot = political_advisor idea_token = advisor traits = { bRiLLiant 1trait 2trait Later Missing } } } }",
+    )
+    .unwrap();
+    let ideas = installed_content::ideas::IdeaContent::default();
+    let localise = |key: &str, view| catalogue.localised(key, view);
+    let joined = Joined {
+        ideas: &ideas,
+        characters: &characters,
+        traits: &traits,
+        localise: &localise,
+    };
+    let advisor = info(&joined, "advisor", None, Err("no holder"));
+    // 1412894E0 -> 140712D20 -> 140710200 keeps the first name match.
+    // The following unread suffix cannot change that match, but can hide
+    // a match before Later or define Missing.
+    let first = &advisor.traits[0];
+    assert!(first.known);
+    assert_eq!(first.unknown, None);
+    assert_eq!(first.lines[0].fixed5, "10000");
+    assert_eq!(first.name.as_deref(), Some("First trait"));
+    // Names rejected by the lexer are still distinct hashed-name lookups.
+    assert_eq!(advisor.traits[1].lines[0].fixed5, "30000");
+    assert_eq!(advisor.traits[2].lines[0].fixed5, "40000");
+    for unknown in &advisor.traits[3..] {
+        assert!(!unknown.known);
+        assert_eq!(unknown.name, None);
+        assert!(unknown.unknown.as_deref().unwrap().contains("b.txt"));
+    }
+}
+
+#[test]
 fn ideas_join_content_for_category_slot_and_traits() {
     use crate::products::idea_history::{Joined, categories, info};
     let tags = installed_content::ideas::parse_tags(
-        b"idea_categories = { government = { slot = economy character_slot = political_advisor character_slot = political_advisor }           country = { type = national_spirit } }",
-    )
-    .unwrap();
-    let ideas = installed_content::ideas::parse_ideas(
-        b"ideas = { economy = { law = yes civilian_economy = { modifier = { consumer_goods_factor = 0.35 } } }           country = { GER_spirit = { modifier = { stability_factor = 0.1 } } } }",
-    )
-    .unwrap();
-    let content = installed_content::ideas::IdeaContent {
-        tags: installed_content::ideas::IdeaTags { categories: tags },
-        order: ideas.iter().map(|idea| idea.token.clone()).collect(),
-        ideas: ideas
-            .into_iter()
-            .map(|idea| (idea.token.clone(), idea))
-            .collect(),
-    };
+        b"idea_categories = { government = { slot = economy character_slot = political_advisor character_slot = political_advisor }           country = { type = national_spirit } military_staff = { character_slot = theorist } }",
+    );
+    // An officer-corps group's entries are character advisor templates
+    let file = installed_content::ideas::parse_ideas(
+        b"ideas = { economy = { law = yes civilian_economy = { modifier = { consumer_goods_factor = 0.35 } } }           country = { GER_spirit = { modifier = { STABILITY_FACTOR = 0.1 hidden_modifier = { Stability_Factor = 0.2 } } } }           theorist = { GER_theorist = { traits = { military_theorist } modifier = { army_org = 1 } } } }",
+        &["theorist".to_owned()],
+    );
+    let content = installed_content::ideas::IdeaContent::from_parsed(tags, file.ideas);
     // The advisor's seat and traits come from its character's advisor role.
-    let characters = installed_content::characters::parse(
-        b"characters = { GER_schacht = { advisor = { slot = political_advisor idea_token = GER_schacht_idea traits = { captain_of_industry } } } }",
+    let mut characters = installed_content::characters::parse(
+        b"characters = { GER_schacht = { advisor = { slot = political_advisor idea_token = GER_schacht_idea traits = { captain_of_industry } } }           GER_split = { instance = { allowed = { has_dlc = \"A\" } advisor = { slot = political_advisor idea_token = GER_split_idea traits = { a } } }             instance = { allowed = { NOT = { has_dlc = \"A\" } } advisor = { slot = political_advisor idea_token = GER_split_idea traits = { b } } } } }",
     )
     .unwrap();
-    let traits = std::collections::BTreeMap::new();
-    let localise = |key: &str| (key == "economy").then(|| "Economy".to_owned());
+    characters.merge(file.advisors);
+    let traits = installed_content::leader_traits::LeaderTraits::default();
+    let localise =
+        |key: &str, _: crate::catalogue::View| (key == "economy").then(|| "Economy".to_owned());
     let joined = Joined {
         ideas: &content,
         characters: &characters,
         traits: &traits,
         localise: &localise,
     };
-    let law = info(&joined, "civilian_economy", None);
+    const NO_HOLDER: Result<&installed_content::characters::BuiltTemplate, &str> = Err("no holder");
+    let law = info(&joined, "civilian_economy", None, NO_HOLDER);
     assert_eq!(
         (law.category.as_deref(), law.slot.as_deref(), law.law),
         (Some("government"), Some("economy"), true)
     );
-    assert_eq!(law.effects[0].value, Some(0.35));
-    let spirit = info(&joined, "GER_spirit", None);
+    assert_eq!(law.effects[0].fixed5, "35000");
+    let spirit = info(&joined, "GER_spirit", None, NO_HOLDER);
     assert_eq!(
         (spirit.category.as_deref(), spirit.slot),
         (Some("country"), None)
     );
-    let advisor = info(&joined, "GER_schacht_idea", None);
+    // One line per modifier, by the identity its folded key names
+    // (1424A7A90), the last value kept and hidden by `hidden_modifier`.
+    assert_eq!(
+        spirit.effects,
+        [crate::products::idea_history::EffectLine {
+            key: "stability_factor".into(),
+            fixed5: "20000".into(),
+            hidden: true,
+        }]
+    );
+    let advisor = info(&joined, "GER_schacht_idea", None, NO_HOLDER);
     assert_eq!(
         (advisor.category.as_deref(), advisor.slot.as_deref()),
         (Some("government"), Some("political_advisor"))
     );
     assert_eq!(advisor.traits[0].token, "captain_of_industry");
+    assert_eq!(content.idea("GER_theorist"), Ok(None));
+    let theorist = info(&joined, "GER_theorist", None, NO_HOLDER);
+    assert_eq!(
+        (theorist.category.as_deref(), theorist.slot.as_deref()),
+        (Some("military_staff"), Some("theorist"))
+    );
+    // The officer template keeps its role's `modifier` (1413CA970).
+    assert!(theorist.effects_known);
+    assert_eq!(
+        (
+            theorist.effects[0].key.as_str(),
+            theorist.effects[0].fixed5.as_str()
+        ),
+        ("army_org", "100000")
+    );
+    assert_eq!(theorist.traits[0].token, "military_theorist");
     // Content has no such trait: its effects are unknown, not none.
     assert!(!advisor.traits[0].known);
-    let unknown = info(&joined, "MOD_mystery", None);
+    // Instances that disagree without a holder's template: the reason says
+    // so rather than "not in the content files".
+    let split = info(
+        &joined,
+        "GER_split_idea",
+        Some("political_advisor"),
+        NO_HOLDER,
+    );
+    assert!(!split.effects_known);
+    assert!(
+        split
+            .unknown
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with(
+                "advisor GER_split_idea: its character's alternatives define it differently"
+            ) && reason.ends_with("no holder")),
+        "{:?}",
+        split.unknown
+    );
+    let unknown = info(&joined, "MOD_mystery", None, NO_HOLDER);
     assert_eq!((unknown.category, unknown.slot), (None, None));
     // An advisor content cannot resolve is placed by the seat the recording gave it.
-    let recorded = info(&joined, "MOD_mystery", Some("political_advisor"));
+    let recorded = info(&joined, "MOD_mystery", Some("political_advisor"), NO_HOLDER);
     assert_eq!(
         (recorded.category.as_deref(), recorded.slot.as_deref()),
         (Some("government"), Some("political_advisor"))
@@ -2643,8 +2742,17 @@ fn stability_output_is_byte_identical_with_the_values_on_country_command_power()
             9 => mult,
             index => stability[index],
         });
-        let old = modifiers_with_totals(&row, old_totals, None, |_| Some(true));
-        let new = modifiers(&row, Some(&launch), None, |_| Some(true));
+        let mut refused = crate::catalogue::Refusals::default();
+        let old =
+            modifiers_with_totals(&row, old_totals, None, |_| Some(true), "FRA", &mut refused);
+        let new = modifiers(
+            &row,
+            Some(&launch),
+            None,
+            |_| Some(true),
+            "FRA",
+            &mut refused,
+        );
         assert_eq!(
             serde_json::to_vec(&old).unwrap(),
             serde_json::to_vec(&new).unwrap()
@@ -3136,6 +3244,56 @@ fn stability_parts_name_a_read_s_characters_as_recorded_at_that_read() {
         .collect();
     assert!(ids.iter().any(|id| id.ends_with(":Old Name")), "{ids:?}");
     assert!(!ids.iter().any(|id| id.ends_with(":New Name")), "{ids:?}");
+}
+
+/// OriginalTagLists::derive reads the branch from its first frame: a load
+/// gives slot order (1401DA010), later name_tag changes append by hour.
+#[test]
+fn original_tag_lists_derive_from_a_loaded_branch() {
+    use crate::scope::{OriginalTagLists, RecordedScopes, tests::dynamic_frame};
+    let frames = vec![
+        dynamic_frame(10, ["GER", "GER", ""], [0, 1, 1, 1]),
+        dynamic_frame(11, ["", "GER", ""], [0, 1, 1, 1]),
+        dynamic_frame(12, ["", "GER", "GER"], [0, 0, 0, 1]),
+    ];
+    let mut records = vec![
+        Record::SessionStart(session(1)),
+        Record::BranchStart(BranchStart {
+            id: 1,
+            session: 1,
+            loaded_hour: Some(10),
+            first_hour: 10,
+            parent: Parentage::Unknown,
+            reason: BranchReason::LoadSignal,
+        }),
+    ];
+    let mut encoder = FrameEncoder::new();
+    for mut frame in frames.clone() {
+        frame.branch = 1;
+        records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+    }
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
+    let derived = OriginalTagLists::derive(
+        &replay,
+        1,
+        &[10, 12].into_iter().collect(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let resolve = |hour: i32, frame: &DecodedFrame| {
+        RecordedScopes::read_with(frame, derived[&hour].clone(), Default::default())
+            .resolve_tag("GER")
+    };
+    // At the load, D01 (slot 1) comes first.
+    assert_eq!(resolve(10, &frames[0]), Ok(1));
+    // At hour 12 only D03 (appended at hour 12) owns a state.
+    assert_eq!(resolve(12, &frames[2]), Ok(3));
+    let members: Vec<Vec<u32>> = derived[&12]
+        .list("GER")
+        .iter()
+        .map(|group| group.members.clone())
+        .collect();
+    assert_eq!(members, [vec![2], vec![3]]);
 }
 
 /// Germany (raw links 11 and `germany`, slot 7), Italy (21, slot 8) and Spain
