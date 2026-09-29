@@ -40,9 +40,10 @@ const ETA_INPUT_RANGES: usize = extended::division_eta_inputs::MAX_RANGES;
 const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
 const CHARACTER_PARTS: usize = extended::characters::PARTS;
 const AIR_RELATION_PARTS: usize = extended::air_relations::PARTS;
+const AIR_HISTORY_PARTS: usize = extended::air_histories::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
-pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first, slot-hour Variants); 1 division inputs copy + divisions/intel dispatch + character roster, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated/character role dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/variants/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
+pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first, slot-hour Variants); 1 division inputs copy + divisions/intel dispatch + character roster, relations, ordinary, slow and supply parts; 2 ShipModels census join + detail part dispatch, World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated/character role dispatch + Naval join + owned wing install + AirMissions dispatch; 7 map sample; 8 AirMissions dispatch after a typed wing census + Orders and AirMissions joins + Late and history-part dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/variants/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late and history-part joins + capture_tables_late; 13 visibility + failure handling; 14 ShipModels detail part joins";
 /// Core row capacities: countries, provinces, links, states, divisions, wars,
 /// factions, faction members, faction name bytes, border-conflict provinces and
 /// their admitted group handles.
@@ -728,11 +729,14 @@ impl Shared {
             roster_ready: AtomicBool::new(false),
             pending: UnsafeCell::new(LossBatch::default()),
             cadence: UnsafeCell::new(CadenceState::default()),
-            // The air-relation family's store belongs to its decode step.
+            // The air families' stores belong to their decode steps.
             slice_fingerprints: std::array::from_fn(|family| {
                 UnsafeCell::new(
-                    (family != crate::slicing::AIR_RELATIONS)
-                        .then(|| Box::new(crate::slicing::SliceFingerprints::new())),
+                    (!matches!(
+                        family,
+                        crate::slicing::AIR_RELATIONS | crate::slicing::AIR_HISTORIES
+                    ))
+                    .then(|| Box::new(crate::slicing::SliceFingerprints::new())),
                 )
             }),
             country_cache: UnsafeCell::new(country_cache),
@@ -970,7 +974,7 @@ fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
     // The dropped hour's sliced reads are never published: read them again.
     // A clockless frame read nothing, and its selections belong to an older hour.
     let read = frame.clock.is_some();
-    frame.extended.drop_air_relations();
+    frame.extended.drop_air_copies();
     for (family, fingerprints) in shared
         .slice_fingerprints
         .iter()
@@ -1353,6 +1357,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             }
             // Before any capture of the hour, while this thread holds the game.
             crate::relation_changes::boundary(!continuous || recovery);
+            crate::history_changes::boundary(!continuous || recovery);
             frame.extended.prepare_hour(clock.hour, force_full);
             let state = clock.game_state as usize;
             let cache_begin = qpc();
@@ -2485,6 +2490,17 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if let Some(reason) = air_failure {
                 frame.map.fail_air_capture(reason);
             }
+            // The owned census supplied the wing identities: the missions
+            // and naval-patrol combats overlap the map sample.
+            let air_missions_pending = if air_wing_payload.is_some() {
+                Some(queue!(acquisition::Job::AirMissions(
+                    frame
+                        .extended
+                        .take_air_missions_request(&country_snapshot, shared.base, state)
+                )))
+            } else {
+                None
+            };
             segment!(6);
             let map_ticks = frame.map.sample(
                 &cached,
@@ -2498,6 +2514,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 ),
             );
             segment!(7);
+            // Otherwise the typed visitor supplied them in the map sample.
+            let air_missions_pending = match air_missions_pending {
+                Some(pending) => pending,
+                None => queue!(acquisition::Job::AirMissions(
+                    frame
+                        .extended
+                        .take_air_missions_request(&country_snapshot, shared.base, state)
+                )),
+            };
             let (orders_request, _, orders_failure) = completed!(orders_pending, Orders);
             let acquired_bytes = orders_request.allocated_bytes();
             if acquired_bytes >= orders_bytes {
@@ -2516,6 +2541,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             );
             // Written after the map-tick copy below, which covers this index.
             let orders_ns = shared.ns(frame.map.orders.ticks as i64);
+            // The Late job joins the registrations; the history parts need
+            // the combats' regions.
+            let (air_missions_request, _, air_missions_failure) =
+                completed!(air_missions_pending, AirMissions);
+            frame
+                .extended
+                .restore_air_missions_request(air_missions_request, air_missions_failure.is_none());
             let late_pending = queue!(acquisition::Job::Late(frame.extended.take_late_request(
                 &mut frame.map.orders,
                 naval_report.raw_ok || naval_failure.is_some(),
@@ -2524,6 +2556,18 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 clock.hour,
                 force_full
             )));
+            let mut air_histories_pending: [Option<PendingAcquisition>; AIR_HISTORY_PARTS] =
+                [const { None }; AIR_HISTORY_PARTS];
+            for (part, pending) in air_histories_pending.iter_mut().enumerate() {
+                *pending = Some(queue!(acquisition::Job::AirHistories(
+                    frame.extended.take_air_histories_request(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        part,
+                    )
+                )));
+            }
             let (countries_request, countries_report, _countries_failure) =
                 completed!(countries_pending, Countries);
             countries_request.restore(&mut frame.countries, &mut frame.links);
@@ -2893,6 +2937,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 late_failure.is_none(),
                 &mut frame.map.orders,
             );
+            for pending in air_histories_pending.into_iter().flatten() {
+                let (request, _, failure) = completed!(pending, AirHistories);
+                frame
+                    .extended
+                    .restore_air_histories_request(request, failure.is_none());
+            }
+            frame.extended.settle_air_histories();
             frame.extended.capture_tables_late(
                 &cached,
                 shared.base,
@@ -3664,6 +3715,32 @@ unsafe fn finish_acquisition(
                     request,
                     report: Ok(acquisition::Report::AirRelations(
                         acquisition::AirRelationsReport,
+                    )),
+                    table_reads: crate::read_accounting::ZERO,
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                };
+            }
+            // Likewise for a history part: the hour's settle then withdraws
+            // every part's certificates and the next hour copies afresh.
+            if let acquisition::Job::AirHistories(histories) = &mut request {
+                extended::air_histories::refuse(&mut histories.staging);
+                return acquisition::Completion {
+                    request,
+                    report: Ok(acquisition::Report::AirHistories(
+                        acquisition::AirHistoriesReport,
+                    )),
+                    table_reads: crate::read_accounting::ZERO,
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                };
+            }
+            if let acquisition::Job::AirMissions(missions) = &mut request {
+                missions.refuse();
+                return acquisition::Completion {
+                    request,
+                    report: Ok(acquisition::Report::AirMissions(
+                        acquisition::AirMissionsReport,
                     )),
                     table_reads: crate::read_accounting::ZERO,
                     #[cfg(feature = "callback_profile")]

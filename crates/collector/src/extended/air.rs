@@ -18,7 +18,8 @@ use engine::{
     cair_regional_mission::{self, WingIdentity},
     cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state, cloop_history,
     cpdx_array::Array,
-    cprovince, cstate, cstrategic_air_manager, cstrategic_navy_manager, equipment_entry,
+    cprovince, cstate, cstrategic_air_manager, cstrategic_navy_manager,
+    equipment_entry,
     map_air_base_reference,
     memory::{RecordLayout, RecordSources},
     msvc_string, sair_wing_combat_data, sdamage_entry,
@@ -30,13 +31,14 @@ use replay::{
 };
 
 use super::{
+    air_histories,
     air_reference_witness::{self, BaseWitness},
     air_sorties::{self, Sorties},
 };
 
-pub const N: usize = 15;
+pub const N: usize = 16;
 /// The tables `Capacities::rows` sizes; the sortie tables size themselves.
-pub const SIZED: usize = 10;
+pub const SIZED: usize = 11;
 pub const TABLES: [TableId; N] = [
     TableId::WingEquipment,
     TableId::AirBases,
@@ -53,6 +55,7 @@ pub const TABLES: [TableId; N] = [
     TableId::AirSortieModifiers,
     TableId::AirSortieSpecialBases,
     TableId::AirSortieModifierMetadata,
+    TableId::AirNavalPatrolCombats,
 ];
 
 /// The regional source walk is charged to history. Owned wing acquisition is charged to
@@ -75,7 +78,9 @@ pub struct Capacities {
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            rows: [8192, 2048, 4096, 8192, 16_384, 1024, 2048, 4096, 1024, 64],
+            rows: [
+                8192, 2048, 4096, 8192, 16_384, 1024, 2048, 4096, 1024, 64, 64,
+            ],
             ace_names: 65_536,
             wings: 8192,
             sorties: Default::default(),
@@ -116,6 +121,10 @@ pub struct Captured {
     references: CaptureRows<BaseWitness>,
     sorties: Sorties,
     mines: CaptureRows<rows::NavalMineLevelRow>,
+    patrol_combats: CaptureRows<rows::AirNavalPatrolCombatRow>,
+    /// The registrations' and combats' ticks once the AirMissions job, or
+    /// the Late job without it, captured them this hour.
+    missions: Option<[u64; 2]>,
     wing_ticks: [u64; 2],
     /// Game-thread time installing the owned census, charged to
     /// AirRegionalMissions, which joins it.
@@ -159,12 +168,15 @@ fn failed(active: bool, reason: &'static str) -> Outcome {
 
 impl Captured {
     /// An accepted Late job never retries. Independent owned payloads still
-    /// install their tables on decode; their raw gates must survive this path.
+    /// install their tables on decode; their raw gates must survive this path,
+    /// and so do the AirMissions job's registrations and combats.
     pub(crate) fn fail_late_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.prepare_hour(hour, force_full);
         self.equipment.fail(failed(self.active[0], reason));
         self.cumulative.fail(failed(self.active[2], reason));
-        self.registrations.fail(failed(self.active[7], reason));
+        if self.missions.is_none() {
+            self.fail_missions_rows(reason);
+        }
         self.references.fail(failed(self.active[8], reason));
         self.sorties
             .fail(failed(self.active[10], reason), failed(self.active[14], reason));
@@ -216,6 +228,8 @@ impl Captured {
             references: CaptureRows::new(capacity.rows[8]),
             sorties: Sorties::with_capacities(&capacity.sorties),
             mines: CaptureRows::new(capacity.rows[9]),
+            patrol_combats: CaptureRows::new(capacity.rows[10]),
+            missions: None,
             wing_ticks: [0; 2],
             identity_ticks: 0,
             active: [true; N],
@@ -248,6 +262,13 @@ impl Captured {
 
     fn reset_missions(&mut self) {
         self.registrations.reset();
+        self.patrol_combats.reset();
+        self.missions = None;
+        self.reset_joins();
+    }
+
+    /// The Late job's joins of the registered missions.
+    fn reset_joins(&mut self) {
         self.references.reset();
         self.sorties.reset();
         self.mines.reset();
@@ -268,6 +289,7 @@ impl Captured {
             + self.references.allocated_bytes()
             + self.sorties.allocated_bytes()
             + self.mines.allocated_bytes()
+            + self.patrol_combats.allocated_bytes()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -289,11 +311,116 @@ impl Captured {
         self.references.grow(&mut capacity.rows[8]);
         self.sorties.grow(&mut capacity.sorties);
         self.mines.grow(&mut capacity.rows[9]);
+        self.patrol_combats.grow(&mut capacity.rows[10]);
     }
 
     /// Freeze the requested tables before contexts and shared map callbacks.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+    }
+
+    /// Whether this hour's registrations and combats were captured.
+    pub(crate) fn missions_captured(&self) -> bool {
+        self.missions.is_some()
+    }
+
+    /// The AirMissions job, before the Late job, which joins what it
+    /// leaves: the registered missions, then the naval-patrol combats, whose
+    /// regions open the hour's history parts ([`air_histories::supply`]).
+    /// `parent` is the map census the typed visitor supplied the wing
+    /// identities in, when it did.
+    pub(crate) fn capture_missions(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        parent: Outcome,
+        histories: &mut [air_histories::Staging],
+        changes: &impl crate::history_changes::Changes,
+    ) {
+        if !self.identities_owned {
+            self.identity_outcome = require_parent(parent, self.identity_outcome);
+        }
+        self.registrations.reset();
+        self.patrol_combats.reset();
+        let begin = qpc();
+        self.registrations.outcome = if !self.active[7] {
+            SKIPPED
+        } else if let Outcome::Rows { len } = self.identity_outcome {
+            let _reads = read_accounting::table(TableId::AirRegionalMissions);
+            let identities = &mut self.identities.first[..len];
+            identities.sort_unstable_by_key(|wing| wing.mission_pointer);
+            bounded(
+                cair_regional_mission::walk(
+                    memory,
+                    base,
+                    game_state,
+                    identities,
+                    &mut self.registrations.rows,
+                ),
+                self.registrations.rows.len(),
+            )
+        } else {
+            Outcome::Unavailable {
+                reason: "registered missions lack the complete wing census",
+            }
+        };
+        let registered_ticks = elapsed(begin).saturating_add(self.identity_ticks);
+        let begin = qpc();
+        let (wings, registered) = joins(
+            &mut self.identities,
+            self.identity_outcome,
+            &self.registrations,
+        );
+        // Every hour: the histories, which need the regions, are sliced.
+        let regions = {
+            let _reads = read_accounting::table(TableId::AirNavalPatrolCombats);
+            capture_patrol_combats(
+                memory,
+                base,
+                game_state,
+                wings,
+                registered,
+                &mut self.handles,
+                &mut self.patrol_combats.rows,
+            )
+        };
+        self.patrol_combats.outcome = match regions {
+            _ if !self.active[15] => SKIPPED,
+            Ok((outcome, _)) => outcome,
+            Err(reason) => Outcome::Unavailable { reason },
+        };
+        air_histories::supply(
+            histories,
+            regions
+                .map(|(_, (first, len))| &self.handles[first..first + len])
+                .map_err(|_| "naval-patrol histories lack their task-force combats"),
+            changes,
+            &mut air_histories::opening(),
+        );
+        self.missions = Some([registered_ticks, elapsed(begin)]);
+    }
+
+    /// The AirMissions job was interrupted: publish its tables unavailable;
+    /// the history parts have no regions. Nothing is read again.
+    pub(crate) fn fail_missions(
+        &mut self,
+        reason: &'static str,
+        histories: &mut [air_histories::Staging],
+    ) {
+        self.fail_missions_rows(reason);
+        self.missions = Some([0; 2]);
+        air_histories::supply(
+            histories,
+            Err(reason),
+            &crate::history_changes::Unobserved,
+            &mut air_histories::opening(),
+        );
+    }
+
+    fn fail_missions_rows(&mut self, reason: &'static str) {
+        self.registrations.fail(failed(self.active[7], reason));
+        self.patrol_combats.fail(failed(self.active[15], reason));
     }
 
     /// Initialize the extension rows immediately before the shared map walk.
@@ -447,7 +574,7 @@ impl Captured {
         self.aces.reset();
         self.statistics.reset();
         self.names.reset();
-        self.reset_missions();
+        self.reset_joins();
         let mut ticks = [0; N];
         ticks[0] = self.wing_ticks[0];
         ticks[2] = self.wing_ticks[1];
@@ -503,38 +630,12 @@ impl Captured {
             });
             ticks[6] = elapsed(begin);
         }
-        let begin = qpc();
-        self.registrations.outcome = if !self.active[7] {
-            SKIPPED
-        } else if let Outcome::Rows { len } = self.identity_outcome {
-            let _reads = read_accounting::table(TableId::AirRegionalMissions);
-            let identities = &mut self.identities.first[..len];
-            identities.sort_unstable_by_key(|wing| wing.mission_pointer);
-            bounded(
-                cair_regional_mission::walk(
-                    memory,
-                    base,
-                    game_state,
-                    identities,
-                    &mut self.registrations.rows,
-                ),
-                self.registrations.rows.len(),
-            )
-        } else {
-            Outcome::Unavailable {
-                reason: "registered missions lack the complete wing census",
-            }
-        };
-        ticks[7] = elapsed(begin).saturating_add(self.identity_ticks);
-        // The remaining joins look wings up by handle.
-        let (wings, registered) = match (self.identity_outcome, self.registrations.outcome) {
-            (Outcome::Rows { len: wings }, Outcome::Rows { len }) => {
-                let identities = &mut self.identities.first[..wings];
-                identities.sort_unstable_by_key(|wing| wing.wing);
-                (&*identities, Some(&self.registrations.rows[..len]))
-            }
-            _ => (&[][..], None),
-        };
+        [ticks[7], ticks[15]] = self.missions.unwrap_or_default();
+        let (wings, registered) = joins(
+            &mut self.identities,
+            self.identity_outcome,
+            &self.registrations,
+        );
         let begin = qpc();
         self.references.outcome = if !self.active[8] {
             SKIPPED
@@ -616,6 +717,7 @@ impl Captured {
             sorties[2],
             sorties[3],
             sorties[4],
+            self.patrol_combats.outcome,
         ]
     }
 
@@ -671,6 +773,11 @@ impl Captured {
             modifiers,
             special_bases,
             metadata,
+            table::<tables::AirNavalPatrolCombats, _>(
+                outcomes[15],
+                &self.patrol_combats.rows,
+                Clone::clone,
+            ),
         ]
     }
 
@@ -725,6 +832,23 @@ fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
 
 fn capture_rows<R>(captured: &mut CaptureRows<R>, walk: impl FnOnce(&mut [R]) -> Outcome) {
     captured.outcome = bounded(walk(&mut captured.rows), captured.rows.len());
+}
+
+/// The wing census sorted by handle and the registrations, both complete,
+/// for the joins that look wings up by handle.
+fn joins<'a>(
+    identities: &'a mut Arena<WingIdentity>,
+    identity_outcome: Outcome,
+    registrations: &'a CaptureRows<cair_regional_mission::Row>,
+) -> (&'a [WingIdentity], Option<&'a [cair_regional_mission::Row]>) {
+    match (identity_outcome, registrations.outcome) {
+        (Outcome::Rows { len: wings }, Outcome::Rows { len }) => {
+            let identities = &mut identities.first[..wings];
+            identities.sort_unstable_by_key(|wing| wing.wing);
+            (&*identities, Some(&registrations.rows[..len]))
+        }
+        _ => (&[][..], None),
+    }
 }
 
 /// Each registration's wing; `wings` is sorted by handle.
@@ -886,6 +1010,104 @@ fn capture_mines(
     } else {
         Outcome::Truncated { len, unread_rows }
     })
+}
+
+/// `141237D20`'s first input for the registered naval-patrol missions: each
+/// effective country's task forces in a naval combat in one of its patrolled
+/// regions, in native order. `scratch` holds the (country, region) pairs and
+/// then the regions those combats are in, whose span it returns.
+fn capture_patrol_combats(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    wings: &[WingIdentity],
+    registered: Option<&[cair_regional_mission::Row]>,
+    scratch: &mut [u64],
+    combats: &mut [rows::AirNavalPatrolCombatRow],
+) -> Result<(Outcome, (usize, usize)), &'static str> {
+    let countries = ccountry::Reader::new(memory, base, game_state)?;
+    let mut count = 0;
+    for wing in registered_wings(wings, registered)? {
+        let wing = wing?;
+        let Some(region) = wing
+            .region
+            .filter(|_| wing.mission_mask & rows::AIR_MISSION_NAVAL_PATROL != 0)
+        else {
+            continue;
+        };
+        let country = countries.resolve(wing.effective_country())?;
+        *scratch
+            .get_mut(count)
+            .ok_or("naval-patrol scratch smaller than the registrations")? =
+            u64::from(country.canonical_slot) << 32 | u64::from(region);
+        count += 1;
+    }
+    patrol_combats(scratch, count, combats, |slot, emit| {
+        let country = countries
+            .at(slot)?
+            .ok_or("naval-patrol country slot is empty")?;
+        engine::air_kamikaze::task_force_combats(memory, base, country, emit)
+    })
+}
+
+/// Sort the `count` pairs in `scratch`, walk each distinct country's task
+/// forces through `walk`, keep those in a patrolled region with their
+/// ordinal, and list the regions they are in after the pairs.
+fn patrol_combats(
+    scratch: &mut [u64],
+    count: usize,
+    combats: &mut [rows::AirNavalPatrolCombatRow],
+    mut walk: impl FnMut(
+        u32,
+        &mut dyn FnMut(engine::air_kamikaze::TaskForceCombat) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str>,
+) -> Result<(Outcome, (usize, usize)), &'static str> {
+    if scratch.len() < count * 2 {
+        return Err("naval-patrol scratch smaller than the registrations");
+    }
+    let (pairs, needed) = scratch.split_at_mut(count);
+    pairs.sort_unstable();
+    let (mut len, mut unread_rows, mut regions) = (0, 0_u32, 0);
+    let mut first = 0;
+    while first < pairs.len() {
+        let slot = (pairs[first] >> 32) as u32;
+        let last = first + pairs[first..].partition_point(|&pair| (pair >> 32) as u32 == slot);
+        let patrolled = &pairs[first..last];
+        first = last;
+        let mut ordinal = 0;
+        walk(slot, &mut |combat| {
+            let key = u64::from(slot) << 32 | u64::from(combat.region);
+            if patrolled.binary_search(&key).is_err() {
+                return Ok(());
+            }
+            let region = u64::from(combat.region);
+            if !needed[..regions].contains(&region) {
+                needed[regions] = region;
+                regions += 1;
+            }
+            match combats.get_mut(len) {
+                Some(row) => {
+                    *row = rows::AirNavalPatrolCombatRow {
+                        country: slot,
+                        ordinal,
+                        province: combat.province,
+                        region: combat.region,
+                    };
+                    len += 1;
+                }
+                None => unread_rows = unread_rows.saturating_add(1),
+            }
+            ordinal += 1;
+            Ok(())
+        })?;
+    }
+    needed[..regions].sort_unstable();
+    let outcome = if unread_rows == 0 {
+        Outcome::Rows { len }
+    } else {
+        Outcome::Truncated { len, unread_rows }
+    };
+    Ok((outcome, (count, regions)))
 }
 
 fn require_parent(parent: Outcome, child: Outcome) -> Outcome {
@@ -3181,7 +3403,7 @@ fn copy_air_base_registrations(
             log,
             memory,
             container.checked_add(ccountry_air_container::COUNTRY),
-            4,
+            engine::cair_base::CONTAINER_SPAN,
             AIR_REGISTRATIONS_MASK,
         ) {
             Some(start) => bases_pool_u32(log, start),
@@ -4051,6 +4273,71 @@ impl Captured {
 
 #[cfg(test)]
 mod tests {
+    use engine::air_kamikaze::TaskForceCombat;
+
+    fn combat(province: u32, region: u32) -> TaskForceCombat {
+        TaskForceCombat { province, region }
+    }
+
+    /// Country 1 patrols regions 5 and 9, country 2 region 5.
+    fn patrols(scratch: &mut [u64]) -> usize {
+        scratch[..3].copy_from_slice(&[2 << 32 | 5, 1 << 32 | 9, 1 << 32 | 5]);
+        3
+    }
+
+    fn walk(
+        slot: u32,
+        emit: &mut dyn FnMut(TaskForceCombat) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        let fleet: &[TaskForceCombat] = match slot {
+            // Region 7 is not patrolled: skipped without an ordinal.
+            1 => &[combat(10, 7), combat(11, 9), combat(12, 5)],
+            2 => &[combat(20, 5)],
+            _ => &[],
+        };
+        fleet.iter().try_for_each(|&combat| emit(combat))
+    }
+
+    #[test]
+    fn patrol_combats_keep_order_filter_regions_and_list_the_regions() {
+        let mut scratch = [0; 6];
+        let count = patrols(&mut scratch);
+        let mut rows = vec![rows::AirNavalPatrolCombatRow::default(); 4];
+        let (outcome, (first, len)) =
+            patrol_combats(&mut scratch, count, &mut rows, walk).unwrap();
+        assert_eq!(outcome, Outcome::Rows { len: 3 });
+        let row = |country, ordinal, province, region| rows::AirNavalPatrolCombatRow {
+            country,
+            ordinal,
+            province,
+            region,
+        };
+        assert_eq!(rows[..3], [row(1, 0, 11, 9), row(1, 1, 12, 5), row(2, 0, 20, 5)]);
+        assert_eq!(scratch[first..first + len], [5, 9]);
+    }
+
+    #[test]
+    fn patrol_combats_truncate_and_refuse_short_scratch() {
+        let mut scratch = [0; 6];
+        let count = patrols(&mut scratch);
+        let mut rows = vec![rows::AirNavalPatrolCombatRow::default(); 1];
+        let (outcome, _) = patrol_combats(&mut scratch, count, &mut rows, walk).unwrap();
+        // The unread rows are what the growth pass sizes the next hour by.
+        assert_eq!(
+            outcome,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 2
+            }
+        );
+        let mut short = [0; 5];
+        let count = patrols(&mut short);
+        assert_eq!(
+            patrol_combats(&mut short, count, &mut rows, walk).map(|_| ()),
+            Err("naval-patrol scratch smaller than the registrations")
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -4469,7 +4756,7 @@ mod tests {
                 assert_eq!((job.required_memberships, job.membership_ticks), (0, 0));
             }
             let mut captured = Captured::with_capacities(&Capacities {
-                rows: [3, 0, if cumulative { 2 } else { 0 }, 0, 0, 0, 0, 4096, 1024, 64],
+                rows: [3, 0, if cumulative { 2 } else { 0 }, 0, 0, 0, 0, 4096, 1024, 64, 0],
                 ace_names: 0,
                 wings: 8192,
                 sorties: Default::default(),
@@ -4589,7 +4876,7 @@ mod tests {
         let memory = kit::memory(&bytes);
         for (equipment, cumulative) in [(0, 0), (1, 1), (2, 1), (3, 2), (4, 3), (8192, 4096)] {
             let capacity = Capacities {
-                rows: [equipment, 2048, cumulative, 8192, 16384, 1024, 2048, 4096, 1024, 64],
+                rows: [equipment, 2048, cumulative, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0],
                 ace_names: 65536,
                 wings: 8192,
                 sorties: Default::default(),
@@ -4604,7 +4891,7 @@ mod tests {
         }
         // Exact-fit arm pins Rows with all rows present.
         let capacity = Capacities {
-            rows: [3, 2048, 2, 8192, 16384, 1024, 2048, 4096, 1024, 64],
+            rows: [3, 2048, 2, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0],
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
@@ -4853,7 +5140,7 @@ mod tests {
         let memory = kit::memory(&bytes);
         for rows in [0, 1, 2, 64] {
             let capacities = Capacities {
-                rows: [8192, 2048, 4096, 8192, 16384, 1024, rows, 4096, 1024, 64],
+                rows: [8192, 2048, 4096, 8192, 16384, 1024, rows, 4096, 1024, 64, 0],
                 ace_names: 65536,
                 wings: 8192,
                 sorties: Default::default(),
@@ -4864,7 +5151,7 @@ mod tests {
             kit::assert_matches_direct(&split, &direct);
         }
         let capacities = Capacities {
-            rows: [8192, 2048, 4096, 8192, 16384, 1024, 2, 4096, 1024, 64],
+            rows: [8192, 2048, 4096, 8192, 16384, 1024, 2, 4096, 1024, 64, 0],
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
@@ -5787,6 +6074,11 @@ mod tests {
                 container + ccountry_air_container::COUNTRY,
                 slot,
             );
+            put64(
+                &mut bytes,
+                container + ccountry_air_container::CAPACITY_RAW,
+                u64::from(slot),
+            );
             put64(&mut bytes, SLOTS + slot as usize * 8, container as u64);
         }
         let memory = kit_memory(&bytes);
@@ -5828,7 +6120,7 @@ mod tests {
                 .rows
                 .iter()
                 .zip((1..COUNTRIES).filter(|slot| *slot != UNREADABLE))
-                .all(|(row, slot)| (row.slot, row.country) == (slot, slot))
+                .all(|(row, slot)| (row.slot, row.capacity_raw) == (slot, i64::from(slot)))
         );
         let fog_capacities = fog::Capacities {
             rows: [0, 0, 0, 0, 0, rows, 0],
@@ -7020,7 +7312,7 @@ pub(crate) mod wing_test_kit {
 
     pub(crate) fn direct_truncated(memory: &impl Memory) -> Split {
         let capacity = Capacities {
-            rows: [1, 2048, 1, 8192, 16384, 1024, 2048, 4096, 1024, 64],
+            rows: [1, 2048, 1, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0],
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
@@ -7042,7 +7334,7 @@ pub(crate) mod wing_test_kit {
         let report = super::copy_air_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         let capacity = Capacities {
-            rows: [1, 2048, 1, 8192, 16384, 1024, 2048, 4096, 1024, 64],
+            rows: [1, 2048, 1, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0],
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
@@ -7431,7 +7723,7 @@ mod air_bases_memo_tests {
 
     fn parts(cap: [usize; 5]) -> (Captured, super::super::fog::Captured) {
         let mut air = Captured::with_capacities(&Capacities {
-            rows: [0, cap[0], 0, 0, 0, cap[1], 0, 4096, 1024, 64],
+            rows: [0, cap[0], 0, 0, 0, cap[1], 0, 4096, 1024, 64, 0],
             ace_names: cap[2],
             wings: 8192,
             sorties: Default::default(),
@@ -8228,7 +8520,7 @@ pub(crate) mod air_bases_test_kit {
     ) -> Split {
         collect_typed(
             memory,
-            [8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64],
+            [8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64, 0],
             names,
             bases.max(2),
             wings,
@@ -8244,7 +8536,7 @@ pub(crate) mod air_bases_test_kit {
     ) -> (Split, AirBasesCopyReport, AirBasesJob) {
         collect_split(
             memory,
-            [8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64],
+            [8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64, 0],
             names,
             bases.max(2),
             wings,
@@ -8486,7 +8778,7 @@ pub(crate) mod air_history_test_kit {
     fn collect_typed(memory: &impl Memory, history_cap: usize, damage_cap: usize) -> Split {
         use engine::cair_region_combat_data;
         let capacities = Capacities {
-            rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048, 4096, 1024, 64],
+            rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048, 4096, 1024, 64, 0],
             ace_names: 65_536,
             wings: 8192,
             sorties: Default::default(),
@@ -8524,7 +8816,7 @@ pub(crate) mod air_history_test_kit {
             damage_limit: damage_cap,
         };
         let capacities = Capacities {
-            rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048, 4096, 1024, 64],
+            rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048, 4096, 1024, 64, 0],
             ace_names: 65_536,
             wings: 8192,
             sorties: Default::default(),

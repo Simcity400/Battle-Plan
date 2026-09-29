@@ -18,9 +18,9 @@ use replay::{
     frame::DecodedFrame,
     rows::{
         AIR_MISSION_BASE_EQUIPMENT_FLAGS, AIR_MISSION_FOREIGN_TARGET_FLAG, AIR_MISSION_LAY_MINES,
-        AirBaseRow, AirWingRow, BuildingRow, DivisionMovementRow, DivisionRow, NavalBaseRow,
-        NavalCombatDetailsRow, NavalCombatRow, NavalMineLevelRow, ProvinceRow,
-        ProvinceUnitOrderRow, StateRow, TableSchema, TaskForceRow, tables,
+        AirBaseRow, AirWingRow, BuildingRow, DivisionMovementRow, DivisionRow, LandCombatRow,
+        LandCombatSideRow, NavalBaseRow, NavalCombatDetailsRow, NavalCombatRow, NavalMineLevelRow,
+        ProvinceRow, ProvinceUnitOrderRow, StateRow, TableSchema, TaskForceRow, tables,
     },
 };
 
@@ -103,7 +103,7 @@ impl Cause {
     pub fn reason(self) -> &'static str {
         match self {
             Self::Tactical => {
-                "tactical target needs land fraction, combat countries and attached orders-group state"
+                "tactical target needs region land fraction, land combat sides, wars and divisions"
             }
             Self::Strategic => {
                 "strategic target needs region land fraction and complete states, provinces, buildings and occupants"
@@ -653,6 +653,106 @@ impl<'a> PortTargetSources<'a> {
                 match self.wars.at_war(country, task_force.logical_owner) {
                     Some(true) => return Some(true),
                     Some(false) => {}
+                    None => unknown = true,
+                }
+            }
+        }
+        if unknown { None } else { Some(false) }
+    }
+}
+
+/// `CountTacticalCombatTargets@140F69480`'s scan, as F66100 calls it (no
+/// output, recon off, stop on first): a land combat at a reached province
+/// (`CProvince+0x170`) with a primary country (`side+0x38`, attacker then
+/// defender) at war with the mission country
+/// (`HasParticipantAtWarWithCountry@1413CD4F0`). A wing with an attached
+/// orders group (`CAirWing+0x9B8`) also needs an attacking or defending army
+/// in that group (`CArmy+0xC0`).
+pub struct TacticalTargetSources<'a> {
+    wars: &'a Wars<'a>,
+    /// Each province's land combats; `None` without complete LandCombats.
+    combats: Option<BTreeMap<u32, Vec<&'a LandCombatRow>>>,
+    sides: Option<&'a [LandCombatSideRow]>,
+    divisions: Option<&'a [DivisionRow]>,
+}
+
+impl<'a> TacticalTargetSources<'a> {
+    pub(super) fn read(frame: &'a DecodedFrame, wars: &'a Wars<'a>) -> io::Result<Self> {
+        let combats = complete::<tables::LandCombats>(frame)?.map(|combats| {
+            let mut by_province = BTreeMap::<u32, Vec<&LandCombatRow>>::new();
+            for combat in combats {
+                by_province.entry(combat.province).or_default().push(combat);
+            }
+            by_province
+        });
+        Ok(Self {
+            wars,
+            combats,
+            sides: complete::<tables::LandCombatSides>(frame)?,
+            divisions: complete::<tables::Divisions>(frame)?,
+        })
+    }
+
+    /// `None` is Unknown; a later combat may still prove success.
+    pub(super) fn admit(
+        &self,
+        wing: &AirWingRow,
+        mission_country: MissionCountry,
+        reached: &[u32],
+    ) -> Option<bool> {
+        let combats = self.combats.as_ref()?;
+        // The capture authenticated the group against its native pointer, so
+        // handle equality is the native pointer equality. None is a group that
+        // did not authenticate.
+        let group = wing.attached_orders_group;
+        let mut unknown = false;
+        for combat in reached
+            .iter()
+            .filter_map(|province| combats.get(province))
+            .flatten()
+        {
+            let Some(side) = self
+                .sides
+                .and_then(|sides| find(sides, combat.id, |row| row.combat))
+            else {
+                unknown = true;
+                continue;
+            };
+            let mut war = Some(false);
+            for &country in side.attacker_primary.iter().chain(&side.defender_primary) {
+                match self.wars.at_war(mission_country, country) {
+                    Some(true) => {
+                        war = Some(true);
+                        break;
+                    }
+                    Some(false) => {}
+                    None => war = None,
+                }
+            }
+            match war {
+                Some(true) => {}
+                Some(false) => continue,
+                None => {
+                    unknown = true;
+                    continue;
+                }
+            }
+            let group = match group {
+                Some(0) => return Some(true),
+                Some(group) => group,
+                None => {
+                    unknown = true;
+                    continue;
+                }
+            };
+            let Some(divisions) = self.divisions else {
+                unknown = true;
+                continue;
+            };
+            for army in combat.attackers.iter().chain(&combat.defenders) {
+                match find(divisions, *army, |row| row.id) {
+                    Some(division) if division.orders_group == group => return Some(true),
+                    Some(_) => {}
                     None => unknown = true,
                 }
             }
@@ -1489,6 +1589,91 @@ mod tests {
         fixture.task_forces[0].logical_owner = 3;
         fixture.province_units[1].naval.clear();
         assert_eq!(fixture.admit(&[412]), Some(false));
+    }
+
+    #[test]
+    fn tactical_target_needs_a_hostile_primary_country_and_the_attached_group() {
+        let fixture = PortFixture::new();
+        let mut frame = fixture.frame();
+        let army = |id: u64| (id << 32) | 53;
+        set::<tables::LandCombats>(
+            &mut frame,
+            vec![LandCombatRow {
+                id: 5,
+                province: 412,
+                attackers: vec![army(1)],
+                defenders: vec![army(2)],
+                ..Default::default()
+            }],
+        );
+        set::<tables::LandCombatSides>(
+            &mut frame,
+            vec![LandCombatSideRow {
+                combat: 5,
+                attacker_primary: vec![2],
+                defender_primary: vec![13],
+                ..Default::default()
+            }],
+        );
+        set::<tables::Divisions>(
+            &mut frame,
+            vec![
+                DivisionRow {
+                    id: army(1),
+                    orders_group: army(9),
+                    ..Default::default()
+                },
+                DivisionRow {
+                    id: army(2),
+                    orders_group: army(8),
+                    ..Default::default()
+                },
+            ],
+        );
+        let registry = fixture.registry();
+        let admit = |frame: &DecodedFrame, wing: &AirWingRow, reached: &[u32]| {
+            let mission = MissionCountrySources::read(frame, &fixture.links, &registry).unwrap();
+            let country = mission.resolve(wing).unwrap();
+            let wars = Wars::read(frame, &fixture.links).unwrap();
+            TacticalTargetSources::read(frame, &wars)
+                .unwrap()
+                .admit(wing, country, reached)
+        };
+        let mut wing = AirWingRow {
+            attached_orders_group: Some(0),
+            ..fixture.wing.clone()
+        };
+        // The defender's primary alias 13 is at war with country 1.
+        assert_eq!(admit(&frame, &wing, &[412]), Some(true));
+        assert_eq!(admit(&frame, &wing, &[100]), Some(false));
+        // An attached group must hold one of the combat's armies.
+        wing.attached_orders_group = Some(army(7));
+        assert_eq!(admit(&frame, &wing, &[412]), Some(false));
+        wing.attached_orders_group = Some(army(8));
+        assert_eq!(admit(&frame, &wing, &[412]), Some(true));
+        // A group that did not authenticate cannot be decided, unless no
+        // hostile combat is reached.
+        wing.attached_orders_group = None;
+        assert_eq!(admit(&frame, &wing, &[412]), None);
+        assert_eq!(admit(&frame, &wing, &[100]), Some(false));
+        wing.attached_orders_group = Some(army(8));
+        // Secondary roster owners are not tested.
+        table::<tables::LandCombatSides>(&mut frame)[0] = LandCombatSideRow {
+            combat: 5,
+            attacker_primary: vec![2],
+            attacker_secondary: vec![3],
+            ..Default::default()
+        };
+        assert_eq!(admit(&frame, &wing, &[412]), Some(false));
+        // An unknown group does not matter without a hostile combat.
+        wing.attached_orders_group = None;
+        assert_eq!(admit(&frame, &wing, &[412]), Some(false));
+        wing.attached_orders_group = Some(army(8));
+        // A combat without its side row cannot be decided.
+        table::<tables::LandCombatSides>(&mut frame).clear();
+        assert_eq!(admit(&frame, &wing, &[412]), None);
+        truncate::<tables::LandCombats>(&mut frame);
+        assert_eq!(admit(&frame, &wing, &[412]), None);
     }
 
     #[test]

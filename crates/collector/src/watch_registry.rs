@@ -1,5 +1,6 @@
 //! A clearable registry of the receiver addresses a mutation observer
-//! watches, for the observers' hooks ([`crate::relation_changes`]).
+//! watches, for the observers' hooks ([`crate::relation_changes`],
+//! [`crate::history_changes`]).
 //!
 //! A capture registers each receiver it certifies and takes its
 //! `(epoch, sequence)`. A hooked writer bumps the sequence of a registered
@@ -10,9 +11,10 @@
 //! certificate outlives a notification it could have missed:
 //! - [`WatchRegistry::boundary`] runs on the game thread in the hourly
 //!   callback, before any capture. It clears the table (on an invalidation,
-//!   or once dead receivers fill half of it) or installs a larger table
-//!   offered off-thread, each between two epoch changes, and only while no
-//!   notification is running (see below for when each waits).
+//!   or, unless [`WatchRegistry::retaining`], once dead receivers fill half
+//!   of it) or installs a larger table offered off-thread, each between two
+//!   epoch changes, and only while no notification is running (see below
+//!   for when each waits).
 //! - An epoch change makes every receiver be read afresh, so a clear or an
 //!   install waits for an invalidating hour (attach, load, gap or recovery:
 //!   the recorder's full hours), where that happens anyway. One a running
@@ -135,6 +137,8 @@ pub struct WatchRegistry {
     requested: AtomicUsize,
     /// Registrations since the table was last cleared or installed.
     registered: AtomicUsize,
+    /// Clear once dead receivers fill half the table.
+    purge: bool,
     epoch: AtomicU64,
     revision: AtomicU64,
     active: AtomicUsize,
@@ -158,6 +162,17 @@ impl Default for WatchRegistry {
 
 impl WatchRegistry {
     pub const fn new() -> Self {
+        Self::with_purge(true)
+    }
+
+    /// Cleared only on an invalidation: every clear starts an epoch, so each
+    /// certified receiver is read afresh once. Offer a table large enough
+    /// for the receivers instead; a full one refuses registrations.
+    pub const fn retaining() -> Self {
+        Self::with_purge(false)
+    }
+
+    const fn with_purge(purge: bool) -> Self {
         Self {
             table: AtomicPtr::new(ptr::null_mut()),
             offered: AtomicPtr::new(ptr::null_mut()),
@@ -166,6 +181,7 @@ impl WatchRegistry {
             capacity: AtomicUsize::new(0),
             requested: AtomicUsize::new(0),
             registered: AtomicUsize::new(0),
+            purge,
             epoch: AtomicU64::new(1),
             revision: AtomicU64::new(0),
             active: AtomicUsize::new(0),
@@ -257,12 +273,13 @@ impl WatchRegistry {
     /// epoch when `invalidate`, then install an offered table or clear the
     /// installed one while no notification is running. Outside an
     /// invalidation both wait, counted as held, unless no table is installed
-    /// yet; so does one a running notification blocks.
-    pub fn boundary(&self, invalidate: bool) {
+    /// yet; so does one a running notification blocks. Returns whether it
+    /// installed a table.
+    pub fn boundary(&self, invalidate: bool) -> bool {
         if invalidate {
             self.new_epoch();
         }
-        let full = self.registered.load(Relaxed) * 2 > self.capacity.load(Relaxed);
+        let full = self.purge && self.registered.load(Relaxed) * 2 > self.capacity.load(Relaxed);
         let first = self.table.load(SeqCst).is_null();
         let restart = invalidate || first;
         if !restart {
@@ -272,7 +289,7 @@ impl WatchRegistry {
             if self.active.load(SeqCst) == 0 {
                 self.retire_drained();
             }
-            return;
+            return false;
         }
         if self.active.load(SeqCst) != 0 {
             if full
@@ -284,7 +301,7 @@ impl WatchRegistry {
             }
             // Only a missing first table retries at the next hour; the rest
             // waits for the next invalidating hour.
-            return;
+            return false;
         }
         // No notification is running, so none holds a replaced table.
         self.retire_drained();
@@ -303,7 +320,7 @@ impl WatchRegistry {
                 if self.active.load(SeqCst) == 0 {
                     self.retire_drained();
                 }
-                return;
+                return true;
             }
         }
         if full || invalidate {
@@ -318,6 +335,7 @@ impl WatchRegistry {
                 self.clears.fetch_add(1, Relaxed);
             }
         }
+        false
     }
 
     /// Hand a drained table to [`Self::collect`] once the previous one is
@@ -397,6 +415,11 @@ impl WatchRegistry {
 
     pub fn poisoned(&self) -> bool {
         self.poisoned.load(SeqCst)
+    }
+
+    /// Registrations since the table was last cleared or installed.
+    pub fn registered(&self) -> usize {
+        self.registered.load(Relaxed)
     }
 
     /// Notifications running now.
@@ -532,6 +555,60 @@ mod tests {
     }
 
     #[test]
+    fn a_retaining_registry_clears_only_on_an_invalidation() {
+        let registry = WatchRegistry::retaining();
+        registry.offer_slots(64);
+        registry.boundary(false);
+        registry.set_enabled(true);
+        for address in (1..=40).map(|n| n * 8) {
+            registry.sequence(address).unwrap();
+        }
+        let certified = registry.sequence(8).unwrap();
+        registry.boundary(false);
+        assert_eq!(registry.clears.load(Relaxed), 0);
+        assert_eq!(registry.sequence(8), Some(certified));
+        registry.boundary(true);
+        assert_eq!(registry.clears.load(Relaxed), 1);
+        assert_ne!(registry.sequence(8), Some(certified));
+    }
+
+    /// A writer that began after the boundary saw no notification running
+    /// can overlap the clear. Whether its bumps land before or after the
+    /// clear zeroes its slot, a receiver registered there is refused while
+    /// it runs and certified after it ends with those bumps included, so it
+    /// never adds a later +2 that would read as an advance.
+    #[test]
+    fn a_notification_spanning_a_clear_never_advances_a_new_certificate() {
+        for bumped_after_clear in [false, true] {
+            let registry = registry(64);
+            registry.sequence(8).unwrap();
+            let table = registry.table().unwrap();
+            let Lookup::Watched(slot) = table.find(8, false) else {
+                unreachable!("registered above")
+            };
+            // Found its slot before the clear reached it.
+            let running = (!bumped_after_clear).then(|| registry.notify(8));
+            registry.new_epoch();
+            table.clear();
+            registry.new_epoch();
+            let running = running.unwrap_or_else(|| {
+                registry.active.fetch_add(1, SeqCst);
+                slot.fetch_add(1, SeqCst);
+                Notification {
+                    registry: &registry,
+                    sequence: Some(slot),
+                }
+            });
+            assert!(registry.sequence(8).is_none());
+            drop(running);
+            let (_, baseline) = registry.sequence(8).unwrap();
+            assert_eq!(registry.sequence(8).map(|(_, s)| s), Some(baseline));
+            drop(registry.notify(8));
+            assert_eq!(registry.sequence(8).map(|(_, s)| s), Some(baseline + 2));
+        }
+    }
+
+    #[test]
     fn a_larger_table_is_installed_at_a_quiet_full_hour_and_freed_off_thread() {
         let registry = registry(4);
         let certified = registry.sequence(8).unwrap();
@@ -540,7 +617,7 @@ mod tests {
         assert!(registry.offered.load(SeqCst).is_null());
         registry.offer(1_000);
         // An ordinary hour holds it and keeps every certificate.
-        registry.boundary(false);
+        assert!(!registry.boundary(false));
         assert_eq!(registry.capacity.load(Relaxed), 4);
         assert_eq!(registry.held.load(Relaxed), 1);
         assert_eq!(registry.sequence(8), Some(certified));
@@ -549,9 +626,9 @@ mod tests {
         assert_eq!(registry.capacity.load(Relaxed), 4);
         drop(running);
         // Blocked by the running writer, it waits for the next full hour.
-        registry.boundary(false);
+        assert!(!registry.boundary(false));
         assert_eq!(registry.capacity.load(Relaxed), 4);
-        registry.boundary(true);
+        assert!(registry.boundary(true));
         assert_eq!(registry.capacity.load(Relaxed), 4096);
         assert_eq!(registry.installs.load(Relaxed), 2);
         assert_ne!(registry.sequence(8), Some(certified));

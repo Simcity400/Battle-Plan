@@ -16,6 +16,8 @@ pub mod advisor_tokens;
 pub mod agency_upgrade_branch;
 pub mod agency_upgrade_branch_database;
 pub mod air_fuel_defines;
+pub mod air_history_mutations;
+pub mod air_kamikaze;
 pub mod air_mission;
 pub mod air_participant_vectors;
 pub mod air_token_record;

@@ -111,6 +111,7 @@ fn parse_spanned(bytes: &[u8], lines: bool) -> io::Result<(Document, Vec<BlockLi
         lexer: Lexer {
             bytes,
             position: usize::from(bytes.starts_with(b"\xef\xbb\xbf")) * 3,
+            lenient: false,
         },
         lookahead: None,
         lines: lines.then(|| Lines {
@@ -131,6 +132,26 @@ fn parse_spanned(bytes: &[u8], lines: bool) -> io::Result<(Document, Vec<BlockLi
     ))
 }
 
+/// Every scalar of `bytes` in order, as the parser's own lexer reads and
+/// decodes it (comment boundaries, quoting and escapes), for text the
+/// parser refuses. No error stops the scan: a structural error does not
+/// concern the lexer, a NUL byte separates words and an unterminated quote
+/// runs to the end of the text.
+pub fn scalars(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut lexer = Lexer {
+        bytes,
+        position: usize::from(bytes.starts_with(b"\xef\xbb\xbf")) * 3,
+        lenient: true,
+    };
+    let mut scalars = Vec::new();
+    while let Ok(Some(token)) = lexer.next() {
+        if let TokenKind::Scalar { bytes, .. } = token.kind {
+            scalars.push(bytes);
+        }
+    }
+    scalars
+}
+
 #[derive(Debug)]
 enum TokenKind {
     Scalar { bytes: Vec<u8>, quoted: bool },
@@ -148,19 +169,22 @@ struct Token {
 struct Lexer<'a> {
     bytes: &'a [u8],
     position: usize,
+    /// [`scalars`]' mode: NUL bytes separate words and an unterminated
+    /// quote ends the text, instead of either failing.
+    lenient: bool,
 }
 
 impl Lexer<'_> {
     fn next(&mut self) -> io::Result<Option<Token>> {
         while let Some(&byte) = self.bytes.get(self.position) {
-            if byte.is_ascii_whitespace() {
+            if byte.is_ascii_whitespace() || (self.lenient && byte == 0) {
                 self.position += 1;
             } else if byte == b'#' {
                 while let Some(&comment) = self.bytes.get(self.position) {
                     if comment == b'\n' || comment == b'\r' {
                         break;
                     }
-                    if comment == 0 {
+                    if comment == 0 && !self.lenient {
                         return Err(invalid(self.position, "NUL byte in text"));
                     }
                     self.position += 1;
@@ -187,6 +211,7 @@ impl Lexer<'_> {
                 while let Some(&next) = self.bytes.get(self.position) {
                     if next.is_ascii_whitespace()
                         || matches!(next, b'{' | b'}' | b'=' | b'"' | b'#')
+                        || (self.lenient && next == 0)
                     {
                         break;
                     }
@@ -210,6 +235,7 @@ impl Lexer<'_> {
             let offset = self.position;
             self.position += 1;
             match byte {
+                0 if self.lenient => {}
                 0 => return Err(invalid(offset, "NUL byte in quoted string")),
                 b'"' => return Ok(bytes),
                 b'\\' => match self.bytes.get(self.position).copied() {
@@ -223,6 +249,9 @@ impl Lexer<'_> {
                 },
                 _ => bytes.push(byte),
             }
+        }
+        if self.lenient {
+            return Ok(bytes);
         }
         Err(invalid(start, "unterminated quoted string"))
     }
@@ -386,6 +415,26 @@ fn invalid(offset: usize, message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The word scan reads what the parser's lexer reads, past any error.
+    #[test]
+    fn scalars_follow_the_lexer_past_errors() {
+        let words = |text: &[u8]| {
+            scalars(text)
+                .into_iter()
+                .map(|word| String::from_utf8(word).unwrap())
+                .collect::<Vec<_>>()
+        };
+        // A bare CR ends a comment; escapes are decoded; a structural error
+        // and a NUL byte do not stop the scan; an unterminated quote runs
+        // to the end.
+        assert_eq!(
+            words(b"# note\rentity = { name = \"a\\\"b\\\\c\" } } = x\0y # z\n\"open"),
+            ["entity", "name", "a\"b\\c", "x", "y", "open"]
+        );
+        assert!(parse(b"a = \"open").is_err());
+        assert!(parse(b"a = x\0y").is_err());
+    }
 
     #[test]
     fn block_lines_follow_the_braces_in_preorder() {

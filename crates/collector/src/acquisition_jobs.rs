@@ -170,6 +170,39 @@ pub(crate) struct AirRelationsRequest {
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct AirRelationsReport;
+/// The registered air missions and the naval-patrol combats, whose regions
+/// open the history parts; the Late job joins the registrations it leaves.
+pub(crate) struct AirMissionsRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    /// The map census the typed visitor supplied the wing identities in.
+    pub parent: engine::walk::Outcome,
+    pub pack: Box<crate::extended::air::Captured>,
+    pub histories: Vec<crate::extended::air_histories::Staging>,
+}
+impl AirMissionsRequest {
+    /// A job the pool refused never runs: its growth could allocate on the
+    /// game thread. It fails the registrations and combats and leaves the
+    /// history parts without regions, as an interrupted job does.
+    pub(crate) fn refuse(&mut self) {
+        self.pack
+            .fail_missions("air mission worker admission failed", &mut self.histories);
+    }
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct AirMissionsReport;
+/// One part of the hour's naval-patrol history copies
+/// (`air_histories::PARTS`).
+pub(crate) struct AirHistoriesRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub part: usize,
+    pub staging: crate::extended::air_histories::Staging,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct AirHistoriesReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SlowReport;
 pub(crate) struct RaidStateRequest {
@@ -374,6 +407,8 @@ pub(crate) enum Job {
     RaidLaunch(RaidLaunchRequest),
     RaidTargets(RaidTargetsRequest),
     AirRelations(AirRelationsRequest),
+    AirMissions(AirMissionsRequest),
+    AirHistories(AirHistoriesRequest),
     Late(LateRequest),
     Orders(OrdersRequest),
     Gated(GatedRequest),
@@ -422,6 +457,8 @@ pub(crate) enum Report {
     RaidLaunch(RaidLaunchReport),
     RaidTargets(RaidTargetsReport),
     AirRelations(AirRelationsReport),
+    AirMissions(AirMissionsReport),
+    AirHistories(AirHistoriesReport),
     Late(LateReport),
     Orders(OrdersReport),
     Gated(GatedReport),
@@ -475,6 +512,8 @@ pub(crate) enum Role {
     RaidLaunch,
     RaidTargets,
     AirRelations,
+    AirMissions,
+    AirHistories,
     Late,
     Orders,
     Gated,
@@ -498,6 +537,8 @@ impl Role {
                 | Self::Presentation
                 | Self::EtaInputs
                 | Self::AirRelations
+                | Self::AirMissions
+                | Self::AirHistories
         )
     }
     /// Shared native work follows an hourly consumer in mixed families. Detail
@@ -542,6 +583,8 @@ impl Role {
             Self::RaidLaunch => T::RaidCountryInputs,
             Self::RaidTargets => T::RaidTargetStatuses,
             Self::AirRelations => T::AirCountryRelations,
+            Self::AirMissions => T::AirRegionalMissions,
+            Self::AirHistories => T::AirNavalPatrolHistories,
             Self::Late => T::WingEquipment,
             Self::Orders => T::ArmyOrders,
             Self::Gated => T::VolunteerHosts,
@@ -586,7 +629,9 @@ impl Role {
             | Self::Players => 2,
             // The roster supplies portraits and the role census.
             Self::Characters | Self::Naval => 3,
+            // Joined with Orders, before the Late job it feeds.
             Self::Orders
+            | Self::AirMissions
             | Self::Provinces
             | Self::States
             | Self::Countries
@@ -610,12 +655,12 @@ impl Role {
             | Self::Gated
             | Self::Variants => 5,
             Self::Presentation | Self::EtaInputs => 6,
-            Self::Late => 7,
+            Self::Late | Self::AirHistories => 7,
         }
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 47;
+pub(crate) const ROLE_COUNT: usize = 49;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -654,6 +699,8 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::RaidLaunch,
     Role::RaidTargets,
     Role::AirRelations,
+    Role::AirMissions,
+    Role::AirHistories,
     Role::Late,
     Role::Orders,
     Role::Gated,
@@ -707,6 +754,8 @@ impl Job {
             Self::RaidLaunch(..) => Role::RaidLaunch,
             Self::RaidTargets(..) => Role::RaidTargets,
             Self::AirRelations(..) => Role::AirRelations,
+            Self::AirMissions(..) => Role::AirMissions,
+            Self::AirHistories(..) => Role::AirHistories,
             Self::Late(..) => Role::Late,
             Self::Orders(..) => Role::Orders,
             Self::Gated(..) => Role::Gated,
@@ -1142,6 +1191,31 @@ fn run_with_memory(
             );
             Report::AirRelations(AirRelationsReport)
         }
+        Job::AirMissions(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.pack.capture_missions(
+                &cached,
+                request.base,
+                request.game_state,
+                request.parent,
+                &mut request.histories,
+                &crate::history_changes::Observer,
+            );
+            Report::AirMissions(AirMissionsReport)
+        }
+        Job::AirHistories(request) => {
+            let cached = request.countries.roster_view(memory);
+            crate::extended::air_histories::stage(
+                &cached,
+                request.base,
+                request.game_state,
+                request.part,
+                &crate::history_changes::Observer,
+                &mut crate::extended::air_histories::certificates(request.part),
+                &mut request.staging,
+            );
+            Report::AirHistories(AirHistoriesReport)
+        }
         Job::RaidState(request) => {
             let cached = request.countries.roster_view(memory);
             request.packs.capture(
@@ -1294,6 +1368,7 @@ impl Role {
         match self {
             Self::AirRelations => crate::extended::air_relations::PARTS,
             Self::EtaInputs => division_eta_inputs::MAX_RANGES,
+            Self::AirHistories => crate::extended::air_histories::PARTS,
             _ => 1,
         }
     }
@@ -1613,12 +1688,15 @@ mod tests {
 
     #[test]
     fn every_worker_only_job_of_an_hour_has_a_reserved_slot() {
-        // Governance, Variants, Orders, Ordinary, Presentation, each ETA
-        // range and each relation part.
+        // Governance, Variants, Orders, Ordinary, Presentation, AirMissions,
+        // each ETA range, each relation part and each history part.
         assert_eq!(
             WORKER_ONLY_JOBS,
-            5 + division_eta_inputs::MAX_RANGES + crate::extended::air_relations::PARTS
+            6 + division_eta_inputs::MAX_RANGES
+                + crate::extended::air_relations::PARTS
+                + crate::extended::air_histories::PARTS
         );
+        assert!(Role::AirMissions.worker_only());
     }
 
     #[test]

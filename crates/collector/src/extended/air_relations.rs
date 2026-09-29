@@ -214,10 +214,11 @@ impl Captured {
         }
     }
 
+    /// Game thread, at the start of a frame's hour: its last hour's copies
+    /// were decoded or dropped before the frame was freed.
     pub fn reset(&mut self) {
+        debug_assert!(!self.staged, "a frame was reused before its copies settled");
         self.rows.reset();
-        // Copies never decoded leave their certificates unbacked.
-        self.dropped();
         for part in &mut self.parts {
             part.clear();
         }

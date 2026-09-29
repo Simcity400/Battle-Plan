@@ -332,6 +332,8 @@ fn air_wings(
             eligibility_veto: row.eligibility_veto,
             eligibility_counter: row.eligibility_counter,
             eligibility_limit: row.eligibility_limit,
+            attached_orders_group: row.attached_orders_group,
+            pool_ordinal: row.pool_ordinal,
         },
     )
 }
@@ -585,6 +587,7 @@ mod tests {
             vec![cair_wing::Row {
                 id: u64::MAX,
                 owner: u32::MAX,
+                pool_ordinal: u32::MAX - 3,
                 country_override: i32::MIN,
                 air_base: u64::MAX - 1,
                 base_override: u64::MAX - 2,
@@ -597,6 +600,7 @@ mod tests {
                 eligibility_veto: u8::MAX,
                 eligibility_counter: i32::MIN,
                 eligibility_limit: i32::MAX,
+                attached_orders_group: Some(u64::MAX),
             }],
         );
         set(
@@ -687,6 +691,7 @@ mod tests {
             TableRows::AirWings(vec![AirWingRow {
                 id: u64::MAX,
                 owner: u32::MAX,
+                pool_ordinal: u32::MAX - 3,
                 country_override: i32::MIN,
                 air_base: u64::MAX - 1,
                 base_override: u64::MAX - 2,
@@ -699,6 +704,7 @@ mod tests {
                 eligibility_veto: u8::MAX,
                 eligibility_counter: i32::MIN,
                 eligibility_limit: i32::MAX,
+                attached_orders_group: Some(u64::MAX),
             }]),
             TableRows::ArmyOrders(vec![ArmyOrderRow {
                 owner_group: u64::MAX,

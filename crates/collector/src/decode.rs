@@ -1869,7 +1869,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     }
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     fail_missing_payloads(frame, job);
-    frame.extended.decode_air_relations();
+    frame.extended.decode_air_copies();
     LAST_SEQ.store(job.seq, Ordering::Relaxed);
     LAST_HOUR.store(job.hour as u64, Ordering::Relaxed);
     if job.force_full {

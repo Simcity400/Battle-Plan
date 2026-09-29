@@ -513,13 +513,13 @@ impl Captured {
             |r, old| {
                 r.base == old.base
                     && r.slot == old.slot
-                    && r.country == old.country
+                    && r.capacity_raw == old.capacity_raw
                     && wings(r) == old.wings
             },
             |r| rows::AirBaseRegistrationRow {
                 base: r.base,
                 slot: r.slot,
-                country: r.country,
+                capacity_raw: r.capacity_raw,
                 wings: wings(r).to_vec(),
             },
         )
@@ -665,7 +665,7 @@ mod registrations_memo_tests {
         source.registrations.rows[0] = cair_base::RegistrationRow {
             base: 12,
             slot: 3,
-            country: 7,
+            capacity_raw: 7,
             wings_start: 0,
             wings_len: 2,
         };
@@ -1515,6 +1515,11 @@ mod tests {
             CONTAINER + engine::ccountry_air_container::COUNTRY,
             &2_u32.to_le_bytes(),
         );
+        put(
+            &mut bytes,
+            CONTAINER + engine::ccountry_air_container::CAPACITY_RAW,
+            &engine::ccountry_air_container::INITIAL_CAPACITY_RAW.to_le_bytes(),
+        );
         array(
             &mut bytes,
             CONTAINER + engine::ccountry_air_container::POOLS,
@@ -1641,7 +1646,7 @@ mod tests {
             &[rows::AirBaseRegistrationRow {
                 base: (4 << 32) | u64::from(cair_base::TYPE),
                 slot: 1,
-                country: 2,
+                capacity_raw: engine::ccountry_air_container::INITIAL_CAPACITY_RAW,
                 wings: vec![(77 << 32) | u64::from(engine::cair_wing::TYPE)],
             }]
         );

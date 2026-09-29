@@ -9,9 +9,9 @@ publish.workspace = true
 crate-type = ["cdylib"]
 
 [features]
-# `opinion_verify` and `relation_verify` stay on by default until their
+# `opinion_verify`, `relation_verify` and `history_verify` stay on by default until their
 # hooks' burn-in passes (owner rule: verify stays on during burn-in).
-default = ["portrait_changes", "advisor_changes", "relation_changes", "relation_verify", "opinion_changes", "opinion_verify"]
+default = ["portrait_changes", "advisor_changes", "relation_changes", "relation_verify", "opinion_changes", "opinion_verify", "history_changes", "history_verify"]
 advisor_changes = []
 # Bounded per-section wall/cycle measurements for diagnosing slow captures.
 advisor_profile = ["advisor_changes"]
@@ -22,6 +22,10 @@ advisor_verify = ["advisor_changes"]
 portrait_changes = []
 # Re-read AirCountryRelations only for countries whose vectors a native writer touched.
 relation_changes = []
+# Re-read air histories only where a native writer touched them.
+history_changes = []
+# Also read every history afresh each hour and poison on a difference.
+history_verify = ["history_changes"]
 # Diagnostic capture also copies every country's relation vectors each hour and checks the held rows.
 relation_verify = ["relation_changes"]
 # Relation opinion writer hooks: observed relations refreshes read only the statuses a writer changed.

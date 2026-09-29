@@ -17,7 +17,7 @@ use engine::{
 use replay::{
     frame::TableView,
     rows::{
-        AIR_MISSION_MAP_FLAGS, AIR_MISSION_REACHED_MEMBERSHIP, AirMissionInputRow,
+        AIR_MISSION_MAP_FLAGS, AIR_MISSION_REACHED_IDS, AirMissionInputRow,
         AirSortieBaseCountryRow, AirSortieModifierMetadataRow, AirSortieModifierRow,
         AirSortieSpecialBaseRow, tables,
     },
@@ -328,7 +328,7 @@ impl Sorties {
                 air_base: wing.air_base,
                 effective: wing.effective_country(),
                 region: wing.region,
-                membership: wing.mission_mask & AIR_MISSION_REACHED_MEMBERSHIP != 0,
+                membership: wing.mission_mask & AIR_MISSION_REACHED_IDS != 0,
                 ..Mission::default()
             });
         }

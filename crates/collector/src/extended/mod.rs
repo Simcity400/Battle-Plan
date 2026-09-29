@@ -153,6 +153,7 @@ macro_rules! packs {
             raid_targets_spare: Option<Box<RaidTargetPacks>>,
             late_ticks: Option<[u64; TABLE_COUNT]>,
             late_spare: Option<Box<LatePacks>>,
+            missions_spare: Option<Box<air::Captured>>,
             gated_ticks: Option<[u64; TABLE_COUNT]>,
             gated_spare: Option<Box<GatedPacks>>,
             registry: Registry,
@@ -192,6 +193,7 @@ macro_rules! packs {
                     raid_targets_spare: Some(RaidTargetPacks::spare()),
                     late_ticks: None,
                     late_spare: Some(LatePacks::spare()),
+                    missions_spare: Some(Box::new(air::Captured::vacant())),
                     gated_ticks: None,
                     gated_spare: Some(GatedPacks::spare()),
                     registry: Registry::new(capacity.variant_registry),
@@ -302,6 +304,7 @@ pub(crate) mod air_sorties;
 packs!(
     air,
     air_relations,
+    air_histories,
     army_icon_inputs,
     naval_counters,
     railway_guns,
@@ -369,6 +372,7 @@ impl Capacities {
         self.raid_launch_inputs.raise_for_countries(slots);
         self.raid_state_inputs.raise_for_countries(slots);
         self.air_relations.raise_for_countries(slots);
+        self.air_histories.raise_for_countries(slots);
         self.model_inputs.raise_for_countries(slots);
         self.hired_advisors.raise_for_countries(slots);
         self.country_stability.raise_for_countries(slots);
@@ -428,6 +432,7 @@ impl Captured {
         // A frame whose sliced job never runs must not report an older read.
         self.governance.reset_slice_selections(hour, force_full);
         self.air_relations.prepare_hour(hour, force_full);
+        self.air_histories.prepare_hour(hour, force_full);
         self.raid_launch_inputs.reset_selection(hour, force_full);
         self.raid_state_inputs.reset_selections(hour, force_full);
         self.division_presentation.reset_selection(hour, force_full);
@@ -700,6 +705,7 @@ impl Captured {
             crate::slicing::STABILITY => self.country_stability.selection(),
             crate::slicing::RETREAT_BANS => self.division_presentation.bans_selection(),
             crate::slicing::AIR_RELATIONS => self.air_relations.selection(),
+            crate::slicing::AIR_HISTORIES => self.air_histories.selection(),
             _ => unreachable!("unregistered sliced family {family}"),
         }
     }
@@ -1015,6 +1021,9 @@ impl Captured {
                 .late_spare
                 .as_ref()
                 .map_or(0, |packs| packs.allocated_bytes())
+            + self.missions_spare.as_ref().map_or(0, |pack| {
+                size_of::<air::Captured>() + pack.allocated_bytes()
+            })
             + self
                 .gated_spare
                 .as_ref()
@@ -1343,14 +1352,99 @@ impl Captured {
             .restore_part(request.part, request.staging);
     }
 
-    /// Decode thread: turn this frame's staged relation copies into rows.
-    pub(crate) fn decode_air_relations(&mut self) {
+    /// Loan the air pack and every history part to the AirMissions job.
+    /// Before the map sample it runs on the owned census's identities;
+    /// after it, on the typed visitor's, whose census is `air_root`.
+    pub(crate) fn take_air_missions_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+    ) -> crate::acquisition_jobs::AirMissionsRequest {
+        let mut pack = self.missions_spare.take().expect("missions spare present");
+        std::mem::swap(&mut self.air, &mut pack);
+        crate::acquisition_jobs::AirMissionsRequest {
+            countries: Arc::clone(countries),
+            base,
+            game_state: state,
+            parent: self.air_root.unwrap_or(MISSING),
+            pack,
+            histories: self.air_histories.take_parts(),
+        }
+    }
+
+    /// An interrupted job fails the registrations and combats, and leaves
+    /// the history parts without regions; nothing is read again.
+    pub(crate) fn restore_air_missions_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::AirMissionsRequest,
+        completed: bool,
+    ) {
+        if !completed {
+            request
+                .pack
+                .fail_missions("air mission acquisition failed", &mut request.histories);
+        }
+        std::mem::swap(&mut self.air, &mut request.pack);
+        self.missions_spare = Some(request.pack);
+        self.air_histories.restore_parts(request.histories);
+    }
+
+    /// Loan one part of the naval-patrol history copies to its job.
+    pub(crate) fn take_air_histories_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        part: usize,
+    ) -> crate::acquisition_jobs::AirHistoriesRequest {
+        crate::acquisition_jobs::AirHistoriesRequest {
+            countries: Arc::clone(countries),
+            base,
+            game_state: state,
+            part,
+            staging: self.air_histories.take_part(part),
+        }
+    }
+
+    pub(crate) fn restore_air_histories_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::AirHistoriesRequest,
+        completed: bool,
+    ) {
+        if !completed {
+            request
+                .staging
+                .fail("naval-patrol history acquisition failed");
+        }
+        self.air_histories
+            .restore_part(request.part, request.staging);
+    }
+
+    /// Game thread, once every history part joined: certify the hour, or
+    /// withdraw every part's certificates before the next hour opens.
+    pub(crate) fn settle_air_histories(&self) {
+        self.air_histories.settle(&mut air_histories::opening());
+    }
+
+    /// Decode thread: turn this frame's staged relation and history copies into rows.
+    pub(crate) fn decode_air_copies(&mut self) {
         self.air_relations.decode();
+        self.air_histories.decode();
     }
 
     /// The frame is dropped before decoding.
-    pub(crate) fn drop_air_relations(&mut self) {
+    pub(crate) fn drop_air_copies(&mut self) {
         self.air_relations.dropped();
+        self.air_histories.dropped();
+    }
+
+    /// Tests reuse a frame without decoding it: drop its copies, as
+    /// production does before freeing an undecoded frame, then reset it.
+    #[cfg(test)]
+    pub(crate) fn drop_and_reset(&mut self) {
+        self.drop_air_copies();
+        self.reset();
     }
 
     fn swap_slow(&mut self, packs: &mut SlowPacks) {
@@ -2225,6 +2319,13 @@ impl Captured {
             self.swap_late(&mut packs, orders);
             self.late_spare = Some(packs);
         }
+        // The parts' copies are decoded later, off the game thread.
+        let cost = if self.air_histories.staged() {
+            self.air_histories.ticks()
+        } else {
+            self.air_histories.unstaged()
+        };
+        scatter(&air_histories::TABLES, cost, ticks);
         scatter(&plans::TABLES, self.plans.capture(), ticks);
         let ticks = &mut *ticks;
         let cost = self.production.acquire(
@@ -2805,7 +2906,19 @@ impl LatePacks {
                 self.orders.root_outcome,
             );
         }
-        self.air.finish_wings(self.air_root.unwrap_or(MISSING));
+        let parent = self.air_root.unwrap_or(MISSING);
+        self.air.finish_wings(parent);
+        // Without the AirMissions job the history parts get no regions.
+        if !self.air.missions_captured() {
+            self.air.capture_missions(
+                memory,
+                base,
+                game_state,
+                parent,
+                &mut [],
+                &crate::history_changes::Unobserved,
+            );
+        }
         let cost = self.air.capture(memory, base, game_state, hour, force_full);
         scatter(&air::TABLES, cost, &mut ticks);
         let cost = self
@@ -3051,6 +3164,7 @@ mod tests {
             size_of::<SlowPacks>(),
             size_of::<LatePacks>(),
             size_of::<GatedPacks>(),
+            size_of::<air::Captured>(),
             size_of::<RaidStatePacks>(),
             size_of::<RaidLaunchPacks>(),
             size_of::<RaidTargetPacks>(),
@@ -3064,6 +3178,8 @@ mod tests {
                     captured.slow_spare.as_ref().unwrap().allocated_bytes(),
                     captured.late_spare.as_ref().unwrap().allocated_bytes(),
                     captured.gated_spare.as_ref().unwrap().allocated_bytes(),
+                    size_of::<air::Captured>()
+                        + captured.missions_spare.as_ref().unwrap().allocated_bytes(),
                     captured
                         .raid_state_spare
                         .as_ref()
@@ -3096,7 +3212,7 @@ mod tests {
         let bytes = captured.allocated_bytes();
         let mut removed = [0; 4];
         for completed in [true, false, true] {
-            captured.reset();
+            captured.drop_and_reset();
             let ordinary_box = std::ptr::from_ref(&**captured.ordinary_spare.as_ref().unwrap());
             let request = captured.take_ordinary_request(&countries, 11, 0x1000);
             assert_eq!(std::ptr::from_ref(&*request.packs), ordinary_box);
@@ -3163,7 +3279,21 @@ mod tests {
             assert_eq!(captured.allocated_bytes(), bytes);
             assert_vacant(&captured);
 
+            let missions_box = std::ptr::from_ref(&**captured.missions_spare.as_ref().unwrap());
             captured.air.stats_raw_mode = true;
+            let request = captured.take_air_missions_request(&countries, 11, 0x1000);
+            assert_eq!(std::ptr::from_ref(&*request.pack), missions_box);
+            assert!(request.pack.stats_raw_mode && !captured.air.stats_raw_mode);
+            assert_eq!(request.histories.len(), air_histories::PARTS);
+            captured.restore_air_missions_request(request, completed);
+            assert_eq!(
+                std::ptr::from_ref(&**captured.missions_spare.as_ref().unwrap()),
+                missions_box
+            );
+            assert!(captured.air.stats_raw_mode);
+            assert_eq!(captured.allocated_bytes(), bytes);
+            assert_vacant(&captured);
+
             captured.naval_history.raw_mode = true;
             captured.air_root = Some(Outcome::Rows { len: 7 });
             let order_bytes = orders.allocated_bytes();
@@ -3282,7 +3412,7 @@ mod tests {
         let pending = captured.presentation_report.as_ref().unwrap();
         assert_eq!(pending.ticks, report.ticks);
         // Reset discards a pending report and releases the frame's source lease.
-        captured.reset();
+        captured.drop_and_reset();
         assert!(captured.presentation_report.is_none());
         assert_eq!(captured.allocated_bytes(), bytes);
         assert_eq!(Arc::strong_count(&inputs), 1);
@@ -3353,7 +3483,7 @@ mod tests {
                     },
                 }]
             );
-            captured.reset();
+            captured.drop_and_reset();
             assert!(captured.eta_inputs_report.is_none());
             assert_eq!(Arc::strong_count(&inputs), 1);
         }
@@ -3395,7 +3525,7 @@ mod tests {
             Some(crate::acquisition::Failure::Panicked),
             Some(crate::acquisition::Failure::Stopped),
         ] {
-            captured.reset();
+            captured.drop_and_reset();
             captured.install_unit_inputs(Some(Arc::clone(&inputs)));
             let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, true, None);
             let context = request.context;
@@ -3588,7 +3718,7 @@ mod tests {
                 }
             }
             // Reset starts a new observation. The normal path must still read.
-            captured.reset();
+            captured.drop_and_reset();
             let counted = crate::read_accounting::Capture::new();
             let mut ticks = captured.capture_tables(&memory, 11, 0x1000, hour, true);
             captured.capture_tables_late(&memory, 11, 0x1000, hour, true, &mut orders, &mut ticks);
@@ -3695,6 +3825,27 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        captured.prepare_hour(0, true);
+        let before = captured.allocated_bytes();
+        let mut request = captured.take_air_missions_request(&countries, 11, 0x1000);
+        // The pool refused it: the callback fails it instead of running it.
+        request.refuse();
+        captured.restore_air_missions_request(request, true);
+        assert_eq!(captured.allocated_bytes(), before);
+        let reason = "air mission worker admission failed";
+        for table in [TableId::AirRegionalMissions, TableId::AirNavalPatrolCombats] {
+            assert_eq!(
+                captured.outcomes()[table.index()],
+                Outcome::Unavailable { reason },
+                "{table:?}"
+            );
+        }
+    }
+
+    #[test]
     fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
         #[derive(Default)]
         struct Reads {
@@ -3746,7 +3897,7 @@ mod tests {
                 captured.ordinary_failure,
                 Some("ordinary acquisition not supplied")
             );
-            captured.reset();
+            captured.drop_and_reset();
             assert!(captured.ordinary_failure.is_none());
             let mut request = captured.take_ordinary_request(&countries, 11, 0x1000);
             assert_eq!(request.allocated_bytes(), owned);
@@ -4202,7 +4353,7 @@ mod tests {
                 &mut crate::slicing::SliceFingerprints::new(),
             );
             assert!(memory.governance.get() > 0);
-            captured.reset();
+            captured.drop_and_reset();
             assert!(captured.governance_report.is_none());
         }
     }
@@ -4260,7 +4411,7 @@ mod tests {
             for index in [0, 13, 14] {
                 assert_eq!(report.ticks[index], 0);
             }
-            captured.reset();
+            captured.drop_and_reset();
             assert!(captured.intel_residual_report.is_none());
         }
     }
@@ -4399,7 +4550,7 @@ mod tests {
             }
         ));
 
-        captured.reset();
+        captured.drop_and_reset();
         captured.ship_models.begin_sources();
         captured
             .ship_models
@@ -4445,7 +4596,7 @@ mod tests {
             (None, Some(Stopped), None),
             (None, None, Some(Stopped)),
         ] {
-            captured.reset();
+            captured.drop_and_reset();
             let before = captured.outcomes();
             captured.supply_trains_report = Some(supply_trains::CaptureReport::default());
             captured.character_portraits_report =
@@ -4670,7 +4821,7 @@ mod tests {
             captured.supply_trains_report = Some(supply);
             captured.character_portraits_report = Some(portraits);
             captured.province_unit_order_report = Some(province_order);
-            captured.reset();
+            captured.drop_and_reset();
             assert!(captured.supply_trains_report.is_none());
             assert!(captured.character_portraits_report.is_none());
             assert!(captured.province_unit_order_report.is_none());
@@ -4719,7 +4870,7 @@ mod tests {
                 reason: "current census failed"
             },
         );
-        captured.reset();
+        captured.drop_and_reset();
         assert_eq!(Arc::strong_count(&failed), 1);
         assert_eq!(unit_sources(&captured.unit_inputs).outcome, MISSING);
         assert!(unit_sources(&captured.unit_inputs).rows.is_empty());
@@ -4964,7 +5115,7 @@ mod tests {
             "accepted division acquisition panicked",
             "owned division payload unavailable",
         ] {
-            captured.reset();
+            captured.drop_and_reset();
             captured.set_divisions_raw_mode(true);
             captured.production_rest_pilot().rest_raw_mode = true;
             for outcome in [
@@ -5073,8 +5224,8 @@ mod tests {
         for readable in [false, true] {
             for air_raw in [false, true] {
                 for naval_raw in [false, true] {
-                    actual.reset();
-                    expected.reset();
+                    actual.drop_and_reset();
+                    expected.drop_and_reset();
                     let memory = SourceReads {
                         bytes: readable.then(air::wing_test_kit::fixture),
                         ..Default::default()

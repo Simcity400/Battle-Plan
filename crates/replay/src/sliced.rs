@@ -19,10 +19,10 @@
 //! hour reads every roster and replaces the table.
 
 use crate::rows::{
-    AceRangeInputRow, AirCountryRelationRow, CountryBuildingResourceRow, CountryStabilityInputRow,
-    CountryStabilityLineRow, DivisionRetreatBanRow, RaidAirSiteRow, RaidCountryInputRow,
-    RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow, ResearchInputRow,
-    ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
+    AceRangeInputRow, AirCountryRelationRow, AirNavalPatrolHistoryRow, CountryBuildingResourceRow,
+    CountryStabilityInputRow, CountryStabilityLineRow, DivisionRetreatBanRow, RaidAirSiteRow,
+    RaidCountryInputRow, RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow,
+    ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
     StateDynamicModifierRow, StateResourceInputRow, StateResourceRow, StockpileArchetypeRow,
     TableId, TableRows,
 };
@@ -61,7 +61,7 @@ sliced_by!(
     AceRangeInputRow
 );
 // Canonical country slots, held in the row's `country` field.
-sliced_by!(country: AirCountryRelationRow);
+sliced_by!(country: AirCountryRelationRow, AirNavalPatrolHistoryRow);
 // Native state IDs.
 sliced_by!(state: StateResourceInputRow, StateResourceRow, StateDynamicModifierRow, StateCoreRow);
 
@@ -99,6 +99,10 @@ macro_rules! dispatch {
             (TableRows::AirCountryRelations($old), TableRows::AirCountryRelations($new)) => {
                 Ok(TableRows::AirCountryRelations($body?))
             }
+            (
+                TableRows::AirNavalPatrolHistories($old),
+                TableRows::AirNavalPatrolHistories($new),
+            ) => Ok(TableRows::AirNavalPatrolHistories($body?)),
             (TableRows::RaidCountryInputs($old), TableRows::RaidCountryInputs($new)) => {
                 Ok(TableRows::RaidCountryInputs($body?))
             }
@@ -273,6 +277,7 @@ pub fn owners(rows: &TableRows) -> Vec<u32> {
         TableRows::ResearchAppliedBonuses(rows) => collect(rows),
         TableRows::ResearchModifiers(rows) => collect(rows),
         TableRows::AirCountryRelations(rows) => collect(rows),
+        TableRows::AirNavalPatrolHistories(rows) => collect(rows),
         TableRows::RaidCountryInputs(rows) => collect(rows),
         TableRows::StockpileArchetypes(rows) => collect(rows),
         TableRows::DivisionRetreatBans(rows) => collect(rows),

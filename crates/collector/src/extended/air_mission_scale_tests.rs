@@ -656,17 +656,28 @@ impl Scale {
             .collect()
     }
 
-    /// One hour of the owned path: the wing job's census installed, then the
-    /// pack's capture.
+    /// One hour of the owned path: the wing job's census installed, the
+    /// registered missions captured without history parts (as the Late job
+    /// does when no AirMissions job ran), then the pack's capture.
     fn hour(&self, census: &[cair_wing::Source], air: &mut Captured) -> [Outcome; N] {
         let job = AirWingJob {
             sources: census.to_vec(),
             source_outcome: Outcome::Rows { len: census.len() },
             ..Default::default()
         };
+        let parent = Outcome::Rows { len: census.len() };
         air.reset();
+        air.prepare_hour(HOUR, false);
         air.install_owned_mission_identities(&job);
-        air.finish_wings(Outcome::Rows { len: census.len() });
+        air.finish_wings(parent);
+        air.capture_missions(
+            &self.world,
+            BASE,
+            self.world.game_state,
+            parent,
+            &mut [],
+            &crate::history_changes::Unobserved,
+        );
         air.capture(&self.world, BASE, self.world.game_state, HOUR, false);
         air.outcomes()
     }

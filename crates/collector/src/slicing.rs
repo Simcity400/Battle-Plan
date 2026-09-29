@@ -58,9 +58,10 @@ pub(crate) const RELATIONS: usize = 5;
 pub(crate) const STABILITY: usize = 6;
 pub(crate) const RETREAT_BANS: usize = 7;
 pub(crate) const AIR_RELATIONS: usize = 8;
+pub(crate) const AIR_HISTORIES: usize = 9;
 
 /// Every sliced family. Index with the family constants above.
-pub(crate) const FAMILIES: [SliceFamily; 9] = [
+pub(crate) const FAMILIES: [SliceFamily; 10] = [
     SliceFamily {
         name: "research",
         owner: OwnerKind::Country,
@@ -142,6 +143,11 @@ pub(crate) const FAMILIES: [SliceFamily; 9] = [
         name: "air_relations",
         owner: OwnerKind::CanonicalSlot,
         tables: &[TableId::AirCountryRelations],
+    },
+    SliceFamily {
+        name: "air_histories",
+        owner: OwnerKind::CanonicalSlot,
+        tables: &[TableId::AirNavalPatrolHistories],
     },
 ];
 
@@ -643,5 +649,6 @@ mod tests {
         assert_eq!(FAMILIES[RAID_BUILDINGS].owner, OwnerKind::Country);
         assert_eq!(FAMILIES[STABILITY].name, "stability");
         assert_eq!(FAMILIES[AIR_RELATIONS].owner, OwnerKind::CanonicalSlot);
+        assert_eq!(FAMILIES[AIR_HISTORIES].owner, OwnerKind::CanonicalSlot);
     }
 }

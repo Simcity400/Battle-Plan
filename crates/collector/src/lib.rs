@@ -24,6 +24,7 @@ mod division_detail;
 mod extended;
 mod fixed_layout;
 mod history;
+mod history_changes;
 mod hook;
 mod map_capture;
 mod map_spool;

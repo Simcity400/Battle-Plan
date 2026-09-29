@@ -379,6 +379,22 @@ mod tests {
     const INTEL_TABLES: usize = 0x5000_0000;
     const INTEL_RECORDS: usize = 0x6000_0000;
     const BLOC_LINKS: usize = 0x7000_0000;
+    // Country air objects, their region history tables, windows and records.
+    const AIR_MANAGER: usize = 0x80_0000;
+    const AIR_ROOTS: usize = 0x90_0000;
+    const AIR_OBJECTS: usize = 0x8000_0000;
+    const AIR_OBJECT: usize = 0x200;
+    const AIR_TABLES: usize = 0x9000_0000;
+    const HISTORIES: usize = 0xa000_0000;
+    const WINDOWS: usize = 0xb000_0000;
+    const RECORD_SLOTS: usize = 0xc000_0000;
+    const RECORDS: usize = 0xf000_0000;
+    const VALUES: usize = 0xf800_0000;
+    /// Strategic region slots in every country's history table.
+    const REGION_SLOTS: usize = 256;
+    const HISTORY: usize = 0x40;
+    const RECORD: usize = 0x10;
+    const VALUE_FIELDS: usize = 0x300;
 
     /// Computes every byte on demand, so thousands of countries need no
     /// multi-megabyte fixture: slot `s` is object `OBJECTS + s * OBJECT` with
@@ -392,8 +408,32 @@ mod tests {
         /// Every country's shared diplomacy lists this many enemies and
         /// wartime allies: a world split into two warring blocs.
         bloc: Option<(u32, u32)>,
+        air: Option<AirWorld>,
         /// This slot's country lives in a second object, past the others.
         relocated: Option<usize>,
+    }
+
+    /// One country slot in every `every` has a window-0 history of `ring`
+    /// entries in each of `regions`, wrapped at `current`; every third entry
+    /// is nonzero.
+    struct AirWorld {
+        every: usize,
+        regions: Vec<u32>,
+        ring: usize,
+        current: u64,
+    }
+
+    impl AirWorld {
+        /// The holder's offset in its block of `every` slots moves by one
+        /// per block, so holders spread over every history part rather than
+        /// following one stride.
+        fn holds(&self, slot: usize) -> bool {
+            slot % self.every == slot / self.every % self.every
+        }
+
+        fn has(&self, slot: usize, region: usize) -> bool {
+            self.holds(slot) && self.regions.contains(&(region as u32))
+        }
     }
 
     impl World {
@@ -417,6 +457,11 @@ mod tests {
             let boundary = DATABASE + engine::ccountry_database::DYNAMIC_TAG_BOUNDARY;
             if (boundary..boundary + 4).contains(&address) {
                 return word(boundary, slots);
+            }
+            if let Some(air) = &self.air
+                && let Some(value) = self.air_byte(air, address)
+            {
+                return value;
             }
             if (DIPLOMACY..DIPLOMACY + 8).contains(&address) {
                 return word(
@@ -520,6 +565,136 @@ mod tests {
             0
         }
 
+        fn air_byte(&self, air: &AirWorld, address: usize) -> Option<u8> {
+            let word = |at: usize, value: u64| (value >> ((address - at) * 8)) as u8;
+            let header = |at: usize, data: usize, count: usize| match address - at {
+                0..8 => word(at, data as u64),
+                8..12 => word(at + 8, count as u64),
+                _ => word(at + 12, count as u64),
+            };
+            let (slots, ring) = (self.slots, air.ring);
+            let pair = |at: usize, base: usize, stride: usize| {
+                let index = (at - base) / stride;
+                (
+                    index / REGION_SLOTS,
+                    index % REGION_SLOTS,
+                    base + index * stride,
+                )
+            };
+            Some(match address {
+                a if (STATE + gs::STRATEGIC_AIR_MANAGER..STATE + gs::STRATEGIC_AIR_MANAGER + 8)
+                    .contains(&a) =>
+                {
+                    word(STATE + gs::STRATEGIC_AIR_MANAGER, AIR_MANAGER as u64)
+                }
+                a if (AIR_MANAGER..AIR_MANAGER + 8).contains(&a) => word(
+                    AIR_MANAGER,
+                    (BASE + engine::cstrategic_air_manager::VTABLE_RVA) as u64,
+                ),
+                a if (AIR_MANAGER + 0x30..AIR_MANAGER + 0x40).contains(&a) => {
+                    match a - AIR_MANAGER - 0x30 {
+                        0..8 => word(AIR_MANAGER + 0x30, AIR_ROOTS as u64),
+                        8..12 => word(AIR_MANAGER + 0x38, slots as u64),
+                        _ => word(AIR_MANAGER + 0x3c, slots as u64),
+                    }
+                }
+                a if (AIR_ROOTS + 8..AIR_ROOTS + slots * 8).contains(&a) => {
+                    let slot = (a - AIR_ROOTS) / 8;
+                    word(
+                        AIR_ROOTS + slot * 8,
+                        (AIR_OBJECTS + slot * AIR_OBJECT) as u64,
+                    )
+                }
+                a if (AIR_OBJECTS + AIR_OBJECT..AIR_OBJECTS + slots * AIR_OBJECT).contains(&a) => {
+                    let slot = (a - AIR_OBJECTS) / AIR_OBJECT;
+                    let object = AIR_OBJECTS + slot * AIR_OBJECT;
+                    let table = engine::cstrategic_air::HISTORY_TABLE;
+                    match a - object {
+                        0..8 => word(object, (BASE + engine::cstrategic_air::VTABLE_RVA) as u64),
+                        o if (0x90..0x94).contains(&o) => word(object + 0x90, slot as u64),
+                        o if (table..table + 8).contains(&o) => word(
+                            object + table,
+                            (AIR_TABLES + slot * REGION_SLOTS * 8) as u64,
+                        ),
+                        o if (table + 8..table + 16).contains(&o) => {
+                            let at = object + table + 8;
+                            match a - at {
+                                0..4 => word(at, REGION_SLOTS as u64),
+                                _ => word(at + 4, REGION_SLOTS as u64),
+                            }
+                        }
+                        _ => 0,
+                    }
+                }
+                a if (AIR_TABLES..AIR_TABLES + slots * REGION_SLOTS * 8).contains(&a) => {
+                    let (slot, region, at) = pair(a, AIR_TABLES, 8);
+                    let history = HISTORIES + (slot * REGION_SLOTS + region) * HISTORY;
+                    word(
+                        at,
+                        if air.has(slot, region) {
+                            history as u64
+                        } else {
+                            0
+                        },
+                    )
+                }
+                a if (HISTORIES..HISTORIES + slots * REGION_SLOTS * HISTORY).contains(&a) => {
+                    let (slot, region, at) = pair(a, HISTORIES, HISTORY);
+                    let window = WINDOWS + (slot * REGION_SLOTS + region) * HISTORY;
+                    match a - at {
+                        0..8 => word(at, (BASE + engine::cloop_history::VTABLE_RVA) as u64),
+                        0x10..0x18 => word(at + 0x10, window as u64),
+                        0x34..0x38 => word(
+                            at + 0x34,
+                            u64::from(engine::cloop_history::air_stats::FIELD_COUNT),
+                        ),
+                        _ => 0,
+                    }
+                }
+                a if (WINDOWS..WINDOWS + slots * REGION_SLOTS * HISTORY).contains(&a) => {
+                    let (slot, region, at) = pair(a, WINDOWS, HISTORY);
+                    let records = RECORD_SLOTS + (slot * REGION_SLOTS + region) * ring * 8;
+                    match a - at {
+                        0..8 => word(at, (BASE + engine::loop_history_window::VTABLE_RVA) as u64),
+                        8..24 => header(at + 8, records, ring),
+                        0x20..0x24 => word(at + 0x20, ring as u64),
+                        0x24..0x28 => word(at + 0x24, air.current),
+                        0x28 => 1,
+                        _ => 0,
+                    }
+                }
+                a if (RECORD_SLOTS..RECORD_SLOTS + slots * REGION_SLOTS * ring * 8)
+                    .contains(&a) =>
+                {
+                    let entry = (a - RECORD_SLOTS) / 8;
+                    word(
+                        RECORD_SLOTS + entry * 8,
+                        (RECORDS + entry % ring * RECORD) as u64,
+                    )
+                }
+                a if (RECORDS..RECORDS + ring * RECORD).contains(&a) => {
+                    let entry = (a - RECORDS) / RECORD;
+                    let at = RECORDS + entry * RECORD;
+                    match a - at {
+                        0..8 => word(at, (VALUES + entry * VALUE_FIELDS) as u64),
+                        _ => 0,
+                    }
+                }
+                a if (VALUES..VALUES + ring * VALUE_FIELDS).contains(&a) => {
+                    let entry = (a - VALUES) / VALUE_FIELDS;
+                    let at = VALUES + entry * VALUE_FIELDS;
+                    let channel = (a - at) / 8;
+                    let value = if entry.is_multiple_of(3) && [3, 43].contains(&channel) {
+                        100_000 * (entry as u64 + 1)
+                    } else {
+                        0
+                    };
+                    word(at + channel * 8, value)
+                }
+                _ => return None,
+            })
+        }
+
         fn in_records(&self, address: usize) -> bool {
             (INTEL_RECORDS..INTEL_RECORDS + self.slots * country_intel_row::STRIDE)
                 .contains(&address)
@@ -559,6 +734,7 @@ mod tests {
             slots: COUNTRIES + 1,
             intel: false,
             bloc: None,
+            air: None,
             relocated: None,
         }
     }
@@ -572,6 +748,7 @@ mod tests {
             slots: LIVE + 1,
             intel: true,
             bloc: None,
+            air: None,
             relocated: None,
         };
         let native = observe_country_intel(&memory, BASE).unwrap();
@@ -1057,6 +1234,472 @@ mod tests {
     fn bloc_war_relations_at_1500_and_5000_countries() {
         bloc_war_relations(1_500);
         bloc_war_relations(5_000);
+    }
+
+    /// Every writer call as the hooks make it, on a watch domain of its own.
+    fn touch(
+        watches: &crate::history_changes::Watches,
+        site: usize,
+        receivers: impl IntoIterator<Item = usize>,
+        calls: u64,
+    ) {
+        for receiver in receivers {
+            for _ in 0..calls {
+                drop(watches.notify(receiver, site));
+            }
+        }
+    }
+
+    /// The real watch domain, less receivers its table could not hold.
+    struct Blinded<'a> {
+        watches: &'a crate::history_changes::Watches,
+        blind: std::collections::BTreeSet<usize>,
+    }
+
+    impl crate::history_changes::Changes for Blinded<'_> {
+        fn quiet(&self) -> Option<(u64, u64)> {
+            self.watches.quiet()
+        }
+        fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+            (!self.blind.contains(&receiver))
+                .then(|| self.watches.sequence(receiver))
+                .flatten()
+        }
+        fn site(&self, index: usize) -> Option<(u64, u64)> {
+            self.watches.site(index)
+        }
+    }
+
+    /// One naval-patrol history hour: the parts' guarded calls and wall
+    /// time, the countries copied, the rows held, the table and the decode
+    /// thread's time.
+    struct HistoriesHour {
+        calls: usize,
+        wall: std::time::Duration,
+        held: usize,
+        outcome: Outcome,
+        decode: std::time::Duration,
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn histories_hour(
+        world: &World,
+        regions: &[u64],
+        changes: &(impl crate::history_changes::Changes + Sync),
+        hour: &mut crate::extended::air_histories::hour::Hour,
+        frame: &mut crate::extended::air_histories::Captured,
+        at: i32,
+        threads: bool,
+    ) -> HistoriesHour {
+        // The parts read through the callback's roster, as in production.
+        let mut cache = std::sync::Arc::new(Cache::with_capacity(Cache::cells_for_countries(
+            world.slots,
+            MIN_COUNTRY_CELLS,
+        )));
+        let snapshot = Cache::prepare_shared(&mut cache, world, BASE, STATE).unwrap();
+        let counting = Counting(world, Default::default());
+        let memory = snapshot.roster_view(&counting);
+        let (wall, decode, outcome) =
+            hour.run(frame, &memory, BASE, STATE, regions, changes, at, threads);
+        HistoriesHour {
+            calls: counting.1.load(Ordering::Relaxed),
+            wall,
+            held: hour.held_rows(),
+            outcome,
+            decode,
+        }
+    }
+
+    fn history(slot: usize, region: u32) -> usize {
+        HISTORIES + (slot * REGION_SLOTS + region as usize) * HISTORY
+    }
+
+    /// Every country slot divisible by `every` has a 30-record window in each
+    /// of `patrolled` regions, a third of the records nonzero: the first
+    /// hour, a quiet hour, one country's combat, the daily advance of every
+    /// window, and one more region patrolled. Each hour runs its parts on
+    /// their own threads and, on a second domain, one after another. Buffers
+    /// are presized from the registry and grown on each recycle, so once the
+    /// parts' certificates took the capacities the first hour raised, the
+    /// combat and advance hours stage without growing one.
+    fn naval_patrol_histories(countries: usize, every: usize, patrolled: u32) -> Vec<usize> {
+        use crate::extended::air_histories::{
+            PARTS,
+            hour::{self, Hour},
+        };
+        use crate::history_changes::Watches;
+        let mut regions: Vec<u64> = (0..patrolled)
+            .map(|region| u64::from(3 + region * 7))
+            .collect();
+        let mut world = World {
+            slots: countries + 1,
+            air: Some(AirWorld {
+                every,
+                // One more region holds histories nobody patrols yet.
+                regions: (0..=patrolled).map(|region| 3 + region * 7).collect(),
+                ring: 30,
+                current: 3,
+            }),
+            ..world()
+        };
+        let air = world.air.as_ref().unwrap();
+        let held: Vec<usize> = (1..=countries).filter(|&slot| air.holds(slot)).collect();
+        // Presized for every region of the content, as the runtime does.
+        let (watches, serial_watches) = (
+            Watches::enabled(countries + 1, air.regions.len()),
+            Watches::enabled(countries + 1, air.regions.len()),
+        );
+        let mut capacity = hour::capacities(countries + 1);
+        let mut serial_capacity = capacity;
+        let (mut frame, mut serial_frame) = (hour::frame(&capacity), hour::frame(&capacity));
+        let (mut hour, mut serial) = (Hour::new(), Hour::new());
+        // Spawning the part threads, which pool jobs do not pay.
+        let started = std::time::Instant::now();
+        std::thread::scope(|scope| {
+            for _ in 0..PARTS {
+                scope.spawn(|| ());
+            }
+        });
+        let spawn = started.elapsed();
+        let mut calls = Vec::new();
+        for (at, label) in [
+            "first hour",
+            "quiet hour",
+            "one country's combat",
+            "daily advance",
+            "one more region",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            match label {
+                "one country's combat" => {
+                    let air = [AIR_OBJECTS + held[0] * AIR_OBJECT];
+                    touch(&watches, 0, air, 3);
+                    touch(&serial_watches, 0, air, 3);
+                }
+                "daily advance" => {
+                    let air = world.air.as_mut().unwrap();
+                    air.current = 4;
+                    let histories: Vec<_> = held
+                        .iter()
+                        .flat_map(|&slot| {
+                            air.regions.iter().map(move |&region| history(slot, region))
+                        })
+                        .collect();
+                    touch(&watches, 1, histories.iter().copied(), 1);
+                    touch(&serial_watches, 1, histories, 1);
+                }
+                "one more region" => regions.push(u64::from(3 + patrolled * 7)),
+                _ => {}
+            }
+            let allocated = hour.allocated(&frame);
+            let result = histories_hour(
+                &world, &regions, &watches, &mut hour, &mut frame, at as i32, true,
+            );
+            let one = histories_hour(
+                &world,
+                &regions,
+                &serial_watches,
+                &mut serial,
+                &mut serial_frame,
+                at as i32,
+                false,
+            );
+            assert_eq!(result.held, held.len() * regions.len() * 10);
+            assert_eq!(one.held, result.held);
+            if (2..=3).contains(&at) {
+                assert_eq!(hour.allocated(&frame), allocated, "{label} grew a buffer");
+            }
+            let counts = Hour::counts(&frame);
+            let emitted = match result.outcome {
+                Outcome::Rows { len } => len.to_string(),
+                other => format!("{other:?}"),
+            };
+            let refused = watches.status()["refused_registrations"].clone();
+            eprintln!(
+                "naval patrol, {countries} countries, {patrolled} regions, 1/{every} with history, {label}: {} guarded calls; parts wall {:?} on {PARTS} threads ({spawn:?} of it spawning); serial {:?}, pool of 3 {:?}, pool of 8 {:?}; decode {:?}; {emitted} of {} rows emitted; {} read, {} advanced, {} refreshed; {refused} refused watches",
+                result.calls,
+                result.wall,
+                one.wall,
+                one.wall / 3,
+                one.wall / PARTS as u32,
+                result.decode,
+                result.held,
+                counts.read,
+                counts.advanced,
+                counts.refreshed,
+            );
+            // The spool's recycle: grow the frames and offer the watches.
+            watches.grow(Hour::grow(&mut frame, &mut capacity));
+            serial_watches.grow(Hour::grow(&mut serial_frame, &mut serial_capacity));
+            calls.push(result.calls);
+        }
+        // No hour, not even one wanting a new region, installed a larger
+        // table and so started an epoch that copies everything again.
+        for watches in [&watches, &serial_watches] {
+            assert_eq!(watches.status()["installs"], 1);
+            assert_eq!(watches.status()["refused_registrations"], 0);
+        }
+        let mut fresh = Hour::new();
+        let unobserved = crate::history_changes::Unobserved;
+        histories_hour(
+            &world,
+            &regions,
+            &unobserved,
+            &mut fresh,
+            &mut hour::frame(&capacity),
+            0,
+            false,
+        );
+        assert!(fresh.same(&hour) && fresh.same(&serial));
+        calls
+    }
+
+    #[test]
+    fn naval_patrol_histories_are_read_where_written() {
+        use crate::extended::air_histories::PARTS;
+        let calls = naval_patrol_histories(100, 5, 2);
+        // `history_verify` also copies everything every hour.
+        if cfg!(feature = "history_verify") {
+            return;
+        }
+        // First hour: gathers batched across countries and histories, the
+        // air objects authenticated 64 to a gather.
+        assert!(calls[0] <= 12 * PARTS, "{calls:?}");
+        // A quiet hour copies only each part's air object slots.
+        assert_eq!(calls[1], 3 * PARTS);
+        // One country re-read; the advance of 40 histories without a read.
+        assert!(calls[2] <= 3 * PARTS + 12, "{calls:?}");
+        assert_eq!(calls[3], 3 * PARTS);
+    }
+
+    /// A history whose advance count was missed is re-read on its own.
+    #[test]
+    fn an_unobserved_advance_rereads_only_that_history() {
+        use crate::extended::air_histories::hour::{self, Hour};
+        let world = |current| World {
+            slots: 3,
+            air: Some(AirWorld {
+                every: 1,
+                regions: vec![3],
+                ring: 30,
+                current,
+            }),
+            ..world()
+        };
+        let watches = crate::history_changes::Watches::enabled(3, 1);
+        let mut changes = Blinded {
+            watches: &watches,
+            blind: Default::default(),
+        };
+        let (mut hour, mut frame) = (Hour::new(), hour::frame(&hour::capacities(3)));
+        histories_hour(&world(3), &[3], &changes, &mut hour, &mut frame, 0, false);
+        changes.blind.insert(history(1, 3));
+        touch(&watches, 1, [history(1, 3), history(2, 3)], 1);
+        let rows = histories_hour(&world(4), &[3], &changes, &mut hour, &mut frame, 1, true).held;
+        let counts = Hour::counts(&frame);
+        assert_eq!((counts.advanced, counts.refreshed, rows), (1, 1, 20));
+        let mut fresh = Hour::new();
+        let unobserved = crate::history_changes::Unobserved;
+        histories_hour(
+            &world(4),
+            &[3],
+            &unobserved,
+            &mut fresh,
+            &mut frame,
+            0,
+            false,
+        );
+        assert!(fresh.same(&hour));
+    }
+
+    /// A quiet hour, with no writer call anywhere, skips a part only when
+    /// every receiver it holds is watched: a history or country air object
+    /// whose watch was refused is read afresh every hour, and the watched
+    /// rest is reused.
+    #[test]
+    fn a_quiet_hour_rereads_every_unwatched_receiver() {
+        use crate::extended::air_histories::{
+            Counts,
+            hour::{self, Hour},
+        };
+        let world = World {
+            slots: 3,
+            air: Some(AirWorld {
+                every: 1,
+                regions: vec![3],
+                ring: 30,
+                current: 3,
+            }),
+            ..world()
+        };
+        let unobserved = crate::history_changes::Unobserved;
+        let mut fresh = Hour::new();
+        histories_hour(
+            &world,
+            &[3],
+            &unobserved,
+            &mut fresh,
+            &mut hour::frame(&hour::capacities(3)),
+            0,
+            false,
+        );
+        for (blind, counts) in [
+            (
+                None,
+                Counts {
+                    reused: 2,
+                    quiet: true,
+                    ..Counts::default()
+                },
+            ),
+            (
+                Some(history(1, 3)),
+                Counts {
+                    reused: 2,
+                    refreshed: 1,
+                    ..Counts::default()
+                },
+            ),
+            (
+                Some(AIR_OBJECTS + AIR_OBJECT),
+                Counts {
+                    reused: 1,
+                    read: 1,
+                    ..Counts::default()
+                },
+            ),
+        ] {
+            let watches = crate::history_changes::Watches::enabled(3, 1);
+            let changes = Blinded {
+                watches: &watches,
+                blind: blind.into_iter().collect(),
+            };
+            let (mut hour, mut frame) = (Hour::new(), hour::frame(&hour::capacities(3)));
+            histories_hour(&world, &[3], &changes, &mut hour, &mut frame, 0, false);
+            for at in 1..3 {
+                let quiet = histories_hour(&world, &[3], &changes, &mut hour, &mut frame, at, true);
+                assert_eq!(Hour::counts(&frame), counts, "{blind:x?} at {at}");
+                assert_eq!(quiet.held, 20);
+                assert!(fresh.same(&hour));
+            }
+        }
+    }
+
+    /// Whichever part fails after its hour staged an advance, the hour is
+    /// published unavailable and none of its copies is applied, and every
+    /// part's certificates are withdrawn: the next hour, staged before the
+    /// failed one is decoded, copies every country afresh.
+    #[test]
+    fn a_failed_part_withdraws_the_hour_and_the_next_copies_afresh() {
+        use crate::extended::air_histories::{
+            PARTS,
+            hour::{self, Hour},
+        };
+        // Two countries with a history in every part.
+        let slots = 2 * PARTS + 1;
+        let world = |current| World {
+            slots,
+            air: Some(AirWorld {
+                every: 1,
+                regions: vec![3],
+                ring: 30,
+                current,
+            }),
+            ..world()
+        };
+        let histories: Vec<_> = (1..slots).map(|slot| history(slot, 3)).collect();
+        let capacity = hour::capacities(slots);
+        for part in 0..PARTS {
+            let watches = crate::history_changes::Watches::enabled(slots, 1);
+            let memory = world(4);
+            let (mut hour, mut frame) = (Hour::new(), hour::frame(&capacity));
+            histories_hour(&world(3), &[3], &watches, &mut hour, &mut frame, 0, true);
+            // Hour 1 stages the daily advance of every history; one part fails.
+            touch(&watches, 1, histories.iter().copied(), 1);
+            let (mut failed, mut next) = (hour::frame(&capacity), hour::frame(&capacity));
+            hour.supply(&mut failed, &[3], &watches);
+            hour.stage(&mut failed, &memory, BASE, STATE, &watches, true);
+            hour.fail(&mut failed, part);
+            hour.settle(&failed);
+            // Hour 2 is quiet but stages before hour 1 is decoded.
+            hour.supply(&mut next, &[3], &watches);
+            hour.stage(&mut next, &memory, BASE, STATE, &watches, true);
+            hour.settle(&next);
+            assert_eq!(Hour::copied(&next), (slots - 1) as u64, "part {part}");
+            assert_eq!(
+                hour.decode(&mut failed, 1),
+                Outcome::Unavailable {
+                    reason: "naval-patrol history acquisition failed"
+                },
+                "part {part}"
+            );
+            assert_eq!(
+                hour.decode(&mut next, 2),
+                Outcome::Rows {
+                    len: (slots - 1) * 10
+                }
+            );
+            let mut fresh = Hour::new();
+            let unobserved = crate::history_changes::Unobserved;
+            histories_hour(&memory, &[3], &unobserved, &mut fresh, &mut next, 0, false);
+            assert!(fresh.same(&hour), "part {part}");
+        }
+    }
+
+    /// A part the pool refused never runs: its hour is published unavailable
+    /// and the next hour, though quiet, copies every country afresh.
+    #[test]
+    fn a_refused_part_fails_the_hour_and_the_next_copies_afresh() {
+        use crate::extended::air_histories::{
+            PARTS,
+            hour::{self, Hour},
+        };
+        let slots = 2 * PARTS + 1;
+        let world = World {
+            slots,
+            air: Some(AirWorld {
+                every: 1,
+                regions: vec![3],
+                ring: 30,
+                current: 3,
+            }),
+            ..world()
+        };
+        let capacity = hour::capacities(slots);
+        let watches = crate::history_changes::Watches::enabled(slots, 1);
+        let (mut hour, mut frame) = (Hour::new(), hour::frame(&capacity));
+        histories_hour(&world, &[3], &watches, &mut hour, &mut frame, 0, true);
+        let mut refused = hour::frame(&capacity);
+        hour.supply(&mut refused, &[3], &watches);
+        hour.stage_refusing(&mut refused, &world, BASE, STATE, &watches, 1);
+        hour.settle(&refused);
+        assert_eq!(
+            hour.decode(&mut refused, 1),
+            Outcome::Unavailable {
+                reason: "naval-patrol history worker admission failed"
+            }
+        );
+        let next = histories_hour(&world, &[3], &watches, &mut hour, &mut frame, 2, true);
+        assert_eq!(Hour::copied(&frame), (slots - 1) as u64);
+        assert_eq!(
+            next.outcome,
+            Outcome::Rows {
+                len: (slots - 1) * 10
+            }
+        );
+    }
+
+    /// The scale matrix: `cargo test -p collector --release -- --ignored`.
+    #[test]
+    #[ignore]
+    fn naval_patrol_histories_at_1500_and_5000_countries() {
+        for countries in [1_500, 5_000] {
+            for (every, patrolled) in [(1, 8), (1, 32), (20, 8), (20, 32)] {
+                naval_patrol_histories(countries, every, patrolled);
+            }
+        }
     }
 
     #[test]

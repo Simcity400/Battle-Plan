@@ -468,6 +468,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     let mut portrait_hooks = unsafe { crate::portrait_changes::Hooks::new(&memory, base) }?;
     let mut advisor_hooks = unsafe { crate::advisor_changes::Hooks::new(&memory, base) }?;
     let mut relation_hooks = unsafe { crate::relation_changes::Hooks::new(&memory, base) }?;
+    let mut history_hooks = unsafe { crate::history_changes::Hooks::new(&memory, base) }?;
     // A family whose sentinels differ is left uninstalled; it reads as before.
     let mut opinion_hooks = unsafe { crate::opinion_changes::Hooks::new(&memory, base) }?;
     // Size every country-proportional buffer from the live registry before
@@ -476,6 +477,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     let slots = crate::country_scale::observe(&memory, base).unwrap_or(0);
     crate::country_scale::note_slots(slots);
     crate::relation_changes::presize(slots);
+    crate::history_changes::presize(slots, strategic_regions(&memory, base));
     let mut sizing = crate::country_scale::Sizing::for_slots(slots);
     sizing.content = engine::cdlc_manager::observe_counts(&memory, base);
     if let Some(rows) = crate::country_scale::observe_country_intel(&memory, base) {
@@ -558,6 +560,13 @@ fn run(module: HMODULE) -> Result<(), String> {
             })
             .and_then(|ready| {
                 if ready {
+                    history_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
                     opinion_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -618,6 +627,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     ranges.extend(portrait_hooks.executable_ranges());
     ranges.extend(advisor_hooks.executable_ranges());
     ranges.extend(relation_hooks.executable_ranges());
+    ranges.extend(history_hooks.executable_ranges());
     ranges.extend(opinion_hooks.executable_ranges());
     while spool_id.load(Ordering::Acquire) == 0 {
         std::thread::yield_now();
@@ -671,6 +681,18 @@ fn run(module: HMODULE) -> Result<(), String> {
                 let _ = fs::write(
                     dll_path.with_file_name("collector.error.txt"),
                     format!("relation hook detach pending: {result:?}"),
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    loop {
+        match history_hooks.set_enabled(false) {
+            Ok(true) => break,
+            result => {
+                let _ = fs::write(
+                    dll_path.with_file_name("collector.error.txt"),
+                    format!("air history hook detach pending: {result:?}"),
                 );
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -733,6 +755,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     drop(portrait_hooks);
     drop(advisor_hooks);
     drop(relation_hooks);
+    drop(history_hooks);
     drop(opinion_hooks);
     drop(shared);
     if let Some(error) = installation_error {
@@ -855,6 +878,7 @@ fn add_decode_status(status: &mut Value) {
     status["portrait_changes"] = crate::portrait_changes::status();
     status["advisor_changes"] = crate::advisor_changes::status();
     status["relation_changes"] = crate::relation_changes::status();
+    status["history_changes"] = crate::history_changes::status();
     status["opinion_changes"] = crate::opinion_changes::status();
     #[cfg(feature = "callback_profile")]
     {
@@ -991,6 +1015,7 @@ fn wait_quiet(
             || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
             || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
             || crate::relation_changes::active() != 0
+            || crate::history_changes::active() != 0
             || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
         {
             Ok(false)
@@ -1001,6 +1026,7 @@ fn wait_quiet(
                         || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
                         || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
                         || crate::relation_changes::active() != 0
+                        || crate::history_changes::active() != 0
                         || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
                     {
                         Ok(false)
@@ -1037,6 +1063,7 @@ fn wait_quiet(
 struct RegistryWatch {
     last: Option<Instant>,
     slots: usize,
+    regions: usize,
     last_intel: Option<Instant>,
     intel_rows: usize,
     last_raids: Option<Instant>,
@@ -1053,8 +1080,9 @@ impl RegistryWatch {
     /// less often than the three registry headers.
     const INTEL_INTERVAL: Duration = Duration::from_secs(1);
 
-    /// A larger registry than any seen before, at most every `INTERVAL`.
-    fn poll(&mut self, memory: &impl engine::Memory, base: usize) -> Option<usize> {
+    /// The country slots and strategic regions when either is larger than
+    /// any seen before, at most every `INTERVAL`.
+    fn poll(&mut self, memory: &impl engine::Memory, base: usize) -> Option<(usize, usize)> {
         if self
             .last
             .is_some_and(|last| last.elapsed() < Self::INTERVAL)
@@ -1063,9 +1091,11 @@ impl RegistryWatch {
         }
         self.last = Some(Instant::now());
         let slots = crate::country_scale::observe(memory, base)?;
-        (slots > self.slots).then(|| {
-            self.slots = slots;
-            slots
+        let regions = strategic_regions(memory, base);
+        (slots > self.slots || regions > self.regions).then(|| {
+            self.slots = self.slots.max(slots);
+            self.regions = self.regions.max(regions);
+            (self.slots, self.regions)
         })
     }
 
@@ -1162,6 +1192,13 @@ impl RegistryWatch {
             self.politics
         })
     }
+}
+
+/// The loaded content's live strategic-region count, zero when unreadable:
+/// the naval-patrol history watches are sized from it, never from a vanilla
+/// count.
+fn strategic_regions(memory: &impl engine::Memory, base: usize) -> usize {
+    engine::cgame_state::read_strategic_region_count(memory, base).map_or(0, |count| count as usize)
 }
 
 /// Grow every idle frame to the current capacities under its queue lease.
@@ -1394,11 +1431,14 @@ fn spool_loop(
             }
         }
         crate::relation_changes::collect();
+        crate::history_changes::collect();
         // A save load rebuilds the country registry before its first hourly
-        // tick; presize every buffer while the game is still loading.
-        if let Some(slots) = registry.poll(&live, shared.base) {
+        // tick; presize every buffer while the game is still loading. Sizing
+        // only grows, so a larger region roster alone repeats it harmlessly.
+        if let Some((slots, regions)) = registry.poll(&live, shared.base) {
             crate::country_scale::note_slots(slots);
             crate::relation_changes::presize(slots);
+            crate::history_changes::presize(slots, regions);
             decode::presize_country_pools();
             let mut raised = crate::country_scale::Sizing {
                 core: capacities,
@@ -1722,21 +1762,24 @@ mod tests {
         let _ = fs::remove_dir_all(&session);
     }
 
-    /// A registry whose three headers report `count` elements.
-    struct Registry(std::cell::Cell<u32>);
+    /// A registry whose three country headers report the first count, and
+    /// whose strategic-region roster the second.
+    #[derive(Default)]
+    struct Registry(std::cell::Cell<u32>, std::cell::Cell<u32>);
 
     impl engine::Memory for Registry {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             const STATE: usize = 0x1000;
             let mut bytes = [0_u8; 0x400];
-            for field in [
-                cgame_state::COUNTRIES,
-                cgame_state::COUNTRY_LINKS,
-                cgame_state::COUNTRY_TAGS,
+            for (field, count) in [
+                (cgame_state::COUNTRIES, &self.0),
+                (cgame_state::COUNTRY_LINKS, &self.0),
+                (cgame_state::COUNTRY_TAGS, &self.0),
+                (cgame_state::STRATEGIC_REGIONS, &self.1),
             ] {
                 bytes[field..field + 8].copy_from_slice(&0x9000_u64.to_le_bytes());
-                bytes[field + 8..field + 12].copy_from_slice(&self.0.get().to_le_bytes());
-                bytes[field + 12..field + 16].copy_from_slice(&self.0.get().to_le_bytes());
+                bytes[field + 8..field + 12].copy_from_slice(&count.get().to_le_bytes());
+                bytes[field + 12..field + 16].copy_from_slice(&count.get().to_le_bytes());
             }
             if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
                 output.copy_from_slice(&(STATE as u64).to_le_bytes());
@@ -1757,20 +1800,25 @@ mod tests {
 
     #[test]
     fn registry_watch_reports_growth_once_and_ignores_torn_or_smaller_counts() {
-        let memory = Registry(std::cell::Cell::new(0));
+        let memory = Registry::default();
         let mut watch = RegistryWatch::default();
         // The main menu has an empty registry: nothing to presize.
         assert_eq!(watch.poll(&memory, 0), None);
         // A save loads 5,001 slots; the next poll after the interval sees it.
         memory.0.set(5_001);
         watch.last = None;
-        assert_eq!(watch.poll(&memory, 0), Some(5_001));
+        assert_eq!(watch.poll(&memory, 0), Some((5_001, 0)));
         // Throttled, then unchanged.
         assert_eq!(watch.poll(&memory, 0), None);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), None);
-        // A smaller registry never shrinks capacities.
+        // The region roster fills later: the slots are reported with it.
+        memory.1.set(2_500);
+        watch.last = None;
+        assert_eq!(watch.poll(&memory, 0), Some((5_001, 2_500)));
+        // A smaller registry or roster never shrinks capacities.
         memory.0.set(400);
+        memory.1.set(100);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), None);
         // A count past the engine's u16 slot ceiling is a torn read, not a size.

@@ -1831,6 +1831,10 @@ pub struct Roster {
     pub unordered_clones: BTreeSet<String>,
     /// Files that do not parse even when closed, with the error.
     pub unreadable: Vec<String>,
+    /// Every word such a file holds ([`lexical_names`]), with the first
+    /// such file. Which of its blocks the engine still registers is
+    /// unverified, so each could be a declaration a consumer cannot see.
+    pub unreadable_names: BTreeMap<String, String>,
 }
 
 impl Roster {
@@ -1847,7 +1851,15 @@ impl Roster {
             }
             match parser::parse(&bytes).or_else(|_| parser::parse(&balanced_blocks(&bytes))) {
                 Ok(document) => roster.add(&document, &path),
-                Err(error) => roster.unreadable.push(format!("{path} ({error})")),
+                Err(error) => {
+                    for name in lexical_names(&bytes) {
+                        roster
+                            .unreadable_names
+                            .entry(name)
+                            .or_insert_with(|| path.clone());
+                    }
+                    roster.unreadable.push(format!("{path} ({error})"));
+                }
             }
         }
         Ok(roster)
@@ -1871,6 +1883,18 @@ impl Roster {
         self.ambiguous
             .extend(collect(document, path, &mut self.descriptors));
     }
+}
+
+/// Every name a descriptor file could declare, read without parsing it:
+/// each scalar the shared lexer reads ([`parser::scalars`], which keeps
+/// scanning past the error that made the parse fail), decoded and trimmed
+/// as a parsed name is (`scalar_str`, then [`unquote`]).
+pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {
+    parser::scalars(bytes)
+        .iter()
+        .filter_map(|word| std::str::from_utf8(word).ok())
+        .map(unquote)
+        .collect()
 }
 
 /// `InitTextureLookup(gfx/models)`: `142251F00` indexes every `.dds` and
@@ -2195,6 +2219,29 @@ entity = { name = "c" clone = "z" }"#,
         assert_eq!(roster.unordered_clones, BTreeSet::from(["c".to_owned()]));
         assert_eq!(roster.ambiguous, BTreeSet::from(["a".to_owned()]));
         assert_eq!(roster.descriptors.entities.len(), 3);
+    }
+
+    #[test]
+    fn lexical_names_keep_quoted_and_bare_words_outside_comments() {
+        // A bare CR ends a comment as the parser's lexer ends it, and a
+        // quoted name's escapes are decoded as a parsed name's are.
+        let names = lexical_names(
+            b"# header\rentity = { name = \"GER_plane_entity\" pdxmesh=plane_mesh # hidden_entity
+              clone = \"a b\\\"c\" } } {",
+        );
+        for name in [
+            "entity",
+            "name",
+            "GER_plane_entity",
+            "pdxmesh",
+            "plane_mesh",
+            "clone",
+        ] {
+            assert!(names.contains(name), "{name}");
+        }
+        assert!(names.contains("a b\"c"));
+        assert!(!names.contains("a b\\\"c"));
+        assert!(!names.contains("hidden_entity"));
     }
 
     #[test]

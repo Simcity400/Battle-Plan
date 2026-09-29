@@ -525,7 +525,7 @@ states={} provinces={}"#,
             TableRows::AirBaseRegistrations(vec![AirBaseRegistrationRow {
                 base: 65,
                 slot: 1,
-                country: 12,
+                capacity_raw: 100_000,
                 wings: vec![69],
             }]),
         ])
