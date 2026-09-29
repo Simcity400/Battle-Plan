@@ -26,6 +26,18 @@ opt-level = 2
 [profile.test.package.replay]
 opt-level = 2
 
+# The collector and engine scale tests run up to 5,000 countries in the default suite:
+# unoptimised they take about 150 s and 70 s, optimised about 15 s and 6 s. Engine is
+# optimised in dev as well, like replay, so dev and test share engine and replay.
+[profile.dev.package.engine]
+opt-level = 2
+
+[profile.test.package.engine]
+opt-level = 2
+
+[profile.test.package.collector]
+opt-level = 2
+
 # Dashboard cold loads parse the verified content catalogue and compact replay
 # projections. Keep those CPU paths representative during interactive UI work.
 [profile.dev.package.installed-content]
