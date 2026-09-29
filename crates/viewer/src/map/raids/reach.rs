@@ -44,6 +44,7 @@ fn get<T>(cell: &Index<T>, build: impl FnOnce() -> Result<T, String>) -> Result<
 #[derive(Default)]
 /// Rows are held as their positions in the hour's tables.
 pub struct Cells {
+    invasion_owners: Index<BTreeMap<Country, usize>>,
     divisions: Index<BTreeMap<u64, usize>>,
     movement: Index<BTreeMap<u64, usize>>,
     armies: Index<BTreeMap<u32, Vec<Occupant>>>,
@@ -105,6 +106,58 @@ impl<'w, 'a> Moves<'w, 'a> {
             assets,
             cells,
         }
+    }
+
+    pub fn invasion_seas(&self, source: u32, target: u32) -> Fact<Option<(u32, u32)>> {
+        let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
+        let mover = Mover { graph, world: self };
+        Ok(mover.invasion_sea(source)?.zip(mover.invasion_sea(target)?))
+    }
+
+    /// The invasion's forced-transfer request uses only these army operands;
+    /// it does not run the raid gate, combat admission or region-avoid filter.
+    /// Endpoints are already resolved by invasion_seas. `recorded_owner` is
+    /// the order's InvasionPreparations `unit_owner`, whose cost operands
+    /// the search reads, so it must be this unit's owner.
+    pub fn invasion_route(
+        &self,
+        division: u64,
+        recorded_owner: Option<u32>,
+        country: u32,
+        from: u32,
+        to: u32,
+    ) -> Fact<Vec<u32>> {
+        let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
+        let mover = Mover { graph, world: self };
+        // 1410277D0 requires a unit even when both ports open onto one sea.
+        let row = self
+            .division(division)?
+            .ok_or_else(|| format!("invasion unit {division:#x} is not a recorded army"))?;
+        if from == to {
+            return Ok(vec![from]);
+        }
+        match recorded_owner {
+            Some(owner) if owner == row.logical_owner => {}
+            Some(_) => {
+                return Err(format!(
+                    "invasion unit {division:#x} owner differs from its recorded path-cost owner"
+                ));
+            }
+            None => return Err("invasion order has no recorded path-cost operands".into()),
+        }
+        let army = Army {
+            location: row.province,
+            owner: self.slot(row.logical_owner)?,
+            orders_group: row.orders_group,
+            exiled: self.move_flags(division)? & DivisionStatusRow::MOVE_EXILED != 0,
+            ..Army::default()
+        };
+        let stop_at_owner = if (country as i32) > 0 {
+            Some(self.slot(country)?)
+        } else {
+            None
+        };
+        mover.invasion_route(&army, stop_at_owner, from, to)
     }
 
     fn table<T: TableSchema>(&self) -> Result<&'a [T::Row], String> {
@@ -479,6 +532,37 @@ impl<'w, 'a> Moves<'w, 'a> {
 }
 
 impl MoveWorld for Moves<'_, '_> {
+    /// The route unit owner's recorded path-cost operands, from any invasion
+    /// whose unit that owner holds (one hour's reads agree).
+    fn path_friendly(&self, owner: Country, target: Country) -> Fact<bool> {
+        let rows = self.table::<tables::InvasionPreparations>()?;
+        let index = get(&self.cells.invasion_owners, || {
+            let mut out = BTreeMap::new();
+            for (at, row) in rows.iter().enumerate() {
+                if row.unit_owner != 0 {
+                    out.entry(self.slot(row.unit_owner)?).or_insert(at);
+                }
+            }
+            Ok(out)
+        })?;
+        let row = index.get(&owner).map(|&at| &rows[at]).ok_or_else(|| {
+            format!("invasion owner slot {owner} has no recorded path-cost operands")
+        })?;
+        if target != 0 {
+            return Ok(
+                self.at_war(owner, target)? || row.co_belligerents.binary_search(&target).is_ok()
+            );
+        }
+        // 1406F3A00 tests the owner country's own id before the war pointer.
+        let raw = self
+            .world
+            .raw_country(owner)
+            .ok_or_else(|| format!("invasion owner slot {owner} has no country"))?;
+        Ok(
+            ((raw as i32) > 0 && row.zero_war_present != 0 && row.zero_war_retired == 0)
+                || row.zero_co_belligerent != 0,
+        )
+    }
     fn at_war(&self, a: Country, b: Country) -> Fact<bool> {
         Ok(a != 0 && a != b && self.world.at_war(a, b)?)
     }

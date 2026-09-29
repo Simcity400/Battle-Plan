@@ -97,6 +97,7 @@ impl Captured {
                     pride_of_the_fleet: r.pride_of_the_fleet,
                     owned_state_count: r.owned_state_count,
                     controlled_state_count: r.controlled_state_count,
+                    first_division: r.first_division,
                 }
             }),
             table::<tables::CountryCivilWars, _>(
@@ -135,6 +136,7 @@ mod tests {
             pride_of_the_fleet: (32 << 32) | 51,
             owned_state_count: 3,
             controlled_state_count: 5,
+            first_division: (9 << 32) | 4,
         };
         capture.rows.outcome = Outcome::Rows { len: 1 };
         capture.civil_wars.rows[0] = ccountry::CivilWarRow {
@@ -153,6 +155,7 @@ mod tests {
         assert_eq!(rows[0].pride_of_the_fleet, (32 << 32) | 51);
         assert_eq!(rows[0].country, 7);
         assert_eq!(rows[0].owned_state_count, 3);
+        assert_eq!(rows[0].first_division, (9 << 32) | 4);
         assert_eq!(rows[0].controlled_state_count, 5);
         assert_eq!(
             wars,

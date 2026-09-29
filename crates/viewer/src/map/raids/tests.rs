@@ -2752,6 +2752,199 @@ fn path_assets() -> RaidAssets {
 }
 
 #[test]
+fn invasion_routes_use_the_recorded_move_world_and_native_unit_fallbacks() {
+    use crate::map::orders::invasion::Routes;
+    use replay::rows::{
+        ArmyOrderPlanRow, ArmyOrderRow, CountryCounterInputRow, DivisionRow, DivisionStatusRow,
+        InvasionPreparationRow, LandTheatreRow, OrdersGroupMemberRow, OrdersGroupRow,
+    };
+    let assets = path_assets();
+    let mut frame = frame();
+    let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
+    for row in &mut provinces {
+        if row.id <= 2 {
+            row.owner = 0;
+            row.controller = 0;
+            row.state = 0;
+        }
+        row.port_sea = match row.id {
+            4 => 1,
+            3 => 2,
+            _ => 0,
+        };
+    }
+    put::<tables::Provinces>(&mut frame, provinces);
+    put::<tables::LandTheatres>(
+        &mut frame,
+        vec![LandTheatreRow {
+            id: 9,
+            owner: 11,
+            ..Default::default()
+        }],
+    );
+    put::<tables::Divisions>(
+        &mut frame,
+        vec![DivisionRow {
+            id: 77,
+            roster_owner: 11,
+            logical_owner: 11,
+            province: 4,
+            ..Default::default()
+        }],
+    );
+    put::<tables::DivisionStatus>(
+        &mut frame,
+        vec![DivisionStatusRow {
+            division: 77,
+            ..Default::default()
+        }],
+    );
+    let roster = |frame: &mut DecodedFrame, first_division| {
+        put::<tables::CountryCounterInputs>(
+            frame,
+            vec![CountryCounterInputRow {
+                country: 11,
+                first_division,
+                ..Default::default()
+            }],
+        )
+    };
+    roster(&mut frame, 0);
+    let operands = |frame: &mut DecodedFrame, unit_owner| {
+        put::<tables::InvasionPreparations>(
+            frame,
+            vec![InvasionPreparationRow {
+                owner_group: 8,
+                instance: 1,
+                unit_owner,
+                ..Default::default()
+            }],
+        )
+    };
+    operands(&mut frame, 11);
+    let order = ArmyOrderRow {
+        owner_group: 8,
+        instance: 1,
+        country: 11,
+        order_type: 3,
+        paradrop_target: 4,
+        path: vec![3],
+        ..Default::default()
+    };
+    let group = OrdersGroupRow {
+        handle: 8,
+        theatre: 9,
+        ..Default::default()
+    };
+    let plan = ArmyOrderPlanRow {
+        assigned_divisions: vec![77],
+        ..Default::default()
+    };
+    assert_eq!(
+        Routes::new(&frame, Some(&assets)).route(&order, &plan, &group),
+        Ok(vec![2])
+    );
+    let empty_plan = ArmyOrderPlanRow::default();
+    // No assigned or group unit: the country's roster slot 0, or no route.
+    assert_eq!(
+        Routes::new(&frame, Some(&assets)).route(&order, &empty_plan, &group),
+        Ok(vec![])
+    );
+    roster(&mut frame, 77);
+    assert_eq!(
+        Routes::new(&frame, Some(&assets)).route(&order, &empty_plan, &group),
+        Ok(vec![2])
+    );
+    roster(&mut frame, 0);
+    put::<tables::OrdersGroupMembers>(
+        &mut frame,
+        vec![OrdersGroupMemberRow {
+            group: 8,
+            ordinal: 0,
+            unit: 77,
+        }],
+    );
+    assert_eq!(
+        Routes::new(&frame, Some(&assets)).route(&order, &empty_plan, &group),
+        Ok(vec![2])
+    );
+    // The search reads the recorded owner's cost operands, and only its.
+    for (owner, error) in [
+        (12, "differs from its recorded path-cost owner"),
+        (0, "differs from its recorded path-cost owner"),
+    ] {
+        operands(&mut frame, owner);
+        assert!(
+            Routes::new(&frame, Some(&assets))
+                .route(&order, &plan, &group)
+                .unwrap_err()
+                .contains(error)
+        );
+    }
+    put::<tables::InvasionPreparations>(&mut frame, vec![]);
+    assert!(
+        Routes::new(&frame, Some(&assets))
+            .route(&order, &plan, &group)
+            .unwrap_err()
+            .contains("no recorded path-cost operands")
+    );
+    // Ports on one sea skip the search and its costs, but still need a unit.
+    let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
+    provinces.iter_mut().find(|p| p.id == 3).unwrap().port_sea = 1;
+    put::<tables::Provinces>(&mut frame, provinces);
+    assert_eq!(
+        Routes::new(&frame, Some(&assets)).route(&order, &empty_plan, &group),
+        Ok(vec![1])
+    );
+    put::<tables::OrdersGroupMembers>(&mut frame, vec![]);
+    roster(&mut frame, 0);
+    assert_eq!(
+        Routes::new(&frame, Some(&assets)).route(&order, &empty_plan, &group),
+        Ok(vec![])
+    );
+    roster(&mut frame, 77);
+    assert_eq!(
+        Routes::new(&frame, Some(&assets)).route(&order, &empty_plan, &group),
+        Ok(vec![1])
+    );
+}
+
+#[test]
+fn invasion_cost_reads_the_route_owners_recorded_operands_not_a_neutral_default() {
+    use installed_content::unit_path::MoveWorld;
+    use replay::rows::InvasionPreparationRow;
+    let assets = assets();
+    for (present, retired, flag, targets, expected) in [
+        (0, 0, 0, vec![], [false, false]),
+        (1, 0, 0, vec![], [true, false]),
+        (1, 128, 0, vec![2], [false, true]),
+        (1, 128, 1, vec![], [true, false]),
+    ] {
+        let mut frame = frame();
+        put::<tables::InvasionPreparations>(
+            &mut frame,
+            vec![InvasionPreparationRow {
+                unit_owner: 11,
+                zero_war_present: present,
+                zero_war_retired: retired,
+                zero_co_belligerent: flag,
+                co_belligerents: targets,
+                ..Default::default()
+            }],
+        );
+        let world = World::new(&frame, assets.facts()).unwrap();
+        let cells = reach::Cells::default();
+        let moves = reach::Moves::new(&world, &assets, &cells);
+        assert_eq!(
+            [moves.path_friendly(1, 0), moves.path_friendly(1, 2)],
+            expected.map(Ok)
+        );
+        // No invasion of this owner: its operands are unknown, never zero.
+        assert!(moves.path_friendly(2, 0).is_err());
+    }
+}
+
+#[test]
 fn raid_path_distances_prefer_the_recorded_memo_and_resolve_naval_targets() {
     use launch::{PathSource, RaidPaths};
     let assets = path_assets();

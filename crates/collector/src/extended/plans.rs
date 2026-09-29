@@ -40,6 +40,8 @@ pub struct Capacities {
     handles: usize,
     /// InvasionPreparations rows: the census's naval invasion orders.
     invasions: usize,
+    /// Their route unit owners' nonzero co-belligerent target slots.
+    co_belligerents: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -55,6 +57,7 @@ impl Default for Capacities {
             pairs: 65536,
             handles: 2048,
             invasions: 256,
+            co_belligerents: 1024,
         }
     }
 }
@@ -63,6 +66,7 @@ pub struct Captured {
     colors: CaptureRows<corders_group::PlanRow>,
     fronts: CaptureRows<cfront::Row>,
     invasions: CaptureRows<invasion_preparations::Row>,
+    co_belligerents: Arena<u32>,
     /// The invasion terms' modifier metadata, read once per pass.
     memo: DefinitionMemo,
     assigned: Arena<u64>,
@@ -99,6 +103,7 @@ impl Captured {
             pairs: 0,
             handles: 0,
             invasions: 0,
+            co_belligerents: 0,
         })
     }
     pub fn with_capacities(c: &Capacities) -> Self {
@@ -107,6 +112,7 @@ impl Captured {
             colors: CaptureRows::new(c.groups),
             fronts: CaptureRows::new(c.fronts),
             invasions: CaptureRows::new(c.invasions),
+            co_belligerents: Arena::new(c.co_belligerents),
             memo: DefinitionMemo::with_capacity(3),
             assigned: Arena::new(c.assigned),
             links: Arena::new(c.links),
@@ -127,6 +133,7 @@ impl Captured {
         self.colors.reset();
         self.fronts.reset();
         self.invasions.reset();
+        self.co_belligerents.reset();
         self.memo.clear();
         self.assigned.reset();
         self.links.reset();
@@ -144,6 +151,7 @@ impl Captured {
             + self.colors.allocated_bytes()
             + self.fronts.allocated_bytes()
             + self.invasions.allocated_bytes()
+            + self.co_belligerents.allocated_bytes()
             + self.memo.allocated_bytes()
             + self.assigned.allocated_bytes()
             + self.links.allocated_bytes()
@@ -160,6 +168,7 @@ impl Captured {
         self.colors.grow(&mut c.groups);
         self.fronts.grow(&mut c.fronts);
         self.invasions.grow(&mut c.invasions);
+        self.co_belligerents.grow(&mut c.co_belligerents);
         self.assigned.grow(&mut c.assigned);
         self.links.grow(&mut c.links);
         let mut group_names = c.names;
@@ -272,7 +281,7 @@ impl Captured {
         self.ticks[2] += qpc().saturating_sub(begin).max(0) as u64;
         read_phase.select(TABLES[3]);
         let begin = qpc();
-        self.invasions.outcome = invasion_preparations::walk(
+        let invasions = invasion_preparations::walk(
             memory,
             base,
             game_state,
@@ -280,7 +289,11 @@ impl Captured {
             order_source,
             &self.memo,
             &mut self.invasions.rows,
+            &mut self.co_belligerents.first,
         );
+        self.invasions.outcome = invasions.outcome;
+        self.co_belligerents.len = invasions.slots;
+        self.co_belligerents.required = invasions.required_slots;
         self.ticks[3] += qpc().saturating_sub(begin).max(0) as u64;
         let total = qpc().saturating_sub(begin_all).max(0) as u64;
         self.ticks[0] += total.saturating_sub(self.ticks.iter().sum::<u64>() - before);
@@ -296,6 +309,7 @@ impl Captured {
         self.colors.outcome = outcome;
         self.fronts.outcome = outcome;
         self.invasions.fail(outcome);
+        self.co_belligerents.len = 0;
         self.assigned.len = 0;
         self.links.len = 0;
         self.names.len = 0;
@@ -410,6 +424,13 @@ impl Captured {
                     leader_term: r.leader_term,
                     leader_applies: r.leader_applies,
                     days_term: r.days_term,
+                    unit_owner: r.unit_owner,
+                    zero_war_present: r.zero_relation.war_present,
+                    zero_war_retired: r.zero_relation.war_retired,
+                    zero_co_belligerent: r.zero_relation.co_belligerent,
+                    co_belligerents: self.co_belligerents.first
+                        [r.co_belligerent_start..r.co_belligerent_start + r.co_belligerent_len]
+                        .to_vec(),
                 }
             }),
         ]
@@ -721,6 +742,7 @@ mod tests {
             pairs: 0,
             handles: 0,
             invasions: 0,
+            co_belligerents: 0,
         };
         c.grow(&mut capacities);
         c.reset();
@@ -793,6 +815,7 @@ mod tests {
             pairs: 0,
             handles: 0,
             invasions: 0,
+            co_belligerents: 0,
         };
         for (hour, (unique, unique_heap, group, group_heap)) in hours.into_iter().enumerate() {
             string(&mut m, unique_at, unique, unique_heap.then_some(UNIQUE));

@@ -308,6 +308,7 @@ fn invasions(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
         );
     }
     report.limitation("GetRequiredInvasionPreparationHours@141016930's operands are live getter inputs the order serializer does not write: the target (the first path province's state controller), the country, relation and leader modifier terms, and whether the leader term counts (the HQ provider's root order) are not compared; the invasion census and the accumulated preparation are", "InvasionPreparations");
+    report.limitation("CheckNavalInvasionRoute@1410277D0's path-cost operands are runtime state the save never writes: the route unit's CUnit+0x1E0 owner, its slot-0 CRelationStatus (+0x2E8 presence, +0x49, +0x310) and its nonzero +0x310 targets are not compared; the roster fallback unit is compared as CountryCounterInputs.first_division", "InvasionPreparations.unit_owner/zero_war_present/zero_war_retired/zero_co_belligerent/co_belligerents");
     Ok(())
 }
 

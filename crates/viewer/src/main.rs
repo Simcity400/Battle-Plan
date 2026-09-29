@@ -1189,6 +1189,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|why| format!("; not drawn: {why}"))
                 .unwrap_or_default()
         );
+        for (why, count) in &plan.invasion_refused {
+            println!("  invasion routes: {count} refused, {why}");
+        }
         if order_field.report.drawn > 0 {
             println!(
                 "  the drawn curve lands on the recorded province chain: a path province's own centroid is at most {:.3} and on average {:.3} world units from its order's curve; {} ribbon vertices",

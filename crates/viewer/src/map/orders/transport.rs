@@ -7,14 +7,40 @@
 //! `rail_arrow_geometry_builder@141251430` and lifted into a sine arc by
 //! `paradrop_height_callback@14123FD20`; nothing smooths it.
 //!
-//! Invasions are refused (see [`super::build`]). Their builder
+//! The invasion builder
 //! (`BuildInvasionArrowGeometry@14123DDC0`) draws `[source, sea route...,
 //! path[0]]`, each province centroid wrapped against the previous control,
 //! then that hop's raw adjacency crossing, then the move smoothing; the sea
 //! route is `CheckNavalInvasionRoute@1410277D0`'s mode-0 path search, which the
-//! follow-up ports on the recorded move world.
+//! recorded move world supplies.
 
 use super::fixed::{Point, SCALE};
+
+/// `14123DDC0`: centroid then the raw crossing, wrapping every inserted
+/// point against the preceding one before ORDER_MOVE smoothing.
+pub fn invasion_controls(
+    path: &[u32],
+    width: i64,
+    centroid: impl Fn(u32) -> Option<Point>,
+    crossing: impl Fn(u32, u32) -> Option<Point>,
+) -> Option<Vec<Point>> {
+    let mut out: Vec<Point> = Vec::with_capacity(path.len() * 2);
+    let mut push = |mut point: Point| {
+        if let Some(previous) = out.last() {
+            wrap_x(previous[0], &mut point[0], width);
+        }
+        out.push(point);
+    };
+    for (at, &province) in path.iter().enumerate() {
+        push(centroid(province)?);
+        if let Some(&next) = path.get(at + 1)
+            && let Some(point) = crossing(province, next)
+        {
+            push(point);
+        }
+    }
+    Some(out)
+}
 
 /// `140A50740`: brings `x` within half the map width of `reference`, both
 /// fixed5, `width` in whole pixels (`CMap+0x40`). Integer `W / 2`, strict `>`.
@@ -135,6 +161,38 @@ mod tests {
     use super::*;
 
     const W: i64 = 5632;
+
+    #[test]
+    fn invasion_controls_wrap_each_centroid_and_raw_crossing_in_order() {
+        let centers = [
+            (1, [2 * SCALE, 0]),
+            (2, [(W - 2) * SCALE, SCALE]),
+            (3, [(W - 6) * SCALE, 0]),
+        ];
+        assert_eq!(
+            invasion_controls(
+                &[1, 2, 3],
+                W,
+                |id| centers.iter().find(|c| c.0 == id).map(|c| c.1),
+                |a, b| (a == 1 && b == 2).then_some([(W - 1) * SCALE, 0])
+            ),
+            Some(vec![
+                [2 * SCALE, 0],
+                [-SCALE, 0],
+                [-2 * SCALE, SCALE],
+                [-6 * SCALE, 0]
+            ])
+        );
+        assert_eq!(
+            invasion_controls(
+                &[1, 9],
+                W,
+                |id| centers.iter().find(|c| c.0 == id).map(|c| c.1),
+                |_, _| None
+            ),
+            None
+        );
+    }
 
     #[test]
     fn the_wrap_brings_a_point_within_half_the_map() {
