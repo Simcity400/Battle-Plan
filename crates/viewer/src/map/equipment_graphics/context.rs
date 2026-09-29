@@ -42,8 +42,9 @@ impl Content {
             // document.rs reports the state id conflicts once.
             continent_by_state: states::read(layers, defines, provinces)?
                 .0
-                .into_iter()
-                .map(|(id, state)| (id, state.provinces.iter().find_map(continent)))
+                .definitions()
+                .iter()
+                .map(|(id, state)| (*id, state.provinces.iter().find_map(continent)))
                 .collect(),
         })
     }

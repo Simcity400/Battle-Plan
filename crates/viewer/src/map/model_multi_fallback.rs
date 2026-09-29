@@ -450,16 +450,15 @@ fn pair_candidates<'a>(
         .content
         .equipment_model(equipment_key)
         .map_err(|error| error.to_string())?;
-    let family = equipment
-        .family
-        .map(|name| {
-            inputs
-                .content
-                .equipment_model(name)
-                .map(|family| (name, family.archetype))
-                .map_err(|error| error.to_string())
-        })
-        .transpose()?;
+    // `CEquipmentType+0x4E8`, the type itself unless another is named.
+    let family = Some((
+        equipment.family,
+        inputs
+            .content
+            .equipment_model(equipment.family)
+            .map_err(|error| error.to_string())?
+            .archetype,
+    ));
     let (ideology, culture) = creator_operands(definition, inputs.links, inputs.countries)?;
     let geography = inputs.geography.context(country_ref)?;
     let graphical = inputs.graphics.lookup(

@@ -155,15 +155,11 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             .into(),
         ..Default::default()
     };
-    assets.equipment = installed_content::equipment::parse(
-        &[installed_content::parser::parse(
-            b"equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } }",
-        )
-        .unwrap()],
-        &[],
-        &[],
-    )
-    .unwrap();
+    assets.equipment = installed_content::equipment::fixture::load(&[(
+        "common/units/equipment/a.txt",
+        "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } }",
+    )])
+    .0;
     let mut frame = hour(countries);
     // States: each country's land, in province order.
     let provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();

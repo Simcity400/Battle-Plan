@@ -36,7 +36,7 @@ fn guarded(numerator: i64, denominator: i64) -> i64 {
 
 /// 141298790: the piercing bucket of `piercing` against `armour`, the first
 /// threshold not above the ratio (zero armour is ratio 100), else bucket 0.
-fn pierce_bucket(thresholds: &[i64], armour: i64, piercing: i64) -> usize {
+pub(super) fn pierce_bucket(thresholds: &[i64], armour: i64, piercing: i64) -> usize {
     let ratio = if armour == 0 {
         10_000_000
     } else {
@@ -120,7 +120,7 @@ fn armour_frames(
 
 /// 140C6F960: fuel over `capacity * define`, clamped to [0, 1]; full when the
 /// scaled capacity is not positive or the fuel is extreme.
-fn fuel_ratio([fuel, capacity, define]: [i64; 3]) -> i64 {
+pub(super) fn fuel_ratio([fuel, capacity, define]: [i64; 3]) -> i64 {
     let capacity = capacity.wrapping_mul(define) / SCALE;
     if capacity <= 0 {
         return SCALE;
@@ -272,8 +272,7 @@ mod tests {
             piercing_thresholds: THRESHOLDS.to_vec(),
             air_superiority: [62_500_000, 75_000],
             fuel_penalty_start_ratio: 25_000,
-            recon_skill_impact: 0,
-            exile_against_occupier: [0; 2],
+            ..LandDefines::default()
         }
     }
 

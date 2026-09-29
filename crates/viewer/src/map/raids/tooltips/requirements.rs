@@ -4,8 +4,12 @@ use super::{
     rules::{Lines, Text},
     text::{Arg, localise},
 };
-use installed_content::{equipment::Equipment, localisation::Localisation, raids::RaidType};
-use std::collections::BTreeSet;
+use installed_content::{
+    equipment::{Database, Groups},
+    localisation::Localisation,
+    parser,
+    raids::RaidType,
+};
 
 /// 141580360 preserves signed integer limits, including an invalid interval.
 pub fn limit(loc: &Localisation, min: Option<i32>, max: Option<i32>) -> Text {
@@ -27,67 +31,63 @@ pub fn limit(loc: &Localisation, min: Option<i32>, max: Option<i32>) -> Text {
     localise(loc, key, &args)
 }
 
-/// 1409FEBA0: named groups localise as a whole when possible, otherwise
-/// expand in authored order; terminal members are deduplicated globally.
+/// A stored name as the port's text, or why it is not.
+fn stored<'a>(what: &str, bytes: &'a [u8]) -> Result<&'a str, String> {
+    parser::text(bytes).map_err(|refused| format!("{what}: {refused}"))
+}
+
+/// 1409FEBA0 over a member list, in authored order: a member naming a group
+/// ([`Groups::group`]: its token, found without case) shows as the group's
+/// key (its description, else its name) localised when that key has
+/// localisation, its terminal members still marked seen (1409FE360, which
+/// does not format them); else as the group's own members, expanded the
+/// same way. Any other member shows localised the first time it is seen,
+/// compared without case (compare_name 14253D9F8). Entries join with ", ".
+/// The recursion has no guard, so a group inside itself is refused by name.
 fn group(
     loc: &Localisation,
-    equipment: &Equipment,
-    names: &[String],
-    seen: &mut BTreeSet<String>,
-    path: &mut BTreeSet<String>,
+    groups: &Groups,
+    names: &[Vec<u8>],
+    seen: &mut Vec<Vec<u8>>,
+    path: &mut Vec<Vec<u8>>,
 ) -> Text {
     let mut out = Vec::new();
     for name in names {
-        if let Some(reason) = equipment.unsupported_groups.get(name) {
-            return Err(format!("equipment group {name}: unsupported {reason}"));
-        }
-        if let Some(members) = equipment.groups.get(name) {
-            if !path.insert(name.clone()) {
-                return Err(format!("equipment group cycle at {name}"));
+        match groups.group(name)? {
+            Some(inner) => {
+                if path
+                    .iter()
+                    .any(|outer| outer.eq_ignore_ascii_case(&inner.name))
+                {
+                    return Err(format!(
+                        "equipment group {} contains itself; 1409FEBA0 recurses into it with no guard",
+                        String::from_utf8_lossy(&inner.name)
+                    ));
+                }
+                let key = stored("equipment group key", inner.key())?;
+                if loc.get(key).is_some() {
+                    groups.expand_into(&inner.members, seen)?;
+                    out.push(localise(loc, key, &[])?);
+                } else {
+                    path.push(inner.name.clone());
+                    out.push(group(loc, groups, &inner.members, seen, path)?);
+                    path.pop();
+                }
             }
-            if loc.get(name).is_some() {
-                // The native localised-group arm still visits its terminal
-                // members to prevent them appearing again later.
-                collect_members(equipment, members, seen, path)?;
-                out.push(localise(loc, name, &[])?);
-            } else {
-                out.push(group(loc, equipment, members, seen, path)?);
+            None if !seen.iter().any(|known| known.eq_ignore_ascii_case(name)) => {
+                seen.push(name.clone());
+                out.push(localise(loc, stored("equipment group member", name)?, &[])?);
             }
-            path.remove(name);
-        } else if seen.insert(name.clone()) {
-            out.push(localise(loc, name, &[])?);
+            None => {}
         }
     }
     Ok(out.join(", "))
 }
 
-// Native CollectExpandedMembers does not format or localise the children.
-fn collect_members(
-    equipment: &Equipment,
-    names: &[String],
-    seen: &mut BTreeSet<String>,
-    path: &mut BTreeSet<String>,
-) -> Result<(), String> {
-    for name in names {
-        if let Some(reason) = equipment.unsupported_groups.get(name) {
-            return Err(format!("equipment group {name}: unsupported {reason}"));
-        }
-        if let Some(members) = equipment.groups.get(name) {
-            if !path.insert(name.clone()) {
-                return Err(format!("equipment group cycle at {name}"));
-            }
-            collect_members(equipment, members, seen, path)?;
-            path.remove(name);
-        } else {
-            seen.insert(name.clone());
-        }
-    }
-    Ok(())
-}
-
 pub fn build(
     loc: &Localisation,
-    equipment: &Equipment,
+    equipment: &Database,
+    groups: &Groups,
     kind: &RaidType,
     country_name: impl Fn(&str) -> Text,
     active_subunit: impl Fn(&str) -> Result<bool, String>,
@@ -99,13 +99,12 @@ pub fn build(
                 continue;
             } // 1415790B0 IsEmpty guard.
             let text = (|| {
-                let name = group(
-                    loc,
-                    equipment,
-                    &req.types,
-                    &mut BTreeSet::new(),
-                    &mut BTreeSet::new(),
-                )?;
+                let types: Vec<Vec<u8>> = req
+                    .types
+                    .iter()
+                    .map(|name| name.as_bytes().to_vec())
+                    .collect();
+                let name = group(loc, groups, &types, &mut Vec::new(), &mut Vec::new())?;
                 let mut text = localise(
                     loc,
                     "raid_unit_requirements_equipment_header",
@@ -118,17 +117,15 @@ pub fn build(
                 for alternatives in &req.modules {
                     let mut modules = Vec::new();
                     for module in alternatives {
-                        if equipment.refused_modules.contains(module) {
-                            return Err(format!(
-                                "module {module} has an unsupported duplicate definition"
-                            ));
-                        }
-                        // Native resolves the module definition, skipping a null result.
-                        if equipment.modules.contains_key(module) {
+                        // GetModuleByToken (1409EB610), a null result
+                        // skipped; the module's own name (+0x18) is
+                        // localised for the country (140BBA630).
+                        if let Some(found) = equipment.module(module) {
+                            let found = stored("equipment module name", found)?;
                             modules.push(localise(
                                 loc,
                                 "raid_unit_requirements_module",
-                                &[("NAME", Arg::Text(country_name(module)?))],
+                                &[("NAME", Arg::Text(country_name(found)?))],
                             )?);
                         }
                     }
@@ -208,7 +205,8 @@ mod tests {
             };
             let lines = build(
                 &loc,
-                &Equipment::default(),
+                &Database::default(),
+                &Groups::default(),
                 &kind,
                 |name| Ok(format!("local {name}")),
                 |_| Ok(active),
@@ -217,7 +215,8 @@ mod tests {
             assert!(
                 build(
                     &loc,
-                    &Equipment::default(),
+                    &Database::default(),
+                    &Groups::default(),
                     &kind,
                     |name| Ok(name.into()),
                     |_| Err("missing witness".into())
@@ -250,37 +249,79 @@ mod tests {
             assert_eq!(limit(&loc, min, max).unwrap(), expected);
         }
     }
+    /// Groups through the database's load (140165060): a group found by its
+    /// token without case, its description as its key, terminal members
+    /// deduplicated without case, and a group inside itself refused by
+    /// name; a module shows by its own name, found by token (1409EB610).
     #[test]
     fn group_expansion_preserves_authored_order_deduplication_and_named_failures() {
-        let loc: Localisation = [("a", "A"), ("b", "B"), ("named", "GROUP")]
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect();
-        let mut equipment = Equipment::default();
-        equipment
-            .groups
-            .insert("inner".into(), vec!["b".into(), "a".into()]);
-        equipment
-            .groups
-            .insert("named".into(), vec!["a".into(), "unlocalised_child".into()]);
-        let run = |e: &Equipment, names: &[&str]| {
+        let loc: Localisation = [
+            ("a", "A"),
+            ("b", "B"),
+            ("named", "GROUP"),
+            ("raid_unit_requirements_equipment_header", "$EQUIPMENT$"),
+            ("raid_unit_requirements_module", "$NAME$"),
+            ("raid_unit_requirements_module_group", "$LIST$"),
+            ("raid_unit_requirements_module_header", ":"),
+            ("OR", "or"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let (equipment, groups) = installed_content::equipment::fixture::load(&[
+            (
+                "common/units/equipment/modules/m.txt",
+                "equipment_modules = { Gun_1 = { } }",
+            ),
+            (
+                "common/equipment_groups/g.txt",
+                "inner = { equipment_type = { b a } }
+                 named = { equipment_type = { a unlocalised_child } }
+                 described = { description = named equipment_type = { b } }
+                 cycle = { equipment_type = { outer } }
+                 outer = { equipment_type = { CYCLE } }",
+            ),
+        ]);
+        let run = |names: &[&str]| {
             group(
                 &loc,
-                e,
-                &names.iter().map(|s| (*s).into()).collect::<Vec<_>>(),
-                &mut BTreeSet::new(),
-                &mut BTreeSet::new(),
+                &groups,
+                &names
+                    .iter()
+                    .map(|name| name.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+                &mut Vec::new(),
+                &mut Vec::new(),
             )
         };
-        assert_eq!(run(&equipment, &["inner", "a"]).unwrap(), "B, A");
-        assert_eq!(run(&equipment, &["named", "a", "b"]).unwrap(), "GROUP, B");
-        equipment
-            .groups
-            .insert("cycle".into(), vec!["cycle".into()]);
-        assert!(run(&equipment, &["cycle"]).unwrap_err().contains("cycle"));
-        equipment
-            .unsupported_groups
-            .insert("bad".into(), "field".into());
-        assert!(run(&equipment, &["bad"]).unwrap_err().contains("bad"));
+        assert_eq!(run(&["inner", "a"]).unwrap(), "B, A");
+        assert_eq!(run(&["INNER", "A"]).unwrap(), "B, A");
+        assert_eq!(run(&["named", "a", "b"]).unwrap(), "GROUP, B");
+        assert_eq!(run(&["described", "b"]).unwrap(), "GROUP");
+        let cycle = run(&["cycle"]).unwrap_err();
+        assert!(
+            cycle.contains("equipment group cycle contains itself"),
+            "{cycle}"
+        );
+        let kind = RaidType {
+            unit_requirements: vec![installed_content::raids::UnitRequirement {
+                equipment: vec![installed_content::raids::EquipmentRequirement {
+                    types: vec!["a".into()],
+                    modules: vec![vec!["GUN_1".into(), "missing".into()]],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let lines = build(
+            &loc,
+            &equipment,
+            &groups,
+            &kind,
+            |name| Ok(format!("local {name}")),
+            |_| Ok(true),
+        );
+        assert_eq!(lines[0].1.as_deref(), Ok("A\n:\nlocal Gun_1\n\n"));
     }
 }

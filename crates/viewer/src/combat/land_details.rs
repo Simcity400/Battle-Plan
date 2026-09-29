@@ -8,7 +8,7 @@ use replay::{
 };
 use std::{collections::BTreeMap, io};
 
-type Divisions<'a> = BTreeMap<(u8, u64), &'a LandCombatDivisionRow>;
+pub(super) type Divisions<'a> = BTreeMap<(u8, u64), &'a LandCombatDivisionRow>;
 
 /// A division's current hit points and organisation from `Divisions`, with
 /// their maxima from `DivisionStatus` when it has a row this hour.
@@ -47,6 +47,43 @@ pub(crate) fn conditions(frame: &DecodedFrame) -> io::Result<Conditions> {
             )
         })
         .collect())
+}
+
+/// Why [`conditions`] holds no entry for a division: which of its two tables
+/// lacks the division's row, and whether that table is complete this hour.
+pub(crate) fn condition_gap(frame: &DecodedFrame) -> io::Result<impl Fn(u64) -> String + '_> {
+    let divisions = rows::<tables::Divisions>(frame)?;
+    let status = rows::<tables::DivisionStatus>(frame)?;
+    Ok(move |unit: u64| {
+        let lacks = |table: &str, present: bool, complete: bool| {
+            (!present).then(|| {
+                if complete {
+                    format!("the {table} table has no row for it")
+                } else {
+                    format!("the {table} table is incomplete this hour and holds no row for it")
+                }
+            })
+        };
+        let gaps: Vec<String> = [
+            lacks(
+                "Divisions",
+                divisions.rows().iter().any(|row| row.id == unit),
+                divisions.is_complete(),
+            ),
+            lacks(
+                "DivisionStatus",
+                status.rows().iter().any(|row| row.division == unit),
+                status.is_complete(),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        format!(
+            "division {unit}'s condition is unknown: {}",
+            gaps.join(", and ")
+        )
+    })
 }
 
 /// The `NMilitary` defines 1412A26B0's early survival estimate reads. The
@@ -207,13 +244,14 @@ fn early_damage(
 
 // 140551820: absent/feature-ineligible modifiers return zero; metadata bit 4
 // clamps the getter to [0,1]. Country and contextual leader use the same rule.
-fn modifier(context: &LandDivisionContext, leader: bool) -> Option<i64> {
+// `key` indexes the recorded modifiers: 0xFB, 0x10F (width), 0x250.
+pub(super) fn modifier(context: &LandDivisionContext, key: usize, leader: bool) -> Option<i64> {
     let value = if leader {
-        &context.leader_modifiers[1]
+        &context.leader_modifiers[key]
     } else {
-        &context.country_modifiers[1]
+        &context.country_modifiers[key]
     };
-    let [flags, selector] = context.modifier_metadata[1];
+    let [flags, selector] = context.modifier_metadata[key];
     if value.present == 0 || (leader && context.leader_modifier_kind == 0) {
         return Some(0);
     }
@@ -232,7 +270,7 @@ fn modifier(context: &LandDivisionContext, leader: bool) -> Option<i64> {
     })
 }
 
-fn division_width(row: &LandCombatDivisionRow) -> Option<i64> {
+pub(super) fn division_width(row: &LandCombatDivisionRow) -> Option<i64> {
     if row.context.template == 0 {
         return Some(0);
     }
@@ -247,8 +285,8 @@ fn division_width(row: &LandCombatDivisionRow) -> Option<i64> {
         )
     });
     let factor = 100_000_i64
-        .wrapping_add(modifier(&row.context, false)?)
-        .wrapping_add(modifier(&row.context, true)?);
+        .wrapping_add(modifier(&row.context, 1, false)?)
+        .wrapping_add(modifier(&row.context, 1, true)?);
     Some(base.wrapping_mul(factor) / 100_000)
 }
 
@@ -271,21 +309,28 @@ pub(super) fn direction_key(
 /// 141298E00's direction count over the attacker committed divisions in
 /// recorded order: one direction per fresh key, except positive
 /// direction-group units after the first, which fold into its direction.
-/// A missing row leaves the count unknown rather than guessed.
-fn direction_count(
+/// A missing row leaves the count unknown rather than guessed; the error
+/// names the attacker and the table that lacks its row.
+pub(super) fn direction_count(
     committed: &[u64],
     divisions: &Divisions<'_>,
     province: u32,
     movement: &BTreeMap<u64, u32>,
-) -> Option<usize> {
+) -> Result<usize, String> {
     let mut seen: Vec<u32> = Vec::new();
     let mut grouped = false;
     for unit in committed {
-        let row = divisions.get(&(0, *unit))?;
+        let row = divisions.get(&(0, *unit)).ok_or_else(|| {
+            format!("attacker committed division {unit} has no LandCombatDivisions row")
+        })?;
         if row.direction_group > 0 && grouped {
             continue;
         }
-        let key = direction_key(row, province, movement)?;
+        let key = direction_key(row, province, movement).ok_or_else(|| {
+            format!(
+                "attacker committed division {unit} stands in the combat province and has no DivisionMovement row for the source its direction takes"
+            )
+        })?;
         if seen.contains(&key) {
             continue;
         }
@@ -294,13 +339,13 @@ fn direction_count(
         }
         seen.push(key);
     }
-    Some(seen.len())
+    Ok(seen.len())
 }
 
 /// 141298D50: the width-factor term over the terrain's `combat_width`, plus
 /// one `combat_support_width` term per direction beyond the first, all fixed5
 /// with native truncation.
-fn total_width(
+pub(super) fn total_width(
     detail: &LandCombatDetailsRow,
     [width, support]: [i64; 2],
     directions: usize,
@@ -470,13 +515,14 @@ pub(super) fn bind(
         &movement,
     );
     let total = match widths {
-        // Without a support width the direction count cannot matter.
-        Some(&widths) if directions.is_some() || widths[1] == 0 => {
-            Ok((total_width(detail, widths, directions.unwrap_or(0)) / 100_000).to_string())
-        }
-        Some(_) => Err(format!(
-            "Land combat {id} total width is hidden: an attacker committed LandCombatDivisions location or DivisionMovement source is missing, so the 141298E00 direction count is unknown."
-        )),
+        Some(&widths) => match &directions {
+            Ok(count) => Ok((total_width(detail, widths, *count) / 100_000).to_string()),
+            // Without a support width the direction count cannot matter.
+            Err(_) if widths[1] == 0 => Ok((total_width(detail, widths, 0) / 100_000).to_string()),
+            Err(reason) => Err(format!(
+                "Land combat {id} total width is hidden: the 141298E00 direction count is unknown ({reason})."
+            )),
+        },
         None => Err(format!(
             "Land combat {id} total width is hidden: province {} has no terrain category in the content.",
             detail.province
@@ -954,7 +1000,7 @@ mod tests {
         ) -> Option<usize> {
             let divisions: Divisions<'_> =
                 rows.iter().map(|row| ((0, row.division), row)).collect();
-            direction_count(committed, &divisions, COMBAT, movement)
+            direction_count(committed, &divisions, COMBAT, movement).ok()
         }
         // Danzig proves the latch reading: the game shows 120, and the base
         // term alone is 80, so the count is 2 with one additional-width term

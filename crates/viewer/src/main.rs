@@ -913,6 +913,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     map::ui_scale::extent(options.size, ui_scale),
                     &options.perspective,
                     None,
+                    false,
                 )?;
                 document.icons.lazy.settle();
                 if document.icons.lazy.version() == before {

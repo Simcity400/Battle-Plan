@@ -192,15 +192,11 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             .into(),
         ..Default::default()
     };
-    assets.equipment = installed_content::equipment::parse(
-        &[installed_content::parser::parse(
-            b"equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } transport_plane = { is_archetype = yes type = air_transport } }",
-        )
-        .unwrap()],
-        &[],
-        &[],
-    )
-    .unwrap();
+    assets.equipment = installed_content::equipment::fixture::load(&[(
+        "common/units/equipment/a.txt",
+        "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } transport_plane = { is_archetype = yes type = air_transport } }",
+    )])
+    .0;
     assets.defines = RaidDefines {
         base_max_command_power: 100 * 100_000,
         naval_invasion_priority: 1,

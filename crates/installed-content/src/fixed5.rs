@@ -39,6 +39,53 @@ pub fn script_fixed5(bytes: &[u8]) -> Option<i64> {
     })
 }
 
+/// ParseTokenFixedPoint64 (1424AFF10) -> 1424B8600, the decimal fixed5
+/// reader of a value token, as the game computes it. It never fails:
+///
+/// - The whole part is `atoll` (14254ADC4 -> 14253D1FC, base 10: leading
+///   white space, a sign, decimal digits, saturating on overflow; no digits
+///   read 0).
+/// - Every byte after the first `.` is a digit to it, `byte - '0'` as a
+///   signed char, accumulated in wrapping 64-bit arithmetic; up to four such
+///   bytes are scaled by ten until they make five places, five or more are
+///   taken as they are (`0.000001` is raw 1).
+/// - The fraction is negated when the whole part is negative, or is zero and
+///   the text starts with `-`.
+/// - A fraction whose `* 100000` wraps below `i64::MIN + 2` is 0xFFFFFFFF;
+///   any other is `fraction * 10^10 / 10^10` in wrapping signed arithmetic.
+/// - The value is `whole * 100000 + fraction`, wrapping.
+///
+/// The token text ends at its first NUL, as the C string does.
+pub fn decimal_fixed5(bytes: &[u8]) -> i64 {
+    let bytes = &bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())];
+    let whole = atoll(bytes);
+    let start = bytes
+        .iter()
+        .position(|byte| *byte == b'.')
+        .map_or(bytes.len(), |dot| dot + 1);
+    let mut fraction = 0_u64;
+    let mut places = 0_u64;
+    for byte in &bytes[start..] {
+        places += 1;
+        let digit = i64::from(*byte as i8) - 0x30;
+        fraction = (digit as u64).wrapping_add(fraction.wrapping_mul(10));
+    }
+    if places <= 4 {
+        for _ in places..5 {
+            fraction = fraction.wrapping_mul(10);
+        }
+    }
+    if (bytes.first() == Some(&b'-') && whole == 0) || whole < 0 {
+        fraction = fraction.wrapping_neg();
+    }
+    let part = if (fraction.wrapping_mul(100_000) as i64) < -0x7fff_ffff_ffff_fffe {
+        0xffff_ffff
+    } else {
+        (fraction.wrapping_mul(10_000_000_000) as i64).wrapping_div(10_000_000_000)
+    };
+    whole.wrapping_mul(100_000).wrapping_add(part)
+}
+
 /// ParseTokenInt32 (1424B0080) -> the UCRT's `atol` (parse_signed_decimal32
 /// 14254AF28 -> parse_integer32_radix 14253C770, base 10, signed): white
 /// space, a sign, decimal digits, clamped to the `i32` range; no digits give
@@ -199,6 +246,30 @@ mod tests {
         // 1424B0480 fails only when sscanf returns 0; an empty token is
         // EOF (-1), so the whole part stays 0.
         assert_eq!(script_fixed5(b""), Some(0));
+    }
+
+    /// 1424B8600's arithmetic: no radix prefixes, no five-digit limit, and
+    /// every byte after the dot counted as a digit.
+    #[test]
+    fn decimal_fixed5_follows_the_native_arithmetic() {
+        assert_eq!(decimal_fixed5(b"-0.05001"), -5_001);
+        assert_eq!(decimal_fixed5(b"0.25"), 25_000);
+        assert_eq!(decimal_fixed5(b".5"), 50_000);
+        assert_eq!(decimal_fixed5(b"-.5"), -50_000);
+        assert_eq!(decimal_fixed5(b"010"), 1_000_000);
+        assert_eq!(decimal_fixed5(b"0x10"), 0);
+        // Six places are taken unscaled.
+        assert_eq!(decimal_fixed5(b"0.000001"), 1);
+        assert_eq!(decimal_fixed5(b"1.123456"), 223_456);
+        // 'e' is 53 to the scanner: 5, 5*10+53, 103*10+3, then two places.
+        assert_eq!(decimal_fixed5(b"1.5e3"), 203_300);
+        assert_eq!(decimal_fixed5(b"yes"), 0);
+        assert_eq!(decimal_fixed5(b""), 0);
+        assert_eq!(decimal_fixed5(b"@bonus"), 0);
+        assert_eq!(
+            decimal_fixed5(b"99999999999999999999"),
+            i64::MAX.wrapping_mul(100_000)
+        );
     }
 
     #[test]

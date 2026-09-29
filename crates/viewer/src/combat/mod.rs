@@ -2,20 +2,27 @@
 mod assets;
 mod battle_name;
 mod binding;
+mod commander_tooltips;
 mod defines;
 mod details;
 mod division_icons;
+mod division_tooltips;
 pub(crate) mod engaged;
+mod fixed;
 mod hq;
 pub(crate) mod icon_frames;
 pub(crate) mod land_details;
 mod layout;
+pub(crate) mod modifier_text;
 mod naval_details;
 mod naval_environment;
 mod presentation;
 pub(crate) mod progress;
+mod reinforcement_speed;
 mod template_icons;
 pub(crate) mod texture;
+mod tooltip_painter;
+mod tooltips;
 
 use crate::{
     document::Document,
@@ -28,7 +35,7 @@ use binding::Bindings;
 use installed_content::localisation::{Piece, pieces};
 /// The one screen-rectangle hit test; the map's counter hits share it.
 pub(crate) use layout::contains;
-use layout::{Node, number, string};
+use layout::{Node, boolean, number, string};
 use std::{borrow::Cow, collections::BTreeMap, io};
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -143,6 +150,7 @@ pub struct Window {
     pub offset: [f32; 2],
     pub scroll: [usize; 4],
     pub dragging: bool,
+    hover: tooltip_painter::HoverState,
     /// The bindings for (branch, hour, selection, perspective), whether the
     /// engaged index covered that hour, and whether the window shows.
     cached: Option<(
@@ -208,17 +216,62 @@ impl Window {
     pub fn close(&mut self) {
         *self = Self::default();
     }
+    /// Draws the hovered widget's tooltip over `drawn` once its delays pass,
+    /// at the pointer (interface pixels) within `extent`. Call every frame,
+    /// with `None` when the pointer is elsewhere, so hiding can finish.
+    pub fn draw_tooltip(
+        &mut self,
+        drawn: &mut Drawn,
+        assets: &Assets,
+        point: Option<[f32; 2]>,
+        extent: [f32; 2],
+    ) -> io::Result<()> {
+        let Ok(defines) = &assets.tooltip_defines else {
+            return Ok(());
+        };
+        let hit = point
+            .and_then(|point| {
+                drawn
+                    .tooltips
+                    .iter()
+                    .rev()
+                    .find(|hit| layout::contains(hit.rect, point))
+            })
+            .map(|hit| {
+                (
+                    hit.text.as_deref().unwrap_or_default(),
+                    hit.description.as_deref(),
+                    hit.rect,
+                )
+            });
+        if let Some((text, anchor)) =
+            self.hover
+                .shown(hit, point, std::time::Instant::now(), defines.timing)
+        {
+            tooltip_painter::draw(assets, drawn, text, anchor, extent)?;
+        }
+        Ok(())
+    }
+    /// When the tooltip next changes with a still pointer, for a repaint.
+    pub fn tooltip_repaint_after(&self, assets: &Assets) -> Option<std::time::Duration> {
+        let defines = assets.tooltip_defines.as_ref().ok()?;
+        self.hover
+            .next_change(std::time::Instant::now(), defines.timing)
+    }
     /// Lays the open window out on a frame of `extent` interface pixels; the
     /// batch and every hit rectangle are in interface pixels too
     /// ([`crate::map::ui_scale`]). `engaged` is the window's engaged-flag
     /// index; without it (a dump) the flag is what a load at this hour
-    /// rebuilds.
+    /// rebuilds. Only a draw with `hovers` collects the hover regions
+    /// [`Self::draw_tooltip`] needs, so a frame that lays the window out
+    /// twice (once for its hit tests) does the hover work once.
     pub(crate) fn draw(
         &mut self,
         document: &Document,
         extent: [f32; 2],
         perspective: &crate::map::perspective::Choice,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
+        hovers: bool,
     ) -> io::Result<Option<Drawn>> {
         let Some(selection) = self.selection else {
             return Ok(None);
@@ -270,6 +323,7 @@ impl Window {
         let mut painter = Painter {
             assets,
             drawn: &mut drawn,
+            hovers,
         };
         painter.node(root, rect, "", &bindings.values)?;
         for side in 0..4 {
@@ -339,8 +393,10 @@ impl Window {
                     size[1],
                 ];
                 let first = painter.drawn.batch.quads.len();
+                let first_hover = painter.drawn.tooltips.len();
                 painter.node(entry_node, at, "", row)?;
                 clip_quads(&mut painter.drawn.batch, first, clip);
+                clip_tooltips(&mut painter.drawn.tooltips, first_hover, clip);
             }
             if hidden_rows > 0 {
                 let slider = &assets.windows[if side % 2 == 0 {
@@ -505,6 +561,39 @@ pub struct Drawn {
     pub close: Option<[f32; 4]>,
     pub lists: [Option<[f32; 4]>; 4],
     pub scroll_buttons: Vec<([f32; 4], usize, i32)>,
+    /// Hover regions in draw order; the last containing one wins.
+    tooltips: Vec<TooltipHit>,
+}
+
+/// Bound hover text. The bindings hold it once; each drawn hover region
+/// shares it rather than copying the text every frame.
+pub(crate) type HoverText = std::sync::Arc<str>;
+
+/// One widget's hover region and its text, in interface pixels.
+#[derive(Clone, Debug, PartialEq)]
+struct TooltipHit {
+    rect: [f32; 4],
+    text: Option<HoverText>,
+    description: Option<HoverText>,
+}
+
+/// Clips the hover regions pushed since `first` to `clip`, as the quads,
+/// keeping their order.
+fn clip_tooltips(tooltips: &mut Vec<TooltipHit>, first: usize, clip: [f32; 4]) {
+    let mut kept = first;
+    for index in first..tooltips.len() {
+        let rect = tooltips[index].rect;
+        let left = rect[0].max(clip[0]);
+        let top = rect[1].max(clip[1]);
+        let right = (rect[0] + rect[2]).min(clip[0] + clip[2]);
+        let bottom = (rect[1] + rect[3]).min(clip[1] + clip[3]);
+        if right > left && bottom > top {
+            tooltips[index].rect = [left, top, right - left, bottom - top];
+            tooltips.swap(kept, index);
+            kept += 1;
+        }
+    }
+    tooltips.truncate(kept);
 }
 impl Drawn {
     pub fn contains(&self, point: [f32; 2]) -> bool {
@@ -529,6 +618,14 @@ impl Drawn {
 #[derive(Clone, Default)]
 pub struct Widget {
     pub text: Option<String>,
+    /// Hover text, and the delayed body shown after its longer delay.
+    pub tooltip: Option<HoverText>,
+    pub tooltip_description: Option<HoverText>,
+    /// A dynamic hover builder owns both strings ([`tooltips::set_hover`]):
+    /// the window's update (1415C1A60, 1415BF4B0, 1415C0AE0) replaces the
+    /// authored `pdx_tooltip` the widget was created with, so the authored
+    /// seed never replaces its text or its refusal.
+    pub hover_owned: bool,
     pub sprite: Option<String>,
     pub flag: Option<String>,
     pub fill: Option<f32>,
@@ -581,6 +678,7 @@ pub(crate) fn naval_bubble_progress(
     Painter {
         assets,
         drawn: &mut drawn,
+        hovers: false,
     }
     .node(root, rect, "", &values)?;
     Ok(drawn.batch)
@@ -713,6 +811,8 @@ fn window_layer(quads: usize) -> u64 {
 struct Painter<'a> {
     assets: &'a Assets,
     drawn: &'a mut Drawn,
+    /// Whether to collect the widgets' hover regions.
+    hovers: bool,
 }
 impl Painter<'_> {
     fn node(&mut self, node: &Node, rect: [f32; 4], path: &str, values: &Values) -> io::Result<()> {
@@ -733,13 +833,12 @@ impl Painter<'_> {
             }
             if child.kind == "containerwindowtype" {
                 let first = self.drawn.batch.quads.len();
+                let first_hover = self.drawn.tooltips.len();
                 self.node(child, child.rect(node.content_rect(rect))?, &key, values)?;
-                if string(&child.items, "clipping") == Some("yes") {
-                    clip_quads(
-                        &mut self.drawn.batch,
-                        first,
-                        child.rect(node.content_rect(rect))?,
-                    );
+                if boolean(&child.items, "clipping").map_err(invalid)? == Some(true) {
+                    let clip = child.rect(node.content_rect(rect))?;
+                    clip_quads(&mut self.drawn.batch, first, clip);
+                    clip_tooltips(&mut self.drawn.tooltips, first_hover, clip);
                 }
                 continue;
             }
@@ -755,6 +854,12 @@ impl Painter<'_> {
             let sprite = data
                 .and_then(|d| d.sprite.as_deref())
                 .or_else(|| installed_content::gui::sprite(&child.items));
+            if self.hovers
+                && let Some(data) =
+                    data.filter(|data| data.tooltip.is_some() || data.tooltip_description.is_some())
+            {
+                self.hover_region(child, rect, origin, sprite, data)?;
+            }
             if let Some(flag) = data
                 .and_then(|d| d.flag.as_ref())
                 .and_then(|key| self.assets.flag(key))
@@ -802,7 +907,8 @@ impl Painter<'_> {
                 let rotation = data
                     .and_then(|d| d.rotation)
                     .unwrap_or_else(|| number(&child.items, "rotation", 0.0));
-                let at = if string(&child.items, "centerPosition") == Some("yes") {
+                let at = if boolean(&child.items, "centerPosition").map_err(invalid)? == Some(true)
+                {
                     [origin[0] - size[0] * 0.5, origin[1] - size[1] * 0.5]
                 } else {
                     origin
@@ -849,8 +955,9 @@ impl Painter<'_> {
                     "maxWidth",
                 )?
                 .map(|v| v as f32));
+                let fixed = boolean(&child.items, "fixedsize").map_err(invalid)? == Some(true);
                 let value = match width {
-                    Some(width) if string(&child.items, "fixedsize") == Some("yes") => {
+                    Some(width) if fixed => {
                         // CInstantTextObject (1422D7A00) replaces an unset box
                         // dimension with 200.
                         let height = installed_content::gui::number(&child.items, "maxHeight")?
@@ -863,6 +970,47 @@ impl Painter<'_> {
                 self.text(font, &value, origin, align, width);
             }
         }
+        Ok(())
+    }
+    /// The widget's hover region: its explicit size, else its sprite at the
+    /// authored scale, else its text box. A GUI background inherits the
+    /// containing window's extent, as transparent column backgrounds do.
+    fn hover_region(
+        &mut self,
+        child: &Node,
+        rect: [f32; 4],
+        origin: [f32; 2],
+        sprite: Option<&str>,
+        data: &Widget,
+    ) -> io::Result<()> {
+        let size = if child.kind == "background" {
+            [rect[2], rect[3]]
+        } else {
+            data.size
+                .or_else(|| {
+                    sprite
+                        .and_then(|name| self.assets.sprite(name))
+                        .map(|sprite| {
+                            sprite
+                                .size
+                                .map(|dimension| dimension * number(&child.items, "scale", 1.0))
+                        })
+                })
+                .unwrap_or([
+                    number(&child.items, "maxWidth", rect[2]),
+                    number(&child.items, "maxHeight", rect[3]),
+                ])
+        };
+        let at = if boolean(&child.items, "centerPosition").map_err(invalid)? == Some(true) {
+            [origin[0] - size[0] * 0.5, origin[1] - size[1] * 0.5]
+        } else {
+            origin
+        };
+        self.drawn.tooltips.push(TooltipHit {
+            rect: [at[0], at[1], size[0], size[1]],
+            text: data.tooltip.clone(),
+            description: data.tooltip_description.clone(),
+        });
         Ok(())
     }
     /// A `corneredTileSpriteType` drawn at another size keeps its `borderSize`
@@ -1620,5 +1768,30 @@ mod tests {
             fit(chunks, 130.0, 16.0, &glyphs).as_deref(),
             Some("Name that is long enough...")
         );
+    }
+
+    #[test]
+    fn clipped_hover_regions_keep_order_and_share_their_text() {
+        let text: HoverText = "shared".into();
+        let hit = |x: f32| TooltipHit {
+            rect: [x, 0.0, 10.0, 10.0],
+            text: Some(text.clone()),
+            description: None,
+        };
+        let mut tooltips = vec![hit(-100.0), hit(0.0), hit(50.0), hit(5.0), hit(200.0)];
+        clip_tooltips(&mut tooltips, 1, [0.0, 0.0, 60.0, 10.0]);
+        // The first region is before `first` and stays untouched.
+        let rects: Vec<_> = tooltips.iter().map(|hit| hit.rect).collect();
+        assert_eq!(
+            rects,
+            [
+                [-100.0, 0.0, 10.0, 10.0],
+                [0.0, 0.0, 10.0, 10.0],
+                [50.0, 0.0, 10.0, 10.0],
+                [5.0, 0.0, 10.0, 10.0],
+            ]
+        );
+        // Every region points at the one bound string.
+        assert_eq!(std::sync::Arc::strong_count(&text), 5);
     }
 }

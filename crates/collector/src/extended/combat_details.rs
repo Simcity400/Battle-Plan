@@ -1456,6 +1456,10 @@ impl Captured {
                                         .to_vec(),
                                 })
                                 .collect(),
+                            trait_expiry_days: s.traits[..s.traits_len]
+                                .iter()
+                                .map(|t| t.expiry_days)
+                                .collect(),
                         }
                     }),
                 }

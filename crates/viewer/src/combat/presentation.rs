@@ -143,24 +143,30 @@ fn portrait(
 }
 
 /// A side's tactic picture (`{prefix}_tactic`) for a selected combat tactic
-/// (kind 2): its authored picture when the content has the sprite, else the
-/// widget is hidden with the named refusal.
+/// (kind 2): the authored picture of the registry entry at its recorded id,
+/// whose name must be the recorded one, when the content has the sprite;
+/// else the widget is hidden with the named refusal.
 fn tactic(
     out: &mut Bindings,
     has_sprite: &dyn Fn(&str) -> bool,
-    pictures: &std::collections::BTreeMap<String, String>,
+    pictures: &super::tooltips::TacticPictures,
     key: &str,
+    id: i32,
     token: &[u8],
 ) {
-    let token = String::from_utf8_lossy(token);
-    let value = match pictures.get(token.as_ref()) {
-        Some(picture) if has_sprite(picture) => Ok(picture.clone()),
-        Some(picture) => Err(format!(
-            "Combat tactic picture {key} is hidden: the content lacks sprite {picture} for tactic {token}"
-        )),
-        None => Err(format!(
-            "Combat tactic picture {key} is hidden: the content declares no picture for tactic {token}"
-        )),
+    let value = match pictures.get(id, token) {
+        Ok(picture) => {
+            let sprite = super::assets::tactic_sprite(picture);
+            if has_sprite(&sprite) {
+                Ok(sprite)
+            } else {
+                Err(format!(
+                    "Combat tactic picture {key} is hidden: the content lacks sprite {sprite} for tactic {}",
+                    String::from_utf8_lossy(token)
+                ))
+            }
+        }
+        Err(reason) => Err(format!("Combat tactic picture {key} is hidden: {reason}")),
     };
     out.bind(key, SPRITE, value);
 }
@@ -169,6 +175,8 @@ fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandComb
     // Both filters are enabled by 1415C6AB0 (land), 1417D81B0 (naval),
     // and 1417C6800 (results). Preserve native assigned order, not token order.
     let mut entries = Vec::new();
+    // Trait sprites the content lacks, counted by name.
+    let mut missing: std::collections::BTreeMap<String, usize> = Default::default();
     for value in traits.iter().filter(|t| t.kind != 0 && t.relevant != 0) {
         let mut entry = Values::new();
         if value.kind == 6 {
@@ -180,15 +188,25 @@ fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandComb
         } else {
             let token = String::from_utf8_lossy(&value.token);
             let requested = format!("GFX_trait_{token}");
-            let selected = if document.icons.combat.has_sprite(&requested) {
-                requested
+            if document.icons.combat.has_sprite(&requested) {
+                sprite(&mut entry, "Background", requested);
             } else {
-                // 141C61C40's actual missing-declaration fallback.
-                "GFX_trait_unknown".into()
-            };
-            sprite(&mut entry, "Background", selected);
+                // 141C61C40's actual missing-declaration fallback; the
+                // missing sprite is still reported by name.
+                *missing.entry(requested).or_default() += 1;
+                if document.icons.combat.has_sprite("GFX_trait_unknown") {
+                    sprite(&mut entry, "Background", "GFX_trait_unknown".into());
+                } else {
+                    *missing.entry("GFX_trait_unknown".into()).or_default() += 1;
+                }
+            }
         }
         entries.push(entry);
+    }
+    for (name, count) in missing {
+        out.warnings.push(format!(
+            "Combat traits {key}: {count} trait entries name sprite {name}, which the content does not declare."
+        ));
     }
     out.values.insert(
         key.into(),
@@ -211,6 +229,9 @@ pub(super) fn bind(
         Selection::Land(id) => {
             let details = rows::<tables::LandCombatDetails>(frame)?;
             let Some(detail) = details.rows().iter().find(|row| row.combat == id) else {
+                out.warnings.push(format!(
+                    "Land combat {id}: no LandCombatDetails row, so the commander portraits, traits and tactic pictures are omitted."
+                ));
                 return Ok(());
             };
             for (index, prefix) in ["attacker", "defender"].into_iter().enumerate() {
@@ -236,6 +257,7 @@ pub(super) fn bind(
                         &has_sprite,
                         &document.icons.combat.tactic_pictures,
                         &format!("{prefix}_tactic"),
+                        side.tactic_id,
                         &side.tactic_token,
                     );
                 }
@@ -254,9 +276,18 @@ pub(super) fn bind(
         Selection::Naval(id) => {
             let details = rows::<tables::NavalCombatDetails>(frame)?;
             let Some(detail) = details.rows().iter().find(|row| row.combat == id) else {
+                out.warnings.push(format!(
+                    "Naval combat {id}: no NavalCombatDetails row, so the commander portraits and traits are omitted."
+                ));
                 return Ok(());
             };
             for (side, prefix) in detail.sides.iter().zip(["attacker", "defender"]) {
+                if side.commander_inputs.is_none() && side.commander != 0 {
+                    out.warnings.push(format!(
+                        "Naval combat {id} {prefix} commander {}: its commander inputs are not recorded, so the portrait and traits are omitted.",
+                        side.commander
+                    ));
+                }
                 if let Some(commander) = &side.commander_inputs {
                     if commander.commander != 0 {
                         portrait(
@@ -279,9 +310,24 @@ pub(super) fn bind(
         Selection::NavalResult(id) => {
             let details = rows::<tables::NavalCombatResultDetails>(frame)?;
             let Some(detail) = details.rows().iter().find(|row| row.result == id) else {
+                out.warnings.push(format!(
+                    "Naval result {id}: no NavalCombatResultDetails row, so the commander portraits and traits are omitted."
+                ));
                 return Ok(());
             };
             for (side, prefix) in detail.sides.iter().zip(["attacker", "defender"]) {
+                if side.commander_context.is_none() && side.leader != 0 {
+                    out.warnings.push(format!(
+                        "Naval result {id} {prefix} commander {}: its commander context is not recorded, so the portrait and traits are omitted.",
+                        side.leader
+                    ));
+                }
+                if side.hq_commander_context.is_none() && side.hq_leader != 0 {
+                    out.warnings.push(format!(
+                        "Naval result {id} {prefix} HQ commander {}: its commander context is not recorded, so the HQ portrait is omitted.",
+                        side.hq_leader
+                    ));
+                }
                 if let Some(commander) = &side.commander_context {
                     let root = format!("{prefix}_leader");
                     if commander.commander != 0 {
@@ -329,7 +375,7 @@ mod tests {
     #[test]
     fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
         let mut out = Bindings::default();
-        let has = |name: &str| name == "GFX_known" || name == "GFX_tactic_a";
+        let has = |name: &str| name == "GFX_known" || name == "combat_tactic:tactic_a";
         sprite(&mut out.values, "leader", "GFX_earlier".into());
         sprite(&mut out.values, "tactic", "GFX_earlier".into());
         let value = CombatCommanderPresentation {
@@ -346,11 +392,10 @@ mod tests {
         // An undeclared sprite: the setter keeps the widget as it was.
         portrait(&mut out, &has, "leader", &value, 2);
         assert_eq!(out.values["leader"].sprite.as_deref(), Some("GFX_earlier"));
-        let pictures = std::collections::BTreeMap::from([
-            ("a".to_owned(), "GFX_tactic_a".to_owned()),
-            ("b".to_owned(), "GFX_tactic_b".to_owned()),
-        ]);
-        tactic(&mut out, &has, &pictures, "tactic", b"b");
+        let pictures = super::super::tooltips::TacticPictures::read(
+            b"a = { picture = tactic_a } b = { picture = tactic_b }",
+        );
+        tactic(&mut out, &has, &pictures, "tactic", 2, b"b");
         assert_eq!(out.values["tactic"].sprite, None);
         assert!(out.values["tactic"].hidden);
         let refused: Vec<_> = out.refused().keys().cloned().collect();
@@ -358,11 +403,14 @@ mod tests {
             refused,
             [
                 "Combat portrait leader: the content does not declare sprite GFX_missing, so the game's sprite setter (1422E6410) keeps the widget's previous image; the viewer shows the window's own sprite",
-                "Combat tactic picture tactic is hidden: the content lacks sprite GFX_tactic_b for tactic b",
+                "Combat tactic picture tactic is hidden: the content lacks sprite combat_tactic:tactic_b for tactic b",
             ]
         );
-        tactic(&mut out, &has, &pictures, "tactic", b"a");
-        assert_eq!(out.values["tactic"].sprite.as_deref(), Some("GFX_tactic_a"));
+        tactic(&mut out, &has, &pictures, "tactic", 1, b"a");
+        assert_eq!(
+            out.values["tactic"].sprite.as_deref(),
+            Some("combat_tactic:tactic_a")
+        );
         assert!(!out.values["tactic"].hidden);
     }
 

@@ -203,6 +203,29 @@ impl<'a> Inputs<'a> {
         })
     }
 
+    /// The native `+0x5C0` count behind frame 14, which the badge's hover
+    /// shows: opposing committed units only, zero without the bonus. Unlike
+    /// the badge it needs every opponent's owner.
+    pub(super) fn occupiers(
+        &self,
+        row: &LandCombatDivisionRow,
+        detail: &LandCombatDetailsRow,
+        bonuses: &[i64; 2],
+    ) -> Result<usize, Refused<'a>> {
+        let (Some(_), Some(exile)) = (Self::exile_country(row), &row.exile) else {
+            return Ok(0);
+        };
+        let side = usize::from(row.side);
+        if bonuses[side] <= 0 {
+            return Ok(0);
+        }
+        let mut count = 0;
+        for opponent in &detail.sides[1 - side].committed {
+            count += usize::from(self.contains(&exile.occupiers, self.owner(*opponent)?)?);
+        }
+        Ok(count)
+    }
+
     /// Frame 15: the division's location state is a core of the exile country.
     fn on_core(&self, row: &LandCombatDivisionRow) -> Result<bool, Refused<'a>> {
         let (Some(country), Some(exile)) = (Self::exile_country(row), &row.exile) else {
@@ -339,6 +362,11 @@ mod tests {
             inputs.frames(&row, &detail(vec![4, 2]), &BONUSES)[0],
             Ok(true)
         );
+        // The hover counts every occupying opponent, reserves excluded.
+        assert_eq!(
+            inputs.occupiers(&row, &detail(vec![2, 3, 4]), &BONUSES),
+            Ok(2)
+        );
         assert_eq!(
             inputs.frames(&row, &detail(vec![4]), &BONUSES)[0],
             Ok(false)
@@ -358,6 +386,18 @@ mod tests {
         // The refusal names the opposing unit whose owner is unknown.
         assert_eq!(
             inputs.frames(&row, &detail(vec![77]), &BONUSES)[0],
+            Err(Refused::Division {
+                division: 77,
+                gap: Gap::Absent
+            })
+        );
+        // The badge stops at its first occupier; the count needs every row.
+        assert_eq!(
+            inputs.frames(&row, &detail(vec![2, 77]), &BONUSES)[0],
+            Ok(true)
+        );
+        assert_eq!(
+            inputs.occupiers(&row, &detail(vec![2, 77]), &BONUSES),
             Err(Refused::Division {
                 division: 77,
                 gap: Gap::Absent

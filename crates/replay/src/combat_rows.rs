@@ -176,8 +176,12 @@ pub struct LandCombatSideDetails {
     pub presentation: CombatCommanderPresentation,
     pub traits: Vec<LandCombatCommanderTrait>,
     pub learning_traits: Vec<LandCombatCommanderLearningTrait>,
+    /// 140C07810 for each of `traits` in order: the signed days of the first
+    /// `CUnitLeader+0xDE0` timed-trait entry holding it, else -1. The trait
+    /// hover's expiry line (141C5F730) shows a nonnegative one (140C0B3C0).
+    pub trait_expiry_days: Vec<i32>,
 }
-value_struct!(LandCombatSideDetails { committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8, tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>, anti_air_attack: i64, air_kills: u32, damage: [i64; 6], organisation_loss: [i64; 24], organisation_loss_count: u32, commander: u64, commander_skill: i32, commander_category: i32, commander_country: u32, commander_experience: i64, commander_name_token: Vec<u8>, commander_description_token: Vec<u8>, commander_formation: u64, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait> });
+value_struct!(LandCombatSideDetails { committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8, tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>, anti_air_attack: i64, air_kills: u32, damage: [i64; 6], organisation_loss: [i64; 24], organisation_loss_count: u32, commander: u64, commander_skill: i32, commander_category: i32, commander_country: u32, commander_experience: i64, commander_name_token: Vec<u8>, commander_description_token: Vec<u8>, commander_formation: u64, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait>, trait_expiry_days: Vec<i32> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatTacticWeightTerm {

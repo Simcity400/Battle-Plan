@@ -837,6 +837,7 @@ mod tests {
                             token: b"progress".to_vec(),
                             experience: Decimal::parse(b"0.00001").unwrap(),
                         }],
+                        timed_traits: Vec::new(),
                         captured: false,
                     },
                 )]),

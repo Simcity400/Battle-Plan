@@ -133,6 +133,7 @@ impl Captured {
                 category_mask: row.category_mask,
                 feature_selector: row.feature_selector,
                 precision: row.precision,
+                eligibility: row.eligibility,
             },
         )]
     }
@@ -197,6 +198,7 @@ mod tests {
             category_mask: 8,
             feature_selector: 0,
             precision: -1,
+            eligibility: 1,
         };
         captured.rows.outcome = Outcome::Rows { len: 1 };
         let [TableView::Complete(TableRows::ModifierDefinitions(rows))] = captured.tables() else {
@@ -214,6 +216,7 @@ mod tests {
                 category_mask: 8,
                 feature_selector: 0,
                 precision: -1,
+                eligibility: 1,
             }
         );
         captured.rows.rows[0].argument = span(7, 2);

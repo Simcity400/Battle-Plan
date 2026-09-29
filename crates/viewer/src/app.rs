@@ -3028,9 +3028,16 @@ impl Viewer {
             .map(|hours| hours.engaged(&self.perspective.country))
             .transpose()
             .map_err(|error| error.to_string())?;
+        // Hit tests only: the frame's second layout below collects the hovers.
         let combat_geometry = self
             .combat
-            .draw(document, extent, &self.perspective, engaged.as_deref())
+            .draw(
+                document,
+                extent,
+                &self.perspective,
+                engaged.as_deref(),
+                false,
+            )
             .map_err(|error| error.to_string())?;
         let point = response
             .hover_pos()
@@ -3371,11 +3378,23 @@ impl Viewer {
             .map(|hours| hours.engaged(&self.perspective.country))
             .transpose()
             .map_err(|error| error.to_string())?;
-        let label_batch = if let Some(drawn) = self
+        let label_batch = if let Some(mut drawn) = self
             .combat
-            .draw(document, extent, &self.perspective, engaged.as_deref())
+            .draw(
+                document,
+                extent,
+                &self.perspective,
+                engaged.as_deref(),
+                true,
+            )
             .map_err(|error| error.to_string())?
         {
+            self.combat
+                .draw_tooltip(&mut drawn, &document.icons.combat, point, extent)
+                .map_err(|error| error.to_string())?;
+            if let Some(delay) = self.combat.tooltip_repaint_after(&document.icons.combat) {
+                ui.ctx().request_repaint_after(delay);
+            }
             if build_warnings {
                 warnings.extend(self.combat.warnings(document));
             }

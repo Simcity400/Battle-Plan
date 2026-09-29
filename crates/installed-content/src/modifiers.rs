@@ -168,27 +168,49 @@ impl std::fmt::Display for Undecided {
     }
 }
 
-/// The modifier readers' dispatch of one field. A block value the name
-/// decides is read as the skip and recorded in `undecided`.
-pub fn shape(node: Node, field: &Field<'_>, undecided: &mut Vec<Undecided>) -> Shape<Node> {
+/// Whether a name is a registered modifier (1406042A0), as far as the
+/// caller knows: `None` when it does not. A recording's modifier
+/// definitions answer it; content alone does not.
+pub type Registry<'a> = &'a dyn Fn(&[u8]) -> Option<bool>;
+
+/// The registry of a reader that has no recording: it knows no name.
+pub const UNKNOWN: Registry<'static> = &|_| None;
+
+/// The modifier readers' dispatch of one field. A block value under a
+/// modifier name is read as `registry` decides it (1406042A0); where it
+/// does not say, and for an equipment stat (140625D00, whose stat map the
+/// port does not hold), it is read as the skip and recorded in
+/// `undecided`.
+pub fn shape(
+    node: Node,
+    field: &Field<'_>,
+    registry: Registry<'_>,
+    undecided: &mut Vec<Undecided>,
+) -> Shape<Node> {
     let keyword = field.keyword();
     // A registered name is read through ReadFixed5, which consumes nothing
     // more; any other through RecordError (1424ACF90), whose skip
     // (1424AD270) passes over a block when the current token is `{`. A
     // punctuation or number key is no name (its token id names none).
-    let mut decide = |reader| {
+    let mut decide = |reader, registry: Registry<'_>| {
         if keyword.is_none() && field.key.kind != native::Kind::Quoted {
-            Shape::Skip
-        } else if field.skips_block() {
-            undecided.push(Undecided {
-                name: String::from_utf8_lossy(&field.key.text).into_owned(),
-                line: field.key.line,
-                reader,
-                untraced: false,
-            });
-            Shape::Skip
-        } else {
-            Shape::One
+            return Shape::Skip;
+        }
+        if !field.skips_block() {
+            return Shape::One;
+        }
+        match registry(&field.key.text) {
+            Some(true) => Shape::One,
+            Some(false) => Shape::Skip,
+            None => {
+                undecided.push(Undecided {
+                    name: String::from_utf8_lossy(&field.key.text).into_owned(),
+                    line: field.key.line,
+                    reader,
+                    untraced: false,
+                });
+                Shape::Skip
+            }
         }
     };
     match node {
@@ -203,9 +225,9 @@ pub fn shape(node: Node, field: &Field<'_>, undecided: &mut Vec<Undecided>) -> S
             Some(b"name" | b"data" | b"custom_modifier_tooltip") => Shape::One,
             Some(b"hidden_modifier") => Shape::ObjectOrSkip(Node::Hidden),
             Some(b"added_modifier") => Shape::Object(Node::Modifier),
-            _ => decide("1406042A0"),
+            _ => decide("1406042A0", registry),
         },
-        Node::Hidden => decide("1406042A0"),
+        Node::Hidden => decide("1406042A0", registry),
         // 1406039B0: `key` 0xDC and `tag` 0x2A02 through ReadStringInto;
         // `valid_relation_trigger` 0x37C3 a CAndTrigger (vtable +0x28,
         // LoadBody 1405431C0), its fields read by key (the key-validity
@@ -213,11 +235,11 @@ pub fn shape(node: Node, field: &Field<'_>, undecided: &mut Vec<Undecided>) -> S
         Node::Targeted => match keyword.as_deref() {
             Some(b"key" | b"tag") => Shape::One,
             Some(b"valid_relation_trigger") => Shape::Trigger,
-            _ => shape(Node::Modifier, field, undecided),
+            _ => shape(Node::Modifier, field, registry, undecided),
         },
         Node::EquipmentBonuses => Shape::Object(Node::EquipmentBonus),
         Node::EquipmentBonus if field.keyword_is("instant") => Shape::One,
-        Node::EquipmentBonus => decide("140625D00"),
+        Node::EquipmentBonus => decide("140625D00", UNKNOWN),
         Node::ResearchBonus => Shape::One,
     }
 }
@@ -631,6 +653,10 @@ mod tests {
     /// A test file: `block` is a CModifier, `t` a targeted modifier, `e` an
     /// equipment bonus loop; anything else is skipped.
     fn read(text: &[u8]) -> (Vec<Item>, Vec<String>, Vec<Undecided>) {
+        read_with(text, UNKNOWN)
+    }
+
+    fn read_with(text: &[u8], registry: Registry<'_>) -> (Vec<Item>, Vec<String>, Vec<Undecided>) {
         #[derive(Clone, Copy)]
         enum Test {
             Top,
@@ -644,7 +670,9 @@ mod tests {
                 Some(b"e") => Shape::Object(Test::Modifier(Node::EquipmentBonuses)),
                 _ => Shape::Skip,
             },
-            Test::Modifier(node) => shape(node, field, &mut undecided).map(Test::Modifier),
+            Test::Modifier(node) => {
+                shape(node, field, registry, &mut undecided).map(Test::Modifier)
+            }
         });
         let misreads = read.misreads.iter().map(ToString::to_string).collect();
         (read.items, misreads, undecided)
@@ -873,6 +901,47 @@ mod tests {
         assert!(
             misreads[0].contains("key `x` has no operator"),
             "{misreads:?}"
+        );
+    }
+
+    /// With a registry (a recording's modifier definitions), 1406042A0
+    /// decides a block value: a registered name goes through ReadFixed5,
+    /// which takes the `{` as its value, so the block's entries are the
+    /// modifier's own and its `}` ends it; any other name is recorded
+    /// (1424ACF90) and its block skipped. An equipment stat (140625D00) is
+    /// not the modifier registry's to decide.
+    #[test]
+    fn a_registry_decides_block_values_under_modifier_names() {
+        let registry: Registry<'_> = &|name| match name {
+            b"registered" => Some(true),
+            b"unregistered" => Some(false),
+            _ => None,
+        };
+        let keys = |text: &[u8]| {
+            let (items, _, undecided) = read_with(text, registry);
+            assert!(undecided.is_empty(), "{undecided:?}");
+            values(block(&items, "block"))
+                .values
+                .into_iter()
+                .map(|m| m.key)
+                .collect::<Vec<_>>()
+        };
+        // `b` is read by the file loop, past the block's `}`.
+        assert_eq!(
+            keys(b"block = { registered = { a = 1 } b = 2 }"),
+            ["registered", "a"]
+        );
+        assert_eq!(
+            keys(b"block = { unregistered = { c = 3 } d = 4 }"),
+            ["unregistered", "d"]
+        );
+        let (_, _, undecided) = read_with(b"e = { armor = { registered = { f = 5 } } }", registry);
+        assert_eq!(
+            undecided
+                .iter()
+                .map(|found| (found.name.as_str(), found.reader))
+                .collect::<Vec<_>>(),
+            [("registered", "140625D00")]
         );
     }
 

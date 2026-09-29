@@ -262,19 +262,27 @@ fn active(
                     asset.size[0],
                     document,
                 );
-                if organisation_admitted
-                    && let Some(total) = live.iter().try_fold(0_i128, |sum, row| {
-                        Some(sum + fixed_ratio(row.organisation, organisation_maximum(row)?))
-                    })
-                {
-                    let ratio = total / live.len() as i128;
-                    bar(
-                        &mut values,
-                        "bar_org",
-                        ratio as f32 / 100_000.0,
-                        asset.size[0],
-                        document,
-                    );
+                // A refused ship organisation family was reported once above.
+                if organisation_admitted {
+                    match live.iter().try_fold(0_i128, |sum, row| {
+                        let maximum = organisation_maximum(row)
+                            .map_err(|reason| (row.battle_slot, reason))?;
+                        Ok::<_, (u32, String)>(sum + fixed_ratio(row.organisation, maximum))
+                    }) {
+                        Ok(total) => {
+                            let ratio = total / live.len() as i128;
+                            bar(
+                                &mut values,
+                                "bar_org",
+                                ratio as f32 / 100_000.0,
+                                asset.size[0],
+                                document,
+                            );
+                        }
+                        Err((slot, reason)) => out.warnings.push(format!(
+                            "NavalCombatShips slot {slot}: its maximum organisation (140C29DF0) is unknown: {reason}; its group's organisation bar is omitted."
+                        )),
+                    }
                 }
             }
             if key.column == "hidden" {
@@ -379,10 +387,20 @@ pub(super) fn escape_bar_x(width: f32, document: &Document) -> f32 {
 fn fixed_ratio(value: i64, maximum: i64) -> i128 {
     i128::from(value) * 100_000 / i128::from(maximum)
 }
-fn organisation_maximum(row: &NavalCombatShipRow) -> Option<i64> {
+/// 140C29DF0's maximum organisation, or which operand refuses it.
+fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, String> {
     if row.live_ship == 0 {
-        return (row.live_convoy != 0 && row.base_organisation > 0)
-            .then_some(row.base_organisation);
+        if row.live_convoy == 0 {
+            return Err("it is neither a live ship nor a live convoy".into());
+        }
+        return if row.base_organisation > 0 {
+            Ok(row.base_organisation)
+        } else {
+            Err(format!(
+                "the convoy records base organisation {}, not a positive value",
+                row.base_organisation
+            ))
+        };
     }
     // 140C29DF0 -> 140C28730 calls 140C29020 with commander=0, which
     // selects the task force's default commander rather than combat leader.
@@ -396,14 +414,24 @@ fn organisation_maximum(row: &NavalCombatShipRow) -> Option<i64> {
             other => other,
         };
     }
-    let modifier = |key| super::naval_environment::modifier(&context, key);
+    let modifier = |key: u32| {
+        super::naval_environment::modifier(&context, key).ok_or_else(|| {
+            let name = engine::modifier_keys::ALL
+                .iter()
+                .find(|known| known.index == key)
+                .map_or("an unnamed key", |known| known.name);
+            format!(
+                "naval_environment::modifier gives no {name} ({key:#x}) from its recorded weapon-context sources"
+            )
+        })
+    };
     let base = row
         .base_organisation
         .wrapping_add(modifier(engine::modifier_keys::NAVY_ORG)?);
     let factor = 100_000_i64
         .wrapping_add(modifier(engine::modifier_keys::NAVY_ORG_FACTOR)?)
         .wrapping_add(modifier(engine::modifier_keys::MAX_ORGANISATION)?);
-    Some((base.wrapping_mul(factor) / 100_000).max(100))
+    Ok((base.wrapping_mul(factor) / 100_000).max(100))
 }
 fn show(values: &mut Values, key: &str) {
     values.entry(key.into()).or_default().hidden = false;
@@ -492,6 +520,9 @@ fn result(
 ) -> io::Result<()> {
     let table = rows::<tables::NavalCombatResultDetails>(frame)?;
     let Some(detail) = table.rows().iter().find(|r| r.result == id) else {
+        out.warnings.push(format!(
+            "Naval result {id}: no NavalCombatResultDetails row, so the survivor and loss lists are omitted."
+        ));
         return Ok(());
     };
     for (side, row) in detail.sides.iter().enumerate() {
@@ -691,9 +722,16 @@ mod tests {
                 ..Default::default()
             },
         ];
-        assert_eq!(organisation_maximum(&row), Some(3_520_000));
+        assert_eq!(organisation_maximum(&row), Ok(3_520_000));
         row.weapon_context.sources.pop();
-        assert_eq!(organisation_maximum(&row), Some(3_300_000));
+        assert_eq!(organisation_maximum(&row), Ok(3_300_000));
+        row.live_ship = 0;
+        row.live_convoy = 1;
+        row.base_organisation = 0;
+        assert_eq!(
+            organisation_maximum(&row),
+            Err("the convoy records base organisation 0, not a positive value".into())
+        );
     }
     #[test]
     fn the_left_column_takes_the_second_frame_unless_reversed() {

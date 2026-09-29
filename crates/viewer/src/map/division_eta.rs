@@ -153,6 +153,8 @@ impl MovementContent {
 pub struct Etas {
     by_division: Pairs,
     progress: BTreeMap<u64, i64>,
+    /// Why a division the hour moves has no progress.
+    progress_gaps: BTreeMap<u64, &'static str>,
     report: Report,
 }
 
@@ -170,12 +172,20 @@ impl Etas {
     }
 
     /// Native first-edge movement fraction in signed fixed5, sentinel and all,
-    /// or `None` where the hour cannot rebuild it. Zero for an empty route. In
-    /// the game it drives only the movement arrow's fill target (`+0x28`) of a
-    /// selected own unit (see the module docs); a counter never reads it.
-    #[cfg(test)]
-    pub fn progress(&self, division: u64) -> Option<i64> {
-        self.progress.get(&division).copied()
+    /// or why the hour cannot rebuild it. Zero for an empty route. In the game
+    /// it drives the movement arrow's fill target (`+0x28`) of a selected own
+    /// unit (see the module docs) and the naval invasion progress in a
+    /// combat's division hover (140BEC9A0 in 1415BF4B0); a counter never reads
+    /// it.
+    pub fn progress(&self, division: u64) -> Result<i64, &'static str> {
+        match self.progress.get(&division) {
+            Some(progress) => Ok(*progress),
+            None => Err(self
+                .progress_gaps
+                .get(&division)
+                .copied()
+                .unwrap_or("it has no DivisionMovement row this hour")),
+        }
     }
 
     pub fn report(&self) -> Report {
@@ -207,11 +217,23 @@ fn derive(frame: &DecodedFrame, movement_content: Option<&MovementContent>) -> i
             &Defines::default(),
         ) {
             etas.progress.insert(row.division, value);
+        } else {
+            etas.progress_gaps.insert(
+                row.division,
+                "eta_derive::movement_progress refuses its empty route",
+            );
         }
     }
     let Some(content_map) = movement_content else {
         etas.report.refused = inputs.len();
         etas.report.progress_refused = movement.len() - etas.progress.len();
+        for division in movement.keys() {
+            if !etas.progress.contains_key(division) {
+                etas.progress_gaps.entry(*division).or_insert(
+                    "the content's movement map (terrain and movement defines) failed to load",
+                );
+            }
+        }
         return Ok(etas);
     };
     let (map, defines) = (&content_map.map, &content_map.defines);
@@ -242,17 +264,33 @@ fn derive(frame: &DecodedFrame, movement_content: Option<&MovementContent>) -> i
     let provinces = indexed(&terrain_rows, |&row| row);
     let distance = |from, to| map.distance(from, to);
     for row in inputs.iter().filter(|row| row.valid_at(frame.hour)) {
-        if let Some(value) = movement.get(&row.division).and_then(|movement| {
-            eta_derive::movement_progress(
-                movement,
-                Some(row),
-                location.get(&row.division).copied(),
-                |id| provinces.get(id),
-                distance,
-                defines,
-            )
-        }) {
-            etas.progress.insert(row.division, value);
+        let Some(movement) = movement.get(&row.division) else {
+            continue;
+        };
+        match eta_derive::movement_progress(
+            movement,
+            Some(row),
+            location.get(&row.division).copied(),
+            |id| provinces.get(id),
+            distance,
+            defines,
+        ) {
+            Some(value) => {
+                etas.progress.insert(row.division, value);
+            }
+            None => {
+                etas.progress_gaps.insert(
+                    row.division,
+                    "eta_derive::movement_progress refuses its recorded route with the content map",
+                );
+            }
+        }
+    }
+    for division in movement.keys() {
+        if !etas.progress.contains_key(division) {
+            etas.progress_gaps
+                .entry(*division)
+                .or_insert("it has no DivisionEtaInputs row valid this hour");
         }
     }
     etas.report.progress_refused = movement.len() - etas.progress.len();
@@ -618,7 +656,7 @@ mod tests {
         let etas = Etas::read(&derivable(), Some(&map)).unwrap();
         assert_eq!(etas.get(DIVISION), Some((25_000, 125_000)));
         // Progress divides the numerator by the first edge's content distance.
-        assert_eq!(etas.progress(DIVISION), Some(50_000));
+        assert_eq!(etas.progress(DIVISION), Ok(50_000));
         assert_eq!(
             etas.report(),
             Report {
@@ -707,7 +745,7 @@ mod tests {
             };
             let etas = Etas::read(&frame, Some(&map)).unwrap();
             assert_eq!(etas.get(DIVISION), None);
-            assert_eq!(etas.progress(DIVISION), Some(50_000));
+            assert_eq!(etas.progress(DIVISION), Ok(50_000));
             assert_eq!((etas.report().derived, etas.report().refused), (0, 1));
         }
 
@@ -717,7 +755,10 @@ mod tests {
             reason: "dropped for the test".into(),
         };
         let etas = Etas::read(&frame, Some(&map)).unwrap();
-        assert_eq!(etas.progress(DIVISION), None);
+        assert_eq!(
+            etas.progress(DIVISION),
+            Err("it has no DivisionEtaInputs row valid this hour")
+        );
         assert_eq!(etas.report().progress_refused, 1);
 
         // A province absent from the content map cannot silently become the
@@ -725,7 +766,10 @@ mod tests {
         let partial = content(MovementMap::from_parts(&[(1, LAND, Vec::new())]));
         let etas = Etas::read(&derivable(), Some(&partial)).unwrap();
         assert_eq!(etas.get(DIVISION), None);
-        assert_eq!(etas.progress(DIVISION), None);
+        assert_eq!(
+            etas.progress(DIVISION),
+            Err("eta_derive::movement_progress refuses its recorded route with the content map")
+        );
 
         // Content that failed to load refuses every moving division, but a
         // division without a route still stands at progress zero.
@@ -748,8 +792,11 @@ mod tests {
         );
         let etas = Etas::read(&frame, None).unwrap();
         assert_eq!(etas.get(DIVISION), None);
-        assert_eq!(etas.progress(DIVISION), None);
-        assert_eq!(etas.progress(DIVISION + 1), Some(0));
+        assert_eq!(
+            etas.progress(DIVISION),
+            Err("the content's movement map (terrain and movement defines) failed to load")
+        );
+        assert_eq!(etas.progress(DIVISION + 1), Ok(0));
         assert_eq!(
             (etas.report().refused, etas.report().progress_refused),
             (1, 1)

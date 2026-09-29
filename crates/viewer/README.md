@@ -84,6 +84,20 @@ A replay can preserve exact simulation values without preserving the native rend
 
 Map text uses the configured user folder's game language (`settings.txt`), not the recording's.
 
+Land combat hovers ([tooltips.rs](src/combat/tooltips.rs), [division_tooltips.rs](src/combat/division_tooltips.rs), [commander_tooltips.rs](src/combat/commander_tooltips.rs)) are rebuilt from recorded operands, the content and the viewer's localisation. Modifier lines follow the native formatter ([modifier_text.rs](src/combat/modifier_text.rs)) over the recorded `ModifierDefinitions`, `LexicalTokens` and `SimulationFeatures` tables. Trait content is read as the game's reader reads it: its number scanner, file-local `@` variables, the sub-unit database order for `sub_unit_modifiers`, and the hash-table order of `custom_modifier_tooltip` keys. What cannot be rebuilt is refused, named and counted in diagnostics, never approximated:
+
+- the reserve reinforcement hover's per-source lines for the country and the commander: the game labels them with localised names that its modifier trees store without a source identity;
+- the default hover of a division invading from the sea whose landing progress the hour cannot rebuild (a route content cannot place, or missing movement rows);
+- the default hover of a division whose template's recorded name is empty: the game then localises the template's name key for its country, which no table records;
+- every trait's effects and the skill levels when a `common/unit_leader` file's reading cannot be followed (a block read by key that the port cannot settle): the unread rest could merge another body into any trait or add a level;
+- trait text that is not UTF-8, a modifier name two recorded tokens fold to, and missing definition, dictionary or DLC tables;
+- advisor unlock lines for ranks between specialist and genius;
+- the skill progress and the learning-trait lines of a commander whose country link the hour's CountryLinks cannot resolve: the game shows them only for the viewing country's commander.
+
+Modifier names, trait keys and sub-units that the game's own reader drops or reads as zero are treated the same way in the hover, and counted.
+
+Planned follow-up layer, after the political layers merge: the reinforcement breakdown's per-source lines. It records each modifier source's identity and value in the order the game adds them: the sources of `CCountry::RecalculateModifiers` (1406CE2A0) for the country tree, and the leader rebuild (140C12A60, 140C12010) for the commander's.
+
 Battle plans show the viewing country's own plan only: the game's allied-plan toggle is not recorded. Ribbons use the native fixed-point smoothing, control-point tessellation, terrain height and texture-side rules; the desktop shader includes terrain/water normals and the no-head shader's second shadow factor ([orders.rs](src/map/orders.rs), [maparrow.wgsl](src/map/maparrow.wgsl)). Army-group front child sections, the extra offset unit a bound front takes from its child count, and the transport count on long invasion and paradrop labels need operands no recording holds and are not drawn; offset fronts skip the game's intersection-tested resubmission. The limitations list states these when a plan is drawn.
 
 

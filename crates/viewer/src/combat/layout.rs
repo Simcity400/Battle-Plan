@@ -13,19 +13,41 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
+/// The last value under keyword `key`: the GUI readers dispatch by token id
+/// (parser::Item::keyword), so a bare key folds and a quoted one is none.
 pub fn value<'a>(items: &'a [Item], key: &str) -> Option<&'a Value> {
     items
         .iter()
         .rev()
-        .find(|item| {
-            item.key
-                .as_deref()
-                .is_some_and(|k| k.eq_ignore_ascii_case(key.as_bytes()))
-        })
+        .find(|item| item.keyword_is(key))
         .map(|item| &item.value)
 }
 pub fn string<'a>(items: &'a [Item], key: &str) -> Option<&'a str> {
     value(items, key).and_then(Value::scalar_str)
+}
+/// A boolean field as read_bool_field (1424ABCA0 -> read_bool_token
+/// 1424B06E0) reads it for CGuiType/CWindowType::parse_field and the sprite
+/// types, each assignment in order: exactly `yes` or `no`, compared on the
+/// token text. Any other value (`YES` included) fails without writing and
+/// 1424ABCA0 only reports it, so the field keeps what an earlier assignment
+/// set, or its default (`None` here). A block value is `Err`: nothing skips
+/// it, so the game reads its contents as the widget's own fields.
+pub fn boolean(items: &[Item], key: &str) -> Result<Option<bool>, String> {
+    let mut read = None;
+    // parse_field dispatches by token id: a quoted key is no keyword.
+    for item in items.iter().filter(|item| item.keyword_is(key)) {
+        match &item.value {
+            Value::Scalar(text) if text == b"yes" => read = Some(true),
+            Value::Scalar(text) if text == b"no" => read = Some(false),
+            Value::Scalar(_) => {}
+            Value::Block(_) | Value::Tagged { .. } => {
+                return Err(format!(
+                    "{key} is a block where read_bool_field (1424ABCA0) takes one value, so the game reads its contents as the widget's own fields"
+                ));
+            }
+        }
+    }
+    Ok(read)
 }
 pub fn number(items: &[Item], key: &str, default: f32) -> f32 {
     string(items, key)
@@ -142,6 +164,30 @@ pub fn contains(rect: [f32; 4], point: [f32; 2]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 1424B06E0 compares the text exactly: `YES` and `No` are neither, so
+    /// the field keeps what an earlier assignment set, or its default; the
+    /// keys still fold (parse_field dispatches them by token id); a block
+    /// value is refused by name.
+    #[test]
+    fn boolean_values_are_exact_yes_or_no_read_in_order() {
+        let document = installed_content::parser::parse(
+            b"CenterPosition = yes centerPosition = YES horizontal = no clipping = YES               fixedsize = No tilingCenter = no TILINGCENTER = yes \"horizontal\" = yes               orientation = { x = 1 }",
+        )
+        .unwrap();
+        let items = &document.items;
+        assert_eq!(boolean(items, "centerPosition"), Ok(Some(true)));
+        assert_eq!(boolean(items, "horizontal"), Ok(Some(false)));
+        assert_eq!(boolean(items, "clipping"), Ok(None));
+        assert_eq!(boolean(items, "fixedsize"), Ok(None));
+        assert_eq!(boolean(items, "tilingCenter"), Ok(Some(true)));
+        assert_eq!(boolean(items, "alwaysTransparent"), Ok(None));
+        assert!(
+            boolean(items, "orientation")
+                .unwrap_err()
+                .starts_with("orientation is a block")
+        );
+    }
 
     #[test]
     fn centered_window_and_scrolling_content_use_separate_origins() {

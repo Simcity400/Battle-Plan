@@ -273,7 +273,8 @@ impl Context<'_, '_> {
             4 => {
                 let (travelled, inputs) = arrows::plane_inputs(self.world.frame(), raid)?;
                 let branch = arrows::SpeedBranch::of(kind, &|name| {
-                    self.assets.equipment.category_mask(name)
+                    let equipment = &self.assets.equipment;
+                    equipment.named(name).map(|kind| equipment.category(kind))
                 })?;
                 let speed = arrows::raid_unit_speed(
                     branch,

@@ -7,6 +7,7 @@ use super::{
     },
     land_details::{Condition, conditions},
     template_icons,
+    tooltips::{hover_text, set_hover},
 };
 use crate::{
     document::Document,
@@ -14,7 +15,7 @@ use crate::{
 };
 use installed_content::{
     division_names::{Database, Unresolved},
-    localisation::Argument,
+    localisation::{Argument, Localisation},
 };
 use replay::{
     frame::DecodedFrame,
@@ -373,6 +374,117 @@ fn icons(values: &mut Values, key: &str, template: &str, frames: impl Iterator<I
     );
 }
 
+/// A global modifier hover: its text (`None` for a frame without one) and
+/// delayed text, each or why it is refused.
+type ModifierHover = (
+    Result<Option<String>, String>,
+    Option<Result<String, String>>,
+);
+
+/// 1415C0AE0 ignores the hovered child and dispatches by the global modifier
+/// strip's frame. Static descriptions come from the localisation; border
+/// conflict factors are the side's recorded simulation operands.
+fn global_modifier_tooltip(
+    icons: &impl TextIcons,
+    loc: &Localisation,
+    frame: u32,
+    dlc_mask: Option<u32>,
+    border: Option<[i64; 3]>,
+) -> ModifierHover {
+    if frame == 8 {
+        let Some([modifier, dig_in, terrain]) = border else {
+            return (
+                Err("the side's border-war factors are not recorded".to_owned()),
+                None,
+            );
+        };
+        let mut main = String::new();
+        if modifier != 0 {
+            match builtin(
+                icons,
+                loc,
+                "BORDER_CONFLICT_MODIFIER",
+                &[("VAL", Argument::Fixed5(modifier))],
+            ) {
+                Ok(line) => main.push_str(&line),
+                Err(reason) => return (Err(reason), None),
+            }
+        }
+        for (value, key) in [
+            (terrain, "BORDER_CONFLICT_TERRAIN_FACTOR"),
+            (dig_in, "BORDER_CONFLICT_DIG_IN_FACTOR"),
+        ] {
+            if value == 100_000 {
+                continue;
+            }
+            let entry = match builtin(
+                icons,
+                loc,
+                "BORDER_CONFLICT_FACTOR_ENTRY",
+                &[("VAL", Argument::Fixed5(value))],
+            ) {
+                Ok(entry) => entry,
+                Err(reason) => return (Err(reason), None),
+            };
+            // 1415C0AE0 wraps the entry in the control byte 0x11 and a colour
+            // with string appends, outside the localiser's buffer.
+            let colour = if value < 100_000 { 'R' } else { 'H' };
+            let coloured = format!("\u{11}{colour}{entry}\u{11}!");
+            if !main.is_empty() && !main.ends_with('\n') {
+                main.push('\n');
+            }
+            match builtin(icons, loc, key, &[("VAL", Argument::Text(&coloured))]) {
+                Ok(line) => main.push_str(&line),
+                Err(reason) => return (Err(reason), None),
+            }
+        }
+        return (Ok((!main.is_empty()).then_some(main)), None);
+    }
+    let (key, description) = match frame {
+        0 => (
+            "BM_FORT_MODIFIER",
+            dlc_mask.map(|mask| {
+                // 1401AE640's feature ID 0x23 maps to the saved DLC mask's
+                // bit 7, not to a bit numbered 0x23.
+                if mask & (1 << 7) != 0 {
+                    "BM_FORT_MODIFIER_DESC_WITH_RAILWAY_GUN"
+                } else {
+                    "BM_FORT_MODIFIER_DESC"
+                }
+            }),
+        ),
+        1 => (
+            "BM_ENEMY_AIR_SUPERIORITY",
+            Some("BM_ENEMY_AIR_SUPERIORITY_DESC"),
+        ),
+        2 => ("BM_AIR_SUPPORT", Some("BM_AIR_SUPPORT_DESC")),
+        3 => ("BM_SHORE_BOMBARD", Some("BM_SHORE_BOMBARD_DESC")),
+        4 => (
+            "BM_RAILWAY_GUN_BOMBARD",
+            Some("BM_RAILWAY_GUN_BOMBARD_DESC"),
+        ),
+        5 => ("BM_STACKING", Some("BM_STACKING_DESC")),
+        6 => (
+            "BM_MULTIPLE_DIRECTIONS",
+            Some("BM_MULTIPLE_DIRECTIONS_DESC"),
+        ),
+        7 => ("BM_DECRYPTION", Some("BM_DECRYPTION_DESC")),
+        9 => (
+            "BM_ACTIVE_CODE_CRACKING_BONUSES",
+            Some("BM_ACTIVE_CODE_CRACKING_BONUSES_DESC"),
+        ),
+        _ => return (Ok(None), None),
+    };
+    // The BM_ keys are the executable's: each must be in the localisation,
+    // and a missing or unsupported one is refused by name, never shown as
+    // its own text.
+    let main = builtin(icons, loc, key, &[])
+        .and_then(|name| builtin(icons, loc, "HEADER", &[("KEY", Argument::Text(&name))]))
+        .map(Some);
+    let delayed = description.map(|key| builtin(icons, loc, key, &[]));
+    (main, delayed)
+}
+
 /// The side whose `*_leader_initiative_overlay_glow` 1415C8950 shows. 1412990E0
 /// scores each side by its selected commander's skill (140C0A4A0, zero without
 /// one) and adds the `RECON_SKILL_IMPACT` define to the side whose largest
@@ -477,6 +589,11 @@ fn land(
     let modifiers = rows::<tables::LandCombatModifiers>(frame)?;
     let marker = rows::<tables::LandCombatSides>(frame)?;
     let marker = marker.rows().iter().find(|row| row.combat == id);
+    let features = rows::<tables::SimulationFeatures>(frame)?;
+    let dlc_mask = match features.rows() {
+        [feature] if features.is_complete() => Some(feature.dlc_mask),
+        _ => None,
+    };
     let bars = conditions(frame)?;
     let division_gap = absence(&rows::<tables::Divisions>(frame)?);
     let status_gap = absence(&rows::<tables::DivisionStatus>(frame)?);
@@ -801,12 +918,55 @@ fn land(
                     kinds.push(kind);
                 }
             }
+            let key = format!("{prefix}_window/modifier_icons_container/list");
             icons(
                 &mut out.values,
-                &format!("{prefix}_window/modifier_icons_container/list"),
+                &key,
                 "global_modifier_icon_entry",
-                kinds.into_iter(),
+                kinds.iter().copied(),
             );
+            if kinds.contains(&0) && dlc_mask.is_none() {
+                out.refuse(format!(
+                    "Land combat {id} {prefix} fort modifier: the SimulationFeatures row is unavailable, so its delayed hover text is omitted."
+                ));
+            }
+            let border = modifier.and_then(|modifier| modifier.border_values);
+            let mut refusals = Vec::new();
+            if let Some(list) = out.values.get_mut(&key) {
+                for (kind, entry) in kinds.iter().copied().zip(&mut list.entries) {
+                    let (main, delayed) = global_modifier_tooltip(
+                        &document.icons.combat,
+                        &document.names.localisation,
+                        kind,
+                        dlc_mask,
+                        border,
+                    );
+                    let main = main.unwrap_or_else(|reason| {
+                        refusals.push(format!(
+                            "Land combat {id} {prefix} modifier frame {kind} hover is omitted: {reason}."
+                        ));
+                        None
+                    });
+                    let delayed = delayed.and_then(|delayed| {
+                        delayed
+                            .map_err(|reason| {
+                                refusals.push(format!(
+                                    "Land combat {id} {prefix} modifier frame {kind} delayed hover text is omitted: {reason}."
+                                ))
+                            })
+                            .ok()
+                    });
+                    set_hover(
+                        entry,
+                        "modifier_icon",
+                        main.as_deref().and_then(hover_text),
+                        delayed.as_deref().and_then(hover_text),
+                    );
+                }
+            }
+            for refusal in refusals {
+                out.refuse(refusal);
+            }
         } else {
             out.refuse(format!(
                 "Land combat {id} {prefix} global modifier icons are omitted: its LandCombatSides row is missing."
@@ -972,6 +1132,35 @@ fn naval(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::combat::binding::NoIcons;
+
+    /// The BM_ keys are the executable's: a missing one is refused, never
+    /// shown as its own text, and the delayed key is named. Border factors
+    /// wrap their entry in the stored colour byte.
+    #[test]
+    fn executable_modifier_keys_must_exist() {
+        let loc: Localisation = [
+            ("HEADER", "$KEY$"),
+            ("BM_STACKING", "Stacking"),
+            ("BORDER_CONFLICT_FACTOR_ENTRY", "$VAL|%0$"),
+            ("BORDER_CONFLICT_TERRAIN_FACTOR", "Terrain $VAL$"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+        let (main, delayed) = global_modifier_tooltip(&NoIcons, &loc, 5, None, None);
+        assert_eq!(main, Ok(Some("Stacking".to_owned())));
+        // A missing top-level key shows its own bytes (142230940).
+        assert_eq!(delayed, Some(Ok("BM_STACKING_DESC".to_owned())));
+        let (main, _) = global_modifier_tooltip(&NoIcons, &loc, 7, None, None);
+        assert_eq!(main, Ok(Some("BM_DECRYPTION".to_owned())));
+        let (main, delayed) =
+            global_modifier_tooltip(&NoIcons, &loc, 8, None, Some([0, 100_000, 80_000]));
+        assert_eq!(main, Ok(Some("Terrain \u{11}R80%\u{11}!".to_owned())));
+        assert_eq!(delayed, None);
+        let (main, _) = global_modifier_tooltip(&NoIcons, &loc, 8, None, None);
+        assert!(main.unwrap_err().contains("border-war factors"));
+    }
     const HALF: Condition = Condition {
         strength: 50_000,
         max_strength: Some(100_000),

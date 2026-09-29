@@ -89,8 +89,10 @@ names, localised `OR` between alternatives, groups
 `raid_unit_requirements_module_header`. `141578C80` reads the global subunit definition discriminator (not a country-local clone) and lists active battalions with
 nonempty limits using `raid_unit_requirements_battalion(NAME, LIMIT)`.
 `141580360` selects the empty/min/max/invalid/exact/min_max limit branch.
-`1409FC1E0`/`1409FEBA0` expand equipment groups in authored order with terminal
-deduplication and `", "` separators when the group has no localisation.
+`1409FC1E0`/`1409FEBA0` expand equipment groups (`installed_content::equipment::Groups`,
+found by token without case) in authored order with terminal deduplication
+without case and `", "` separators when the group's key (its description, else
+its name) has no localisation; a module is shown by its own name, found by token.
 
 `141580CB0` describes a source as `raid_source_desc(WHAT, LOCATION)`.
 LOCATION is the state's display name or the ship name. `141581940` selects WHAT
@@ -114,7 +116,8 @@ localisation keys (`1409CC380`, `140310B50`). These are not replaced with names
 in the recording client's language.
 
 Content forms outside the narrow adapters are explicitly refused: unknown
-success factors or custom expressions, unsupported naming/group fields, native
+success factors or custom expressions, unsupported naming fields, equipment
+groups that contain themselves, native
 trigger text forms without a supported adapter, scoped scripted localisation,
 unsupported numeric directives, invalid text cycles, and missing inline assets.
 No refusal changes the ordinary-map icon eligibility.

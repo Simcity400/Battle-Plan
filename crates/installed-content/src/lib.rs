@@ -54,6 +54,7 @@ pub mod terrain;
 pub mod tokens;
 pub mod train_gfx;
 pub mod triggers;
+pub mod unit_leader;
 pub mod unit_path;
 pub mod weather;
 

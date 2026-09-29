@@ -267,9 +267,14 @@ pub enum Shape<S> {
     /// `hidden_modifier`, 1413CA970's `research_bonus` test token 3), else
     /// RecordError (1424ACF90), whose skip is [`Shape::Skip`]'s.
     ObjectOrSkip(S),
+    /// Read as an object twice (140ADCB60's new adjuster on the default
+    /// token: 141001790 reads it, then 140ADDA6F again).
+    Twice(S),
     /// ReadStringList (1401426E0): every token up to the next `}` or the
     /// end, each through 1424AB540 into the value slot.
     List,
+    /// A list only when the value token is `{` (140ADE670), else one value.
+    ListIfOpen,
     /// CStateTemplate's `provinces` loop (140AAF580): the tokens after the
     /// value up to the `}` that brings its depth, starting at 1, to 0 (a `{`
     /// adds one, a `}` takes one; the value itself is not counted), or to
@@ -351,7 +356,9 @@ impl<S> Shape<S> {
             Self::Object(s) => Shape::Object(node(s)),
             Self::ObjectIfOpen(s) => Shape::ObjectIfOpen(node(s)),
             Self::ObjectOrSkip(s) => Shape::ObjectOrSkip(node(s)),
+            Self::Twice(s) => Shape::Twice(node(s)),
             Self::List => Shape::List,
+            Self::ListIfOpen => Shape::ListIfOpen,
             Self::Tokens => Shape::Tokens,
             Self::ListOrSkip => Shape::ListOrSkip,
             Self::Pair(s) => Shape::Pair(node(s)),
@@ -907,8 +914,8 @@ impl<'t> Reader<'t> {
                 );
                 self.apply(Shape::Skip, key, value, dispatch)
             }
-            Shape::Object(schema) | Shape::ObjectIfOpen(schema)
-                if opens || matches!(shape, Shape::Object(_)) =>
+            Shape::Object(schema) | Shape::ObjectIfOpen(schema) | Shape::Twice(schema)
+                if opens || matches!(shape, Shape::Object(_) | Shape::Twice(_)) =>
             {
                 if !opens {
                     self.misread(
@@ -920,11 +927,23 @@ impl<'t> Reader<'t> {
                         ),
                     );
                 }
-                Value::Block(self.object(schema, dispatch))
+                let mut items = self.object(schema, dispatch);
+                if let Shape::Twice(schema) = shape {
+                    self.misread(
+                        key.line,
+                        format!(
+                            "field {} is read twice: the second read takes the tokens after its block as its fields",
+                            key.shown()
+                        ),
+                    );
+                    items.extend(self.object(schema, dispatch));
+                }
+                Value::Block(items)
             }
             Shape::ObjectIfOpen(_) => Value::Scalar(value.text.clone()),
-            Shape::Object(_) => unreachable!("handled above"),
-            Shape::List => {
+            Shape::Object(_) | Shape::Twice(_) => unreachable!("handled above"),
+            Shape::ListIfOpen if !opens => Value::Scalar(value.text.clone()),
+            Shape::List | Shape::ListIfOpen => {
                 if !opens {
                     self.misread(
                         key.line,

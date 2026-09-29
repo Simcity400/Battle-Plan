@@ -145,12 +145,18 @@ fn read_file(input: &[u8]) -> (native::Read, Vec<modifiers::Undecided>) {
         Node::Ideology => match field.keyword().as_deref() {
             Some(b"color") => Shape::Color,
             Some(b"can_be_randomly_selected") => Shape::One,
-            _ => modifiers::shape(modifiers::Node::Modifier, field, &mut undecided)
-                .map(Node::Modifier),
+            _ => modifiers::shape(
+                modifiers::Node::Modifier,
+                field,
+                modifiers::UNKNOWN,
+                &mut undecided,
+            )
+            .map(Node::Modifier),
         },
         Node::Rule(rule) => rule_field(rule, field).map(Node::Rule),
         Node::Modifier(modifier) => {
-            modifiers::shape(modifier, field, &mut undecided).map(Node::Modifier)
+            modifiers::shape(modifier, field, modifiers::UNKNOWN, &mut undecided)
+                .map(Node::Modifier)
         }
     });
     (read, undecided)

@@ -36,6 +36,32 @@ impl<'a, T: TableSchema> Available<'a, T> {
     }
 }
 
+/// A recorded country reference (a CountryLinks id) as the canonical slot
+/// it links to: `None` for 0, no country; `Err` names why this hour cannot
+/// say (a link the complete table lacks, or one a truncated or unavailable
+/// table may hold). A present link proves either answer of a comparison
+/// with it; an unresolved one proves neither.
+pub fn country_slot(
+    links: &Available<'_, tables::CountryLinks>,
+    country: u32,
+) -> Result<Option<u32>, String> {
+    if country == 0 {
+        return Ok(None);
+    }
+    if let Some(link) = links.rows().iter().find(|link| link.id == country) {
+        return Ok(Some(link.canonical_slot));
+    }
+    Err(match links {
+        Available::Complete(_) => format!("country {country} has no CountryLinks row"),
+        Available::Truncated { missing, .. } => format!(
+            "the CountryLinks table is truncated this hour ({missing} rows not reached) and holds no row for country {country}"
+        ),
+        Available::Unavailable { reason } => format!(
+            "the CountryLinks table is unavailable this hour ({reason}), so country {country} is unresolved"
+        ),
+    })
+}
+
 /// The rows of `T` this hour holds, whatever state its table is in.
 ///
 /// The only error is a decoded table holding another table's rows, which is a
@@ -323,5 +349,43 @@ mod tests {
         // Only A-Z fold: other letters must match exactly.
         assert_eq!(keys.resolve("\u{e9}t\u{e9}"), Ok(Some("\u{e9}t\u{e9}")));
         assert_eq!(keys.resolve("\u{c9}t\u{c9}"), Ok(None));
+    }
+
+    /// A present link proves the slot; 0 is no country; a link the hour
+    /// lacks is named with why (a complete table without it, a truncated
+    /// or unavailable one), never taken as another country's.
+    #[test]
+    fn country_references_resolve_or_name_why_not() {
+        use replay::rows::CountryLinkRow;
+        let with = |view: TableView| {
+            let mut frame = frame(TableView::Complete(TableRows::empty(
+                TableId::LexicalTokens,
+            )));
+            *frame.tables[TableId::CountryLinks.index()] = view;
+            frame
+        };
+        let links = TableRows::CountryLinks(vec![CountryLinkRow {
+            id: 7,
+            canonical_slot: 70,
+        }]);
+        let complete = with(TableView::Complete(links.clone()));
+        let available = rows::<tables::CountryLinks>(&complete).unwrap();
+        assert_eq!(country_slot(&available, 7), Ok(Some(70)));
+        assert_eq!(country_slot(&available, 0), Ok(None));
+        assert_eq!(
+            country_slot(&available, 8),
+            Err("country 8 has no CountryLinks row".to_owned())
+        );
+        let truncated = with(TableView::Truncated {
+            rows: links,
+            missing: 3,
+        });
+        let available = rows::<tables::CountryLinks>(&truncated).unwrap();
+        assert_eq!(country_slot(&available, 7), Ok(Some(70)));
+        assert!(
+            country_slot(&available, 8)
+                .unwrap_err()
+                .starts_with("the CountryLinks table is truncated this hour (3 rows not reached)")
+        );
     }
 }

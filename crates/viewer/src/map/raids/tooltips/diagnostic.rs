@@ -19,6 +19,7 @@ impl Context<'_, '_> {
         super::super::requirements::build(
             self.loc,
             &self.assets.equipment,
+            &self.assets.equipment_groups,
             kind,
             |key| self.country_localise(key),
             |key| {
@@ -529,14 +530,11 @@ impl Context<'_, '_> {
                         .map(|(_, v)| *v)
                         .unwrap_or(0)
                         / 100_000) as i32;
-                    if self
-                        .assets
-                        .equipment
-                        .category_mask(name)
-                        .ok_or("raid equipment category absent")?
-                        & 1
-                        != 0
-                    {
+                    let equipment = &self.assets.equipment;
+                    let definition = equipment
+                        .named(name)
+                        .ok_or_else(|| format!("raid equipment {name} is not in the content"))?;
+                    if equipment.category(definition) & 1 != 0 {
                         value = value.max(-1);
                     }
                     Ok(value)

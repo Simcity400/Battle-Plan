@@ -54,6 +54,15 @@ fn definitions(
             format!("ModifierDefinitions: {unnamed} rows"),
         );
     }
+    // The eligibility callback is one process-wide pointer read with the table.
+    if rows
+        .windows(2)
+        .any(|pair| pair[0].eligibility != pair[1].eligibility)
+    {
+        return Err(invalid(
+            "ModifierDefinitions: the eligibility callback state differs between rows",
+        ));
+    }
     report.compared("ModifierDefinitions", 0);
     report.limitation(
         "modifier definitions are engine registration state (modifier_definition::Register@14054A990) that no save writer serializes, so this table has no save comparison; the recorded rows decode but are not certified against a save",

@@ -1,5 +1,5 @@
 //! Only combat-window assets; all interface bytes pass through the resolved layers.
-use super::layout::{Node, number, string, value};
+use super::layout::{Node, boolean, number, string, value};
 use crate::map::{
     counters::FlagAtlas,
     lazy_icons::{LazyImages, LazyTextures, Lookup},
@@ -59,7 +59,7 @@ pub struct Assets {
     sprites: BTreeMap<String, Sprite>,
     /// Leader portrait sprites by name: their texture and declaration, drawn
     /// once `portraits` has decoded the texture.
-    lazy_sprites: BTreeMap<String, (String, gfx::SpriteType)>,
+    lazy_sprites: BTreeMap<String, (String, gfx::SpriteType, Flags)>,
     portraits: Arc<LazyImages>,
     pub fonts: BTreeMap<String, text::Font>,
     /// The normal set, decoded as windows draw it.
@@ -68,8 +68,10 @@ pub struct Assets {
     small_flags: Arc<FlagAtlas>,
     /// The small flag cell every [`Flag::inline`] is drawn at.
     pub inline_flag_size: [f32; 2],
-    pub tactic_pictures: BTreeMap<String, String>,
-    pub convoy_weapon_bound: Option<i64>,
+    /// Each combat tactic's picture by registry id, or why it has none.
+    pub(crate) tactic_pictures: super::tooltips::TacticPictures,
+    /// The range of convoy weapon values the content allows, fixed5.
+    pub convoy_weapon_bound: Result<[i64; 2], String>,
     pub text_colors: fonts::TextColors,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
@@ -78,6 +80,12 @@ pub struct Assets {
     pub(crate) naval_name_defines: Result<[i64; 2], String>,
     /// Authored division name groups, which render the recorded selection.
     pub(crate) division_names: installed_content::division_names::Database,
+    /// Tactic literals and commander skill costs for the land hovers.
+    pub(super) tooltips: super::tooltips::Content,
+    /// Authored leader traits and advisor ranks for the commander hovers.
+    pub(super) commander_tooltips: super::commander_tooltips::Content,
+    /// Tooltip delays and screen offsets, or why the content lacks them.
+    pub(super) tooltip_defines: Result<super::tooltip_painter::TooltipDefines, String>,
     pub warnings: Vec<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -94,7 +102,7 @@ impl Assets {
         if let Some(sprite) = self.sprites.get(name) {
             return Some(Cow::Borrowed(sprite));
         }
-        let (first, declaration) = self.lazy_sprites.get(name)?;
+        let (first, declaration, flags) = self.lazy_sprites.get(name)?;
         let Lookup::Loaded { texture, size } = self.portraits.get(first) else {
             return None;
         };
@@ -107,6 +115,7 @@ impl Assets {
         Some(Cow::Owned(build_sprite(
             name,
             declaration,
+            *flags,
             sheet,
             false,
             None,
@@ -120,7 +129,7 @@ impl Assets {
             || self
                 .lazy_sprites
                 .get(name)
-                .is_some_and(|(first, _)| self.portraits.peek(first) != Lookup::Failed)
+                .is_some_and(|(first, _, _)| self.portraits.peek(first) != Lookup::Failed)
     }
 
     /// Whether a normal-set flag file exists for `key` and is not known to be
@@ -155,10 +164,27 @@ impl Assets {
     }
 }
 
+/// A sprite declaration's `horizontal = no` and `tilingCenter = yes`.
+#[derive(Clone, Copy, Debug)]
+struct Flags {
+    vertical: bool,
+    tiling_center: bool,
+}
+
+/// The declaration's boolean fields, or which one is a block, which the
+/// game's reader takes as the declaration's own fields ([`boolean`]).
+fn sprite_flags(declaration: &gfx::SpriteType) -> Result<Flags, String> {
+    Ok(Flags {
+        vertical: boolean(&declaration.items, "horizontal")? == Some(false),
+        tiling_center: boolean(&declaration.items, "tilingCenter")? == Some(true),
+    })
+}
+
 /// One combat sprite from its declaration and its first texture's sheet.
 fn build_sprite(
     name: &str,
     declaration: &gfx::SpriteType,
+    flags: Flags,
     mut sheet: SpriteSheet,
     progress: bool,
     second: Option<SpriteSheet>,
@@ -178,7 +204,7 @@ fn build_sprite(
         sheet,
         second,
         size,
-        vertical: string(&declaration.items, "horizontal") == Some("no"),
+        vertical: flags.vertical,
         progress,
         start_end: string(&declaration.items, "effectFile")
             .is_some_and(|file| file.ends_with("progress_startend.lua")),
@@ -188,7 +214,7 @@ fn build_sprite(
         .then(|| value(&declaration.items, "borderSize").and_then(|v| v.items()))
         .flatten()
         .map(|items| [number(items, "x", 0.0), number(items, "y", 0.0)]),
-        tiling_center: string(&declaration.items, "tilingCenter") == Some("yes"),
+        tiling_center: flags.tiling_center,
     }
 }
 fn path(raw: &str) -> String {
@@ -249,6 +275,12 @@ fn collect(node: &Node, sprites: &mut BTreeSet<String>, fonts: &mut BTreeSet<Str
         collect(child, sprites, fonts);
     }
 }
+
+/// The sprite a tactic picture is declared as.
+pub(super) fn tactic_sprite(picture: &str) -> String {
+    format!("combat_tactic:{picture}")
+}
+
 fn texture_declaration(name: String, texture: String, source: &str) -> gfx::SpriteType {
     gfx::SpriteType {
         name,
@@ -341,24 +373,12 @@ impl Assets {
                 texture_declaration(key, texture, "common/characters"),
             );
         }
-        let mut tactic_pictures = BTreeMap::new();
         let file = "common/combat_tactics.txt";
-        for item in installed_content::parser::parse(&layers.read(file)?)?.items {
-            let Some(items) = item.value.items() else {
-                continue;
-            };
-            let (Some(token), Some(picture)) = (
-                item.key
-                    .as_deref()
-                    .and_then(|s| std::str::from_utf8(s).ok()),
-                string(items, "picture"),
-            ) else {
-                continue;
-            };
+        let tactic_pictures = super::tooltips::TacticPictures::read(&layers.read(file)?);
+        for picture in tactic_pictures.declared() {
             let texture = format!("gfx/interface/landcombat/tactics/{picture}.dds");
-            let key = format!("combat_tactic:{picture}");
-            declarations.insert(key.clone(), texture_declaration(key.clone(), texture, file));
-            tactic_pictures.insert(token.into(), key);
+            let key = tactic_sprite(picture);
+            declarations.insert(key.clone(), texture_declaration(key, texture, file));
         }
         let mut windows = BTreeMap::new();
         for (file, names) in [
@@ -414,36 +434,41 @@ impl Assets {
             }
         }
         let core = gui::read(layers, "interface/core.gui")?;
+        // CTextBox forwards its authored border and texture to CTextSprite
+        // (14228E580/14228EE80); core.gfx's ToolTip sprite has no textbox
+        // border, so the GUI definition is the drawable.
+        let tooltip = gui::find(&core, "textBoxType", "ToolTip")
+            .ok_or_else(|| super::invalid("core.gui has no ToolTip"))?;
+        let tooltip_texture = string(tooltip, "textureFile")
+            .ok_or_else(|| super::invalid("core.gui ToolTip has no textureFile"))?;
+        declarations.insert(
+            "ToolTip".into(),
+            gfx::SpriteType {
+                name: "ToolTip".into(),
+                kind: "corneredTileSpriteType".into(),
+                texture: Some(path(tooltip_texture)),
+                frames: 1,
+                always_transparent: false,
+                items: tooltip.to_vec(),
+                source: "interface/core.gui".into(),
+            },
+        );
+        windows.insert("ToolTip".into(), Node::new("textBoxType", tooltip));
         for name in ["left_vertical_slider", "right_vertical_slider"] {
             let items = gui::find(&core, "extendedScrollbarType", name)
                 .ok_or_else(|| super::invalid(format!("core.gui has no {name}")))?;
             windows.insert(name.into(), Node::new("extendedScrollbarType", items));
         }
-        let mut wanted = BTreeSet::new();
+        let mut wanted = BTreeSet::from(["ToolTip".to_owned()]);
         let mut wanted_fonts = BTreeSet::new();
         for node in windows.values() {
             collect(node, &mut wanted, &mut wanted_fonts);
         }
-        // Trait-tree connectors also start with GFX_trait_. Inventory actual
-        // unit-leader definitions instead of loading that unrelated editor UI.
-        for file in layers
-            .paths()
-            .filter(|p| p.starts_with("common/unit_leader/") && p.ends_with(".txt"))
-        {
-            for item in installed_content::parser::parse(&layers.read(file)?)?.items {
-                if item.key.as_deref() != Some(b"leader_traits") {
-                    continue;
-                }
-                for entry in item.value.items().unwrap_or_default() {
-                    if let Some(token) = entry
-                        .key
-                        .as_deref()
-                        .and_then(|s| std::str::from_utf8(s).ok())
-                    {
-                        wanted.insert(format!("GFX_trait_{token}"));
-                    }
-                }
-            }
+        // Trait-tree connectors also start with GFX_trait_. Inventory the
+        // traits append_trait (140AD7890) registers, by their first spelling,
+        // instead of loading that unrelated editor UI.
+        for name in installed_content::unit_leader::Traits::registered(layers)?.spellings() {
+            wanted.insert(format!("GFX_trait_{name}"));
         }
         for name in declarations.keys().filter(|name| {
             name.starts_with("GFX_terrain_")
@@ -469,6 +494,16 @@ impl Assets {
         }
         let mut sprites = BTreeMap::new();
         let (division_names, mut warnings) = installed_content::division_names::read(layers)?;
+        let (commander_tooltips, skills) =
+            super::commander_tooltips::Content::load(layers, defines)?;
+        let tooltips = super::tooltips::Content::load(layers, skills)?;
+        warnings.extend(tooltips.warnings().iter().cloned());
+        warnings.extend(commander_tooltips.warnings());
+        let tooltip_defines = super::tooltip_painter::TooltipDefines::read(defines)
+            .map_err(|error| error.to_string());
+        if let Err(reason) = &tooltip_defines {
+            warnings.push(format!("Combat tooltips are unavailable: {reason}."));
+        }
         let mut decoded = BTreeMap::new();
         let mut uncovered_portraits = false;
         // Resolve every wanted sprite's reads up front; the first textures
@@ -538,7 +573,14 @@ impl Assets {
                 }
                 WantedSprite::Lazy(first) => {
                     let declaration = declarations[&name].clone();
-                    lazy_sprites.insert(name, (first, declaration));
+                    match sprite_flags(&declaration) {
+                        Ok(flags) => {
+                            lazy_sprites.insert(name, (first, declaration, flags));
+                        }
+                        Err(reason) => warnings.push(format!(
+                            "Combat UI: declared sprite {name}: {reason}; widget stays empty."
+                        )),
+                    }
                     continue;
                 }
                 WantedSprite::Load {
@@ -550,6 +592,15 @@ impl Assets {
             let declaration = declarations
                 .get(&name)
                 .expect("wanted sprite declared up front");
+            let flags = match sprite_flags(declaration) {
+                Ok(flags) => flags,
+                Err(reason) => {
+                    warnings.push(format!(
+                        "Combat UI: declared sprite {name}: {reason}; widget stays empty."
+                    ));
+                    continue;
+                }
+            };
             let sheet = match decoded.get(&first).cloned() {
                 Some(sheet) => sheet,
                 None => {
@@ -579,7 +630,7 @@ impl Assets {
             let second = second
                 .map(|p| load_image(layers, &p, images, false))
                 .transpose()?;
-            let sprite = build_sprite(&name, declaration, sheet, progress, second);
+            let sprite = build_sprite(&name, declaration, flags, sheet, progress, second);
             sprites.insert(name, sprite);
         }
         let reader = Arc::clone(shared);
@@ -636,6 +687,18 @@ impl Assets {
         // The inline markers draw from the counters' small set: the same
         // `gfx/flags/small` files at the same defines cell, decoded once.
         let small_cell = small.cell_size();
+        let (convoy_weapon_bound, misreads) =
+            super::naval_environment::convoy_weapon_bound(layers)?;
+        warnings.extend(misreads.into_iter().map(|misread| {
+            format!(
+                "Convoy equipment content: {misread}; the weapon bound follows the game's reading."
+            )
+        }));
+        if let Err(reason) = &convoy_weapon_bound {
+            warnings.push(format!(
+                "Naval weapon totals with live convoys stay dash: the convoy equipment's weapon values are unknown ({reason})."
+            ));
+        }
         Ok(Self {
             windows,
             sprites,
@@ -646,7 +709,7 @@ impl Assets {
             small_flags: Arc::clone(small),
             inline_flag_size: small_cell.map(|side| side as f32),
             tactic_pictures,
-            convoy_weapon_bound: super::naval_environment::convoy_weapon_bound(layers)?,
+            convoy_weapon_bound,
             text_colors: fonts::read_text_colors(layers)?,
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),
@@ -657,6 +720,9 @@ impl Assets {
                 .map(|values| [values[0], values[1]])
                 .map_err(|error| error.to_string()),
             division_names,
+            tooltips,
+            commander_tooltips,
+            tooltip_defines,
             warnings,
         })
     }
