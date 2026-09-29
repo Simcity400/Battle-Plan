@@ -327,6 +327,7 @@ mod tests {
             TableId::SupplyNodes,
             TableId::WeatherProvinces,
             TableId::LandCombatDivisions,
+            TableId::LandCombatSides,
             TableId::AirBaseRegistrations,
             // The land counter's ability grid: abilities start and change phase at any hour.
             TableId::ActiveAbilities,

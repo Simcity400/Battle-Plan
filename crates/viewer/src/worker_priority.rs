@@ -69,3 +69,20 @@ pub fn at_least(priority: Option<i32>, work: impl FnOnce()) {
     let _ = priority;
     work();
 }
+
+/// Below the hour builders and the playback decoder, for passes that only
+/// refine what the window already shows.
+pub fn lowest_priority() {
+    #[cfg(windows)]
+    {
+        const THREAD_PRIORITY_LOWEST: i32 = -2;
+        unsafe extern "system" {
+            fn GetCurrentThread() -> *mut std::ffi::c_void;
+            fn SetThreadPriority(thread: *mut std::ffi::c_void, priority: i32) -> i32;
+        }
+        // SAFETY: as in `background_priority`.
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+        }
+    }
+}

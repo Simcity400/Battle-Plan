@@ -5,7 +5,10 @@ use super::{
 };
 use crate::{
     document::Document,
-    map::{perspective::Vision, tables::rows},
+    map::{
+        perspective::{NAVAL_COMBATS_NOT_WHOLE, NAVAL_DETAILS_ROW_MISSING, SharingUnknown, Vision},
+        tables::rows,
+    },
 };
 use engine::modifier_keys as keys;
 use replay::{
@@ -388,6 +391,64 @@ fn no_carrier_penalty(side: &NavalCombatSideDetails) -> bool {
     planes <= side.summary.integer_defines[2]
 }
 
+/// 140E69830: whether the battle province shows the `ongoing_sea_battle_`
+/// terrain prefix, over the hour's tables.
+fn ongoing_battle(
+    frame: &DecodedFrame,
+    province: u32,
+    aliases: &BTreeMap<u32, u32>,
+    vision: &Vision,
+) -> io::Result<Result<bool, SharingUnknown>> {
+    let details = rows::<tables::NavalCombatDetails>(frame)?;
+    // 140E69830: any intel-visible combat at this province enables the
+    // ongoing_sea_battle_ prefix. 1413CD880 uses either side's countries.
+    // A proven seen combat decides it; otherwise an undecided one leaves it
+    // unknown, with the first missing input. The province's combats are
+    // every NavalCombats identity there (and every detail row there): one
+    // without a detail row has no country list, and a NavalCombats table
+    // that is not whole may lack one.
+    let combats = rows::<tables::NavalCombats>(frame)?;
+    let at_province: BTreeSet<u64> = combats
+        .rows()
+        .iter()
+        .filter(|r| r.province == province)
+        .map(|r| r.id)
+        .chain(
+            details
+                .rows()
+                .iter()
+                .filter(|r| r.province == province)
+                .map(|r| r.combat),
+        )
+        .collect();
+    let mut ongoing = Ok(false);
+    for combat in at_province {
+        let row = details.rows().iter().find(|r| r.combat == combat);
+        match vision.sees_combat(
+            row.into_iter()
+                .flat_map(|r| &r.sides)
+                .flat_map(|side| &side.summary.countries)
+                .map(|country| aliases.get(country).copied()),
+            row.is_none().then_some(NAVAL_DETAILS_ROW_MISSING),
+        ) {
+            Ok(true) => {
+                ongoing = Ok(true);
+                break;
+            }
+            Ok(false) => {}
+            Err(cause) => {
+                if ongoing == Ok(false) {
+                    ongoing = Err(cause);
+                }
+            }
+        }
+    }
+    if ongoing == Ok(false) && !combats.is_complete() {
+        ongoing = Err(SharingUnknown::Census(NAVAL_COMBATS_NOT_WHOLE));
+    }
+    Ok(ongoing)
+}
+
 pub(super) fn bind(
     out: &mut Bindings,
     document: &Document,
@@ -414,20 +475,7 @@ pub(super) fn bind(
         .iter()
         .map(|r| (r.id, r.canonical_slot))
         .collect();
-    // 140E69830: any intel-visible combat at this province enables the
-    // ongoing_sea_battle_ prefix. 1413CD880 uses either side's countries.
-    let ongoing = details
-        .rows()
-        .iter()
-        .filter(|r| r.province == detail.province)
-        .any(|r| {
-            vision.sees_combat(
-                r.sides
-                    .iter()
-                    .flat_map(|side| &side.summary.countries)
-                    .filter_map(|country| aliases.get(country).copied()),
-            )
-        });
+    let ongoing = ongoing_battle(frame, detail.province, &aliases, vision)?;
     for (side, name) in detail.sides.iter().zip(["attacker", "defender"]) {
         if no_carrier_penalty(side) {
             let widget = out
@@ -468,15 +516,24 @@ pub(super) fn bind(
                     .strategic_regions
                     .get(&region)
                     .and_then(|r| r.naval_terrain.as_deref());
-                if let Some(name) = picture_names(
-                    terrain,
-                    *nights.first().expect("one night value"),
-                    weather_suffix(weather),
-                    ongoing,
-                )
-                .into_iter()
-                .find(|n| document.icons.combat.has_sprite(n))
-                {
+                let night = *nights.first().expect("one night value");
+                let picture = |ongoing| {
+                    picture_names(terrain, night, weather_suffix(weather), ongoing)
+                        .into_iter()
+                        .find(|n| document.icons.combat.has_sprite(n))
+                };
+                // An undecided prefix decides nothing unless both pictures agree.
+                let name = match ongoing {
+                    Ok(ongoing) => picture(ongoing),
+                    Err(cause) => match (picture(true), picture(false)) {
+                        (with, without) if with == without => with,
+                        _ => {
+                            out.warnings.push(format!("Naval environment: whether the viewer sees a combat at the battle province (1406F3A90, for the ongoing_sea_battle_ prefix) is unknown, {}; terrain image remains empty.", cause.describe()));
+                            None
+                        }
+                    },
+                };
+                if let Some(name) = name {
                     out.values.insert(
                         "header_container/terrain_background".into(),
                         Widget {
@@ -699,5 +756,99 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(modifier(&context, 7), Some(17_000));
+    }
+
+    /// 140E69830 takes the ongoing prefix from any seen combat at the battle
+    /// province. Every NavalCombats identity there counts, so two combats in
+    /// one province: one without a detail row, or a NavalCombats table that
+    /// is not whole, keeps a proven positive and refuses a negative.
+    #[test]
+    fn the_ongoing_prefix_needs_every_combat_at_the_province() {
+        use replay::{
+            frame::TableView,
+            rows::{NavalCombatDetailsRow, NavalCombatRow, TableId, TableRows},
+        };
+        // GER (100 -> 0) views and ITA (102 -> 2) shares; SOV (101 -> 1) does not.
+        let aliases = BTreeMap::from([(100, 0), (101, 1), (102, 2)]);
+        let vision = Vision::sharing(0, [2]);
+        let details = |rows: &[(u64, u32)]| {
+            TableRows::NavalCombatDetails(
+                rows.iter()
+                    .map(|&(combat, country)| {
+                        let mut row = NavalCombatDetailsRow {
+                            combat,
+                            province: 500,
+                            ..Default::default()
+                        };
+                        row.sides[0].summary.countries = vec![country];
+                        row
+                    })
+                    .collect(),
+            )
+        };
+        let combats = || {
+            TableRows::NavalCombats(
+                [(1, 500), (2, 500), (3, 600)]
+                    .map(|(id, province)| NavalCombatRow {
+                        id,
+                        province,
+                        ..Default::default()
+                    })
+                    .to_vec(),
+            )
+        };
+        let ongoing = |combats: TableView, details: TableView| {
+            let mut frame = DecodedFrame {
+                branch: 1,
+                hour: 5,
+                tables: std::array::from_fn(|_| {
+                    TableView::Unavailable {
+                        reason: "not captured".into(),
+                    }
+                    .into()
+                }),
+                metrics: Default::default(),
+            };
+            *frame.tables[TableId::NavalCombats.index()] = combats;
+            *frame.tables[TableId::NavalCombatDetails.index()] = details;
+            ongoing_battle(&frame, 500, &aliases, &vision).unwrap()
+        };
+        let truncated = |rows| TableView::Truncated { rows, missing: 1 };
+        // Both combats at 500 are SOV's, and every table is whole: unseen.
+        assert_eq!(
+            ongoing(
+                TableView::Complete(combats()),
+                TableView::Complete(details(&[(1, 101), (2, 101)]))
+            ),
+            Ok(false)
+        );
+        // Combat 2 has no detail row, the table whole or not: unknown.
+        for rows in [
+            TableView::Complete(details(&[(1, 101)])),
+            truncated(details(&[(1, 101)])),
+        ] {
+            assert_eq!(
+                ongoing(TableView::Complete(combats()), rows),
+                Err(SharingUnknown::Census(NAVAL_DETAILS_ROW_MISSING))
+            );
+        }
+        // A proven seen combat decides it whatever else is missing.
+        assert_eq!(
+            ongoing(
+                TableView::Unavailable {
+                    reason: "combats read failed".into()
+                },
+                truncated(details(&[(2, 102)]))
+            ),
+            Ok(true)
+        );
+        // NavalCombats not whole: another combat may be at the province.
+        assert_eq!(
+            ongoing(
+                truncated(combats()),
+                TableView::Complete(details(&[(1, 101), (2, 101)]))
+            ),
+            Err(SharingUnknown::Census(NAVAL_COMBATS_NOT_WHOLE))
+        );
     }
 }

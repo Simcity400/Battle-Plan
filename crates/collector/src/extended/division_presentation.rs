@@ -464,6 +464,7 @@ impl Captured {
                         && span(r.path_start, r.path_len).unwrap() == previous.path.as_slice()
                         && r.combat_role == previous.combat_role
                         && r.combat_province == previous.combat_province
+                        && r.map_entity == previous.map_entity
                         && r.alternate_total == previous.alternate_total
                         && span(r.alternate_start, r.alternate_len).unwrap()
                             == previous.alternate_path.as_slice()
@@ -481,6 +482,7 @@ impl Captured {
                     path: span(r.path_start, r.path_len).unwrap().to_vec(),
                     combat_role: r.combat_role,
                     combat_province: r.combat_province,
+                    map_entity: r.map_entity,
                     alternate_total: r.alternate_total,
                     alternate_path: span(r.alternate_start, r.alternate_len).unwrap().to_vec(),
                 },
@@ -518,6 +520,7 @@ mod tests {
             movement_target: Some(0),
             movement_source: Some(0),
             naval_transfer_membership: Some(0),
+            map_entity: Some(0),
             retreat: Some(0),
             strategic_redeployment: Some(0),
             ..DivisionSeed::default()

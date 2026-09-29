@@ -3,11 +3,14 @@ mod assets;
 mod binding;
 mod details;
 mod division_icons;
+pub(crate) mod engaged;
+pub(crate) mod icon_frames;
 pub(crate) mod land_details;
 mod layout;
 mod naval_details;
 mod naval_environment;
 mod presentation;
+pub(crate) mod progress;
 pub(crate) mod texture;
 
 use crate::{

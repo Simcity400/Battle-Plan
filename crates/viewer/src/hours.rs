@@ -51,6 +51,7 @@ use replay::{BranchId, Hour, container::Replay};
 use crate::{
     blocks::BlockReader,
     document::{Content, Hour as HourView, OverlayTables, PreparedOverlay},
+    engaged_index::EngagedIndex,
     map::{
         aircraft::AircraftPlan,
         border_pass::ClassPlan,
@@ -1111,6 +1112,9 @@ struct Coordinator {
     /// The playback decode lane, unless a shared decoder serves this view.
     lane: Option<DecodeLane>,
     requested: Arc<Mutex<Option<(u64, Want)>>>,
+    /// The window's engaged-flag index, which the overlay part reads when it
+    /// is for the wanted perspective's country; it never starts one.
+    engaged: Engaged,
     want: Option<Want>,
     epoch: u64,
     pending: BTreeMap<(BranchId, Hour), Pending>,
@@ -1455,14 +1459,26 @@ impl Coordinator {
         let (camera, viewport, ui_scale) =
             (want.view.camera, want.view.viewport, want.view.ui_scale);
         let overlay_perspective = want.perspective.clone();
+        // The window's index when it is for this perspective's country, so a
+        // prebuilt hour carries the exact flags once the index covers it.
+        let overlay_engaged = self
+            .engaged
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .filter(|index| index.country() == &want.perspective.country)
+            .cloned();
         submit(
             "overlay",
             Box::new(move |view| {
                 Part::Overlay((|| {
                     // Raid icons come from the window's raid lane
                     // ([`crate::raid_lane`]), which chains hours.
-                    let tables =
-                        view.hour_tables_with_raids(&overlay_perspective, Arc::default())?;
+                    let tables = view.hour_tables_with_raids(
+                        &overlay_perspective,
+                        Arc::default(),
+                        overlay_engaged.as_deref(),
+                    )?;
                     let overlay =
                         view.prepare_overlay_cached(camera, viewport, ui_scale, &tables)?;
                     Ok(Box::new((overlay, tables)))
@@ -1590,9 +1606,15 @@ pub struct Pipeline {
     epoch: u64,
     received: std::cell::Cell<u64>,
     requested: Arc<Mutex<Option<(u64, Want)>>>,
+    /// The engaged-flag index for the last perspective country asked for,
+    /// shared with the coordinator's overlay builds.
+    engaged: Engaged,
     /// The builders' turns, which other work may borrow.
     workers: crate::parallel::Workers,
 }
+
+/// The window's engaged-flag index, shared by the window and its builders.
+type Engaged = Arc<Mutex<Option<Arc<EngagedIndex>>>>;
 
 impl Pipeline {
     /// Starts the coordinator and a builder pool of all the hardware threads
@@ -1650,12 +1672,14 @@ impl Pipeline {
                 )?)
             }
         };
+        let engaged: Engaged = Arc::new(Mutex::new(None));
         let coordinator = Coordinator {
             content: Arc::clone(&content),
             playback: Playback::unloaded(Arc::clone(&replay))?,
             shared_decoder,
             lane,
             requested: Arc::clone(&requested),
+            engaged: Arc::clone(&engaged),
             want: None,
             epoch: 0,
             pending: BTreeMap::new(),
@@ -1683,8 +1707,39 @@ impl Pipeline {
             epoch: 0,
             received: std::cell::Cell::new(0),
             requested,
+            engaged,
             workers,
         })
+    }
+
+    /// The engaged-flag index for `country`, started on first use; another
+    /// country starts a new pass and stops the old one.
+    pub(crate) fn engaged(&self, country: &perspective::Country) -> io::Result<Arc<EngagedIndex>> {
+        let mut held = self.engaged.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(index) = held.as_ref().filter(|index| index.country() == country) {
+            return Ok(Arc::clone(index));
+        }
+        let index = Arc::new(EngagedIndex::start(
+            Arc::clone(&self.replay),
+            country.clone(),
+        )?);
+        *held = Some(Arc::clone(&index));
+        Ok(index)
+    }
+
+    /// Hands this pipeline's index on to the next snapshot's pipeline.
+    pub(crate) fn take_engaged(&self) -> Option<Arc<EngagedIndex>> {
+        self.engaged
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+
+    /// Keeps a previous snapshot's index when this snapshot extends it.
+    pub(crate) fn adopt_engaged(&self, index: Arc<EngagedIndex>) {
+        if index.extend(&self.replay) {
+            *self.engaged.lock().unwrap_or_else(|p| p.into_inner()) = Some(index);
+        }
     }
 
     /// The builders' threads for work split across threads, such as a raid

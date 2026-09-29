@@ -254,6 +254,8 @@ fn land(
         .map(|r| ((r.side, r.division), r))
         .collect();
     let modifiers = rows::<tables::LandCombatModifiers>(frame)?;
+    let marker = rows::<tables::LandCombatSides>(frame)?;
+    let marker = marker.rows().iter().find(|row| row.combat == id);
     let movement: BTreeMap<_, _> = rows::<tables::DivisionMovement>(frame)?
         .rows()
         .iter()
@@ -267,6 +269,8 @@ fn land(
     }
     out.warnings
         .retain(|s| !s.starts_with("Combat UI: LandCombatDetails/"));
+    // Committed entries whose icon list ended early, per cause.
+    let mut omitted = BTreeMap::new();
     if let Some(detail) = detail {
         let snow = rows::<tables::WeatherProvinces>(frame)?
             .rows()
@@ -342,20 +346,21 @@ fn land(
                             .map(|enemy| divisions.get(&(1 - side as u8, *enemy)).copied())
                             .collect()
                     });
-                    if detail.is_some() && opponents.is_none() {
-                        out.warnings.push(format!("Land division icons: an opposing committed LandCombatDivisions row of combat {id} is missing; derived frames from armour onwards are omitted."));
+                    let (frames, cut) = super::division_icons::frames(
+                        modifier.entries.iter().map(|m| m.id),
+                        detail.map(|detail| (detail, side)),
+                        marker.map(|marker| marker.flags[side]),
+                        row,
+                        opponents.as_deref(),
+                    );
+                    if let Some(cause) = cut {
+                        *omitted.entry(cause).or_insert(0_usize) += 1;
                     }
                     icons(
                         &mut widgets,
                         "modifier_icons_container/list",
                         "modifier_icon_entry",
-                        super::division_icons::frames(
-                            modifier.entries.iter().map(|m| m.id),
-                            detail.map(|detail| (detail, side)),
-                            row,
-                            opponents.as_deref(),
-                        )
-                        .into_iter(),
+                        frames.into_iter(),
                     );
                 }
                 out.entries[target].push((*unit, widgets));
@@ -455,9 +460,9 @@ fn land(
                 );
             }
         }
-        if let Some(modifier) = modifier {
+        if let Some(marker) = marker {
             let mut kinds = Vec::new();
-            if modifier.indicator != 0 {
+            if marker.indicator != 0 {
                 kinds.push(8);
             }
             // 1415C9860's order. Frame 6 is attacker-only and asks the
@@ -483,7 +488,7 @@ fn land(
                             _ => out.warnings.push("Land attacker multiple-direction icon: an attacker's LandCombatDivisions location or DivisionMovement source is missing; the icon is omitted rather than guessed.".into()),
                         }
                     }
-                } else if modifier.flags & mask != 0 {
+                } else if marker.flags[side] & mask != 0 {
                     kinds.push(kind);
                 }
             }
@@ -522,6 +527,8 @@ fn land(
             _ => out.warnings.push("Land initiative glow: a participant's LandCombatDivisions reconnaissance is missing; neither glow is drawn rather than guessed.".into()),
         }
     }
+    out.warnings
+        .extend(super::division_icons::omission_warnings(id, &omitted));
     if detail.is_none() {
         out.warnings.push("LandCombatDetails unavailable: recorded LandCombatDivisions names, HP/org bars, commitment roles and defence/breakthrough remain bound independently, as do LandCombatModifiers icons. Side attack bonuses, selected commanders, tactics, CAS, maximum width and heading remain unknown; division commanders do not substitute for selected-side commanders.".into());
     }

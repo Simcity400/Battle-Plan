@@ -16,7 +16,8 @@
 //! and stores the two bits on the division row. Older formats decode them as
 //! zero, so those icons stay absent there exactly as before. The grid takes
 //! the frames in this order, so an undecidable step ends the list rather than
-//! shifting later icons into its place.
+//! shifting later icons into its place, and the entry reports the suffix it
+//! omitted ([`Omitted`]), the template-country frames 14 and 15 included.
 use replay::rows::{LandCombatDetailsRow, LandCombatDivisionRow};
 
 const SCALE: i64 = 100_000;
@@ -128,21 +129,66 @@ fn fuel_ratio([fuel, capacity, define]: [i64; 3]) -> i64 {
     guarded(fuel, capacity).clamp(0, SCALE)
 }
 
-/// Every frame the recording decides for one committed entry, in grid order.
-/// `opponents` is `None` when an opposing committed row is missing, which
-/// leaves the armour frames and everything after them undecided.
+/// Why a committed entry's list ends before 1415CA660's last frames: the
+/// undecidable step and every frame after it are omitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Omitted {
+    /// No `LandCombatDetails` row: frames 8 to 16 need its thresholds,
+    /// defines and selected commanders.
+    Details,
+    /// An opposing committed `LandCombatDivisions` row is missing: the armour
+    /// frames read the whole opposing array.
+    Opponent,
+    /// 141297FD0's anti-air value cannot be computed, for this reason.
+    AirDefense(&'static str),
+    /// The anti-air value passes but the side's flags (`LandCombatSides`)
+    /// are missing, so frame 13's 0x4000 test is undecided.
+    SideFlags,
+}
+
+impl Omitted {
+    /// What is omitted and why.
+    pub(super) fn reason(self) -> String {
+        const FROM_ARMOUR: &str = "armour 8 to 11, leader 12, fuel 16, anti-air 13 and the template-country icons 14 and 15";
+        const FROM_AIR: &str =
+            "the anti-air icon 13 and the template-country icons 14 and 15 after it";
+        match self {
+            Self::Details => format!(
+                "the combat has no LandCombatDetails row, so every derived icon after the recorded kinds is omitted: {FROM_ARMOUR}"
+            ),
+            Self::Opponent => format!(
+                "an opposing committed LandCombatDivisions row is missing, so every icon from armour on is omitted: {FROM_ARMOUR}"
+            ),
+            Self::AirDefense(cause) => format!(
+                "the anti-air value (141297FD0) cannot be computed ({cause}), so {FROM_AIR} are omitted"
+            ),
+            Self::SideFlags => format!(
+                "the combat has no LandCombatSides row, so the side flag 0x4000 that decides the anti-air icon is unknown and {FROM_AIR} are omitted"
+            ),
+        }
+    }
+}
+
+/// Every frame the recording decides for one committed entry, in grid order,
+/// and why the list ends early, if it does. `opponents` is `None` when an
+/// opposing committed row is missing, which leaves the armour frames and
+/// everything after them undecided.
 pub(super) fn frames(
     recorded: impl Iterator<Item = u32>,
     detail: Option<(&LandCombatDetailsRow, usize)>,
+    own_flags: Option<u32>,
     unit: &LandCombatDivisionRow,
     opponents: Option<&[&LandCombatDivisionRow]>,
-) -> Vec<u32> {
+) -> (Vec<u32>, Option<Omitted>) {
     let mut out: Vec<u32> = recorded
         .filter_map(|kind| RECORDED_KINDS.iter().position(|k| *k == kind))
         .map(|frame| frame as u32)
         .collect();
-    let (Some((detail, side)), Some(opponents)) = (detail, opponents) else {
-        return out;
+    let Some((detail, side)) = detail else {
+        return (out, Some(Omitted::Details));
+    };
+    let Some(opponents) = opponents else {
+        return (out, Some(Omitted::Opponent));
     };
     out.extend(armour_frames(detail, unit, opponents).into_iter().flatten());
     let own = &detail.sides[side];
@@ -157,9 +203,13 @@ pub(super) fn frames(
         detail.air_defines[3],
         detail.air_defines[4],
     ) {
-        Ok(value) if value > 1000 && own.flags & 0x4000 != 0 => out.push(13),
+        Ok(value) if value > 1000 => match own_flags {
+            Some(flags) if flags & 0x4000 != 0 => out.push(13),
+            Some(_) => (),
+            None => return (out, Some(Omitted::SideFlags)),
+        },
         Ok(_) => (),
-        Err(_) => return out,
+        Err(cause) => return (out, Some(Omitted::AirDefense(cause))),
     }
     // Frames 14 and 15 are recorded bits (see the module docs), pushed
     // independently exactly as 1415CA660 pushes them; a zero bit is a
@@ -170,7 +220,21 @@ pub(super) fn frames(
     if unit.template_frames & 2 != 0 {
         out.push(15);
     }
-    out
+    (out, None)
+}
+
+/// One warning per cause for a combat's entries whose list ended early,
+/// with how many entries it cut.
+pub(super) fn omission_warnings(
+    combat: u64,
+    omitted: &std::collections::BTreeMap<Omitted, usize>,
+) -> impl Iterator<Item = String> + '_ {
+    omitted.iter().map(move |(cause, entries)| {
+        format!(
+            "Land division icons: {entries} committed entries of combat {combat} end early: {}.",
+            cause.reason()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -268,7 +332,7 @@ mod tests {
         assert_eq!(fuel_ratio([100_000, 1_000_000, 25_000]), 40_000);
         assert_eq!(fuel_ratio([1_000_000, 1_000_000, 25_000]), SCALE);
         assert_eq!(fuel_ratio([-5, 1_000_000, 25_000]), 0);
-        let mut detail = detail();
+        let detail = detail();
         let enemy = unit(0, 0);
         // pairL 169th: its own leader, anti-air 21.27 (0.10176 > 0.01), side
         // flags 0x80200C9 without 0x4000: only the general.
@@ -279,30 +343,44 @@ mod tests {
             frames(
                 [].into_iter(),
                 Some((&detail, 1)),
+                Some(0x80200C9),
                 &madison,
                 Some(&[&enemy])
             ),
-            [12]
+            (vec![12], None)
         );
-        detail.sides[1].flags = 0x4000;
         madison.fuel_inputs = [100_000, 1_000_000, 25_000];
         assert_eq!(
             frames(
                 [27, 3].into_iter(),
                 Some((&detail, 1)),
+                Some(0x4000),
                 &madison,
                 Some(&[&enemy])
             ),
-            [4, 12, 16, 13]
+            (vec![4, 12, 16, 13], None)
         );
-        // Without the details row or an opposing row only recorded kinds remain.
+        // Without the details row or an opposing row only recorded kinds
+        // remain, and the entry says which step ended it.
         assert_eq!(
-            frames([2].into_iter(), None, &madison, Some(&[&enemy])),
-            [0]
+            frames(
+                [2].into_iter(),
+                None,
+                Some(0x4000),
+                &madison,
+                Some(&[&enemy])
+            ),
+            (vec![0], Some(Omitted::Details))
         );
         assert_eq!(
-            frames([2].into_iter(), Some((&detail, 1)), &madison, None),
-            [0]
+            frames(
+                [2].into_iter(),
+                Some((&detail, 1)),
+                Some(0x4000),
+                &madison,
+                None
+            ),
+            (vec![0], Some(Omitted::Opponent))
         );
         madison.air_attack = 158_327; // 0.00237 after 141297FD0: below 1000.
         madison.commander = detail.sides[1].commander;
@@ -310,41 +388,70 @@ mod tests {
             frames(
                 [].into_iter(),
                 Some((&detail, 1)),
+                Some(0x4000),
                 &madison,
                 Some(&[&enemy])
             ),
-            [16]
+            (vec![16], None)
         );
         // Recorded template bits append frames 14 and 15 independently.
-        madison.template_frames = 1;
+        for (bits, expected) in [(1, vec![16, 14]), (2, vec![16, 15]), (3, vec![16, 14, 15])] {
+            madison.template_frames = bits;
+            assert_eq!(
+                frames(
+                    [].into_iter(),
+                    Some((&detail, 1)),
+                    Some(0x4000),
+                    &madison,
+                    Some(&[&enemy])
+                ),
+                (expected, None)
+            );
+        }
+        // Below the anti-air limit the missing side flags decide nothing.
         assert_eq!(
             frames(
                 [].into_iter(),
                 Some((&detail, 1)),
+                None,
                 &madison,
                 Some(&[&enemy])
             ),
-            [16, 14]
+            (vec![16, 14, 15], None)
         );
-        madison.template_frames = 2;
+        // Above it they decide frame 13, so the list ends there and the
+        // recorded template frames 14 and 15 after it are omitted too.
+        madison.air_attack = 2_127_473;
         assert_eq!(
             frames(
                 [].into_iter(),
                 Some((&detail, 1)),
+                None,
                 &madison,
                 Some(&[&enemy])
             ),
-            [16, 15]
+            (vec![16], Some(Omitted::SideFlags))
         );
-        madison.template_frames = 3;
-        assert_eq!(
-            frames(
-                [].into_iter(),
-                Some((&detail, 1)),
-                &madison,
-                Some(&[&enemy])
-            ),
-            [16, 14, 15]
+    }
+
+    /// Each cause is one warning with its entry count, naming the omitted
+    /// template-country icons.
+    #[test]
+    fn omissions_are_counted_per_cause_and_name_the_omitted_suffix() {
+        let omitted =
+            std::collections::BTreeMap::from([(Omitted::SideFlags, 3), (Omitted::Opponent, 1)]);
+        let lines: Vec<_> = omission_warnings(62, &omitted).collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with(
+            "Land division icons: 1 committed entries of combat 62 end early: an opposing committed LandCombatDivisions row is missing"
+        ));
+        assert!(lines[1].starts_with(
+            "Land division icons: 3 committed entries of combat 62 end early: the combat has no LandCombatSides row"
+        ));
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.contains("template-country icons 14 and 15"))
         );
     }
 }

@@ -1,13 +1,27 @@
 //! Opt-in layer measurements against the synthetic replay example's output.
 use crate::{
     document::{Document, Hour, InitialHour},
+    engaged_index::{self, EngagedIndex},
     map::{
         camera::{MapSize, Placement},
         perspective, political,
+        tables::core,
+        visibility::Relations,
     },
 };
-use replay::{container::SeekResult, frame::TableView, rows::TableId};
-use std::{io, path::PathBuf, time::Instant};
+use replay::{
+    container::SeekResult,
+    frame::TableView,
+    rows::{TableId, tables},
+};
+use std::{
+    collections::BTreeMap,
+    io,
+    path::PathBuf,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 fn lap<T>(name: &str, camera: &str, hour: i32, work: impl FnOnce() -> io::Result<T>) {
     let start = Instant::now();
@@ -51,6 +65,32 @@ fn unit_scale_replay_layers() {
         fog: false,
         ..Default::default()
     };
+    // The index the window starts for its perspective country
+    // (`hours::Pipeline::engaged`), timed until it covers the last hour.
+    let started = Instant::now();
+    let engaged = Arc::new(
+        EngagedIndex::start(
+            document.playback.replay_handle(),
+            perspective.country.clone(),
+        )
+        .unwrap(),
+    );
+    let last = replay
+        .index
+        .iter()
+        .filter(|block| block.branch == 1)
+        .map(|block| block.last_hour)
+        .max()
+        .unwrap();
+    while !engaged.covers(1, last) {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let ms = started.elapsed().as_secs_f64() * 1e3;
+    let hours = last - first + 1;
+    println!(
+        "UNIT_ENGAGED_FOLD hours={hours} ms={ms:.6} per_hour_ms={:.6}",
+        ms / f64::from(hours)
+    );
     for (camera_name, height) in [("close", 70.0), ("mid", 339.0), ("world", 2400.0)] {
         let camera = Placement {
             center: [3009.9868, 1537.9652],
@@ -85,10 +125,77 @@ fn unit_scale_replay_layers() {
                 political::build(&document.map, &frame)
             });
             lap("names", camera_name, at, || hour.place_names());
+            // The land combat flags alone: from the covering index, as the
+            // window reads them, and rebuilt as a load (or a dump) does.
+            let viewer = hour.vision(&perspective).unwrap().ours();
+            let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(&frame)
+                .unwrap()
+                .iter()
+                .map(|link| (link.id, link.canonical_slot))
+                .collect();
+            let relations = Relations::read(&frame, &links);
+            assert!(
+                engaged.answers(&frame, viewer),
+                "the index does not answer hour {at}"
+            );
+            let flags = |index: Option<&EngagedIndex>| {
+                engaged_index::combats(
+                    &frame,
+                    engaged_index::LAND,
+                    viewer,
+                    &links,
+                    relations.as_ref().map_err(|reason| *reason),
+                    index,
+                )
+            };
+            if camera_name == "close" && offset == 0 {
+                let mut counts = BTreeMap::new();
+                for flag in flags(Some(&*engaged)).unwrap().0.values() {
+                    *counts.entry(format!("{flag:?}")).or_insert(0) += 1;
+                }
+                println!("UNIT_ENGAGED hour={at} flags={counts:?}");
+                // The fixture covers the engaged index, not every marker:
+                // its added combats have no LandCombatDetails row, so a seen
+                // one draws no tint. Every tint gap must be one of those.
+                let tables = hour.hour_tables(&perspective, Some(&*engaged)).unwrap();
+                let (gaps, limits) = tables.land_combat_gaps();
+                let details: std::collections::BTreeSet<u64> =
+                    core::<tables::LandCombatDetails>(&frame)
+                        .map(|rows| rows.iter().map(|row| row.combat).collect())
+                        .unwrap_or_default();
+                let without_details = core::<tables::LandCombats>(&frame)
+                    .unwrap()
+                    .iter()
+                    .filter(|combat| !details.contains(&combat.id))
+                    .count();
+                println!(
+                    "UNIT_LAND_MARKERS hour={at} without_details={without_details} gaps={gaps:?} limits={limits:?}"
+                );
+                let tint = gaps
+                    .get("tint (survival estimate unknown)")
+                    .copied()
+                    .unwrap_or(0);
+                assert!(
+                    tint <= without_details,
+                    "{tint} tint gaps, only {without_details} combats without details"
+                );
+                // The covering index answers every flag: no load-rebuilt
+                // provenance. (Marker value limits, such as an unseen
+                // icon's withheld frame, are not provenance.)
+                assert!(
+                    !limits.keys().any(|limit| limit.starts_with("engaged flag")),
+                    "the covering index answers: {limits:?}"
+                );
+            }
+            lap("engaged_indexed", camera_name, at, || {
+                flags(Some(&*engaged))
+            });
+            lap("engaged_rebuilt", camera_name, at, || flags(None));
             lap("overlay", camera_name, at, || {
-                hour.hour_tables(&perspective).and_then(|tables| {
-                    hour.prepare_overlay_cached(camera, [1920, 1080], 1.0, &tables)
-                })
+                hour.hour_tables(&perspective, Some(&*engaged))
+                    .and_then(|tables| {
+                        hour.prepare_overlay_cached(camera, [1920, 1080], 1.0, &tables)
+                    })
             });
             lap("rails", camera_name, at, || hour.rail_mesh());
             lap("buildings", camera_name, at, || {
@@ -111,6 +218,8 @@ fn unit_scale_replay_layers() {
             document.playback.replay_handle(),
         )
         .unwrap();
+        // The window carries its index into a new pipeline the same way.
+        pipeline.adopt_engaged(Arc::clone(&engaged));
         let started = Instant::now();
         pipeline
             .want(crate::hours::Want {

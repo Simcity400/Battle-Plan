@@ -5,6 +5,7 @@ mod compare;
 mod dashboard_maps;
 mod document;
 mod embedded;
+mod engaged_index;
 mod hours;
 mod map;
 mod parallel;
@@ -889,11 +890,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {warning}");
         }
         if let Some(path) = &options.counters_json {
-            let census =
+            let mut census =
                 document
                     .icons
                     .counters
                     .census(&label_batch, &document.icons.fonts, ui_scale);
+            // The same land combat lines the dump prints, so the export says
+            // which markers were undecided or drawn with load-rebuilt flags.
+            census["combat_diagnostics"] =
+                serde_json::json!(counter_report.combat_gap_lines().collect::<Vec<_>>());
             std::fs::write(path, serde_json::to_vec_pretty(&census)?)?;
         }
         if let Some(selector) = options.combat {
@@ -1404,6 +1409,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.naval_combats,
             counter_report.unanchored
         );
+        for line in counter_report.combat_gap_lines() {
+            println!("{line}");
+        }
         for warning in counter_report.warnings() {
             println!("{warning}");
         }

@@ -5,11 +5,79 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::LandCombatDetails, |r| land(frame, save, r));
     report.attempt_table(TableId::LandCombatDivisions, |r| divisions(frame, save, r));
     report.attempt_table(TableId::LandCombatModifiers, |r| modifiers(frame, save, r));
+    report.attempt_table(TableId::LandCombatSides, |r| sides(frame, save, r));
     report.attempt_table(TableId::NavalCombatDetails, |r| naval(frame, save, r));
     report.attempt_table(TableId::NavalCombatShips, |r| ships(frame, save, r));
     report.attempt_table(TableId::NavalCombatResultDetails, |r| {
         results(frame, save, r)
     });
+}
+
+/// One row per saved land combat. The save serializes neither country set of a
+/// side, nor the indicator byte or flag words. Beyond the census, each primary
+/// set must hold the logical owner of every saved unit on its side: `1413CC0D0`
+/// appends the joining unit's logical owner to the side's `+0x38` set.
+fn sides(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::LandCombatSides>()?;
+    let countries = country_context(frame)?;
+    let mut seen = BTreeSet::new();
+    let mut unsaved_units = 0_usize;
+    for row in rows {
+        if row.combat == 0 || !seen.insert(row.combat) {
+            return Err(invalid("LandCombatSides: null or duplicate combat handle"));
+        }
+        let Some(combat) = save.land_combats.get(&row.combat) else {
+            r.difference(
+                format!("LandCombatSides {}", row.combat),
+                "present",
+                "absent",
+            );
+            continue;
+        };
+        for (label, units, primary) in [
+            ("attacker", &combat.attackers, &row.attacker_primary),
+            ("defender", &combat.defenders, &row.defender_primary),
+        ] {
+            let mut tags = BTreeSet::new();
+            for &raw in primary {
+                if let Some(tag) = country_tag(raw, &countries.links)? {
+                    tags.insert(tag);
+                }
+            }
+            for unit in units {
+                let Some(division) = save.divisions.get(unit) else {
+                    unsaved_units += 1;
+                    continue;
+                };
+                r.scalar_checks += 1;
+                if !tags.contains(division.logical_owner.as_slice()) {
+                    r.difference(
+                        format!("LandCombatSides {}.{label}_primary", row.combat),
+                        format!(
+                            "missing {}",
+                            tag_text(Some(division.logical_owner.as_slice()))
+                        ),
+                        "every saved unit's logical owner",
+                    );
+                }
+            }
+        }
+    }
+    for combat in save.land_combats.keys().filter(|id| !seen.contains(id)) {
+        r.difference(format!("LandCombatSides {combat}"), "absent", "present");
+    }
+    r.compared("LandCombatSides", rows.len());
+    if unsaved_units > 0 {
+        r.limitation(
+            "A saved combat side names a unit the save's division rosters do not hold; its logical owner cannot be checked against the primary set.",
+            "LandCombatSides",
+        );
+    }
+    r.limitation(
+        "The text save serializes neither side's country sets, the indicator byte nor the flag words. The census is compared, and each primary set must hold every saved unit's logical owner; the full ordered raw lists, secondary sets and operands need a paused live-memory check.",
+        "LandCombatSides",
+    );
+    Ok(())
 }
 
 fn equal<T: PartialEq + std::fmt::Debug>(
@@ -512,7 +580,7 @@ fn modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         }
     }
     r.compared("LandCombatModifiers", rows.len());
-    r.limitation("Native ordered modifier id/A/B entries and side visibility flags are runtime presentation inputs with no compared text-save counterpart. Ordinary side icons have static explanations, not numeric percentage fields; no invented percentage is recorded. Battle-history modifier durations are a different data structure and are not substitutes for active modifier values", "LandCombatModifiers");
+    r.limitation("Native ordered modifier id/A/B entries are runtime presentation inputs with no compared text-save counterpart. Ordinary side icons have static explanations, not numeric percentage fields; no invented percentage is recorded. Battle-history modifier durations are a different data structure and are not substitutes for active modifier values", "LandCombatModifiers");
     Ok(())
 }
 

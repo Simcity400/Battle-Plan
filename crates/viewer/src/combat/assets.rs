@@ -69,7 +69,6 @@ pub struct Assets {
     /// The small flag cell every [`Flag::inline`] is drawn at.
     pub inline_flag_size: [f32; 2],
     pub tactic_pictures: BTreeMap<String, String>,
-    pub score_defines: Option<super::land_details::ScoreDefines>,
     pub convoy_weapon_bound: Option<i64>,
     pub text_colors: fonts::TextColors,
     pub warnings: Vec<String>,
@@ -637,7 +636,6 @@ impl Assets {
             small_flags: Arc::clone(small),
             inline_flag_size: small_cell.map(|side| side as f32),
             tactic_pictures,
-            score_defines: super::land_details::ScoreDefines::load(layers)?,
             convoy_weapon_bound: super::naval_environment::convoy_weapon_bound(layers)?,
             text_colors: fonts::read_text_colors(layers)?,
             warnings,

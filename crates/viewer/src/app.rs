@@ -455,6 +455,9 @@ pub struct Viewer {
     map_animation_target: Option<map::presentation::Target>,
     /// The worker threads that build every hour's layers off the frame path.
     hours: Option<hours::Pipeline>,
+    /// The engaged-flag index of the recording last closed, for a newer
+    /// snapshot of it to continue.
+    engaged_carry: Option<Arc<crate::engaged_index::EngagedIndex>>,
     /// The builders' generation the window keeps hours of.
     epoch: u64,
     /// Built hours not yet shown.
@@ -786,6 +789,7 @@ impl Viewer {
             animation_seek: false,
             map_animation_target: None,
             hours: None,
+            engaged_carry: None,
             epoch: 0,
             ready: BTreeMap::new(),
             shown: None,
@@ -1061,6 +1065,9 @@ impl Viewer {
             warnings.extend(placements.warnings.iter().cloned());
         }
         warnings.extend(self.label_report.warnings());
+        // Land combats whose marker is undecided (for example while the engaged
+        // index has not yet covered a session-start branch's hour).
+        warnings.extend(self.counter_report.combat_gap_lines());
         // The overlay's refused tokens: the raid icons' as laid out for this
         // camera, the counters' as last drawn.
         if let Some(overlay) = &self.prepared_overlay {
@@ -1703,9 +1710,13 @@ impl Viewer {
         self.rendered = None;
         self.revision = None;
         self.scene = None;
-        // hours
+        // hours: a newer snapshot of this recording keeps its engaged index.
         self.playhead = None;
-        self.hours = None;
+        self.engaged_carry = self
+            .hours
+            .take()
+            .and_then(|hours| hours.take_engaged())
+            .or(self.engaged_carry.take());
         self.ready.clear();
         self.shown = None;
         self.last_view = None;
@@ -2249,6 +2260,9 @@ impl Viewer {
                 }
                 None => hours::Pipeline::new(Arc::clone(&document.content), replay)?,
             });
+            if let (Some(hours), Some(index)) = (&self.hours, self.engaged_carry.take()) {
+                hours.adopt_engaged(index);
+            }
             self.epoch = 0;
             self.ready.clear();
             self.shown = None;
@@ -3201,6 +3215,26 @@ impl Viewer {
             .prepared_overlay
             .as_ref()
             .is_some_and(|prepared| prepared.is_stale(&now));
+        let engaged = self
+            .hours
+            .as_ref()
+            .map(|hours| hours.engaged(&self.perspective.country))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        // An overlay laid out before the engaged index reached its hour, by the
+        // window or by an hour builder, is laid out again once it does, so a
+        // paused seek or a prebuilt hour settles on the exact flag.
+        let engaged_arrived = engaged_relayout(
+            self.prepared_overlay
+                .as_ref()
+                .zip(self.overlay_at.as_ref())
+                .map(|(prepared, (branch, hour, ..))| (prepared.engaged_covered(), *branch, *hour)),
+            |branch, hour| {
+                engaged
+                    .as_ref()
+                    .is_some_and(|index| index.covers(branch, hour))
+            },
+        );
         // The raid lane's icons for the hour on screen replace the hour's
         // when they are newer; a paused frame asks the lane for one batch.
         let ctx = ui.ctx().clone();
@@ -3224,7 +3258,8 @@ impl Viewer {
         {
             raids_changed = tables.set_raids(icons);
         }
-        let layout_changed = stale || self.overlay_at.as_ref() != Some(&overlay_key);
+        let layout_changed =
+            stale || engaged_arrived || self.overlay_at.as_ref() != Some(&overlay_key);
         // A raid batch on the laid-out hour, camera and view replaces the raid
         // icons alone: the rest of the overlay does not read them. The batch
         // drawn at this fraction takes them in place, as drawing it again
@@ -3245,12 +3280,13 @@ impl Viewer {
                 document.playback.hour(),
                 self.perspective.clone(),
             );
-            if self
-                .overlay_tables
-                .as_ref()
-                .is_none_or(|(branch, hour, perspective, _)| {
-                    (*branch, *hour, perspective) != (tables_key.0, tables_key.1, &tables_key.2)
-                })
+            if engaged_arrived
+                || self
+                    .overlay_tables
+                    .as_ref()
+                    .is_none_or(|(branch, hour, perspective, _)| {
+                        (*branch, *hour, perspective) != (tables_key.0, tables_key.1, &tables_key.2)
+                    })
             {
                 // Raid offers are only evaluated on the raid lane: until it
                 // delivers this hour's for this view, no raid icon draws
@@ -3264,7 +3300,7 @@ impl Viewer {
                     .icons(tables_key.0, tables_key.1, ours)
                     .unwrap_or_default();
                 let tables = now
-                    .hour_tables_with_raids(&self.perspective, raids)
+                    .hour_tables_with_raids(&self.perspective, raids, engaged.as_deref())
                     .map_err(|error| error.to_string())?;
                 self.overlay_tables = Some((tables_key.0, tables_key.1, tables_key.2, tables));
             }
@@ -4068,9 +4104,45 @@ fn presentation_matches(rendered: Playhead, target: Playhead, playing: bool) -> 
         || (playing && rendered.branch == target.branch && rendered.hour < target.hour)
 }
 
+/// Whether the shown overlay, `(engaged_covered, branch, hour)`, was laid out
+/// before the engaged index covered its hour (by the window or by an hour
+/// builder) and the index now does: it is laid out again once, so a paused
+/// seek or a prebuilt hour settles on the exact flag, and an overlay laid out
+/// with the index is never redone for it.
+fn engaged_relayout(
+    shown: Option<(bool, replay::BranchId, i32)>,
+    covers: impl Fn(replay::BranchId, i32) -> bool,
+) -> bool {
+    shown.is_some_and(|(covered, branch, hour)| !covered && covers(branch, hour))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A prebuilt or window overlay without the index is laid out again once
+    /// the index covers its hour, while paused or while advancing through
+    /// prebuilt hours; one laid out with it, or one the index does not yet
+    /// cover, is kept, so unchanged frames do not rebuild.
+    #[test]
+    fn overlays_relayout_once_when_the_engaged_index_arrives() {
+        let covered_to =
+            |last: i32| move |branch: replay::BranchId, hour: i32| branch == 1 && hour <= last;
+        assert!(!engaged_relayout(None, covered_to(10)));
+        // Paused at hour 5: not yet covered, then covered.
+        assert!(!engaged_relayout(Some((false, 1, 5)), covered_to(4)));
+        assert!(engaged_relayout(Some((false, 1, 5)), covered_to(5)));
+        // After the relayout the overlay carries the index.
+        assert!(!engaged_relayout(Some((true, 1, 5)), covered_to(5)));
+        // Advancing through prebuilt hours: each prebuilt without the index is
+        // redone once the index reaches it, one built with it is not.
+        for hour in 6..9 {
+            assert!(engaged_relayout(Some((false, 1, hour)), covered_to(8)));
+            assert!(!engaged_relayout(Some((true, 1, hour)), covered_to(8)));
+        }
+        // Another branch is not covered.
+        assert!(!engaged_relayout(Some((false, 2, 5)), covered_to(8)));
+    }
 
     /// A built hour of branch 1 standing for the builders' delivery: a
     /// recorded gap, as what the lane holds is all this reads.

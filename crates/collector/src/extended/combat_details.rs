@@ -1,5 +1,5 @@
-//! Hourly combat-window operands. One bounded census feeds three independent
-//! tables. Division destinations grow from their original counts on the
+//! Hourly combat-window and marker operands. One bounded census feeds four
+//! independent tables. Division destinations grow from their original counts on the
 //! acquisition worker; projection and other capacity growth stay on the spool.
 //!
 //! The pass holds the simulation thread, so the walk reuses what it has read
@@ -38,7 +38,7 @@ use replay::{
     rows::{
         CombatModifierValue, DivisionCombatModifiers, LandCombatCommanderLearningTrait,
         LandCombatCommanderTrait, LandCombatDetailsRow, LandCombatDivisionRow,
-        LandCombatModifierRow, LandCombatSideDetails, LandDivisionContext, LandDivisionModifier,
+        LandCombatModifierRow, LandCombatSideDetails, LandCombatSideRow, LandDivisionContext, LandDivisionModifier,
         LandDivisionWidthTerm, LandReinforcementAcclimatization, LandReinforcementInputs,
         LandReinforcementModifier, LandReinforcementSupplyTerm, LandReinforcementTransportTerm,
         TableId, tables,
@@ -46,16 +46,17 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 3;
+pub const N: usize = 4;
 pub const TABLES: [TableId; N] = [
     TableId::LandCombatDetails,
     TableId::LandCombatDivisions,
     TableId::LandCombatModifiers,
+    TableId::LandCombatSides,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
     "land combat detail census and member authentication",
     0,
-    &[0, 1, 2],
+    &[0, 1, 2, 3],
 )];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,8 @@ pub struct Capacities {
     details: usize,
     divisions: usize,
     sides: usize,
+    combat_sides: usize,
+    country_tags: usize,
     rosters: usize,
     modifier_members: usize,
     modifiers: usize,
@@ -89,6 +92,8 @@ impl Default for Capacities {
             details: 64,
             divisions: 1024,
             sides: 128,
+            combat_sides: 512,
+            country_tags: 2048,
             rosters: 2048,
             modifier_members: 1024,
             modifiers: 16384,
@@ -138,11 +143,15 @@ struct Division {
 struct ModifierSide {
     combat: u64,
     side: u8,
-    flags: u32,
-    indicator: u8,
     border_values: Option<[i64; 3]>,
     start: usize,
     len: usize,
+}
+/// One combat's side country sets, with the indicator and flag words read
+/// with its modifier context (1418B4BD0's operands).
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+struct CombatSides {
+    sets: cland_combat::CountrySetsRow,
 }
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct ModifierMember {
@@ -313,6 +322,11 @@ struct Destination<'a> {
     tactic_unlock_progress: Progress,
     divisions: &'a mut Vec<Division>,
     sides: &'a mut [ModifierSide],
+    combat_sides: &'a mut [CombatSides],
+    country_tags: &'a mut [u32],
+    country_tags_progress: Progress,
+    /// Nodes one country set can hold: the live country count plus tag 0.
+    country_set_limit: Result<usize, &'static str>,
     rosters: &'a mut [u64],
     members: &'a mut [ModifierMember],
     modifiers: &'a mut [carmy_combat_inputs::Modifier],
@@ -443,8 +457,6 @@ impl Destination<'_> {
                             self.sides[next] = ModifierSide {
                                 combat: source.id,
                                 side: side as u8,
-                                flags: context.side_flags[side],
-                                indicator: context.indicator,
                                 border_values: context.border_values[side],
                                 start: self.arenas[1].len,
                                 len: 0,
@@ -454,7 +466,9 @@ impl Destination<'_> {
                         }
                     }
                 }
-                Err(reason) => self.progress[2].failure = Some(reason),
+                Err(reason) => {
+                    self.progress[2].failure = Some(reason);
+                }
             }
             self.ticks[2] += elapsed(started);
         }
@@ -472,6 +486,12 @@ impl Destination<'_> {
         }
         // The unit visit's storage, lent while the visitor borrows `self`.
         let mut shares = std::mem::take(self.combat);
+        {
+            let _reads = crate::read_accounting::table(TABLES[3]);
+            let started = qpc();
+            self.combat_sides(memory, base, source);
+            self.ticks[3] += elapsed(started);
+        }
         {
             let started = qpc();
             let before = self.ticks[1] + self.ticks[2];
@@ -636,6 +656,51 @@ impl Destination<'_> {
         }
         *self.combat = shares;
         *self.images = images;
+    }
+    /// The country sets with the marker's indicator and flag words, which
+    /// `read_country_sets` reads itself.
+    fn combat_sides(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        source: cland_combat::Source,
+    ) {
+        self.progress[3].required += 1;
+        if self.progress[3].failure.is_some() {
+            return;
+        }
+        let limit = match self.country_set_limit {
+            Ok(limit) => limit,
+            Err(reason) => {
+                self.progress[3].failure = Some(reason);
+                return;
+            }
+        };
+        let start = self.country_tags_progress.len;
+        match cland_combat::read_country_sets(
+            memory,
+            base,
+            source,
+            limit,
+            &mut self.country_tags[start..],
+        ) {
+            Ok((mut row, count)) => {
+                self.country_tags_progress.required += count;
+                if self.progress[3].len == self.combat_sides.len() {
+                    return;
+                }
+                row.start = start;
+                self.combat_sides[self.progress[3].len] = CombatSides { sets: row };
+                self.progress[3].len += 1;
+                self.country_tags_progress.len += count;
+            }
+            Err(cland_combat::CountrySetError::Truncated { required }) => {
+                self.country_tags_progress.required += required;
+            }
+            Err(cland_combat::CountrySetError::Unavailable(reason)) => {
+                self.progress[3].failure = Some(reason);
+            }
+        }
     }
     fn detail(
         &mut self,
@@ -804,6 +869,8 @@ pub struct Captured {
     tactic_unlocks: Arena<land_tactic_inputs::Unlock>,
     divisions: CaptureRows<Division>,
     sides: CaptureRows<ModifierSide>,
+    combat_sides: CaptureRows<CombatSides>,
+    country_tags: Arena<u32>,
     rosters: Arena<u64>,
     members: Arena<ModifierMember>,
     modifiers: Arena<carmy_combat_inputs::Modifier>,
@@ -841,6 +908,8 @@ impl Captured {
             details: 0,
             divisions: 0,
             sides: 0,
+            combat_sides: 0,
+            country_tags: 0,
             rosters: 0,
             modifier_members: 0,
             modifiers: 0,
@@ -873,6 +942,8 @@ impl Captured {
             tactic_unlocks: Arena::new(c.tactic_unlocks),
             divisions: CaptureRows::new(c.divisions),
             sides: CaptureRows::new(c.sides),
+            combat_sides: CaptureRows::new(c.combat_sides),
+            country_tags: Arena::new(c.country_tags),
             rosters: Arena::new(c.rosters),
             members: Arena::new(c.modifier_members),
             modifiers: Arena::new(c.modifiers),
@@ -913,6 +984,8 @@ impl Captured {
         self.tactic_unlocks.reset();
         self.divisions.reset();
         self.sides.reset();
+        self.combat_sides.reset();
+        self.country_tags.reset();
         self.rosters.reset();
         self.members.reset();
         self.modifiers.reset();
@@ -932,6 +1005,7 @@ impl Captured {
         self.details.outcome = outcome;
         self.divisions.outcome = outcome;
         self.sides.outcome = outcome;
+        self.combat_sides.outcome = outcome;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.details.allocated_bytes()
@@ -942,6 +1016,8 @@ impl Captured {
             + self.tactic_unlocks.allocated_bytes()
             + self.divisions.allocated_bytes()
             + self.sides.allocated_bytes()
+            + self.combat_sides.allocated_bytes()
+            + self.country_tags.allocated_bytes()
             + self.rosters.allocated_bytes()
             + self.members.allocated_bytes()
             + self.modifiers.allocated_bytes()
@@ -981,6 +1057,8 @@ impl Captured {
         self.tactic_unlocks.grow(&mut c.tactic_unlocks);
         self.divisions.grow(&mut c.divisions);
         self.sides.grow(&mut c.sides);
+        self.combat_sides.grow(&mut c.combat_sides);
+        self.country_tags.grow(&mut c.country_tags);
         self.rosters.grow(&mut c.rosters);
         self.members.grow(&mut c.modifier_members);
         self.modifiers.grow(&mut c.modifiers);
@@ -1042,6 +1120,11 @@ impl Captured {
             details: &mut self.details.rows,
             divisions: &mut self.divisions.rows,
             sides: &mut self.sides.rows,
+            combat_sides: &mut self.combat_sides.rows,
+            country_tags: &mut self.country_tags.first,
+            country_tags_progress: Progress::default(),
+            country_set_limit: engine::ccountry::Reader::new(memory, base, state)
+                .map(|countries| countries.count() as usize + 1),
             rosters: &mut self.rosters.first,
             members: &mut self.members.first,
             modifiers: &mut self.modifiers.first,
@@ -1056,7 +1139,7 @@ impl Captured {
             reinforcement_progress: [Progress::default(); 4],
             progress: [Progress::default(); N],
             arenas: [Progress::default(); N],
-            ticks: [0, commander_ticks, 0],
+            ticks: [0, commander_ticks, 0, 0],
             window: &mut self.window.first,
             window_progress: Progress::default(),
             current_window: None,
@@ -1091,6 +1174,7 @@ impl Captured {
         let tactic_unlocks = destination.tactic_unlock_progress;
         let width = destination.width_progress;
         let window = destination.window_progress;
+        let country_tags = destination.country_tags_progress;
         let manpower = destination.manpower_progress;
         let reinforcement = destination.reinforcement_progress;
         let mut ticks = destination.ticks;
@@ -1130,6 +1214,8 @@ impl Captured {
         self.members.required = arenas[1].required;
         self.modifiers.len = arenas[2].len;
         self.modifiers.required = arenas[2].required;
+        self.country_tags.len = country_tags.len;
+        self.country_tags.required = country_tags.required;
         (outcomes, ticks)
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
@@ -1138,6 +1224,7 @@ impl Captured {
         self.details.outcome = outcomes[0];
         self.divisions.outcome = outcomes[1];
         self.sides.outcome = outcomes[2];
+        self.combat_sides.outcome = outcomes[3];
         ticks[0] += elapsed(started).saturating_sub(ticks.iter().sum::<u64>());
         ticks
     }
@@ -1146,6 +1233,7 @@ impl Captured {
             self.details.outcome,
             self.divisions.outcome,
             self.sides.outcome,
+            self.combat_sides.outcome,
         ]
     }
     fn tactic_inputs(&self, context: &land_tactic_inputs::ContextRow) -> LandCombatTacticInputs {
@@ -1211,7 +1299,6 @@ impl Captured {
                         .collect(),
                     combat: r.id,
                     province: r.province,
-                    indicator: r.indicator,
                     phase: r.phase,
                     width_factor: r.width_factor,
                     attacker_bonus: r.attacker_bonus,
@@ -1234,7 +1321,6 @@ impl Captured {
                     sides: std::array::from_fn(|side| {
                         let s = &r.sides[side];
                         LandCombatSideDetails {
-                            flags: s.flags,
                             presentation: commander_presentation(&s.presentation),
                             committed: self.rosters.first
                                 [s.committed_start..s.committed_start + s.committed_len]
@@ -1467,8 +1553,6 @@ impl Captured {
                 LandCombatModifierRow {
                     combat: r.combat,
                     side: r.side,
-                    flags: r.flags,
-                    indicator: r.indicator,
                     border_values: r.border_values,
                     divisions: self.members.first[r.start..r.start + r.len]
                         .iter()
@@ -1485,6 +1569,23 @@ impl Captured {
                                 .collect(),
                         })
                         .collect(),
+                }
+            }),
+            table::<tables::LandCombatSides, _>(outcomes[3], &self.combat_sides.rows, |r| {
+                let mut start = r.sets.start;
+                let mut set = |index: usize| {
+                    let tags = self.country_tags.first[start..start + r.sets.lens[index]].to_vec();
+                    start += r.sets.lens[index];
+                    tags
+                };
+                LandCombatSideRow {
+                    combat: r.sets.combat,
+                    indicator: r.sets.indicator,
+                    flags: r.sets.flags,
+                    attacker_primary: set(0),
+                    attacker_secondary: set(1),
+                    defender_primary: set(2),
+                    defender_secondary: set(3),
                 }
             }),
         ]
@@ -1596,6 +1697,10 @@ mod tests {
             tactic_unlock_progress: Progress::default(),
             divisions: &mut Vec::new(),
             sides: &mut sides,
+            combat_sides: &mut [],
+            country_tags: &mut [],
+            country_tags_progress: Progress::default(),
+            country_set_limit: Ok(1),
             rosters: &mut [],
             members: &mut members,
             modifiers: &mut values,
@@ -1760,6 +1865,8 @@ mod tests {
             details: 1,
             divisions: 1,
             sides: 1,
+            combat_sides: 1,
+            country_tags: 1,
             rosters: 1,
             modifier_members: 1,
             modifiers: 1,
@@ -1799,6 +1906,7 @@ mod tests {
             TableView::Complete(replay::rows::TableRows::LandCombatDetails(details)),
             _,
             _,
+            _,
         ] = captured.tables()
         else {
             panic!("complete tactic operands were not projected")
@@ -1821,6 +1929,8 @@ mod tests {
             details: 2,
             divisions: 1,
             sides: 1,
+            combat_sides: 1,
+            country_tags: 1,
             rosters: 6,
             modifier_members: 1,
             modifiers: 1,
@@ -1864,6 +1974,7 @@ mod tests {
             TableView::Complete(replay::rows::TableRows::LandCombatDetails(details)),
             _,
             _,
+            _,
         ] = captured.tables()
         else {
             panic!("complete land details were not projected")
@@ -1896,6 +2007,8 @@ mod tests {
             details: 1,
             divisions: 1,
             sides: 1,
+            combat_sides: 1,
+            country_tags: 1,
             rosters: 1,
             modifier_members: 1,
             modifiers: 1,
@@ -1929,6 +2042,7 @@ mod tests {
             _,
             TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)),
             _,
+            _,
         ] = captured.tables()
         else {
             panic!("complete land divisions were not projected")
@@ -1951,6 +2065,8 @@ mod tests {
             details: 1,
             divisions: 2,
             sides: 1,
+            combat_sides: 1,
+            country_tags: 1,
             rosters: 1,
             modifier_members: 1,
             modifiers: 1,
@@ -1998,6 +2114,7 @@ mod tests {
             _,
             TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)),
             _,
+            _,
         ] = captured.tables()
         else {
             panic!("complete land divisions were not projected")
@@ -2030,6 +2147,8 @@ mod tests {
             details: 1,
             divisions: 2,
             sides: 2,
+            combat_sides: 2,
+            country_tags: 2,
             rosters: 2,
             modifier_members: 2,
             modifiers: 2,
@@ -2108,6 +2227,46 @@ mod tests {
             }; N],
         );
         assert_eq!(captured.allocated_bytes(), allocated);
+    }
+
+    #[test]
+    fn combat_sides_project_independently_of_the_larger_tables() {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        captured.details.outcome = Outcome::Unavailable {
+            reason: "tactic context failed",
+        };
+        captured.country_tags.first[..5].copy_from_slice(&[7, 0, 9, 4, 2]);
+        captured.combat_sides.rows[0] = CombatSides {
+            sets: cland_combat::CountrySetsRow {
+                combat: 62,
+                indicator: 1,
+                flags: [0x4000, 0x800],
+                start: 0,
+                lens: [2, 1, 2, 0],
+            },
+        };
+        captured.combat_sides.outcome = Outcome::Rows { len: 1 };
+        let [
+            TableView::Unavailable { .. },
+            _,
+            _,
+            TableView::Complete(replay::rows::TableRows::LandCombatSides(sides)),
+        ] = captured.tables()
+        else {
+            panic!("the side table was not projected independently")
+        };
+        assert_eq!(
+            sides,
+            [LandCombatSideRow {
+                combat: 62,
+                indicator: 1,
+                flags: [0x4000, 0x800],
+                attacker_primary: vec![7, 0],
+                attacker_secondary: vec![9],
+                defender_primary: vec![4, 2],
+                defender_secondary: vec![],
+            }]
+        );
     }
 }
 

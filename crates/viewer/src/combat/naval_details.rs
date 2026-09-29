@@ -5,7 +5,10 @@ use super::{
 };
 use crate::{
     document::Document,
-    map::{perspective::Vision, tables::rows},
+    map::{
+        perspective::{SharingUnknown, Vision},
+        tables::rows,
+    },
 };
 use replay::{
     frame::DecodedFrame,
@@ -136,10 +139,21 @@ fn active(
         .collect();
     let mut lookup = BTreeMap::new();
     let mut groups: Vec<(GroupKey, Vec<&NavalCombatShipRow>)> = Vec::new();
+    // Incoming live ships whose owner's sharing (1406F3A90) the hour cannot
+    // decide, by missing input: their box is unknown, so they are omitted.
+    let mut undecided: BTreeMap<SharingUnknown, usize> = BTreeMap::new();
     for row in members {
-        let unknown = row.state == 4
-            && row.live_ship != 0
-            && !vision.sees_combat(aliases.get(&row.owner).copied().into_iter());
+        let unknown = if row.state == 4 && row.live_ship != 0 {
+            match vision.sees_combat(std::iter::once(aliases.get(&row.owner).copied()), None) {
+                Ok(seen) => !seen,
+                Err(cause) => {
+                    *undecided.entry(cause).or_default() += 1;
+                    continue;
+                }
+            }
+        } else {
+            false
+        };
         let Some(key) = key(
             row,
             aliases.get(&row.owner).copied().unwrap_or(row.owner),
@@ -157,6 +171,12 @@ fn active(
             groups.push((key, Vec::new()));
         }
         groups[index].1.push(row);
+    }
+    for (cause, ships) in &undecided {
+        out.warnings.push(format!(
+            "NavalCombatShips: {ships} incoming ships of combat {id} omitted: whether the viewer sees them (1406F3A90 for their owner) is unknown, {}.",
+            cause.describe()
+        ));
     }
     // 1417D9C60 -> 1417CC070 sorts each combat box after grouping. More
     // numerous groups precede smaller ones; the final native pointer tie is

@@ -1,11 +1,22 @@
 //! Synthetic performance input from a supplied recording; not a native fidelity oracle.
 use replay::{
+    branches::BranchReason,
     container::{Replay, SeekResult},
     frame::{FrameEncoder, TableView},
-    rows::{CountryLinkRow, TableId, TableRows},
+    rows::{CountryLinkRow, LandCombatRow, LandCombatSideRow, TableId, TableRows},
     spool::Record,
 };
-use std::{collections::BTreeMap, env, fs, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fs, io,
+};
+
+/// Divisions in land combat, in percent. A recorded 925-hour war of about
+/// 3,200 divisions peaked at 10.1% (mean 5.0%), and the collector's combat-walk
+/// bench takes 10,000 of 50,000 (20%); this takes that 20%, twice the peak.
+const COMBAT_SHARE_PERCENT: usize = 20;
+/// Divisions per side of an added combat; the same war averaged 7.6 per combat.
+const SIDE_DIVISIONS: usize = 4;
 
 fn main() -> io::Result<()> {
     let args: Vec<_> = env::args().collect();
@@ -17,8 +28,9 @@ fn main() -> io::Result<()> {
     let wing_count = division_count;
     let ship_count = if stress { 50_000 } else { 20_000 };
     let first = replay.index[0].first_hour;
-    let SeekResult::Frame(mut frame) = replay.seek(1, first + 1)? else {
-        panic!("source gap")
+    let mut frame = match replay.seek(1, first + 1)? {
+        SeekResult::Frame(frame) => frame,
+        SeekResult::Gap { reason, .. } => panic!("source gap: {reason}"),
     };
     let TableView::Complete(TableRows::Countries(countries)) =
         &mut *frame.tables[TableId::Countries.index()]
@@ -188,12 +200,151 @@ fn main() -> io::Result<()> {
             row.effective_planes = 10;
         }
     }
+    // Recorded combats stay; out-of-combat divisions, spread over every owner,
+    // join added combats until the share is met. Attackers come from the first
+    // half of the owner order and defenders from the second, at the first
+    // defender's province.
+    let TableView::Complete(TableRows::Divisions(division_rows)) =
+        &*frame.tables[TableId::Divisions.index()]
+    else {
+        panic!("divisions missing")
+    };
+    let owners: BTreeMap<u64, (u32, u32)> = division_rows
+        .iter()
+        .map(|row| (row.id, (row.logical_owner, row.roster_owner)))
+        .collect();
+    let TableView::Complete(TableRows::LandCombats(recorded)) =
+        &*frame.tables[TableId::LandCombats.index()]
+    else {
+        panic!("land combats missing")
+    };
+    let mut combats = recorded.clone();
+    // Recorded combats keep their recorded side row (lists, indicator and
+    // flags) except for the lists of an hour whose membership churns.
+    let recorded_sides: BTreeMap<u64, LandCombatSideRow> =
+        match &*frame.tables[TableId::LandCombatSides.index()] {
+            TableView::Complete(TableRows::LandCombatSides(rows))
+            | TableView::Truncated {
+                rows: TableRows::LandCombatSides(rows),
+                ..
+            } => rows.iter().map(|row| (row.combat, row.clone())).collect(),
+            _ => BTreeMap::new(),
+        };
+    let canonical: BTreeMap<u32, u32> = match &*frame.tables[TableId::CountryLinks.index()] {
+        TableView::Complete(TableRows::CountryLinks(rows)) => rows
+            .iter()
+            .map(|row| (row.id, row.canonical_slot))
+            .collect(),
+        _ => panic!("links missing"),
+    };
+    let fighting: BTreeSet<u64> = combats
+        .iter()
+        .flat_map(|combat| combat.attackers.iter().chain(&combat.defenders).copied())
+        .collect();
+    let needed = (division_count * COMBAT_SHARE_PERCENT / 100).saturating_sub(fighting.len());
+    let mut free: Vec<_> = division_rows
+        .iter()
+        .filter(|row| !fighting.contains(&row.id))
+        .map(|row| (row.logical_owner, row.id, row.province))
+        .collect();
+    free.sort_unstable();
+    assert!(free.len() >= needed);
+    let chosen: Vec<_> = free
+        .iter()
+        .step_by((free.len() / needed.max(1)).max(1))
+        .take(needed)
+        .collect();
+    let (attackers, defenders) = chosen.split_at(chosen.len() / 2);
+    let shape = combats.first().cloned().unwrap_or_default();
+    let first_id = combats.iter().map(|combat| combat.id).max().unwrap_or(0) + 1;
+    let added: Vec<_> = attackers
+        .chunks(SIDE_DIVISIONS)
+        .zip(defenders.chunks(SIDE_DIVISIONS))
+        .zip(first_id..)
+        .map(|((attackers, defenders), id)| LandCombatRow {
+            id,
+            province: defenders[0].2,
+            attackers: attackers.iter().map(|division| division.1).collect(),
+            defenders: defenders.iter().map(|division| division.1).collect(),
+            ..shape.clone()
+        })
+        .collect();
+    let added_count = added.len();
+    combats.extend(added);
+    let in_combat: usize = combats
+        .iter()
+        .map(|combat| combat.attackers.len() + combat.defenders.len())
+        .sum();
+    // A side's lists as 1413CC0D0 appends them for each unit in order: the
+    // logical owner (+0x38) unless an equivalent country is listed, and the
+    // roster owner (+0x50) when it is positive, not the logical owner's
+    // country and not yet listed. Equivalence is `same_country` (140BA60A0,
+    // and the list search 1406D7F90): the canonical slot, through CountryLinks.
+    let same = |a: u32, b: u32| {
+        a == b
+            || (a != 0
+                && b != 0
+                && canonical
+                    .get(&a)
+                    .is_some_and(|slot| canonical.get(&b) == Some(slot)))
+    };
+    let lists = |units: &[u64]| {
+        let (mut primary, mut secondary) = (Vec::<u32>::new(), Vec::<u32>::new());
+        for &(logical, roster) in units.iter().filter_map(|unit| owners.get(unit)) {
+            if !primary.iter().any(|&listed| same(listed, logical)) {
+                primary.push(logical);
+            }
+            if !same(logical, roster)
+                && (roster as i32) > 0
+                && !secondary.iter().any(|&listed| same(listed, roster))
+            {
+                secondary.push(roster);
+            }
+        }
+        (primary, secondary)
+    };
+    let sides = |combats: &[LandCombatRow], base: &[LandCombatRow]| -> Vec<LandCombatSideRow> {
+        combats
+            .iter()
+            .zip(base)
+            .map(|(combat, base)| {
+                let recorded = recorded_sides.get(&combat.id);
+                if let Some(row) = recorded.filter(|_| combat == base) {
+                    return row.clone();
+                }
+                let (attacker_primary, attacker_secondary) = lists(&combat.attackers);
+                let (defender_primary, defender_secondary) = lists(&combat.defenders);
+                LandCombatSideRow {
+                    combat: combat.id,
+                    attacker_primary,
+                    attacker_secondary,
+                    defender_primary,
+                    defender_secondary,
+                    ..recorded.cloned().unwrap_or_default()
+                }
+            })
+            .collect()
+    };
     println!(
-        "unit fixture divisions={division_count} ships={ship_count} wings={wing_count} planes={} countries={count}; clones preserve source owners, locations and activity; companion handles remapped; source combat lists and order memberships unchanged",
+        "unit fixture divisions={division_count} ships={ship_count} wings={wing_count} planes={} countries={count}; clones preserve source owners, locations and activity; companion handles remapped; source order memberships unchanged",
         wing_count * 10
+    );
+    println!(
+        "land combats={} in_combat={in_combat} share={:.3} recorded_combats={}; every tenth combat drops its last attacker on odd hours and regains it on even ones",
+        combats.len(),
+        in_combat as f64 / division_count as f64,
+        recorded.len()
+    );
+    // Engaged-index coverage only: marker coverage is incomplete.
+    println!(
+        "marker coverage incomplete: added_combats={added_count} without LandCombatDetails or LandCombatDivisions rows (a seen one draws no tint) and with the out-of-combat DivisionMovement operands their divisions were cloned with; recorded combats keep their recorded side operands"
     );
     let mut branch = replay.branches[0].clone();
     branch.first_hour = first;
+    // A save load, which rebuilds every combat side's engaged flag: the flags
+    // are known from the first hour, so markers take their seen path.
+    branch.reason = BranchReason::LoadSignal;
+    branch.loaded_hour = Some(first);
     let mut records = vec![
         Record::SessionStart(replay.sessions[0].clone()),
         Record::BranchStart(branch),
@@ -232,6 +383,24 @@ fn main() -> io::Result<()> {
                 row.organisation += i64::from(offset);
             }
         }
+        // A removal then a join on a tenth of the combats each hour, so the
+        // engaged flag's rebuild path runs every hour.
+        let mut hour_combats = combats.clone();
+        if offset % 2 == 1 {
+            for combat in hour_combats
+                .iter_mut()
+                .skip(offset as usize % 10)
+                .step_by(10)
+            {
+                if combat.attackers.len() > 1 {
+                    combat.attackers.pop();
+                }
+            }
+        }
+        hour.tables[TableId::LandCombatSides.index()] =
+            TableView::Complete(TableRows::LandCombatSides(sides(&hour_combats, &combats))).into();
+        hour.tables[TableId::LandCombats.index()] =
+            TableView::Complete(TableRows::LandCombats(hour_combats)).into();
         records.push(Record::Frame(encoder.encode(hour, offset == 0)?));
     }
     let output = Replay::from_records(replay.campaign_id.clone(), &[records])?;

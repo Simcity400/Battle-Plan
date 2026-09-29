@@ -142,7 +142,6 @@ value_struct!(LandCombatDivisionCommander { handle: u64, skill: i32, name: Vec<u
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatSideDetails {
-    pub flags: u32,
     pub committed: Vec<u64>,
     pub reserves: Vec<u64>,
     pub tactic_id: i32,
@@ -182,7 +181,7 @@ pub struct LandCombatSideDetails {
     /// Resolved HQ unit handle shown in the combat window; zero is hidden.
     pub hq_unit: u64,
 }
-value_struct!(LandCombatSideDetails { flags: u32, committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8, tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>, anti_air_attack: i64, air_kills: u32, damage: [i64; 6], organisation_loss: [i64; 24], organisation_loss_index: u32, organisation_loss_count: u32, border_modifier: i64, border_dig_in_factor: i64, border_terrain_factor: i64, commander: u64, commander_skill: i32, commander_category: i32, commander_country: u32, commander_experience: i64, commander_name: Vec<u8>, commander_description: Vec<u8>, presentation: CombatCommanderPresentation, commander_next_skill: CombatCommanderSkillDefinition, parent_commander: u64, parent_commander_name: Vec<u8>, parent_command_capacity: i32, parent_formation_kind: u8, parent_command_count: i32, portrait_modifiers: Vec<LandCombatCommanderPortraitModifier>, portrait_tooltips: Vec<LandCombatCommanderPortraitTooltip>, commander_modifiers: [i64; 4], commander_modifier_present: [u8; 4], traits: Vec<LandCombatCommanderTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait>, hq_unit: u64 });
+value_struct!(LandCombatSideDetails { committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8, tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>, anti_air_attack: i64, air_kills: u32, damage: [i64; 6], organisation_loss: [i64; 24], organisation_loss_index: u32, organisation_loss_count: u32, border_modifier: i64, border_dig_in_factor: i64, border_terrain_factor: i64, commander: u64, commander_skill: i32, commander_category: i32, commander_country: u32, commander_experience: i64, commander_name: Vec<u8>, commander_description: Vec<u8>, presentation: CombatCommanderPresentation, commander_next_skill: CombatCommanderSkillDefinition, parent_commander: u64, parent_commander_name: Vec<u8>, parent_command_capacity: i32, parent_formation_kind: u8, parent_command_count: i32, portrait_modifiers: Vec<LandCombatCommanderPortraitModifier>, portrait_tooltips: Vec<LandCombatCommanderPortraitTooltip>, commander_modifiers: [i64; 4], commander_modifier_present: [u8; 4], traits: Vec<LandCombatCommanderTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait>, hq_unit: u64 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatTacticWeightTerm {
@@ -670,7 +669,6 @@ value_struct!(NavalResultSideDetails { leader: u64, hq_leader: u64, hq_influence
 pub struct LandCombatDetailsRow {
     pub combat: u64,
     pub province: u32,
-    pub indicator: u8,
     pub phase: i32,
     pub width_factor: i64,
     pub attacker_bonus: i64,
@@ -695,8 +693,8 @@ pub struct LandCombatDetailsRow {
 }
 typed_codec!(LandCombatDetailsRow, 64, |row| row.combat as u128,
  |key| Self { combat: key as u64, ..Default::default() },
- |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, indicator: read_value(Kind::U8, input)?, phase: read_value(Kind::I32, input)?, width_factor: read_value(Kind::I64, input)?, attacker_bonus: read_value(Kind::I64, input)?, defender_bonus: read_value(Kind::I64, input)?, terrain_name: read_value(Kind::Bytes, input)?, stored_terrain_valid: read_value(Kind::U8, input)?, stored_terrain_name: read_value(Kind::Bytes, input)?, terrain_width: read_value(Kind::I64, input)?, terrain_additional_width: read_value(Kind::I64, input)?, air_defines: read_value(Kind::Opaque, input)?, armour_icon_defines: read_value(Kind::Opaque, input)?, piercing_thresholds: read_value(Kind::Opaque, input)?, piercing_damage: read_value(Kind::Opaque, input)?, commander_learning_threshold: read_value(Kind::I64, input)?, parent_commander_factor: read_value(Kind::I64, input)?, portrait_feature_flags: read_value(Kind::U32, input)?, portrait_callback_kind: read_value(Kind::U8, input)?, recon_skill_impact: read_value(Kind::I32, input)?, sides: read_value(Kind::Opaque, input)?, tactic_inputs: read_value(Kind::Opaque, input)?, tactic_candidates: read_value(Kind::Opaque, input)? }),
-  { 0 => (province): U32, 1 => (indicator): U8, 2 => (phase): I32, 3 => (width_factor): I64, 4 => (attacker_bonus): I64, 5 => (defender_bonus): I64, 6 => (terrain_name): Bytes, 7 => (stored_terrain_valid): U8, 8 => (stored_terrain_name): Bytes, 9 => (terrain_width): I64, 10 => (terrain_additional_width): I64, 11 => (air_defines): Opaque, 12 => (armour_icon_defines): Opaque, 13 => (piercing_thresholds): Opaque, 14 => (piercing_damage): Opaque, 15 => (commander_learning_threshold): I64, 16 => (parent_commander_factor): I64, 17 => (portrait_feature_flags): U32, 18 => (portrait_callback_kind): U8, 19 => (recon_skill_impact): I32, 20 => (sides): Opaque, 21 => (tactic_inputs): Opaque, 22 => (tactic_candidates): Opaque }, |row| { let _ = row; Ok(()) });
+ |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, phase: read_value(Kind::I32, input)?, width_factor: read_value(Kind::I64, input)?, attacker_bonus: read_value(Kind::I64, input)?, defender_bonus: read_value(Kind::I64, input)?, terrain_name: read_value(Kind::Bytes, input)?, stored_terrain_valid: read_value(Kind::U8, input)?, stored_terrain_name: read_value(Kind::Bytes, input)?, terrain_width: read_value(Kind::I64, input)?, terrain_additional_width: read_value(Kind::I64, input)?, air_defines: read_value(Kind::Opaque, input)?, armour_icon_defines: read_value(Kind::Opaque, input)?, piercing_thresholds: read_value(Kind::Opaque, input)?, piercing_damage: read_value(Kind::Opaque, input)?, commander_learning_threshold: read_value(Kind::I64, input)?, parent_commander_factor: read_value(Kind::I64, input)?, portrait_feature_flags: read_value(Kind::U32, input)?, portrait_callback_kind: read_value(Kind::U8, input)?, recon_skill_impact: read_value(Kind::I32, input)?, sides: read_value(Kind::Opaque, input)?, tactic_inputs: read_value(Kind::Opaque, input)?, tactic_candidates: read_value(Kind::Opaque, input)? }),
+  { 0 => (province): U32, 1 => (phase): I32, 2 => (width_factor): I64, 3 => (attacker_bonus): I64, 4 => (defender_bonus): I64, 5 => (terrain_name): Bytes, 6 => (stored_terrain_valid): U8, 7 => (stored_terrain_name): Bytes, 8 => (terrain_width): I64, 9 => (terrain_additional_width): I64, 10 => (air_defines): Opaque, 11 => (armour_icon_defines): Opaque, 12 => (piercing_thresholds): Opaque, 13 => (piercing_damage): Opaque, 14 => (commander_learning_threshold): I64, 15 => (parent_commander_factor): I64, 16 => (portrait_feature_flags): U32, 17 => (portrait_callback_kind): U8, 18 => (recon_skill_impact): I32, 19 => (sides): Opaque, 20 => (tactic_inputs): Opaque, 21 => (tactic_candidates): Opaque }, |row| { let _ = row; Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatDivisionRow {
@@ -750,15 +748,33 @@ typed_codec!(LandCombatDivisionRow, 97, |row| (row.combat as u128) << 33 | (row.
 pub struct LandCombatModifierRow {
     pub combat: u64,
     pub side: u8,
-    pub flags: u32,
-    pub indicator: u8,
     pub border_values: Option<[i64; 3]>,
     pub divisions: Vec<DivisionCombatModifiers>,
 }
 typed_codec!(LandCombatModifierRow, 65, |row| (row.combat as u128) << 1 | row.side as u128,
  |key| Self { combat: (key >> 1) as u64, side: (key & 1) as u8, ..Default::default() },
- |key, input| Ok(Self { combat: (key >> 1) as u64, side: (key & 1) as u8, flags: read_value(Kind::U32, input)?, indicator: read_value(Kind::U8, input)?, border_values: read_value(Kind::Opaque, input)?, divisions: read_value(Kind::Opaque, input)? }),
- { 0 => (flags): U32, 1 => (indicator): U8, 2 => (border_values): Opaque, 3 => (divisions): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
+ |key, input| Ok(Self { combat: (key >> 1) as u64, side: (key & 1) as u8, border_values: read_value(Kind::Opaque, input)?, divisions: read_value(Kind::Opaque, input)? }),
+ { 0 => (border_values): Opaque, 1 => (divisions): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
+
+/// Hourly side operands of one land combat, for its map marker (1418B4BD0) and
+/// window. The country sets keep raw references in native order; the viewer
+/// applies the visibility and side rules for any viewing country.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LandCombatSideRow {
+    pub combat: u64,
+    /// CLandCombat +0x98, the marker's frame and the window's indicator icon.
+    pub indicator: u8,
+    /// Attacker then defender CLandCombatant +0x08 flag words.
+    pub flags: [u32; 2],
+    pub attacker_primary: Vec<u32>,
+    pub attacker_secondary: Vec<u32>,
+    pub defender_primary: Vec<u32>,
+    pub defender_secondary: Vec<u32>,
+}
+typed_codec!(LandCombatSideRow, 64, |row| row.combat as u128,
+|key| Self { combat: key as u64, ..Default::default() },
+|key, input| Ok(Self { combat: key as u64, indicator: read_value(Kind::U8, input)?, flags: read_value(Kind::Opaque, input)?, attacker_primary: read_value(Kind::U32List, input)?, attacker_secondary: read_value(Kind::U32List, input)?, defender_primary: read_value(Kind::U32List, input)?, defender_secondary: read_value(Kind::U32List, input)? }),
+{ 0 => (indicator): U8, 1 => (flags): Opaque, 2 => (attacker_primary): U32List, 3 => (attacker_secondary): U32List, 4 => (defender_primary): U32List, 5 => (defender_secondary): U32List }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatDetailsRow {
@@ -856,4 +872,5 @@ opaque_value!([i64; 3]);
 opaque_value!([i64; 4]);
 opaque_value!([i64; 5]);
 opaque_value!([i64; 6]);
+opaque_value!([u32; 2]);
 opaque_value!([u32; 4]);

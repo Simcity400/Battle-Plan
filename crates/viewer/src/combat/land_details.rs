@@ -9,8 +9,8 @@ use std::{collections::BTreeMap, io};
 
 type Divisions<'a> = BTreeMap<(u8, u64), &'a LandCombatDivisionRow>;
 
-/// Hash-covered NMilitary definitions consumed by 1412A26B0. The native
-/// estimate uses the named avoid chances directly, not their complements.
+/// The `NMilitary` defines 1412A26B0's early survival estimate reads. The
+/// native estimate uses the named avoid chances directly, not their complements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ScoreDefines {
     pub avoid_with_defence: i64,
@@ -19,168 +19,21 @@ pub(crate) struct ScoreDefines {
 }
 
 impl ScoreDefines {
-    /// Read once when combat assets load. This bounded reader accepts the
-    /// shipped NMilitary block and direct literal overrides. Scripted Lua is
-    /// deliberately unavailable rather than evaluated with guessed semantics.
-    pub(crate) fn load(layers: &installed_content::ResolvedLayers) -> io::Result<Option<Self>> {
-        let mut values = [None; 3];
-        let mut paths: Vec<_> = layers
-            .paths()
-            .filter(|path| path.starts_with("common/defines/") && path.ends_with(".lua"))
-            .collect();
-        paths.sort_unstable();
-        for path in paths {
-            let source = layers.read(path)?;
-            let Ok(source) = std::str::from_utf8(&source) else {
-                return Ok(None);
-            };
-            if !score_assignments(source, path.ends_with("/00_defines.lua"), &mut values) {
-                return Ok(None);
-            }
-        }
-        Ok(match values {
-            [Some(a), Some(b), Some(die)] if die % 100_000 == 0 => i32::try_from(die / 100_000)
-                .ok()
-                .map(|organisation_die| Self {
-                    avoid_with_defence: a,
-                    avoid_without_defence: b,
-                    organisation_die,
-                }),
-            _ => None,
+    pub(crate) fn read(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+        Ok(Self {
+            avoid_with_defence: defines.fixed5("NMilitary", "BASE_CHANCE_TO_AVOID_HIT")?,
+            avoid_without_defence: defines.fixed5("NMilitary", "CHANCE_TO_AVOID_HIT_AT_NO_DEF")?,
+            organisation_die: defines.int32("NMilitary", "LAND_COMBAT_ORG_DICE_SIZE")?,
         })
     }
-}
 
-fn fixed_literal(value: &str) -> Option<i64> {
-    let value = value.trim().trim_end_matches([',', ';']).trim();
-    let negative = value.starts_with('-');
-    let value = value.strip_prefix(['-', '+']).unwrap_or(value);
-    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
-    if whole.is_empty()
-        || !whole.bytes().all(|v| v.is_ascii_digit())
-        || fraction.len() > 5
-        || !fraction.bytes().all(|v| v.is_ascii_digit())
-    {
-        return None;
-    }
-    let magnitude = whole
-        .parse::<i64>()
-        .ok()?
-        .checked_mul(100_000)?
-        .checked_add(if fraction.is_empty() {
-            0
-        } else {
-            fraction
-                .parse::<i64>()
-                .ok()?
-                .checked_mul(10_i64.pow(5 - fraction.len() as u32))?
-        })?;
-    if negative {
-        magnitude.checked_neg()
-    } else {
-        Some(magnitude)
-    }
-}
-
-fn score_assignments(source: &str, base: bool, values: &mut [Option<i64>; 3]) -> bool {
-    const KEYS: [&str; 3] = [
-        "BASE_CHANCE_TO_AVOID_HIT",
-        "CHANCE_TO_AVOID_HIT_AT_NO_DEF",
-        "LAND_COMBAT_ORG_DICE_SIZE",
-    ];
-    let mut military_depth = 0_i32;
-    let touches_military = source.contains("NMilitary");
-    for line in source.lines() {
-        let line = line.split_once("--").map_or(line, |(code, _)| code).trim();
-        if touches_military
-            && [
-                "if ",
-                "for ",
-                "while ",
-                "function ",
-                "local ",
-                "require(",
-                "dofile(",
-            ]
-            .iter()
-            .any(|prefix| line.starts_with(prefix))
-        {
-            return false;
-        }
-        if base && line == "NMilitary = {" {
-            military_depth = 1;
-            continue;
-        }
-        for (index, key) in KEYS.iter().enumerate() {
-            if !line.contains(key) {
-                continue;
-            }
-            let qualified = format!("NDefines.NMilitary.{key}");
-            let lhs = if base && military_depth == 1 {
-                *key
-            } else {
-                &qualified
-            };
-            let Some(rhs) = line
-                .strip_prefix(lhs)
-                .and_then(|rest| rest.trim_start().strip_prefix('='))
-            else {
-                return false;
-            };
-            let Some(value) = fixed_literal(rhs) else {
-                return false;
-            };
-            values[index] = Some(value);
-        }
-        // Replacing or aliasing the whole namespace cannot be represented by
-        // this three-value reader. Unrelated graphics/career defines are fine.
-        if !base && line.contains("NMilitary") {
-            let Some((key, rhs)) = line
-                .strip_prefix("NDefines.NMilitary.")
-                .and_then(|assignment| assignment.split_once('='))
-            else {
-                return false;
-            };
-            let key = key.trim();
-            if key.is_empty()
-                || !key
-                    .bytes()
-                    .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
-                || (fixed_literal(rhs).is_none() && !matches!(rhs.trim(), "true" | "false"))
-            {
-                return false;
-            }
-        }
-        if military_depth > 0 {
-            // Definitions before the scalar keys include nested numeric arrays.
-            // Quoted text cannot affect the table depth.
-            let mut quote = None;
-            let mut escape = false;
-            for ch in line.chars() {
-                if escape {
-                    escape = false;
-                    continue;
-                }
-                if quote.is_some() && ch == '\\' {
-                    escape = true;
-                    continue;
-                }
-                if Some(ch) == quote {
-                    quote = None;
-                    continue;
-                }
-                if quote.is_none() {
-                    match ch {
-                        '\'' | '"' => quote = Some(ch),
-                        '{' => military_depth += 1,
-                        '}' => military_depth -= 1,
-                        _ => (),
-                    }
-                }
-            }
-        }
-    }
-    true
+    /// The shipped values, for tests only.
+    #[cfg(test)]
+    pub(crate) const VANILLA: Self = Self {
+        avoid_with_defence: 9_000_000,
+        avoid_without_defence: 6_000_000,
+        organisation_die: 4,
+    };
 }
 
 fn fixed_mul(a: i64, b: i64) -> i64 {
@@ -351,7 +204,7 @@ pub(crate) fn side_scores<'a>(
     detail: &LandCombatDetailsRow,
     divisions: impl IntoIterator<Item = &'a LandCombatDivisionRow>,
     participants: [&[u64]; 2],
-    defines: Option<ScoreDefines>,
+    defines: ScoreDefines,
 ) -> Option<[i64; 2]> {
     let divisions: Divisions<'_> = divisions
         .into_iter()
@@ -362,12 +215,12 @@ pub(crate) fn side_scores<'a>(
     for side in 0..2 {
         let state = &detail.sides[side];
         let organisation = participants[side].iter().try_fold(0_i64, |sum, id| {
-            sum.checked_add(divisions.get(&(side as u8, *id))?.organisation)
+            Some(sum.wrapping_add(divisions.get(&(side as u8, *id))?.organisation))
         })?;
         if state.organisation_loss_count < 24 {
-            let damage = early_damage(detail, &divisions, 1 - side, defines?)?;
+            let damage = early_damage(detail, &divisions, 1 - side, defines)?;
             scores[side] = if damage > 99 {
-                organisation.checked_mul(100_000)? / damage
+                comparison_ratio(organisation, damage)
             } else {
                 0x0017_4875_6160 // Native no-effective-loss sentinel, not zero.
             };
@@ -376,12 +229,24 @@ pub(crate) fn side_scores<'a>(
         let loss = state
             .organisation_loss
             .iter()
-            .try_fold(0_i64, |sum, value| sum.checked_add(*value))?;
-        let average = loss.checked_mul(100_000)? / 2_400_000;
+            .fold(0_i64, |sum, value| sum.wrapping_add(*value));
+        let average = comparison_ratio(loss, 2_400_000);
         let average = if average < 1 { 100 } else { average };
-        scores[side] = organisation.checked_mul(100_000)? / average;
+        scores[side] = comparison_ratio(organisation, average);
     }
     Some(scores)
+}
+
+/// 1412A2AA0: ADD/IMUL keep the low qword, then signed IDIV truncates.
+/// Only the three special fixed-point values bypass division; MOV ECX,
+/// 0xffffffff (1412A2B9A / 1412A2C35) zero-extends their positive sentinel.
+/// Both callers supply a positive denominator, so the division cannot trap.
+fn comparison_ratio(value: i64, denominator: i64) -> i64 {
+    if (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
+        i64::from(u32::MAX)
+    } else {
+        value.wrapping_mul(100_000) / denominator
+    }
 }
 
 // 1415C8950 selects one-based frames 1,2,3,4,5 at strict 2x/1.2x
@@ -490,23 +355,17 @@ pub(super) fn bind(
             detail,
             division_rows.rows(),
             [&combat.attackers, &combat.defenders],
-            document.icons.combat.score_defines,
+            document.counters.defines.land_combat.scores,
         ) {
-            let progress = rows::<tables::LandCombatProgress>(frame)?;
             if let (Some(progress), Some(bar), Some(icon)) = (
-                progress.rows().iter().find(|row| row.combat == id),
+                super::progress::Progresses::read(frame)?.attacker(id),
                 document.icons.combat.sprite("GFX_landcombat_progress"),
                 document
                     .icons
                     .combat
                     .sprite("GFX_land_battle_heading_indicator_strip"),
             ) {
-                let (frame, x) = heading(
-                    scores,
-                    progress.attacker_progress,
-                    bar.size[0],
-                    icon.size[0],
-                );
+                let (frame, x) = heading(scores, progress, bar.size[0], icon.size[0]);
                 let widget = out.values.entry("combat_heading".into()).or_default();
                 widget.hidden = false;
                 widget.frame = Some(frame);
@@ -524,45 +383,6 @@ pub(super) fn bind(
 mod tests {
     use super::*;
     use replay::rows::{LandDivisionModifier, LandDivisionWidthTerm};
-
-    const SCORE_DEFINES: ScoreDefines = ScoreDefines {
-        avoid_with_defence: 9_000_000,
-        avoid_without_defence: 6_000_000,
-        organisation_die: 4,
-    };
-
-    #[test]
-    fn score_definitions_accept_literals_and_reject_scripted_values() {
-        let mut values = [None; 3];
-        assert!(score_assignments(
-            "NMilitary = {\nNESTED = {\n1, 2\n},\nBASE_CHANCE_TO_AVOID_HIT = 90, -- chance\nCHANCE_TO_AVOID_HIT_AT_NO_DEF = 60,\nLAND_COMBAT_ORG_DICE_SIZE = 4,\n},",
-            true,
-            &mut values
-        ));
-        assert_eq!(values, [Some(9_000_000), Some(6_000_000), Some(400_000)]);
-        assert!(score_assignments(
-            "NDefines.NMilitary.BASE_CHANCE_TO_AVOID_HIT = 85.25",
-            false,
-            &mut values
-        ));
-        assert_eq!(values[0], Some(8_525_000));
-        assert!(score_assignments(
-            "NDefines.NMilitary.UNRELATED_DEFINE = 1.5",
-            false,
-            &mut values
-        ));
-        assert_eq!(values[0], Some(8_525_000));
-        assert!(!score_assignments(
-            "NDefines.NMilitary.BASE_CHANCE_TO_AVOID_HIT = 90 / 2",
-            false,
-            &mut values
-        ));
-        assert!(!score_assignments(
-            "if condition then\nNDefines.NMilitary.BASE_CHANCE_TO_AVOID_HIT = 90\nend",
-            false,
-            &mut values
-        ));
-    }
 
     #[test]
     fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
@@ -604,22 +424,22 @@ mod tests {
             },
         ];
         assert_eq!(
-            side_scores(&detail, &divisions, [&[1], &[2]], Some(SCORE_DEFINES)),
+            side_scores(&detail, &divisions, [&[1], &[2]], ScoreDefines::VANILLA),
             Some([200_000, 333_333])
         );
         assert_eq!(
-            side_scores(&detail, &divisions, [&[1, 3], &[2]], Some(SCORE_DEFINES)),
+            side_scores(&detail, &divisions, [&[1, 3], &[2]], ScoreDefines::VANILLA),
             Some([400_000, 333_333])
         );
         divisions[1].strength = 49_999; // Native tenths truncate to 0.4.
         detail.defender_bonus = 10_000; // Added to coarse strength, not a multiplier.
         assert_eq!(
-            side_scores(&detail, &divisions, [&[1], &[2]], Some(SCORE_DEFINES)),
+            side_scores(&detail, &divisions, [&[1], &[2]], ScoreDefines::VANILLA),
             Some([400_000, 333_333])
         );
         detail.sides[1].committed.clear();
         assert_eq!(
-            side_scores(&detail, &divisions, [&[1], &[2]], Some(SCORE_DEFINES)).map(|v| v[0]),
+            side_scores(&detail, &divisions, [&[1], &[2]], ScoreDefines::VANILLA).map(|v| v[0]),
             Some(99_999_900_000)
         );
     }
@@ -682,24 +502,83 @@ mod tests {
                 ..Default::default()
             },
         ];
-        assert_eq!(side_scores(&detail, &divisions, [&[1], &[2]], None), None);
+        // An early battle whose committed division has no row is unknown.
+        detail.sides[1].committed = vec![99];
+        assert_eq!(
+            side_scores(&detail, &divisions, [&[1], &[2]], ScoreDefines::VANILLA),
+            None
+        );
         for side in &mut detail.sides {
             side.organisation_loss_count = 24;
             side.organisation_loss = [100_000; 24];
         }
         assert_eq!(
-            side_scores(&detail, &divisions, [&[1], &[2]], None),
+            side_scores(&detail, &divisions, [&[1], &[2]], ScoreDefines::VANILLA),
             Some([3_000_000, 6_000_000])
         );
         assert_eq!(
-            side_scores(&detail, &divisions, [&[1, 3], &[2]], None),
+            side_scores(&detail, &divisions, [&[1, 3], &[2]], ScoreDefines::VANILLA),
             None
         );
         detail.sides[0].organisation_loss = [0; 24];
         assert_eq!(
-            side_scores(&detail, &divisions, [&[1], &[2]], None),
+            side_scores(&detail, &divisions, [&[1], &[2]], ScoreDefines::VANILLA),
             Some([3_000_000_000, 6_000_000])
         );
+    }
+
+    #[test]
+    fn survival_keeps_native_wrapping_sums_products_and_special_values() {
+        let mut detail = LandCombatDetailsRow {
+            combat: 9,
+            ..Default::default()
+        };
+        for side in &mut detail.sides {
+            side.organisation_loss_count = 24;
+            side.organisation_loss = [100_000; 24];
+        }
+        let mut divisions = [
+            LandCombatDivisionRow {
+                combat: 9,
+                side: 0,
+                division: 1,
+                ..Default::default()
+            },
+            LandCombatDivisionRow {
+                combat: 9,
+                side: 0,
+                division: 2,
+                organisation: 1,
+                ..Default::default()
+            },
+        ];
+        let score = |detail: &LandCombatDetailsRow, divisions: &[LandCombatDivisionRow], units| {
+            side_scores(detail, divisions, [units, &[]], ScoreDefines::VANILLA)
+                .map(|scores| scores[0])
+        };
+        // IMUL overflows without failing; the final signed quotient is -1.
+        divisions[0].organisation = i64::MAX / 2;
+        assert_eq!(score(&detail, &divisions, &[1]), Some(-1));
+        for value in [i64::MAX, i64::MIN, i64::MIN + 1] {
+            divisions[0].organisation = value;
+            assert_eq!(score(&detail, &divisions, &[1]), Some(4_294_967_295));
+        }
+        // The participant sum itself wraps to a guarded value.
+        divisions[0].organisation = i64::MAX;
+        assert_eq!(score(&detail, &divisions, &[1, 2]), Some(4_294_967_295));
+        divisions[0].organisation = 100_000;
+        detail.sides[0].organisation_loss = [0; 24];
+        detail.sides[0].organisation_loss[0] = i64::MAX;
+        assert_eq!(score(&detail, &divisions, &[1]), Some(2));
+        detail.sides[0].organisation_loss[1] = 1;
+        assert_eq!(score(&detail, &divisions, &[1]), Some(2));
+        // A non-special loss sum can overflow its product: the resulting
+        // nonpositive average gets native's minimum denominator of 100.
+        detail.sides[0].organisation_loss[0] = i64::MAX - 1;
+        detail.sides[0].organisation_loss[1] = 0;
+        assert_eq!(score(&detail, &divisions, &[1]), Some(100_000_000));
+        assert_eq!(comparison_ratio(i64::MAX / 2, 100), -1_000);
+        assert_eq!(comparison_ratio(i64::MAX, 100), 4_294_967_295);
     }
 
     #[test]

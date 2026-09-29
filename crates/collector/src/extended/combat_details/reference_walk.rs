@@ -85,8 +85,6 @@ impl Destination<'_> {
                             self.sides[next] = ModifierSide {
                                 combat: source.id,
                                 side: side as u8,
-                                flags: context.side_flags[side],
-                                indicator: context.indicator,
                                 border_values: context.border_values[side],
                                 start: self.arenas[1].len,
                                 len: 0,
@@ -108,6 +106,13 @@ impl Destination<'_> {
         self.forget_shares();
         // The unit visit's storage, lent while the visitor borrows `self`.
         let mut shares = std::mem::take(self.combat);
+        {
+            // The country sets share nothing: the same reader as the walk.
+            let _reads = crate::read_accounting::table(TABLES[3]);
+            let started = qpc();
+            self.combat_sides(memory, base, source);
+            self.ticks[3] += elapsed(started);
+        }
         {
             let started = qpc();
             let before = self.ticks[1] + self.ticks[2];
