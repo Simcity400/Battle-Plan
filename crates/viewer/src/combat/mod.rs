@@ -536,11 +536,76 @@ pub(crate) const INLINE_FLAG: char = '\u{12}';
 /// Infantry Division" (101 px) 113 px before it. An attacker's trailing flag
 /// starts exactly at the pen after "name ".
 const INLINE_FLAG_ADVANCE: f32 = 12.0;
-enum Chunk {
+pub(crate) enum Chunk {
     Text(String, [f32; 4]),
     Icon(String),
     Flag(String),
 }
+pub(crate) fn text_chunks(
+    raw: &str,
+    colors: &installed_content::fonts::TextColors,
+    base: [f32; 4],
+    color: &mut [f32; 4],
+) -> Vec<Chunk> {
+    let mut chunks = Vec::new();
+    let mut run = String::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '§' || ch == '£' || ch == INLINE_FLAG {
+            if !run.is_empty() {
+                chunks.push(Chunk::Text(std::mem::take(&mut run), *color));
+            }
+            if ch == '§' {
+                if let Some(code) = chars.next() {
+                    *color = if code == '!' {
+                        base
+                    } else if let Some(rgb) = colors.get(&code) {
+                        [
+                            rgb[0] as f32 / 255.0,
+                            rgb[1] as f32 / 255.0,
+                            rgb[2] as f32 / 255.0,
+                            1.0,
+                        ]
+                    } else {
+                        *color
+                    };
+                }
+            } else if ch == INLINE_FLAG {
+                let mut key = String::new();
+                while let Some(c) = chars
+                    .peek()
+                    .copied()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                {
+                    key.push(c);
+                    chars.next();
+                }
+                chunks.push(Chunk::Flag(key));
+            } else {
+                let mut name = String::from("GFX_");
+                while let Some(c) = chars
+                    .peek()
+                    .copied()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                {
+                    name.push(c);
+                    chars.next();
+                }
+                if chars.peek() == Some(&'£') {
+                    chars.next();
+                }
+                chunks.push(Chunk::Icon(name));
+            }
+        } else {
+            run.push(ch);
+        }
+    }
+    if !run.is_empty() {
+        chunks.push(Chunk::Text(run, *color));
+    }
+    chunks
+}
+
 /// The layer of a window quad pushed after `quads` others: the window draws
 /// in push order, one icon ordinal per quad, in the GUI band above every
 /// map-icon priority, so the open window covers the icons behind it.
@@ -869,63 +934,7 @@ impl Painter<'_> {
     }
     /// One line of rich text: colour runs, `£icon£` sprites and inline flags.
     fn chunks(&self, font: &text::Font, raw: &str, color: &mut [f32; 4]) -> Vec<Chunk> {
-        let mut chunks = Vec::new();
-        let mut run = String::new();
-        let mut chars = raw.chars().peekable();
-        while let Some(ch) = chars.next() {
-            if ch == '§' || ch == '£' || ch == INLINE_FLAG {
-                if !run.is_empty() {
-                    chunks.push(Chunk::Text(std::mem::take(&mut run), *color));
-                }
-                if ch == '§' {
-                    if let Some(code) = chars.next() {
-                        *color = if code == '!' {
-                            font.color()
-                        } else if let Some(rgb) = self.assets.text_colors.get(&code) {
-                            [
-                                rgb[0] as f32 / 255.0,
-                                rgb[1] as f32 / 255.0,
-                                rgb[2] as f32 / 255.0,
-                                1.0,
-                            ]
-                        } else {
-                            *color
-                        };
-                    }
-                } else if ch == INLINE_FLAG {
-                    let mut key = String::new();
-                    while let Some(c) = chars
-                        .peek()
-                        .copied()
-                        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    {
-                        key.push(c);
-                        chars.next();
-                    }
-                    chunks.push(Chunk::Flag(key));
-                } else {
-                    let mut name = String::from("GFX_");
-                    while let Some(c) = chars
-                        .peek()
-                        .copied()
-                        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    {
-                        name.push(c);
-                        chars.next();
-                    }
-                    if chars.peek() == Some(&'£') {
-                        chars.next();
-                    }
-                    chunks.push(Chunk::Icon(name));
-                }
-            } else {
-                run.push(ch);
-            }
-        }
-        if !run.is_empty() {
-            chunks.push(Chunk::Text(run, *color));
-        }
-        chunks
+        text_chunks(raw, &self.assets.text_colors, font.color(), color)
     }
     fn length(&self, font: &text::Font, chunk: &Chunk) -> f32 {
         match chunk {

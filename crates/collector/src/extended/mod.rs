@@ -363,6 +363,7 @@ impl Capacities {
         self.economy.raise_for_countries(slots);
         self.governance.raise_for_countries(slots);
         self.intel.raise_for_countries(slots);
+        self.air.raise_for_countries(slots);
         self.session.raise_for_countries(slots);
         self.projects.raise_for_countries(slots);
         self.supply_trains.raise_for_countries(slots);
@@ -393,6 +394,12 @@ impl Capacities {
     /// Presize the raid arenas whose per-country demand content decides.
     pub fn raise_for_raid_arenas(&mut self, demand: crate::country_scale::RaidArenas) {
         self.projects.raise_for_raid_type_tokens(demand.type_tokens);
+        self.projects.raise_for_facilities(demand.facility_rows);
+        crate::country_scale::raise(&mut self.air.scores.regions, demand.air_regions);
+        crate::country_scale::raise(
+            &mut self.projects.counteroperatives,
+            demand.counteroperatives,
+        );
         self.raid_launch_inputs
             .raise_for_reservations(demand.reservation_words);
     }
@@ -1492,6 +1499,7 @@ impl Captured {
 
     /// Loan the late packs and the walked order census to the job.
     /// `naval_raw`: the Naval raw job staged the order-of-battle sources.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_late_request(
         &mut self,
         orders: &mut Orders,
@@ -1500,6 +1508,7 @@ impl Captured {
         state: usize,
         hour: i32,
         force_full: bool,
+        air_scores: Box<engine::raid_air_scores::Held>,
     ) -> crate::acquisition_jobs::LateRequest {
         self.late_ticks = None;
         let mut packs = self.late_spare.take().expect("late spare present");
@@ -1513,22 +1522,28 @@ impl Captured {
             hour,
             force_full,
             packs,
+            air_scores,
         }
     }
 
+    /// Restore the late packs and return the held RaidAirScores table, which
+    /// a failed job leaves to be read in full.
     pub(crate) fn restore_late_request(
         &mut self,
         request: crate::acquisition_jobs::LateRequest,
         completed: bool,
         orders: &mut Orders,
-    ) {
+    ) -> Box<engine::raid_air_scores::Held> {
         let mut packs = request.packs;
+        let mut air_scores = request.air_scores;
         if !completed {
             packs.fail(request.hour, request.force_full, "late acquisition failed");
+            air_scores.invalidate();
         }
         self.late_ticks = Some(packs.ticks);
         self.swap_late(&mut packs, orders);
         self.late_spare = Some(packs);
+        air_scores
     }
 
     /// Loan the raw-gated packs once every raw-copy verdict is in.
@@ -2305,6 +2320,7 @@ impl Captured {
         } else {
             let mut packs = self.late_spare.take().expect("late spare present");
             self.swap_late(&mut packs, orders);
+            // Without a loaned held table, RaidAirScores reads every pair.
             packs.capture(
                 memory,
                 base,
@@ -2312,6 +2328,7 @@ impl Captured {
                 current_hour,
                 force_full,
                 self.unit_inputs.as_deref(),
+                &mut engine::raid_air_scores::Held::default(),
             );
             for (total, cost) in ticks.iter_mut().zip(packs.ticks) {
                 *total += cost;
@@ -2877,6 +2894,7 @@ impl LatePacks {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -2885,6 +2903,7 @@ impl LatePacks {
         hour: i32,
         force_full: bool,
         inputs: Option<&UnitInputs>,
+        air_scores: &mut engine::raid_air_scores::Held,
     ) {
         let mut ticks = [0; TABLE_COUNT];
         let cost = self.leader_portraits.capture(
@@ -2919,7 +2938,9 @@ impl LatePacks {
                 &crate::history_changes::Unobserved,
             );
         }
-        let cost = self.air.capture(memory, base, game_state, hour, force_full);
+        let cost = self
+            .air
+            .capture(memory, base, game_state, hour, force_full, air_scores);
         scatter(&air::TABLES, cost, &mut ticks);
         let cost = self
             .naval_history
@@ -3298,7 +3319,8 @@ mod tests {
             captured.air_root = Some(Outcome::Rows { len: 7 });
             let order_bytes = orders.allocated_bytes();
             let late_box = std::ptr::from_ref(&**captured.late_spare.as_ref().unwrap());
-            let request = captured.take_late_request(&mut orders, true, 11, 0x1000, 9, false);
+            let request =
+                captured.take_late_request(&mut orders, true, 11, 0x1000, 9, false, Box::default());
             assert_eq!(std::ptr::from_ref(&*request.packs), late_box);
             assert_eq!(
                 captured.allocated_bytes()
@@ -3357,7 +3379,8 @@ mod tests {
                 Outcome::Rows { len: 1 },
             ));
             captured.install_unit_inputs(Some(Arc::clone(&inputs)));
-            let request = captured.take_late_request(&mut orders, true, 11, 0x1000, 9, false);
+            let request =
+                captured.take_late_request(&mut orders, true, 11, 0x1000, 9, false, Box::default());
             assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
             assert_eq!(request.inputs.as_ref().unwrap().seeds()[0].pointer, pointer);
             assert_eq!(Arc::strong_count(&inputs), 3);
@@ -3652,8 +3675,15 @@ mod tests {
             let mut request = captured.take_gated_request(11, 0x1000, hour, force_full);
             request.packs.ticks.fill(23);
             captured.restore_gated_request(request, false);
-            let mut request =
-                captured.take_late_request(&mut orders, false, 11, 0x1000, hour, force_full);
+            let mut request = captured.take_late_request(
+                &mut orders,
+                false,
+                11,
+                0x1000,
+                hour,
+                force_full,
+                Box::default(),
+            );
             request.packs.ticks.fill(31);
             captured.restore_late_request(request, false, &mut orders);
             assert_eq!(captured.allocated_bytes(), bytes);
@@ -3794,7 +3824,8 @@ mod tests {
         captured.naval_history.supremacy_raw_mode = true;
         captured.naval_history.sunk_raw_mode = true;
         let before = captured.outcomes();
-        let request = captured.take_late_request(&mut orders, true, 11, 0x1000, 1, true);
+        let request =
+            captured.take_late_request(&mut orders, true, 11, 0x1000, 1, true, Box::default());
         captured.restore_late_request(request, false, &mut orders);
         let after = captured.outcomes();
         for id in [

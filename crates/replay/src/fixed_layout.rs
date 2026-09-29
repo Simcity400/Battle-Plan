@@ -269,6 +269,38 @@ pub const ORACLE_FIXED15: Family = Family {
     tables: &[],
 };
 
+/// Success operands read by 14157C670, 140F49710, 140F4D130.
+pub const RAID_SUCCESS: Family = Family {
+    name: "raid success operands",
+    keys: &[
+        keys::AIR_STRATEGIC_BOMBER_BOMBING_FACTOR,
+        keys::AIR_DEFENCE_FACTOR,
+        keys::AIR_AGILITY_FACTOR,
+        keys::AIR_HOME_DEFENCE_FACTOR,
+        keys::AIR_POWER_PROJECTION_FACTOR,
+        keys::AIR_STRATEGIC_BOMBER_DEFENCE_FACTOR,
+        keys::AIR_STRATEGIC_BOMBER_NIGHT_PENALTY,
+        keys::AIR_NIGHT_PENALTY,
+        keys::AIR_WEATHER_PENALTY,
+        keys::AIR_CARRIER_NIGHT_PENALTY_REDUCTION_FACTOR,
+        keys::AIR_ACE_BONUSES_FACTOR,
+        keys::ACE_EFFECTIVENESS_FACTOR,
+    ],
+    tokens: &[
+        engine::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+        engine::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
+    ],
+    tables: &[TableId::RaidTooltipOperands],
+};
+
+/// `1411DED90/140C07140` counterintelligence and `1413E3350` cryptology.
+pub const RAID_INTEL: Family = Family {
+    name: "raid target intel",
+    keys: &[keys::INTELLIGENCE_AGENCY_DEFENSE, keys::CRYPTO_STRENGTH],
+    tokens: &[],
+    tables: &[TableId::RaidIntelInputs],
+};
+
 /// State-resource save comparison selects the engine's infrastructure token.
 pub const ORACLE_INFRASTRUCTURE: Family = Family {
     name: "save oracle infrastructure",
@@ -297,6 +329,8 @@ pub const FAMILIES: &[Family] = &[
     COMMAND_POWER,
     COUNTRY_ACE_MODIFIERS,
     RAID_UNIT_SPEED,
+    RAID_INTEL,
+    RAID_SUCCESS,
     INVASION_PREPARATION,
     RESEARCH_IDLE,
     ORACLE_FIXED15,

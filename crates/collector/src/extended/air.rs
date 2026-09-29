@@ -36,7 +36,7 @@ use super::{
     air_sorties::{self, Sorties},
 };
 
-pub const N: usize = 16;
+pub const N: usize = 17;
 /// The tables `Capacities::rows` sizes; the sortie tables size themselves.
 pub const SIZED: usize = 11;
 pub const TABLES: [TableId; N] = [
@@ -56,6 +56,7 @@ pub const TABLES: [TableId; N] = [
     TableId::AirSortieSpecialBases,
     TableId::AirSortieModifierMetadata,
     TableId::AirNavalPatrolCombats,
+    TableId::RaidAirScores,
 ];
 
 /// The regional source walk is charged to history. Owned wing acquisition is charged to
@@ -73,6 +74,34 @@ pub struct Capacities {
     /// The wing census joined to missions, and its base-handle scratch.
     pub wings: usize,
     pub sorties: air_sorties::Capacities,
+    /// RaidAirScores rows, region roster and strategic-air countries.
+    pub scores: ScoreCapacities,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ScoreCapacities {
+    pub rows: usize,
+    pub regions: usize,
+    pub countries: usize,
+}
+
+impl Default for ScoreCapacities {
+    fn default() -> Self {
+        Self {
+            rows: 4096,
+            regions: 0,
+            countries: 0,
+        }
+    }
+}
+
+impl Capacities {
+    /// Every strategic-air country holds a RaidAirScores witness row; its
+    /// nonzero pairs grow the table on demand.
+    pub fn raise_for_countries(&mut self, slots: usize) {
+        crate::country_scale::raise(&mut self.scores.countries, slots);
+        crate::country_scale::raise(&mut self.scores.rows, slots);
+    }
 }
 
 impl Default for Capacities {
@@ -84,6 +113,7 @@ impl Default for Capacities {
             ace_names: 65_536,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         }
     }
 }
@@ -107,6 +137,10 @@ pub struct Captured {
     damage: CaptureRows<sdamage_entry::Row>,
     aces: CaptureRows<cace::Row>,
     statistics: CaptureRows<cloop_history::Row>,
+    scores: CaptureRows<engine::raid_air_scores::Row>,
+    /// Held-table sizes: this pack's capacities, then the last walk's demand.
+    score_capacity: [usize; 2],
+    score_demand: [usize; 2],
     names: Arena<u8>,
     /// This hour's complete wing census by mission address. Acquisition
     /// context only: pointers never reach the replay.
@@ -172,6 +206,7 @@ impl Captured {
     /// and so do the AirMissions job's registrations and combats.
     pub(crate) fn fail_late_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.prepare_hour(hour, force_full);
+        self.scores.fail(failed(self.active[16], reason));
         self.equipment.fail(failed(self.active[0], reason));
         self.cumulative.fail(failed(self.active[2], reason));
         if self.missions.is_none() {
@@ -207,6 +242,11 @@ impl Captured {
                 keys: 0,
                 hosts: 0,
             },
+            scores: ScoreCapacities {
+                rows: 0,
+                regions: 0,
+                countries: 0,
+            },
         })
     }
 
@@ -219,6 +259,9 @@ impl Captured {
             damage: CaptureRows::new(capacity.rows[4]),
             aces: CaptureRows::new(capacity.rows[5]),
             statistics: CaptureRows::new(capacity.rows[6]),
+            scores: CaptureRows::new(capacity.scores.rows),
+            score_capacity: [capacity.scores.regions, capacity.scores.countries],
+            score_demand: [0; 2],
             names: Arena::new(capacity.ace_names),
             identities: Arena::new(capacity.wings),
             identity_outcome: NO_WING_SOURCE,
@@ -251,6 +294,8 @@ impl Captured {
         self.damage.reset();
         self.aces.reset();
         self.statistics.reset();
+        self.scores.reset();
+        self.score_demand = [0; 2];
         self.names.reset();
         self.identities.reset();
         self.identity_outcome = NO_WING_SOURCE;
@@ -282,6 +327,7 @@ impl Captured {
             + self.damage.allocated_bytes()
             + self.aces.allocated_bytes()
             + self.statistics.allocated_bytes()
+            + self.scores.allocated_bytes()
             + self.names.allocated_bytes()
             + self.identities.allocated_bytes()
             + self.registrations.allocated_bytes()
@@ -300,6 +346,11 @@ impl Captured {
         self.damage.grow(&mut capacity.rows[4]);
         self.aces.grow(&mut capacity.rows[5]);
         self.statistics.grow(&mut capacity.rows[6]);
+        self.scores.grow(&mut capacity.scores.rows);
+        let scores = &mut capacity.scores;
+        crate::table_capture::grow_capacity(&mut scores.regions, self.score_demand[0]);
+        crate::table_capture::grow_capacity(&mut scores.countries, self.score_demand[1]);
+        self.score_capacity = [scores.regions, scores.countries];
         self.names.grow(&mut capacity.ace_names);
         self.identities.grow(&mut capacity.wings);
         // One pool base per registration plus one transfer base per wing.
@@ -557,8 +608,10 @@ impl Captured {
         self.wing_ticks
     }
 
-    /// Five independent sources plus the two extensions supplied by the map
-    /// visitor. Reset non-wing buffers here, preserving the prepared extensions.
+    /// The independent sources and the joins of the registered missions, after
+    /// the extensions supplied by the map visitor. Reset non-wing buffers here,
+    /// preserving the prepared extensions. `scores` is the attachment's held
+    /// RaidAirScores table, loaned each hour.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -566,6 +619,7 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
+        scores: &mut engine::raid_air_scores::Held,
     ) -> [u64; N] {
         self.prepare_hour(hour, force_full);
         self.bases.reset();
@@ -573,6 +627,8 @@ impl Captured {
         self.damage.reset();
         self.aces.reset();
         self.statistics.reset();
+        self.scores.reset();
+        self.score_demand = [0; 2];
         self.names.reset();
         self.reset_joins();
         let mut ticks = [0; N];
@@ -696,6 +752,30 @@ impl Captured {
             .unwrap_or_else(|reason| Outcome::Unavailable { reason })
         };
         ticks[9] = elapsed(begin);
+        if !self.active[16] {
+            self.scores.outcome = SKIPPED;
+            scores.invalidate();
+        } else {
+            let begin = qpc();
+            let _reads = read_accounting::table(TableId::RaidAirScores);
+            if force_full {
+                scores.invalidate();
+            }
+            // Only a raised capacity allocates, on this pool worker.
+            let [regions, countries] = self.score_capacity;
+            scores.grow(regions, countries, self.scores.rows.len());
+            let walked = engine::raid_air_scores::walk(
+                memory,
+                base,
+                game_state,
+                hour,
+                scores,
+                &mut self.scores.rows,
+            );
+            self.score_demand = [walked.regions, walked.countries];
+            self.scores.outcome = bounded(walked.outcome, self.scores.rows.len());
+            ticks[16] = elapsed(begin);
+        }
         ticks
     }
 
@@ -718,6 +798,7 @@ impl Captured {
             sorties[3],
             sorties[4],
             self.patrol_combats.outcome,
+            self.scores.outcome,
         ]
     }
 
@@ -778,6 +859,14 @@ impl Captured {
                 &self.patrol_combats.rows,
                 Clone::clone,
             ),
+            table::<tables::RaidAirScores, _>(outcomes[16], &self.scores.rows, |r| {
+                rows::RaidAirScoreRow {
+                    country: r.country,
+                    region: r.region,
+                    friendly: r.friendly,
+                    enemy: r.enemy,
+                }
+            }),
         ]
     }
 
@@ -4383,6 +4472,7 @@ mod tests {
             ace_names: 8,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         };
         let captured = Captured::with_capacities(&capacity);
         (capacity, captured)
@@ -4760,6 +4850,7 @@ mod tests {
                 ace_names: 0,
                 wings: 8192,
                 sorties: Default::default(),
+                scores: Default::default(),
             });
             decode_air_payload(&mut captured, &job, &mut [0; WING_PACK_N]);
             assert_eq!(captured.equipment.outcome, job.equipment_outcome);
@@ -4880,6 +4971,7 @@ mod tests {
                 ace_names: 65536,
                 wings: 8192,
                 sorties: Default::default(),
+                scores: Default::default(),
             };
             let direct = kit::direct_with(&memory, &capacity);
             let (split, report, _) = kit::split_with(&memory, &capacity);
@@ -4895,6 +4987,7 @@ mod tests {
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         };
         let (split, _, _) = kit::split_with(&memory, &capacity);
         assert_eq!(split.equipment_outcome, Outcome::Rows { len: 3 });
@@ -5144,6 +5237,7 @@ mod tests {
                 ace_names: 65536,
                 wings: 8192,
                 sorties: Default::default(),
+                scores: Default::default(),
             };
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
@@ -5155,6 +5249,7 @@ mod tests {
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         };
         let (split, _, _) = kit::split(&memory, &capacities);
         assert_eq!(split.outcome, Outcome::Rows { len: 2 });
@@ -7316,6 +7411,7 @@ pub(crate) mod wing_test_kit {
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         };
         collect_typed(memory, &capacity)
     }
@@ -7338,6 +7434,7 @@ pub(crate) mod wing_test_kit {
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         };
         let mut captured = Captured::with_capacities(&capacity);
         let mut ticks = [0u64; 2];
@@ -7727,6 +7824,7 @@ mod air_bases_memo_tests {
             ace_names: cap[2],
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         });
         let mut fog =
             super::super::fog::Captured::with_capacities(&super::super::fog::Capacities {
@@ -8423,6 +8521,7 @@ pub(crate) mod air_bases_test_kit {
             ace_names,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         };
         let mut captured = Captured::with_capacities(&capacities);
         let walked = cair_base::walk(memory, BASE, GAME_STATE, &mut captured.bases.rows);
@@ -8471,6 +8570,7 @@ pub(crate) mod air_bases_test_kit {
             ace_names,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         };
         let mut air = Captured::with_capacities(&capacities);
         let mut fog =
@@ -8782,6 +8882,7 @@ pub(crate) mod air_history_test_kit {
             ace_names: 65_536,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         };
         let mut captured = Captured::with_capacities(&capacities);
         let walked = cair_region_combat_data::walk_world(
@@ -8820,6 +8921,7 @@ pub(crate) mod air_history_test_kit {
             ace_names: 65_536,
             wings: 8192,
             sorties: Default::default(),
+            scores: Default::default(),
         };
         let mut captured = Captured::with_capacities(&capacities);
         let mut first = AirHistoryJob::new();

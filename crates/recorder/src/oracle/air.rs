@@ -86,6 +86,12 @@ pub(super) fn compare(
     complete &= report.attempt("air AirStatistics", |report| {
         compare_statistics(frame, save, links, report)
     });
+    complete &= report.attempt("air RaidAirScores", |report| {
+        let rows = super::complete::<tables::RaidAirScores>(frame)?;
+        for row in rows { required_country_tag(row.country, links)?; }
+        report.limitation("CStrategicAir::vf2@140C57230 omits the entire +E0 regional-score array; fresh saves cannot certify the stored superiority operands", "RaidAirScores.friendly / enemy");
+        Ok(())
+    });
     if complete {
         Ok(())
     } else {

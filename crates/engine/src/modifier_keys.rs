@@ -27,6 +27,8 @@ keys! {
     AIR_MAXIMUM_SPEED_FACTOR = 0x2;
     /// Register@14058cabe (token global 0x1427bff9c).
     AIR_RANGE_FACTOR = 0x5;
+    /// Register@14058AB21 (token global 0x1427bff80).
+    AIR_STRATEGIC_BOMBER_BOMBING_FACTOR = 0xa;
     /// Register@1405cad3e (token global 0x1427c00e0).
     INVASION_PREPARATION = 0x1a;
     /// Register@1405cc61c (token global 0x1427c058c).
@@ -59,8 +61,18 @@ keys! {
     OFFENCE = 0x5f;
     /// Register@1405ab3cc (token global 0x1427bff18).
     DEFENCE = 0x60;
+    /// Register@14058B36B (token global 0x1427bffa8).
+    AIR_DEFENCE_FACTOR = 0x70;
+    /// Register@14058BBB5 (token global 0x1427bffac).
+    AIR_AGILITY_FACTOR = 0x71;
     /// Register@14058d308 (token global 0x1427c0498).
     AIR_ACE_BONUSES_FACTOR = 0x72;
+    /// Register@14058D8B8 (token global 0x1427c04a8).
+    AIR_HOME_DEFENCE_FACTOR = 0x74;
+    /// Register@14058DCDD (token global 0x1427c04ac).
+    AIR_POWER_PROJECTION_FACTOR = 0x75;
+    /// Register@14058ED71 (token global 0x1427bff7c).
+    AIR_STRATEGIC_BOMBER_DEFENCE_FACTOR = 0x76;
     /// Register@140562322 (token global 0x1427c0524).
     POWER_BALANCE_DAILY = 0x98;
     /// Register@140562747 (token global 0x1427c0528).
@@ -83,8 +95,16 @@ keys! {
     RESEARCH_SHARING_PER_COUNTRY_BONUS_FACTOR = 0xcf;
     /// Register@14056c4b9 (token global 0x1427c0678).
     LAND_REINFORCE_RATE = 0xfb;
+    /// Register@14058F196 (token global 0x1427c00e8).
+    AIR_STRATEGIC_BOMBER_NIGHT_PENALTY = 0x104;
+    /// Register@14058FE05 (token global 0x1427c00ec).
+    AIR_NIGHT_PENALTY = 0x105;
+    /// Register@140590A74 (token global 0x1427c00f0).
+    AIR_WEATHER_PENALTY = 0x106;
     /// Register@14058f855 (token global 0x1427bfcd8).
     NAVAL_NIGHT_ATTACK = 0x107;
+    /// Register@14059022A (token global 0x1427c049c).
+    AIR_CARRIER_NIGHT_PENALTY_REDUCTION_FACTOR = 0x10d;
     /// Register@1405a589e (token global 0x1427c00d8).
     COMBAT_WIDTH_FACTOR = 0x10f;
     /// Register@140594b39 (token global 0x1427bfb64).
@@ -143,6 +163,10 @@ keys! {
     DISABLE_STRATEGIC_REDEPLOYMENT = 0x1ea;
     /// Register@140573494 (token global 0x1427c03d4).
     DISABLE_STRATEGIC_REDEPLOYMENT_FOR_CONTROLLER = 0x1eb;
+    /// Register@1405EC993 (token global 0x1427C0348); `1411DED90/140C07140`.
+    INTELLIGENCE_AGENCY_DEFENSE = 0x1ff;
+    /// Register@1405F1C6B (token global 0x1427C0388); `1413E3350`.
+    CRYPTO_STRENGTH = 0x210;
     /// Register@14057b50f (token global 0x1427c0440).
     STATE_RESOURCES_FACTOR = 0x223;
     /// Register@1405dc712 (token global 0x1427bfc94).

@@ -83,6 +83,8 @@ The movement costs and the map palette read the same files: `common/terrain`'s o
 
 [defines.rs](src/defines.rs) also reads boolean defines, such as the raid gate's army transfer rule.
 
+[raids/tooltips.rs](src/raids/tooltips.rs) reads raid preparation and the ordered success mappings; [raids/names.rs](src/raids/names.rs) reads the naming groups selected by recorded raid units and source ships. Literal authored names stay literal; the viewer refuses runtime localised names whose provenance is lost.
+
 ## PdxShader source contract
 
 [`pdxshader`](src/pdxshader/mod.rs) reads the native effect language independently of GUI layout. Its source assembler preserves child-first include order, repeated-key semantics, raw code, stage declarations, caller/effect defines, state tables and entry lookup, with executable addresses beside the rules. Every file resolves through the recorded content stack; a missing root produces the native empty technique record, a present root requires the DX11 header, and missing includes contribute empty content and a diagnostic as the engine does. The assembled program carries a SHA256 identity covering all resolved inputs. Effect artwork is currently outside recording hash coverage: its current stack identity is explicit and is not represented as recorded verification. UTF-8 source conversion or compilation failures name the effect. Execution, persistent caches and resource binding belong to [shader-pipeline](../shader-pipeline/README.md).

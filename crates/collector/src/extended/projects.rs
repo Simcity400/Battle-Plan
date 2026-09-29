@@ -7,6 +7,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
+use engine::raid_tooltip_operands;
 use engine::{
     Memory, ccountry, ccountry_raid_status, cgame_state, cnuke,
     cpdx_array::Array,
@@ -15,7 +16,7 @@ use engine::{
     msvc_string, nproject_breakthrough_node, nproject_cbreakthrough_progress, nproject_cprogram,
     nproject_cprogram_status, nproject_cproject, nproject_cproject_pool,
     nproject_cproject_state_machine as machine, nproject_sproject_context,
-    nproject_sproject_history, peace_conference, raid_equipment, raid_path_memo, raid_speed_inputs,
+    nproject_sproject_history, peace_conference, raid_equipment, raid_facilities, raid_path_memo, raid_speed_inputs,
     scientist_roster,
     walk::Outcome,
 };
@@ -25,7 +26,7 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 16;
+pub const N: usize = 19;
 pub const TABLES: [TableId; N] = [
     TableId::ProjectPrograms,
     TableId::Projects,
@@ -43,6 +44,9 @@ pub const TABLES: [TableId; N] = [
     TableId::RaidPlayerAllowedTypes,
     TableId::RaidSpeedInputs,
     TableId::RaidEquipment,
+    TableId::RaidFacilities,
+    TableId::RaidIntelInputs,
+    TableId::RaidTooltipOperands,
 ];
 
 /// Each rooted walk produces two independently bounded tables.
@@ -69,16 +73,18 @@ pub struct Capacities {
     pub raid_equipment_items: usize,
     /// RaidEquipment's per-archetype pool totals, every recorded raid's.
     pub raid_equipment_archetypes: usize,
+    pub counteroperatives: usize,
 }
 
 impl Default for Capacities {
     fn default() -> Self {
         Self {
             rows: [
-                256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192, 128, 64, 1024, 1, 64, 64,
+                256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192, 128, 64, 1024, 1, 64, 64, 256, 512, 1024,
             ],
             raid_equipment_items: 1024,
             raid_equipment_archetypes: 1024,
+            counteroperatives: 1024,
             raid_transports: 256,
             program_names: 8192,
             program_candidates: 1024,
@@ -96,6 +102,7 @@ impl Capacities {
         raise(&mut self.rows[1], rows(slots, 64));
         raise(&mut self.rows[4], rows(slots, 2));
         raise(&mut self.rows[5], rows(slots, 1));
+        raise(&mut self.rows[17], rows(slots, 1));
         // Every country holds its eligible raid types.
         raise(&mut self.raid_type_tokens, rows(slots, 8));
     }
@@ -107,10 +114,19 @@ impl Capacities {
         use crate::country_scale::{raise, rows};
         raise(&mut self.raid_type_tokens, rows(tokens, 1));
     }
+
+    pub(crate) fn raise_for_facilities(&mut self, count: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[16], rows(count, 1));
+    }
 }
 
 pub struct Captured {
     programs: CaptureRows<nproject_cprogram::Row>,
+    facilities: CaptureRows<raid_facilities::Row>,
+    raid_intel: CaptureRows<engine::raid_intel_inputs::Row>,
+    tooltip_operands: CaptureRows<engine::raid_tooltip_operands::Row>,
+    counteroperatives: Arena<engine::raid_intel_inputs::Operative>,
     projects: CaptureRows<nproject_cproject::Row>,
     history: CaptureRows<nproject_sproject_history::Row>,
     breakthroughs: CaptureRows<nproject_cbreakthrough_progress::Row>,
@@ -172,6 +188,9 @@ impl Captured {
         self.raid_player.fail(outcomes[13]);
         self.raid_speeds.fail(outcomes[14]);
         self.raid_equipment.fail(outcomes[15]);
+        self.facilities.fail(outcomes[16]);
+        self.raid_intel.fail(outcomes[17]);
+        self.tooltip_operands.fail(outcomes[18]);
     }
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -185,6 +204,7 @@ impl Captured {
             raid_transports: 0,
             raid_equipment_items: 0,
             raid_equipment_archetypes: 0,
+            counteroperatives: 0,
         })
     }
 
@@ -192,6 +212,10 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             programs: CaptureRows::new(capacity.rows[0]),
+            facilities: CaptureRows::new(capacity.rows[16]),
+            raid_intel: CaptureRows::new(capacity.rows[17]),
+            tooltip_operands: CaptureRows::new(capacity.rows[18]),
+            counteroperatives: Arena::new(capacity.counteroperatives),
             projects: CaptureRows::new(capacity.rows[1]),
             history: CaptureRows::new(capacity.rows[2]),
             breakthroughs: CaptureRows::new(capacity.rows[3]),
@@ -237,6 +261,10 @@ impl Captured {
 
     pub fn reset(&mut self) {
         self.programs.reset();
+        self.facilities.reset();
+        self.raid_intel.reset();
+        self.tooltip_operands.reset();
+        self.counteroperatives.reset();
         self.projects.reset();
         self.history.reset();
         self.breakthroughs.reset();
@@ -264,7 +292,8 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.programs.allocated_bytes()
+        self.facilities.allocated_bytes() + self.raid_intel.allocated_bytes() + self.tooltip_operands.allocated_bytes()
+            + self.counteroperatives.allocated_bytes() + self.programs.allocated_bytes()
             + self.projects.allocated_bytes()
             + self.history.allocated_bytes()
             + self.breakthroughs.allocated_bytes()
@@ -294,6 +323,10 @@ impl Captured {
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.programs.grow(&mut capacity.rows[0]);
+        self.facilities.grow(&mut capacity.rows[16]);
+        self.raid_intel.grow(&mut capacity.rows[17]);
+        self.tooltip_operands.grow(&mut capacity.rows[18]);
+        self.counteroperatives.grow(&mut capacity.counteroperatives);
         self.projects.grow(&mut capacity.rows[1]);
         self.history.grow(&mut capacity.rows[2]);
         self.breakthroughs.grow(&mut capacity.rows[3]);
@@ -524,6 +557,20 @@ impl Captured {
             };
         }
         plain!(peace, 7, peace_conference);
+        plain!(facilities, 16, raid_facilities);
+        plain!(tooltip_operands, 18, raid_tooltip_operands);
+        if !active[17] {
+            self.raid_intel.outcome = Outcome::Unavailable { reason: replay::cadence::SKIPPED_REASON };
+        } else {
+            let begin = qpc();
+            let _reads = read_accounting::table(TABLES[17]);
+            let read = engine::raid_intel_inputs::walk(memory, base, game_state,
+                &mut self.raid_intel.rows, &mut self.counteroperatives.first);
+            self.raid_intel.outcome = read.outcome;
+            self.counteroperatives.required = read.operatives;
+            self.counteroperatives.len = read.operatives.min(self.counteroperatives.first.len());
+            ticks[17] = elapsed(begin);
+        }
         if active[12] {
             let _reads = read_accounting::table(TABLES[12]);
             let begin = qpc();
@@ -600,6 +647,9 @@ impl Captured {
             self.raid_player.outcome,
             self.raid_speeds.outcome,
             self.raid_equipment.outcome,
+            self.facilities.outcome,
+            self.raid_intel.outcome,
+            self.tooltip_operands.outcome,
         ]
     }
 
@@ -702,6 +752,7 @@ impl Captured {
                     ordinal: r.ordinal,
                     raid_type: r.raid_type,
                     scope: super::raid_target_statuses::scope(&r.scope),
+                    days: r.days,
                 }
             }),
             table::<tables::RaidPathDistances, _>(outcomes[12], &self.raid_paths.rows, |r| {
@@ -715,6 +766,19 @@ impl Captured {
             self.raid_player_table(outcomes[13]),
             self.raid_speed_table(outcomes[14]),
             self.raid_equipment_table(outcomes[15]),
+            table::<tables::RaidFacilities, _>(outcomes[16], &self.facilities.rows, |r| rows::RaidFacilityRow {
+                country: r.country, ordinal: r.ordinal, id: r.id, owner: r.owner,
+                province: r.province, active_project: r.active_project, project_definition: r.project_definition,
+            }),
+            table::<tables::RaidIntelInputs, _>(outcomes[17], &self.raid_intel.rows, |r| rows::RaidIntelInputRow {
+                country: r.country, strategic_present: u8::from(r.strategic_present),
+                country_defense: r.country_defense, crypto_strength: r.crypto_strength,
+                operatives: self.counteroperatives.first[r.operatives_start..r.operatives_start + r.operatives_len]
+                    .iter().map(|o| rows::RaidCounterOperative { handle: o.handle, defense: o.defense, context: o.context }).collect(),
+            }),
+            table::<tables::RaidTooltipOperands, _>(outcomes[18], &self.tooltip_operands.rows, |r| rows::RaidTooltipOperandRow {
+                raid: r.raid, ordinal: r.ordinal, kind: r.kind, key: r.key, raw: r.raw,
+            }),
         ]
     }
 
@@ -2822,6 +2886,7 @@ mod tests {
         raid_transports: 16,
         raid_equipment_items: 16,
         raid_equipment_archetypes: 16,
+            counteroperatives: 16,
         };
         let captured = Captured::with_capacities(&capacities);
         (capacities, captured)
@@ -3308,6 +3373,7 @@ mod tests {
         raid_transports: 16,
         raid_equipment_items: 16,
         raid_equipment_archetypes: 16,
+            counteroperatives: 16,
         }
     }
 
@@ -3871,6 +3937,7 @@ mod tests {
             raid_transports: 16,
             raid_equipment_items: 16,
             raid_equipment_archetypes: 16,
+            counteroperatives: 16,
             };
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
@@ -3888,6 +3955,7 @@ mod tests {
             raid_transports: 16,
             raid_equipment_items: 16,
             raid_equipment_archetypes: 16,
+            counteroperatives: 16,
             };
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
@@ -3904,6 +3972,7 @@ mod tests {
         raid_transports: 16,
         raid_equipment_items: 16,
         raid_equipment_archetypes: 16,
+            counteroperatives: 16,
         };
         let (split, _, _) = kit::split(&memory, &capacities);
         assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
@@ -3945,6 +4014,7 @@ mod tests {
         raid_transports: 16,
         raid_equipment_items: 16,
         raid_equipment_archetypes: 16,
+            counteroperatives: 16,
         };
         let direct = kit::direct(&memory, &capacities);
         let (split, report, _) = kit::split(&memory, &capacities);

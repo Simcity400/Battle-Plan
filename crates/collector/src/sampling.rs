@@ -609,6 +609,10 @@ pub struct Shared {
     eta_cadence:
         [UnsafeCell<Option<Box<extended::division_eta_inputs::CadenceStore>>>; ETA_INPUT_RANGES],
     eta_cadence_bytes: [AtomicU64; ETA_INPUT_RANGES],
+    /// The held RaidAirScores table, loaned to the Late job each hour. Only
+    /// the game thread takes and returns it.
+    raid_air_scores: UnsafeCell<Option<Box<engine::raid_air_scores::Held>>>,
+    raid_air_score_bytes: AtomicU64,
     pub eta_inputs: EtaInputStats,
     /// Template rows whose model inputs failed; the status thread copies it.
     pub template_models: Mutex<TemplateModelStats>,
@@ -687,9 +691,14 @@ impl Shared {
             .extended
             .country_intel_home()
             .expect("a new frame holds its intel pack");
+        let air = &sizing.extended.air;
+        let mut raid_air_scores = Box::<engine::raid_air_scores::Held>::default();
+        raid_air_scores.grow(air.scores.regions, air.scores.countries, air.scores.rows);
+        let raid_air_score_bytes = raid_air_scores.allocated_bytes();
         let pool_bytes = roster.allocated_bytes()
             + country_cache.allocated_bytes()
-            + country_intel.allocated_bytes();
+            + country_intel.allocated_bytes()
+            + raid_air_score_bytes;
         let shared = Self {
             acquisition: OnceLock::new(),
             collect_wait_ns: AtomicU64::new(0),
@@ -742,6 +751,8 @@ impl Shared {
             country_cache: UnsafeCell::new(country_cache),
             eta_cadence: std::array::from_fn(|_| UnsafeCell::new(Some(Box::default()))),
             eta_cadence_bytes: std::array::from_fn(|_| AtomicU64::new(0)),
+            raid_air_scores: UnsafeCell::new(Some(raid_air_scores)),
+            raid_air_score_bytes: AtomicU64::new(raid_air_score_bytes as u64),
             eta_inputs: EtaInputStats::default(),
             template_models: Mutex::new(TemplateModelStats::default()),
             template_models_missed: AtomicU64::new(0),
@@ -2548,13 +2559,18 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             frame
                 .extended
                 .restore_air_missions_request(air_missions_request, air_missions_failure.is_none());
+            // SAFETY: only this callback takes and returns the store.
+            let air_scores = unsafe { &mut *shared.raid_air_scores.get() }
+                .take()
+                .expect("raid air score loan");
             let late_pending = queue!(acquisition::Job::Late(frame.extended.take_late_request(
                 &mut frame.map.orders,
                 naval_report.raw_ok || naval_failure.is_some(),
                 shared.base,
                 state,
                 clock.hour,
-                force_full
+                force_full,
+                air_scores
             )));
             let mut air_histories_pending: [Option<PendingAcquisition>; AIR_HISTORY_PARTS] =
                 [const { None }; AIR_HISTORY_PARTS];
@@ -2932,7 +2948,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             }
             segment!(11);
             let (late_request, _, late_failure) = completed!(late_pending, Late);
-            frame.extended.restore_late_request(
+            let air_scores = frame.extended.restore_late_request(
                 late_request,
                 late_failure.is_none(),
                 &mut frame.map.orders,
@@ -2944,6 +2960,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     .restore_air_histories_request(request, failure.is_none());
             }
             frame.extended.settle_air_histories();
+            let bytes = air_scores.allocated_bytes() as u64;
+            let previous = shared.raid_air_score_bytes.swap(bytes, Ordering::Relaxed);
+            shared
+                .pool_bytes
+                .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+            // SAFETY: the owned job has joined; no worker retains this store.
+            unsafe { *shared.raid_air_scores.get() = Some(air_scores) };
             frame.extended.capture_tables_late(
                 &cached,
                 shared.base,
@@ -5264,8 +5287,9 @@ mod tests {
         assert_eq!(shared.free.len(), BUFFERS);
         let mut bytes = unsafe { (&*shared.roster.get()).as_ref().unwrap() }.allocated_bytes();
         bytes += unsafe { &*shared.country_cache.get() }.allocated_bytes();
-        // One CountryIntel buffer for the whole pool.
+        // One CountryIntel buffer and one held RaidAirScores table for the pool.
         bytes += shared.country_intel.allocated_bytes();
+        bytes += unsafe { (&*shared.raid_air_scores.get()).as_ref().unwrap() }.allocated_bytes();
         for slot in &shared.frames {
             let frame = slot.load(Ordering::Acquire);
             assert!(!frame.is_null());

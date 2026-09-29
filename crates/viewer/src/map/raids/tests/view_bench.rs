@@ -476,6 +476,7 @@ fn bench_hours(base: &DecodedFrame, countries: u32, typical: bool) -> Vec<Decode
                         ordinal: 0,
                         raid_type: TYPE_TOKENS + rng.below(32) as u32,
                         scope,
+                        days: 0,
                     }]
                 } else {
                     Vec::new()
@@ -886,6 +887,7 @@ fn churn(frame: &mut DecodedFrame, rng: &mut Rng, hour: i32) {
                     ordinal: 0,
                     raid_type: TYPE_TOKENS + rng.below(32) as u32,
                     scope: target.scope.clone(),
+                    days: 0,
                 }]
             } else {
                 Vec::new()

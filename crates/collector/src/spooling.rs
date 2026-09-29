@@ -2347,6 +2347,8 @@ fn decoded_with_costs(
                     owner: state.owner,
                     controller: state.controller,
                     movement_infrastructure: state.movement_infrastructure,
+                    primary_name_length: state.primary_name_length,
+                    secondary_name_length: state.secondary_name_length,
                 },
             ),
             scalar_table::<tables::Divisions, _>(
@@ -3558,6 +3560,8 @@ mod tests {
                 owner: 7,
                 controller: u32::MAX,
                 movement_infrastructure: 0,
+                primary_name_length: 0,
+                secondary_name_length: 0,
             }]))
         );
     }

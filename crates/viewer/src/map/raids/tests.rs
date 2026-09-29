@@ -46,7 +46,7 @@ fn kind(name: &str, target: TargetType) -> Kind {
 }
 
 /// Provinces 1..=4 in state 10 (1, 2) and state 20 (3, 4), in a 4 x 1 map.
-fn assets() -> RaidAssets {
+pub(super) fn assets() -> RaidAssets {
     let child = |texture| Child {
         position: [1.0, 1.0],
         centred: true,
@@ -142,6 +142,7 @@ fn assets() -> RaidAssets {
         refused_sites: None,
         equipment: Default::default(),
         leader_roles: Ok(LeaderRoles::new(Default::default())),
+        tooltip: Default::default(),
         invasion_prepare_days: Ok(60),
         defines: Default::default(),
         warnings: Vec::new(),
@@ -175,7 +176,7 @@ pub(crate) fn registered_launch_inputs() -> replay::rows::RaidCountryInputRow {
     }
 }
 
-fn put<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
+pub(super) fn put<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
 }
 
@@ -192,7 +193,7 @@ fn status(ordinal: u32, province: u32) -> RaidTargetStatusRow {
 }
 
 /// Slots 0 (GER, raw 10) and 1 (ENG, raw 11); GER controls state 10, ENG 20.
-fn frame() -> DecodedFrame {
+pub(super) fn frame() -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 5,
@@ -575,6 +576,7 @@ fn used_up_types_locked_categories_and_undetected_buildings_offer_nothing() {
     put::<tables::RaidCooldowns>(
         &mut frame,
         vec![RaidCooldownRow {
+            days: 3,
             owner_slot: 0,
             ordinal: 0,
             raid_type: OILFIELD,
@@ -887,6 +889,7 @@ fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
                 enabled: true,
                 glyph: None,
                 plus: false,
+                tooltip: None,
             },
             RaidIcon {
                 province: 2,
@@ -894,6 +897,7 @@ fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
                 enabled: true,
                 glyph: None,
                 plus: false,
+                tooltip: None,
             },
         ],
         report: RaidReport::default(),
@@ -947,6 +951,7 @@ fn only_the_hours_own_raid_icons_are_drawn() {
             enabled: true,
             glyph: None,
             plus: false,
+            tooltip: None,
         }],
         report: RaidReport::default(),
         built_for: Some((1, 40, 7)),
@@ -1330,6 +1335,7 @@ fn drawn(height: f32, viewport: [u32; 2], ui_scale: f32) -> (usize, Batch) {
         enabled: true,
         glyph: None,
         plus: false,
+        tooltip: None,
     };
     let icons = RaidIcons {
         icons: vec![icon(1, 0), icon(2, 4)],
@@ -2440,6 +2446,7 @@ mod launch_gate {
         put::<tables::RaidCooldowns>(
             &mut frame,
             vec![RaidCooldownRow {
+                days: 3,
                 owner_slot: 0,
                 ordinal: 0,
                 raid_type: 999,
@@ -4061,6 +4068,7 @@ fn a_prepared_raids_launch_triggers_follow_the_native_chain() {
     put::<tables::RaidCooldowns>(
         &mut frame,
         vec![RaidCooldownRow {
+            days: 3,
             owner_slot: 0,
             ordinal: 0,
             raid_type: OILFIELD,

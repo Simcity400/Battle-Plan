@@ -1035,6 +1035,7 @@ impl Captured {
                     state_id: r.state_id,
                     strength_raw: r.strength_raw,
                     subnetwork_selector: r.subnetwork_selector,
+                    local_strength_raw: r.local_strength_raw,
                 },
             )),
             flags,
@@ -1091,6 +1092,8 @@ impl Captured {
             target_index: r.target_index,
             army: r.army,
             air: r.air,
+            civilian: r.civilian,
+            navy: r.navy,
         })
     }
 
@@ -2667,6 +2670,8 @@ pub(crate) fn intel_shadow_fixture(value: i64) -> Captured {
             target_index: index as u32,
             army: value,
             air: i64::MIN,
+            civilian: 0,
+            navy: 0,
         };
     }
     for (index, row) in capture.flags.rows.iter_mut().enumerate() {
@@ -3245,6 +3250,7 @@ mod tests {
             state_id: 3,
             strength_raw: None,
             subnetwork_selector: i32::MIN,
+            local_strength_raw: i64::MIN,
         };
         capture.networks.rows[1] = ccountry_intel_network::Row {
             owner_country: 1,
@@ -3252,6 +3258,7 @@ mod tests {
             state_id: 4,
             strength_raw: Some(i64::MIN),
             subnetwork_selector: 0,
+            local_strength_raw: i64::MAX,
         };
         capture.operations.outcome = Outcome::Rows { len: 1 };
         capture.operations.rows[0] = coperation_instance::Row {
@@ -3311,6 +3318,8 @@ mod tests {
 
         let views = capture.tables();
         let networks = complete::<tables::IntelNetworks>(&views[6]);
+        assert_eq!(networks[0].local_strength_raw, i64::MIN);
+        assert_eq!(networks[1].local_strength_raw, i64::MAX);
         assert_eq!(
             (networks[0].subnetwork_selector, networks[0].strength_raw),
             (i32::MIN, None)

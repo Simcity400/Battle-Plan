@@ -16,6 +16,7 @@ The pre-rewrite implementation is retained at Git tag `archive/pre-rewrite-2026-
 | How are memory reads bounded and failures represented? | [memory.rs](src/memory.rs), [walk.rs](src/walk.rs) and the relevant struct's reader. |
 | How do country references resolve? | [ccountry_tag.rs](src/ccountry_tag.rs), [country_memory.rs](src/country_memory.rs) and the [replay identity rules](../replay/README.md#values-availability-and-freshness). |
 | Where is a native row captured and encoded? | Collector [acquisition](../collector/src/acquisition.rs) and [extended packs](../collector/src/extended/), then replay [rows](../replay/src/rows.rs), [extended rows](../replay/src/extended_rows.rs) and [format](../replay/src/format.rs). |
+| What do the raid map tooltips read? | [raid_facilities.rs](src/raid_facilities.rs), [raid_air_scores.rs](src/raid_air_scores.rs), [raid_intel_inputs.rs](src/raid_intel_inputs.rs) and [raid_tooltip_operands.rs](src/raid_tooltip_operands.rs); each separates stored values from the tooltip's on-demand arithmetic. |
 | What can a save validate? | [Text-save parsers](../installed-content/src/save/) and the recorder's [oracle comparators](../recorder/src/oracle/); keep unsupported fields explicit. |
 
 The struct files hold offsets, native widths and evidence. Do not recreate the old registry, table-count or format-version catalogs here. A stored field, a calculated getter and a renderer cache are different sources; a similar-looking save value does not make them interchangeable.

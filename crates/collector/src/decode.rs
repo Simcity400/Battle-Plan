@@ -4175,7 +4175,7 @@ mod tests {
         let index = shared.free.pop().expect("pooled buffer");
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let capacities = crate::extended::projects::Capacities {
-            rows: [256; 16],
+            rows: [256; crate::extended::projects::N],
             program_names: 8192,
             program_candidates: 1024,
             raid_type_tokens: 256,
@@ -4183,6 +4183,7 @@ mod tests {
             raid_transports: 16,
             raid_equipment_items: 16,
             raid_equipment_archetypes: 16,
+            counteroperatives: 16,
         };
         let direct = projects_test_kit::direct(&memory, &capacities);
         let ctx = ProjectsCopyContext {
@@ -5914,7 +5915,14 @@ mod tests {
                 captured.bases_raw_mode = true;
                 captured.history_raw_mode = true;
                 // The pack reset must preserve the staged-payload reservation.
-                captured.capture(&memory, kit::BASE, kit::GAME_STATE, hour, false);
+                captured.capture(
+                    &memory,
+                    kit::BASE,
+                    kit::GAME_STATE,
+                    hour,
+                    false,
+                    &mut Default::default(),
+                );
                 job.air_stats_payload = Some(payload);
             } else if !job.air_stats_refresh {
                 captured.fail_air_stats_capture(replay::cadence::SKIPPED_REASON);

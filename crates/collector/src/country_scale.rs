@@ -88,6 +88,9 @@ pub fn observe_country_intel(memory: &impl Memory, base: usize) -> Option<usize>
 pub struct RaidArenas {
     pub type_tokens: usize,
     pub reservation_words: usize,
+    pub facility_rows: usize,
+    pub air_regions: usize,
+    pub counteroperatives: usize,
 }
 
 /// Live raid arena demand, or `None` when no raid system or country census
@@ -102,9 +105,24 @@ pub fn observe_raid_arenas(memory: &impl Memory, base: usize) -> Option<RaidAren
     let player = engine::cplayer_status_cache::required_tokens(memory, base, state).unwrap_or(0);
     let reservation_words =
         engine::raid_launch_inputs::required_reservations(memory, base, state).ok()?;
+    // An empty destination counts native roster occurrences without reading
+    // the programs or resolving active projects. This is only a sizing hint.
+    let facility_rows = match engine::raid_facilities::walk(memory, base, state, &mut []) {
+        engine::walk::Outcome::Rows { len } => len,
+        engine::walk::Outcome::Truncated { unread_rows, .. } => unread_rows as usize,
+        engine::walk::Outcome::Unavailable { .. } => 0,
+    };
+    let air_regions = state
+        .checked_add(cgame_state::STRATEGIC_REGIONS)
+        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
+        .map_or(0, |array| array.count as usize);
     Some(RaidArenas {
         type_tokens: parents.checked_add(player)?,
         reservation_words,
+        facility_rows,
+        air_regions,
+        counteroperatives: engine::raid_intel_inputs::required_operatives(memory, base, state)
+            .unwrap_or(0),
     })
 }
 
@@ -283,12 +301,17 @@ mod tests {
         let demand = RaidArenas {
             type_tokens: 5_400,
             reservation_words: 1_900,
+            facility_rows: 10_000,
+            counteroperatives: 5000 * 11,
+            air_regions: 700,
         };
         let mut sizing = Sizing::for_slots(440);
         let default_tokens = sizing.extended.projects.raid_type_tokens;
         assert!(default_tokens < demand.type_tokens);
         sizing.extended.raise_for_raid_arenas(demand);
         assert!(sizing.extended.projects.raid_type_tokens >= demand.type_tokens);
+        assert!(sizing.extended.projects.rows[16] >= demand.facility_rows);
+        assert!(sizing.extended.air.scores.regions >= demand.air_regions);
         assert!(
             sizing
                 .extended

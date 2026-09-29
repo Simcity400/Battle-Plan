@@ -248,6 +248,8 @@ pub(crate) struct LateRequest {
     pub hour: i32,
     pub force_full: bool,
     pub packs: Box<crate::extended::LatePacks>,
+    /// The attachment's held RaidAirScores table, loaned for this hour.
+    pub air_scores: Box<engine::raid_air_scores::Held>,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LateReport;
@@ -1259,6 +1261,7 @@ fn run_with_memory(
                 request.hour,
                 request.force_full,
                 request.inputs.as_deref(),
+                &mut request.air_scores,
             );
             Report::Late(LateReport)
         }

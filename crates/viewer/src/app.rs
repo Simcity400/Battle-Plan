@@ -487,6 +487,8 @@ pub struct Viewer {
     label_report: LabelReport,
     /// The raid offer cycle, advanced off the frame path.
     raid_lane: crate::raid_lane::RaidLane,
+    raid_tooltips: map::raids::tooltips::lane::Lane,
+    raid_tooltip_view: map::raids::tooltips::view::View,
     // counters
     counter_report: CounterReport,
     /// The last icon layer built, and the frame, camera and viewport it was
@@ -807,6 +809,8 @@ impl Viewer {
             last_frame: Instant::now(),
             label_report: LabelReport::default(),
             raid_lane: Default::default(),
+            raid_tooltips: Default::default(),
+            raid_tooltip_view: Default::default(),
             // counters
             counter_report: CounterReport::default(),
             overlay: None,
@@ -909,6 +913,8 @@ impl Viewer {
             return false;
         }
         self.options.replay = None;
+        self.raid_tooltips = Default::default();
+        self.raid_tooltip_view = Default::default();
         self.source = None;
         self.source_decoder = None;
         self.loaded_config = None;
@@ -1704,6 +1710,8 @@ impl Viewer {
         self.opened = Some(Instant::now());
         self.combat.close();
         self.document = None;
+        self.raid_tooltips = Default::default();
+        self.raid_tooltip_view = Default::default();
         self.source = None;
         self.source_decoder = None;
         self.loaded_config = None;
@@ -3522,6 +3530,25 @@ impl Viewer {
             .gap(points(4.0))
             .width(points(style.spacing.tooltip_width));
         tooltip.show(|ui| {
+            let raid = point
+                .filter(|_| !over_combat)
+                .and_then(|point| self.prepared_overlay.as_ref()?.raid_at(point).cloned());
+            if let Some(key) = raid {
+                if let crate::playback::Current::Frame(frame) = document.playback.current()
+                    && let Some(ours) = self.overlay_tables.as_ref().map(|t| t.3.ours())
+                    && let Some(prepared) = self.raid_tooltips.request(
+                        Arc::clone(&document.content),
+                        Arc::clone(frame),
+                        ours,
+                        key,
+                        ui.ctx(),
+                    )
+                {
+                    self.raid_tooltip_view
+                        .show(ui, &prepared, points(1.0), self.diagnostics);
+                }
+                return;
+            }
             // The game shows a moving division's arrival in its counter's
             // tooltip, so the hovered counter's line replaces the map's hint.
             let arrival = point.filter(|_| !over_combat).and_then(|point| {

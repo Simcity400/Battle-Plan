@@ -678,7 +678,14 @@ impl Scale {
             &mut [],
             &crate::history_changes::Unobserved,
         );
-        air.capture(&self.world, BASE, self.world.game_state, HOUR, false);
+        air.capture(
+            &self.world,
+            BASE,
+            self.world.game_state,
+            HOUR,
+            false,
+            &mut Default::default(),
+        );
         air.outcomes()
     }
 }

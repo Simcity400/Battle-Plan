@@ -30,6 +30,15 @@ pub const TOKENS: &[Token] = &[
         id: cbuilding_database::INFRASTRUCTURE_TOKEN,
         name: "infrastructure",
     },
+    // Registered at 14010DE6A and 14010DEA3, respectively.
+    Token {
+        id: crate::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+        name: "nuclear_bomb",
+    },
+    Token {
+        id: crate::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
+        name: "thermonuclear_bomb",
+    },
     // Registered at 1400A6D6C and 140088997, respectively.
     Token {
         id: cresearch_slot::IDLE_HANDLE,

@@ -1,0 +1,737 @@
+//! Stored operands of the ordinary-map raid tooltips. `14157C670` reads
+//! army statistics and the wing's mission-8 statistics on demand. Keep the
+//! stored numerators and every manpower entry; division and wing derived
+//! fractions are computed by the viewer. Hourly because equipment, strength,
+//! organisation and experience can change during any hour.
+use crate::modifier_keys as keys;
+use crate::{
+    Memory, cair_wing, carmy, cpdx_array::Array, craid_instance, creference_registry, cunit,
+    raid_speed_inputs, read, walk::Outcome,
+};
+
+mod context;
+mod names;
+mod requirements;
+
+pub const REFERENCES: u32 = 0;
+pub const ARMY: u32 = 1;
+pub const ARMY_STATS: u32 = 2;
+pub const MANPOWER: u32 = 3;
+pub const WING: u32 = 4;
+pub const WING_STATS: u32 = 5;
+pub const WING_MODIFIERS: u32 = 6;
+pub const WING_COUNTRY_MODIFIERS: u32 = 7;
+pub const ACE: u32 = 8;
+pub const ACE_MODIFIERS: u32 = 9;
+pub const ACE_TYPE_MODIFIERS: u32 = 10;
+pub const ACE_OWNER_MODIFIERS: u32 = 11;
+pub const ACE_WING: u32 = 12;
+pub const TARGET_STATE: u32 = 13;
+pub const TARGET_UNIT_OWNERS: u32 = 14;
+pub const CONTEXT: u32 = 15;
+pub const WEATHER_MODIFIERS: u32 = 16;
+pub const NIGHT_MODIFIERS: u32 = 17;
+pub const INTERCEPTION_ENABLED: u32 = 18;
+pub const INTERCEPTION_SUPPORTED: u32 = 19;
+pub const INTERCEPTION_REGION: u32 = 20;
+pub const INTERCEPTION_PLANES: u32 = 21;
+pub const ANTI_AIR_LEVELS: u32 = 22;
+pub const TARGET_CORES: u32 = 23;
+pub const NAME: u32 = 24;
+pub const NAME_GROUP: u32 = 25;
+pub const CUSTOM_NAME: u32 = 26;
+pub const ESSENTIAL_ORDER: u32 = 27;
+pub const ADDITIONAL_ORDER: u32 = 28;
+pub const SOURCE_NAME: u32 = 29;
+pub const SOURCE_NAME_GROUP: u32 = 30;
+pub const SOURCE_CUSTOM_NAME: u32 = 31;
+/// Global subunit +10 discriminator, 141578C80. Scope zero holds the
+/// ordered database entries; key zero is the native null fallback.
+pub const SUBUNIT_ACTIVE: u32 = 32;
+/// The only row of a raid whose operands could not be read; the other
+/// raids keep theirs.
+pub const UNREADABLE: u32 = 33;
+/// 141084940 passes these static lexer tokens to GetTokenString for names.
+pub const NUCLEAR_BOMB_TOKEN: u32 = 0x4bf0;
+pub const THERMONUCLEAR_BOMB_TOKEN: u32 = 0x4bf1;
+/// Definition keys use the unused null reference-type arm; ordinary raid
+/// keys retain their native nonzero reference type.
+pub fn definition_key(token: u32) -> u64 {
+    u64::from(token) << 32
+}
+/// Keys in NAME, apart from CNameGroupMember offsets.
+pub const ARMY_RESOLVED: u32 = 0x1000;
+pub const WING_RESOLVED: u32 = 0x1001;
+pub const UNIT_RAID_REFERENCE: u32 = 0x1002;
+pub const UNIT_RAID_RESOLVED: u32 = 0x1003;
+pub const WING_NAME_LENGTH: u32 = 0x1004;
+pub const SOURCE_SHIP_RESOLVED: u32 = 0x1005;
+pub const SOURCE_AIR_BASE_KIND: u32 = 0x1006;
+// CONTEXT keys name the source word, never a calculated value.
+pub const TARGET_PROVINCE: u32 = 0;
+pub const TARGET_REGION: u32 = 1;
+pub const WING_REGION: u32 = 2;
+pub const BASE_REGION: u32 = 3;
+pub const WING_MISSION_MASK: u32 = 4;
+pub const CARRIER_MISSION: u32 = 5;
+pub const NIGHT_FACTOR: u32 = 6;
+pub const TARGET_COUNTRY: u32 = 7;
+/// A native binary-search operand, apart from the direct vector scan.
+pub const LOOKUP: u32 = 1 << 31;
+
+/// Keys within a scalar family are native byte offsets, and within a stat
+/// family native stat indexes. Ordinals preserve repeated vector entries.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub raid: u64,
+    pub ordinal: u32,
+    pub kind: u32,
+    pub key: u32,
+    pub raw: i64,
+}
+
+fn field<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    at: usize,
+    offset: usize,
+) -> Result<T, &'static str> {
+    at.checked_add(offset)
+        .filter(|_| at != 0)
+        .and_then(|at| read(memory, at))
+        .ok_or("raid tooltip operand unreadable")
+}
+
+struct Sink<'a> {
+    rows: &'a mut [Row],
+    required: usize,
+    raid: u64,
+    ordinal: u32,
+}
+impl Sink<'_> {
+    fn push(&mut self, kind: u32, key: u32, raw: i64) -> Result<(), &'static str> {
+        if let Some(row) = self.rows.get_mut(self.required) {
+            *row = Row {
+                raid: self.raid,
+                ordinal: self.ordinal,
+                kind,
+                key,
+                raw,
+            };
+        }
+        self.ordinal = self
+            .ordinal
+            .checked_add(1)
+            .ok_or("raid tooltip operand ordinal overflow")?;
+        self.required = self
+            .required
+            .checked_add(1)
+            .ok_or("raid tooltip operand demand overflow")?;
+        Ok(())
+    }
+}
+
+fn unit(
+    memory: &impl Memory,
+    base: usize,
+    handle: u64,
+    vtable: usize,
+) -> Result<Option<usize>, &'static str> {
+    let Some(pointer) = creference_registry::resolve(memory, base, handle)?
+        .and_then(|p| p.checked_sub(0x10))
+        .filter(|&p| p != 0)
+    else {
+        return Ok(None);
+    };
+    if field::<u64>(memory, pointer, 0)?
+        != base
+            .checked_add(vtable)
+            .ok_or("raid tooltip vtable overflow")? as u64
+    {
+        return Err("raid tooltip unit vtable mismatch");
+    }
+    Ok(Some(pointer))
+}
+
+fn army(memory: &impl Memory, pointer: usize, sink: &mut Sink<'_>) -> Result<(), &'static str> {
+    // CArmy vf31/vf36: 140C78820 / 140C78810. Experience 141454330 reads
+    // +430 and sums the signed manpower array at +3E0, without deduplication.
+    for offset in [0x420, 0x428, 0x430] {
+        sink.push(ARMY, offset as u32, field(memory, pointer, offset)?)?;
+    }
+    let stats = field::<u64>(memory, pointer, cunit::STAT_BLOCK)? as usize;
+    // Recon 140BEE1B0, maximum strength 140C72EB0 (the latter clamps at 100).
+    for offset in [0xd0, 0x288] {
+        sink.push(ARMY_STATS, offset as u32, field(memory, stats, offset)?)?;
+    }
+    let roster = Array::read(memory, pointer + carmy::MANPOWER_DATA, 8)
+        .ok_or("raid tooltip manpower header invalid")?;
+    for index in 0..roster.count {
+        sink.push(
+            MANPOWER,
+            index,
+            i64::from(field::<i32>(
+                memory,
+                roster
+                    .element(index, 8)
+                    .ok_or("raid tooltip manpower address overflow")?,
+                4,
+            )?),
+        )?;
+    }
+    Ok(())
+}
+
+fn wing_stats(
+    memory: &impl Memory,
+    pointer: usize,
+    sink: &mut Sink<'_>,
+) -> Result<(), &'static str> {
+    sink.push(
+        WING,
+        cair_wing::EXPERIENCE as u32,
+        field(memory, pointer, cair_wing::EXPERIENCE)?,
+    )?;
+    // FindAirWingMissionStats 140F49280: mission 8 has bit index 3. -1 alone
+    // selects the default block. Refuse other invalid indexes, never guess.
+    let index = field::<i8>(memory, pointer, 0x968 + 0x18 + 3)?;
+    let stats = if index == -1 {
+        pointer
+            .checked_add(0x390)
+            .ok_or("raid tooltip stat address overflow")?
+    } else {
+        let roster = Array::read(memory, pointer + 0x968, 0x270)
+            .ok_or("raid tooltip mission stat header invalid")?;
+        let index = u32::try_from(index).map_err(|_| "raid tooltip mission stat index negative")?;
+        roster
+            .element(index, 0x270)
+            .ok_or("raid tooltip mission stat index outside array")?
+    };
+    // GetMissionStatOrDefault 140F4B7F0, consumed by 140F49710/140F4D130
+    // and reliability branch 14157C670. No getter or modifier is executed.
+    for key in [0x2f, 0x31, 0x32, 0x41, 0x4c] {
+        sink.push(WING_STATS, key, field(memory, stats, key as usize * 8)?)?;
+    }
+    Ok(())
+}
+
+/// 140F48230 scans all occurrences; the other getters binary-search this
+/// sorted vector. Preserve native order and duplicate keys for both users.
+fn modifiers(
+    memory: &impl Memory,
+    at: usize,
+    kind: u32,
+    keys: &[u32],
+    sink: &mut Sink<'_>,
+) -> Result<(), &'static str> {
+    let array = Array::read(memory, at, 16).ok_or("raid tooltip modifier header invalid")?;
+    for index in 0..array.count {
+        let bytes = field::<[u8; 16]>(
+            memory,
+            array
+                .element(index, 16)
+                .ok_or("raid tooltip modifier address overflow")?,
+            0,
+        )?;
+        let key = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        if keys.contains(&key) && matches!(key, keys::AIR_DEFENCE_FACTOR | keys::AIR_AGILITY_FACTOR)
+        {
+            sink.push(
+                kind,
+                key,
+                i64::from_le_bytes(bytes[8..].try_into().unwrap()),
+            )?;
+        }
+    }
+    // Preserve the stored entry selected by the native binary search even
+    // if an accumulator contains repeated keys; no sum or clamp here.
+    for &key in keys {
+        let (mut lower, mut upper) = (0, array.count);
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2;
+            let at = array
+                .element(middle, 16)
+                .ok_or("raid tooltip modifier address overflow")?;
+            let found = field::<u32>(memory, at, 0)?;
+            if found < key {
+                lower = middle + 1;
+            } else {
+                upper = middle;
+            }
+        }
+        if let Some(at) = array.element(lower, 16)
+            && field::<u32>(memory, at, 0)? == key
+        {
+            sink.push(kind, key | LOOKUP, field(memory, at, 8)?)?;
+        }
+    }
+    Ok(())
+}
+
+fn object(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    id: u32,
+    province: bool,
+) -> Result<usize, &'static str> {
+    if id == 0 {
+        return Ok(0);
+    }
+    let (offset, vtable, id_offset) = if province {
+        (
+            crate::cgame_state::PROVINCES,
+            crate::cprovince::VTABLE_RVA,
+            crate::cprovince::ID,
+        )
+    } else {
+        (
+            crate::cgame_state::STATES,
+            crate::cstate::VTABLE_RVA,
+            crate::cstate::ID,
+        )
+    };
+    let roster =
+        Array::read(memory, game + offset, 8).ok_or("raid tooltip target roster invalid")?;
+    let Some(at) = roster.element(id, 8) else {
+        return Ok(0);
+    };
+    let pointer = field::<u64>(memory, at, 0)? as usize;
+    if pointer != 0
+        && (field::<u64>(memory, pointer, 0)? != (base + vtable) as u64
+            || field::<u32>(memory, pointer, id_offset)? != id)
+    {
+        return Err("raid tooltip target identity mismatch");
+    }
+    Ok(pointer)
+}
+
+fn nearest(memory: &impl Memory, state: usize) -> Result<usize, &'static str> {
+    // 140FD0D60, 1409CE8D0, 140E6AAD0: no wrapping of the map X axis;
+    // squared distances wrap as signed i32 and equal distances keep first.
+    let template = field::<u64>(memory, state, crate::cstate::TEMPLATE)? as usize;
+    let point = |at, offset| -> Result<[i32; 2], &'static str> {
+        let bytes = field::<[u8; 8]>(memory, at, offset)?;
+        Ok([
+            i32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            i32::from_le_bytes(bytes[4..].try_into().unwrap()),
+        ])
+    };
+    let centre = point(template, 0x148)?;
+    let roster = Array::read(memory, state + crate::cstate::PROVINCES, 8)
+        .ok_or("raid tooltip state provinces invalid")?;
+    let mut best = None;
+    for index in 0..roster.count {
+        let province = field::<u64>(
+            memory,
+            roster
+                .element(index, 8)
+                .ok_or("raid tooltip province address overflow")?,
+            0,
+        )? as usize;
+        let definition = field::<u64>(memory, province, crate::cprovince::DEFINITION)? as usize;
+        let pos = point(definition, 0xb8)?;
+        let dx = pos[0].wrapping_sub(centre[0]);
+        let dy = pos[1].wrapping_sub(centre[1]);
+        let distance = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy));
+        if best.is_none_or(|(_, old)| distance < old) {
+            best = Some((province, distance));
+        }
+    }
+    best.map(|(province, _)| province)
+        .ok_or("raid tooltip target state has no provinces")
+}
+
+fn targets(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    raid: usize,
+) -> Result<(usize, usize), &'static str> {
+    let scope = crate::craid_target::read_row(memory, base, raid + craid_instance::TARGET)?;
+    let province = object(memory, base, game, scope.province, true)?;
+    let secondary = object(memory, base, game, scope.leader_province, true)?;
+    let explicit_state = object(memory, base, game, scope.state, false)?;
+    let building_location = object(
+        memory,
+        base,
+        game,
+        scope.building_location,
+        scope.building_flags & 1 != 0,
+    )?;
+    let building_state = if building_location != 0 && scope.building_flags & 1 != 0 {
+        field::<u64>(memory, building_location, crate::cprovince::STATE)? as usize
+    } else {
+        building_location
+    };
+    // 140FD19C0 has a different precedence from 140FD1760.
+    let state = if explicit_state != 0 {
+        explicit_state
+    } else if province != 0 {
+        field::<u64>(memory, province, crate::cprovince::STATE)? as usize
+    } else if secondary != 0 {
+        field::<u64>(memory, secondary, crate::cprovince::STATE)? as usize
+    } else {
+        building_state
+    };
+    let province = if province != 0 {
+        province
+    } else if building_location != 0 && scope.building_flags & 1 != 0 {
+        building_location
+    } else if secondary != 0 {
+        secondary
+    } else if explicit_state != 0 {
+        nearest(memory, explicit_state)?
+    } else if building_state != 0 {
+        nearest(memory, building_state)?
+    } else {
+        0
+    };
+    Ok((state, province))
+}
+
+fn target_inputs(
+    memory: &impl Memory,
+    state: usize,
+    province: usize,
+    sink: &mut Sink<'_>,
+) -> Result<(), &'static str> {
+    if state != 0 {
+        // 14157BC30 resistance branch reads the live CState+278 numerator.
+        sink.push(TARGET_STATE, 0x278, field(memory, state, 0x278)?)?;
+    }
+    if province != 0 {
+        // 14157BC30 enemy_units uses this roster, not the map-counter roster.
+        let roster =
+            Array::read(memory, province + 0x110, 8).ok_or("raid tooltip target units invalid")?;
+        for index in 0..roster.count {
+            let pointer = field::<u64>(
+                memory,
+                roster
+                    .element(index, 8)
+                    .ok_or("raid tooltip target unit address overflow")?,
+                0,
+            )? as usize;
+            sink.push(
+                TARGET_UNIT_OWNERS,
+                index,
+                i64::from(field::<u32>(memory, pointer, 0x1d8)?),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn wing(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    pointer: usize,
+    sink: &mut Sink<'_>,
+) -> Result<(), &'static str> {
+    wing_stats(memory, pointer, sink)?;
+    let countries = crate::ccountry::Reader::new(memory, base, game)?;
+    let raw = field::<i32>(memory, pointer, cair_wing::COUNTRY_OVERRIDE)?;
+    let raw = if raw > 0 {
+        raw as u32
+    } else {
+        let pool = field::<u64>(memory, pointer, cair_wing::POOL)? as usize;
+        let holder = field::<u64>(memory, pool, raid_speed_inputs::WING_POOL_OWNER)? as usize;
+        field::<u32>(memory, holder, raid_speed_inputs::POOL_OWNER_COUNTRY)?
+    };
+    // 140F49710 and 140F4D130 use this wing-country accumulator. The
+    // slot selected above is a stored CCountryTag, never a modifier result.
+    let slot = countries
+        .link(raw)?
+        .ok_or("raid tooltip wing country unresolved")?;
+    let country = countries
+        .at(slot)?
+        .ok_or("raid tooltip wing country absent")?;
+    modifiers(
+        memory,
+        pointer + 0x238,
+        WING_MODIFIERS,
+        &[
+            keys::AIR_DEFENCE_FACTOR,
+            keys::AIR_AGILITY_FACTOR,
+            keys::AIR_NIGHT_PENALTY,
+            keys::AIR_WEATHER_PENALTY,
+        ],
+        sink,
+    )?;
+    modifiers(
+        memory,
+        country.pointer + crate::ccountry::MODIFIER_ACCUMULATOR,
+        WING_COUNTRY_MODIFIERS,
+        &[
+            keys::AIR_STRATEGIC_BOMBER_BOMBING_FACTOR,
+            keys::AIR_DEFENCE_FACTOR,
+            keys::AIR_AGILITY_FACTOR,
+            keys::AIR_ACE_BONUSES_FACTOR,
+            keys::AIR_HOME_DEFENCE_FACTOR,
+            keys::AIR_POWER_PROJECTION_FACTOR,
+            keys::AIR_STRATEGIC_BOMBER_DEFENCE_FACTOR,
+            keys::AIR_STRATEGIC_BOMBER_NIGHT_PENALTY,
+            keys::AIR_NIGHT_PENALTY,
+            keys::AIR_WEATHER_PENALTY,
+            keys::AIR_CARRIER_NIGHT_PENALTY_REDUCTION_FACTOR,
+        ],
+        sink,
+    )?;
+    let ace_ref = field::<u64>(memory, pointer, cair_wing::ACE_REFERENCE)?;
+    sink.push(WING, cair_wing::ACE_REFERENCE as u32, ace_ref as i64)?;
+    let Some(ace) = creference_registry::resolve(memory, base, ace_ref)? else {
+        return Ok(());
+    };
+    context::authenticate(memory, base, ace, crate::cace::VTABLE_RVA)?;
+    let alive = field::<u8>(memory, ace, crate::cace::ALIVE)?;
+    sink.push(ACE, crate::cace::ALIVE as u32, i64::from(alive))?;
+    if alive == 0 {
+        return Ok(());
+    }
+    modifiers(
+        memory,
+        ace + crate::cace::MODIFIERS,
+        ACE_MODIFIERS,
+        &[
+            keys::AIR_STRATEGIC_BOMBER_BOMBING_FACTOR,
+            keys::AIR_DEFENCE_FACTOR,
+            keys::AIR_AGILITY_FACTOR,
+            keys::AIR_NIGHT_PENALTY,
+            keys::AIR_WEATHER_PENALTY,
+        ],
+        sink,
+    )?;
+    let kind = field::<u64>(memory, ace, crate::raid_launch_inputs::ACE_TYPE_DEFINITION)? as usize;
+    modifiers(
+        memory,
+        kind + raid_speed_inputs::ACE_TYPE_ACCUMULATOR,
+        ACE_TYPE_MODIFIERS,
+        &[
+            keys::AIR_STRATEGIC_BOMBER_BOMBING_FACTOR,
+            keys::AIR_DEFENCE_FACTOR,
+            keys::AIR_AGILITY_FACTOR,
+            keys::AIR_NIGHT_PENALTY,
+            keys::AIR_WEATHER_PENALTY,
+        ],
+        sink,
+    )?;
+    let owner = field::<u64>(memory, ace, crate::cace::OWNER_COUNTRY)? as usize;
+    countries.of_pointer(owner)?;
+    modifiers(
+        memory,
+        owner + crate::ccountry::MODIFIER_ACCUMULATOR,
+        ACE_OWNER_MODIFIERS,
+        &[keys::ACE_EFFECTIVENESS_FACTOR],
+        sink,
+    )?;
+    let assigned = field::<u64>(memory, ace, crate::cace::ASSIGNED_WING_REFERENCE)?;
+    if let Some(wing) = unit(memory, base, assigned, cair_wing::VTABLE_RVA)? {
+        sink.push(
+            ACE_WING,
+            cair_wing::PLANE_COUNT as u32,
+            i64::from(field::<i32>(memory, wing, cair_wing::PLANE_COUNT)?),
+        )?;
+    }
+    Ok(())
+}
+
+fn operands(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    raid: usize,
+    sink: &mut Sink<'_>,
+) -> Result<(), &'static str> {
+    let army_ref = field::<u64>(memory, raid, craid_instance::UNIT)?;
+    let wing_ref = field::<u64>(memory, raid, craid_instance::UNIT + 8)?;
+    sink.push(REFERENCES, 0, army_ref as i64)?;
+    sink.push(REFERENCES, 1, wing_ref as i64)?;
+    let (state, province) = targets(memory, base, game, raid)?;
+    target_inputs(memory, state, province, sink)?;
+    context::target(memory, base, game, raid, state, province, sink)?;
+    let army_pointer = unit(memory, base, army_ref, carmy::VTABLE_RVA)?;
+    let wing_pointer = unit(memory, base, wing_ref, cair_wing::VTABLE_RVA)?;
+    names::capture(memory, base, army_pointer, wing_pointer, sink)?;
+    names::source(memory, base, raid, sink)?;
+    context::source(memory, base, game, raid, sink)?;
+    if let Some(pointer) = army_pointer {
+        army(memory, pointer, sink)?;
+    }
+    if let Some(pointer) = wing_pointer {
+        wing(memory, base, game, pointer, sink)?;
+        context::wing(memory, base, game, pointer, province, sink)?;
+    }
+    Ok(())
+}
+
+pub fn walk(memory: &impl Memory, base: usize, game: usize, rows: &mut [Row]) -> Outcome {
+    let mut sink = Sink {
+        rows,
+        required: 0,
+        raid: 0,
+        ordinal: 0,
+    };
+    let result = requirements::capture(memory, base, &mut sink).and_then(|()| {
+        raid_speed_inputs::each_raid(memory, base, game, |_, raid| {
+            if raid.phase == craid_instance::PHASE_ENDED {
+                return Ok(());
+            }
+            sink.raid = u64::from(raid.id) << 32 | u64::from(raid.reference_type);
+            sink.ordinal = 0;
+            let first = sink.required;
+            if operands(memory, base, game, raid.pointer, &mut sink).is_err() {
+                sink.required = first;
+                sink.ordinal = 0;
+                sink.push(UNREADABLE, 0, 0)?;
+            }
+            Ok(())
+        })
+    });
+    match result {
+        Err(reason) => Outcome::Unavailable { reason },
+        Ok(()) if sink.required <= sink.rows.len() => Outcome::Rows { len: sink.required },
+        Ok(()) => Outcome::Truncated {
+            len: sink.rows.len(),
+            unread_rows: u32::try_from(sink.required - sink.rows.len()).unwrap_or(u32::MAX),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+    #[test]
+    fn native_lower_bound_and_direct_occurrences_stay_separate() {
+        let mut bytes = vec![0; 256];
+        bytes[16..24].copy_from_slice(&64u64.to_le_bytes());
+        bytes[24..32].copy_from_slice(&0x0000000300000003u64.to_le_bytes());
+        for (i, (key, raw)) in [
+            (0x70u32, 7i64),
+            (keys::AIR_DEFENCE_FACTOR, 9),
+            (keys::AIR_NIGHT_PENALTY, -11),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            bytes[64 + i * 16..68 + i * 16].copy_from_slice(&key.to_le_bytes());
+            bytes[72 + i * 16..80 + i * 16].copy_from_slice(&raw.to_le_bytes());
+        }
+        let mut rows = [Row::default(); 4];
+        let mut sink = Sink {
+            rows: &mut rows,
+            required: 0,
+            raid: 3,
+            ordinal: 0,
+        };
+        modifiers(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            16,
+            WING_MODIFIERS,
+            &[
+                keys::AIR_DEFENCE_FACTOR,
+                keys::AIR_AGILITY_FACTOR,
+                keys::AIR_NIGHT_PENALTY,
+            ],
+            &mut sink,
+        )
+        .unwrap();
+        assert_eq!(sink.required, 4);
+        assert_eq!(
+            rows.map(|r| (r.key, r.raw)),
+            [
+                (keys::AIR_DEFENCE_FACTOR, 7),
+                (keys::AIR_DEFENCE_FACTOR, 9),
+                (LOOKUP | keys::AIR_DEFENCE_FACTOR, 7),
+                (LOOKUP | keys::AIR_NIGHT_PENALTY, -11)
+            ]
+        );
+    }
+    #[test]
+    fn mission_stats_select_only_the_stored_mission_record_and_refuse_bad_indexes() {
+        let pointer = 16;
+        let mut bytes = vec![0; 0x2000];
+        bytes[pointer + 0x218..pointer + 0x220].copy_from_slice(&123i64.to_le_bytes());
+        bytes[pointer + 0x983] = 255;
+        bytes[pointer + 0x390 + 0x2f * 8..pointer + 0x398 + 0x2f * 8]
+            .copy_from_slice(&987i64.to_le_bytes());
+        let mut rows = [Row::default(); 6];
+        let run = |bytes: &[u8], rows: &mut [Row]| {
+            wing_stats(
+                &SliceMemory { base: 0, bytes },
+                pointer,
+                &mut Sink {
+                    rows,
+                    required: 0,
+                    raid: 77,
+                    ordinal: 0,
+                },
+            )
+        };
+        assert_eq!(run(&bytes, &mut rows), Ok(()));
+        assert_eq!(rows[0].raw, 123);
+        assert_eq!(rows[1].raw, 987);
+        bytes[pointer + 0x983] = 0;
+        assert_eq!(
+            run(&bytes, &mut rows),
+            Err("raid tooltip mission stat index outside array")
+        );
+        bytes[pointer + 0x983] = 254;
+        assert_eq!(
+            run(&bytes, &mut rows),
+            Err("raid tooltip mission stat index negative")
+        );
+    }
+    #[test]
+    fn signed_manpower_entries_and_truncation_demand_are_preserved() {
+        let pointer = 16;
+        let mut bytes = vec![0; 0x2000];
+        bytes[pointer + cunit::STAT_BLOCK..pointer + cunit::STAT_BLOCK + 8]
+            .copy_from_slice(&0x1000u64.to_le_bytes());
+        bytes[pointer + 0x3e0..pointer + 0x3e8].copy_from_slice(&0x1800u64.to_le_bytes());
+        bytes[pointer + 0x3e8..pointer + 0x3f0]
+            .copy_from_slice(&0x0000000300000003u64.to_le_bytes());
+        for (i, value) in [3i32, -4, i32::MAX].into_iter().enumerate() {
+            bytes[0x1804 + i * 8..0x1808 + i * 8].copy_from_slice(&value.to_le_bytes());
+        }
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut rows = [Row::default(); 8];
+        let mut sink = Sink {
+            rows: &mut rows,
+            required: 0,
+            raid: 77,
+            ordinal: 0,
+        };
+        assert_eq!(army(&memory, pointer, &mut sink), Ok(()));
+        assert_eq!(sink.required, 8);
+        assert_eq!(
+            rows[5..].iter().map(|r| r.raw).collect::<Vec<_>>(),
+            [3, -4, i64::from(i32::MAX)]
+        );
+        let mut sink = Sink {
+            rows: &mut rows[..1],
+            required: 0,
+            raid: 77,
+            ordinal: 0,
+        };
+        assert_eq!(army(&memory, pointer, &mut sink), Ok(()));
+        assert_eq!(sink.required, 8);
+        assert!(
+            army(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes[..128]
+                },
+                pointer,
+                &mut sink
+            )
+            .is_err()
+        );
+    }
+}

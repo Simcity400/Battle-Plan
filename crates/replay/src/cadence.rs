@@ -160,7 +160,10 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::AirTheatres
         | TableId::AirTheatreGroups
         | TableId::AirTheatreMembers => Daily(13),
-        TableId::IntelNetworks => Daily(14),
+        // `1401D4390 -> 140E9DD30 -> 1411E5DE0 -> 1411EB280 -> 1411C1340`
+        // applies graph strengths (`1411AF020`) inside the hour-23 daily
+        // tick. Slot 0, like CountryIntel, observes its first completed state.
+        TableId::IntelNetworks => Daily(0),
         TableId::DynamicModifiers | TableId::ActiveIdeas => Daily(15),
         TableId::OperativeMemberships | TableId::WingCumulative => Daily(16),
         TableId::Scientists
@@ -199,8 +202,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::HiredAdvisors
         | TableId::UnitLeaderTraits
         | TableId::UnitLeaderTraitExperience => Daily(21),
-        TableId::Cryptology
-        | TableId::IncomingDiplomaticActions
+        TableId::IncomingDiplomaticActions
         | TableId::TechSharingGroups
         | TableId::TechSharingMembers
         // Variants and the rosters that name them share a slot, so a roster
@@ -226,6 +228,10 @@ pub const fn cadence(table: TableId) -> Cadence {
         // each tick's combat manager (140BA9890) tests the viewing choice once;
         // one eight-byte read.
         TableId::LocalPlayer => Cadence::Hourly,
+        // Cryptology is hourly: activation (1413E0F20) and scripted progress
+        // (1413E1610) can change the raid target-intel predicate between
+        // daily ticks.
+        TableId::Cryptology => Cadence::Hourly,
         _ => Cadence::Hourly,
     }
 }

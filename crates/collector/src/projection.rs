@@ -277,6 +277,8 @@ mod tests {
             owner,
             controller: owner + 1,
             movement_infrastructure: 0,
+            primary_name_length: 0,
+            secondary_name_length: 0,
         };
         let mut rows = vec![state(3, 30), state(1, 10), state(2, 20)];
         for hour in 0..8 {
@@ -329,12 +331,16 @@ mod tests {
                 owner: 7,
                 controller: 9,
                 movement_infrastructure: 0,
+                primary_name_length: 0,
+                secondary_name_length: 0,
             },
             StateRow {
                 id: 1,
                 owner: 2,
                 controller: 4,
                 movement_infrastructure: 0,
+                primary_name_length: 0,
+                secondary_name_length: 0,
             },
         ];
         let complete = Outcome::Rows { len: 2 };
@@ -395,6 +401,8 @@ mod tests {
             owner: 2,
             controller: 4,
             movement_infrastructure: 0,
+            primary_name_length: 0,
+            secondary_name_length: 0,
         }];
         let outcome = Outcome::Rows { len: 1 };
         let first = project(&encoder, &mut scratch, 0, outcome, &rows, &conversions);

@@ -278,6 +278,10 @@ impl Cycle {
                     entry.shown = entry.shown.wrapping_add(1);
                     entry.shown_wrapped |= entry.shown == 0;
                     entry.anchor.get_or_insert_with(|| row.scope.clone());
+                    entry.targets.push(super::offers::TooltipTarget {
+                        scope: row.scope.clone(),
+                        types: shown.clone(),
+                    });
                     entry
                         .pairs
                         .extend(shown.iter().map(|&index| (index, row.scope.building_type)));
@@ -299,6 +303,7 @@ impl Cycle {
             (false, Some(anchor), true) => Some(Province {
                 anchor,
                 pairs: entry.pairs,
+                targets: entry.targets,
                 launchable,
             }),
             _ => None,

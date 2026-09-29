@@ -794,6 +794,8 @@ fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
     }
     *frame.tables[TableId::States.index()] =
         TableView::Complete(TableRows::States(vec![replay::rows::StateRow {
+            primary_name_length: 0,
+            secondary_name_length: 0,
             id: 1,
             owner,
             controller: 55,
@@ -936,6 +938,8 @@ fn land_owners_keep_partial_positive_evidence_and_do_not_reuse_lost_baselines() 
     let mut partial = ownership_frame(1, 102, 66);
     *partial.tables[TableId::States.index()] = TableView::Truncated {
         rows: TableRows::States(vec![replay::rows::StateRow {
+            primary_name_length: 0,
+            secondary_name_length: 0,
             id: 1,
             owner: 66,
             controller: 55,
@@ -1335,6 +1339,8 @@ fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
     *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         (0..count)
             .map(|index| replay::rows::StateRow {
+                primary_name_length: 0,
+                secondary_name_length: 0,
                 id: index + 1,
                 owner: 100_000 + index,
                 controller: 100_000 + index,
