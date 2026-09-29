@@ -19,10 +19,12 @@ mod naval_environment;
 mod presentation;
 pub(crate) mod progress;
 mod reinforcement_speed;
+mod tactics;
 mod template_icons;
 pub(crate) mod texture;
 mod tooltip_painter;
 mod tooltips;
+mod trigger_names;
 
 use crate::{
     document::Document,
@@ -148,8 +150,14 @@ fn keep_list_order(next: &mut [(u64, Values)], shown: &[(u64, Values)]) {
 pub struct Window {
     pub selection: Option<Selection>,
     pub offset: [f32; 2],
-    pub scroll: [usize; 4],
+    /// Committed and reserve lists per side, then the tactics popup list.
+    pub scroll: [usize; 5],
     pub dragging: bool,
+    /// The possible-tactics popup (1415C7D20): window presentation state,
+    /// never recorded.
+    pub tactics_open: bool,
+    tactics_position: Option<[f32; 2]>,
+    dragging_tactics: bool,
     hover: tooltip_painter::HoverState,
     /// The bindings for (branch, hour, selection, perspective), whether the
     /// engaged index covered that hour, and whether the window shows.
@@ -215,6 +223,65 @@ impl Window {
     }
     pub fn close(&mut self) {
         *self = Self::default();
+    }
+    /// The popup's own controls; true when `point` was one of them.
+    pub fn handle_click(&mut self, drawn: &Drawn, point: [f32; 2]) -> bool {
+        if drawn
+            .tactics_close
+            .is_some_and(|rect| layout::contains(rect, point))
+        {
+            self.tactics_open = false;
+            return true;
+        }
+        if drawn
+            .tactics_rect
+            .is_some_and(|rect| layout::contains(rect, point))
+        {
+            return true;
+        }
+        if drawn
+            .tactics_button
+            .is_some_and(|rect| layout::contains(rect, point))
+        {
+            self.tactics_open = !self.tactics_open;
+            self.tactics_position = None;
+            self.scroll[4] = 0;
+            return true;
+        }
+        false
+    }
+    /// A drag begins on the popup's or the window's title strip.
+    pub fn start_drag(&mut self, drawn: Option<&Drawn>, point: Option<[f32; 2]>) {
+        self.dragging = false;
+        self.dragging_tactics = false;
+        let (Some(drawn), Some(point)) = (drawn, point) else {
+            return;
+        };
+        let title = |mut rect: [f32; 4]| {
+            rect[3] = 35.0;
+            layout::contains(rect, point)
+        };
+        if drawn.tactics_rect.is_some_and(title) {
+            self.dragging = true;
+            self.dragging_tactics = true;
+        } else if !drawn
+            .tactics_rect
+            .is_some_and(|rect| layout::contains(rect, point))
+            && title(drawn.rect)
+        {
+            self.dragging = true;
+        }
+    }
+    /// Moves the window or the popup being dragged, in interface pixels.
+    pub fn drag_by(&mut self, delta: [f32; 2]) {
+        let target = if self.dragging_tactics {
+            self.tactics_position.get_or_insert([0.0; 2])
+        } else {
+            &mut self.offset
+        };
+        for (position, movement) in target.iter_mut().zip(delta) {
+            *position += movement;
+        }
     }
     /// Draws the hovered widget's tooltip over `drawn` once its delays pass,
     /// at the pointer (interface pixels) within `extent`. Call every frame,
@@ -324,6 +391,7 @@ impl Window {
             assets,
             drawn: &mut drawn,
             hovers,
+            layer_base: 0,
         };
         painter.node(root, rect, "", &bindings.values)?;
         for side in 0..4 {
@@ -412,118 +480,12 @@ impl Window {
                 // container's `margin = { top = 10 }`, level with the list.
                 slider_rect[1] += grid_rect[1] - parent_rect[1];
                 slider_rect[3] = height;
-                // pairL_land_danzig.png, device pixels of the defender committed
-                // slider at (1054,649,18,165): the up button ends 19 px down,
-                // the 12-wide track glow spans from there to the down button
-                // at H - 19, and the 16 px thumb sits at the track origin plus
-                // the authored (-2,-2), drawn over the track. UNVERIFIED: the
-                // thumb's travel for a scrolled list, which no capture shows.
-                let button = |name: &str| -> io::Result<([f32; 2], [f32; 2])> {
-                    let node = slider.child(name).expect("authored scrollbar button");
-                    let origin = node.origin([0.0, 0.0, 0.0, 0.0])?;
-                    let size = installed_content::gui::sprite(&node.items)
-                        .and_then(|key| assets.sprite(key))
-                        .map_or([0.0; 2], |sprite| sprite.size);
-                    Ok((origin, size))
-                };
-                let (decrease, decrease_size) = button("Decrease")?;
-                let (increase, _) = button("Increase")?;
-                let track_top = decrease[1] + decrease_size[1];
-                let track_height = (slider_rect[3] + increase[1] - track_top).max(0.0);
-                let track_width = installed_content::gui::sprite(
-                    &slider
-                        .child("Track")
-                        .expect("authored scrollbar track")
-                        .items,
-                )
-                .and_then(|key| assets.sprite(key))
-                .map_or(0.0, |sprite| sprite.size[0]);
-                let track_x = slider
-                    .child("Track")
-                    .expect("authored scrollbar track")
-                    .origin([0.0, 0.0, 0.0, 0.0])?[0];
-                let thumb = installed_content::gui::sprite(
-                    &slider
-                        .child("Slider")
-                        .expect("authored scrollbar thumb")
-                        .items,
-                )
-                .and_then(|key| assets.sprite(key))
-                .map_or(0.0, |sprite| sprite.size[1]);
-                let mut values = Values::new();
-                values.insert(
-                    "Background".into(),
-                    Widget {
-                        size: Some([slider_rect[2], slider_rect[3]]),
-                        ..Widget::default()
-                    },
-                );
-                values.insert(
-                    "Track".into(),
-                    Widget {
-                        size: Some([track_width, track_height]),
-                        offset: [0.0, track_top],
-                        ..Widget::default()
-                    },
-                );
-                values.insert(
-                    "Increase".into(),
-                    Widget {
-                        offset: [slider_rect[2], slider_rect[3]],
-                        ..Widget::default()
-                    },
-                );
-                values.insert(
-                    "Slider".into(),
-                    Widget {
-                        hidden: true,
-                        ..Widget::default()
-                    },
-                );
-                painter.node(slider, slider_rect, "", &values)?;
-                let thumb_only: Values = slider
-                    .children
-                    .iter()
-                    .map(|child| {
-                        let shown = child.name == "Slider";
-                        (
-                            child.name.clone(),
-                            Widget {
-                                hidden: !shown,
-                                offset: if shown {
-                                    [
-                                        track_x,
-                                        track_top
-                                            + (track_height - thumb).max(0.0)
-                                                * (start / columns) as f32
-                                                / hidden_rows as f32,
-                                    ]
-                                } else {
-                                    [0.0; 2]
-                                },
-                                ..Widget::default()
-                            },
-                        )
-                    })
-                    .collect();
-                painter.node(slider, slider_rect, "", &thumb_only)?;
-                for (name, direction) in [("Decrease", -1), ("Increase", 1)] {
-                    let node = slider.child(name).expect("authored scrollbar button");
-                    let mut at = node.origin(slider_rect)?;
-                    if let Some(value) = values.get(name) {
-                        at[0] += value.offset[0];
-                        at[1] += value.offset[1];
-                    }
-                    if let Some(sprite) =
-                        installed_content::gui::sprite(&node.items).and_then(|key| assets.sprite(key))
-                    {
-                        painter.drawn.scroll_buttons.push((
-                            [at[0], at[1], sprite.size[0], sprite.size[1]],
-                            side,
-                            direction,
-                        ));
-                    }
-                }
+                painter.scrollbar(
+                    slider,
+                    slider_rect,
+                    side,
+                    (start / columns) as f32 / hidden_rows as f32,
+                )?;
             }
         }
         for row in &bindings.naval_entries {
@@ -550,8 +512,118 @@ impl Window {
             drawn.rect[2] = drawn.rect[2].max(quad.rect[0] + quad.rect[2] - drawn.rect[0]);
             drawn.rect[3] = drawn.rect[3].max(quad.rect[1] + quad.rect[3] - drawn.rect[1]);
         }
+        if self.tactics_open && matches!(selection, Selection::Land(_)) {
+            draw_tactics(
+                &mut self.tactics_position,
+                self.scroll[4],
+                &mut drawn,
+                assets,
+                &bindings.tactics,
+                extent,
+                hovers,
+            )?;
+        }
         Ok(Some(drawn))
     }
+}
+
+/// 1415C7D20 places the companion list ten pixels right of the battle window
+/// at its y; it does not recentre it.
+fn draw_tactics(
+    tactics_position: &mut Option<[f32; 2]>,
+    scroll: usize,
+    drawn: &mut Drawn,
+    assets: &Assets,
+    menu_values: &tactics::Menu,
+    extent: [f32; 2],
+    hovers: bool,
+) -> io::Result<()> {
+    let menu = &assets.windows["tactics_list_view"];
+    let size = menu.size(extent)?;
+    let rect = drawn.rect;
+    let position = *tactics_position.get_or_insert([rect[0] + rect[2] + 10.0, rect[1]]);
+    let at = [position[0], position[1], size[0], size[1]];
+    let mut popup = Drawn {
+        rect: at,
+        ..Drawn::default()
+    };
+    // The popup paints into its own batch, appended after the window's
+    // quads: its layers continue the window's push order.
+    let layer_base = drawn.batch.quads.len();
+    popup.batch.at_layer(window_layer(layer_base));
+    let mut values = menu_values.values.clone();
+    values.entry("Background".into()).or_default().size = Some(size);
+    let mut painter = Painter {
+        assets,
+        drawn: &mut popup,
+        hovers,
+        layer_base,
+    };
+    painter.node(menu, at, "", &values)?;
+    let container = menu.path_rect(at, "tactics_list_container")?;
+    let grid_path = "tactics_list_container/tactics_list_gridbox";
+    let grid = menu.path_rect(at, grid_path)?;
+    let grid_node = menu.child(grid_path).expect("authored tactics list");
+    let step = installed_content::gui::slot_size(&grid_node.items)?
+        .and_then(|(_, height)| match height {
+            installed_content::gui::Length::Pixels(height) => Some(height as f32),
+            _ => None,
+        })
+        .ok_or_else(|| invalid("tactics list has no pixel row height"))?;
+    let wheel = number(
+        &menu
+            .child("tactics_list_container")
+            .expect("authored container")
+            .items,
+        "scroll_wheel_factor",
+        step,
+    )
+    .max(1.0);
+    let overflow = (menu_values.entries.len() as f32 * step - grid[3]).max(0.0);
+    let max_steps = (overflow / wheel).ceil() as usize;
+    let scroll = (scroll.min(max_steps) as f32 * wheel).min(overflow);
+    let entry = &assets.windows["tactics_list_entry"];
+    let entry_size = entry.size([grid[2], step])?;
+    for (index, values) in menu_values.entries.iter().enumerate() {
+        let y = grid[1] + index as f32 * step - scroll;
+        if y + entry_size[1] <= grid[1] || y >= grid[1] + grid[3] {
+            continue;
+        }
+        let first = painter.drawn.batch.quads.len();
+        let first_hover = painter.drawn.tooltips.len();
+        painter.node(
+            entry,
+            [grid[0], y, entry_size[0], entry_size[1]],
+            "",
+            values,
+        )?;
+        clip_quads(&mut painter.drawn.batch, first, grid);
+        clip_tooltips(&mut painter.drawn.tooltips, first_hover, grid);
+    }
+    if max_steps > 0 {
+        let slider = &assets.windows["right_vertical_slider"];
+        let mut slider_rect = slider.rect(container)?;
+        slider_rect[0] -= slider_rect[2];
+        slider_rect[1] += grid[1] - container[1];
+        slider_rect[3] = grid[3];
+        painter.scrollbar(slider, slider_rect, 4, scroll / overflow)?;
+    }
+    drawn.tactics_rect = Some(at);
+    drawn.tactics_close = popup.close;
+    drawn.lists[4] = Some(grid);
+    // The foreground popup consumes blank-space hover too; a covered
+    // window control must not show its tooltip through it.
+    if hovers {
+        drawn.tooltips.push(TooltipHit {
+            rect: at,
+            text: None,
+            description: None,
+        });
+        drawn.tooltips.extend(popup.tooltips);
+    }
+    drawn.scroll_buttons.extend(popup.scroll_buttons);
+    drawn.batch.quads.extend(popup.batch.quads);
+    Ok(())
 }
 
 #[derive(Default)]
@@ -559,10 +631,14 @@ pub struct Drawn {
     pub batch: Batch,
     pub rect: [f32; 4],
     pub close: Option<[f32; 4]>,
-    pub lists: [Option<[f32; 4]>; 4],
+    /// Committed and reserve lists per side, then the tactics popup list.
+    pub lists: [Option<[f32; 4]>; 5],
     pub scroll_buttons: Vec<([f32; 4], usize, i32)>,
     /// Hover regions in draw order; the last containing one wins.
     tooltips: Vec<TooltipHit>,
+    tactics_button: Option<[f32; 4]>,
+    tactics_close: Option<[f32; 4]>,
+    tactics_rect: Option<[f32; 4]>,
 }
 
 /// Bound hover text. The bindings hold it once; each drawn hover region
@@ -596,13 +672,23 @@ fn clip_tooltips(tooltips: &mut Vec<TooltipHit>, first: usize, clip: [f32; 4]) {
     tooltips.truncate(kept);
 }
 impl Drawn {
+    fn in_popup(&self, point: [f32; 2]) -> bool {
+        self.tactics_rect
+            .is_some_and(|rect| layout::contains(rect, point))
+    }
     pub fn contains(&self, point: [f32; 2]) -> bool {
-        layout::contains(self.rect, point)
+        layout::contains(self.rect, point) || self.in_popup(point)
     }
     pub fn closes(&self, point: [f32; 2]) -> bool {
-        self.close.is_some_and(|rect| layout::contains(rect, point))
+        !self.in_popup(point) && self.close.is_some_and(|rect| layout::contains(rect, point))
     }
+    /// The list under `point`; the popup covers the window's lists.
     pub fn list_at(&self, point: [f32; 2]) -> Option<usize> {
+        if self.in_popup(point) {
+            return self.lists[4]
+                .filter(|rect| layout::contains(*rect, point))
+                .map(|_| 4);
+        }
         self.lists
             .iter()
             .position(|rect| rect.is_some_and(|rect| layout::contains(rect, point)))
@@ -610,7 +696,10 @@ impl Drawn {
     pub fn scroll_action(&self, point: [f32; 2]) -> Option<(usize, i32)> {
         self.scroll_buttons
             .iter()
-            .find(|(rect, _, _)| layout::contains(*rect, point))
+            .rev()
+            .find(|(rect, list, _)| {
+                layout::contains(*rect, point) && (*list == 4 || !self.in_popup(point))
+            })
             .map(|(_, side, direction)| (*side, *direction))
     }
 }
@@ -679,6 +768,7 @@ pub(crate) fn naval_bubble_progress(
         assets,
         drawn: &mut drawn,
         hovers: false,
+        layer_base: 0,
     }
     .node(root, rect, "", &values)?;
     Ok(drawn.batch)
@@ -813,8 +903,15 @@ struct Painter<'a> {
     drawn: &'a mut Drawn,
     /// Whether to collect the widgets' hover regions.
     hovers: bool,
+    /// The quads the destination batch holds before `drawn`'s: a popup
+    /// painted into its own batch and appended stays above them.
+    layer_base: usize,
 }
 impl Painter<'_> {
+    /// The layer of the next quad in the destination batch's push order.
+    fn next_layer(&self) -> u64 {
+        window_layer(self.layer_base.saturating_add(self.drawn.batch.quads.len()))
+    }
     fn node(&mut self, node: &Node, rect: [f32; 4], path: &str, values: &Values) -> io::Result<()> {
         for child in &node.children {
             let key = if path.is_empty() {
@@ -848,9 +945,7 @@ impl Painter<'_> {
                 }
                 continue;
             }
-            self.drawn
-                .batch
-                .at_layer(window_layer(self.drawn.batch.quads.len()));
+            self.drawn.batch.at_layer(self.next_layer());
             let sprite = data
                 .and_then(|d| d.sprite.as_deref())
                 .or_else(|| installed_content::gui::sprite(&child.items));
@@ -892,9 +987,7 @@ impl Painter<'_> {
                 if sprite == Some("GFX_flag_small2")
                     && let Some(overlay) = self.assets.sprite("GFX_flag_small2_not_masked")
                 {
-                    self.drawn
-                        .batch
-                        .at_layer(window_layer(self.drawn.batch.quads.len()));
+                    self.drawn.batch.at_layer(self.next_layer());
                     self.drawn
                         .batch
                         .scaled(&overlay.sheet, 0, origin, overlay.size, [1.0; 4]);
@@ -938,6 +1031,9 @@ impl Painter<'_> {
                 if child.name == "close" || child.name == "close_button" {
                     self.drawn.close = Some([at[0], at[1], size[0], size[1]]);
                 }
+                if child.name == "tactics_list_button" {
+                    self.drawn.tactics_button = Some([at[0], at[1], size[0], size[1]]);
+                }
             }
             if let Some(font) =
                 installed_content::gui::font(&child.items).and_then(|name| self.assets.fonts.get(name))
@@ -968,6 +1064,109 @@ impl Painter<'_> {
                     _ => value.to_owned(),
                 };
                 self.text(font, &value, origin, align, width);
+            }
+        }
+        Ok(())
+    }
+    /// An authored vertical scrollbar over `rect` with its thumb at
+    /// `fraction` of the travel. pairL_land_danzig.png, device pixels of the
+    /// defender committed slider at (1054,649,18,165): the up button ends 19 px
+    /// down, the track glow spans from there to the down button at H - 19, and
+    /// the 16 px thumb sits at the track origin plus the authored (-2,-2).
+    fn scrollbar(
+        &mut self,
+        slider: &Node,
+        rect: [f32; 4],
+        list: usize,
+        fraction: f32,
+    ) -> io::Result<()> {
+        let assets = self.assets;
+        let part = |name: &str| -> io::Result<([f32; 2], [f32; 2])> {
+            let node = slider
+                .child(name)
+                .ok_or_else(|| invalid(format!("scrollbar has no {name}")))?;
+            let origin = node.origin([0.0; 4])?;
+            let size = installed_content::gui::sprite(&node.items)
+                .and_then(|key| assets.sprite(key))
+                .map_or([0.0; 2], |sprite| sprite.size);
+            Ok((origin, size))
+        };
+        let (decrease, decrease_size) = part("Decrease")?;
+        let (increase, _) = part("Increase")?;
+        let (track, track_size) = part("Track")?;
+        let (_, thumb) = part("Slider")?;
+        let top = decrease[1] + decrease_size[1];
+        let height = (rect[3] + increase[1] - top).max(0.0);
+        let mut values = Values::from([
+            (
+                "Background".into(),
+                Widget {
+                    size: Some([rect[2], rect[3]]),
+                    ..Widget::default()
+                },
+            ),
+            (
+                "Track".into(),
+                Widget {
+                    size: Some([track_size[0], height]),
+                    offset: [0.0, top],
+                    ..Widget::default()
+                },
+            ),
+            (
+                "Increase".into(),
+                Widget {
+                    offset: [rect[2], rect[3]],
+                    ..Widget::default()
+                },
+            ),
+            (
+                "Slider".into(),
+                Widget {
+                    hidden: true,
+                    ..Widget::default()
+                },
+            ),
+        ]);
+        self.node(slider, rect, "", &values)?;
+        let thumb_only: Values = slider
+            .children
+            .iter()
+            .map(|child| {
+                let shown = child.name == "Slider";
+                (
+                    child.name.clone(),
+                    Widget {
+                        hidden: !shown,
+                        offset: if shown {
+                            [
+                                track[0],
+                                top + (height - thumb[1]).max(0.0) * fraction.clamp(0.0, 1.0),
+                            ]
+                        } else {
+                            [0.0; 2]
+                        },
+                        ..Widget::default()
+                    },
+                )
+            })
+            .collect();
+        self.node(slider, rect, "", &thumb_only)?;
+        for (name, direction) in [("Decrease", -1), ("Increase", 1)] {
+            let node = slider.child(name).expect("checked above");
+            let mut at = node.origin(rect)?;
+            if let Some(value) = values.remove(name) {
+                at[0] += value.offset[0];
+                at[1] += value.offset[1];
+            }
+            if let Some(sprite) =
+                installed_content::gui::sprite(&node.items).and_then(|key| assets.sprite(key))
+            {
+                self.drawn.scroll_buttons.push((
+                    [at[0], at[1], sprite.size[0], sprite.size[1]],
+                    list,
+                    direction,
+                ));
             }
         }
         Ok(())
@@ -1137,9 +1336,7 @@ impl Painter<'_> {
             for chunk in chunks {
                 let advance = self.length(font, &chunk);
                 let remaining = width.map(|w| (origin[0] + w - x).max(0.0));
-                self.drawn
-                    .batch
-                    .at_layer(window_layer(self.drawn.batch.quads.len()));
+                self.drawn.batch.at_layer(self.next_layer());
                 match &chunk {
                     Chunk::Icon(sprite, frame) => {
                         if remaining.is_none_or(|w| w >= advance) {
@@ -1624,6 +1821,37 @@ mod tests {
     }
 
     use super::*;
+
+    /// The tactics popup paints into its own batch, which is appended after
+    /// the window's quads: with the window's quad count as its layer base,
+    /// every popup quad sorts above every window quad, as the sprite pass
+    /// sorts them (map::sprites, by layer).
+    #[test]
+    fn the_tactics_popup_draws_above_the_whole_window() {
+        let mut window = Drawn::default();
+        for texture in 0..5 {
+            window
+                .batch
+                .at_layer(window_layer(window.batch.quads.len()));
+            window
+                .batch
+                .cell(texture, [0.0, 0.0], [1.0, 1.0], [0.0; 4], [1.0; 4]);
+        }
+        let layer_base = window.batch.quads.len();
+        let mut popup = Drawn::default();
+        for texture in 100..103 {
+            let layer = window_layer(layer_base + popup.batch.quads.len());
+            popup.batch.at_layer(layer);
+            popup
+                .batch
+                .cell(texture, [0.0, 0.0], [1.0, 1.0], [0.0; 4], [1.0; 4]);
+        }
+        window.batch.quads.extend(popup.batch.quads);
+        let mut order: Vec<_> = window.batch.quads.iter().collect();
+        order.sort_by_key(|quad| (quad.layer, quad.texture));
+        let textures: Vec<_> = order.iter().map(|quad| quad.texture).collect();
+        assert_eq!(textures, [0, 1, 2, 3, 4, 100, 101, 102]);
+    }
 
     #[test]
     fn an_open_list_keeps_its_order_until_its_membership_changes() {

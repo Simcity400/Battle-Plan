@@ -38,7 +38,10 @@ pub const TABLES: [TableId; N] = [
 
 /// Definitions are authenticated once and reused by the two dependent walks.
 /// Their read time is charged to ResourceDefinitions, not charged again to each
-/// consumer. The consumers' own timings include their additional native reads.
+/// consumer. CountryResources and ResourceExchanges are hourly and the
+/// definitions daily (replay::cadence): the census is walked every hour for
+/// its two consumers and published only in its slot. The consumers' own
+/// timings include their additional native reads.
 /// One fuel walk reads each country's status once for both its tables and is
 /// charged to CountryFuel.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
@@ -109,7 +112,11 @@ pub struct Captured {
     /// the ready handoff. Preserved across `reset` (set per hour, cleared by
     /// the worker after decode).
     pub(crate) rest_raw_mode: bool,
+    /// CountryResources, ResourceExchanges and the resource census they need
+    /// are walked.
     resources_active: bool,
+    /// ResourceDefinitions is in its daily slot.
+    definitions_slot: bool,
     other_active: bool,
 }
 
@@ -132,6 +139,7 @@ impl Captured {
             purchase_scratch: vec![cpurchase_contract::Membership::default(); capacity.rows[9]],
             rest_raw_mode: false,
             resources_active: false,
+            definitions_slot: false,
             other_active: false,
         }
     }
@@ -285,6 +293,7 @@ impl Captured {
                 self.exchanges.outcome = unavailable_descriptors();
             }
             ticks[8] = elapsed(begin);
+            self.hide_off_slot_census();
         }
         if self.other_active {
             let _reads = read_accounting::table(TABLES[9]);
@@ -314,15 +323,20 @@ impl Captured {
 
     fn set_schedule(&mut self, hour: i32, force_full: bool) {
         self.resources_active =
+            replay::cadence::should_walk(TableId::CountryResources, hour, force_full);
+        // The exchanges are walked with the pools; both are hourly.
+        debug_assert_eq!(
+            self.resources_active,
+            replay::cadence::should_walk(TableId::ResourceExchanges, hour, force_full)
+        );
+        self.definitions_slot =
             replay::cadence::should_walk(TableId::ResourceDefinitions, hour, force_full);
         self.other_active = replay::cadence::should_walk(TableId::CountryFuel, hour, force_full);
         self.mark_inactive();
     }
 
     fn mark_inactive(&mut self) {
-        let skipped = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
-        };
+        let skipped = skipped();
         if !self.resources_active {
             self.definitions.outcome = skipped;
             self.resources.outcome = skipped;
@@ -337,6 +351,15 @@ impl Captured {
             self.purchases.outcome = skipped;
             self.fuel_consumers.outcome = skipped;
             self.sources.reset();
+        }
+    }
+
+    /// Off the census's slot, a census read only for its consumers is not
+    /// published; a failed or truncated one stays visible so it grows and is
+    /// retried.
+    fn hide_off_slot_census(&mut self) {
+        if !self.definitions_slot &&matches!(self.definitions.outcome, Outcome::Rows { .. }) {
+            self.definitions.outcome = skipped();
         }
     }
 
@@ -666,6 +689,7 @@ pub(crate) fn copy_economy_rest_refresh(
     job.clear();
     job.game_state = ctx.game_state;
     job.resources_active = ctx.resources_active;
+    job.definitions_slot = ctx.definitions_slot;
     job.other_active = ctx.other_active;
     // Active resources must have capacity before any raw source fault is consumed.
     if ctx.resources_active
@@ -787,6 +811,7 @@ impl Captured {
         decode_ticks: &mut [u64; N],
     ) {
         self.resources_active = job.resources_active;
+        self.definitions_slot = job.definitions_slot;
         self.other_active = job.other_active;
         self.mark_inactive();
         if let Some(reason) = job.staging_failure {
@@ -890,6 +915,7 @@ impl Captured {
                 unavailable_descriptors()
             };
             decode_ticks[8] += elapsed(started);
+            self.hide_off_slot_census();
         }
         if self.other_active {
             let started = qpc();
@@ -967,6 +993,7 @@ pub(crate) struct EconomyRestJob {
     pub log: RawLog<N>,
     pub game_state: usize,
     resources_active: bool,
+    definitions_slot: bool,
     other_active: bool,
     resources: OwnedResources,
     staging_failure: Option<&'static str>,
@@ -980,6 +1007,7 @@ impl EconomyRestJob {
             log: RawLog::new(1 << 18, 16 << 20),
             game_state: 0,
             resources_active: false,
+            definitions_slot: false,
             other_active: false,
             resources: OwnedResources::new([16, 4096, 1024], 1024),
             staging_failure: None,
@@ -991,6 +1019,7 @@ impl EconomyRestJob {
         self.log.clear();
         self.game_state = 0;
         self.resources_active = false;
+        self.definitions_slot = false;
         self.other_active = false;
         self.resources.clear();
         self.staging_failure = None;
@@ -1028,7 +1057,11 @@ pub(crate) struct EconomyRestCopyContext {
     pub game_state: usize,
     pub resource_rows: [usize; 3],
     pub resource_scratch: usize,
+    /// CountryResources, ResourceExchanges and their census are walked
+    /// (hourly).
     pub resources_active: bool,
+    /// ResourceDefinitions is in its daily slot.
+    pub definitions_slot: bool,
     pub other_active: bool,
 }
 
@@ -1106,8 +1139,15 @@ impl Captured {
             ],
             resource_scratch: self.exchange_scratch.len(),
             resources_active: self.resources_active,
+            definitions_slot: self.definitions_slot,
             other_active: self.other_active,
         }
+    }
+}
+
+fn skipped() -> Outcome {
+    Outcome::Unavailable {
+        reason: replay::cadence::SKIPPED_REASON,
     }
 }
 
@@ -2052,8 +2092,11 @@ mod tests {
         }
     }
 
+    /// CountryResources and ResourceExchanges are hourly: off the daily slot
+    /// the census is walked for them and not published, and both consumers
+    /// are walked and published. A job without capacity still starts nothing.
     #[test]
-    fn inactive_resources_neither_preflight_capacity_nor_install_missing_payloads() {
+    fn off_slot_hours_walk_the_census_for_its_hourly_consumers_only() {
         let source = resource_fixture::Fixture::new();
         let memory = engine::memory::CountedMemory::new(ResourceTrace {
             source: &source,
@@ -2062,41 +2105,34 @@ mod tests {
         });
         let mut captured = Captured::with_capacities(&e_capacities());
         let context = captured.resource_copy_context(0, 0x1000, 0, false);
+        assert!(context.resources_active);
+        assert!(!context.definitions_slot);
         let mut job = resource_job();
+        let report = copy_economy_rest_refresh(&memory, context, &mut job);
+        assert!(report.raw_ok);
+        assert!(matches!(job.resources.outcomes[0], Some(Outcome::Rows { .. })));
+        assert!(matches!(job.resources.outcomes[1], Some(Outcome::Rows { .. })));
+        assert!(matches!(job.resources.outcomes[2], Some(Outcome::Rows { .. })));
+        let skipped = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        let mut ticks = [0; N];
+        captured.decode_economy_rest_payload(0, &job, &mut ticks);
+        assert_eq!(captured.definitions.outcome, skipped);
+        assert!(matches!(captured.resources.outcome, Outcome::Rows { .. }));
+        assert!(matches!(captured.exchanges.outcome, Outcome::Rows { .. }));
+
+        // The typed walk publishes the same.
+        let mut direct = Captured::with_capacities(&e_capacities());
+        direct.capture(&memory, 0, 0x1000, 0, false);
+        assert_eq!(direct.definitions.outcome, skipped);
+        assert_eq!(direct.resources.outcome, captured.resources.outcome);
+        assert_eq!(direct.exchanges.outcome, captured.exchanges.outcome);
+
         job.resources.definitions.clear();
         job.resources.resources.clear();
         job.resources.exchanges.clear();
         job.resources.scratch.clear();
-        let native = read_accounting::Capture::new();
-        let report = copy_economy_rest_refresh(&memory, context, &mut job);
-        assert!(report.raw_ok);
-        assert!(!job.resources.needs_growth());
-        assert_eq!(job.resources.outcomes, [None; 3]);
-        assert_eq!(
-            memory.0.reads.borrow().as_slice(),
-            &[0x1000 + cgame_state::SUPPLY_SYSTEM]
-        );
-        assert!(job.log.spans.iter().all(|span| span.mask == M_E_SUPPLY));
-        let before_decode = read_accounting::snapshot();
-        captured.set_schedule(0, true);
-        let mut ticks = [0; N];
-        captured.decode_economy_rest_payload(0, &job, &mut ticks);
-        assert_eq!(native.finish(), before_decode);
-        for index in [0, 1, 3, 4, 5, 6, 7, 8, 9] {
-            assert_eq!(
-                captured.outcomes()[index],
-                Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON,
-                }
-            );
-            assert_eq!(ticks[index], 0);
-            assert_eq!(report.copy_ticks[index], 0);
-            assert_eq!(report.raw_bytes[index], 0);
-            assert_eq!(
-                before_decode[TABLES[index].index()],
-                engine::memory::ReadCounts::ZERO
-            );
-        }
         let context = captured.resource_copy_context(0, 0x1000, 10, false);
         let native = read_accounting::Capture::new();
         assert!(!copy_economy_rest_refresh(&memory, context, &mut job).raw_ok);
@@ -2281,15 +2317,13 @@ mod tests {
                 captured.purchases.outcome,
                 Outcome::Unavailable { reason } if reason != replay::cadence::SKIPPED_REASON
             ));
+            // The census and both its consumers are walked every hour, so the
+            // shared fault reaches them.
             for outcome in &captured.outcomes()[6..9] {
-                assert!(matches!(outcome, Outcome::Unavailable { .. }));
-                assert_eq!(
-                    *outcome
-                        == Outcome::Unavailable {
-                            reason: replay::cadence::SKIPPED_REASON,
-                        },
-                    !force_full
-                );
+                assert!(matches!(
+                    outcome,
+                    Outcome::Unavailable { reason } if *reason != replay::cadence::SKIPPED_REASON
+                ));
             }
             let reads = memory.0.reads.borrow();
             assert_eq!(reads.len(), 8);
@@ -2450,10 +2484,13 @@ mod tests {
         let mut scratch = ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 101, false, &mut scratch);
         let assert_unchanged = |inputs: [TableInput; N]| {
-            // Hourly supply may reuse its validated baseline. Daily tables
-            // materialize complete rows for their separate recovery cache.
-            assert!(matches!(inputs[2], TableInput::ComparedEqual(_)));
-            for index in [0, 1, 3, 4, 5, 6, 7, 8, 9, 10] {
+            // Hourly supply, country resources and exchanges may reuse their
+            // validated baselines. Daily tables materialize complete rows for
+            // their separate recovery cache.
+            for index in [2, 7, 8] {
+                assert!(matches!(inputs[index], TableInput::ComparedEqual(_)));
+            }
+            for index in [0, 1, 3, 4, 5, 6, 9, 10] {
                 assert_eq!(inputs[index], original_inputs[index], "table {index}");
             }
         };
@@ -2465,12 +2502,12 @@ mod tests {
 
         captured.supply.rows[0].flags -= 1;
         captured.resources.rows[0].exported += 1;
+        captured.exchanges.rows[0].delivered -= 1;
         let changed = captured.table_inputs(Some(&mut projection));
         let converted = captured.table_inputs(None);
-        for index in [2, 7] {
+        for index in [2, 7, 8] {
             match &changed[index] {
                 TableInput::ComparedChanges { indices, rows, .. } => {
-                    assert_eq!(index, 2);
                     assert_eq!(indices, &[0]);
                     assert_eq!(TableInput::Sampled(TableView::Complete(rows.clone())), converted[index]);
                 }
@@ -3122,8 +3159,11 @@ mod tests {
                 );
                 assert!(typed_counts[TABLES[2].index()].spans > 0);
                 assert!(raw_counts[TABLES[2].index()].spans > 0);
+                // CountryResources, ResourceExchanges and their census are
+                // walked every hour (the census fails in this fixture, so its
+                // failure is published).
                 for (active, indices) in [
-                    (force_full || hour.rem_euclid(24) == 10, &[6, 7, 8][..]),
+                    (true, &[6, 7, 8][..]),
                     (
                         force_full || hour.rem_euclid(24) == 17,
                         &[0, 1, 3, 4, 5, 9, 10][..],
@@ -3158,9 +3198,9 @@ mod tests {
                 assert_eq!(failure_ticks, [0; N]);
                 for (index, outcome) in split.outcomes().into_iter().enumerate() {
                     let active = index == 2
+                        || (6..9).contains(&index)
                         || force_full
-                        || ((6..9).contains(&index) && hour.rem_euclid(24) == 10)
-                        || (!(6..9).contains(&index) && hour.rem_euclid(24) == 17);
+                        || hour.rem_euclid(24) == 17;
                     assert_eq!(
                         outcome,
                         if active {

@@ -3405,16 +3405,18 @@ mod tests {
         let shared = Shared::new(0, 0, 1);
         let index = shared.free.pop().expect("pooled buffer");
         for (hour, force_full, parts, economy) in [
-            (0, false, [false, false, false], [false, false]),
-            (3, false, [false, true, false], [false, false]),
-            (8, false, [true, false, false], [false, false]),
-            (19, false, [false, false, true], [false, false]),
-            (-5, false, [false, false, true], [false, false]),
-            (27, false, [false, true, false], [false, false]),
-            (32, false, [true, false, false], [false, false]),
-            (10, false, [false, false, false], [true, false]),
-            (17, false, [false, false, false], [false, true]),
-            (0, true, [true, true, true], [true, true]),
+            // CountryResources is hourly; its census and the exchanges
+            // publish in their daily slot.
+            (0, false, [false, false, false], [true, false, false]),
+            (3, false, [false, true, false], [true, false, false]),
+            (8, false, [true, false, false], [true, false, false]),
+            (19, false, [false, false, true], [true, false, false]),
+            (-5, false, [false, false, true], [true, false, false]),
+            (27, false, [false, true, false], [true, false, false]),
+            (32, false, [true, false, false], [true, false, false]),
+            (10, false, [false, false, false], [true, true, false]),
+            (17, false, [false, false, false], [true, false, true]),
+            (0, true, [true, true, true], [true, true, true]),
         ] {
             assert!(retired.is_empty());
             let reads = read_accounting::Capture::new();
@@ -3444,6 +3446,7 @@ mod tests {
             assert_eq!(
                 [
                     request.economy.context.resources_active,
+                    request.economy.context.definitions_slot,
                     request.economy.context.other_active,
                 ],
                 economy
@@ -3571,15 +3574,12 @@ mod tests {
     }
 
     #[test]
-    fn characters_gate_keeps_the_roster_hourly_and_roles_on_their_daily_slot() {
+    fn characters_gate_walks_the_roster_roles_and_traits_every_hour() {
         for hour in -48..48i32 {
             assert!(characters_refresh_hour(hour, false), "hour {hour}");
             for table in CHARACTERS {
-                let expected = matches!(table, TableId::Characters | TableId::UnitLeaders)
-                    || hour.rem_euclid(24) == 21;
-                assert_eq!(
+                assert!(
                     replay::cadence::should_walk(table, hour, false),
-                    expected,
                     "{table:?} at hour {hour}"
                 );
                 assert!(replay::cadence::should_walk(table, hour, true));

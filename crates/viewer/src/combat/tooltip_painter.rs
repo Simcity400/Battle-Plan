@@ -8,7 +8,7 @@
 //! `14228C8D0` then measures the resulting lines and adds a border on every
 //! side. For the shipped ToolTip this means wrapping at 328 pixels, an
 //! 18-pixel text inset, and a background fitted to the resulting text.
-use super::{Assets, Chunk, Drawn, Painter, invalid, layout, window_layer};
+use super::{Assets, Chunk, Drawn, Painter, invalid, layout};
 use crate::map::{names::GlyphMetrics, text};
 use installed_content::defines::Defines;
 use std::{
@@ -376,6 +376,7 @@ pub(super) fn draw(
         assets,
         drawn,
         hovers: false,
+        layer_base: 0,
     };
     let mut color = font.color();
     let mut lines = Vec::new();
@@ -429,10 +430,7 @@ pub(super) fn draw(
         lines.iter().map(|line| line.height).sum::<f32>() + 2.0 * border[1],
     ];
     let at = position(point, size, extent, defines.offsets);
-    painter
-        .drawn
-        .batch
-        .at_layer(window_layer(painter.drawn.batch.quads.len()));
+    painter.drawn.batch.at_layer(painter.next_layer());
     painter.cornered(&sprite, 0, at, size, border, [1.0; 4]);
     let mut y = at[1] + border[1];
     for line in lines {
@@ -440,10 +438,7 @@ pub(super) fn draw(
         for atom in line.atoms {
             x += atom.kerning;
             let top = y + (line.height - atom.height) * 0.5;
-            painter
-                .drawn
-                .batch
-                .at_layer(window_layer(painter.drawn.batch.quads.len()));
+            painter.drawn.batch.at_layer(painter.next_layer());
             match atom.chunk {
                 Chunk::Text(value, color) => painter.drawn.batch.text(
                     &text::layout(font, &value, [x, top], text::Align::Left, None),

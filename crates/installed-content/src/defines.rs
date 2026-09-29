@@ -69,7 +69,7 @@ pub(crate) fn script_paths(layers: &ResolvedLayers) -> Vec<String> {
 /// `Vfs_EnumerateRecursive@1424C7630` under `root`: the names ending in
 /// `filter`, files before the subdirectories of each directory, each level in
 /// byte order, depth first.
-pub(crate) fn load_order<'a>(
+pub fn load_order<'a>(
     root: &str,
     filter: &str,
     paths: impl Iterator<Item = &'a str>,

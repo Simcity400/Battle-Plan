@@ -351,6 +351,7 @@ packs!(
     hired_advisors,
     country_stability,
     new_divisions,
+    country_tactic_unlocks,
     weather
 );
 
@@ -378,6 +379,7 @@ impl Capacities {
         self.model_inputs.raise_for_countries(slots);
         self.hired_advisors.raise_for_countries(slots);
         self.country_stability.raise_for_countries(slots);
+        self.country_tactic_unlocks.raise_for_countries(slots);
     }
 
     /// Presize CountryIntel from the live dense record total.
@@ -1467,6 +1469,10 @@ impl Captured {
         );
         std::mem::swap(&mut self.hired_advisors, &mut packs.hired_advisors);
         std::mem::swap(&mut self.country_stability, &mut packs.country_stability);
+        std::mem::swap(
+            &mut self.country_tactic_unlocks,
+            &mut packs.country_tactic_unlocks,
+        );
     }
 
     /// Loan the order census and the plans to the Orders job.
@@ -2206,7 +2212,8 @@ impl Captured {
                 faction_theatres,
                 model_inputs,
                 modifier_definitions,
-                hired_advisors
+                hired_advisors,
+                country_tactic_unlocks
             );
             // No loaned fingerprint store: only the hour's slice is read.
             let cost = self.country_stability.capture(
@@ -2626,6 +2633,7 @@ pub(crate) struct SlowPacks {
     pub(crate) modifier_definitions: modifier_definitions::Captured,
     pub(crate) hired_advisors: hired_advisors::Captured,
     pub(crate) country_stability: country_stability::Captured,
+    pub(crate) country_tactic_unlocks: country_tactic_unlocks::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -2770,6 +2778,8 @@ impl SlowPacks {
         self.hired_advisors.fail_capture(hour, force_full, reason);
         self.country_stability
             .fail_capture(hour, force_full, reason);
+        self.country_tactic_unlocks
+            .fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
@@ -2783,6 +2793,7 @@ impl SlowPacks {
             + self.modifier_definitions.allocated_bytes()
             + self.hired_advisors.allocated_bytes()
             + self.country_stability.allocated_bytes()
+            + self.country_tactic_unlocks.allocated_bytes()
     }
 
     fn spare() -> Box<Self> {
@@ -2795,6 +2806,7 @@ impl SlowPacks {
             modifier_definitions: modifier_definitions::Captured::vacant(),
             hired_advisors: hired_advisors::Captured::vacant(),
             country_stability: country_stability::Captured::vacant(),
+            country_tactic_unlocks: country_tactic_unlocks::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         })
     }
@@ -2825,7 +2837,8 @@ impl SlowPacks {
             faction_theatres,
             model_inputs,
             modifier_definitions,
-            hired_advisors
+            hired_advisors,
+            country_tactic_unlocks
         );
         let cost = self.country_stability.capture(
             memory,

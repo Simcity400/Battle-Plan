@@ -31,16 +31,16 @@
 //! for the overlord, negative for the subject. `base_export` (the reserve before
 //! modifiers) is not shown.
 //!
-//! The resource tables are read once a day in one slot and carried in between.
-//! A read is an hour whose frame timed a walk of any table of that slot, as the
-//! fresh-save oracle dates daily tables (`recorder::oracle::last_read_hours`).
-//! Values start only at a read, are carried over the following hours of the same
-//! country identity, and end at a gap, an incomplete table or a change of
-//! identity; `reads` lets the widget say how old a carried value is.
+//! The pools and the deals are both read every hour (`replay::cadence`), so a
+//! value shown at an hour is as of that hour. Values run over the consecutive
+//! hours of the same country identity and end at a gap, an incomplete table or a
+//! change of identity. The resource names come from `ResourceDefinitions`, read
+//! daily and carried: they are content, fixed once loaded.
 //!
 //! The pools and the deals are captured as separate tables with their own
-//! outcomes, so each keeps its own values: a read whose deal table is missing
-//! still shows the pools, and `deal_hours` says at which hours the deals are known.
+//! outcomes, so each keeps its own values: an hour whose deal table is missing
+//! still shows the pools, and `deal_hours` says at which hours the deals are
+//! known.
 //!
 //! Resources are told apart by their native index, not their token: the game
 //! keeps every declaration as its own resource (see [`ResourceInfo`]).
@@ -55,7 +55,7 @@ use super::{CountryParams, LoadContext, Product};
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{link_slot, slot_read, tagged_country, validate_campaign},
+    metadata::{link_slot, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
 };
 use installed_content::localisation::Localisation;
@@ -91,15 +91,15 @@ const TRADE_VIEW_GUI: &str = "interface/countrytradeview.gui";
 const RESOURCE_ROW: &str = "resources_info_entry";
 const RESOURCE_ICON: &str = "resources_icon";
 
-/// One recorded read of a country's pools of one resource, held over
-/// consecutive hours while it stays unchanged. Raw values are exact decimal
-/// strings with [`RESOURCE_DECIMALS`] places.
+/// A country's recorded pools of one resource over consecutive hours while they
+/// stay unchanged. Raw values are exact decimal strings with
+/// [`RESOURCE_DECIMALS`] places.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PoolRun {
     pub first_hour: i32,
     pub last_hour: i32,
-    /// The run follows a gap, a missing read or another country identity.
+    /// The run follows a gap, a missing table or another country identity.
     pub starts_segment: bool,
     /// Extracted in the country's states (`produced`).
     pub produced_raw: String,
@@ -183,13 +183,10 @@ pub struct ResourceBalanceReply {
     pub resources: Vec<ResourceInfo>,
     /// One per resource, in `resources` order.
     pub series: Vec<ResourceSeries>,
-    /// Hours the country's resources were read, ascending: a value shown at a
-    /// later hour is as of the latest read before it.
-    pub reads: Vec<i32>,
-    /// Hours whose deals are known, as ascending spans: from a read of the deal
-    /// table over the hours it is carried. The deal table is captured apart from
-    /// the pools, so pools shown at an hour outside these spans have unknown deals,
-    /// which is not the same as no deals.
+    /// Hours whose deals are known, as ascending spans: the hours the deal table
+    /// was recorded. It is captured apart from the pools, so pools shown at an
+    /// hour outside these spans have unknown deals, which is not the same as no
+    /// deals.
     pub deal_hours: Vec<HourSpan>,
     pub trades: Vec<TradeRun>,
     pub warnings: Vec<String>,
@@ -200,7 +197,6 @@ pub struct ScannedBalance {
     /// Resources in the game's order: native index and token.
     pub resources: Vec<(u32, String)>,
     pub series: BTreeMap<u32, Vec<PoolRun>>,
-    pub reads: Vec<i32>,
     pub deal_hours: Vec<HourSpan>,
     pub trades: Vec<TradeRun>,
     /// Rows naming a resource the recorded definitions or tokens do not name.
@@ -252,7 +248,6 @@ fn same_terms(a: &TradeRun, b: &TradeRun) -> bool {
 fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
     match spans.last_mut() {
         Some(span) if span.last_hour.checked_add(1) == Some(hour) => span.last_hour = hour,
-        Some(span) if span.last_hour >= hour => {}
         _ => spans.push(HourSpan {
             first_hour: hour,
             last_hour: hour,
@@ -280,11 +275,12 @@ pub fn scan(
     let budget = || io::Error::other("Resource history exceeds its memory budget");
     let mut result = ScannedBalance::default();
     let mut ids: BTreeMap<u32, String> = BTreeMap::new();
-    // The identity and hour last seen, and whether the pools and the deals are
-    // open (carried) at it. The two tables are captured apart, so each has its own.
+    // The identity and hour last seen, and whether the pools and the deals were
+    // recorded for it at that hour. The two tables are captured apart, so each
+    // has its own.
     let mut last: Option<((u32, u32), i32)> = None;
-    let mut open = false;
-    let mut trades_open = false;
+    let mut pools_open = false;
+    let mut deals_open = false;
     let mut open_trades: BTreeMap<u64, usize> = BTreeMap::new();
     let mut runs = 0_usize;
     for block in replay.index.iter().filter(|block| block.branch == branch) {
@@ -319,45 +315,22 @@ pub fn scan(
                 last.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour))
             });
             last = identity.map(|(identity, _)| (identity, hour));
-            let rows = decoded.complete::<tables::CountryResources>().ok();
-            let exchanges = decoded.complete::<tables::ResourceExchanges>().ok();
-            // Each table ends its own values where it is missing; the other keeps going.
-            if !continues || rows.is_none() {
-                open = false;
-            }
-            if !continues || exchanges.is_none() {
-                trades_open = false;
+            // Each table's values go on only from its previous hour of the same
+            // identity; where one is missing, the other keeps going.
+            let pools_continue = continues && pools_open;
+            if !(continues && deals_open) {
                 open_trades.clear();
             }
+            pools_open = false;
+            deals_open = false;
             let Some(((slot, _), links)) = identity else {
                 continue;
             };
-            if !slot_read(&decoded.metrics, TableId::CountryResources) {
-                // Carried: the last read still holds, but only after a read of this identity.
-                if open {
-                    for series in result.series.values_mut() {
-                        if let Some(run) = series.last_mut()
-                            && run.last_hour.checked_add(1) == Some(hour)
-                        {
-                            run.last_hour = hour;
-                        }
-                    }
-                }
-                if trades_open {
-                    for index in open_trades.values() {
-                        result.trades[*index].last_hour = hour;
-                    }
-                    mark(&mut result.deal_hours, hour);
-                }
-                continue;
-            }
+            // Without names, nothing this hour records can be shown.
             let (Ok(definitions), Ok(lexical)) = (
                 decoded.complete::<tables::ResourceDefinitions>(),
                 decoded.complete::<tables::LexicalTokens>(),
             ) else {
-                open = false;
-                trades_open = false;
-                open_trades.clear();
                 continue;
             };
             for definition in definitions {
@@ -376,10 +349,8 @@ pub fn scan(
                 result.resources.push((definition.id, token.to_owned()));
                 result.resources.sort_by_key(|(id, _)| *id);
             }
-            if let Some(rows) = rows {
-                result.reads.push(hour);
-                let was_open = open;
-                open = true;
+            if let Ok(rows) = decoded.complete::<tables::CountryResources>() {
+                pools_open = true;
                 for row in rows
                     .iter()
                     .filter(|row| link_slot(links, row.country) == Some(slot))
@@ -402,36 +373,32 @@ pub fn scan(
                         production_raw: row.production_demand.to_string(),
                     };
                     let series = result.series.entry(row.resource).or_default();
+                    let follows = pools_continue
+                        && series
+                            .last()
+                            .is_some_and(|run| run.last_hour.checked_add(1) == Some(hour));
                     match series.last_mut() {
-                        Some(run)
-                            if was_open
-                                && run.last_hour.checked_add(1) == Some(hour)
-                                && same_pools(run, &values) =>
-                        {
-                            run.last_hour = hour
-                        }
-                        previous => {
-                            let starts_segment = !(was_open
-                                && previous
-                                    .is_some_and(|run| run.last_hour.checked_add(1) == Some(hour)));
+                        Some(run) if follows && same_pools(run, &values) => run.last_hour = hour,
+                        _ => {
                             runs += 1;
                             if runs > MAX_RUNS {
                                 return Err(budget());
                             }
                             series.push(PoolRun {
-                                starts_segment,
+                                starts_segment: !follows,
                                 ..values
                             });
                         }
                     }
                 }
             }
-            let Some(exchanges) = exchanges else {
+            let Ok(exchanges) = decoded.complete::<tables::ResourceExchanges>() else {
+                open_trades.clear();
                 continue;
             };
             mark(&mut result.deal_hours, hour);
-            trades_open = true;
-            // Deals this read still lists continue; the others ended.
+            deals_open = true;
+            // Deals this hour still lists continue; the others ended.
             let countries = decoded.complete::<tables::Countries>()?;
             let mut still = BTreeMap::new();
             for exchange in exchanges {
@@ -472,11 +439,9 @@ pub fn scan(
                     last_hour: hour,
                     starts_segment: false,
                 };
+                // An open deal was listed at the previous hour.
                 match open_trades.get(&exchange.id) {
-                    Some(&index)
-                        if result.trades[index].last_hour.checked_add(1) == Some(hour)
-                            && same_terms(&result.trades[index], &terms) =>
-                    {
+                    Some(&index) if same_terms(&result.trades[index], &terms) => {
                         result.trades[index].last_hour = hour;
                         still.insert(exchange.id, index);
                     }
@@ -485,11 +450,8 @@ pub fn scan(
                         if runs > MAX_RUNS {
                             return Err(budget());
                         }
-                        let continued = previous.is_some_and(|&index| {
-                            result.trades[index].last_hour.checked_add(1) == Some(hour)
-                        });
                         result.trades.push(TradeRun {
-                            starts_segment: !continued,
+                            starts_segment: previous.is_none(),
                             ..terms
                         });
                         still.insert(exchange.id, result.trades.len() - 1);
@@ -826,11 +788,11 @@ impl Product for ResourceBalance {
         }
         if scanned.unresolved > 0 {
             warnings.push(format!(
-                "{} recorded trade reads name another country the recorded links do not resolve; they are left out.",
+                "{} recorded trade rows name another country the recorded links do not resolve; they are left out.",
                 scanned.unresolved
             ));
         }
-        if scanned.reads.is_empty() {
+        if scanned.series.is_empty() {
             warnings.push(format!(
                 "{}: no recorded resources in this branch",
                 params.tag
@@ -849,7 +811,6 @@ impl Product for ResourceBalance {
                 })
                 .collect(),
             resources,
-            reads: scanned.reads.clone(),
             deal_hours: scanned.deal_hours.clone(),
             trades: scanned.trades.clone(),
             warnings,

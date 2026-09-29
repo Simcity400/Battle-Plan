@@ -24,6 +24,39 @@ pub struct Country {
     pub experience: Option<Experience>,
     /// None preserves an absent resources object; an empty export list is distinct.
     pub exports: Option<Vec<ResourceExchange>>,
+    /// The resource pools of the same object; `None` with it.
+    pub pools: Option<ResourcePools>,
+}
+
+/// One resource pool as CStrategicResourcePool::vf2 (140BBD5D0) writes it:
+/// each nonzero amount in resource index order, keyed by its token through
+/// the fixed5 writer 1424AE590, zero amounts omitted. The loader 140AB2ED0
+/// appends a repeated declaration as another resource, so a name can repeat;
+/// every occurrence is kept in written order.
+pub type ResourcePool = Vec<(Vec<u8>, Decimal)>;
+
+/// The pools CCountryResources::Write (140CAEB80; its `this` is the object
+/// + 0x18) emits, each a CStrategicResourcePool of the object.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResourcePools {
+    /// `produced` (token 0x2FAC): the pool at +0x28.
+    pub produced: ResourcePool,
+    /// `transfer_overlord_subject` (0x417C): the pool at +0xD8.
+    pub transfer_overlord_subject: ResourcePool,
+    /// `imported` (0x30C2): the pool at +0x188.
+    pub imported: ResourcePool,
+    /// `to_use` (0x30C3): three unkeyed pools. The three pools from +0x238
+    /// (stride 0xB0) form a Fenwick tree (prefix sum 140C8ED30); the writer
+    /// emits prefix(i) - prefix(i - 1) (140BBBE90) for odd i and the pool
+    /// itself for even i, so the entries are +0x238, +0x2E8 less +0x238,
+    /// and +0x398.
+    pub to_use: [ResourcePool; 3],
+    /// `to_export` (0x30C4): the pool at +0x450.
+    pub to_export: ResourcePool,
+    /// `base_export` (0x3762): the pool at +0x500.
+    pub base_export: ResourcePool,
+    /// `exported` (0x30C5): the pool at +0x5B0.
+    pub exported: ResourcePool,
 }
 
 /// Exact native signed /32768 values. 141294210 omits the first eight fields
@@ -590,6 +623,60 @@ fn parse_purchases(items: &[Item]) -> io::Result<Option<BTreeMap<u64, Purchase>>
     Ok(Some(purchases))
 }
 
+fn parse_pool(items: &[Item]) -> io::Result<ResourcePool> {
+    items
+        .iter()
+        .map(|item| {
+            let resource = item
+                .key
+                .as_ref()
+                .filter(|key| !key.is_empty())
+                .ok_or_else(|| invalid("saved resource pool entry lacks a resource"))?;
+            Ok((resource.clone(), Decimal::parse(scalar(&item.value)?)?))
+        })
+        .collect()
+}
+
+fn parse_pools(items: &[Item]) -> io::Result<Option<ResourcePools>> {
+    let Some(resources) = field(items, b"resources")? else {
+        return Ok(None);
+    };
+    let fields = block(resources)?;
+    let pool = |key: &[u8]| {
+        field(fields, key)?
+            .ok_or_else(|| {
+                invalid(format!(
+                    "saved country resources lack {}",
+                    String::from_utf8_lossy(key)
+                ))
+            })
+            .and_then(|value| parse_pool(block(value)?))
+    };
+    let to_use = block(
+        field(fields, b"to_use")?.ok_or_else(|| invalid("saved country resources lack to_use"))?,
+    )?;
+    let [first, second, third] = to_use else {
+        return Err(invalid("saved to_use does not hold three pools"));
+    };
+    let mut parts = [first, second, third].into_iter().map(|item| {
+        if item.key.is_some() {
+            return Err(invalid("saved to_use pool is keyed"));
+        }
+        parse_pool(block(&item.value)?)
+    });
+    let mut next = || parts.next().unwrap();
+    let to_use = [next()?, next()?, next()?];
+    Ok(Some(ResourcePools {
+        produced: pool(b"produced")?,
+        transfer_overlord_subject: pool(b"transfer_overlord_subject")?,
+        imported: pool(b"imported")?,
+        to_use,
+        to_export: pool(b"to_export")?,
+        base_export: pool(b"base_export")?,
+        exported: pool(b"exported")?,
+    }))
+}
+
 fn parse_exports(items: &[Item]) -> io::Result<Option<Vec<ResourceExchange>>> {
     let Some(resources) = field(items, b"resources")? else {
         return Ok(None);
@@ -664,6 +751,7 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                     fuel,
                     experience: parse_experience(fields)?,
                     exports: parse_exports(fields)?,
+                    pools: parse_pools(fields)?,
                 },
             )
             .is_some()
@@ -1062,6 +1150,7 @@ mod tests {
                 required_cic=-1 lended_cic=2}
             export={id={id=1 type=4713} efficiency=0 efficiency_due_to_lost_convoys=0 delivered=0
                 required_cic=0 lended_cic=0 convoys_subscriber={}}
+            produced={} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}
         }} D01={}}"#,
         )
         .unwrap();
@@ -1077,5 +1166,85 @@ mod tests {
         assert!(exports[1].receiver.is_none());
         assert!(exports[1].resource.is_none());
         assert!(parsed.countries[b"D01".as_slice()].exports.is_none());
+    }
+
+    /// The pools as CCountryResources::Write (140CAEB80) emits them: each
+    /// nonzero amount by resource name, fixed5 through 1424AE590, and
+    /// `to_use` as three unkeyed pools.
+    #[test]
+    fn country_resource_pools_keep_every_written_pool() {
+        let document = parser::parse(
+            br#"countries={GER={resources={
+            dirty=no
+            produced={ oil=32 steel=301.00001 }
+            transfer_overlord_subject={ steel=-2.1 }
+            imported={ }
+            to_use={ { oil=24 } { } { steel=-30 } }
+            to_export={ oil=8 } base_export={ oil=8 } exported={ coal=64 }
+        }} D01={}}"#,
+        )
+        .unwrap();
+        let parsed = parse(&document.items).unwrap();
+        let pools = parsed.countries[b"GER".as_slice()].pools.as_ref().unwrap();
+        let raw = |pool: &ResourcePool| {
+            pool.iter()
+                .map(|(name, amount)| (String::from_utf8_lossy(name).into_owned(), amount.raw))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            raw(&pools.produced),
+            [("oil".into(), 3_200_000), ("steel".into(), 30_100_001)]
+        );
+        assert_eq!(
+            raw(&pools.transfer_overlord_subject),
+            [("steel".into(), -210_000)]
+        );
+        assert!(pools.imported.is_empty());
+        assert_eq!(raw(&pools.to_use[0]), [("oil".into(), 2_400_000)]);
+        assert!(pools.to_use[1].is_empty());
+        assert_eq!(raw(&pools.to_use[2]), [("steel".into(), -3_000_000)]);
+        assert_eq!(raw(&pools.exported), [("coal".into(), 6_400_000)]);
+        assert!(parsed.countries[b"D01".as_slice()].pools.is_none());
+        for broken in [
+            "produced={ 1 }",
+            "to_use={ { } { } }",
+            "to_use={ a={ } { } { } }",
+        ] {
+            let text = format!("countries={{GER={{resources={{{broken}}}}}}}");
+            assert!(
+                parse(&parser::parse(text.as_bytes()).unwrap().items).is_err(),
+                "{broken}"
+            );
+        }
+    }
+
+    /// A name declared twice is two resources (loader 140AB2ED0 appends
+    /// each declaration); the writer 140BBD5D0 repeats the name, one entry
+    /// per nonzero index in index order. Both occurrences are kept in order.
+    #[test]
+    fn repeated_resource_names_keep_every_occurrence_in_written_order() {
+        let document = parser::parse(
+            br#"countries={GER={resources={
+            produced={ steel=3 coal=1 steel=-5 }
+            transfer_overlord_subject={ } imported={ } to_use={ { } { steel=2 } { } }
+            to_export={ } base_export={ } exported={ }
+        }}}"#,
+        )
+        .unwrap();
+        let parsed = parse(&document.items).unwrap();
+        let pools = parsed.countries[b"GER".as_slice()].pools.as_ref().unwrap();
+        assert_eq!(
+            pools
+                .produced
+                .iter()
+                .map(|(name, amount)| (name.as_slice(), amount.raw))
+                .collect::<Vec<_>>(),
+            [
+                (b"steel".as_slice(), 300_000),
+                (b"coal".as_slice(), 100_000),
+                (b"steel".as_slice(), -500_000),
+            ]
+        );
+        assert_eq!(pools.to_use[1].len(), 1);
     }
 }

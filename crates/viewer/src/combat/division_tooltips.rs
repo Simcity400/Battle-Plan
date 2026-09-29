@@ -11,7 +11,8 @@ use super::{
         Condition, Divisions, condition_gap, conditions, direction_count, division_width, modifier,
         total_width,
     },
-    tooltips::{Content, hover_text, refuse_hovers, set_hover},
+    tactics::Content as Tactics,
+    tooltips::{hover_text, organisation_effects, refuse_hovers, set_hover},
 };
 use crate::{
     document::Document,
@@ -91,10 +92,10 @@ fn tactic_effects(
     loc: &Localisation,
     detail: &LandCombatDetailsRow,
     sides: Option<&LandCombatSideRow>,
-    content: &Content,
+    tactics: &Tactics,
     side: u8,
 ) -> Result<String, String> {
-    let organisation = content.organisation_effects(detail, sides)?;
+    let organisation = organisation_effects(tactics, detail, sides)?;
     let (damage_key, damage, org_key, org_gate) = if side == 0 {
         (
             "TACTICS_DAMAGE_ATTACKER",
@@ -1181,7 +1182,7 @@ pub(super) fn bind(
             loc,
             detail,
             sides,
-            &document.icons.combat.tooltips,
+            &document.icons.combat.tactics,
             side,
         );
         for (unit, values) in entries {

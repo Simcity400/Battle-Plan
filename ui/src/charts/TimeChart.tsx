@@ -69,9 +69,9 @@ export interface TimeChartProps {
    * (never over a strip, which has its own `describe`). */
   snap?: (hour: number, frame: PlotFrame) => number;
   /** Hours the arrow keys step the keyboard hover through, ascending (such as every
-   * read); without them the keys step a day. Pass them all, not only those in view:
-   * a value carried into the view from an earlier one is reachable at the view's
-   * start (`keyStops`). */
+   * hour a value changes); without them the keys step a day. Pass them all, not only
+   * those in view: a value going on into the view from an earlier one is reachable at
+   * the view's start (`keyStops`). */
   keyHours?: readonly number[];
   /** Drawn after the plot, unclipped: end labels and markers. */
   overlay?: (ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens) => void;

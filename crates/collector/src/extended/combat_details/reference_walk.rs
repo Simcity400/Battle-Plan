@@ -33,6 +33,12 @@ impl Destination<'_> {
         let bound =
             (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
         grow_vec(self.divisions, self.progress[1].required + bound);
+        // A side's committed and reserve lists are subsets of its full
+        // participants, so the larger census count bounds the role scratch.
+        grow_vec(
+            self.unit_scratch,
+            (source.attackers.count.max(source.defenders.count)) as usize,
+        );
         {
             let started = qpc();
             self.detail_reference(memory, base, state, source, &members);
@@ -72,8 +78,6 @@ impl Destination<'_> {
         let mut images = std::mem::take(self.images);
         images.clear();
         self.forget_shares();
-        // The unit visit's storage, lent while the visitor borrows `self`.
-        let mut shares = std::mem::take(self.combat);
         {
             let _reads = crate::read_accounting::table(TABLES[3]);
             let started = qpc();
@@ -83,12 +87,14 @@ impl Destination<'_> {
         {
             let started = qpc();
             let before = self.ticks[1] + self.ticks[2];
+            // Moved out for the visitor's borrow of the destination; no allocation.
+            let mut owned = std::mem::take(self.unit_scratch);
             let result = cland_combat::visit_units(
                 memory,
                 base,
                 source,
                 &members,
-                &mut shares,
+                &mut owned,
                 |side, ordinal, pointer, handle, province, role| {
                     let row = ordinal as usize
                         + if side == 0 {
@@ -173,8 +179,15 @@ impl Destination<'_> {
                     }
                 },
             );
+            *self.unit_scratch = owned;
             self.ticks[0] +=
                 elapsed(started).saturating_sub(self.ticks[1] + self.ticks[2] - before);
+            let result = result.and_then(|visited| match visited {
+                cland_combat::Visited::Complete => Ok(()),
+                cland_combat::Visited::Scratch { .. } => {
+                    Err("land role subsets exceed their full participants")
+                }
+            });
             if let Err(reason) = result {
                 for index in [1, 2] {
                     {
@@ -183,7 +196,6 @@ impl Destination<'_> {
                 }
             }
         }
-        *self.combat = shares;
         *self.images = images;
     }
     /// The country sets with the marker's indicator and flag words, which
@@ -200,90 +212,90 @@ impl Destination<'_> {
         if self.progress[0].failure.is_some() {
             return;
         }
-        if self.tactic_registry.is_none() {
-            self.tactic_registry = Some(land_tactic_inputs::capture_registry(
-                memory,
-                base,
-                self.tactic_candidates,
-                self.tactic_weights,
-            ));
-        }
-        match self.tactic_registry.expect("registry supplied").outcome {
-            Outcome::Unavailable { reason } => {
-                self.progress[0].failure = Some(reason);
-                return;
-            }
-            Outcome::Truncated { .. } => return,
-            Outcome::Rows { .. } => {}
-        }
-        // Selected commanders' texts share the commander text arena; they stay
-        // committed only if this combat's row is kept.
-        let texts = self.commander_names.len;
         self.forget_shares();
-        match cland_combat::read_details(
+        let at = self.detail_used;
+        let roster = self.arenas[0].len;
+        let mut arenas = cland_combat::DetailArenas::new(
+            &mut self.rosters[roster..],
+            &mut self.air_counts[at.air..],
+            &mut self.detail_text[at.text..],
+            &mut self.commander_traits[at.traits..],
+            &mut self.timed_traits[at.timed..],
+            &mut self.learning_traits[at.learning..],
+        );
+        let result = cland_combat::read_details(
             memory,
             base,
             source,
             members,
             &mut self.commanders,
-            &mut self.scratch.rosters,
-            &mut self.commander_names,
-        ) {
-            Ok(cland_combat::Details {
-                mut row,
-                participants: count,
-                texts_fit,
-            }) => {
-                self.arenas[0].required += count;
+            &mut arenas,
+        );
+        let (complete, used, required) = (arenas.complete(), arenas.used, arenas.required);
+        self.arenas[0].required += required.participants;
+        for (total, value) in [
+            (&mut self.detail_required.air, required.air),
+            (&mut self.detail_required.text, required.text),
+            (&mut self.detail_required.traits, required.traits),
+            (&mut self.detail_required.timed, required.timed),
+            (&mut self.detail_required.learning, required.learning),
+        ] {
+            *total += value;
+        }
+        match result {
+            Ok(mut row) => {
                 self.forget_shares();
-                let mut context = land_tactic_inputs::capture_context(
+                let context = land_tactic_inputs::capture_context(
                     memory,
                     base,
                     state,
                     source,
                     members,
                     &mut self.commanders,
-                    &mut self.tactic_unlocks[self.tactic_unlock_progress.len..],
                 );
-                self.tactic_unlock_progress.required += context.row.required_unlocks;
-                match context.outcome {
-                    Outcome::Unavailable { reason } => {
-                        self.progress[0].failure = Some(reason);
-                        self.commander_names.len = texts;
-                        return;
-                    }
-                    Outcome::Truncated { .. } => {
-                        self.commander_names.len = texts;
-                        return;
-                    }
-                    Outcome::Rows { .. } => {}
-                }
-                // A text that did not fit was counted for growth: the whole
-                // combat is omitted this hour, as for a full roster arena.
-                if !texts_fit
-                    || self.progress[0].len == self.details.len()
-                    || count > self.rosters.len().saturating_sub(self.arenas[0].len)
-                {
-                    self.commander_names.len = texts;
+                if let Outcome::Unavailable { reason } = context.outcome {
+                    self.progress[0].failure = Some(reason);
                     return;
                 }
-                let start = self.arenas[0].len;
-                self.rosters[start..start + count].copy_from_slice(&self.scratch.rosters[..count]);
+                // A detail whose lists did not all fit is never published;
+                // its demand grows the arenas for the next hour.
+                if self.progress[0].len == self.details.len() || !complete {
+                    return;
+                }
+                let text = at.text;
                 for side in &mut row.sides {
-                    side.committed_start += start;
-                    side.reserve_start += start;
+                    side.committed_start += roster;
+                    side.reserve_start += roster;
+                    side.traits_start += at.traits;
+                    side.timed_traits_start += at.timed;
+                    side.air_counts.start += at.air;
+                    side.learning_traits.start += at.learning;
+                    for token in [
+                        &mut side.tactic_token,
+                        &mut side.commander_name_token,
+                        &mut side.commander_description_token,
+                    ] {
+                        token.start += text;
+                    }
                 }
-                let unlock_count = context.row.unlock_count.iter().sum::<usize>();
-                for start in &mut context.row.unlock_start {
-                    *start += self.tactic_unlock_progress.len;
+                row.stored_terrain_name.start += text;
+                for stored in &mut self.commander_traits[at.traits..at.traits + used.traits] {
+                    stored.token_start += text;
                 }
+                for stored in &mut self.learning_traits[at.learning..at.learning + used.learning] {
+                    stored.token_start += text;
+                }
+                self.arenas[0].len += used.participants;
+                self.detail_used.air += used.air;
+                self.detail_used.text += used.text;
+                self.detail_used.traits += used.traits;
+                self.detail_used.timed += used.timed;
+                self.detail_used.learning += used.learning;
                 self.details[self.progress[0].len] = Detail {
                     row,
                     tactic_context: context.row,
                 };
-                self.tactic_unlock_progress.len += unlock_count;
                 self.progress[0].len += 1;
-                self.arenas[0].len += count;
             }
             Err(reason) => self.progress[0].failure = Some(reason),
         }

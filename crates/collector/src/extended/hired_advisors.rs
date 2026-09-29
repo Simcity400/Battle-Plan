@@ -1,9 +1,9 @@
 //! The per-country character object (CCountryCharacters at CCountry
 //! +0xff0): each country's appointed advisors (+0x58) in native order, with
-//! the advisor's character, idea token and slot, daily in the advisor roles'
-//! slot; each country's active-character records (+0x10,
-//! CountryCharacters), hourly; and the character manager's advisor
-//! idea-token set (AdvisorTokens), hourly.
+//! the advisor's character, idea token and slot, daily in its own slot (the
+//! advisor roles are read every hour, so also at that slot); each country's
+//! active-character records (+0x10, CountryCharacters), hourly; and the
+//! character manager's advisor idea-token set (AdvisorTokens), hourly.
 use crate::{
     sampling::qpc,
     spooling::{table, table_iter, unavailable},
@@ -278,7 +278,7 @@ mod tests {
     use replay::rows::TableRows;
 
     #[test]
-    fn walks_only_on_the_advisor_roles_slot_or_a_full_hour() {
+    fn walks_only_on_its_daily_slot_or_a_full_hour() {
         let memory = engine::memory::SliceMemory {
             base: 0,
             bytes: &[],
@@ -291,10 +291,8 @@ mod tests {
                     reason: SKIPPED_REASON,
                 };
             assert_eq!(skipped, !should_walk(TABLES[0], hour, false), "{hour}");
-            assert_eq!(
-                should_walk(TABLES[0], hour, false),
-                should_walk(TableId::AdvisorRoles, hour, false)
-            );
+            // The advisor roles it names are hourly, so read at its slot too.
+            assert!(should_walk(TableId::AdvisorRoles, hour, false));
         }
         captured.capture(&memory, 0, 0x1000, 3, true);
         assert!(matches!(

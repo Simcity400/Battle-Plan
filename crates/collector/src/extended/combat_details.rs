@@ -26,8 +26,7 @@ use engine::{
     walk::Outcome,
 };
 use replay::rows::{
-    LandCombatTacticCandidate, LandCombatTacticCountryWeight, LandCombatTacticInputs,
-    LandCombatTacticUnlock, LandCombatTacticWeightTerm,
+    LandCombatCommanderTimedTrait, LandCombatTacticCountryWeight, LandCombatTacticInputs,
 };
 use replay::{
     frame::TableView,
@@ -78,14 +77,18 @@ pub struct Capacities {
     supply_terms: usize,
     acclimatization: usize,
     transport_terms: usize,
-    tactic_candidates: usize,
-    tactic_weights: usize,
-    tactic_unlocks: usize,
     division_commanders: usize,
-    /// Commander text bytes: division commanders' name tokens and each kept
-    /// combat side's selected commander name and description tokens.
+    /// Division commanders' raw name tokens, bytes.
     commander_names: usize,
     commander_keys: usize,
+    /// Every detail list is sized from its live vectors' demand: all token
+    /// bytes, commander assigned/timed/learning traits and air-support counts
+    /// (committed and reserve handles use `rosters`).
+    commander_traits: usize,
+    detail_text: usize,
+    timed_traits: usize,
+    air_counts: usize,
+    learning_traits: usize,
 }
 impl Capacities {
     /// Presize from the live country registry. Each exile list holds at most
@@ -121,12 +124,14 @@ impl Default for Capacities {
             supply_terms: 4096,
             acclimatization: 2048,
             transport_terms: 1024,
-            tactic_candidates: 256,
-            tactic_weights: 1024,
-            tactic_unlocks: 4096,
             division_commanders: 32,
             commander_names: 2048,
             commander_keys: 2048,
+            commander_traits: 256,
+            detail_text: 8192,
+            timed_traits: 64,
+            air_counts: 256,
+            learning_traits: 1024,
         }
     }
 }
@@ -232,8 +237,6 @@ struct Scratch {
     reinforcement_modifiers: Vec<reinforcement::ModifierTerm>,
     supply: Vec<reinforcement::SupplyTerm>,
     acclimatization: Vec<reinforcement::AcclimatizationTerm>,
-    /// Both committed/reserve lists on each side have independent bounds.
-    rosters: Vec<u64>,
     modifiers: Vec<carmy_combat_inputs::Modifier>,
 }
 impl Scratch {
@@ -249,10 +252,6 @@ impl Scratch {
             &mut self.acclimatization,
             reinforcement::ACCLIMATIZATION_LIMIT,
         );
-        grow_vec(
-            &mut self.rosters,
-            cland_combat::DETAIL_UNIT_LIMIT as usize * 4,
-        );
         grow_vec(&mut self.modifiers, carmy_combat_inputs::MODIFIER_LIMIT);
     }
     fn allocated_bytes(&self) -> usize {
@@ -260,7 +259,6 @@ impl Scratch {
             + self.reinforcement_modifiers.capacity() * size_of::<reinforcement::ModifierTerm>()
             + self.supply.capacity() * size_of::<reinforcement::SupplyTerm>()
             + self.acclimatization.capacity() * size_of::<reinforcement::AcclimatizationTerm>()
-            + self.rosters.capacity() * size_of::<u64>()
             + self.modifiers.capacity() * size_of::<carmy_combat_inputs::Modifier>()
     }
 }
@@ -341,8 +339,6 @@ fn read_division<M: Memory, C: Memory>(
 
 struct Destination<'a> {
     sources: &'a mut Sources,
-    /// Per-pass shares of the combat readers, and their storage.
-    combat: &'a mut cland_combat::CombatScratch,
     /// This combat's commander selections, shared by its readers.
     commanders: cland_combat::Commanders,
     /// This combat's division images.
@@ -356,21 +352,14 @@ struct Destination<'a> {
     #[cfg(test)]
     reference: bool,
     division_commanders: &'a mut Vec<engine::naval_commander_inputs::DivisionCommanderRow>,
-    /// Kept commanders' texts: division commanders' name tokens and detail
-    /// sides' selected commander tokens. A token that does not fit is counted
-    /// for growth and its divisions, or its combat's detail, are omitted this
-    /// hour.
+    /// Kept commanders' name tokens; a token that does not fit is counted
+    /// for growth and its divisions are omitted this hour.
     commander_names: engine::cname_group_member::Names<'a>,
     commander_progress: Progress,
     commander_keys: &'a mut [CommanderKey],
     commander_key_count: usize,
     required_commander_keys: usize,
     details: &'a mut [Detail],
-    tactic_candidates: &'a mut [land_tactic_inputs::Candidate],
-    tactic_weights: &'a mut [land_tactic_inputs::WeightTerm],
-    tactic_unlocks: &'a mut [land_tactic_inputs::Unlock],
-    tactic_registry: Option<land_tactic_inputs::RegistryCapture>,
-    tactic_unlock_progress: Progress,
     divisions: &'a mut Vec<Division>,
     sides: &'a mut [ModifierSide],
     combat_sides: &'a mut [CombatSides],
@@ -379,6 +368,16 @@ struct Destination<'a> {
     /// Nodes one country set can hold: the live country count plus tag 0.
     country_set_limit: Result<usize, &'static str>,
     rosters: &'a mut [u64],
+    commander_traits: &'a mut [cland_combat::CommanderTrait],
+    detail_text: &'a mut [u8],
+    timed_traits: &'a mut [cland_combat::CommanderTimedTrait],
+    air_counts: &'a mut [i32],
+    learning_traits: &'a mut [cland_combat::CommanderLearningTrait],
+    unit_scratch: &'a mut Vec<usize>,
+    /// Stored entries of committed details, and every entry read; the
+    /// participant counts live in `arenas[0]`.
+    detail_used: cland_combat::DetailCounts,
+    detail_required: cland_combat::DetailCounts,
     members: &'a mut [ModifierMember],
     modifiers: &'a mut [carmy_combat_inputs::Modifier],
     width_terms: &'a mut Vec<carmy_combat_inputs::WidthTerm>,
@@ -549,6 +548,12 @@ impl Destination<'_> {
         let bound =
             (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
         grow_vec(self.divisions, self.progress[1].required + bound);
+        // A side's committed and reserve lists are subsets of its full
+        // participants, so the larger census count bounds the role scratch.
+        grow_vec(
+            self.unit_scratch,
+            (source.attackers.count.max(source.defenders.count)) as usize,
+        );
         // One country reader per combat serves every division's contextual
         // owner lookup and exile operands; no division rebuilds it.
         let countries = engine::ccountry::Reader::new(memory, base, state);
@@ -597,8 +602,6 @@ impl Destination<'_> {
         } else {
             images.clear();
         }
-        // The unit visit's storage, lent while the visitor borrows `self`.
-        let mut shares = std::mem::take(self.combat);
         {
             let _reads = crate::read_accounting::table(TABLES[3]);
             let started = qpc();
@@ -608,12 +611,14 @@ impl Destination<'_> {
         {
             let started = qpc();
             let before = self.ticks[1] + self.ticks[2];
+            // Moved out for the visitor's borrow of the destination; no allocation.
+            let mut owned = std::mem::take(self.unit_scratch);
             let result = cland_combat::visit_units(
                 memory,
                 base,
                 source,
                 &members,
-                &mut shares,
+                &mut owned,
                 |side, ordinal, pointer, handle, province, role| {
                     let row = ordinal as usize
                         + if side == 0 {
@@ -692,8 +697,15 @@ impl Destination<'_> {
                     }
                 },
             );
+            *self.unit_scratch = owned;
             self.ticks[0] +=
                 elapsed(started).saturating_sub(self.ticks[1] + self.ticks[2] - before);
+            let result = result.and_then(|visited| match visited {
+                cland_combat::Visited::Complete => Ok(()),
+                cland_combat::Visited::Scratch { .. } => {
+                    Err("land role subsets exceed their full participants")
+                }
+            });
             if let Err(reason) = result {
                 for index in [1, 2] {
                     {
@@ -702,7 +714,6 @@ impl Destination<'_> {
                 }
             }
         }
-        *self.combat = shares;
         *self.images = images;
     }
     /// The country sets with the marker's indicator and flag words, which
@@ -762,88 +773,88 @@ impl Destination<'_> {
         if self.progress[0].failure.is_some() {
             return;
         }
-        if self.tactic_registry.is_none() {
-            self.tactic_registry = Some(land_tactic_inputs::capture_registry(
-                memory,
-                base,
-                self.tactic_candidates,
-                self.tactic_weights,
-            ));
-        }
-        match self.tactic_registry.expect("registry supplied").outcome {
-            Outcome::Unavailable { reason } => {
-                self.progress[0].failure = Some(reason);
-                return;
-            }
-            Outcome::Truncated { .. } => return,
-            Outcome::Rows { .. } => {}
-        }
-        // Selected commanders' texts share the commander text arena; they stay
-        // committed only if this combat's row is kept.
-        let texts = self.commander_names.len;
-        match cland_combat::read_details(
+        let at = self.detail_used;
+        let roster = self.arenas[0].len;
+        let mut arenas = cland_combat::DetailArenas::new(
+            &mut self.rosters[roster..],
+            &mut self.air_counts[at.air..],
+            &mut self.detail_text[at.text..],
+            &mut self.commander_traits[at.traits..],
+            &mut self.timed_traits[at.timed..],
+            &mut self.learning_traits[at.learning..],
+        );
+        let result = cland_combat::read_details(
             memory,
             base,
             source,
             members,
             &mut self.commanders,
-            &mut self.scratch.rosters,
-            &mut self.commander_names,
-        ) {
-            Ok(cland_combat::Details {
-                mut row,
-                participants: count,
-                texts_fit,
-            }) => {
-                self.arenas[0].required += count;
-                let mut context = land_tactic_inputs::capture_context(
+            &mut arenas,
+        );
+        let (complete, used, required) = (arenas.complete(), arenas.used, arenas.required);
+        self.arenas[0].required += required.participants;
+        for (total, value) in [
+            (&mut self.detail_required.air, required.air),
+            (&mut self.detail_required.text, required.text),
+            (&mut self.detail_required.traits, required.traits),
+            (&mut self.detail_required.timed, required.timed),
+            (&mut self.detail_required.learning, required.learning),
+        ] {
+            *total += value;
+        }
+        match result {
+            Ok(mut row) => {
+                let context = land_tactic_inputs::capture_context(
                     memory,
                     base,
                     state,
                     source,
                     members,
                     &mut self.commanders,
-                    &mut self.tactic_unlocks[self.tactic_unlock_progress.len..],
                 );
-                self.tactic_unlock_progress.required += context.row.required_unlocks;
-                match context.outcome {
-                    Outcome::Unavailable { reason } => {
-                        self.progress[0].failure = Some(reason);
-                        self.commander_names.len = texts;
-                        return;
-                    }
-                    Outcome::Truncated { .. } => {
-                        self.commander_names.len = texts;
-                        return;
-                    }
-                    Outcome::Rows { .. } => {}
-                }
-                // A text that did not fit was counted for growth: the whole
-                // combat is omitted this hour, as for a full roster arena.
-                if !texts_fit
-                    || self.progress[0].len == self.details.len()
-                    || count > self.rosters.len().saturating_sub(self.arenas[0].len)
-                {
-                    self.commander_names.len = texts;
+                if let Outcome::Unavailable { reason } = context.outcome {
+                    self.progress[0].failure = Some(reason);
                     return;
                 }
-                let start = self.arenas[0].len;
-                self.rosters[start..start + count].copy_from_slice(&self.scratch.rosters[..count]);
+                // A detail whose lists did not all fit is never published;
+                // its demand grows the arenas for the next hour.
+                if self.progress[0].len == self.details.len() || !complete {
+                    return;
+                }
+                let text = at.text;
                 for side in &mut row.sides {
-                    side.committed_start += start;
-                    side.reserve_start += start;
+                    side.committed_start += roster;
+                    side.reserve_start += roster;
+                    side.traits_start += at.traits;
+                    side.timed_traits_start += at.timed;
+                    side.air_counts.start += at.air;
+                    side.learning_traits.start += at.learning;
+                    for token in [
+                        &mut side.tactic_token,
+                        &mut side.commander_name_token,
+                        &mut side.commander_description_token,
+                    ] {
+                        token.start += text;
+                    }
                 }
-                let unlock_count = context.row.unlock_count.iter().sum::<usize>();
-                for start in &mut context.row.unlock_start {
-                    *start += self.tactic_unlock_progress.len;
+                row.stored_terrain_name.start += text;
+                for stored in &mut self.commander_traits[at.traits..at.traits + used.traits] {
+                    stored.token_start += text;
                 }
+                for stored in &mut self.learning_traits[at.learning..at.learning + used.learning] {
+                    stored.token_start += text;
+                }
+                self.arenas[0].len += used.participants;
+                self.detail_used.air += used.air;
+                self.detail_used.text += used.text;
+                self.detail_used.traits += used.traits;
+                self.detail_used.timed += used.timed;
+                self.detail_used.learning += used.learning;
                 self.details[self.progress[0].len] = Detail {
                     row,
                     tactic_context: context.row,
                 };
-                self.tactic_unlock_progress.len += unlock_count;
                 self.progress[0].len += 1;
-                self.arenas[0].len += count;
             }
             Err(reason) => self.progress[0].failure = Some(reason),
         }
@@ -915,9 +926,6 @@ pub struct Captured {
     commander_keys: Vec<CommanderKey>,
     required_commander_keys: usize,
     details: CaptureRows<Detail>,
-    tactic_candidates: Arena<land_tactic_inputs::Candidate>,
-    tactic_weights: Arena<land_tactic_inputs::WeightTerm>,
-    tactic_unlocks: Arena<land_tactic_inputs::Unlock>,
     divisions: CaptureRows<Division>,
     sides: CaptureRows<ModifierSide>,
     combat_sides: CaptureRows<CombatSides>,
@@ -933,6 +941,14 @@ pub struct Captured {
     supply_terms: Arena<reinforcement::SupplyTerm>,
     acclimatization: Arena<reinforcement::AcclimatizationTerm>,
     transport_terms: Arena<reinforcement::TransportTerm>,
+    commander_traits: Arena<cland_combat::CommanderTrait>,
+    detail_text: Arena<u8>,
+    timed_traits: Arena<cland_combat::CommanderTimedTrait>,
+    air_counts: Arena<i32>,
+    learning_traits: Arena<cland_combat::CommanderLearningTrait>,
+    /// One side's committed and reserve pointers while roles are visited;
+    /// grown on the acquisition worker from the census's participant counts.
+    unit_scratch: Vec<usize>,
     census: Vec<cland_combat::Row>,
     census_participants: Vec<u64>,
     /// Each census participant's pointer, beside its handle.
@@ -941,8 +957,6 @@ pub struct Captured {
     required_census_participants: usize,
     /// Per-pass shared division sources; cleared before each pass.
     sources: Sources,
-    /// Per-pass shares of the combat readers; cleared before each pass.
-    combat: cland_combat::CombatScratch,
     /// Each combat's division images, storage reused.
     images: Images,
     /// Reader storage reused across divisions and passes.
@@ -974,12 +988,14 @@ impl Captured {
             supply_terms: 0,
             acclimatization: 0,
             transport_terms: 0,
-            tactic_candidates: 0,
-            tactic_weights: 0,
-            tactic_unlocks: 0,
             division_commanders: 0,
             commander_names: 0,
             commander_keys: 0,
+            commander_traits: 0,
+            detail_text: 0,
+            timed_traits: 0,
+            air_counts: 0,
+            learning_traits: 0,
         })
     }
 
@@ -993,9 +1009,6 @@ impl Captured {
             ],
             required_commander_keys: 0,
             details: CaptureRows::new(c.details),
-            tactic_candidates: Arena::new(c.tactic_candidates),
-            tactic_weights: Arena::new(c.tactic_weights),
-            tactic_unlocks: Arena::new(c.tactic_unlocks),
             divisions: CaptureRows::new(c.divisions),
             sides: CaptureRows::new(c.sides),
             combat_sides: CaptureRows::new(c.combat_sides),
@@ -1014,13 +1027,18 @@ impl Captured {
             supply_terms: Arena::new(c.supply_terms),
             acclimatization: Arena::new(c.acclimatization),
             transport_terms: Arena::new(c.transport_terms),
+            commander_traits: Arena::new(c.commander_traits),
+            detail_text: Arena::new(c.detail_text),
+            timed_traits: Arena::new(c.timed_traits),
+            air_counts: Arena::new(c.air_counts),
+            learning_traits: Arena::new(c.learning_traits),
+            unit_scratch: Vec::new(),
             census: vec![cland_combat::Row::default(); c.combats],
             census_participants: vec![0; c.census_participants],
             census_pointers: vec![0; c.census_participants],
             required_census: 0,
             required_census_participants: 0,
             sources: Sources::new(),
-            combat: cland_combat::CombatScratch::default(),
             images: Images::default(),
             // Sized with the capture, off the game thread; a vacant
             // placeholder stays allocation-free and is sized if it is walked.
@@ -1040,9 +1058,6 @@ impl Captured {
         self.commander_names.reset();
         self.required_commander_keys = 0;
         self.details.reset();
-        self.tactic_candidates.reset();
-        self.tactic_weights.reset();
-        self.tactic_unlocks.reset();
         self.divisions.reset();
         self.sides.reset();
         self.combat_sides.reset();
@@ -1057,6 +1072,11 @@ impl Captured {
         self.supply_terms.reset();
         self.acclimatization.reset();
         self.transport_terms.reset();
+        self.commander_traits.reset();
+        self.detail_text.reset();
+        self.timed_traits.reset();
+        self.air_counts.reset();
+        self.learning_traits.reset();
         self.required_census = 0;
         self.required_census_participants = 0;
     }
@@ -1073,9 +1093,6 @@ impl Captured {
             + self.division_commanders.allocated_bytes()
             + self.commander_names.allocated_bytes()
             + self.commander_keys.capacity() * size_of::<CommanderKey>()
-            + self.tactic_candidates.allocated_bytes()
-            + self.tactic_weights.allocated_bytes()
-            + self.tactic_unlocks.allocated_bytes()
             + self.divisions.allocated_bytes()
             + self.sides.allocated_bytes()
             + self.combat_sides.allocated_bytes()
@@ -1091,6 +1108,12 @@ impl Captured {
             + self.supply_terms.allocated_bytes()
             + self.acclimatization.allocated_bytes()
             + self.transport_terms.allocated_bytes()
+            + self.commander_traits.allocated_bytes()
+            + self.detail_text.allocated_bytes()
+            + self.timed_traits.allocated_bytes()
+            + self.air_counts.allocated_bytes()
+            + self.learning_traits.allocated_bytes()
+            + self.unit_scratch.capacity() * size_of::<usize>()
             + self.census.capacity() * size_of::<cland_combat::Row>()
             + self.census_participants.capacity() * size_of::<u64>()
             + self.census_pointers.capacity() * size_of::<usize>()
@@ -1119,9 +1142,6 @@ impl Captured {
         grow_capacity(&mut c.commander_keys, self.required_commander_keys);
         grow_vec(&mut self.commander_keys, c.commander_keys);
         self.details.grow(&mut c.details);
-        self.tactic_candidates.grow(&mut c.tactic_candidates);
-        self.tactic_weights.grow(&mut c.tactic_weights);
-        self.tactic_unlocks.grow(&mut c.tactic_unlocks);
         self.divisions.grow(&mut c.divisions);
         self.sides.grow(&mut c.sides);
         self.combat_sides.grow(&mut c.combat_sides);
@@ -1151,6 +1171,12 @@ impl Captured {
         self.supply_terms.grow(&mut c.supply_terms);
         self.acclimatization.grow(&mut c.acclimatization);
         self.transport_terms.grow(&mut c.transport_terms);
+        self.commander_traits.grow(&mut c.commander_traits);
+        self.detail_text
+            .grow(&mut c.detail_text);
+        self.timed_traits.grow(&mut c.timed_traits);
+        self.air_counts.grow(&mut c.air_counts);
+        self.learning_traits.grow(&mut c.learning_traits);
         grow_capacity(&mut c.combats, self.required_census);
         grow_capacity(
             &mut c.census_participants,
@@ -1183,7 +1209,6 @@ impl Captured {
         let commander_ticks = elapsed(commander_started);
         let mut destination = Destination {
             sources: &mut self.sources,
-            combat: &mut self.combat,
             commanders: cland_combat::Commanders::default(),
             images: &mut self.images,
             scratch: &mut self.scratch,
@@ -1205,11 +1230,6 @@ impl Captured {
             commander_keys: &mut self.commander_keys,
             commander_key_count: 0,
             required_commander_keys: 0,
-            tactic_candidates: &mut self.tactic_candidates.first,
-            tactic_weights: &mut self.tactic_weights.first,
-            tactic_unlocks: &mut self.tactic_unlocks.first,
-            tactic_registry: None,
-            tactic_unlock_progress: Progress::default(),
             details: &mut self.details.rows,
             divisions: &mut self.divisions.rows,
             sides: &mut self.sides.rows,
@@ -1219,6 +1239,14 @@ impl Captured {
             country_set_limit: engine::ccountry::Reader::new(memory, base, state)
                 .map(|countries| countries.count() as usize + 1),
             rosters: &mut self.rosters.first,
+            commander_traits: &mut self.commander_traits.first,
+            detail_text: &mut self.detail_text.first,
+            timed_traits: &mut self.timed_traits.first,
+            air_counts: &mut self.air_counts.first,
+            learning_traits: &mut self.learning_traits.first,
+            unit_scratch: &mut self.unit_scratch,
+            detail_used: cland_combat::DetailCounts::default(),
+            detail_required: cland_combat::DetailCounts::default(),
             members: &mut self.members.first,
             modifiers: &mut self.modifiers.first,
             width_terms: &mut self.width_terms.first,
@@ -1257,11 +1285,6 @@ impl Captured {
         self.required_commander_keys = self
             .required_commander_keys
             .max(destination.required_commander_keys);
-        let tactic_registry = destination
-            .tactic_registry
-            .map(|r| r.row)
-            .unwrap_or_default();
-        let tactic_unlocks = destination.tactic_unlock_progress;
         let width = destination.width_progress;
         let exile = destination.exile_progress;
         let names = (destination.names.len, destination.names.required);
@@ -1271,6 +1294,7 @@ impl Captured {
         );
         let country_tags = destination.country_tags_progress;
         let reinforcement = destination.reinforcement_progress;
+        let (detail_used, detail_required) = (destination.detail_used, destination.detail_required);
         let mut ticks = destination.ticks;
         ticks[0] += elapsed(started).saturating_sub(ticks.iter().sum::<u64>());
         self.required_census = self.required_census.max(match census.outcome {
@@ -1282,14 +1306,18 @@ impl Captured {
             .max(census.required_participants);
         self.division_commanders.len = commanders.len;
         self.division_commanders.required = commanders.required;
-        self.tactic_candidates.len = tactic_registry.candidate_count;
-        self.tactic_candidates.required = tactic_registry.required_candidates;
-        self.tactic_weights.len = tactic_registry.weight_count;
-        self.tactic_weights.required = tactic_registry.required_weights;
-        self.tactic_unlocks.len = tactic_unlocks.len;
-        self.tactic_unlocks.required = tactic_unlocks.required;
         self.rosters.len = arenas[0].len;
         self.rosters.required = arenas[0].required;
+        self.commander_traits.len = detail_used.traits;
+        self.commander_traits.required = detail_required.traits;
+        self.detail_text.len = detail_used.text;
+        self.detail_text.required = detail_required.text;
+        self.timed_traits.len = detail_used.timed;
+        self.timed_traits.required = detail_required.timed;
+        self.air_counts.len = detail_used.air;
+        self.air_counts.required = detail_required.air;
+        self.learning_traits.len = detail_used.learning;
+        self.learning_traits.required = detail_required.learning;
         self.width_terms.len = width.len;
         self.width_terms.required = width.required;
         self.exile_tags.len = exile.len;
@@ -1330,12 +1358,9 @@ impl Captured {
             self.combat_sides.outcome,
         ]
     }
-    fn tactic_inputs(&self, context: &land_tactic_inputs::ContextRow) -> LandCombatTacticInputs {
+    fn tactic_inputs(context: &land_tactic_inputs::ContextRow) -> LandCombatTacticInputs {
         LandCombatTacticInputs {
-            countries: context.countries,
             preferred_tactic_ids: context.preferred_tactic_ids,
-            commander_handles: context.commander_handles,
-            preference_factors: context.preference_factors,
             country_weights: context
                 .country_weights
                 .map(|w| LandCombatTacticCountryWeight {
@@ -1349,58 +1374,22 @@ impl Captured {
                     accumulator_entry_present: w.accumulator_entry_present,
                 }),
             country_weight_present: context.country_weight_present,
-            unlocks: std::array::from_fn(|index| {
-                self.tactic_unlocks.first[context.unlock_start[index]
-                    ..context.unlock_start[index] + context.unlock_count[index]]
-                    .iter()
-                    .map(|u| LandCombatTacticUnlock {
-                        country: u.country,
-                        ordinal: u.ordinal,
-                        unlock_id: u.unlock_id,
-                    })
-                    .collect()
-            }),
         }
     }
     pub fn tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
-        let commander_text = |(start, len): engine::cname_group_member::Span| {
-            self.commander_names.first[start..start + len].to_vec()
-        };
         [
             table::<tables::LandCombatDetails, _>(outcomes[0], &self.details.rows, |captured| {
                 let r = &captured.row;
                 LandCombatDetailsRow {
-                    tactic_inputs: self.tactic_inputs(&captured.tactic_context),
-                    tactic_candidates: self.tactic_candidates.first[..self.tactic_candidates.len]
-                        .iter()
-                        .map(|t| LandCombatTacticCandidate {
-                            ordinal: t.ordinal,
-                            tactic_id: t.tactic_id,
-                            unlock_id: t.unlock_id,
-                            only_show_for: t.only_show_for,
-                            active: t.active,
-                            base_weight: t.base_weight,
-                            token: t.token.as_bytes().to_vec(),
-                            weights: self.tactic_weights.first
-                                [t.weight_start..t.weight_start + t.weight_count]
-                                .iter()
-                                .map(|w| LandCombatTacticWeightTerm {
-                                    tactic_id: w.tactic_id,
-                                    ordinal: w.ordinal,
-                                    factor: w.factor,
-                                    add: w.add,
-                                })
-                                .collect(),
-                        })
-                        .collect(),
+                    tactic_inputs: Self::tactic_inputs(&captured.tactic_context),
                     combat: r.id,
                     province: r.province,
                     phase: r.phase,
                     width_factor: r.width_factor,
                     attacker_bonus: r.attacker_bonus,
                     defender_bonus: r.defender_bonus,
-                    stored_terrain_name: r.stored_terrain_name[..r.stored_terrain_name_len]
+                    stored_terrain_name: self.detail_text.first[r.stored_terrain_name.range()]
                         .to_vec(),
                     stored_terrain_valid: r.stored_terrain_valid,
                     sides: std::array::from_fn(|side| {
@@ -1416,8 +1405,8 @@ impl Captured {
                             tactic_id: s.tactic_id,
                             tactic_kind: s.tactic_kind,
                             tactic_counter_id: s.tactic_counter_id,
-                            tactic_token: s.tactic_token[..s.tactic_token_len].to_vec(),
-                            air_counts: s.air_counts[..s.air_count_len].to_vec(),
+                            tactic_token: self.detail_text.first[s.tactic_token.range()].to_vec(),
+                            air_counts: self.air_counts.first[s.air_counts.range()].to_vec(),
                             anti_air_attack: s.anti_air_attack,
                             air_kills: s.air_kills,
                             damage: s.damage,
@@ -1428,37 +1417,47 @@ impl Captured {
                             commander_category: s.commander_category,
                             commander_country: s.commander_country,
                             commander_experience: s.commander_experience,
-                            commander_name_token: commander_text(s.commander_name_token),
-                            commander_description_token: commander_text(
-                                s.commander_description_token,
-                            ),
+                            commander_name_token: self.detail_text.first
+                                [s.commander_name_token.range()]
+                                .to_vec(),
+                            commander_description_token: self.detail_text.first
+                                [s.commander_description_token.range()]
+                                .to_vec(),
                             commander_formation: s.commander_formation,
-                            learning_traits: s.learning_traits[..s.learning_traits_len]
+                            timed_traits: self.timed_traits.first
+                                [s.timed_traits_start..s.timed_traits_start + s.timed_traits_len]
+                                .iter()
+                                .map(|t| LandCombatCommanderTimedTrait {
+                                    token_id: t.token_id,
+                                    definition_ordinal: t.definition_ordinal,
+                                    remaining_days: t.remaining_days,
+                                })
+                                .collect(),
+                            learning_traits: self.learning_traits.first
+                                [s.learning_traits.range()]
                                 .iter()
                                 .map(|t| LandCombatCommanderLearningTrait {
                                     token_id: t.token_id,
                                     definition_ordinal: t.definition_ordinal,
                                     required_experience: t.required_experience,
                                     experience: t.experience,
-                                    token: s.learning_text
+                                    token: self.detail_text.first
                                         [t.token_start..t.token_start + t.token_len]
                                         .to_vec(),
                                 })
                                 .collect(),
-                            traits: s.traits[..s.traits_len]
+                            traits: self.commander_traits.first
+                                [s.traits_start..s.traits_start + s.traits_len]
                                 .iter()
                                 .map(|t| LandCombatCommanderTrait {
                                     token_id: t.token_id,
                                     definition_ordinal: t.definition_ordinal,
                                     kind: t.kind,
                                     relevant: t.relevant,
-                                    token: s.trait_text[t.token_start..t.token_start + t.token_len]
+                                    token: self.detail_text.first
+                                        [t.token_start..t.token_start + t.token_len]
                                         .to_vec(),
                                 })
-                                .collect(),
-                            trait_expiry_days: s.traits[..s.traits_len]
-                                .iter()
-                                .map(|t| t.expiry_days)
                                 .collect(),
                         }
                     }),
@@ -1729,7 +1728,6 @@ mod tests {
         let mut members = [ModifierMember::default(); 2];
         let mut values = [carmy_combat_inputs::Modifier::default(); 1];
         let mut test_sources = Sources::new();
-        let mut combat = cland_combat::CombatScratch::default();
         let mut images = Images::default();
         let mut scratch = Scratch::default();
         scratch.ensure();
@@ -1737,7 +1735,6 @@ mod tests {
         let mut grown_commander_bytes = vec![0_u8; 300];
         let mut destination = Destination {
             sources: &mut test_sources,
-            combat: &mut combat,
             commanders: Default::default(),
             images: &mut images,
             scratch: &mut scratch,
@@ -1756,14 +1753,17 @@ mod tests {
                 required: 0,
             },
             commander_keys: &mut [],
+            commander_traits: &mut [],
+            detail_text: &mut [],
+            timed_traits: &mut [],
+            air_counts: &mut [],
+            learning_traits: &mut [],
+            unit_scratch: &mut Vec::new(),
+            detail_used: cland_combat::DetailCounts::default(),
+            detail_required: cland_combat::DetailCounts::default(),
             commander_progress: Progress::default(),
             commander_key_count: 0,
             required_commander_keys: 0,
-            tactic_candidates: &mut [],
-            tactic_weights: &mut [],
-            tactic_unlocks: &mut [],
-            tactic_registry: None,
-            tactic_unlock_progress: Progress::default(),
             divisions: &mut Vec::new(),
             sides: &mut sides,
             combat_sides: &mut [],
@@ -1973,70 +1973,6 @@ mod tests {
         assert!(destination.commander_names.bytes.iter().all(|&byte| byte == b'k'));
     }
 
-    #[test]
-    fn tactic_registry_and_country_unlock_spans_keep_raw_order() {
-        let c = Capacities {
-            combats: 1,
-            census_participants: 1,
-            details: 1,
-            divisions: 1,
-            sides: 1,
-            combat_sides: 1,
-            country_tags: 1,
-            rosters: 1,
-            modifier_members: 1,
-            modifiers: 1,
-            width_terms: 1,
-            exile_tags: 1,
-            division_names: 1,
-            name_templates: 1,
-            name_groups: 1,
-            reinforcement_modifiers: 1,
-            supply_terms: 1,
-            acclimatization: 1,
-            transport_terms: 1,
-            tactic_candidates: 1,
-            tactic_weights: 1,
-            tactic_unlocks: 3,
-            division_commanders: 1,
-            commander_names: 1,
-            commander_keys: 2,
-        };
-        let mut captured = Captured::with_capacities(&c);
-        captured.details.outcome = Outcome::Rows { len: 1 };
-        captured.details.rows[0].row.id = 0x1000_0000_003e;
-        captured.details.rows[0].tactic_context.unlock_start = [0, 1, 2];
-        captured.details.rows[0].tactic_context.unlock_count = [1; 3];
-        captured.tactic_candidates.len = 1;
-        captured.tactic_weights.len = 1;
-        captured.tactic_unlocks.len = 3;
-        captured.tactic_candidates.first[0].tactic_id = 17;
-        captured.tactic_candidates.first[0].weight_count = 1;
-        captured.tactic_weights.first[0].tactic_id = 17;
-        captured.tactic_weights.first[0].factor = i64::MIN;
-        for (index, unlock) in captured.tactic_unlocks.first.iter_mut().enumerate() {
-            *unlock = land_tactic_inputs::Unlock {
-                country: index as u32 + 10,
-                ordinal: 0,
-                unlock_id: index as u32 + 30,
-            };
-        }
-        let [
-            TableView::Complete(replay::rows::TableRows::LandCombatDetails(details)),
-            _,
-            _,
-            _,
-        ] = captured.tables()
-        else {
-            panic!("complete tactic operands were not projected")
-        };
-        assert_eq!(details[0].tactic_candidates[0].weights[0].factor, i64::MIN);
-        for (index, unlocks) in details[0].tactic_inputs.unlocks.iter().enumerate() {
-            assert_eq!(unlocks[0].country, index as u32 + 10);
-            assert_eq!(unlocks[0].unlock_id, index as u32 + 30);
-        }
-    }
-
     /// The viewer builds the land window's lists straight from these spans, so
     /// each combat's committed and reserve arrays keep their native index
     /// order (1415CA230/1415CA460) after the arena offset is applied.
@@ -2062,12 +1998,14 @@ mod tests {
             supply_terms: 1,
             acclimatization: 1,
             transport_terms: 1,
-            tactic_candidates: 1,
-            tactic_weights: 1,
-            tactic_unlocks: 1,
             division_commanders: 1,
             commander_names: 1,
             commander_keys: 2,
+            commander_traits: 2,
+            detail_text: 2,
+            timed_traits: 2,
+            air_counts: 2,
+            learning_traits: 2,
         };
         let mut captured = Captured::with_capacities(&c);
         captured.details.outcome = Outcome::Rows { len: 2 };
@@ -2122,7 +2060,6 @@ mod tests {
         c.scratch.ensure();
         Destination {
             sources: &mut c.sources,
-            combat: &mut c.combat,
             commanders: Default::default(),
             images: &mut c.images,
             scratch: &mut c.scratch,
@@ -2143,11 +2080,6 @@ mod tests {
             commander_keys: &mut c.commander_keys,
             commander_key_count: 0,
             required_commander_keys: 0,
-            tactic_candidates: &mut c.tactic_candidates.first,
-            tactic_weights: &mut c.tactic_weights.first,
-            tactic_unlocks: &mut c.tactic_unlocks.first,
-            tactic_registry: None,
-            tactic_unlock_progress: Progress::default(),
             details: &mut c.details.rows,
             divisions: &mut c.divisions.rows,
             sides: &mut c.sides.rows,
@@ -2156,6 +2088,14 @@ mod tests {
             country_tags_progress: Progress::default(),
             country_set_limit: Ok(1),
             rosters: &mut c.rosters.first,
+            commander_traits: &mut c.commander_traits.first,
+            detail_text: &mut c.detail_text.first,
+            timed_traits: &mut c.timed_traits.first,
+            air_counts: &mut c.air_counts.first,
+            learning_traits: &mut c.learning_traits.first,
+            unit_scratch: &mut c.unit_scratch,
+            detail_used: cland_combat::DetailCounts::default(),
+            detail_required: cland_combat::DetailCounts::default(),
             members: &mut c.members.first,
             modifiers: &mut c.modifiers.first,
             width_terms: &mut c.width_terms.first,
@@ -2323,12 +2263,14 @@ mod tests {
             supply_terms: 1,
             acclimatization: 1,
             transport_terms: 1,
-            tactic_candidates: 1,
-            tactic_weights: 1,
-            tactic_unlocks: 1,
             division_commanders: 1,
             commander_names: 1,
             commander_keys: 2,
+            commander_traits: 2,
+            detail_text: 2,
+            timed_traits: 2,
+            air_counts: 2,
+            learning_traits: 2,
         };
         let mut captured = Captured::with_capacities(&c);
         captured.divisions.outcome = Outcome::Rows { len: 2 };
@@ -2432,12 +2374,14 @@ mod tests {
             supply_terms: 1,
             acclimatization: 1,
             transport_terms: 1,
-            tactic_candidates: 1,
-            tactic_weights: 1,
-            tactic_unlocks: 1,
             division_commanders: 1,
             commander_names: 1,
             commander_keys: 2,
+            commander_traits: 2,
+            detail_text: 2,
+            timed_traits: 2,
+            air_counts: 2,
+            learning_traits: 2,
         };
         let mut captured = Captured::with_capacities(&c);
         let enemies = 5_000;
@@ -2517,12 +2461,14 @@ mod tests {
             supply_terms: 2,
             acclimatization: 2,
             transport_terms: 2,
-            tactic_candidates: 2,
-            tactic_weights: 2,
-            tactic_unlocks: 2,
             division_commanders: 2,
             commander_names: 64,
             commander_keys: 1,
+            commander_traits: 1,
+            detail_text: 1,
+            timed_traits: 1,
+            air_counts: 1,
+            learning_traits: 1,
         };
         let mut captured = Captured::with_capacities(&c);
         let memory = engine::memory::SliceMemory {
@@ -2559,12 +2505,8 @@ mod tests {
         captured.width_terms.required = 9;
         captured.division_commanders.required = 5;
         captured.required_commander_keys = 7;
-        captured.tactic_candidates.required = 7;
-        captured.tactic_weights.required = 11;
-        captured.tactic_unlocks.required = 13;
         captured.grow(&mut c);
         assert!(c.division_commanders >= 5 && c.commander_keys >= 7);
-        assert!(c.tactic_candidates >= 7 && c.tactic_weights >= 11 && c.tactic_unlocks >= 13);
         assert!(c.sides >= 4 && c.modifier_members >= 7 && c.modifiers >= 19 && c.width_terms >= 9);
         captured.details.outcome = Outcome::Rows { len: 1 };
         captured.divisions.outcome = Outcome::Unavailable {
@@ -2626,6 +2568,30 @@ mod tests {
                 defender_secondary: vec![],
             }]
         );
+    }
+
+    /// No detail list has a chosen bound: every arena follows the demand of
+    /// the largest hour, off the game thread.
+    #[test]
+    fn detail_arenas_grow_from_live_demand() {
+        let mut c = Capacities::default();
+        let mut captured = Captured::with_capacities(&c);
+        captured.commander_traits.required = 1_000;
+        captured.detail_text.required = 100_000;
+        captured.timed_traits.required = 500;
+        captured.air_counts.required = 3_000;
+        captured.learning_traits.required = 7_000;
+        captured.rosters.required = 9_000;
+        captured.grow(&mut c);
+        assert!(captured.air_counts.first.len() >= 3_000);
+        assert!(captured.learning_traits.first.len() >= 7_000);
+        assert!(captured.rosters.first.len() >= 9_000);
+        assert!(c.commander_traits >= 1_000);
+        assert!(c.detail_text >= 100_000);
+        assert!(c.timed_traits >= 500);
+        assert!(captured.commander_traits.first.len() >= 1_000);
+        assert!(captured.detail_text.first.len() >= 100_000);
+        assert!(captured.timed_traits.first.len() >= 500);
     }
 }
 
@@ -2946,7 +2912,7 @@ mod family {
         w.u64(database + 0x3b0, definition as u64);
         // The tactic database: its null entry and `tactics` definitions.
         let tactics = w.alloc(0x100);
-        w.u64(land_tactic_inputs::DATABASE_RVA, tactics as u64);
+        w.u64(ccombat_tactic::DATABASE_RVA, tactics as u64);
         let entries = w.alloc((shape.tactics as usize + 1) * 8);
         w.array(tactics + 0x10, entries, shape.tactics + 1);
         for id in 1..=shape.tactics {
@@ -2960,7 +2926,7 @@ mod family {
             w.u64(entries + id as usize * 8, tactic as u64);
         }
         let doctrine = w.alloc(0x40);
-        w.u64(GAME + land_tactic_inputs::DOCTRINE_SYSTEM, doctrine as u64);
+        w.u64(GAME + engine::country_tactic_unlocks::DOCTRINE_SYSTEM, doctrine as u64);
         // Countries.
         let countries = w.alloc(slots * 8);
         let links = w.alloc(slots * 4);
@@ -3543,9 +3509,11 @@ mod family {
             captured.supply_terms.required,
             captured.acclimatization.required,
             captured.transport_terms.required,
-            captured.tactic_unlocks.required,
-            captured.tactic_candidates.required,
-            captured.tactic_weights.required,
+            captured.air_counts.required,
+            captured.detail_text.required,
+            captured.commander_traits.required,
+            captured.timed_traits.required,
+            captured.learning_traits.required,
             captured.required_census,
             captured.required_census_participants,
             captured.required_commander_keys,
@@ -3686,7 +3654,6 @@ mod family {
         else {
             unreachable!()
         };
-        assert!(details.iter().all(|row| row.tactic_candidates.len() == 2));
         assert!(
             details
                 .iter()
@@ -3814,40 +3781,6 @@ mod family {
         }
     }
 
-    /// A failed tactic registry fails the details at the first combat; a
-    /// truncated one reads no details.
-    #[test]
-    fn tactic_registry_outcome_governs_the_details() {
-        let shape = Shape::small();
-        let detail = |built: &mut Built, combat: usize| {
-            let object = built.combats[combat];
-            built.world.poison(object + cland_combat::STORED_TERRAIN, 8);
-        };
-        let mut built = world(&shape);
-        built.world.poison(land_tactic_inputs::DATABASE_RVA, 8);
-        detail(&mut built, 1);
-        let observed = assert_equivalent(&built.world);
-        assert_eq!(reason(observed.outcomes[0]), "tactic input unreadable");
-        // Truncated: two tactics, one candidate slot.
-        let mut built = world(&shape);
-        detail(&mut built, 3);
-        let one = assert_equivalent_with(
-            &built.world,
-            Capacities {
-                tactic_candidates: 1,
-                ..roomy()
-            },
-        );
-        assert_eq!(
-            one.outcomes[0],
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: shape.combats as u32
-            }
-        );
-        assert!(matches!(one.tables[1], TableView::Complete(_)));
-    }
-
     /// A census that fails at a later combat stops the walk there; an
     /// earlier division failure still names the division table.
     #[test]
@@ -3935,9 +3868,9 @@ mod family {
 
     /// 140C16FB0 stores a selected commander's +0x20 name as an ordinary MSVC
     /// string and 142230F20 takes any length, empty included; +0x80 is the
-    /// same kind of string. A long name omits its combat's detail (and its
-    /// divisions' commander) until the shared text arena grows, then both
-    /// publish it whole, as the reference walk does.
+    /// same kind of string. A long name omits its combat's detail until the
+    /// detail text arena grows, then it publishes whole, as the reference
+    /// walk does.
     #[test]
     fn selected_commander_texts_keep_native_length_and_grow() {
         use engine::cunit_leader::{DESCRIPTION_TOKEN, TOKEN};
@@ -3959,7 +3892,7 @@ mod family {
             built.world.u64(leader + DESCRIPTION_TOKEN + 24, 31);
         }
         let mut c = Capacities {
-            commander_names: 64,
+            detail_text: 64,
             ..roomy()
         };
         let truncated = assert_equivalent_with(&built.world, c);
@@ -4128,25 +4061,18 @@ mod family {
     fn stages(w: &World, memory: &impl Memory, tables: [u64; N]) -> Vec<(&'static str, u64)> {
         use engine::land_tactic_inputs as tactic;
         let through = |stage: u8| {
+            let mut air = vec![0; 1 << 12];
+            let mut text = vec![0; 1 << 16];
+            let mut traits = vec![Default::default(); 1 << 12];
+            let mut timed = vec![Default::default(); 1 << 12];
+            let mut learning = vec![Default::default(); 1 << 12];
             let mut census = vec![cland_combat::Row::default(); 4096];
             let mut participants = vec![0; 1 << 17];
             let mut pointers = vec![0; 1 << 17];
-            let mut shares = cland_combat::CombatScratch::default();
+            let mut roles = vec![0; 1 << 12];
             let mut images = engine::combat_sources::Images::default();
-            let mut rosters = vec![0; cland_combat::DETAIL_UNIT_LIMIT as usize * 4];
-            let mut candidates = vec![tactic::Candidate::default(); 1024];
-            let mut weights = vec![tactic::WeightTerm::default(); 4096];
-            let mut unlocks = vec![tactic::Unlock::default(); 1 << 16];
-            let mut text = vec![0; 1 << 22];
-            let mut texts = engine::cname_group_member::Names {
-                bytes: &mut text,
-                len: 0,
-                required: 0,
-            };
+            let mut rosters = vec![0; 1 << 12];
             w.calls.store(0, Ordering::Relaxed);
-            if stage >= 1 {
-                tactic::capture_registry(memory, 0, &mut candidates, &mut weights);
-            }
             let walk = cland_combat::walk_members(
                 memory,
                 0,
@@ -4157,25 +4083,24 @@ mod family {
                 |source, members| {
                     let mut commanders = cland_combat::Commanders::default();
                     if stage >= 1 {
+                        let mut arenas = cland_combat::DetailArenas::new(
+                            &mut rosters,
+                            &mut air,
+                            &mut text,
+                            &mut traits,
+                            &mut timed,
+                            &mut learning,
+                        );
                         cland_combat::read_details(
                             memory,
                             0,
                             source,
                             &members,
                             &mut commanders,
-                            &mut rosters,
-                            &mut texts,
+                            &mut arenas,
                         )
                         .unwrap();
-                        tactic::capture_context(
-                            memory,
-                            0,
-                            GAME,
-                            source,
-                            &members,
-                            &mut commanders,
-                            &mut unlocks,
-                        );
+                        tactic::capture_context(memory, 0, GAME, source, &members, &mut commanders);
                     }
                     if stage >= 2 {
                         cland_combat::read_modifiers_context(memory, 0, source).unwrap();
@@ -4189,7 +4114,7 @@ mod family {
                             0,
                             source,
                             &members,
-                            &mut shares,
+                            &mut roles,
                             |_, _, _, _, _, _| {},
                         )
                         .unwrap();

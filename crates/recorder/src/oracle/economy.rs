@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, io};
 use installed_content::save::{Save, economy};
 use replay::{
     frame::DecodedFrame,
-    rows::{CountryRow, tables},
+    rows::{CountryResourceRow, CountryRow, tables},
 };
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
@@ -57,6 +57,9 @@ pub(super) fn compare(
     all_complete &= report.attempt("economy PurchaseContracts", |report| {
         compare_purchases(frame, &saved.economy, links, report)
     });
+    all_complete &= report.attempt("economy CountryResources", |report| {
+        compare_resources(frame, &saved.economy, links, tokens, report)
+    });
     all_complete &= report.attempt("economy ResourceExchanges", |report| {
         compare_exchanges(frame, &saved.economy, links, tokens, report)
     });
@@ -81,11 +84,6 @@ pub(super) fn compare(
             "ResourceDefinitions",
             complete::<tables::ResourceDefinitions>(frame).map(<[_]>::len),
             "resource definitions are a native content database; the save does not directly certify numeric resource/token IDs, active flags or factory-cost operands",
-        ),
-        (
-            "CountryResources",
-            complete::<tables::CountryResources>(frame).map(<[_]>::len),
-            "the nine native country resource pool operands have no established exact save mapping; displayed production, use and trade totals are not substituted for the separate prefix-sum allocation pools",
         ),
     ] {
         all_complete &= report.attempt(&format!("economy {name}"), |report| {
@@ -188,6 +186,268 @@ fn compare_experience(
     report.compared("CountryExperience", count);
     report.limitation("all nine experience scalars compare exact signed /32768 values; native i64::MIN has malformed text serialization and is refused; num_armies_for_training is the fractional training divisor, not an integer count of exercising units", "CountryExperience");
     Ok(())
+}
+
+/// One CountryResources operand and the saved pool that carries it.
+type ResourceField = (
+    &'static str,
+    fn(&CountryResourceRow) -> i64,
+    fn(&economy::ResourcePools) -> &economy::ResourcePool,
+);
+
+/// The nine pools CCountryResources::Write (140CAEB80) saves. `to_use`
+/// holds the first use pool, the second less the first (prefix sums
+/// 140C8ED30 subtracted by 140BBBE90) and the third.
+const RESOURCE_FIELDS: [ResourceField; 9] = [
+    ("produced", |row| row.produced, |pools| &pools.produced),
+    (
+        "adjustment",
+        |row| row.adjustment,
+        |pools| &pools.transfer_overlord_subject,
+    ),
+    ("imported", |row| row.imported, |pools| &pools.imported),
+    ("used", |row| row.used, |pools| &pools.to_use[0]),
+    (
+        "special_total - used",
+        |row| row.special_total.wrapping_sub(row.used),
+        |pools| &pools.to_use[1],
+    ),
+    (
+        "production_demand",
+        |row| row.production_demand,
+        |pools| &pools.to_use[2],
+    ),
+    ("to_export", |row| row.to_export, |pools| &pools.to_export),
+    (
+        "base_export",
+        |row| row.base_export,
+        |pools| &pools.base_export,
+    ),
+    ("exported", |row| row.exported, |pools| &pools.exported),
+];
+
+const AMBIGUOUS_RESOURCE_JOIN: &str = "a resource name declared more than once (loader 140AB2ED0 appends each declaration) repeats in the saved pools, and the pool writer 140BBD5D0 omits zero amounts, so a pool with fewer occurrences than declarations cannot attribute its amounts to declarations; its nonzero amounts are compared in index order instead";
+
+/// CountryResources against the pools CCountryResources::Write (140CAEB80)
+/// saves. The collector emits one row per captured country and resource
+/// definition; that census is checked by itself, since 140BBD5D0 omits a zero
+/// amount and an all-zero row leaves no saved entry. Rows join the save by
+/// country tag and resource name (the definition's token, spelled by the
+/// lexical dictionary); an absent entry is 0. A name can own several
+/// definitions (140AB2ED0 does not deduplicate), whose nonzero amounts the
+/// writer emits in index order under the same name.
+fn compare_resources(
+    frame: &DecodedFrame,
+    saved: &economy::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut definitions = BTreeMap::new();
+    for row in complete::<tables::ResourceDefinitions>(frame)? {
+        if definitions.insert(row.id, row.token).is_some() {
+            return Err(invalid("duplicate resource definition id"));
+        }
+    }
+    // Definition ids by spelling, in index order (the writer's order).
+    let mut spelled = BTreeMap::<&[u8], Vec<u32>>::new();
+    let mut unspelled = BTreeMap::new();
+    for (&id, &token) in &definitions {
+        match tokens.get(&token) {
+            Some(name) => spelled.entry(*name).or_default().push(id),
+            None => {
+                unspelled.insert(id, token);
+            }
+        }
+    }
+    let label = |tag: &[u8], id: u32| {
+        let tag = String::from_utf8_lossy(tag);
+        match tokens.get(&definitions[&id]) {
+            Some(name) if spelled[name].len() > 1 => {
+                format!("{tag}.resources[{} id={id}]", String::from_utf8_lossy(name))
+            }
+            Some(name) => format!("{tag}.resources[{}]", String::from_utf8_lossy(name)),
+            None => format!("{tag}.resources token={}", definitions[&id]),
+        }
+    };
+    let mut rows = BTreeMap::new();
+    for row in complete::<tables::CountryResources>(frame)? {
+        let tag = required_country_tag(row.country, links)?;
+        if !definitions.contains_key(&row.resource) {
+            return Err(invalid(format!(
+                "country resource row {} references absent resource definition {}",
+                String::from_utf8_lossy(tag),
+                row.resource
+            )));
+        }
+        if rows.insert((tag, row.resource), row).is_some() {
+            return Err(invalid(format!(
+                "two country resource rows resolve to {} and resource definition {}",
+                String::from_utf8_lossy(tag),
+                row.resource
+            )));
+        }
+    }
+    // The census, independent of saved entries: every captured country has a
+    // row for every definition.
+    let countries = links
+        .values()
+        .map(|country| country.tag.as_slice())
+        .collect::<std::collections::BTreeSet<_>>();
+    for &tag in &countries {
+        for &id in definitions.keys() {
+            if !rows.contains_key(&(tag, id)) {
+                report.difference(
+                    label(tag, id),
+                    "absent",
+                    "one row per captured country and resource definition",
+                );
+            }
+        }
+    }
+    let mut count = 0;
+    for &tag in &countries {
+        let pools = saved
+            .countries
+            .get(tag)
+            .and_then(|country| country.pools.as_ref());
+        for (&id, token) in &unspelled {
+            if rows.contains_key(&(tag, id)) {
+                report.limitation(
+                    "resource name comparison lacks the captured lexical token spelling",
+                    format!("{}.resources token={token}", String::from_utf8_lossy(tag)),
+                );
+            }
+        }
+        for (&name, ids) in &spelled {
+            // A missing row is the census difference above.
+            let Some(group) = ids
+                .iter()
+                .map(|&id| rows.get(&(tag, id)).copied())
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            let Some(pools) = pools else {
+                for &id in ids {
+                    report.difference(label(tag, id), "present", "save resources object absent");
+                }
+                continue;
+            };
+            count += ids.len();
+            compare_resource_name(report, tag, name, ids, &group, pools, &label);
+        }
+    }
+    // A saved name with no captured row to join.
+    for (tag, country) in &saved.countries {
+        let Some(pools) = &country.pools else {
+            continue;
+        };
+        let captured = countries.contains(tag.as_slice());
+        let mut unmatched = std::collections::BTreeSet::new();
+        for (_, _, pool) in RESOURCE_FIELDS {
+            for (name, _) in pool(pools) {
+                if !captured || !spelled.contains_key(name.as_slice()) {
+                    unmatched.insert(name.as_slice());
+                }
+            }
+        }
+        for name in unmatched {
+            let subject = format!(
+                "{}.resources[{}]",
+                String::from_utf8_lossy(tag),
+                String::from_utf8_lossy(name)
+            );
+            if captured && !unspelled.is_empty() {
+                report.limitation(
+                    "saved resource name matches no spelled resource definition while some definitions lack the captured lexical token spelling",
+                    subject,
+                );
+            } else {
+                report.difference(subject, "absent", "present");
+            }
+        }
+    }
+    report.compared("CountryResources", count);
+    Ok(())
+}
+
+/// One country's definitions of one resource name against that name's saved
+/// occurrences, pool by pool. With as many occurrences as definitions every
+/// amount was written, so they pair in index order; a single definition
+/// without an occurrence is 0. With fewer, 140BBD5D0 skipped zeros and the
+/// recorded nonzero amounts must equal the occurrences in order.
+fn compare_resource_name(
+    report: &mut Report,
+    tag: &[u8],
+    name: &[u8],
+    ids: &[u32],
+    rows: &[&CountryResourceRow],
+    pools: &economy::ResourcePools,
+    label: &impl Fn(&[u8], u32) -> String,
+) {
+    let mut ambiguous = Vec::new();
+    for (field, value, pool) in RESOURCE_FIELDS {
+        let saved = pool(pools)
+            .iter()
+            .filter(|(key, _)| key.as_slice() == name)
+            .map(|(_, amount)| amount.raw)
+            .collect::<Vec<_>>();
+        let recorded = rows.iter().map(|row| value(row)).collect::<Vec<_>>();
+        if saved.len() == ids.len() {
+            for ((&id, recorded), saved) in ids.iter().zip(recorded).zip(saved) {
+                equal(
+                    report,
+                    format!("{}.{field}", label(tag, id)),
+                    recorded,
+                    saved,
+                );
+            }
+        } else if let ([id], []) = (ids, saved.as_slice()) {
+            equal(
+                report,
+                format!("{}.{field}", label(tag, *id)),
+                recorded[0],
+                0,
+            );
+        } else {
+            let group = format!(
+                "{}.resources[{}].{field}",
+                String::from_utf8_lossy(tag),
+                String::from_utf8_lossy(name)
+            );
+            if saved.len() > ids.len() {
+                report.difference(
+                    format!("{group} ({} definitions)", ids.len()),
+                    recorded,
+                    format!("{} saved occurrences {saved:?}", saved.len()),
+                );
+                continue;
+            }
+            ambiguous.push(format!("{field} {}/{}", saved.len(), ids.len()));
+            let nonzero = recorded
+                .into_iter()
+                .filter(|&amount| amount != 0)
+                .collect::<Vec<_>>();
+            equal(
+                report,
+                format!("{group} nonzero in index order"),
+                nonzero,
+                saved,
+            );
+        }
+    }
+    if !ambiguous.is_empty() {
+        report.limitation(
+            AMBIGUOUS_RESOURCE_JOIN,
+            format!(
+                "{}.resources[{}] ids {ids:?}: {} (saved occurrences/definitions)",
+                String::from_utf8_lossy(tag),
+                String::from_utf8_lossy(name),
+                ambiguous.join(", ")
+            ),
+        );
+    }
 }
 
 fn compare_exchanges(
@@ -823,8 +1083,9 @@ mod tests {
     use replay::{
         frame::{Metrics, TableView},
         rows::{
-            CountryExperienceRow, CountryFuelConsumerRow, CountryFuelRow, HubMotorizationRow,
-            LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow, TableId, TableRows,
+            CountryExperienceRow, CountryFuelConsumerRow, CountryFuelRow, CountryResourceRow,
+            HubMotorizationRow, LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow,
+            TableId, TableRows,
         },
     };
 
@@ -953,6 +1214,7 @@ mod tests {
             "HubMotorization",
             "ProvinceSupply",
             "ResourceDefinitions",
+            "CountryResources",
         ] {
             assert!(
                 report
@@ -966,7 +1228,6 @@ mod tests {
             "PurchaseContracts",
             "DisruptedSupply",
             "ForeignHomebases",
-            "CountryResources",
         ] {
             assert_eq!(report.compared_tables[name], 0);
         }
@@ -1026,7 +1287,7 @@ mod tests {
                 br#"countries={GER={resources={export={
             id={id=1 type=4713} receiver=GER resource=steel efficiency=1
             efficiency_due_to_lost_convoys=0 delivered=-0.00001 required_cic=2 lended_cic=1
-        }}}}"#,
+        } produced={} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}}}}"#,
             )
             .unwrap()
             .items,
@@ -1187,6 +1448,334 @@ mod tests {
         let mut report = Report::default();
         let tokens = super::super::lexical_tokens(&frame, &mut report).unwrap();
         assert!(compare_exchanges(&frame, &saved, &links, &tokens, &mut report).is_err());
+    }
+
+    /// CountryResources against the saved pools of CCountryResources::Write
+    /// (140CAEB80): all nine operands, `to_use[1]` as the second use pool
+    /// less the first, an omitted amount as zero, and a saved amount
+    /// without a recorded row as a difference.
+    #[test]
+    fn country_resources_compare_every_saved_pool() {
+        let saved = economy::parse(
+            &parser::parse(
+                br#"countries={GER={resources={
+            produced={ steel=301 } transfer_overlord_subject={ steel=-2.1 } imported={ steel=0.00001 }
+            to_use={ { steel=24 } { steel=6 } { steel=-30 } }
+            to_export={ steel=8 } base_export={ steel=7 } exported={ steel=5 }
+        }} ENG={resources={
+            produced={ } transfer_overlord_subject={ } imported={ } to_use={ { } { } { } }
+            to_export={ } base_export={ } exported={ }
+        }}}"#,
+            )
+            .unwrap()
+            .items,
+        )
+        .unwrap();
+        let rows = [
+            CountryRow {
+                id: 11,
+                tag: b"GER".to_vec(),
+                ..Default::default()
+            },
+            CountryRow {
+                id: 12,
+                tag: b"ENG".to_vec(),
+                ..Default::default()
+            },
+        ];
+        let links = BTreeMap::from([(11, &rows[0]), (12, &rows[1])]);
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 2,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+        };
+        *frame.tables[TableId::ResourceDefinitions.index()] =
+            TableView::Complete(TableRows::ResourceDefinitions(vec![
+                ResourceDefinitionRow {
+                    id: 1,
+                    token: 77,
+                    active: 1,
+                    factory_cost: 100_000,
+                },
+            ]));
+        let recorded = |country| CountryResourceRow {
+            country,
+            resource: 1,
+            ..Default::default()
+        };
+        let german = CountryResourceRow {
+            produced: 30_100_000,
+            adjustment: -210_000,
+            imported: 1,
+            used: 2_400_000,
+            special_total: 3_000_000,
+            production_demand: -3_000_000,
+            to_export: 800_000,
+            base_export: 700_000,
+            exported: 500_000,
+            ..recorded(11)
+        };
+        let set = |frame: &mut DecodedFrame, rows: Vec<CountryResourceRow>| {
+            *frame.tables[TableId::CountryResources.index()] =
+                TableView::Complete(TableRows::CountryResources(rows));
+        };
+        set(&mut frame, vec![german.clone(), recorded(12)]);
+        let tokens = TokenNames::from([(77, b"steel".as_slice())]);
+        let mut report = Report::default();
+        compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CountryResources"], 2);
+
+        // One native unit off in each operand is one difference each.
+        for change in 0..9 {
+            let mut row = german.clone();
+            let field = [
+                &mut row.produced,
+                &mut row.adjustment,
+                &mut row.imported,
+                &mut row.used,
+                &mut row.special_total,
+                &mut row.production_demand,
+                &mut row.to_export,
+                &mut row.base_export,
+                &mut row.exported,
+            ]
+            .into_iter()
+            .nth(change)
+            .unwrap();
+            *field += 1;
+            set(&mut frame, vec![row, recorded(12)]);
+            let mut report = Report::default();
+            compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
+            // Moving the first use pool also moves the second's difference.
+            let expected = if change == 3 { 2 } else { 1 };
+            assert_eq!(report.differences.len(), expected, "operand {change}");
+        }
+
+        // A saved amount the recording lacks.
+        set(&mut frame, vec![recorded(12)]);
+        let mut report = Report::default();
+        compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("GER.resources[steel]"));
+
+        // Without the lexical spelling a row is a limitation, not a match.
+        set(&mut frame, vec![german, recorded(12)]);
+        let mut report = Report::default();
+        compare_resources(&frame, &saved, &links, &TokenNames::new(), &mut report).unwrap();
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("lacks the captured lexical token spelling"))
+        );
+    }
+
+    /// A frame with only the given resource definitions (id, token) and
+    /// CountryResources rows complete; every other table empty.
+    fn resource_frame(definitions: &[(u32, u32)], rows: Vec<CountryResourceRow>) -> DecodedFrame {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 2,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+        };
+        *frame.tables[TableId::ResourceDefinitions.index()] =
+            TableView::Complete(TableRows::ResourceDefinitions(
+                definitions
+                    .iter()
+                    .map(|&(id, token)| ResourceDefinitionRow {
+                        id,
+                        token,
+                        active: 1,
+                        factory_cost: 100_000,
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::CountryResources.index()] =
+            TableView::Complete(TableRows::CountryResources(rows));
+        frame
+    }
+
+    /// Resource pools of one country's saved `resources` object, empty
+    /// where not given.
+    fn saved_resources(countries: &[(&str, &str, &str)]) -> economy::Pack {
+        let mut text = String::from("countries={");
+        for (tag, produced, to_use) in countries {
+            text += &format!(
+                "{tag}={{resources={{produced={{ {produced} }} transfer_overlord_subject={{ }} imported={{ }} to_use={{ {to_use} }} to_export={{ }} base_export={{ }} exported={{ }}}}}} "
+            );
+        }
+        text += "}";
+        economy::parse(&parser::parse(text.as_bytes()).unwrap().items).unwrap()
+    }
+
+    /// The collector emits a row for every captured country and resource
+    /// definition, while 140BBD5D0 omits zero amounts: a deleted all-zero
+    /// row leaves the save unchanged and is caught by the census alone.
+    #[test]
+    fn country_resources_census_detects_deleted_all_zero_rows() {
+        let saved = saved_resources(&[
+            ("GER", "steel=1", "{ } { } { }"),
+            ("ENG", "", "{ } { } { }"),
+        ]);
+        let countries = [
+            CountryRow {
+                id: 11,
+                tag: b"GER".to_vec(),
+                ..Default::default()
+            },
+            CountryRow {
+                id: 12,
+                tag: b"ENG".to_vec(),
+                ..Default::default()
+            },
+        ];
+        let links = BTreeMap::from([(11, &countries[0]), (12, &countries[1])]);
+        let tokens = TokenNames::from([(77, b"steel".as_slice()), (78, b"coal".as_slice())]);
+        let row = |country, resource| CountryResourceRow {
+            country,
+            resource,
+            ..Default::default()
+        };
+        let steel = CountryResourceRow {
+            produced: 100_000,
+            ..row(11, 1)
+        };
+        let all = vec![steel.clone(), row(11, 2), row(12, 1), row(12, 2)];
+        let definitions = [(1, 77), (2, 78)];
+        let mut report = Report::default();
+        let frame = resource_frame(&definitions, all);
+        compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CountryResources"], 4);
+
+        // GER's all-zero coal row deleted.
+        let frame = resource_frame(&definitions, vec![steel.clone(), row(12, 1), row(12, 2)]);
+        let mut report = Report::default();
+        compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].starts_with("GER.resources[coal]:"));
+        assert!(report.differences[0].contains("one row per captured country"));
+        assert_eq!(report.compared_tables["CountryResources"], 3);
+
+        // Every row of a captured country whose pools are all zero.
+        let frame = resource_frame(&definitions, vec![steel, row(11, 2)]);
+        let mut report = Report::default();
+        compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        assert!(
+            report
+                .differences
+                .iter()
+                .all(|difference| difference.starts_with("ENG.resources["))
+        );
+    }
+
+    /// The loader 140AB2ED0 appends a repeated declaration as another
+    /// resource, and 140BBD5D0 writes each nonzero amount in index order
+    /// under the shared name. Both definitions are compared, not refused;
+    /// a pool that omitted a zero joins as a nonzero sequence under a named
+    /// limitation, and unrelated resources compare as before.
+    #[test]
+    fn country_resources_keep_repeated_resource_names_apart() {
+        let saved = saved_resources(&[("GER", "steel=3 coal=2 steel=5", "{ steel=2 } { } { }")]);
+        let country = CountryRow {
+            id: 11,
+            tag: b"GER".to_vec(),
+            ..Default::default()
+        };
+        let links = BTreeMap::from([(11, &country)]);
+        // Two declarations of one name intern one token.
+        let definitions = [(1, 77), (2, 77), (3, 78)];
+        let tokens = TokenNames::from([(77, b"steel".as_slice()), (78, b"coal".as_slice())]);
+        let rows = |first_used: i64, second_used: i64, first: i64, second: i64| {
+            vec![
+                CountryResourceRow {
+                    country: 11,
+                    resource: 1,
+                    produced: first,
+                    used: first_used,
+                    special_total: first_used,
+                    ..Default::default()
+                },
+                CountryResourceRow {
+                    country: 11,
+                    resource: 2,
+                    produced: second,
+                    used: second_used,
+                    special_total: second_used,
+                    ..Default::default()
+                },
+                CountryResourceRow {
+                    country: 11,
+                    resource: 3,
+                    produced: 200_000,
+                    ..Default::default()
+                },
+            ]
+        };
+        let run = |rows: Vec<CountryResourceRow>, saved: &economy::Pack| {
+            let mut report = Report::default();
+            compare_resources(
+                &resource_frame(&definitions, rows),
+                saved,
+                &links,
+                &tokens,
+                &mut report,
+            )
+            .unwrap();
+            report
+        };
+
+        let report = run(rows(200_000, 0, 300_000, 500_000), &saved);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CountryResources"], 3);
+        let subjects = &report.limitations[AMBIGUOUS_RESOURCE_JOIN];
+        assert_eq!(subjects.len(), 1);
+        assert!(subjects[0].starts_with("GER.resources[steel] ids [1, 2]:"));
+        assert!(subjects[0].contains("used 1/2"));
+        assert!(!subjects[0].contains("produced"));
+
+        // The omitted zero hides which declaration used the steel.
+        assert!(
+            run(rows(0, 200_000, 300_000, 500_000), &saved)
+                .differences
+                .is_empty()
+        );
+        // Both amounts written: each declaration is compared by index.
+        let report = run(rows(200_000, 0, 500_000, 300_000), &saved);
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        assert!(report.differences[0].starts_with("GER.resources[steel id=1].produced:"));
+        assert!(report.differences[1].starts_with("GER.resources[steel id=2].produced:"));
+        // A nonzero sequence that differs is a difference.
+        let report = run(rows(200_001, 0, 300_000, 500_000), &saved);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(
+            report.differences[0].starts_with("GER.resources[steel].used nonzero in index order:")
+        );
+        // The unrelated resource is still compared.
+        let mut changed = rows(200_000, 0, 300_000, 500_000);
+        changed[2].produced += 1;
+        let report = run(changed, &saved);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].starts_with("GER.resources[coal].produced:"));
+        // More occurrences than declarations.
+        let repeated = saved_resources(&[(
+            "GER",
+            "steel=3 coal=2 steel=5 steel=1",
+            "{ steel=2 } { } { }",
+        )]);
+        let report = run(rows(200_000, 0, 300_000, 500_000), &repeated);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("GER.resources[steel].produced (2 definitions)"));
     }
 
     fn fuel_row(frame: &mut DecodedFrame) -> &mut CountryFuelRow {

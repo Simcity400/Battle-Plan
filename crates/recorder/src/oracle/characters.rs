@@ -4,7 +4,7 @@ use super::{Report, TokenNames, complete, invalid, required_country_tag};
 use installed_content::save::characters as saved;
 use replay::{
     frame::DecodedFrame,
-    rows::{CountryRow, TableId, tables},
+    rows::{CountryRow, tables},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -115,64 +115,27 @@ pub(super) fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut complete = true;
-    let tables = [
-        TableId::Characters,
-        TableId::CountryLeaderRoles,
-        TableId::AdvisorRoles,
-        TableId::UnitLeaders,
-        TableId::UnitLeaderTraits,
-        TableId::UnitLeaderTraitExperience,
-    ];
-    let current = tables.map(|table| report.refresh_is_current(table, frame.hour));
-    for (table, current) in tables.into_iter().zip(current) {
-        if !current {
-            report.limitation(
-                &format!("Characters family {}", replay::cadence::STAGGER_LIMITATION),
-                format!(
-                    "{table:?} refreshes on {} (oracle hour {})",
-                    replay::cadence::refresh_text(table),
-                    frame.hour
-                ),
-            );
-        }
-    }
+    // Every table of the family is hourly (replay::cadence), so each is
+    // read at the oracle hour.
     if let Some(manager) = &pack.manager {
         complete &= report.attempt("Characters", |report| {
-            if !current[0] {
-                return Ok(());
-            }
             compare_characters(frame, manager, links, tokens, report)
         });
         complete &= report.attempt("CountryLeaderRoles", |report| {
-            if !current[1] {
-                return Ok(());
-            }
             compare_country_leader_roles(frame, manager, links, report)
         });
         complete &= report.attempt("AdvisorRoles", |report| {
-            if !current[2] {
-                return Ok(());
-            }
             compare_advisors(frame, manager, links, report)
         });
         let mut unrepresented = None;
         complete &= report.attempt("UnitLeaders", |report| {
-            if !current[3] {
-                return Ok(());
-            }
             unrepresented = Some(compare_leaders(frame, manager, links, report)?);
             Ok(())
         });
         complete &= report.attempt("UnitLeaderTraits", |report| {
-            if !current[4] {
-                return Ok(());
-            }
             compare_traits(frame, manager, tokens, unrepresented.as_ref(), report)
         });
         complete &= report.attempt("UnitLeaderTraitExperience", |report| {
-            if !current[5] {
-                return Ok(());
-            }
             compare_trait_experience(frame, manager, tokens, unrepresented.as_ref(), report)
         });
     } else {
@@ -856,9 +819,23 @@ mod tests {
     }
 
     #[test]
-    fn character_tables_are_compared_only_when_fresh() {
+    fn character_tables_are_compared_at_every_hour() {
+        // compare() needs no freshness gate while the family is hourly.
+        for table in [
+            TableId::Characters,
+            TableId::CountryLeaderRoles,
+            TableId::AdvisorRoles,
+            TableId::UnitLeaders,
+            TableId::UnitLeaderTraits,
+            TableId::UnitLeaderTraitExperience,
+        ] {
+            assert_eq!(
+                replay::cadence::cadence(table),
+                replay::cadence::Cadence::Hourly,
+                "{table:?}"
+            );
+        }
         let (mut frame, pack, country) = fixture();
-        frame.hour = 1;
         let links = BTreeMap::from([(102, &country)]);
         let tokens = BTreeMap::from([
             (5, b"script_token".as_slice()),
@@ -872,15 +849,13 @@ mod tests {
             unreachable!()
         };
         rows[0].experience += 1;
-        let mut mixed = Report::default();
-        mixed.record_tables(&frame);
-        compare(&frame, &pack, &links, &tokens, &mut mixed).unwrap();
-        assert!(mixed.differences.is_empty());
-        frame.hour = 21;
-        let mut current = Report::default();
-        current.record_tables(&frame);
-        compare(&frame, &pack, &links, &tokens, &mut current).unwrap();
-        assert_eq!(current.differences.len(), 1);
+        for hour in [1, 21] {
+            frame.hour = hour;
+            let mut report = Report::default();
+            report.record_tables(&frame);
+            compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+            assert_eq!(report.differences.len(), 1, "hour {hour}");
+        }
     }
 
     #[test]

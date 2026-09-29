@@ -11,12 +11,7 @@ use super::{
 };
 use crate::{document::Document, map::perspective::Vision, table_access::rows};
 use installed_content::{
-    ResolvedLayers,
     localisation::{Argument, Localisation},
-    parser::{
-        Item,
-        native::{self, Shape},
-    },
     unit_leader::Skills,
 };
 use replay::{
@@ -25,419 +20,83 @@ use replay::{
 };
 use std::{collections::BTreeMap, io};
 
-/// 1406B3CB0 loads these six literal content scalars into tactic+138..160.
-/// Their native tooltip ordering differs from their memory ordering.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Tactic {
-    width: i64,
-    movement: i64,
-    attacker: i64,
-    attacker_org: i64,
-    defender: i64,
-    defender_org: i64,
-}
-
-/// One combat tactic registry entry: the tactic's name bytes and its six
-/// values as the game read them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Entry {
-    name: Vec<u8>,
-    tactic: Tactic,
-}
-
-/// The executable's field keys (1406B3CB0) of the six effects, in [`Tactic`]
-/// order. 1406B3CB0 dispatches them by the lexer's token id, found without
-/// case for a bare key (1424A7A90), so they fold; a quoted key is none.
-const TACTIC_FIELDS: [&str; 6] = [
-    "combat_width",
-    "attacker_movement_speed",
-    "attacker",
-    "attacker_org_damage_modifier",
-    "defender",
-    "defender_org_damage_modifier",
-];
+use super::tactics::{Content as Tactics, Effects};
 
 #[derive(Default)]
 pub(super) struct Content {
-    /// Every combat tactic in registry order: position + 1 is its database
-    /// id. 1406B3690 inserts the null tactic at 0, then gives every top-level
-    /// entry other than `phases` the next id (1406B0A70 stores it at +0x98),
-    /// so a repeated name is a second tactic with its own id; the name lookup
-    /// (1406B11F0) finds the later one first, as it heads its hash bucket.
-    tactics: Vec<Entry>,
-    /// From this registry position on the file's reading cannot be
-    /// followed, and why.
-    desynchronised: Option<(usize, String)>,
     skills: Skills,
     warnings: Vec<String>,
 }
 
 impl Content {
     /// `skills` are `common/unit_leader`'s, read with the commander content
-    /// (their files' readers also hold the traits).
-    pub(super) fn load(layers: &ResolvedLayers, skills: Skills) -> io::Result<Self> {
-        let mut content = Self::read_tactics(&layers.read("common/combat_tactics.txt")?)?;
-        content.warnings.extend(skills.warnings().iter().cloned());
-        content.skills = skills;
-        Ok(content)
-    }
-
-    /// 1406B3690 over `common/combat_tactics.txt` ([`read_tactic_file`]):
-    /// every top-level key but `phases` is a tactic read by 1406B3CB0.
-    fn read_tactics(bytes: &[u8]) -> io::Result<Self> {
-        let read = read_tactic_file(bytes);
-        let mut content = Self::default();
-        for misread in &read.misreads {
-            content.warnings.push(format!(
-                "Combat tactics: combat_tactics.txt {misread}; the tactics follow the game's reading."
-            ));
+    /// (their files' readers also hold the traits). Tactic effects come from
+    /// the one tactic registry ([`Tactics`]).
+    pub(super) fn load(skills: Skills) -> Self {
+        Self {
+            warnings: skills.warnings().to_vec(),
+            skills,
         }
-        for item in &read.items {
-            let key = item.key.as_deref().unwrap_or_default();
-            if key == b"phases" {
-                continue;
-            }
-            let id = content.tactics.len() + 1;
-            let name = String::from_utf8_lossy(key).into_owned();
-            let mut notes = Vec::new();
-            let tactic = read_tactic(item.value.items().unwrap_or_default(), &mut notes);
-            for note in notes {
-                content
-                    .warnings
-                    .push(format!("Combat tactic {name} (id {id}): {note}."));
-            }
-            content.tactics.push(Entry {
-                name: key.to_vec(),
-                tactic,
-            });
-        }
-        if let Some(unsettled) = read.unsettled {
-            // The tactic being read when the reading was lost, and every
-            // later one.
-            let name = content
-                .tactics
-                .last()
-                .map(|entry| String::from_utf8_lossy(&entry.name).into_owned())
-                .unwrap_or_default();
-            content.desynchronise(
-                content.tactics.len().saturating_sub(1),
-                format!("combat_tactics.txt {unsettled} (in tactic {name})"),
-            );
-        }
-        Ok(content)
-    }
-
-    /// The file's parse cannot be followed from registry position `from`
-    /// on, and why.
-    fn desynchronise(&mut self, from: usize, reason: String) {
-        self.warnings.push(format!(
-            "Combat tactics: {reason}; tactic {} onwards is refused.",
-            from + 1
-        ));
-        self.desynchronised = Some((from, reason));
     }
 
     pub(super) fn warnings(&self) -> &[String] {
         &self.warnings
     }
-
-    /// The content definition of the tactic the recording names: the
-    /// registry entry at its recorded id, which must carry its name.
-    fn tactic(&self, id: i32, token: &[u8]) -> Result<&Tactic, String> {
-        registry_entry(
-            &self.tactics,
-            |entry| &entry.name,
-            self.desynchronised.as_ref(),
-            id,
-            token,
-        )
-        .map(|entry| &entry.tactic)
-    }
-
-    /// 141299190 rebuilds the six combat sums after tactic changes and load.
-    /// Organisation terms come from content; the two recorded damage sums
-    /// prove the current side membership still matches that rebuild. The
-    /// error names the missing operand.
-    pub(super) fn organisation_effects(
-        &self,
-        detail: &LandCombatDetailsRow,
-        sides: Option<&LandCombatSideRow>,
-    ) -> Result<[i64; 2], String> {
-        let sides = sides.ok_or("the combat's LandCombatSides row is missing")?;
-        if sides.combat != detail.combat {
-            return Err(format!(
-                "the LandCombatSides row is combat {}'s, not {}'s",
-                sides.combat, detail.combat
-            ));
-        }
-        // 141299340 scopes each side to its first linked-set country. An empty
-        // set during teardown cannot authenticate the previous effects.
-        for (side, primary) in [
-            ("attacker", &sides.attacker_primary),
-            ("defender", &sides.defender_primary),
-        ] {
-            match primary.first() {
-                None => return Err(format!("the {side}'s primary country set is empty")),
-                Some(0) => return Err(format!("the {side}'s first primary country is null")),
-                Some(_) => {}
-            }
-        }
-        let mut damage = [0_i64; 2];
-        let mut organisation = [0_i64; 2];
-        for (index, side) in detail.sides.iter().enumerate() {
-            if side.tactic_kind <= 1 || countered(side, &detail.sides[1 - index]) {
-                continue;
-            }
-            if side.tactic_kind != 2 {
-                return Err(format!(
-                    "side {index}'s tactic kind {} is not a combat tactic",
-                    side.tactic_kind
-                ));
-            }
-            let tactic = self.tactic(side.tactic_id, &side.tactic_token)?;
-            damage[0] = damage[0].wrapping_add(tactic.attacker);
-            damage[1] = damage[1].wrapping_add(tactic.defender);
-            organisation[0] = organisation[0].wrapping_add(tactic.attacker_org);
-            organisation[1] = organisation[1].wrapping_add(tactic.defender_org);
-        }
-        if damage != [detail.attacker_bonus, detail.defender_bonus] {
-            return Err(format!(
-                "the damage sums rebuilt from the content tactics, {damage:?}, differ from the recorded {:?}, so the organisation terms rebuilt with them are not confirmed",
-                [detail.attacker_bonus, detail.defender_bonus]
-            ));
-        }
-        Ok(organisation)
-    }
 }
 
-/// 1406B3690 over `common/combat_tactics.txt` with its one CReader
-/// ([`installed_content::parser::native`]), to the end of the file. Its items are
-/// the tactics in registry order, and `phases`.
-pub(super) fn read_tactic_file(bytes: &[u8]) -> native::Read {
-    #[derive(Clone, Copy)]
-    enum Node {
-        Top,
-        Tactic,
-        Mtth,
-    }
-    native::read(bytes, Node::Top, &mut |node, field| match node {
-        // 1406B3875 compares the key's text with `phases` (length 6 and the
-        // bytes), exactly, whatever the token kind: the lexer lowercases only
-        // its lookup copy (1424A7A90), so `PHASES` is a tactic like any other
-        // name and a quoted `"phases"` is skipped too. Its string list
-        // (1401426E0) resolves references and defines nothing.
-        Node::Top if field.key.text == b"phases" => Shape::List,
-        Node::Top => Shape::Object(Node::Tactic),
-        // `base` (0x2C86) is a CMeanTimeToHappen through ReadObjectFromParser
-        // (1424ABB40).
-        Node::Tactic if field.keyword_is("base") => Shape::Object(Node::Mtth),
-        Node::Tactic => tactic_field(field),
-        Node::Mtth => native::mean_time_to_happen(field),
-    })
-}
-
-/// The registry entry of the tactic the recording names: the entry at its
-/// recorded database id (1406B3690 gives the null tactic id 0 and each
-/// tactic the next, a repeated name included), which must carry the
-/// recorded name, and not past the point where the file's reading was lost.
-fn registry_entry<'a, T>(
-    entries: &'a [T],
-    name: fn(&T) -> &[u8],
-    lost: Option<&(usize, String)>,
-    id: i32,
-    token: &[u8],
-) -> Result<&'a T, String> {
-    let shown = String::from_utf8_lossy(token);
-    let index = usize::try_from(id)
-        .ok()
-        .and_then(|id| id.checked_sub(1))
-        .ok_or_else(|| format!("recorded tactic {shown}'s id {id} is not a content tactic id"))?;
-    if let Some((from, reason)) = lost
-        && index >= *from
-    {
+/// 141299190 rebuilds the six combat sums after tactic changes and load.
+/// Organisation terms come from content; the two recorded damage sums
+/// prove the current side membership still matches that rebuild. The
+/// error names the missing operand.
+pub(super) fn organisation_effects(
+    tactics: &Tactics,
+    detail: &LandCombatDetailsRow,
+    sides: Option<&LandCombatSideRow>,
+) -> Result<[i64; 2], String> {
+    let sides = sides.ok_or("the combat's LandCombatSides row is missing")?;
+    if sides.combat != detail.combat {
         return Err(format!(
-            "tactic {shown} (id {id}) is past the point where {reason}"
+            "the LandCombatSides row is combat {}'s, not {}'s",
+            sides.combat, detail.combat
         ));
     }
-    let entry = entries.get(index).ok_or_else(|| {
-        format!(
-            "recorded tactic {shown}'s id {id} is past the content's {} combat tactics",
-            entries.len()
-        )
-    })?;
-    if name(entry) != token {
-        return Err(format!(
-            "recorded tactic id {id} is {shown}, but the content's tactic {id} is {}",
-            String::from_utf8_lossy(name(entry))
-        ));
-    }
-    Ok(entry)
-}
-
-/// Each combat tactic's `picture` (0x1D0, the value's text to its NUL: the
-/// last one read) in registry order, as [`read_tactic_file`] reads the file, and
-/// where that reading was lost. Selected like the effects: by recorded id,
-/// the name checked ([`registry_entry`]).
-#[derive(Debug, Default)]
-pub(crate) struct TacticPictures {
-    /// Position + 1 is the database id: each tactic's name, and its picture
-    /// or why it has none.
-    entries: Vec<(Vec<u8>, Result<String, String>)>,
-    /// From this position on the file's reading cannot be followed, and why.
-    lost: Option<(usize, String)>,
-}
-
-impl TacticPictures {
-    pub(super) fn read(bytes: &[u8]) -> Self {
-        let read = read_tactic_file(bytes);
-        let mut pictures = Self::default();
-        for item in &read.items {
-            // 1406B3875 compares the key's text with `phases` exactly.
-            let key = item.key.as_deref().unwrap_or_default();
-            if key == b"phases" {
-                continue;
-            }
-            let id = pictures.entries.len() + 1;
-            let name = String::from_utf8_lossy(key);
-            let picture = match item
-                .value
-                .items()
-                .unwrap_or_default()
-                .iter()
-                .rfind(|field| field.keyword_is("picture"))
-            {
-                None => Err(format!("tactic {name} (id {id}) declares no picture")),
-                // 1406B3CB0 copies the value slot's text (+0xC8) as a C
-                // string: to its NUL, with no line-feed check.
-                Some(field) => field
-                    .value
-                    .c_str()
-                    .map(str::to_owned)
-                    .map_err(|why| format!("tactic {name} (id {id})'s picture: {why}")),
-            };
-            pictures.entries.push((key.to_vec(), picture));
+    // 141299340 scopes each side to its first linked-set country. An empty
+    // set during teardown cannot authenticate the previous effects.
+    for (side, primary) in [
+        ("attacker", &sides.attacker_primary),
+        ("defender", &sides.defender_primary),
+    ] {
+        match primary.first() {
+            None => return Err(format!("the {side}'s primary country set is empty")),
+            Some(0) => return Err(format!("the {side}'s first primary country is null")),
+            Some(_) => {}
         }
-        if let Some(unsettled) = read.unsettled {
-            // The tactic being read when the reading was lost, and every
-            // later one, as the effects' registry refuses them.
-            let name = pictures
-                .entries
-                .last()
-                .map(|(name, _)| String::from_utf8_lossy(name).into_owned())
-                .unwrap_or_default();
-            pictures.lost = Some((
-                pictures.entries.len().saturating_sub(1),
-                format!("combat_tactics.txt {unsettled} (in tactic {name})"),
-            ));
-        }
-        pictures
     }
-
-    /// Every picture a tactic before the lost point declares, for the
-    /// texture declarations.
-    pub(super) fn declared(&self) -> impl Iterator<Item = &str> {
-        let settled = self
-            .lost
-            .as_ref()
-            .map_or(self.entries.len(), |(from, _)| *from);
-        self.entries[..settled]
-            .iter()
-            .filter_map(|(_, picture)| picture.as_deref().ok())
-    }
-
-    /// The picture of the tactic the recording names, or why it has none.
-    pub(super) fn get(&self, id: i32, token: &[u8]) -> Result<&str, String> {
-        let (_, picture) = registry_entry(
-            &self.entries,
-            |entry| &entry.0,
-            self.lost.as_ref(),
-            id,
-            token,
-        )?;
-        picture.as_deref().map_err(Clone::clone)
-    }
-}
-
-/// 1406B3CB0's reader per key: the six effects, `is_attacker`, `active`,
-/// `picture`, `phase`, `display_phase`, `countered_by`, `only_show_for` and
-/// `aggressiveness` take one value; `trigger` (0x2963, a CAndTrigger read
-/// by CTrigger::LoadBody 1405431C0, whose children go to the trigger
-/// readers by name: the known key-validity gap) is read by key; anything
-/// else is reported (1424A9CE0 -> 1424AD100) and its block skipped
-/// (1424AD270). `base` is dispatched by the caller. Keys dispatch on the
-/// token id: a bare key folds, a quoted one is none.
-fn tactic_field<S>(field: &native::Field<'_>) -> Shape<S> {
-    let keyword = field.keyword();
-    let keyword = keyword.as_deref();
-    match keyword {
-        Some(name) if TACTIC_FIELDS.iter().any(|field| field.as_bytes() == name) => Shape::One,
-        Some(
-            b"is_attacker" | b"active" | b"picture" | b"phase" | b"display_phase" | b"countered_by"
-            | b"only_show_for" | b"aggressiveness",
-        ) => Shape::One,
-        Some(b"trigger") => Shape::ByKey,
-        _ => Shape::Skip,
-    }
-}
-
-/// One tactic body as 1406B3CB0 read it: each field in order, the last of
-/// a repeated one winning.
-///
-/// - `attacker_movement_speed` goes through ReadFixed5 (1424ABB10 ->
-///   1424B0480, `%lli`: `010` is eight); a value that does not scan is
-///   reported (1424ACEE0) and the field keeps what it held.
-/// - The other five go through ParseTokenFixedPoint64 (1424AFF10 ->
-///   1424B8600, [`installed_content::fixed5::decimal_fixed5`]), which reads any text.
-///
-/// Values are already resolved through the file's variables (1424AB540); an
-/// undefined bare reference keeps its own text, which each scanner reads as
-/// it reads any other text. What the game reports is added to `notes`.
-fn read_tactic(fields: &[Item], notes: &mut Vec<String>) -> Tactic {
-    let mut values = [0_i64; 6];
-    for field in fields {
-        let Some(slot) = field.keyword().and_then(|keyword| {
-            let keyword = keyword.folded();
-            TACTIC_FIELDS
-                .iter()
-                .position(|name| name.as_bytes() == keyword)
-        }) else {
+    let mut damage = [0_i64; 2];
+    let mut organisation = [0_i64; 2];
+    for (index, side) in detail.sides.iter().enumerate() {
+        if side.tactic_kind <= 1 || countered(side, &detail.sides[1 - index]) {
             continue;
-        };
-        let key = String::from_utf8_lossy(field.key.as_deref().unwrap_or_default());
-        let value = field.value.scalar().unwrap_or_default();
-        let text = String::from_utf8_lossy(value);
-        if slot == 1 {
-            match installed_content::fixed5::script_fixed5(value) {
-                Some(read) => values[slot] = read,
-                None => notes.push(format!(
-                    "field {key} value {text:?} does not scan (1424B0480), which the game reports (1424ACEE0) while the field keeps its previous value"
-                )),
-            }
-        } else {
-            values[slot] = installed_content::fixed5::decimal_fixed5(value);
         }
-        if !field.quoted() && value.starts_with(b"@") {
-            notes.push(format!(
-                "field {key} names the variable {text}, which is not defined before it, so the game reads that text as the value"
+        if side.tactic_kind != 2 {
+            return Err(format!(
+                "side {index}'s tactic kind {} is not a combat tactic",
+                side.tactic_kind
             ));
         }
+        let tactic = tactics.effects(side.tactic_id, &side.tactic_token)?;
+        damage[0] = damage[0].wrapping_add(tactic.attacker);
+        damage[1] = damage[1].wrapping_add(tactic.defender);
+        organisation[0] = organisation[0].wrapping_add(tactic.attacker_org);
+        organisation[1] = organisation[1].wrapping_add(tactic.defender_org);
     }
-    let [
-        width,
-        movement,
-        attacker,
-        attacker_org,
-        defender,
-        defender_org,
-    ] = values;
-    Tactic {
-        width,
-        movement,
-        attacker,
-        attacker_org,
-        defender,
-        defender_org,
+    if damage != [detail.attacker_bonus, detail.defender_bonus] {
+        return Err(format!(
+            "the content tactics' damage sums {damage:?} differ from the recorded {:?}, so the side membership they were rebuilt for is not this hour's",
+            [detail.attacker_bonus, detail.defender_bonus]
+        ));
     }
+    Ok(organisation)
 }
 
 /// 1406B3670 tests the other pointer, not whether it is a real tactic.
@@ -600,7 +259,7 @@ pub(super) enum Described<'a> {
 fn tactic_tooltip(
     icons: &dyn TextIcons,
     loc: &Localisation,
-    content: &Content,
+    tactics: &Tactics,
     side: &LandCombatSideDetails,
     other: &LandCombatSideDetails,
     attacker: bool,
@@ -621,7 +280,7 @@ fn tactic_tooltip(
     tactic_description(
         icons,
         loc,
-        content,
+        tactics,
         described,
         attacker,
         countered(side, other),
@@ -632,7 +291,7 @@ fn tactic_tooltip(
 pub(super) fn tactic_description(
     icons: &dyn TextIcons,
     loc: &Localisation,
-    content: &Content,
+    tactics: &Tactics,
     described: Described<'_>,
     attacker: bool,
     countered: bool,
@@ -645,10 +304,10 @@ pub(super) fn tactic_description(
     if countered {
         text.push_str(&builtin(icons, loc, "TACTIC_CURRENTLY_COUNTERED", &[])?);
     } else {
-        let null = Tactic::default();
+        // CNullCombatTactic's six values are 0 (1406B0A70).
         let tactic = match described {
-            Described::Content { id, token } => content.tactic(id, token)?,
-            Described::Null => &null,
+            Described::Content { id, token } => tactics.effects(id, token)?,
+            Described::Null => Effects::default(),
         };
         for (value, label, favorable_side, width) in [
             (tactic.width, "TACTICS_COMBATWIDTH", true, true),
@@ -985,7 +644,7 @@ pub(super) fn bind(
         let (text, description) = match tactic_tooltip(
             icons,
             loc,
-            &assets.tooltips,
+            &assets.tactics,
             side,
             opponent,
             index == 0,
@@ -1167,18 +826,10 @@ mod tests {
     use super::*;
     use crate::combat::binding::NoIcons;
 
-    /// Content whose registry holds `tactics` at ids 1, 2, ...
-    fn with_tactics(tactics: &[(&str, Tactic)]) -> Content {
-        Content {
-            tactics: tactics
-                .iter()
-                .map(|(name, tactic)| Entry {
-                    name: name.as_bytes().to_vec(),
-                    tactic: *tactic,
-                })
-                .collect(),
-            ..Content::default()
-        }
+    /// The tactic registry read through the real parse
+    /// (installed_content::combat_tactics), as the land hovers use it.
+    fn tactics(text: &[u8]) -> Tactics {
+        Tactics::from_database(installed_content::combat_tactics::parse(text))
     }
 
     fn loc(entries: &[(&str, &str)]) -> Localisation {
@@ -1188,321 +839,66 @@ mod tests {
             .collect()
     }
 
-    /// 1406B3690 through the real reader: only an exact `phases` is skipped
-    /// (1406B3875), so `PHASES` takes an id; `@variables` resolve as the
-    /// reader defines them; field keys, which 1406B3CB0 dispatches by token
-    /// id, fold; a repeat of a name is a second tactic with its own id; the
-    /// five decimal fields read any text as 1424B8600 does.
-    /// The pictures come from the same reading: `Picture` folds, a quoted
-    /// `"picture"` is no keyword (1424A7A90), a variable resolves
-    /// (1424AB540), `phases` is compared by its text and `PHASES` is a
-    /// tactic, and a block where ReadStringInto reads one value leaves its
-    /// contents to the tactic. A picture is selected by the recorded id with
-    /// its name checked, so a repeated name is two tactics with their own
-    /// pictures; a tactic without one is named; the tactic whose reading is
-    /// lost and every later one are refused.
+    /// The hovers find the recorded tactic at its recorded ID (1406B0A70
+    /// stores the database ID at +0x98), which must carry the recorded name;
+    /// a repeated name is its own tactic, and a refused effect or an
+    /// unproven entry names the tactic and why.
     #[test]
-    fn tactic_pictures_follow_the_tactic_reader() {
-        let pictures = TacticPictures::read(
-            br#"@pic = shared
-                phases = { assault }
-                PHASES = { Picture = upper }
-                a = { Picture = first picture = @pic }
-                b = { "picture" = quoted }
-                c = { picture = { picture = inner } active = yes }
-                a = { picture = second }
-                d = { picture = kept trigger = { x @y = 1 } picture = lost }
-                e = { picture = later }"#,
-        );
-        assert_eq!(pictures.get(1, b"PHASES"), Ok("upper"));
-        assert_eq!(pictures.get(2, b"a"), Ok("shared"));
-        assert_eq!(
-            pictures.get(3, b"b"),
-            Err("tactic b (id 3) declares no picture".into())
-        );
-        assert_eq!(pictures.get(4, b"c"), Ok("inner"));
-        // c's `}` came from its picture's block, so `active` is read as the
-        // next tactic, its own `}` ending it at once.
-        assert_eq!(
-            pictures.get(5, b"active"),
-            Err("tactic active (id 5) declares no picture".into())
-        );
-        assert_eq!(pictures.get(6, b"a"), Ok("second"));
-        assert_eq!(
-            pictures.get(2, b"c"),
-            Err("recorded tactic id 2 is c, but the content's tactic 2 is a".into())
-        );
-        for (id, token) in [(7, &b"d"[..]), (8, b"e")] {
-            let refusal = pictures.get(id, token).unwrap_err();
-            assert!(
-                refusal.contains("is past the point where combat_tactics.txt line 8: variable @y"),
-                "{refusal}"
-            );
-            assert!(refusal.ends_with("(in tactic d)"), "{refusal}");
-        }
-        assert_eq!(
-            pictures.declared().collect::<Vec<_>>(),
-            ["upper", "shared", "inner", "second"]
-        );
-        // 1406B3CB0 copies the value's text as a C string: to its NUL, a
-        // line feed kept (no ReadStringInto check).
-        let pictures = TacticPictures::read(
-            b"a = { picture = \"GFX_a\0tail\" } b = { picture = \"two\nlines\" }",
-        );
-        assert_eq!(pictures.get(1, b"a"), Ok("GFX_a"));
-        assert_eq!(pictures.get(2, b"b"), Ok("two\nlines"));
-    }
-
-    #[test]
-    fn tactic_file_registry_follows_the_native_loader() {
-        let content = Content::read_tactics(
+    fn recorded_tactics_find_their_registry_effects() {
+        let registry = tactics(
             br#"@bonus = 0.25
-                PHASES = { assault = 1 }
+                PHASES = { }
                 tactic_a = { ATTACKER = @bonus Combat_Width = 0.1 attacker_movement_speed = 010 }
                 tactic_b = { defender = @missing }
                 tactic_a = { attacker = 0.5 }
-                tactic_c = { defender_org_damage_modifier = 1.5e3 active = yes attacker = .5 defender = 0.000001 }
-                phases = { breakthrough }"#,
-        )
-        .unwrap();
-        assert_eq!(content.tactics.len(), 5);
-        assert_eq!(content.tactic(1, b"PHASES"), Ok(&Tactic::default()));
+                tactic_c = { defender_org_damage_modifier = 1.5e3 active = yes }
+                tactic_d = { trigger = { x @y = 1 } }"#,
+        );
+        use super::super::tactics::Effects;
         assert_eq!(
-            content.tactic(2, b"tactic_a"),
-            Ok(&Tactic {
+            registry.effects(2, b"tactic_a"),
+            Ok(Effects {
                 attacker: 25_000,
                 width: 10_000,
                 movement: 800_000,
-                ..Tactic::default()
+                ..Effects::default()
             })
         );
-        // The repeat is tactic 4, with its own values; tactic 2 keeps its own.
+        // The repeat is tactic 4, with its own values.
         assert_eq!(
-            content.tactic(4, b"tactic_a").map(|t| t.attacker),
+            registry.effects(4, b"tactic_a").map(|t| t.attacker),
             Ok(50_000)
         );
-        // An undefined reference is its own text, which reads zero.
-        assert_eq!(content.tactic(3, b"tactic_b"), Ok(&Tactic::default()));
-        // 'e' is a digit to 1424B8600; six places are taken unscaled.
+        assert_eq!(registry.effects(1, b"PHASES"), Ok(Effects::default()));
+        // 1424B8600 reads any text: an undefined reference is its own text
+        // (0), and 'e' is a digit to it.
+        assert_eq!(registry.effects(3, b"tactic_b"), Ok(Effects::default()));
         assert_eq!(
-            content.tactic(5, b"tactic_c"),
-            Ok(&Tactic {
+            registry.effects(5, b"tactic_c"),
+            Ok(Effects {
                 defender_org: 203_300,
-                attacker: 50_000,
-                defender: 1,
-                ..Tactic::default()
+                ..Effects::default()
             })
         );
-        assert_eq!(
-            content.tactic(10, b"tactic_a"),
-            Err("recorded tactic tactic_a's id 10 is past the content's 5 combat tactics".into())
+        // A trigger block the port cannot settle: that tactic is unproven
+        // and no later one is known.
+        let unsettled = registry.effects(6, b"tactic_d").unwrap_err();
+        assert!(
+            unsettled.starts_with("tactic tactic_d's ID or fields cannot be read as the game reads them: combat_tactics.txt line 7: key `x` has no operator and its reader is handed the previous value `{`"),
+            "{unsettled}"
+        );
+        let past = registry.effects(10, b"tactic_a").unwrap_err();
+        assert!(
+            past.starts_with("recorded tactic tactic_a's id 10 is past the 6 combat tactics read before combat_tactics.txt line 7"),
+            "{past}"
         );
         assert_eq!(
-            content.tactic(0, b"x").unwrap_err(),
+            registry.effects(0, b"x").unwrap_err(),
             "recorded tactic x's id 0 is not a content tactic id"
         );
         assert_eq!(
-            content.warnings,
-            [
-                "Combat tactic tactic_b (id 3): field defender names the variable @missing, which is not defined before it, so the game reads that text as the value."
-            ]
-        );
-    }
-
-    /// A scalar tactic body: ReadObjectFromParser (1424ABB40) reads the
-    /// tokens after it as the tactic's fields, so the next tactic is an
-    /// unknown field of this one, skipped.
-    #[test]
-    fn a_scalar_tactic_body_reads_what_follows() {
-        let content =
-            Content::read_tactics(b"scalar = 5 t = { attacker = 0.1 } u = { attacker = 0.2 }")
-                .unwrap();
-        assert_eq!(content.tactics.len(), 1);
-        assert_eq!(content.tactic(1, b"scalar"), Ok(&Tactic::default()));
-        assert!(
-            content.warnings[0].contains("field `scalar` is `5` where its reader reads a block")
-        );
-    }
-
-    /// `base` is a CMeanTimeToHappen (140545850, through 1424ABB40), which
-    /// only logs a key it does not know: a block there is read as its
-    /// fields and its `}` ends `base`, so the tactic's `}` comes early.
-    #[test]
-    fn a_tactic_base_reads_as_a_mean_time_to_happen() {
-        let content = Content::read_tactics(
-            b"t = { base = { factor = 2 modifier = { factor = 0 has_war = yes } } attacker = 0.1 }",
-        )
-        .unwrap();
-        assert_eq!(content.tactic(1, b"t").map(|t| t.attacker), Ok(10_000));
-        assert!(content.warnings.is_empty(), "{:?}", content.warnings);
-        let content = Content::read_tactics(
-            b"t = { base = { odd = { factor = 2 } } attacker = 0.1 } u = { attacker = 0.2 }",
-        )
-        .unwrap();
-        assert_eq!(content.tactic(1, b"t").map(|t| t.attacker), Ok(0));
-        assert!(
-            content.warnings[0].contains("field `odd` is a block where its reader takes one value"),
-            "{:?}",
-            content.warnings
-        );
-    }
-
-    /// A quoted field key is token 0xF (1424A7A90): 1406B3CB0 reports it and
-    /// skips it, so `"attacker"` sets nothing while `ATTACKER` folds.
-    #[test]
-    fn a_quoted_tactic_field_is_no_keyword() {
-        let content =
-            Content::read_tactics(br#"t = { "attacker" = 0.5 ATTACKER = 0.25 "defender" = 0.1 }"#)
-                .unwrap();
-        assert_eq!(
-            content.tactic(1, b"t"),
-            Ok(&Tactic {
-                attacker: 25_000,
-                ..Tactic::default()
-            })
-        );
-    }
-
-    /// ReadFixed5 (1424ABB10) reports a value that does not scan and leaves
-    /// the field as it was, so an earlier assignment stands.
-    #[test]
-    fn an_unscannable_movement_value_keeps_the_previous_one() {
-        let content = Content::read_tactics(
-            b"t = { attacker_movement_speed = 0.5 ATTACKER_MOVEMENT_SPEED = fast }",
-        )
-        .unwrap();
-        assert_eq!(content.tactic(1, b"t").map(|t| t.movement), Ok(50_000));
-        assert_eq!(
-            content.warnings,
-            [
-                "Combat tactic t (id 1): field ATTACKER_MOVEMENT_SPEED value \"fast\" does not scan (1424B0480), which the game reports (1424ACEE0) while the field keeps its previous value."
-            ]
-        );
-    }
-
-    /// Forms the tree cannot hold, read as the game reads them: a value
-    /// without a key consumes the next token as its operator (1424AC5E0); a
-    /// block given to a one-value field is read as `{` and its contents as
-    /// the tactic's fields; a taken name hands its `=` to the next key, here
-    /// a tactic named `=` whose reader reads what follows.
-    #[test]
-    fn forms_the_tree_cannot_hold_are_read_as_the_game_reads_them() {
-        let content = Content::read_tactics(
-            b"s = { attacker = 0.1 } t = { assault seize } u = { attacker = 0.2 }",
-        )
-        .unwrap();
-        assert_eq!(content.tactic(2, b"t"), Ok(&Tactic::default()));
-        assert_eq!(content.tactic(3, b"u").map(|t| t.attacker), Ok(20_000));
-        assert!(content.warnings[0].contains("key `assault` has no operator"));
-        let content = Content::read_tactics(
-            b"t = { defender = { attacker = 0.3 } width = 1 } u = { attacker = 0.2 }",
-        )
-        .unwrap();
-        assert_eq!(
-            content.tactic(1, b"t"),
-            Ok(&Tactic {
-                attacker: 30_000,
-                ..Tactic::default()
-            })
-        );
-        // `width = 1` is then a tactic whose reader t's `}` ends at once.
-        assert_eq!(content.tactics.len(), 3);
-        assert_eq!(content.tactic(3, b"u").map(|t| t.attacker), Ok(20_000));
-        let content = Content::read_tactics(b"@x = 0.1 @x = 0.2 t = { attacker = @x }").unwrap();
-        assert_eq!(
-            content.tactic(1, b"t"),
-            Err("recorded tactic id 1 is t, but the content's tactic 1 is =".into())
-        );
-    }
-
-    /// The file's one reader (1406B3690) and its variables: a chain resolves
-    /// when defined and names keep their case (1424AC830); a definition in a
-    /// tactic body holds for the rest of the file; `phases` is a string list
-    /// (1401426E0) that defines nothing; a quoted `"@w"` stays text
-    /// (1424AB540), which reads zero; `@(1+1)` is the reference `@` and then
-    /// `(`, `1+1` and `)` read as keys, the last consuming the tactic's `}`.
-    #[test]
-    fn tactic_variables_follow_the_game_reader() {
-        let content = Content::read_tactics(
-            br#"@w = 0.1
-                @W = 0.2
-                @chain = @w
-                phases = { @unregistered = 1 }
-                a = { combat_width = @chain attacker = @W }
-                quoted = { defender = "@w" }
-                b = { @inner = 0.3 attacker = @inner }
-                c = { attacker = @inner }
-                unregistered = { defender = @unregistered }
-                expression = { attacker = @(1+1) }
-                after = { attacker = 0.1 }"#,
-        )
-        .unwrap();
-        assert_eq!(
-            content.tactic(1, b"a"),
-            Ok(&Tactic {
-                width: 10_000,
-                attacker: 20_000,
-                ..Tactic::default()
-            })
-        );
-        assert_eq!(content.tactic(2, b"quoted"), Ok(&Tactic::default()));
-        assert_eq!(content.tactic(3, b"b").map(|t| t.attacker), Ok(30_000));
-        assert_eq!(content.tactic(4, b"c").map(|t| t.attacker), Ok(30_000));
-        assert_eq!(content.tactic(5, b"unregistered"), Ok(&Tactic::default()));
-        assert_eq!(content.tactic(6, b"expression"), Ok(&Tactic::default()));
-        // `after` is read as a field of `expression`.
-        assert_eq!(content.tactics.len(), 6);
-    }
-
-    /// The tactic's `trigger` (a CAndTrigger, 1405431C0) and `base` (a
-    /// CMeanTimeToHappen, 140545850) are read by key on the file's reader,
-    /// so their definitions register in document order; an unknown field is
-    /// skipped (1424ACF90 -> 1424AD270) and defines nothing.
-    #[test]
-    fn definitions_inside_trigger_and_base_register() {
-        let content = Content::read_tactics(
-            b"t = { attacker = @late trigger = { OR = { @late = 0.1 always = yes } phase = no } \
-              base = { factor = 1 modifier = { @weight = 0.2 factor = 2 } } unknown = { @skipped = 1 x = 1 } } \
-              u = { attacker = @late defender = @weight combat_width = @skipped }",
-        )
-        .unwrap();
-        assert_eq!(content.desynchronised, None);
-        assert_eq!(content.tactic(1, b"t").map(|t| t.attacker), Ok(0));
-        assert_eq!(
-            content.tactic(2, b"u"),
-            Ok(&Tactic {
-                attacker: 10_000,
-                defender: 20_000,
-                ..Tactic::default()
-            })
-        );
-        assert!(
-            content.warnings[1].starts_with(
-                "Combat tactic u (id 2): field combat_width names the variable @skipped"
-            )
-        );
-    }
-
-    /// A trigger block holding a value without a key and a definition could
-    /// be a list reader's or a reader by key's (the known key-validity gap):
-    /// that tactic and every later one are refused by name.
-    #[test]
-    fn an_unsettled_trigger_block_refuses_the_rest_of_the_file() {
-        let content = Content::read_tactics(
-            b"s = { attacker = 0.1 } t = { trigger = { x @y = 1 } } u = { attacker = @y }",
-        )
-        .unwrap();
-        assert_eq!(content.tactic(1, b"s").map(|t| t.attacker), Ok(10_000));
-        let (from, reason) = content.desynchronised.clone().unwrap();
-        assert_eq!(from + 1, 2);
-        assert!(
-            reason.contains("variable @y is in a block read by a trigger"),
-            "{reason}"
-        );
-        assert!(content.tactic(2, b"t").is_err());
-        assert_eq!(
-            content.warnings.last().unwrap(),
-            &format!("Combat tactics: {reason}; tactic 2 onwards is refused.")
+            registry.effects(1, b"tactic_b"),
+            Err("recorded tactic id 1 is tactic_b, but the content's tactic 1 is PHASES".into())
         );
     }
 
@@ -1525,7 +921,7 @@ mod tests {
             ("TACTIC_CURRENTLY_COUNTERED", "Countered"),
             ("TACTIC_DESC", "What tactics do"),
         ]);
-        let content = with_tactics(&[]);
+        let content = tactics(b"");
         let null = LandCombatSideDetails {
             tactic_kind: 1,
             tactic_counter_id: 5,
@@ -1570,13 +966,7 @@ mod tests {
             ("TACTIC_DESC", "What tactics do"),
             ("NO_TACTIC", "None"),
         ]);
-        let content = with_tactics(&[(
-            "tactic_a",
-            Tactic {
-                attacker: 20_000,
-                ..Default::default()
-            },
-        )]);
+        let content = tactics(b"tactic_a = { attacker = 0.2 }");
         assert_eq!(
             tactic_description(&NoIcons, &loc, &content, tactic_a(), true, false),
             Ok((
@@ -1607,7 +997,7 @@ mod tests {
                 .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
                 .collect()
         };
-        let content = with_tactics(&[("tactic_a", Tactic::default())]);
+        let content = tactics(b"tactic_a = { }");
         let missing =
             tactic_description(&NoIcons, &entries(&[]), &content, tactic_a(), true, false);
         assert!(
@@ -1766,15 +1156,10 @@ mod tests {
 
     #[test]
     fn organisation_effects_follow_active_tactics_and_validate_damage_sums() {
-        let content = with_tactics(&[(
-            "tactic_a",
-            Tactic {
-                attacker: 20_000,
-                attacker_org: 15_000,
-                defender_org: -5_000,
-                ..Default::default()
-            },
-        )]);
+        let content = tactics(
+            b"tactic_a = { attacker = 0.2 attacker_org_damage_modifier = 0.15 \
+              defender_org_damage_modifier = -0.05 }",
+        );
         let mut detail = LandCombatDetailsRow {
             combat: 42,
             attacker_bonus: 20_000,
@@ -1790,39 +1175,38 @@ mod tests {
         detail.sides[0].tactic_id = 1;
         detail.sides[0].tactic_token = b"tactic_a".to_vec();
         assert_eq!(
-            content.organisation_effects(&detail, Some(&sides)),
+            organisation_effects(&content, &detail, Some(&sides)),
             Ok([15_000, -5_000])
         );
         detail.attacker_bonus = 0;
         assert!(
-            content
-                .organisation_effects(&detail, Some(&sides))
+            organisation_effects(&content, &detail, Some(&sides))
                 .unwrap_err()
                 .contains("damage sums")
         );
         detail.sides[1].tactic_kind = 1;
         assert_eq!(
-            content.organisation_effects(&detail, Some(&sides)),
+            organisation_effects(&content, &detail, Some(&sides)),
             Ok([0, 0])
         );
         assert_eq!(
-            content.organisation_effects(&detail, None),
+            organisation_effects(&content, &detail, None),
             Err("the combat's LandCombatSides row is missing".into())
         );
         sides.defender_primary.clear();
         sides.defender_secondary.push(2);
         assert_eq!(
-            content.organisation_effects(&detail, Some(&sides)),
+            organisation_effects(&content, &detail, Some(&sides)),
             Err("the defender's primary country set is empty".into())
         );
         sides.defender_primary.push(0);
         assert_eq!(
-            content.organisation_effects(&detail, Some(&sides)),
+            organisation_effects(&content, &detail, Some(&sides)),
             Err("the defender's first primary country is null".into())
         );
         sides.defender_primary[0] = 2;
         sides.combat = 43;
-        assert!(content.organisation_effects(&detail, Some(&sides)).is_err());
+        assert!(organisation_effects(&content, &detail, Some(&sides)).is_err());
     }
 
     #[test]

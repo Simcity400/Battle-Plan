@@ -12,6 +12,19 @@ pub struct Pack {
     pub countries: BTreeMap<Vec<u8>, Country>,
     pub tech_sharing: Vec<TechSharing>,
     pub power_balances: Option<Vec<PowerBalance>>,
+    /// `doctrine={ countries={ ... } }` in doctrine-array order; `None` when
+    /// the save has no doctrine block.
+    pub doctrine: Option<Vec<DoctrineStatus>>,
+}
+
+/// One saved `NDoctrines::CCountryDoctrineStatus` (writer 1413BA360).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DoctrineStatus {
+    /// Token 0x289A; 140BA6770 omits a non-positive country reference.
+    pub country: Option<Vec<u8>>,
+    /// Token 0x3357: the +0x28 tactic vector as each tactic's +0x98 database
+    /// ID in vector order. The writer omits an empty vector.
+    pub enable_tactic: Vec<i32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -544,11 +557,44 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                 .collect::<io::Result<Vec<_>>>()
         })
         .transpose()?;
+    let doctrine = optional_block(items, b"doctrine")?
+        .map(parse_doctrine)
+        .transpose()?;
     Ok(Pack {
         countries,
         tech_sharing,
         power_balances,
+        doctrine,
     })
+}
+
+/// CDoctrineSystem::vf2 (140D6C880) writes every status row, omitting the
+/// whole `countries` block only for an empty doctrine array.
+fn parse_doctrine(items: &[Item]) -> io::Result<Vec<DoctrineStatus>> {
+    optional_block(items, b"countries")?
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| {
+            if entry.key.is_some() {
+                return Err(invalid("doctrine country status must be anonymous"));
+            }
+            let fields = block(&entry.value)?;
+            let enable_tactic = optional_block(fields, b"enable_tactic")?
+                .unwrap_or_default()
+                .iter()
+                .map(|item| {
+                    if item.key.is_some() {
+                        return Err(invalid("enable_tactic contains a keyed element"));
+                    }
+                    integer(scalar(&item.value)?)
+                })
+                .collect::<io::Result<Vec<i32>>>()?;
+            Ok(DoctrineStatus {
+                country: bytes(fields, b"country")?,
+                enable_tactic,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -558,6 +604,37 @@ mod tests {
 
     fn parse_text(text: &[u8]) -> io::Result<Pack> {
         parse(&crate::parser::parse(text)?.items)
+    }
+
+    #[test]
+    fn doctrine_rows_keep_array_order_omitted_tags_and_saved_tactic_ids() {
+        let pack = parse_text(
+            b"countries={} doctrine={ countries={
+                { folder={ { folder=\"land\" } } }
+                { country=\"GER\" enable_tactic={ 43 7 43 } }
+                { country=\"ITA\" }
+            } }",
+        )
+        .unwrap();
+        assert_eq!(
+            pack.doctrine.unwrap(),
+            [
+                DoctrineStatus::default(),
+                DoctrineStatus {
+                    country: Some(b"GER".to_vec()),
+                    enable_tactic: vec![43, 7, 43],
+                },
+                DoctrineStatus {
+                    country: Some(b"ITA".to_vec()),
+                    enable_tactic: Vec::new(),
+                },
+            ]
+        );
+        assert_eq!(parse_text(b"countries={}").unwrap().doctrine, None);
+        assert!(
+            parse_text(b"countries={} doctrine={ countries={ { enable_tactic={ a=1 } } } }")
+                .is_err()
+        );
     }
 
     #[test]

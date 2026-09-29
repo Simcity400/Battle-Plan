@@ -60,7 +60,7 @@ const DOMAIN_TABLES: [TableId; 234] = [
     TableId::Decisions,
     TableId::DynamicModifiers,
     TableId::PreferredTactics,
-    TableId::PreferredTacticOperands,
+    TableId::CountryTacticUnlocks,
     TableId::TechSharingGroups,
     TableId::TechSharingMembers,
     TableId::PowerBalances,

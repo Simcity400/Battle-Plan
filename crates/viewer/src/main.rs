@@ -13,6 +13,7 @@ mod playback;
 mod profiling;
 mod raid_lane;
 mod render;
+mod state_resources;
 mod table_access;
 #[cfg(test)]
 mod unit_scale_tests;

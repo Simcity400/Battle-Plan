@@ -1652,6 +1652,7 @@ mod tests {
                     resource_rows: [0; 3],
                     resource_scratch: 0,
                     resources_active: true,
+                    definitions_slot: true,
                     other_active: true,
                 },
                 payload: Default::default(),

@@ -54,6 +54,9 @@ pub(crate) struct LandDefines {
     pub(crate) learning_threshold: i64,
     pub(crate) armour_hover: ArmourHover,
     pub(crate) reinforce: Reinforce,
+    /// Country, general and field-marshal preferred-tactic weight factors
+    /// (1412A77A0).
+    pub(crate) preference_factors: [i64; 3],
 }
 
 impl LandDefines {
@@ -126,6 +129,11 @@ impl LandDefines {
                 speed_bonus: military("SPEED_REINFORCEMENT_BONUS")?,
                 slowest_speed: military("SLOWEST_SPEED")?,
             },
+            preference_factors: [
+                military("COUNTRY_PREFERRED_TACTIC_WEIGHT_FACTOR")?,
+                military("ARMY_GENERAL_PREFERRED_TACTIC_WEIGHT_FACTOR")?,
+                military("FIELD_MARSHAL_PREFERRED_TACTIC_WEIGHT_FACTOR")?,
+            ],
         })
     }
 }

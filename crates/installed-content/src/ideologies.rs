@@ -65,6 +65,17 @@ impl Ideologies {
     pub fn groups(&self) -> (&[Ideology], Option<&Gap>) {
         (&self.groups, self.coverage.any_gap())
     }
+
+    /// A database of these groups, with a file stopping short where `gap`
+    /// names one, for other modules' tests.
+    #[cfg(test)]
+    pub(crate) fn from_groups(groups: Vec<Ideology>, gap: Option<(&str, &str)>) -> Self {
+        let mut coverage = Coverage::default();
+        if let Some((path, cause)) = gap {
+            coverage.gap(path, cause);
+        }
+        Self { groups, coverage }
+    }
 }
 
 /// Which reader a field goes to.

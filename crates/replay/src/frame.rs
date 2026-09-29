@@ -1299,7 +1299,7 @@ mod tests {
     fn shared_baselines_survive_cadence_and_owned_equal_inputs_without_reallocation() {
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
-        let table = TableId::AdvisorRoles;
+        let table = TableId::HiredAdvisors;
         let first = shared_input(source(1, 0));
         let TableInput::SharedComplete(rows) = &first.tables[table.index()] else {
             panic!()
@@ -1910,7 +1910,7 @@ mod tests {
     #[test]
     fn cadence_carry_requires_complete_same_branch_non_keyframe_baseline() {
         let mut encoder = FrameEncoder::new();
-        let table = TableId::AdvisorRoles;
+        let table = TableId::HiredAdvisors;
         assert!(!encoder.can_carry(table, 1, 1, false));
         encoder.encode(source(1, 0), false).unwrap();
         assert!(encoder.can_carry(table, 1, 1, false));

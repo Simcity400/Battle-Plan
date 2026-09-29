@@ -3297,12 +3297,10 @@ fn original_tag_lists_derive_from_a_loaded_branch() {
 }
 
 /// Germany (raw links 11 and `germany`, slot 7), Italy (21, slot 8) and Spain
-/// (31, slot 9), with steel and oil. `read` times a walk of the resource slot's
-/// exchange table only, as a shared read times only its anchor; the country
-/// table is timed every hour. Deals are (handle, exporter, importer, delivered).
+/// (31, slot 9), with steel and oil. Deals are (handle, exporter, importer,
+/// delivered).
 fn resource_frame(
     hour: i32,
-    read: bool,
     steel: i64,
     germany: u32,
     deals: &[(u64, u32, u32, i64)],
@@ -3392,15 +3390,11 @@ fn resource_frame(
                 })
                 .collect(),
         ));
-    frame.metrics.table_ns[TableId::Countries.index()] = 1;
-    if read {
-        frame.metrics.table_ns[TableId::ResourceExchanges.index()] = 1;
-    }
     frame
 }
 
 #[test]
-fn resource_values_start_at_reads_carry_until_the_next_and_never_cross_gaps() {
+fn resource_values_run_over_recorded_hours_and_never_cross_gaps() {
     use crate::products::resource_balance::{TradeDirection, scan};
     let import = [(0x33, 21, 9001, 800_000)];
     let both = [(0x33, 21, 9001, 800_000), (0x44, 11, 31, 1_700_000)];
@@ -3409,18 +3403,20 @@ fn resource_values_start_at_reads_carry_until_the_next_and_never_cross_gaps() {
         &[records(
             1,
             vec![
-                resource_frame(100, true, 30_100_000, 9001, &import),
-                resource_frame(101, false, 30_100_000, 9001, &import),
-                // A value seen off a read is not a read: the hour carries hour 100's.
-                resource_frame(102, false, 1, 9001, &import),
-                resource_frame(103, true, 30_100_000, 9001, &both),
-                resource_frame(104, true, 31_000_000, 9001, &both),
-                // Hour 105 is missing: 106 carries nothing until the next read.
-                resource_frame(106, false, 31_000_000, 9001, &both),
-                resource_frame(107, true, 31_000_000, 9001, &both),
-                // Another country took the tag: its carried rows are not Germany's.
-                resource_frame(108, false, 31_000_000, 9002, &both),
-                resource_frame(109, true, 31_000_000, 9002, &[]),
+                resource_frame(100, 30_100_000, 9001, &import),
+                resource_frame(101, 30_100_000, 9001, &import),
+                // Every table is read every hour, so a new value shows at once.
+                resource_frame(102, 1, 9001, &import),
+                resource_frame(103, 30_100_000, 9001, &both),
+                resource_frame(104, 31_000_000, 9001, &both),
+                // Hour 105 is missing: 106 starts anew.
+                resource_frame(106, 31_000_000, 9001, &both),
+                resource_frame(107, 31_000_000, 9001, &both),
+                // Another country took the tag: its pools and deals start anew.
+                // Italy's deal names Germany's old link, so it is not the new
+                // Germany's.
+                resource_frame(108, 31_000_000, 9002, &both),
+                resource_frame(109, 31_000_000, 9002, &[]),
             ],
         )],
     )
@@ -3430,7 +3426,6 @@ fn resource_values_start_at_reads_carry_until_the_next_and_never_cross_gaps() {
         scanned.resources,
         [(1, "steel".to_owned()), (2, "oil".to_owned())]
     );
-    assert_eq!(scanned.reads, [100, 103, 104, 107, 109]);
     let steel: Vec<_> = scanned.series[&1]
         .iter()
         .map(|run| {
@@ -3445,10 +3440,12 @@ fn resource_values_start_at_reads_carry_until_the_next_and_never_cross_gaps() {
     assert_eq!(
         steel,
         [
-            (100, 103, true, "30100000"),
+            (100, 101, true, "30100000"),
+            (102, 102, false, "1"),
+            (103, 103, false, "30100000"),
             (104, 104, false, "31000000"),
-            (107, 107, true, "31000000"),
-            (109, 109, true, "31000000"),
+            (106, 107, true, "31000000"),
+            (108, 109, true, "31000000"),
         ]
     );
     let run = &scanned.series[&1][0];
@@ -3481,9 +3478,18 @@ fn resource_values_start_at_reads_carry_until_the_next_and_never_cross_gaps() {
         [
             (TradeDirection::Import, "ITA", 100, 104, true),
             (TradeDirection::Export, "SPR", 103, 104, true),
-            (TradeDirection::Import, "ITA", 107, 107, true),
-            (TradeDirection::Export, "SPR", 107, 107, true),
+            (TradeDirection::Import, "ITA", 106, 107, true),
+            (TradeDirection::Export, "SPR", 106, 107, true),
+            (TradeDirection::Export, "SPR", 108, 108, true),
         ]
+    );
+    assert_eq!(
+        scanned
+            .deal_hours
+            .iter()
+            .map(|span| (span.first_hour, span.last_hour))
+            .collect::<Vec<_>>(),
+        [(100, 104), (106, 109)]
     );
     assert_eq!(scanned.trades[0].delivered_raw, "800000");
     assert_eq!(scanned.unnamed + scanned.unresolved, 0);
@@ -3501,8 +3507,8 @@ fn resource_balance_replies_without_content_and_answers_again_from_the_cache() {
             &[records(
                 1,
                 vec![
-                    resource_frame(100, true, 30_100_000, 9001, &[]),
-                    resource_frame(101, false, 30_100_000, 9001, &[]),
+                    resource_frame(100, 30_100_000, 9001, &[]),
+                    resource_frame(101, 30_100_000, 9001, &[]),
                 ],
             )],
         )
@@ -3558,7 +3564,7 @@ fn resource_balance_replies_without_content_and_answers_again_from_the_cache() {
         tag: "XXX".into(),
         ..params
     });
-    assert!(other.reads.is_empty());
+    assert!(other.series.is_empty());
     assert!(
         other
             .warnings
@@ -3582,25 +3588,25 @@ fn resource_pools_and_deals_keep_their_own_values_when_the_other_table_is_missin
         &[records(
             1,
             vec![
-                resource_frame(100, true, 30_100_000, 9001, &deal),
-                // The deals were not captured at this read: the pools still count.
+                resource_frame(100, 30_100_000, 9001, &deal),
+                // The deals were not captured at this hour: the pools still count,
+                // and the deals are unknown, not none.
                 missing(
-                    resource_frame(101, true, 30_100_000, 9001, &deal),
+                    resource_frame(101, 30_100_000, 9001, &deal),
                     TableId::ResourceExchanges,
                 ),
-                resource_frame(102, true, 30_100_000, 9001, &deal),
-                // The pools were not captured at this read: the deals still count.
+                resource_frame(102, 30_100_000, 9001, &deal),
+                // The pools were not captured at this hour: the deals still count.
                 missing(
-                    resource_frame(103, true, 30_100_000, 9001, &deal),
+                    resource_frame(103, 30_100_000, 9001, &deal),
                     TableId::CountryResources,
                 ),
-                resource_frame(104, true, 30_100_000, 9001, &deal),
+                resource_frame(104, 30_100_000, 9001, &deal),
             ],
         )],
     )
     .unwrap();
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
-    assert_eq!(scanned.reads, [100, 101, 102, 104]);
     let spans = |spans: &[crate::products::country_groups::HourSpan]| {
         spans
             .iter()
@@ -3622,57 +3628,6 @@ fn resource_pools_and_deals_keep_their_own_values_when_the_other_table_is_missin
 }
 
 #[test]
-fn deals_missing_at_a_carried_hour_are_unknown_from_there_while_the_pools_go_on() {
-    use crate::products::resource_balance::scan;
-    let deal = [(0x33, 21, 9001, 800_000)];
-    let mut missing = resource_frame(101, false, 30_100_000, 9001, &deal);
-    *missing.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable {
-        reason: "fixture".into(),
-    };
-    let replay = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(
-            1,
-            vec![
-                resource_frame(100, true, 30_100_000, 9001, &deal),
-                // Carried hours: the deal table fails at 101 and is back at 102, but
-                // only a read can say what the deals are again.
-                missing,
-                resource_frame(102, false, 30_100_000, 9001, &deal),
-                resource_frame(103, true, 30_100_000, 9001, &deal),
-            ],
-        )],
-    )
-    .unwrap();
-    let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
-    // The pools of read 100 carry through; their deals are known only at 100.
-    assert_eq!(scanned.reads, [100, 103]);
-    assert_eq!(
-        scanned.series[&1]
-            .iter()
-            .map(|run| (run.first_hour, run.last_hour))
-            .collect::<Vec<_>>(),
-        [(100, 103)]
-    );
-    assert_eq!(
-        scanned
-            .deal_hours
-            .iter()
-            .map(|span| (span.first_hour, span.last_hour))
-            .collect::<Vec<_>>(),
-        [(100, 100), (103, 103)]
-    );
-    assert_eq!(
-        scanned
-            .trades
-            .iter()
-            .map(|trade| (trade.first_hour, trade.last_hour))
-            .collect::<Vec<_>>(),
-        [(100, 100), (103, 103)]
-    );
-}
-
-#[test]
 fn a_repeated_resource_token_is_its_own_resource_and_never_blanks_the_others() {
     use crate::products::{
         CountryParams, LoadContext, Product,
@@ -3681,7 +3636,7 @@ fn a_repeated_resource_token_is_its_own_resource_and_never_blanks_the_others() {
     use replay::rows::{CountryResourceRow, ResourceDefinitionRow};
     // Resource 3 repeats resource 1's token, as a second declaration in content would.
     let repeated = |hour| {
-        let mut frame = resource_frame(hour, true, 30_100_000, 9001, &[]);
+        let mut frame = resource_frame(hour, 30_100_000, 9001, &[]);
         if let TableView::Complete(TableRows::ResourceDefinitions(rows)) =
             &mut *frame.tables[TableId::ResourceDefinitions.index()]
         {

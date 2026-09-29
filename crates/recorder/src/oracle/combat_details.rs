@@ -229,66 +229,6 @@ fn naval_commander_values(
     }
     Ok(())
 }
-/// Each assigned trait's recorded expiry (140C07810) against the saved
-/// `traits_to_remove`: C0D920 writes the +0xDE0 timed-trait vector in native
-/// order as each trait's token and signed days, so the first saved entry of a
-/// trait's token is the entry 140C07810 finds, and no entry is -1.
-fn trait_expiry(
-    r: &mut Report,
-    label: &str,
-    side: &replay::rows::LandCombatSideDetails,
-    save: &Save,
-) {
-    let leader = save
-        .characters
-        .manager
-        .as_ref()
-        .and_then(|manager| manager.unit_leaders.get(&side.commander));
-    trait_expiry_against(r, label, side, leader);
-}
-
-fn trait_expiry_against(
-    r: &mut Report,
-    label: &str,
-    side: &replay::rows::LandCombatSideDetails,
-    leader: Option<&save::characters::UnitLeader>,
-) {
-    if side.commander == 0 {
-        equal(
-            r,
-            format!("{label} trait expiry count"),
-            side.trait_expiry_days.len(),
-            0,
-        );
-        return;
-    }
-    equal(
-        r,
-        format!("{label} trait expiry count"),
-        side.trait_expiry_days.len(),
-        side.traits.len(),
-    );
-    // commander_values reports a commander missing from the save.
-    let Some(leader) = leader else {
-        return;
-    };
-    for (index, (item, days)) in side.traits.iter().zip(&side.trait_expiry_days).enumerate() {
-        let label = format!("{label} assigned trait {index} expiry");
-        if item.token_id == 0x167 || item.token.contains(&0) {
-            r.limitation(
-                "reserved numeric or interior-NUL trait token has no proven literal text projection; its expiry is not compared",
-                label,
-            );
-            continue;
-        }
-        let saved = leader
-            .timed_traits
-            .iter()
-            .find(|timed| timed.token == item.token)
-            .map_or(-1, |timed| timed.days);
-        equal(r, label, *days, saved);
-    }
-}
 
 /// writes `leader` exactly when the +0x88 pointer is set; army groups carry
 /// no leader and never match a side commander.
@@ -335,9 +275,84 @@ fn formation(
     }
 }
 
+/// The side commander's timed traits (+0xDE0) against `traits_to_remove`
+/// (0x3969), which C0D920 writes in vector order as each trait's +8 token and
+/// signed remaining days, omitting an empty vector. The saved leader's
+/// presence is `commander_values`' comparison.
+fn timed_traits(
+    r: &mut Report,
+    label: &str,
+    side: &replay::rows::LandCombatSideDetails,
+    save: &Save,
+    tokens: &TokenNames<'_>,
+) {
+    if side.commander == 0 {
+        equal(
+            r,
+            format!("{label} timed traits"),
+            side.timed_traits.len(),
+            0,
+        );
+        return;
+    }
+    if !(0..=2).contains(&side.commander_category) {
+        return;
+    }
+    let Some(saved) = save
+        .characters
+        .manager
+        .as_ref()
+        .and_then(|manager| manager.unit_leaders.get(&side.commander))
+    else {
+        return;
+    };
+    equal(
+        r,
+        format!("{label} timed trait count"),
+        side.timed_traits.len(),
+        saved.timed_traits.len(),
+    );
+    for (index, (a, b)) in side
+        .timed_traits
+        .iter()
+        .zip(&saved.timed_traits)
+        .enumerate()
+    {
+        let label = format!("{label} timed trait {index}");
+        equal(r, format!("{label} days"), a.remaining_days, b.days);
+        match u32::try_from(a.token_id).ok().and_then(|id| tokens.get(&id)) {
+            Some(literal) if a.token_id != 0x167 && !literal.contains(&0) => equal(
+                r,
+                format!("{label} token"),
+                *literal,
+                b.token.as_slice(),
+            ),
+            _ => r.limitation(
+                "timed trait token has no recorded lexical spelling or is the reserved numeric formatter token; only its days are compared",
+                label,
+            ),
+        }
+    }
+}
+
 fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDetails>()?;
     let formations = formations(save)?;
+    // Only timed traits need the dictionary; its absence limits them alone.
+    let timed = rows
+        .iter()
+        .any(|row| row.sides.iter().any(|side| !side.timed_traits.is_empty()));
+    let tokens = match timed.then(|| lexical_tokens(frame, r)) {
+        None => TokenNames::new(),
+        Some(Ok(tokens)) => tokens,
+        Some(Err(error)) => {
+            r.limitation(
+                "recorded lexical dictionary is incomplete; timed trait tokens are not compared",
+                error.to_string(),
+            );
+            TokenNames::new()
+        }
+    };
     let mut seen = BTreeSet::new();
     for row in rows {
         if !seen.insert(row.combat) {
@@ -375,6 +390,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 },
                 save,
             )?;
+            timed_traits(r, &format!("{label} commander"), actual, save, &tokens);
             equal(
                 r,
                 format!("{label} committed"),
@@ -400,7 +416,6 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 side.tactic,
             );
             formation(r, &label, actual, &formations);
-            trait_expiry(r, &format!("{label} commander"), actual, save);
             positive_decimal(
                 r,
                 &format!("{label} anti_air_attack"),
@@ -451,7 +466,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         r.difference(format!("LandCombatDetails {id}"), "absent", "present");
     }
     r.compared("LandCombatDetails", rows.len());
-    r.limitation("Hourly samples cannot reproduce every tick or battles beginning and ending between samples. Ordered committed/reserve handles, air counts, positive damage/anti-air/kill fields, valid tactic ids, commander name tokens and formation references, each assigned trait's expiry days against the first saved traits_to_remove entry of its token, and mature organisation-loss rings are compared; the saved loss-ring index has no recorded counterpart (no window or tooltip reads it: only serialization and 1412A2AA0's count test touch +0x1A8/+0x1AC). A positive-only omitted scalar proves only nonpositive, not its exact raw value. Before 24 organisation-loss observations the window does not consume the ring and the recording leaves its values unsampled; only the count is compared. Saved terrain is compared to its separately captured stored terrain cache, never to the independent province-derived window terrain. Phase, width/bonus inputs, tactic definition metadata, commander runtime modifiers/traits and other presentation caches are not validated by these save matches", "LandCombatDetails");
+    r.limitation("Hourly samples cannot reproduce every tick or battles beginning and ending between samples. Ordered committed/reserve handles, air counts, positive damage/anti-air/kill fields, valid tactic ids, commander name tokens, ordered timed traits (tokens and signed days) and formation references, and mature organisation-loss rings are compared; the saved loss-ring index has no recorded counterpart (no window or tooltip reads it: only serialization and 1412A2AA0's count test touch +0x1A8/+0x1AC). A positive-only omitted scalar proves only nonpositive, not its exact raw value. Before 24 organisation-loss observations the window does not consume the ring and the recording leaves its values unsampled; only the count is compared. Saved terrain is compared to its separately captured stored terrain cache, never to the independent province-derived window terrain. Phase, width/bonus inputs, tactic definition metadata, commander runtime modifiers/traits and other presentation caches are not validated by these save matches", "LandCombatDetails");
     Ok(())
 }
 
@@ -1403,6 +1418,64 @@ fn results(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay::rows::{LandCombatCommanderTimedTrait, LandCombatSideDetails};
+
+    #[test]
+    fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
+        let save = installed_content::save::parse(
+            br#"HOI4txt
+            date=1942.9.6.2 game_unique_id=test version=test game_unique_seed=1 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
+            countries={} states={} provinces={}
+            equipment_market={contracts={}} supply_system_2={countries={}}
+            character_manager={historical={character={id={id=8 type=73} token=x
+                corps_commander={id={id=4 type=4713} skill=1 traits_to_remove={sick=20 wounded=-1}}
+            }}}
+            "#,
+        )
+        .unwrap();
+        let timed = |token_id, remaining_days| LandCombatCommanderTimedTrait {
+            token_id,
+            definition_ordinal: 0,
+            remaining_days,
+        };
+        let side = LandCombatSideDetails {
+            commander: (4 << 32) | 4713,
+            commander_category: 1,
+            timed_traits: vec![timed(1, 20), timed(2, -1)],
+            ..Default::default()
+        };
+        let tokens: TokenNames<'static> =
+            BTreeMap::from([(1, b"sick".as_slice()), (2, b"wounded".as_slice())]);
+        let compare = |side: &LandCombatSideDetails, tokens: &TokenNames<'_>| {
+            let mut report = Report::default();
+            timed_traits(&mut report, "side", side, &save, tokens);
+            report
+        };
+        let report = compare(&side, &tokens);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        // Vector order and exact signed days, never a set.
+        let swapped = LandCombatSideDetails {
+            timed_traits: vec![timed(2, -1), timed(1, 20)],
+            ..side.clone()
+        };
+        assert_eq!(compare(&swapped, &tokens).differences.len(), 4);
+        // An unspelled token limits only its own spelling; days still compare.
+        let report = compare(&side, &TokenNames::new());
+        assert!(report.differences.is_empty());
+        assert_eq!(report.limitations.values().flatten().count(), 2);
+        // A capture longer than the save is a count difference.
+        let extra = LandCombatSideDetails {
+            timed_traits: vec![timed(1, 20), timed(2, -1), timed(1, 3)],
+            ..side.clone()
+        };
+        assert_eq!(compare(&extra, &tokens).differences.len(), 1);
+        // No commander carries no timed traits.
+        let absent = LandCombatSideDetails {
+            commander: 0,
+            ..side.clone()
+        };
+        assert_eq!(compare(&absent, &tokens).differences.len(), 1);
+    }
 
     #[test]
     fn null_naval_commander_is_a_limitation_only_at_an_observed_load_hour() {
@@ -1786,47 +1859,6 @@ mod tests {
             &templates,
         );
         assert_eq!(report.differences.len(), 1);
-    }
-    #[test]
-    fn trait_expiry_matches_the_first_saved_timed_entry_of_each_token() {
-        let item = |token: &[u8]| replay::rows::LandCombatCommanderTrait {
-            token: token.to_vec(),
-            ..Default::default()
-        };
-        let side = replay::rows::LandCombatSideDetails {
-            commander: 7,
-            traits: vec![item(b"sick"), item(b"brave"), item(b"calm")],
-            trait_expiry_days: vec![-1, 20, -1],
-            ..Default::default()
-        };
-        let timed = |token: &[u8], days| save::characters::TimedTrait {
-            token: token.to_vec(),
-            days,
-        };
-        let leader = save::characters::UnitLeader {
-            id: 7,
-            character: 1,
-            category: 0,
-            name: None,
-            skill: 1,
-            experience: Decimal::parse(b"0").unwrap(),
-            components: [0; 4],
-            traits: vec![b"sick".to_vec(), b"brave".to_vec(), b"calm".to_vec()],
-            trait_experience: Vec::new(),
-            timed_traits: vec![timed(b"sick", -1), timed(b"brave", 20), timed(b"sick", 4)],
-            captured: false,
-        };
-        let mut report = Report::default();
-        trait_expiry_against(&mut report, "side", &side, Some(&leader));
-        assert!(report.differences.is_empty(), "{:?}", report.differences);
-        let mut wrong = side.clone();
-        wrong.trait_expiry_days = vec![4, 20, -1];
-        trait_expiry_against(&mut report, "side", &wrong, Some(&leader));
-        assert_eq!(report.differences.len(), 1);
-        // One expiry per trait.
-        wrong.trait_expiry_days = vec![-1, 20];
-        trait_expiry_against(&mut report, "side", &wrong, Some(&leader));
-        assert_eq!(report.differences.len(), 2);
     }
 
     #[test]

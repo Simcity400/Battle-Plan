@@ -281,7 +281,7 @@ mod tests {
     fn frame(rows: Vec<HiredAdvisorRow>) -> DecodedFrame {
         let mut frame = DecodedFrame {
             branch: 1,
-            // The advisor roles' daily slot: the table is fresh at this hour.
+            // HiredAdvisors' daily slot: the table is fresh at this hour.
             hour: replay::cadence::refresh_slot(TableId::HiredAdvisors).unwrap() as i32,
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))

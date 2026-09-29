@@ -2,7 +2,7 @@
 //! five decimals: the text after the dot keeps only its first five digits, so
 //! a value is truncated, never rounded.
 
-use crate::crt::{Scanned, scan_i64};
+use crate::crt::{Scanned, scan_i32, scan_i64};
 
 /// `1424b0480`, the script fixed5 conversion: two `%lli` scans
 /// ([`crate::crt::scan_i64`]), the whole part and then up to five fraction
@@ -123,6 +123,82 @@ fn atoll(bytes: &[u8]) -> i64 {
         (signed as i64).wrapping_neg()
     } else {
         signed as i64
+    }
+}
+
+/// `ParseFixed5String` (1424B7050), the console and scoped-variable
+/// conversion, a different function from ParseTokenFixedPoint64's 1424B8600:
+/// the decimal whole part (`atoll`, 14254ADC4) times 100000 plus every byte
+/// after the first `.` taken as a digit without a check, padded to five
+/// places when there are fewer and left as it is when there are more. A
+/// leading `-` negates the fraction of a zero whole part.
+pub fn parse_fixed5_string(bytes: &[u8]) -> i64 {
+    let whole = atoll(bytes);
+    let after = bytes
+        .iter()
+        .position(|byte| *byte == b'.')
+        .map_or(&[][..], |dot| &bytes[dot + 1..]);
+    let mut fraction = after.iter().fold(0_i64, |fraction, byte| {
+        fraction
+            .wrapping_mul(10)
+            .wrapping_add(i64::from(*byte as i8) - 0x30)
+    });
+    if after.len() <= 4 {
+        for _ in after.len()..5 {
+            fraction = fraction.wrapping_mul(10);
+        }
+    }
+    if (bytes.first() == Some(&b'-') && whole == 0) || whole < 0 {
+        fraction = fraction.wrapping_neg();
+    }
+    let part = if fraction.wrapping_mul(100_000) < -0x7fff_ffff_ffff_fffe {
+        0xffff_ffff
+    } else {
+        fraction.wrapping_mul(10_000_000_000) / 10_000_000_000
+    };
+    whole.wrapping_mul(100_000).wrapping_add(part)
+}
+
+/// An integer trigger's operand as `CIntTrigger::vf4` (14138D4E0) reads its
+/// value token, after 1424AB540 has resolved a variable (keep the resolved
+/// token's quoted flag: it decides the path).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntOperand {
+    /// A number token (id 0xC, [`crate::parser::number_token`]) read by
+    /// `%i` ([`crate::crt::scan_i32`], 1424B02C0 with format 142A24BE8):
+    /// base 8 after a leading `0`, base 16 after `0x`, the low 32 bits of
+    /// the 64-bit scan. Bare `010` is 8. A scan that stores nothing (EOF,
+    /// which 1424B02C0 takes as success) leaves the 0 that 14138D4E0 wrote
+    /// first (+0x60).
+    Integer(i32),
+    /// A number token `%i` matches nothing in: 1424B02C0 returns false.
+    Unreadable,
+    /// Any other token is a scoped variable (140539370 -> 140539B50). Text
+    /// made only of `-+0123456789.` (1424B77E0 with the set at 1427BED80)
+    /// is a constant through ParseFixed5String (1424B7050), in fixed5:
+    /// quoted `"010"` is 10.
+    Constant(i64),
+    /// Empty text: 140539B50 logs it and sets nothing.
+    Empty,
+    /// Any other text names a variable or a scope evaluated at run time.
+    Scoped,
+}
+
+/// See [`IntOperand`].
+pub fn int_operand(text: &[u8], quoted: bool) -> IntOperand {
+    if crate::parser::number_token(text, quoted) {
+        return match scan_i32(text) {
+            Scanned::Stored(value) => IntOperand::Integer(value),
+            Scanned::End => IntOperand::Integer(0),
+            Scanned::NoMatch => IntOperand::Unreadable,
+        };
+    }
+    if text.is_empty() {
+        IntOperand::Empty
+    } else if text.iter().all(|byte| b"-+0123456789.".contains(byte)) {
+        IntOperand::Constant(parse_fixed5_string(text))
+    } else {
+        IntOperand::Scoped
     }
 }
 
@@ -270,6 +346,33 @@ mod tests {
             decimal_fixed5(b"99999999999999999999"),
             i64::MAX.wrapping_mul(100_000)
         );
+    }
+
+    /// `%i` on a number token against ParseFixed5String on any other.
+    #[test]
+    fn integer_operands_take_the_token_kinds_path() {
+        assert_eq!(int_operand(b"010", false), IntOperand::Integer(8));
+        assert_eq!(int_operand(b"0x10", false), IntOperand::Integer(16));
+        assert_eq!(int_operand(b"-7", false), IntOperand::Integer(-7));
+        assert_eq!(int_operand(b"-x", false), IntOperand::Unreadable);
+        // EOF stores nothing; 14138D4E0 zeroed the operand first.
+        assert_eq!(int_operand(b"-", false), IntOperand::Integer(0));
+        assert_eq!(int_operand(b"010", true), IntOperand::Constant(1_000_000));
+        assert_eq!(int_operand(b"-0.5", true), IntOperand::Constant(-50_000));
+        assert_eq!(int_operand(b"+.5", false), IntOperand::Constant(50_000));
+        assert_eq!(int_operand(b"", true), IntOperand::Empty);
+        assert_eq!(int_operand(b"var:x", false), IntOperand::Scoped);
+        assert_eq!(int_operand(b"yes", false), IntOperand::Scoped);
+    }
+
+    #[test]
+    fn fixed5_strings_keep_every_fraction_byte() {
+        assert_eq!(parse_fixed5_string(b"1.5"), 150_000);
+        assert_eq!(parse_fixed5_string(b"2.00001"), 200_001);
+        // Six places are not cut back to five.
+        assert_eq!(parse_fixed5_string(b"0.123456"), 123_456);
+        assert_eq!(parse_fixed5_string(b"-1.25"), -125_000);
+        assert_eq!(parse_fixed5_string(b"12"), 1_200_000);
     }
 
     #[test]

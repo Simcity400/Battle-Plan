@@ -22,7 +22,7 @@ use std::mem::size_of;
 #[cfg(test)]
 use replay::rows::TableRows;
 
-pub const N: usize = 23;
+pub const N: usize = 22;
 
 pub const TABLES: [TableId; N] = [
     TableId::Focus,
@@ -37,7 +37,6 @@ pub const TABLES: [TableId; N] = [
     TableId::Decisions,
     TableId::DynamicModifiers,
     TableId::PreferredTactics,
-    TableId::PreferredTacticOperands,
     TableId::TechSharingGroups,
     TableId::TechSharingMembers,
     TableId::PowerBalances,
@@ -59,14 +58,14 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     (
         "Politics, parties, party leaders, ideas and shared country authentication",
         5,
-        &[5, 6, 7, 22],
+        &[5, 6, 7, 21],
     ),
     ("Decision counts and state", 8, &[8, 9]),
     ("Dynamic modifiers", 10, &[10]),
-    ("Preferred tactic and operands", 11, &[11, 12]),
-    ("Technology sharing", 13, &[13, 14]),
-    ("Power balance and children", 15, &[15, 16, 17, 18]),
-    ("Sliced research inputs, bonuses and modifiers", 19, &[19, 20, 21]),
+    ("Preferred tactic", 11, &[11]),
+    ("Technology sharing", 12, &[12, 13]),
+    ("Power balance and children", 14, &[14, 15, 16, 17]),
+    ("Sliced research inputs, bonuses and modifiers", 18, &[18, 19, 20]),
 ];
 
 /// Callback-local inputs for an exclusively owned governance acquisition.
@@ -106,7 +105,7 @@ impl Default for Capacities {
     fn default() -> Self {
         Self {
             rows: [
-                512, 8192, 32768, 2048, 4096, 512, 2048, 16384, 512, 8192, 4096, 512, 512, 128,
+                512, 8192, 32768, 2048, 4096, 512, 2048, 16384, 512, 8192, 4096, 512, 128,
                 1024, 128, 512, 1024, 512, 2048, 4096, 16384, 2048,
             ],
             focus_text: 131072,
@@ -127,16 +126,16 @@ impl Default for Capacities {
 }
 impl Capacities {
     /// One row per canonical country for Focus, Politics, DecisionCounts and
-    /// both preferred-tactic tables; PoliticalParties (and its country arena)
+    /// the preferred-tactic table; PoliticalParties (and its country arena)
     /// one per country and ideology group, ResearchSlots and ResearchInputs
     /// one per country and research slot. The per-country factors keep the
     /// defaults' ratios; larger content still grows on demand.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
-        for index in [0, 5, 8, 11, 12] {
+        for index in [0, 5, 8, 11] {
             raise(&mut self.rows[index], rows(slots, 1));
         }
-        for index in [3, 6, 19] {
+        for index in [3, 6, 18] {
             raise(&mut self.rows[index], rows(slots, 4));
         }
         raise(&mut self.party_countries, self.rows[6]);
@@ -147,7 +146,7 @@ impl Capacities {
     /// rule's headroom. Never lowers.
     pub(crate) fn raise_for_party_leaders(&mut self, leaders: usize) {
         use crate::country_scale::{raise, rows};
-        raise(&mut self.rows[22], rows(leaders, 1));
+        raise(&mut self.rows[21], rows(leaders, 1));
     }
 }
 
@@ -178,7 +177,6 @@ pub struct Captured {
     decisions: CaptureRows<cdecision_status::Row>,
     modifiers: CaptureRows<cdynamic_modifier_container::Row>,
     tactics: CaptureRows<TacticRow>,
-    operands: CaptureRows<ccombat_tactic::WeightRow>,
     sharing: CaptureRows<ctechnology_sharing_group::Row>,
     sharing_members: CaptureRows<ctechnology_sharing_group::MemberRow>,
     balances: CaptureRows<power_balance_record::Row>,
@@ -232,7 +230,7 @@ pub(crate) struct ResearchPart {
 }
 
 /// Indices of the research tables in `TABLES`.
-pub(crate) const RESEARCH: [usize; 3] = [19, 20, 21];
+pub(crate) const RESEARCH: [usize; 3] = [18, 19, 20];
 
 /// Indices of the technologies family's tables in `TABLES`.
 pub(crate) const TECHNOLOGIES: [usize; 2] = [2, 4];
@@ -458,22 +456,21 @@ impl Captured {
             definitions: CaptureRows::new(capacity.rows[4]),
             politics: CaptureRows::new(capacity.rows[5]),
             parties: CaptureRows::new(capacity.rows[6]),
-            party_leaders: CaptureRows::new(capacity.rows[22]),
+            party_leaders: CaptureRows::new(capacity.rows[21]),
             ideas: CaptureRows::new(capacity.rows[7]),
             counts: CaptureRows::new(capacity.rows[8]),
             decisions: CaptureRows::new(capacity.rows[9]),
             modifiers: CaptureRows::new(capacity.rows[10]),
             tactics: CaptureRows::new(capacity.rows[11]),
-            operands: CaptureRows::new(capacity.rows[12]),
-            sharing: CaptureRows::new(capacity.rows[13]),
-            sharing_members: CaptureRows::new(capacity.rows[14]),
-            balances: CaptureRows::new(capacity.rows[15]),
-            balance_members: CaptureRows::new(capacity.rows[16]),
-            ranges: CaptureRows::new(capacity.rows[17]),
-            research_inputs: CaptureRows::new(capacity.rows[19]),
-            research_bonuses: CaptureRows::new(capacity.rows[20]),
-            research_modifiers: CaptureRows::new(capacity.rows[21]),
-            overrides: CaptureRows::new(capacity.rows[18]),
+            sharing: CaptureRows::new(capacity.rows[12]),
+            sharing_members: CaptureRows::new(capacity.rows[13]),
+            balances: CaptureRows::new(capacity.rows[14]),
+            balance_members: CaptureRows::new(capacity.rows[15]),
+            ranges: CaptureRows::new(capacity.rows[16]),
+            research_inputs: CaptureRows::new(capacity.rows[18]),
+            research_bonuses: CaptureRows::new(capacity.rows[19]),
+            research_modifiers: CaptureRows::new(capacity.rows[20]),
+            overrides: CaptureRows::new(capacity.rows[17]),
             focus_text: Arena::new(capacity.focus_text),
             definition_text: Arena::new(capacity.definition_text),
             party_text: Arena::new(capacity.party_text),
@@ -490,7 +487,7 @@ impl Captured {
             dictionary_required: 0,
             focus_raw_mode: false,
             research_loaned: false,
-            research_selection: SliceSelection::new(capacity.rows[19] != 0),
+            research_selection: SliceSelection::new(capacity.rows[18] != 0),
             technology_selection: SliceSelection::new(capacity.rows[2] != 0),
         }
     }
@@ -552,17 +549,16 @@ impl Captured {
             decisions = 9,
             modifiers = 10,
             tactics = 11,
-            operands = 12,
-            sharing = 13,
-            sharing_members = 14,
-            balances = 15,
-            balance_members = 16,
-            ranges = 17,
-            overrides = 18,
-            research_bonuses = 20,
-            research_modifiers = 21,
-            research_inputs = 19,
-            party_leaders = 22,
+            sharing = 12,
+            sharing_members = 13,
+            balances = 14,
+            balance_members = 15,
+            ranges = 16,
+            overrides = 17,
+            research_bonuses = 19,
+            research_modifiers = 20,
+            research_inputs = 18,
+            party_leaders = 21,
         );
         CaptureReport::default()
     }
@@ -580,7 +576,6 @@ impl Captured {
         self.decisions.reset();
         self.modifiers.reset();
         self.tactics.reset();
-        self.operands.reset();
         self.sharing.reset();
         self.sharing_members.reset();
         self.balances.reset();
@@ -619,7 +614,6 @@ impl Captured {
             + self.decisions.allocated_bytes()
             + self.modifiers.allocated_bytes()
             + self.tactics.allocated_bytes()
-            + self.operands.allocated_bytes()
             + self.sharing.allocated_bytes()
             + self.sharing_members.allocated_bytes()
             + self.balances.allocated_bytes()
@@ -660,17 +654,16 @@ impl Captured {
         self.decisions.grow(&mut capacity.rows[9]);
         self.modifiers.grow(&mut capacity.rows[10]);
         self.tactics.grow(&mut capacity.rows[11]);
-        self.operands.grow(&mut capacity.rows[12]);
-        self.sharing.grow(&mut capacity.rows[13]);
-        self.sharing_members.grow(&mut capacity.rows[14]);
-        self.balances.grow(&mut capacity.rows[15]);
-        self.balance_members.grow(&mut capacity.rows[16]);
-        self.ranges.grow(&mut capacity.rows[17]);
-        self.research_inputs.grow(&mut capacity.rows[19]);
-        self.research_bonuses.grow(&mut capacity.rows[20]);
-        self.research_modifiers.grow(&mut capacity.rows[21]);
-        self.party_leaders.grow(&mut capacity.rows[22]);
-        self.overrides.grow(&mut capacity.rows[18]);
+        self.sharing.grow(&mut capacity.rows[12]);
+        self.sharing_members.grow(&mut capacity.rows[13]);
+        self.balances.grow(&mut capacity.rows[14]);
+        self.balance_members.grow(&mut capacity.rows[15]);
+        self.ranges.grow(&mut capacity.rows[16]);
+        self.research_inputs.grow(&mut capacity.rows[18]);
+        self.research_bonuses.grow(&mut capacity.rows[19]);
+        self.research_modifiers.grow(&mut capacity.rows[20]);
+        self.party_leaders.grow(&mut capacity.rows[21]);
+        self.overrides.grow(&mut capacity.rows[17]);
         capacity.party_countries = capacity.rows[6];
         capacity.idea_countries = capacity.rows[7];
         capacity.decision_countries = capacity.rows[9];
@@ -704,7 +697,6 @@ impl Captured {
             self.decisions.outcome,
             self.modifiers.outcome,
             self.tactics.outcome,
-            self.operands.outcome,
             self.sharing.outcome,
             self.sharing_members.outcome,
             self.balances.outcome,
@@ -733,7 +725,6 @@ impl Captured {
             decisions: &mut self.decisions.rows,
             modifiers: &mut self.modifiers.rows,
             tactics: &mut self.tactics.rows,
-            operands: &mut self.operands.rows,
             sharing: &mut self.sharing.rows,
             sharing_members: &mut self.sharing_members.rows,
             balances: &mut self.balances.rows,
@@ -820,14 +811,13 @@ impl Captured {
         self.decisions.outcome = first.outcomes[9];
         self.modifiers.outcome = first.outcomes[10];
         self.tactics.outcome = first.outcomes[11];
-        self.operands.outcome = first.outcomes[12];
-        self.sharing.outcome = first.outcomes[13];
-        self.sharing_members.outcome = first.outcomes[14];
-        self.balances.outcome = first.outcomes[15];
-        self.balance_members.outcome = first.outcomes[16];
-        self.ranges.outcome = first.outcomes[17];
-        self.overrides.outcome = first.outcomes[18];
-        self.party_leaders.outcome = first.outcomes[22];
+        self.sharing.outcome = first.outcomes[12];
+        self.sharing_members.outcome = first.outcomes[13];
+        self.balances.outcome = first.outcomes[14];
+        self.balance_members.outcome = first.outcomes[15];
+        self.ranges.outcome = first.outcomes[16];
+        self.overrides.outcome = first.outcomes[17];
+        self.party_leaders.outcome = first.outcomes[21];
         self.focus_text.len = first.lens[0];
         self.focus_text.required = first.required[0];
         self.definition_text.len = first.lens[1];
@@ -924,7 +914,6 @@ struct Buffers<'a> {
     decisions: &'a mut [cdecision_status::Row],
     modifiers: &'a mut [cdynamic_modifier_container::Row],
     tactics: &'a mut [TacticRow],
-    operands: &'a mut [ccombat_tactic::WeightRow],
     sharing: &'a mut [ctechnology_sharing_group::Row],
     sharing_members: &'a mut [ctechnology_sharing_group::MemberRow],
     balances: &'a mut [power_balance_record::Row],
@@ -1004,19 +993,9 @@ fn acquire(
     if enabled[2] {
         o.ticks[2] += elapsed(started);
     }
-    let started = qpc();
-    let tactic_context = if enabled[11] {
-        let _reads = read_accounting::table(TABLES[11]);
-        ccombat_tactic::WeightContext::read(memory, base)
-    } else {
-        Err("tactic weight not sampled")
-    };
-    if enabled[11] {
-        o.ticks[11] += elapsed(started);
-    }
     // Every live country was visited without a census error.
     let mut census = true;
-    if enabled[..13].iter().any(|&value| value) || enabled[22] {
+    if enabled[..12].iter().any(|&value| value) || enabled[21] {
         let started = qpc();
         let countries = read_accounting::with_table(TABLES[5], || {
             ccountry::Reader::new(memory, base, game_state)
@@ -1025,11 +1004,11 @@ fn acquire(
         match countries {
             Err(reason) => {
                 census = false;
-                for (outcome, _) in o.outcomes[..13].iter_mut().zip(&enabled[..13]).filter(|(_, active)| **active) {
+                for (outcome, _) in o.outcomes[..12].iter_mut().zip(&enabled[..12]).filter(|(_, active)| **active) {
                     *outcome = Outcome::Unavailable { reason };
                 }
-                if enabled[22] {
-                    o.outcomes[22] = Outcome::Unavailable { reason };
+                if enabled[21] {
+                    o.outcomes[21] = Outcome::Unavailable { reason };
                 }
             }
             Ok(countries) => {
@@ -1042,11 +1021,11 @@ fn acquire(
                         Ok(None) => continue,
                         Err(reason) => {
                             census = false;
-                            for (outcome, _) in o.outcomes[..13].iter_mut().zip(&enabled[..13]).filter(|(_, active)| **active) {
+                            for (outcome, _) in o.outcomes[..12].iter_mut().zip(&enabled[..12]).filter(|(_, active)| **active) {
                                 *outcome = Outcome::Unavailable { reason };
                             }
-                            if enabled[22] {
-                                o.outcomes[22] = Outcome::Unavailable { reason };
+                            if enabled[21] {
+                                o.outcomes[21] = Outcome::Unavailable { reason };
                             }
                             break;
                         }
@@ -1120,7 +1099,7 @@ fn acquire(
                         append(&mut o.outcomes[3], result);
                         o.ticks[3] += elapsed(started);
                     }
-                    if enabled[5] || enabled[22] {
+                    if enabled[5] || enabled[21] {
                         let _reads = read_accounting::table(TABLES[5]);
                         let started = qpc();
                         match cpolitical_status::Reader::new(memory, base, country.pointer) {
@@ -1130,21 +1109,21 @@ fn acquire(
                                         o.outcomes[index] = Outcome::Unavailable { reason };
                                     }
                                 }
-                                if enabled[22] {
-                                    o.outcomes[22] = Outcome::Unavailable { reason };
+                                if enabled[21] {
+                                    o.outcomes[21] = Outcome::Unavailable { reason };
                                 }
                             }
                             Ok(reader) => {
                                 // PartyLeaders shares Politics' hourly walk and
                                 // authenticated status, charged to its own table.
-                                if enabled[22] {
-                                    let _reads = read_accounting::table(TABLES[22]);
+                                if enabled[21] {
+                                    let _reads = read_accounting::table(TABLES[21]);
                                     let leaders = qpc();
-                                    let first = o.outcomes[22].len();
+                                    let first = o.outcomes[21].len();
                                     let result = reader
                                         .party_leaders(country.id, &mut b.party_leaders[first..]);
-                                    append(&mut o.outcomes[22], result);
-                                    o.ticks[22] += elapsed(leaders);
+                                    append(&mut o.outcomes[21], result);
+                                    o.ticks[21] += elapsed(leaders);
                                 }
                                 let first = o.outcomes[5].len();
                                 let result = reader
@@ -1285,24 +1264,6 @@ fn acquire(
                             }
                         };
                         append(&mut o.outcomes[11], result);
-                        // The context was acquired once before entering this loop.
-                        let result = match tactic_context {
-                            Ok(context) => match ccombat_tactic::weight(
-                                memory,
-                                country.pointer,
-                                &selected,
-                                context,
-                            ) {
-                                Ok(Some(row)) => {
-                                    let first = o.outcomes[12].len();
-                                    one(&mut b.operands[first..], row)
-                                }
-                                Ok(None) => Outcome::Rows { len: 0 },
-                                Err(reason) => Outcome::Unavailable { reason },
-                            },
-                            Err(reason) => Outcome::Unavailable { reason },
-                        };
-                        append(&mut o.outcomes[12], result);
                         o.ticks[11] += elapsed(started);
                     }
                 }
@@ -1366,17 +1327,17 @@ fn acquire(
     o.required[10] = required_rows(o.outcomes[7]);
     o.lens[11] = o.outcomes[9].len();
     o.required[11] = required_rows(o.outcomes[9]);
-    if enabled[13] {
-        let _reads = read_accounting::table(TABLES[13]);
+    if enabled[12] {
+        let _reads = read_accounting::table(TABLES[12]);
         let started = qpc();
         let result =
             ctechnology_sharing_group::walk(memory, base, game_state, b.sharing, b.sharing_members);
-        o.outcomes[13] = result.groups;
-        o.outcomes[14] = result.members;
-        o.ticks[13] += elapsed(started);
+        o.outcomes[12] = result.groups;
+        o.outcomes[13] = result.members;
+        o.ticks[12] += elapsed(started);
     }
-    if enabled[15] {
-        let _reads = read_accounting::table(TABLES[15]);
+    if enabled[14] {
+        let _reads = read_accounting::table(TABLES[14]);
         let started = qpc();
         let result = power_balance_manager::walk(
             memory,
@@ -1390,13 +1351,13 @@ fn acquire(
                 text: b.balance_text,
             },
         );
-        o.outcomes[15] = result.records;
-        o.outcomes[16] = result.members;
-        o.outcomes[17] = result.ranges;
-        o.outcomes[18] = result.overrides;
+        o.outcomes[14] = result.records;
+        o.outcomes[15] = result.members;
+        o.outcomes[16] = result.ranges;
+        o.outcomes[17] = result.overrides;
         o.lens[8] = result.text_len;
         o.required[8] = result.required_text;
-        o.ticks[15] += elapsed(started);
+        o.ticks[14] += elapsed(started);
     }
     o
 }
@@ -1957,20 +1918,6 @@ impl Captured {
                     token: copy_span(tactics, r.token_start, r.row.token_len),
                 },
             )),
-            wrap(view::<tables::PreferredTacticOperands, _>(
-                &self.operands,
-                |_| true,
-                |r| rows::PreferredTacticOperandsRow {
-                    country: r.country,
-                    tactic_id: r.tactic_id,
-                    modifier_key: r.modifier_key,
-                    metadata_flags: r.metadata_flags,
-                    metadata_gate: r.metadata_gate,
-                    country_factor_raw: r.country_factor_raw,
-                    accumulator_raw: r.accumulator_raw,
-                    accumulator_entry_present: r.accumulator_entry_present,
-                },
-            )),
             wrap(view::<tables::TechSharingGroups, _>(
                 &self.sharing,
                 |_| true,
@@ -2109,12 +2056,12 @@ mod tests {
         captured.research_inputs.outcome = Outcome::Rows { len: 1 };
         captured.research_bonuses.outcome = Outcome::Unavailable { reason: "bonus read failed" };
         let tables = captured.tables();
-        let TableView::Complete(TableRows::ResearchInputs(rows)) = &tables[19] else { panic!("inputs missing") };
+        let TableView::Complete(TableRows::ResearchInputs(rows)) = &tables[18] else { panic!("inputs missing") };
         assert_eq!(rows[0].index, 2);
         assert_eq!(rows[0].token, b"abc");
         assert_eq!(rows[0].progress_raw, i64::MAX);
         assert_eq!(rows[0].speed_bonus_raw, i64::MIN);
-        assert!(matches!(&tables[20], TableView::Unavailable { .. }));
+        assert!(matches!(&tables[19], TableView::Unavailable { .. }));
         for table in [TableId::ResearchInputs, TableId::ResearchAppliedBonuses, TableId::ResearchModifiers] {
             for hour in 0..8 { assert!(replay::cadence::should_walk(table, hour, false)); }
         }
@@ -2133,7 +2080,7 @@ mod tests {
         captured.research_modifiers.rows.push(row);
         captured.research_modifiers.outcome = Outcome::Rows { len: 1 };
         let tables = captured.tables();
-        let TableView::Complete(TableRows::ResearchModifiers(rows)) = &tables[21] else { panic!("modifiers missing") };
+        let TableView::Complete(TableRows::ResearchModifiers(rows)) = &tables[20] else { panic!("modifiers missing") };
         assert_eq!((rows[0].country, rows[0].index, rows[0].ordinal), (11, u32::MAX, 7));
         assert_eq!((rows[0].raw, rows[0].auxiliary, rows[0].count), (i64::MIN, i64::MAX, u32::MAX));
         assert_eq!(rows[0].kind, rows::ResearchModifierRow::COUNTRY_SOURCE);

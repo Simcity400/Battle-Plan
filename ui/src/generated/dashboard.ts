@@ -686,7 +686,7 @@ ideologies: Array<IdeologyInfo>,
 unobserved: Array<HourSpan>, warnings: Array<string>, };
 export type PoolRun = { firstHour: number, lastHour: number,
 /**
- * The run follows a gap, a missing read or another country identity.
+ * The run follows a gap, a missing table or another country identity.
  */
 startsSegment: boolean,
 /**
@@ -767,14 +767,9 @@ resources: Array<ResourceInfo>,
  */
 series: Array<ResourceSeries>,
 /**
- * Hours the country's resources were read, ascending: a value shown at a
- * later hour is as of the latest read before it.
- */
-reads: Array<number>,
-/**
- * Hours whose deals are known, as ascending spans: from a read of the deal
- * table over the hours it is carried. The deal table is captured apart from
- * the pools, so pools shown at an hour outside these spans have unknown deals,
- * which is not the same as no deals.
+ * Hours whose deals are known, as ascending spans: the hours the deal table
+ * was recorded. It is captured apart from the pools, so pools shown at an
+ * hour outside these spans have unknown deals, which is not the same as no
+ * deals.
  */
 dealHours: Array<HourSpan>, trades: Array<TradeRun>, warnings: Array<string>, };

@@ -383,7 +383,7 @@ mod tests {
         assert!(sizing.extended != before);
         assert!(!seen.exceeds(&seen) && seen.max(demand) == seen);
     }
-    use crate::extended::{country_appearance, country_counters};
+    use crate::extended::{country_appearance, country_counters, country_tactic_unlocks};
     use engine::{
         ccountry, ccountry_intel, cgame_state as gs, country_intel_row, msvc_string, walk::Outcome,
     };
@@ -418,6 +418,18 @@ mod tests {
     const HISTORY: usize = 0x40;
     const RECORD: usize = 0x10;
     const VALUE_FIELDS: usize = 0x300;
+    // The tactic database and doctrine rows, past the module image
+    // (BASE) and every other region.
+    const TACTIC_DATABASE: usize = 0x2_0000_0000;
+    const TACTIC_ENTRIES: usize = 0x2_0000_1000;
+    const TACTIC_OBJECTS: usize = 0x2_0001_0000;
+    const TACTIC_OBJECT: usize = 0x100;
+    const DOCTRINE_SYSTEM: usize = 0x2_0100_0000;
+    const DOCTRINE_ROWS: usize = 0x2_0200_0000;
+    const UNLOCK_LISTS: usize = 0x2_0400_0000;
+    /// A vanilla-sized tactic database; every country unlocks eight tactics.
+    const TACTICS: usize = 64;
+    const UNLOCKS: usize = 8;
 
     /// Computes every byte on demand, so thousands of countries need no
     /// multi-megabyte fixture: slot `s` is object `OBJECTS + s * OBJECT` with
@@ -460,7 +472,77 @@ mod tests {
     }
 
     impl World {
+        /// The combat-tactics database and one doctrine row per slot.
+        fn tactic_byte(&self, address: usize) -> Option<u8> {
+            use engine::{ccombat_tactic as tactic, country_tactic_unlocks as doctrine};
+            let word = |at: usize, value: u64| (value >> ((address - at) * 8)) as u8;
+            let header = |at: usize, pointer: usize, count: usize| match address - at {
+                0..8 => word(at, pointer as u64),
+                8..12 => word(at + 8, count as u64),
+                _ => word(at + 12, count as u64),
+            };
+            let within = |at: usize, len: usize| (at..at + len).contains(&address);
+            let singleton = BASE + tactic::DATABASE_RVA;
+            if within(singleton, 8) {
+                return Some(word(singleton, TACTIC_DATABASE as u64));
+            }
+            let entries = TACTIC_DATABASE + tactic::DATABASE_ENTRIES;
+            if within(entries, 16) {
+                return Some(header(entries, TACTIC_ENTRIES, TACTICS + 1));
+            }
+            // Entry 0 is the null tactic with ID 0; entry i has ID i.
+            if within(TACTIC_ENTRIES, (TACTICS + 1) * 8) {
+                let index = (address - TACTIC_ENTRIES) / 8;
+                let object = TACTIC_OBJECTS + index * TACTIC_OBJECT;
+                return Some(word(TACTIC_ENTRIES + index * 8, object as u64));
+            }
+            if within(TACTIC_OBJECTS, (TACTICS + 1) * TACTIC_OBJECT) {
+                let index = (address - TACTIC_OBJECTS) / TACTIC_OBJECT;
+                let object = TACTIC_OBJECTS + index * TACTIC_OBJECT;
+                let vtable = match index {
+                    0 => engine::cnull_combat_tactic::VTABLE_RVA,
+                    _ => tactic::VTABLE_RVA,
+                };
+                return Some(match address - object {
+                    0..8 => word(object, (BASE + vtable) as u64),
+                    o if (tactic::ID..tactic::ID + 4).contains(&o) => {
+                        word(object + tactic::ID, index as u64)
+                    }
+                    _ => 0,
+                });
+            }
+            let system = STATE + doctrine::DOCTRINE_SYSTEM;
+            if within(system, 8) {
+                return Some(word(system, DOCTRINE_SYSTEM as u64));
+            }
+            let rows = DOCTRINE_SYSTEM + doctrine::DOCTRINE_ROWS;
+            if within(rows, 16) {
+                return Some(header(rows, DOCTRINE_ROWS, self.slots));
+            }
+            if within(DOCTRINE_ROWS, self.slots * doctrine::DOCTRINE_STRIDE) {
+                let slot = (address - DOCTRINE_ROWS) / doctrine::DOCTRINE_STRIDE;
+                let row = DOCTRINE_ROWS + slot * doctrine::DOCTRINE_STRIDE;
+                let (tag, list) = (row + doctrine::ROW_TAG, row + doctrine::TACTICS);
+                return Some(if within(list, 16) {
+                    header(list, UNLOCK_LISTS + slot * UNLOCKS * 8, UNLOCKS)
+                } else if within(tag, 4) {
+                    word(tag, slot as u64)
+                } else {
+                    0
+                });
+            }
+            if within(UNLOCK_LISTS, self.slots * UNLOCKS * 8) {
+                let entry = (address - UNLOCK_LISTS) / 8;
+                let object = TACTIC_OBJECTS + (1 + entry % TACTICS) * TACTIC_OBJECT;
+                return Some(word(UNLOCK_LISTS + entry * 8, object as u64));
+            }
+            None
+        }
+
         fn byte(&self, address: usize) -> u8 {
+            if let Some(byte) = self.tactic_byte(address) {
+                return byte;
+            }
             let slots = self.slots as u64;
             let word = |at: usize, value: u64| (value >> ((address - at) * 8)) as u8;
             let header = |at: usize, pointer: usize| match address - at {
@@ -834,6 +916,19 @@ mod tests {
         let mut small =
             country_appearance::Captured::with_capacities(&vanilla.extended.country_appearance);
         small.capture(&memory, BASE, STATE);
+        assert!(matches!(small.outcomes()[0], Outcome::Truncated { .. }));
+
+        // Every country's tactic unlock list fits its per-country arena on
+        // the first day; the vanilla-sized arena truncated it.
+        let mut unlocks = country_tactic_unlocks::Captured::with_capacities(
+            &sizing.extended.country_tactic_unlocks,
+        );
+        unlocks.capture(&memory, BASE, STATE, 0, true);
+        assert_eq!(unlocks.outcomes()[0], Outcome::Rows { len: COUNTRIES });
+        let mut small = country_tactic_unlocks::Captured::with_capacities(
+            &vanilla.extended.country_tactic_unlocks,
+        );
+        small.capture(&memory, BASE, STATE, 0, true);
         assert!(matches!(small.outcomes()[0], Outcome::Truncated { .. }));
 
         // The country authentication cache holds the whole census.
@@ -1742,7 +1837,8 @@ mod tests {
         // (measured 2026-09-28 after merging main's fuel and volunteer
         // tables with the raid and political tables; main alone is 16,519 B
         // per slot between 1,500 and 5,000 slots), dominated by the project
-        // pools and the per-slot research, party and raid rows.
+        // pools and the per-slot research, party and raid rows; the doctrine
+        // tactic unlock rows add about 21 bytes per slot.
         assert!(
             large - per_state <= 3_500 * 20 * 1024,
             "vanilla {vanilla}, 1,501 slots {per_state}, 5,001 slots {large}"

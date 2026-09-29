@@ -304,6 +304,7 @@ pub mod country_icon_presentation_functions;
 pub mod country_intel_row;
 pub mod country_memory;
 pub mod country_stability;
+pub mod country_tactic_unlocks;
 pub mod country_volunteer_reader_layout;
 pub mod coverlapping_elements_box;
 pub mod cpdx_3d_object;

@@ -175,38 +175,23 @@ pub struct LandCombatSideDetails {
     pub commander_formation: u64,
     pub presentation: CombatCommanderPresentation,
     pub traits: Vec<LandCombatCommanderTrait>,
+    pub timed_traits: Vec<LandCombatCommanderTimedTrait>,
     pub learning_traits: Vec<LandCombatCommanderLearningTrait>,
-    /// 140C07810 for each of `traits` in order: the signed days of the first
-    /// `CUnitLeader+0xDE0` timed-trait entry holding it, else -1. The trait
-    /// hover's expiry line (141C5F730) shows a nonnegative one (140C0B3C0).
-    pub trait_expiry_days: Vec<i32>,
 }
-value_struct!(LandCombatSideDetails { committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8, tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>, anti_air_attack: i64, air_kills: u32, damage: [i64; 6], organisation_loss: [i64; 24], organisation_loss_count: u32, commander: u64, commander_skill: i32, commander_category: i32, commander_country: u32, commander_experience: i64, commander_name_token: Vec<u8>, commander_description_token: Vec<u8>, commander_formation: u64, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait>, trait_expiry_days: Vec<i32> });
+value_struct!(LandCombatSideDetails { committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8, tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>, anti_air_attack: i64, air_kills: u32, damage: [i64; 6], organisation_loss: [i64; 24], organisation_loss_count: u32, commander: u64, commander_skill: i32, commander_category: i32, commander_country: u32, commander_experience: i64, commander_name_token: Vec<u8>, commander_description_token: Vec<u8>, commander_formation: u64, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, timed_traits: Vec<LandCombatCommanderTimedTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait> });
 
+/// A timed trait of the side's commander (`CUnitLeader+0xDE0`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct LandCombatTacticWeightTerm {
-    pub tactic_id: i32,
-    pub ordinal: u32,
-    pub factor: i64,
-    pub add: i64,
+pub struct LandCombatCommanderTimedTrait {
+    pub token_id: i32,
+    pub definition_ordinal: i32,
+    /// Signed; -1 is not an expiring trait, zero still is (140C0B3C0).
+    pub remaining_days: i32,
 }
-value_struct!(LandCombatTacticWeightTerm {
-    tactic_id: i32,
-    ordinal: u32,
-    factor: i64,
-    add: i64
-});
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct LandCombatTacticUnlock {
-    pub country: u32,
-    pub ordinal: u32,
-    pub unlock_id: u32,
-}
-value_struct!(LandCombatTacticUnlock {
-    country: u32,
-    ordinal: u32,
-    unlock_id: u32
+value_struct!(LandCombatCommanderTimedTrait {
+    token_id: i32,
+    definition_ordinal: i32,
+    remaining_days: i32
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -231,33 +216,22 @@ value_struct!(LandCombatTacticCountryWeight {
     accumulator_entry_present: u8
 });
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct LandCombatTacticCandidate {
-    pub ordinal: u32,
-    pub tactic_id: i32,
-    pub unlock_id: u32,
-    pub only_show_for: u32,
-    pub active: u8,
-    pub base_weight: i64,
-    pub token: Vec<u8>,
-    pub weights: Vec<LandCombatTacticWeightTerm>,
-}
-value_struct!(LandCombatTacticCandidate { ordinal: u32, tactic_id: i32, unlock_id: u32, only_show_for: u32, active: u8, base_weight: i64, token: Vec<u8>, weights: Vec<LandCombatTacticWeightTerm> });
-
+/// The per-side simulation operands of 1412A77A0's preferred-tactic weights;
+/// the candidates, weights and unlocks come from content and
+/// CountryTacticUnlocks. A side whose country set emptied has no country
+/// preference or weight.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatTacticInputs {
-    /// Attacker, defender and viewpoint country. A side's null tag 0 means its
-    /// country set was empty (its last unit had left before teardown); that
-    /// side's country preference, weight and unlocks are then absent.
-    pub countries: [u32; 3],
+    /// Country, general and field-marshal preferred tactic ids per side.
     pub preferred_tactic_ids: [[i32; 3]; 2],
-    pub commander_handles: [[u64; 2]; 2],
-    pub preference_factors: [i64; 3],
     pub country_weights: [LandCombatTacticCountryWeight; 2],
     pub country_weight_present: [u8; 2],
-    pub unlocks: [Vec<LandCombatTacticUnlock>; 3],
 }
-value_struct!(LandCombatTacticInputs { countries: [u32; 3], preferred_tactic_ids: [[i32; 3]; 2], commander_handles: [[u64; 2]; 2], preference_factors: [i64; 3], country_weights: [LandCombatTacticCountryWeight; 2], country_weight_present: [u8; 2], unlocks: [Vec<LandCombatTacticUnlock>;3] });
+value_struct!(LandCombatTacticInputs {
+    preferred_tactic_ids: [[i32; 3]; 2],
+    country_weights: [LandCombatTacticCountryWeight; 2],
+    country_weight_present: [u8; 2]
+});
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandDivisionModifier {
@@ -678,12 +652,11 @@ pub struct LandCombatDetailsRow {
     pub stored_terrain_name: Vec<u8>,
     pub sides: [LandCombatSideDetails; 2],
     pub tactic_inputs: LandCombatTacticInputs,
-    pub tactic_candidates: Vec<LandCombatTacticCandidate>,
 }
 typed_codec!(LandCombatDetailsRow, 64, |row| row.combat as u128,
  |key| Self { combat: key as u64, ..Default::default() },
- |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, phase: read_value(Kind::I32, input)?, width_factor: read_value(Kind::I64, input)?, attacker_bonus: read_value(Kind::I64, input)?, defender_bonus: read_value(Kind::I64, input)?, stored_terrain_valid: read_value(Kind::U8, input)?, stored_terrain_name: read_value(Kind::Bytes, input)?, sides: read_value(Kind::Opaque, input)?, tactic_inputs: read_value(Kind::Opaque, input)?, tactic_candidates: read_value(Kind::Opaque, input)? }),
-  { 0 => (province): U32, 1 => (phase): I32, 2 => (width_factor): I64, 3 => (attacker_bonus): I64, 4 => (defender_bonus): I64, 5 => (stored_terrain_valid): U8, 6 => (stored_terrain_name): Bytes, 7 => (sides): Opaque, 8 => (tactic_inputs): Opaque, 9 => (tactic_candidates): Opaque }, |row| { let _ = row; Ok(()) });
+ |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, phase: read_value(Kind::I32, input)?, width_factor: read_value(Kind::I64, input)?, attacker_bonus: read_value(Kind::I64, input)?, defender_bonus: read_value(Kind::I64, input)?, stored_terrain_valid: read_value(Kind::U8, input)?, stored_terrain_name: read_value(Kind::Bytes, input)?, sides: read_value(Kind::Opaque, input)?, tactic_inputs: read_value(Kind::Opaque, input)? }),
+  { 0 => (province): U32, 1 => (phase): I32, 2 => (width_factor): I64, 3 => (attacker_bonus): I64, 4 => (defender_bonus): I64, 5 => (stored_terrain_valid): U8, 6 => (stored_terrain_name): Bytes, 7 => (sides): Opaque, 8 => (tactic_inputs): Opaque }, |row| { let _ = row; Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatDivisionRow {
@@ -848,7 +821,6 @@ opaque_value!(Option<LandCombatDivisionCommander>);
 opaque_value!(Option<[i64; 3]>);
 opaque_value!(Option<LandCombatExileInputs>);
 opaque_value!(Vec<DivisionCombatModifiers>);
-opaque_value!(Vec<LandCombatTacticCandidate>);
 opaque_value!(Vec<LandDivisionWidthTerm>);
 opaque_value!(Vec<LandReinforcementAcclimatization>);
 opaque_value!(Vec<LandReinforcementModifier>);

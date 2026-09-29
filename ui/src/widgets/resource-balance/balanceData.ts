@@ -23,12 +23,10 @@ const HOUR = (value: unknown) => Number.isInteger(value);
 const ordered = <T extends { firstHour: number; lastHour: number }>(runs: readonly T[]) =>
   runs.every((run, index) => run.firstHour <= run.lastHour && (index === 0 || runs[index - 1].lastHour < run.firstHour));
 
-const ascending = (hours: unknown) => Array.isArray(hours) && hours.every((hour, index) => HOUR(hour) && (index === 0 || hours[index - 1] < hour));
-
 const POOLS = ['producedRaw', 'subjectsRaw', 'importedRaw', 'toExportRaw', 'exportedRaw', 'availableRaw', 'afterProjectsRaw', 'productionRaw'] as const;
 
 /** Checks the reply's shape: resources by ascending native index, one series each,
- * runs in hour order that never overlap, exact raw values and reads in ascending order. */
+ * runs and deal hours in hour order that never overlap, and exact raw values. */
 export function validateResourceBalanceReply(data: unknown): ResourceBalanceReply {
   const reply = data as ResourceBalanceReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
@@ -39,7 +37,7 @@ export function validateResourceBalanceReply(data: unknown): ResourceBalanceRepl
     && Array.isArray(reply.series) && reply.series.length === reply.resources.length
     && reply.series.every((series, index) => series.id === reply.resources[index].id && Array.isArray(series.runs) && ordered(series.runs)
       && series.runs.every(run => HOUR(run.firstHour) && HOUR(run.lastHour) && typeof run.startsSegment === 'boolean' && POOLS.every(key => RAW.test(run[key]))))
-    && ascending(reply.reads) && Array.isArray(reply.dealHours) && ordered(reply.dealHours)
+    && Array.isArray(reply.dealHours) && ordered(reply.dealHours)
     && Array.isArray(reply.trades) && reply.trades.every(trade => typeof trade.deal === 'string' && typeof trade.partner === 'string'
       && reply.resources.some(item => item.id === trade.resource) && (trade.direction === 'import' || trade.direction === 'export')
       && RAW.test(trade.deliveredRaw) && HOUR(trade.factories) && HOUR(trade.convoysAssigned) && HOUR(trade.convoysRequired)
@@ -76,9 +74,9 @@ export function balanceOf(run: PoolRun): Balance {
   };
 }
 
-/** Whether the deals at an hour are known: the deal table was read and carried to
- * that hour, as the product records it. Where it was not (a read or an hour that
- * lacked the table), the deals are unknown, not none, even while the pools go on. */
+/** Whether the deals at an hour are known: the deal table was recorded at that
+ * hour, as the product records it. Where it was not, the deals are unknown, not
+ * none, even while the pools go on. */
 export function dealsKnown(reply: Pick<ResourceBalanceReply, 'dealHours'>, hour: number): boolean {
   return runAt(reply.dealHours, hour) != null;
 }
@@ -104,6 +102,27 @@ export function partnersAt(index: IntervalIndex<TradeRun>, hour: number, resourc
     if (!resources || resources.includes(trade.resource)) partners.add(trade.partner);
   }
   return [...partners];
+}
+
+/** The hours where any of `resources` (native indices) changes, ascending: a pool
+ * run, a deal or the deals' coverage (`dealHours`) starts, or one ends the hour
+ * before, so a change to "not recorded" is a stop too. The over-time chart's
+ * keyboard steps through them (the kit keeps those in view). */
+export function changeHours(reply: ResourceBalanceReply, resources: readonly number[]): number[] {
+  const hours = new Set<number>();
+  const span = (run: { firstHour: number; lastHour: number }) => { hours.add(run.firstHour); hours.add(run.lastHour + 1); };
+  const chosen = reply.series.filter(series => resources.includes(series.id));
+  chosen.forEach(series => series.runs.forEach(span));
+  for (const trade of reply.trades) {
+    if (resources.includes(trade.resource)) span(trade);
+  }
+  // A breakdown shown there says whether the deals are known (the pool ends are stops already).
+  for (const run of reply.dealHours) {
+    for (const hour of [run.firstHour, run.lastHour + 1]) {
+      if (chosen.some(series => runAt(series.runs, hour))) hours.add(hour);
+    }
+  }
+  return [...hours].sort((a, b) => a - b);
 }
 
 /** The largest supply or demand of any resource: over the whole branch, or at one
@@ -223,8 +242,8 @@ const factories = (count: number) => `${count} civilian ${count === 1 ? 'factory
  * where it goes (with each trade partner), what is available and what is needed,
  * then the surplus or deficit. Each direction lists its `maxDeals` largest deals
  * (they come largest first) and sums the rest in one row, so the totals always fit.
- * `trades` is null when the read behind these values did not record the deals:
- * then no partner and no remainder is shown, only that they were not recorded. */
+ * `trades` is null when the deals were not recorded at this hour: then no
+ * partner and no remainder is shown, only that they were not recorded. */
 export function breakdownRows(balance: Balance, trades: Deals | null, decimals: number, partner: CountryLabel, maxDeals = MAX_DEALS): TooltipRow[] {
   const amount = (raw: bigint) => formatAmount(raw, decimals);
   // A difference too small to show at two decimals is not listed as a part.
@@ -240,7 +259,7 @@ export function breakdownRows(balance: Balance, trades: Deals | null, decimals: 
   // no deal accounts for is its own part, never folded into a deal.
   const deals = (pool: bigint, list: readonly TradeRun[] | undefined): TooltipRow[] => {
     // Unknown deals: nothing can be said about partners or what they leave out.
-    if (!list) return pool ? [{ label: 'Trade partners not recorded at this read', tone: 'muted', indent: true }] : [];
+    if (!list) return pool ? [{ label: 'Trade partners not recorded at this hour', tone: 'muted', indent: true }] : [];
     const more = list.slice(limit);
     const rest = pool - total(list);
     return [...list.slice(0, limit).map(deal),
@@ -303,19 +322,18 @@ export interface LineAt { resource: ResourceInfo; color: string; balance: Balanc
  * [`FULL_BREAKDOWN_MAX`] resources) with as many deals as fit, else supply, demand
  * and net per resource, else one row per resource with its net, and a row counting
  * any left out. A screen reader gets the fullest form. */
-export function overTimeTooltip(title: string, lines: readonly LineAt[], decimals: number, partner: CountryLabel, readNote: string | undefined, height: number): TooltipContent {
-  const note = (...parts: (string | undefined)[]) => parts.filter(Boolean).join(' ') || undefined;
+export function overTimeTooltip(title: string, lines: readonly LineAt[], decimals: number, partner: CountryLabel, height: number): TooltipContent {
   const head = (line: LineAt, index: number): TooltipRow => ({ label: resourceName(line.resource), swatch: line.color, strong: true, divider: index > 0 });
   const missing: TooltipRow = { label: 'Not recorded', tone: 'muted' };
   function* forms(): Generator<TooltipContent> {
     if (lines.length <= FULL_BREAKDOWN_MAX) {
       for (const count of dealCounts(lines.map(line => line.deals))) {
-        yield { title, note: readNote, rows: lines.flatMap((line, index) => [head(line, index), ...(line.balance ? breakdownRows(line.balance, line.deals, decimals, partner, count) : [missing])]) };
+        yield { title, rows: lines.flatMap((line, index) => [head(line, index), ...(line.balance ? breakdownRows(line.balance, line.deals, decimals, partner, count) : [missing])]) };
       }
     }
     yield { title, rows: lines.flatMap((line, index) => [head(line, index), ...(line.balance ? summaryRows(line.balance, decimals) : [missing])]),
-      note: note(readNote, lines.length > FULL_BREAKDOWN_MAX ? `Choose at most ${FULL_BREAKDOWN_MAX} resources to see where each comes from and goes.` : 'A taller window shows where each comes from and goes.') };
-    yield { title, note: note(readNote, 'Each resource’s net: a taller window shows supply and demand.'),
+      note: lines.length > FULL_BREAKDOWN_MAX ? `Choose at most ${FULL_BREAKDOWN_MAX} resources to see where each comes from and goes.` : 'A taller window shows where each comes from and goes.' };
+    yield { title, note: 'Each resource’s net: a taller window shows supply and demand.',
       rows: lines.map(line => ({ label: resourceName(line.resource), swatch: line.color, short: true, ...(line.balance ? netValue(line.balance, decimals) : { value: 'Not recorded', tone: 'muted' as const }) })) };
   }
   return fitTooltip(forms(), height, { more: hidden => `${hidden} more ${hidden === 1 ? 'resource' : 'resources'}: a taller window shows them` });

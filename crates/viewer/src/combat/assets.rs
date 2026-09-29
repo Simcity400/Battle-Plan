@@ -68,8 +68,6 @@ pub struct Assets {
     small_flags: Arc<FlagAtlas>,
     /// The small flag cell every [`Flag::inline`] is drawn at.
     pub inline_flag_size: [f32; 2],
-    /// Each combat tactic's picture by registry id, or why it has none.
-    pub(crate) tactic_pictures: super::tooltips::TacticPictures,
     /// The range of convoy weapon values the content allows, fixed5.
     pub convoy_weapon_bound: Result<[i64; 2], String>,
     pub text_colors: fonts::TextColors,
@@ -80,10 +78,13 @@ pub struct Assets {
     pub(crate) naval_name_defines: Result<[i64; 2], String>,
     /// Authored division name groups, which render the recorded selection.
     pub(crate) division_names: installed_content::division_names::Database,
-    /// Tactic literals and commander skill costs for the land hovers.
+    /// Commander skill costs for the land hovers.
     pub(super) tooltips: super::tooltips::Content,
     /// Authored leader traits and advisor ranks for the commander hovers.
     pub(super) commander_tooltips: super::commander_tooltips::Content,
+    /// The content's tactic registry: triggers, weights, effects and
+    /// pictures.
+    pub(super) tactics: super::tactics::Content,
     /// Tooltip delays and screen offsets, or why the content lacks them.
     pub(super) tooltip_defines: Result<super::tooltip_painter::TooltipDefines, String>,
     pub warnings: Vec<String>,
@@ -136,6 +137,26 @@ impl Assets {
     /// unreadable: the key the bindings choose among a country's candidates.
     pub fn has_flag(&self, key: &str) -> bool {
         self.flags.contains(key)
+    }
+
+    /// Hands the tactic triggers the building, ideology and resource names
+    /// LoadKey's count triggers find (1405434F0), from the databases the
+    /// document already loaded, and what a state scope's resource count
+    /// reads: the building types' grants and NBuildings' origin bonuses
+    /// (crate::state_resources), or why the bonuses are unreadable.
+    pub(crate) fn set_count_trigger_names(
+        &mut self,
+        buildings: &installed_content::buildings::Buildings,
+        ideologies: &installed_content::ideologies::Ideologies,
+        resources: &[installed_content::resources::Resource],
+        resource_bonuses: Result<[i64; 2], String>,
+    ) {
+        self.tactics
+            .set_count_names(installed_content::trigger_keys::CountTriggerNames::new(
+                buildings, ideologies, resources,
+            ));
+        self.tactics
+            .set_state_resources(buildings.clone(), resource_bonuses);
     }
 
     /// The normal-set flag of `key`, queued when not decoded yet.
@@ -276,11 +297,6 @@ fn collect(node: &Node, sprites: &mut BTreeSet<String>, fonts: &mut BTreeSet<Str
     }
 }
 
-/// The sprite a tactic picture is declared as.
-pub(super) fn tactic_sprite(picture: &str) -> String {
-    format!("combat_tactic:{picture}")
-}
-
 fn texture_declaration(name: String, texture: String, source: &str) -> gfx::SpriteType {
     gfx::SpriteType {
         name,
@@ -373,12 +389,28 @@ impl Assets {
                 texture_declaration(key, texture, "common/characters"),
             );
         }
-        let file = "common/combat_tactics.txt";
-        let tactic_pictures = super::tooltips::TacticPictures::read(&layers.read(file)?);
-        for picture in tactic_pictures.declared() {
-            let texture = format!("gfx/interface/landcombat/tactics/{picture}.dds");
-            let key = tactic_sprite(picture);
-            declarations.insert(key.clone(), texture_declaration(key, texture, file));
+        // The one trait-name inventory (append_trait 140AD7890) and the one
+        // sub-unit database, for has_trait, has_artillery_ratio, the trait
+        // sprites and the commander hovers.
+        let traits = installed_content::unit_leader::Traits::registered(layers)?;
+        let sub_units =
+            installed_content::unit_leader::sub_units(layers).map_err(|error| error.to_string());
+        // The tactic registry as the game reads it: the file's one read
+        // (installed_content::combat_tactics). Each proven tactic's picture declares
+        // its texture; the widgets look it up through the registry.
+        let tactics =
+            super::tactics::Content::from_database(installed_content::combat_tactics::read(layers)?)
+                .with_inventories(
+                    traits.clone(),
+                    sub_units.as_ref(),
+                    installed_content::scripted_triggers::read(layers)?,
+                )
+                .with_tag_aliases(installed_content::tag_aliases::read(layers)?);
+        for (key, texture) in tactics.pictures() {
+            declarations.insert(
+                key.to_owned(),
+                texture_declaration(key.to_owned(), texture, "common/combat_tactics.txt"),
+            );
         }
         let mut windows = BTreeMap::new();
         for (file, names) in [
@@ -394,6 +426,8 @@ impl Assets {
                     "division_combat_attacker_entry",
                     "division_combat_defender_entry",
                     "reserve_combat_entry",
+                    "tactics_list_view",
+                    "tactics_list_entry",
                     "global_modifier_icon_entry",
                     "modifier_icon_entry",
                 ],
@@ -464,12 +498,20 @@ impl Assets {
         for node in windows.values() {
             collect(node, &mut wanted, &mut wanted_fonts);
         }
-        // Trait-tree connectors also start with GFX_trait_. Inventory the
-        // traits append_trait (140AD7890) registers, by their first spelling,
-        // instead of loading that unrelated editor UI.
-        for name in installed_content::unit_leader::Traits::registered(layers)?.spellings() {
+        // Trait-tree connectors also start with GFX_trait_. Load only the
+        // sprites of the traits append_trait (140AD7890) registers, by their
+        // first spelling, instead of that editor UI. A name that is not UTF-8
+        // is not registered (Traits::unsupported names it).
+        for name in traits.spellings() {
             wanted.insert(format!("GFX_trait_{name}"));
         }
+        let trait_warnings: Vec<String> = traits
+            .unsupported
+            .iter()
+            .map(|reason| {
+                format!("Combat UI: {reason}; no trait sprite is loaded for those names.")
+            })
+            .collect();
         for name in declarations.keys().filter(|name| {
             name.starts_with("GFX_terrain_")
                 || name.starts_with("GFX_navalcombat_ship_icon_")
@@ -495,10 +537,12 @@ impl Assets {
         let mut sprites = BTreeMap::new();
         let (division_names, mut warnings) = installed_content::division_names::read(layers)?;
         let (commander_tooltips, skills) =
-            super::commander_tooltips::Content::load(layers, defines)?;
-        let tooltips = super::tooltips::Content::load(layers, skills)?;
+            super::commander_tooltips::Content::load(layers, defines, sub_units)?;
+        let tooltips = super::tooltips::Content::load(skills);
         warnings.extend(tooltips.warnings().iter().cloned());
         warnings.extend(commander_tooltips.warnings());
+        warnings.extend(trait_warnings);
+        warnings.extend(tactics.warnings().iter().cloned());
         let tooltip_defines = super::tooltip_painter::TooltipDefines::read(defines)
             .map_err(|error| error.to_string());
         if let Err(reason) = &tooltip_defines {
@@ -708,7 +752,6 @@ impl Assets {
             flags,
             small_flags: Arc::clone(small),
             inline_flag_size: small_cell.map(|side| side as f32),
-            tactic_pictures,
             convoy_weapon_bound,
             text_colors: fonts::read_text_colors(layers)?,
             land_defines: super::defines::LandDefines::read(defines)
@@ -722,6 +765,7 @@ impl Assets {
             division_names,
             tooltips,
             commander_tooltips,
+            tactics,
             tooltip_defines,
             warnings,
         })

@@ -8603,7 +8603,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_character_family_matches_raw_and_typed_at_every_slot() {
+    fn character_family_matches_raw_and_typed_at_every_hour() {
         let bytes = fixture();
         let capacities = Capacities {
             rows: [4; N],
@@ -8642,9 +8642,8 @@ mod tests {
                 decoded.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
                 characters_test_kit::assert_matches_direct(&decoded, &typed);
                 assert_eq!(decoded.character_activity(), active);
-                assert!(active[0] && active[3]);
-                assert_eq!(active[1..3], [hour == 21; 2]);
-                assert_eq!(active[4..6], [hour == 21; 2]);
+                // Roster, roles and traits are all hourly (replay::cadence).
+                assert_eq!(active, [true; N]);
             }
         }
     }

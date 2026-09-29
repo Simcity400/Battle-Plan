@@ -1,8 +1,9 @@
 //! Capture cadence. Single source of truth.
 //!
 //! There are three cadences (owner rule): Hourly, Daily and Static.
-//! Hourly: map inputs, character identities and unit leaders. Daily: panel
-//! data, including persistent character roles and traits, and slow map
+//! Hourly: map inputs, character identities, unit leaders, the persistent
+//! character roles and traits and scientist rosters a tactic's `has_trait`
+//! reads, and doctrine tactic unlocks. Daily: panel data and slow map
 //! inputs such as relations, read once per 24 game-hours. A daily table is
 //! walked whole in a fixed slot ([`Cadence::Daily`]) or, when one walk would
 //! make its hour spike, spread over the day one owner slice per hour
@@ -144,9 +145,29 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::DeploymentEquipment
         | TableId::ProductionLicenseRecords => Daily(8),
         TableId::ScriptVariables | TableId::DivisionTemplates => Daily(9),
-        TableId::ResourceDefinitions | TableId::CountryResources | TableId::ResourceExchanges => {
-            Daily(10)
-        }
+        // CountryResources is hourly: a tactic's resource count trigger
+        // (141390640) reads its produced (+0x30) and adjustment (+0xE0)
+        // pools, which are rewritten at any hour: add_resource 14034B550,
+        // modify_building_resources 14035B100, releasing a country
+        // 141143610 and a building level change (1410C71A0 -> 1406F7760 ->
+        // 140CA6D20) each run 140EF2F70 (-> 140CAAE80 and 140CAA590 ->
+        // 140CAE730), as the daily update does (1406DAAF0 -> 1406D4AB0 ->
+        // 1406F7810); a peace conference runs the full recompute 140CA5A80.
+        // ResourceExchanges is hourly: a deal is created, re-sized and
+        // cancelled (amount 0) by 140CA6610 from CCreateTradeCommand
+        // (141B90740; posted by the trade UI 141CA0E30/141CA56B0 and the AI's
+        // CAIInteriorMinister::DailyUpdate 1412F14A0 via 1412ED8E0/1412FD690)
+        // and create_import (1403508E0), and removed by 140CAC2F0 from the
+        // civilian-factory consumer (1419EB1F0 -> 140CAB2C0). Every hour
+        // CGameState::PreHourlyUpdate (1401D8120) runs the trade task
+        // 140EF22E0, which rewrites deliveries (140CAA8C0 and 140CAB1C0 ->
+        // 140C97760 -> UpdateTradeResourceExchange 140C9A7A0) and terminates
+        // deals (140CAC580 -> 140CA6610), as 140EF2F70 does for the writers
+        // above. The collector walks the resource census with both every
+        // hour. ResourceDefinitions stays daily: its rows are content, set
+        // only as it loads (constructor 140BBB090, CPersistent::Read
+        // 1424A9730, the cost token in 140BBD150).
+        TableId::ResourceDefinitions => Daily(10),
         // The raid army search's strategic-region access modes, which the
         // player's UI and the AI's daily step set.
         TableId::ResearchSlots | TableId::NavalRegionAccess => Daily(11),
@@ -166,9 +187,13 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::IntelNetworks => Daily(0),
         TableId::DynamicModifiers | TableId::ActiveIdeas => Daily(15),
         TableId::OperativeMemberships | TableId::WingCumulative => Daily(16),
-        TableId::Scientists
-        | TableId::ScientistSkills
-        | TableId::PowerBalances
+        // Scientists and ScientistSkills, one roster walk, are hourly: a
+        // tactic's character-scope has_trait (1403D7D20) reads the roster
+        // (CCountryCharacters+0xA0) and each scientist's trait count
+        // (CScientist+0x3C), which change at any hour. CRecruitScientistCommand
+        // (141EDEE70) inserts into the roster (1410D8D70) and add_scientist_trait
+        // (1404919B0) appends a trait (1413F5530).
+        TableId::PowerBalances
         | TableId::PowerBalanceMembers
         | TableId::PowerBalanceRanges
         | TableId::PowerBalanceOverrides
@@ -183,7 +208,6 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::ForeignHomebases
         | TableId::PurchaseContracts => Daily(17),
         TableId::PreferredTactics
-        | TableId::PreferredTacticOperands
         | TableId::WorldTension
         | TableId::ThreatSources
         | TableId::ThreatCountryAggregates
@@ -191,17 +215,28 @@ pub const fn cadence(table: TableId) -> Cadence {
         // Raids stay hourly: RaidTargets is the same walk's map-icon projection.
         TableId::SunkShips | TableId::Focus | TableId::CompletedFocuses => Daily(19),
         TableId::IntelligenceAgencies | TableId::OperationTokens => Daily(20),
-        // HiredAdvisors shares the advisor roles' slot, so every appointed
-        // advisor's role (traits, idea, slot) comes from the same refresh. An
-        // appointment is a player or AI decision shown by daily panels; one
-        // made after the slot appears at the next day's slot.
-        TableId::AirAces
-        | TableId::PeaceConferences
-        | TableId::CountryLeaderRoles
-        | TableId::AdvisorRoles
-        | TableId::HiredAdvisors
-        | TableId::UnitLeaderTraits
-        | TableId::UnitLeaderTraitExperience => Daily(21),
+        // The persistent role and trait tables are hourly: a tactic's
+        // character-scope has_trait (1403D7D20) reads them, and their writers
+        // run at any hour. CUnitLeader::AddTrait (140BFF6F0) fills the trait
+        // array (+0xDC8) from CLearnTraitCommand (1418304D0), the officer
+        // commands (14114ACB0 -> 14143ED50 and 14114AE70 -> 14143F2B0, both
+        // -> 14143F7E0), the add-trait effects
+        // (1402E7030, 1402E6250, 1402E8D20) and, when a leader's experience
+        // passes a trait's threshold (140C0EE20), from
+        // CGameState::HourlyGamestate (1401DEF80 -> 140BA9890 -> 140BA7D10);
+        // remove_unit_leader_trait (1402E8920) runs RemoveTrait (140C13BA0).
+        // add_country_leader_role (140348C50) and remove_country_leader_role
+        // (14035C970) insert into and erase from CCharacter+0x98, and
+        // add_advisor_role (140347DF0) and remove_advisor_role (14035C330)
+        // do the same for +0xB0. Effects run when an event option is chosen
+        // (CSelectEventOptionCommand 141527E00 -> 14116ACD0 -> 141527860).
+        // UnitLeaderTraitExperience comes from the same trait walk, so it is
+        // hourly with UnitLeaderTraits. HiredAdvisors, its own walk, keeps
+        // this slot: no hourly consumer reads it, and the hourly AdvisorRoles
+        // is read in the same hour, so every appointed advisor's role (traits,
+        // idea, slot) comes from that refresh. An appointment made after the
+        // slot appears at the next day's slot.
+        TableId::AirAces | TableId::PeaceConferences | TableId::HiredAdvisors => Daily(21),
         TableId::IncomingDiplomaticActions
         | TableId::TechSharingGroups
         | TableId::TechSharingMembers
@@ -348,18 +383,22 @@ mod tests {
             TableId::StateBuildings,
             TableId::ProvinceBuildings,
             TableId::RaidTargetStatuses,
+            // A tactic's has_trait reads the roles, traits and scientist
+            // rosters of the hour; each trait and roster walk moves whole.
+            TableId::CountryLeaderRoles,
+            TableId::AdvisorRoles,
+            TableId::UnitLeaderTraits,
+            TableId::UnitLeaderTraitExperience,
+            TableId::Scientists,
+            TableId::ScientistSkills,
         ] {
             assert_eq!(cadence(table), Cadence::Hourly, "{table:?}");
             assert_eq!(refresh_text(table), "hourly");
         }
+        // The appointed-advisor list keeps its daily slot; the advisor roles
+        // it names are read every hour, so also at that slot.
+        assert_eq!(refresh_slot(TableId::HiredAdvisors), Some(21));
         for family in [
-            &[
-                TableId::CountryLeaderRoles,
-                TableId::AdvisorRoles,
-                TableId::HiredAdvisors,
-                TableId::UnitLeaderTraits,
-                TableId::UnitLeaderTraitExperience,
-            ][..],
             &[
                 TableId::ProjectPrograms,
                 TableId::Projects,

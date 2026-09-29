@@ -4,7 +4,7 @@ import { UNSTORABLE } from '../../dashboard/options.ts';
 import type { PoolRun, ResourceBalanceReply, TradeRun } from '../../generated/dashboard';
 import { clipToSpans, runAt } from '../../charts/series.ts';
 import { tooltipHeight, tooltipRoom, tooltipText } from '../../charts/tooltip.ts';
-import { automaticResource, balanceOf, barScale, breakdownRows, chosenLines, chosenResources, dealsKnown, FULL_BREAKDOWN_MAX, MAX_DEALS, orderResources, overTimeTooltip,
+import { automaticResource, balanceOf, barScale, breakdownRows, changeHours, chosenLines, chosenResources, dealsKnown, FULL_BREAKDOWN_MAX, MAX_DEALS, orderResources, overTimeTooltip,
   partnersAt, resourceName, resourceTooltip, supplyDemandRuns, toggleChosen, tradeIndex, tradesAt, validateResourceBalanceReply } from './balanceData.ts';
 
 const U = 100000;
@@ -21,7 +21,7 @@ const trade = (partner: string, direction: 'import' | 'export', delivered: numbe
   deal: `${partner}${direction}`, resource, direction, partner, deliveredRaw: String(delivered * U), factories: 1, convoysAssigned: 0, convoysRequired: 0,
   firstHour: 100, lastHour: 123, startsSegment: true });
 const REPLY: ResourceBalanceReply = {
-  branchId: '1', tag: 'GER', decimals: 5, warnings: [], reads: [100, 124], dealHours: [{ firstHour: 100, lastHour: 130 }],
+  branchId: '1', tag: 'GER', decimals: 5, warnings: [], dealHours: [{ firstHour: 100, lastHour: 130 }],
   // Resources are told apart by their native index (steel 5, rubber 7), not their token.
   resources: [{ id: 5, token: 'steel', ordinal: 1, name: 'Steel', icon: null }, { id: 7, token: 'rubber', ordinal: 1, name: null, icon: null }],
   series: [{ id: 5, runs: [STEEL, pools(124, 130, { producedRaw: 320, availableRaw: 320, afterProjectsRaw: 316, productionRaw: -30 }, false)] },
@@ -131,6 +131,30 @@ test('long deal lists keep their largest deals, sum the rest and always show the
     .find(row => row.label.endsWith('more deal'))?.label, '1 more deal');
 });
 
+test('the keyboard stops where a chosen resource’s pools or deals change', () => {
+  // Steel's runs start at 100 and 124; its deals run 100 to 123, so they end before 124;
+  // the pools and the deal table end at 130, so 131 is not recorded.
+  assert.deepEqual(changeHours(REPLY, [5]), [100, 124, 131]);
+  const renewed: ResourceBalanceReply = { ...REPLY, trades: [...REPLY.trades, { ...trade('SWE', 'import', 3), firstHour: 110, lastHour: 115 }] };
+  assert.deepEqual(changeHours(renewed, [5]), [100, 110, 116, 124, 131]);
+  // Rubber's run and its one deal both end at 123; nothing shows for rubber at 131.
+  assert.deepEqual(changeHours(REPLY, [7]), [100, 124]);
+  assert.deepEqual(changeHours(REPLY, []), []);
+});
+
+test('the keyboard stops where the pools or the deal table stop being recorded, with no deal rows', () => {
+  // Steel is not recorded from 110 to 119; the deal table is missing at 105 and 106.
+  const gaps: ResourceBalanceReply = { ...REPLY, trades: [], dealHours: [{ firstHour: 100, lastHour: 104 }, { firstHour: 107, lastHour: 130 }],
+    series: [{ id: 5, runs: [pools(100, 109, { producedRaw: 1 }), pools(120, 130, { producedRaw: 2 })] }, { id: 7, runs: [] }] };
+  assert.deepEqual(changeHours(gaps, [5]), [100, 105, 107, 110, 120, 131]);
+  // A deal table change where no chosen pools show changes nothing shown.
+  const late: ResourceBalanceReply = { ...gaps, dealHours: [{ firstHour: 100, lastHour: 112 }, { firstHour: 115, lastHour: 125 }] };
+  assert.deepEqual(changeHours(late, [5]), [100, 110, 120, 126, 131]);
+  // Rubber has no pools, so no stops.
+  assert.deepEqual(changeHours(gaps, [7]), []);
+  assert.deepEqual(changeHours(gaps, []), []);
+});
+
 test('partners are the countries trading at the hour, each once', () => {
   assert.deepEqual(partnersAt(tradeIndex(REPLY), 110), ['SPR', 'SAU', 'ITA']);
   assert.deepEqual(partnersAt(tradeIndex(REPLY), 110, [7]), ['ITA']);
@@ -145,8 +169,8 @@ test('a date range cuts the series through the kit, so supply and demand stay in
   assert.deepEqual(supplyDemandRuns(cut, 5).demand.map(run => [run.firstHour, run.lastHour]), [[110, 123], [124, 126]]);
 });
 test('deals follow their own coverage: unknown where the deal table was missing, even while the pools go on', () => {
-  // The review's case: read 100 recorded pools and deals; the deal table was missing
-  // from hour 110, so the deal runs end at 109 while the pools of read 100 carry on.
+  // The review's case: the deal table was missing from hour 110 to 123, so the deal
+  // runs end at 109 while the pools go on.
   const partial: ResourceBalanceReply = { ...REPLY, dealHours: [{ firstHour: 100, lastHour: 109 }, { firstHour: 124, lastHour: 130 }],
     trades: REPLY.trades.map(item => ({ ...item, lastHour: 109 })) };
   assert.equal(dealsKnown(partial, 105), true);
@@ -157,10 +181,10 @@ test('deals follow their own coverage: unknown where the deal table was missing,
   const hour = 115;
   const run = runAt(partial.series[1].runs, hour)!;
   const shown = breakdownRows({ ...balanceOf(run), imported: 200000n }, dealsKnown(partial, hour) ? tradesAt(tradeIndex(partial), 7, hour) : null, 5, tag => ({ name: tag }));
-  assert.ok(shown.some(row => row.label === 'Trade partners not recorded at this read'));
+  assert.ok(shown.some(row => row.label === 'Trade partners not recorded at this hour'));
   assert.ok(!shown.some(row => row.label === 'Not from a listed deal'));
   const rows = breakdownRows(balanceOf(STEEL), null, 5, tag => ({ name: tag }));
-  assert.deepEqual(rows.filter(row => row.indent).map(row => row.label), ['Trade partners not recorded at this read', 'Set aside, not bought']);
+  assert.deepEqual(rows.filter(row => row.indent).map(row => row.label), ['Trade partners not recorded at this hour', 'Set aside, not bought']);
   assert.ok(!rows.some(row => row.label === 'Not from a listed deal'));
   // Nothing imported: nothing to say about import partners either.
   assert.equal(rows.filter(row => row.label.startsWith('Trade partners')).length, 1);
@@ -204,7 +228,7 @@ function busy(count: number) {
     availableRaw: 2000 + sum(imports) - sum(exports) - 3, afterProjectsRaw: 2000 + sum(imports) - sum(exports) - 3, productionRaw: -40 }));
   return { balance, deals: { imports, exports } };
 }
-const HEAD = { title: 'Steel', icon: 'data:image/png;base64,', subtitle: 'Per day · 1 Jan 1936', note: 'Read 1 Jan 1936 · 00:00; resources are read once a day.' };
+const HEAD = { title: 'Steel', icon: 'data:image/png;base64,', subtitle: 'Per day · 1 Jan 1936' };
 
 test('a resource’s tooltip fits any window with its surplus or deficit shown', () => {
   // The review's case: a 300px window and many deals each way.
@@ -220,9 +244,12 @@ test('a resource’s tooltip fits any window with its surplus or deficit shown',
     }
   }
   const { balance, deals } = busy(20);
-  // Tall enough, it lists every deal it may; at 300px it keeps supply, demand and the net.
+  // Tall enough, it lists every deal it may; at 300px the largest deal each way and the
+  // rest summed; at 280px it keeps supply, demand and the net.
   assert.equal(resourceTooltip(HEAD, balance, deals, 5, tag => ({ name: tag }), 1200).rows.filter(row => row.label.includes('civilian factory')).length, 2 * MAX_DEALS);
-  assert.deepEqual(resourceTooltip(HEAD, balance, deals, 5, tag => ({ name: tag }), 300).rows.map(row => row.label),
+  assert.deepEqual(resourceTooltip(HEAD, balance, deals, 5, tag => ({ name: tag }), 300).rows.filter(row => row.indent).map(row => row.label),
+    ['I00 · 1 civilian factory', '19 more deals', 'E00 · 1 civilian factory', '19 more deals', 'Set aside, not bought']);
+  assert.deepEqual(resourceTooltip(HEAD, balance, deals, 5, tag => ({ name: tag }), 280).rows.map(row => row.label),
     ['Supply', 'Demand', 'A taller window shows where it comes from and goes.', 'Surplus']);
 });
 
@@ -231,7 +258,7 @@ test('an over-time tooltip fits the window with every chosen resource’s net', 
   const line = (index: number) => ({ resource: { id: index, token: `r${index}`, ordinal: 1, name: `R${index}`, icon: null }, color: 'c', balance, deals });
   for (const height of [200, 300, 450, 600, 800, 1200]) {
     for (let count = 1; count <= 8; count++) {
-      const tip = overTimeTooltip('1 Jan 1936 · per day', Array.from({ length: count }, (_, index) => line(index)), 5, tag => ({ name: tag }), undefined, height);
+      const tip = overTimeTooltip('1 Jan 1936 · per day', Array.from({ length: count }, (_, index) => line(index)), 5, tag => ({ name: tag }), height);
       assert.ok(tooltipHeight(tip) <= tooltipRoom(height), `${count} at ${height}`);
       // Every resource is named, or counted in the last row.
       const named = tip.rows.filter(row => /^R\d$/.test(row.label)).length;
@@ -243,7 +270,7 @@ test('an over-time tooltip fits the window with every chosen resource’s net', 
     }
   }
   // Two resources in a tall window: both breakdowns, as many deals as fit.
-  const two = overTimeTooltip('t', [line(1), line(2)], 5, tag => ({ name: tag }), undefined, 1200);
+  const two = overTimeTooltip('t', [line(1), line(2)], 5, tag => ({ name: tag }), 1200);
   assert.equal(two.rows.filter(row => row.label === 'Surplus').length, 2);
   assert.equal(two.spoken, undefined);
 });
@@ -251,7 +278,6 @@ test('an over-time tooltip fits the window with every chosen resource’s net', 
 test('malformed replies are refused', () => {
   assert.equal(validateResourceBalanceReply(REPLY), REPLY);
   const broken = (change: Partial<ResourceBalanceReply>) => () => validateResourceBalanceReply({ ...REPLY, ...change });
-  assert.throws(broken({ reads: [124, 100] }));
   assert.throws(broken({ series: [REPLY.series[1], REPLY.series[0]] }));
   assert.throws(broken({ series: [{ id: 5, runs: [STEEL, STEEL] }, REPLY.series[1]] }));
   assert.throws(broken({ trades: [{ ...REPLY.trades[0], resource: 99 }] }));

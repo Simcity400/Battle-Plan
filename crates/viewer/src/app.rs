@@ -3020,7 +3020,12 @@ impl Viewer {
         // too: counters, combat bubbles, the combat window and its lists.
         let extent = map::ui_scale::extent(pixels, ui_scale);
         if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.combat.close();
+            // Escape closes the tactics popup before the battle window.
+            if self.combat.tactics_open {
+                self.combat.tactics_open = false;
+            } else {
+                self.combat.close();
+            }
         }
         let engaged = self
             .hours
@@ -3044,11 +3049,7 @@ impl Viewer {
             .or_else(|| response.interact_pointer_pos())
             .map(|position| map::ui_scale::to_interface(physical(position), ui_scale));
         if response.drag_started() {
-            self.combat.dragging = point.is_some_and(|point| {
-                combat_geometry.as_ref().is_some_and(|window| {
-                    window.contains(point) && point[1] < window.rect[1] + 35.0
-                })
-            });
+            self.combat.start_drag(combat_geometry.as_ref(), point);
         }
         if response.drag_stopped() {
             self.combat.dragging = false;
@@ -3059,7 +3060,12 @@ impl Viewer {
                     .as_ref()
                     .is_some_and(|window| window.contains(point))
             });
+        let popup_click = response.clicked()
+            && point
+                .zip(combat_geometry.as_ref())
+                .is_some_and(|(point, drawn)| self.combat.handle_click(drawn, point));
         if response.clicked()
+            && !popup_click
             && let Some(point) = point
             && combat_geometry
                 .as_ref()
@@ -3080,8 +3086,8 @@ impl Viewer {
             }
             if response.dragged() && self.combat.dragging {
                 let delta = response.drag_delta();
-                self.combat.offset[0] += delta.x * scale / ui_scale;
-                self.combat.offset[1] += delta.y * scale / ui_scale;
+                self.combat
+                    .drag_by([delta.x * scale / ui_scale, delta.y * scale / ui_scale]);
             }
             if let Some(side) = point.and_then(|point| {
                 combat_geometry

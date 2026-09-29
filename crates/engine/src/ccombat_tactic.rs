@@ -16,6 +16,12 @@ pub const ID: usize = 0x98;
 pub const COUNTER_ID: usize = 0x90;
 /// CCombatTactic u32 modifier-metadata key; archived tactic_weight.rs:29 and preferred-tactic weight reader.
 pub const MODIFIER_KEY: usize = 0x174;
+/// Combat-tactics database singleton that GetCombatTacticsDatabase
+/// (1406B0FC0) reads and lazily creates; the recorder never creates it.
+pub const DATABASE_RVA: usize = 0x0331_88c0;
+/// Database CPdxArray of tactic pointers in ID order; index 0 is the null
+/// entry. 1406B0FC0 zeroes it at +10 on construction.
+pub const DATABASE_ENTRIES: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -35,6 +41,69 @@ pub struct Preferred {
     pub required_token_bytes: usize,
 }
 
+/// One country's authenticated selection: its tactic object and database ID,
+/// `None` for CNullCombatTactic. A null pointer or unknown vtable is an error.
+fn selection(
+    memory: &impl Memory,
+    base: usize,
+    country: usize,
+) -> Result<(usize, Option<i32>), &'static str> {
+    let pointer = country
+        .checked_add(ccountry::PREFERRED_TACTIC)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .filter(|p| *p != 0)
+        .ok_or("preferred tactic pointer unreadable or null")?;
+    let vtable = read::<u64>(memory, pointer).ok_or("preferred tactic vtable unreadable")?;
+    let null_vtable = base
+        .checked_add(cnull_combat_tactic::VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    let selected_vtable = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    if vtable == null_vtable as u64 {
+        return Ok((pointer, None));
+    }
+    if vtable != selected_vtable as u64 {
+        return Err("preferred tactic vtable mismatch");
+    }
+    let tactic_id = pointer
+        .checked_add(ID)
+        .and_then(|p| read::<i32>(memory, p))
+        .filter(|id| *id > 0)
+        .ok_or("preferred tactic id unreadable or invalid")?;
+    Ok((pointer, Some(tactic_id)))
+}
+
+/// [`preferred`] without the token bytes, for a reader that needs only the
+/// selection and its weight: the land tactic weight (1412A77A0) reads no name,
+/// so no name length can make it unavailable.
+pub fn preferred_identity(
+    memory: &impl Memory,
+    base: usize,
+    country: usize,
+    country_id: u32,
+) -> Preferred {
+    match selection(memory, base, country) {
+        Ok((pointer, tactic_id)) => Preferred {
+            outcome: Outcome::Rows { len: 1 },
+            row: Row {
+                country: country_id,
+                tactic_id: tactic_id.unwrap_or_default(),
+                ..Row::default()
+            },
+            pointer,
+            required_token_bytes: 0,
+        },
+        Err(reason) => Preferred {
+            outcome: Outcome::Unavailable { reason },
+            row: Row::default(),
+            pointer: 0,
+            required_token_bytes: 0,
+        },
+    }
+}
+
 /// Reads one country's selection and its exact token bytes. A null pointer or
 /// unknown vtable is unavailable; only CNullCombatTactic means no selection.
 pub fn preferred(
@@ -45,20 +114,8 @@ pub fn preferred(
     token: &mut [u8],
 ) -> Preferred {
     let result = (|| {
-        let pointer = country
-            .checked_add(ccountry::PREFERRED_TACTIC)
-            .and_then(|p| read::<u64>(memory, p))
-            .and_then(|p| usize::try_from(p).ok())
-            .filter(|p| *p != 0)
-            .ok_or("preferred tactic pointer unreadable or null")?;
-        let vtable = read::<u64>(memory, pointer).ok_or("preferred tactic vtable unreadable")?;
-        let null_vtable = base
-            .checked_add(cnull_combat_tactic::VTABLE_RVA)
-            .ok_or("module address overflow")?;
-        let selected_vtable = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")?;
-        if vtable == null_vtable as u64 {
+        let (pointer, tactic_id) = selection(memory, base, country)?;
+        let Some(tactic_id) = tactic_id else {
             return Ok(Preferred {
                 outcome: Outcome::Rows { len: 1 },
                 row: Row {
@@ -68,15 +125,7 @@ pub fn preferred(
                 pointer,
                 required_token_bytes: 0,
             });
-        }
-        if vtable != selected_vtable as u64 {
-            return Err("preferred tactic vtable mismatch");
-        }
-        let tactic_id = pointer
-            .checked_add(ID)
-            .and_then(|p| read::<i32>(memory, p))
-            .filter(|id| *id > 0)
-            .ok_or("preferred tactic id unreadable or invalid")?;
+        };
         let (source, len) = cdynamic_modifier::literal(
             memory,
             pointer
@@ -296,6 +345,67 @@ mod tests {
                 0x1000,
                 9,
                 &mut token
+            )
+            .outcome,
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    /// The identity-only read takes the same selection and ID and never
+    /// reads the name, so a name longer than any buffer cannot make it fail,
+    /// and it weighs the same as the full read.
+    #[test]
+    fn identity_ignores_the_name_and_weighs_as_the_full_read() {
+        let mut bytes = fixture();
+        // A 200-byte heap name at an unmapped address.
+        put(&mut bytes, 0x2800 + TOKEN, 0x9000_0000_u64.to_le_bytes());
+        put(&mut bytes, 0x2800 + TOKEN + 16, 200_u64.to_le_bytes());
+        put(&mut bytes, 0x2800 + TOKEN + 24, 200_u64.to_le_bytes());
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let identity = preferred_identity(&memory, BASE, 0x1000, 9);
+        assert_eq!(identity.outcome, Outcome::Rows { len: 1 });
+        assert_eq!((identity.row.country, identity.row.tactic_id), (9, 7));
+        assert_eq!(identity.pointer, 0x2800);
+        // The full read cannot copy that name into its 128-byte buffer.
+        assert!(!matches!(
+            preferred(&memory, BASE, 0x1000, 9, &mut [0; 128]).outcome,
+            Outcome::Rows { .. }
+        ));
+        let named = fixture();
+        let named = SliceMemory {
+            base: 0x1000,
+            bytes: &named,
+        };
+        let context = WeightContext {
+            country_factor_raw: 1,
+            metadata: 0x3000,
+        };
+        assert_eq!(
+            weight(&memory, 0x1000, &identity, context),
+            weight(
+                &named,
+                0x1000,
+                &preferred(&named, BASE, 0x1000, 9, &mut [0; 2]),
+                context
+            )
+        );
+        put(
+            &mut bytes,
+            0x1000 + ccountry::PREFERRED_TACTIC,
+            0_u64.to_le_bytes(),
+        );
+        assert!(matches!(
+            preferred_identity(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes
+                },
+                BASE,
+                0x1000,
+                9
             )
             .outcome,
             Outcome::Unavailable { .. }

@@ -143,29 +143,24 @@ fn portrait(
 }
 
 /// A side's tactic picture (`{prefix}_tactic`) for a selected combat tactic
-/// (kind 2): the authored picture of the registry entry at its recorded id,
-/// whose name must be the recorded one, when the content has the sprite;
-/// else the widget is hidden with the named refusal.
+/// (kind 2): the registry entry's own picture, through the registry's
+/// identity and refusal checks (1406B0A70's +0x98 ID must name the recorded
+/// token; 1406B3CB0, 141C5DD20), when the content has the sprite; else the
+/// widget is hidden with the named refusal.
 fn tactic(
     out: &mut Bindings,
     has_sprite: &dyn Fn(&str) -> bool,
-    pictures: &super::tooltips::TacticPictures,
+    tactics: &super::tactics::Content,
     key: &str,
     id: i32,
     token: &[u8],
 ) {
-    let value = match pictures.get(id, token) {
-        Ok(picture) => {
-            let sprite = super::assets::tactic_sprite(picture);
-            if has_sprite(&sprite) {
-                Ok(sprite)
-            } else {
-                Err(format!(
-                    "Combat tactic picture {key} is hidden: the content lacks sprite {sprite} for tactic {}",
-                    String::from_utf8_lossy(token)
-                ))
-            }
-        }
+    let name = String::from_utf8_lossy(token);
+    let value = match tactics.picture(id, token) {
+        Ok(picture) if has_sprite(picture) => Ok(picture.to_owned()),
+        Ok(picture) => Err(format!(
+            "Combat tactic picture {key} is hidden: the content lacks sprite {picture} for tactic {name}"
+        )),
         Err(reason) => Err(format!("Combat tactic picture {key} is hidden: {reason}")),
     };
     out.bind(key, SPRITE, value);
@@ -175,8 +170,10 @@ fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandComb
     // Both filters are enabled by 1415C6AB0 (land), 1417D81B0 (naval),
     // and 1417C6800 (results). Preserve native assigned order, not token order.
     let mut entries = Vec::new();
-    // Trait sprites the content lacks, counted by name.
-    let mut missing: std::collections::BTreeMap<String, usize> = Default::default();
+    // Trait sprites that are not loaded, counted by name and why.
+    let mut missing: std::collections::BTreeMap<(String, String), usize> = Default::default();
+    let names = document.icons.combat.tactics.trait_names();
+    let not_declared = || "which the content does not declare".to_owned();
     for value in traits.iter().filter(|t| t.kind != 0 && t.relevant != 0) {
         let mut entry = Values::new();
         if value.kind == 6 {
@@ -192,20 +189,35 @@ fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandComb
                 sprite(&mut entry, "Background", requested);
             } else {
                 // 141C61C40's actual missing-declaration fallback; the
-                // missing sprite is still reported by name.
-                *missing.entry(requested).or_default() += 1;
+                // missing sprite is still reported by name. Only the
+                // content's trait names have their sprites loaded
+                // (installed_content::unit_leader::Traits::registered).
+                let why = if names.contains(&value.token) {
+                    not_declared()
+                } else if names.unsupported.is_empty() {
+                    "which is not loaded: no leader_traits entry of the content names the trait"
+                        .to_owned()
+                } else {
+                    format!(
+                        "which is not loaded: the trait is not among the proven trait names, and {}",
+                        names.unsupported.join("; ")
+                    )
+                };
+                *missing.entry((requested, why)).or_default() += 1;
                 if document.icons.combat.has_sprite("GFX_trait_unknown") {
                     sprite(&mut entry, "Background", "GFX_trait_unknown".into());
                 } else {
-                    *missing.entry("GFX_trait_unknown".into()).or_default() += 1;
+                    *missing
+                        .entry(("GFX_trait_unknown".into(), not_declared()))
+                        .or_default() += 1;
                 }
             }
         }
         entries.push(entry);
     }
-    for (name, count) in missing {
+    for ((name, why), count) in missing {
         out.warnings.push(format!(
-            "Combat traits {key}: {count} trait entries name sprite {name}, which the content does not declare."
+            "Combat traits {key}: {count} trait entries name sprite {name}, {why}."
         ));
     }
     out.values.insert(
@@ -255,7 +267,7 @@ pub(super) fn bind(
                     tactic(
                         out,
                         &has_sprite,
-                        &document.icons.combat.tactic_pictures,
+                        &document.icons.combat.tactics,
                         &format!("{prefix}_tactic"),
                         side.tactic_id,
                         &side.tactic_token,
@@ -392,10 +404,11 @@ mod tests {
         // An undeclared sprite: the setter keeps the widget as it was.
         portrait(&mut out, &has, "leader", &value, 2);
         assert_eq!(out.values["leader"].sprite.as_deref(), Some("GFX_earlier"));
-        let pictures = super::super::tooltips::TacticPictures::read(
-            b"a = { picture = tactic_a } b = { picture = tactic_b }",
-        );
-        tactic(&mut out, &has, &pictures, "tactic", 2, b"b");
+        let tactics =
+            super::super::tactics::Content::from_database(installed_content::combat_tactics::parse(
+                b"a = { picture = tactic_a } b = { picture = tactic_b }",
+            ));
+        tactic(&mut out, &has, &tactics, "tactic", 2, b"b");
         assert_eq!(out.values["tactic"].sprite, None);
         assert!(out.values["tactic"].hidden);
         let refused: Vec<_> = out.refused().keys().cloned().collect();
@@ -406,7 +419,7 @@ mod tests {
                 "Combat tactic picture tactic is hidden: the content lacks sprite combat_tactic:tactic_b for tactic b",
             ]
         );
-        tactic(&mut out, &has, &pictures, "tactic", 1, b"a");
+        tactic(&mut out, &has, &tactics, "tactic", 1, b"a");
         assert_eq!(
             out.values["tactic"].sprite.as_deref(),
             Some("combat_tactic:tactic_a")

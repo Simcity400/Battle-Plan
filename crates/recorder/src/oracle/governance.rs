@@ -114,7 +114,7 @@ fn compare_pack(
     attempt!("Decisions", compare_decisions);
     attempt!("DynamicModifiers", compare_modifiers);
     attempt!("PreferredTactics", compare_tactics);
-    attempt!("PreferredTacticOperands", compare_tactic_operands);
+    attempt!("CountryTacticUnlocks", compare_tactic_unlocks);
     complete &= report.attempt("governance TechSharingGroups", |report| {
         compare_sharing_groups(frame, pack, links, tokens, report)
     });
@@ -1107,18 +1107,101 @@ fn compare_tactics(
     Ok(())
 }
 
-fn compare_tactic_operands(
+/// Each country's recorded doctrine unlocks against its saved doctrine
+/// status. CDoctrineSystem::vf2 (140D6C880) writes one status per slot of
+/// the doctrine array in slot order, and 140D6A7B0 indexes that array by
+/// canonical country slot, so saved status N is slot N's. 1413BA360 writes
+/// the +0x28 vector as `enable_tactic`, each tactic's +0x98 database ID in
+/// vector order, omitting an empty vector. The collector records every
+/// country of the canonical census (every non-null country slot, the
+/// Countries table) with an explicit row, empty included, so every census
+/// country needs its row; a saved status may be absent from the recording
+/// only when its slot is outside that census.
+fn compare_tactic_unlocks(
     frame: &DecodedFrame,
     pack: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let operands = complete::<tables::PreferredTacticOperands>(frame)?;
-    for row in operands {
-        country(pack, links, row.country)?;
+    let rows = complete::<tables::CountryTacticUnlocks>(frame)?;
+    let statuses = pack
+        .doctrine
+        .as_ref()
+        .ok_or_else(|| invalid("tactic unlock comparison requires the saved doctrine block"))?;
+    // The canonical census: every tagged country links to itself
+    // (country_context), so the links reach each Countries row.
+    let census: BTreeMap<u32, &CountryRow> = links
+        .values()
+        .map(|country| (country.canonical_slot, *country))
+        .collect();
+    let mut captured = BTreeMap::new();
+    for row in rows {
+        let country = links
+            .get(&row.country)
+            .ok_or_else(|| invalid("captured tactic unlock country has no country link"))?;
+        if captured
+            .insert(country.canonical_slot, row.unlocked_tactic_ids.as_slice())
+            .is_some()
+        {
+            return Err(invalid("duplicate captured tactic unlock country"));
+        }
     }
-    report.compared("PreferredTacticOperands", 0);
-    report.limitation("preferred-tactic modifier key, metadata, factor, accumulator value and entry-presence are runtime operands without a direct save representation", format!("PreferredTacticOperands: {} rows", operands.len()));
+    let ids = |ids: &[i32]| ids.iter().map(|&id| i64::from(id)).collect::<Vec<_>>();
+    for (&slot, country) in &census {
+        let tag = country.tag.as_slice();
+        let status = usize::try_from(slot)
+            .ok()
+            .and_then(|slot| statuses.get(slot));
+        if let Some(status) = status
+            && status.country.as_deref() != Some(tag)
+        {
+            report.difference(
+                label(tag, "doctrine status country"),
+                String::from_utf8_lossy(tag),
+                status.country.as_deref().map(String::from_utf8_lossy),
+            );
+        }
+        match (captured.get(&slot), status) {
+            (Some(actual), Some(status)) => equal(
+                report,
+                label(tag, "enable_tactic"),
+                actual.iter().map(|&id| i64::from(id)).collect(),
+                ids(&status.enable_tactic),
+            ),
+            (Some(actual), None) => report.difference(
+                label(tag, "enable_tactic"),
+                actual,
+                "no saved doctrine status for its slot",
+            ),
+            (None, status) => report.difference(
+                label(tag, "enable_tactic"),
+                "no captured row for a census country",
+                status.map(|status| ids(&status.enable_tactic)),
+            ),
+        }
+    }
+    let mut excluded = 0;
+    for (slot, status) in statuses.iter().enumerate() {
+        if u32::try_from(slot).is_ok_and(|slot| census.contains_key(&slot)) {
+            continue;
+        }
+        if status.enable_tactic.is_empty() {
+            excluded += 1;
+        } else {
+            report.difference(
+                format!("doctrine status {slot}.enable_tactic"),
+                "slot outside the captured country census",
+                ids(&status.enable_tactic),
+            );
+        }
+    }
+    report.compared("CountryTacticUnlocks", rows.len());
+    if excluded > 0 {
+        report.limitation(
+            "the doctrine array has a status for every country slot (140D6C880), and the census records every non-null canonical country slot; a status whose slot is outside that census holds no live country and is compared only when it holds unlocks",
+            format!("CountryTacticUnlocks: {excluded} empty statuses of slots outside the census"),
+        );
+    }
     Ok(())
 }
 
@@ -1521,9 +1604,10 @@ mod tests {
     use replay::{
         frame::{Metrics, TableView},
         rows::{
-            ActiveIdeaRow, CompletedFocusRow, DecisionCountsRow, DecisionRow, DynamicModifierRow,
-            LexicalTokenRow, PreferredTacticRow, ResearchSlotRow, ResearchTechnologyRow, TableId,
-            TableRows, TechSharingGroupRow, TechSharingMemberRow, TechnologyDefinitionRow,
+            ActiveIdeaRow, CompletedFocusRow, CountryTacticUnlockRow, DecisionCountsRow,
+            DecisionRow, DynamicModifierRow, LexicalTokenRow, PreferredTacticRow, ResearchSlotRow,
+            ResearchTechnologyRow, TableId, TableRows, TechSharingGroupRow, TechSharingMemberRow,
+            TechnologyDefinitionRow,
         },
     };
 
@@ -1564,6 +1648,89 @@ mod tests {
             ..Default::default()
         };
         (frame, pack, country)
+    }
+
+    /// Saved status N is canonical slot N's (140D6C880, 140D6A7B0). Every
+    /// census country needs its captured row, empty or not; only a status
+    /// whose slot is outside the census may be missing from the recording,
+    /// and then only while it holds no unlock.
+    #[test]
+    fn tactic_unlocks_cover_the_canonical_census() {
+        let (mut frame, _, country) = fixture();
+        let links = BTreeMap::from([(11, &country)]);
+        // The fixture's AAA is canonical slot 7.
+        let pack = |at_seven: saved::DoctrineStatus, stray: Vec<i32>| saved::Pack {
+            doctrine: Some(
+                (0..8)
+                    .map(|slot| match slot {
+                        7 => at_seven.clone(),
+                        3 => saved::DoctrineStatus {
+                            country: Some(b"BBB".to_vec()),
+                            enable_tactic: stray.clone(),
+                        },
+                        _ => saved::DoctrineStatus::default(),
+                    })
+                    .collect(),
+            ),
+            ..saved::Pack::default()
+        };
+        let aaa = |ids: Vec<i32>| saved::DoctrineStatus {
+            country: Some(b"AAA".to_vec()),
+            enable_tactic: ids,
+        };
+        let mut compare = |rows: Vec<CountryTacticUnlockRow>, pack: &saved::Pack| {
+            *frame.tables[TableId::CountryTacticUnlocks.index()] =
+                TableView::Complete(TableRows::CountryTacticUnlocks(rows));
+            let mut report = Report::default();
+            let result = compare_tactic_unlocks(&frame, pack, &links, &mut report);
+            (result.is_ok(), report)
+        };
+        let row = |ids: Vec<u32>| CountryTacticUnlockRow {
+            country: 11,
+            unlocked_tactic_ids: ids,
+        };
+        let (ok, report) = compare(vec![row(vec![4, 2])], &pack(aaa(vec![4, 2]), Vec::new()));
+        assert!(ok);
+        assert_eq!(report.compared_tables.get("CountryTacticUnlocks"), Some(&1));
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .values()
+                .flatten()
+                .any(|subject| subject.contains("7 empty statuses of slots outside the census"))
+        );
+        // Order is native vector order, not a set.
+        let (_, report) = compare(vec![row(vec![2, 4])], &pack(aaa(vec![4, 2]), Vec::new()));
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("AAA.enable_tactic"))
+        );
+        // A census country's missing row is a difference even when its
+        // saved status is empty: the collector promises explicit rows.
+        let (_, report) = compare(Vec::new(), &pack(aaa(Vec::new()), Vec::new()));
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("no captured row for a census country"));
+        // A status at the census slot must name that country.
+        let (_, report) = compare(
+            vec![row(Vec::new())],
+            &pack(saved::DoctrineStatus::default(), Vec::new()),
+        );
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("AAA.doctrine status country"))
+        );
+        // Unlocks on a slot outside the census are a difference.
+        let (_, report) = compare(vec![row(vec![4, 2])], &pack(aaa(vec![4, 2]), vec![9]));
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("doctrine status 3.enable_tactic"));
+        // A save without its doctrine block is a failed comparison.
+        let (ok, _) = compare(vec![row(vec![4, 2])], &saved::Pack::default());
+        assert!(!ok);
     }
 
     #[test]
@@ -1644,7 +1811,6 @@ mod tests {
         }
         for table in [
             "Decisions",
-            "PreferredTacticOperands",
             "TechSharingGroups",
             "PowerBalanceOverrides",
             "PowerBalanceRanges",
