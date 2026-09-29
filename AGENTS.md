@@ -13,7 +13,7 @@ Read the [project README](README.md) and the README for the component you are ch
 
 - Recorder/viewer integration also needs the relevant fresh-save oracle and existing smoke workflow in the [recorder guide](crates/recorder/README.md).
 
-- Builds: while iterating, check only the crates you changed. Run full workspace checks once, when the work is finished, and at most two at a time across agents (`bash tools/build-slot.sh`).
+- Builds: while iterating, including fix rounds, merges and re-reviews, run `cargo fmt` plus clippy and tests for only the crates you changed. Run the full workspace gate once per PR, as the last step at its exact final head immediately before merging, and never earlier. Every cargo run goes through `bash tools/build-slot.sh`.
 
 Coordinate game ownership. Keep builds outside timed intervals; reuse matched saves/baselines and batch expensive live checks. Never waive a save difference. Report what ran, failed or remains unverified. Documentation-only changes need link and diff checks, not game captures.
 
