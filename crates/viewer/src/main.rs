@@ -154,7 +154,7 @@ struct Options {
     allow_unverified: bool,
     // counters
     /// `--perspective` and `--fog`: the game's two map controls. `recorded`
-    /// (the default) views the map as the hour's own human player and a tag as
+    /// (the default) views the map as the recording client's viewpoint at that hour and a tag as
     /// that country; `--fog off` is the game's `fow` console switch. See
     /// `map::perspective`.
     perspective: map::perspective::Choice,

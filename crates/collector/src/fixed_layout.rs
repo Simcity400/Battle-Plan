@@ -91,6 +91,7 @@ mod tests {
                     | TableId::WorldTension
                     | TableId::SimulationFeatures
                     | TableId::AirSortieModifierMetadata
+                    | TableId::LocalPlayer
             ) {
                 TableInput::Sampled(TableView::Unavailable {
                     reason: "fixture has no clock or campaign".into(),

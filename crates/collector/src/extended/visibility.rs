@@ -16,12 +16,12 @@ use replay::{
     cadence::{SKIPPED_REASON, should_walk},
     frame::TableView,
     rows::{
-        CountryVisibilityRow, CountryWarRow, NavalRegionAccessRow, RelationLinkRow,
+        CountryVisibilityRow, CountryWarRow, LocalPlayerRow, NavalRegionAccessRow, RelationLinkRow,
         SimulationFeatureRow, StateVisibilityRow, TableId, tables,
     },
 };
 
-pub const N: usize = 6;
+pub const N: usize = 7;
 pub const TABLES: [TableId; N] = [
     TableId::SimulationFeatures,
     TableId::CountryVisibility,
@@ -29,6 +29,7 @@ pub const TABLES: [TableId; N] = [
     TableId::RelationLinks,
     TableId::CountryWars,
     TableId::NavalRegionAccess,
+    TableId::LocalPlayer,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
@@ -69,6 +70,7 @@ impl Capacities {
 
 pub struct Captured {
     dlc_mask: CaptureRows<(u32, u8)>,
+    local_player: CaptureRows<[u32; 2]>,
     countries: CaptureRows<native::CountryRow>,
     states: CaptureRows<native::StateRow>,
     links: CaptureRows<crelation_status::LinkRow>,
@@ -96,12 +98,15 @@ impl Captured {
             .fail(super::failed_capture(TABLES[4], hour, force_full, reason));
         self.naval_access
             .fail(super::failed_capture(TABLES[5], hour, force_full, reason));
+        self.local_player
+            .fail(super::failed_capture(TABLES[6], hour, force_full, reason));
     }
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self {
             dlc_mask: CaptureRows::new(0),
+            local_player: CaptureRows::new(0),
             countries: CaptureRows::new(0),
             states: CaptureRows::new(0),
             links: CaptureRows::new(0),
@@ -116,6 +121,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             dlc_mask: CaptureRows::new(1),
+            local_player: CaptureRows::new(1),
             countries: CaptureRows::new(capacity.countries),
             states: CaptureRows::new(capacity.states),
             links: CaptureRows::new(capacity.links),
@@ -128,6 +134,7 @@ impl Captured {
     }
     pub fn reset(&mut self) {
         self.dlc_mask.reset();
+        self.local_player.reset();
         self.countries.reset();
         self.states.reset();
         self.links.reset();
@@ -136,7 +143,8 @@ impl Captured {
         self.naval_access.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.dlc_mask.allocated_bytes()
+        self.local_player.allocated_bytes()
+            + self.dlc_mask.allocated_bytes()
             + self.countries.allocated_bytes()
             + self.states.allocated_bytes()
             + self.links.allocated_bytes()
@@ -178,7 +186,8 @@ impl Captured {
                     2 => self.states.outcome = skipped,
                     3 => self.links.outcome = skipped,
                     4 => self.wars.outcome = skipped,
-                    _ => self.naval_access.outcome = skipped,
+                    5 => self.naval_access.outcome = skipped,
+                    _ => self.local_player.outcome = skipped,
                 }
                 continue;
             }
@@ -216,6 +225,16 @@ impl Captured {
                         &mut self.naval_access.rows,
                     )
                 }
+                6 => {
+                    self.local_player.outcome =
+                        match engine::cgame_state::local_player(memory, game_state) {
+                            Ok(row) => {
+                                self.local_player.rows[0] = row;
+                                Outcome::Rows { len: 1 }
+                            }
+                            Err(reason) => Outcome::Unavailable { reason },
+                        };
+                }
                 _ => {
                     let walk = crelation_status::links(
                         memory,
@@ -247,6 +266,7 @@ impl Captured {
             self.links.outcome,
             self.wars.outcome,
             self.naval_access.outcome,
+            self.local_player.outcome,
         ]
     }
 
@@ -291,6 +311,14 @@ impl Captured {
                     mode: r.mode,
                 },
             ),
+            table::<tables::LocalPlayer, _>(
+                self.local_player.outcome,
+                &self.local_player.rows,
+                |&[country, observer_country]| LocalPlayerRow {
+                    country,
+                    observer_country,
+                },
+            ),
         ]
     }
 
@@ -319,6 +347,73 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_player_switch_observer_failure_and_recovery_round_trip() {
+        use replay::frame::{DecodedFrame, Frame, FrameDecoder, FrameEncoder, Metrics};
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        // Unchanged, a controller change, an observer view, no view, a failed
+        // read and recovery, each decoded through the codec.
+        let samples = [
+            Some([4_999_u32, 0]),
+            Some([4_999, 0]),
+            Some([5_000, 0]),
+            Some([0, 4_999]),
+            Some([0, 0]),
+            None,
+            Some([5_000, 0]),
+        ];
+        for (hour, sample) in samples.into_iter().enumerate() {
+            let bytes: Vec<_> = sample
+                .into_iter()
+                .flatten()
+                .flat_map(u32::to_le_bytes)
+                .collect();
+            let memory = engine::memory::SliceMemory {
+                base: 0x1000 + engine::cgame_state::LOCAL_PLAYER_COUNTRY,
+                bytes: &bytes,
+            };
+            captured.capture(&memory, 0, 0x1000, hour as i32, hour == 0);
+            let mut tables = std::array::from_fn(|_| TableView::Unavailable {
+                reason: "fixture".into(),
+            });
+            tables[TableId::LocalPlayer.index()] = captured.tables()[6].clone();
+            let frame = encoder
+                .encode(
+                    DecodedFrame {
+                        branch: 1,
+                        hour: hour as i32,
+                        tables: tables.map(Into::into),
+                        metrics: Metrics::default(),
+                    },
+                    false,
+                )
+                .unwrap();
+            let mut bytes = Vec::new();
+            frame.encode(&mut bytes).unwrap();
+            let wire = Frame::decode(&mut replay::codec::Decoder::new(&bytes)).unwrap();
+            let decoded = decoder.apply(&wire).unwrap();
+            match sample {
+                Some([country, observer_country]) => assert_eq!(
+                    decoded.complete::<tables::LocalPlayer>().unwrap(),
+                    &[LocalPlayerRow {
+                        country,
+                        observer_country
+                    }]
+                ),
+                None => assert!(decoded.complete::<tables::LocalPlayer>().is_err()),
+            }
+        }
+        captured.fail_capture(9, false, "worker stopped");
+        assert_eq!(
+            captured.outcomes()[6],
+            Outcome::Unavailable {
+                reason: "worker stopped"
+            }
+        );
+    }
 
     #[test]
     fn growth_sizes_country_rows_from_the_live_slot_count() {
@@ -362,7 +457,7 @@ mod tests {
             target: 9,
             links: crelation_status::LINK_ATTACHE,
         };
-        let [_, _, _, TableView::Complete(rows), _, _] = captured.tables() else {
+        let [_, _, _, TableView::Complete(rows), _, _, _] = captured.tables() else {
             panic!("links table stays complete");
         };
         assert_eq!(rows.len(), 1);

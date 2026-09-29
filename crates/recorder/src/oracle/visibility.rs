@@ -1,5 +1,6 @@
 //! Fog-rebuild inputs (L2b): RelationLinks against the saved relations that set
-//! its slots, and named limitations for the inputs no save serializer writes.
+//! its slots, LocalPlayer against the saved `player` tag, and named limitations
+//! for the inputs no save serializer writes.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -25,7 +26,11 @@ pub(super) fn compare(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let mut complete_comparison = report.attempt("visibility RelationLinks", |report| {
+    let mut complete_comparison = report
+        .attempt_table(replay::rows::TableId::LocalPlayer, |report| {
+            compare_local_player(frame, save, countries, report)
+        });
+    complete_comparison &= report.attempt("visibility RelationLinks", |report| {
         compare_links(frame, save, countries, tokens, report)
     });
     complete_comparison &= report.attempt("visibility NavalRegionAccess", |report| {
@@ -466,6 +471,47 @@ pub(super) fn compare_stockpile_archetypes(
     Ok(())
 }
 
+/// `CGameState::Serialize@1401F2580` writes the saving client's `player` tag
+/// through 140BB31F0: CGameState+0x520 when signed-positive, else +0x524, the
+/// choice `LocalPlayerRow::viewing_country` makes. Only that choice is saved,
+/// so the other reference decodes uncertified.
+fn compare_local_player(
+    frame: &DecodedFrame,
+    save: &Save,
+    countries: &CountryContext<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let [row] = complete::<tables::LocalPlayer>(frame)? else {
+        return Err(invalid("LocalPlayer must contain exactly one row"));
+    };
+    let words = format!(
+        "LocalPlayer: country={}, observer_country={}",
+        row.country, row.observer_country
+    );
+    let Some(raw) = row.viewing_country() else {
+        report.compared("LocalPlayer", 0);
+        report.limitation(
+            "neither client reference is positive; the save names the country database's tag for it, which the recorded links do not resolve",
+            words,
+        );
+        return Ok(());
+    };
+    let tag = required_country_tag(raw, &countries.links)?;
+    if save.player.as_deref() != Some(tag) {
+        report.difference(
+            "LocalPlayer viewing country",
+            super::tag_text(Some(tag)),
+            super::tag_text(save.player.as_deref()),
+        );
+    }
+    report.compared("LocalPlayer", 1);
+    report.limitation(
+        "the save holds only the client's viewing choice; the unchosen reference has no save representation",
+        words,
+    );
+    Ok(())
+}
+
 /// Inputs the text save does not carry: they decode, but nothing certifies them.
 fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     for (table, rows, why) in [
@@ -527,4 +573,55 @@ fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay::{
+        frame::TableView,
+        rows::{LocalPlayerRow, TableId, TableRows},
+    };
+
+    /// The save names the tag of the playing reference when positive, else of
+    /// the observer's; an alias reference resolves through the links.
+    #[test]
+    fn the_saved_player_tag_certifies_the_clients_viewing_choice() {
+        let (mut frame, mut save, _, _) = super::super::tests::fixture();
+        let run = |frame: &DecodedFrame, save: &Save, row: [u32; 2]| {
+            let [country, observer_country] = row;
+            let mut frame = frame.clone();
+            *frame.tables[TableId::LocalPlayer.index()] =
+                TableView::Complete(TableRows::LocalPlayer(vec![LocalPlayerRow {
+                    country,
+                    observer_country,
+                }]));
+            let countries = super::super::country_context(&frame).unwrap();
+            let mut report = Report::default();
+            compare_local_player(&frame, save, &countries, &mut report).map(|()| report)
+        };
+        for row in [[101, 0], [102, 0], [0, 101], [u32::MAX, 102]] {
+            let report = run(&frame, &save, row).unwrap();
+            assert!(report.differences.is_empty(), "{row:?}");
+            assert_eq!(report.compared_tables["LocalPlayer"], 1);
+        }
+        let report = run(&frame, &save, [0, 0]).unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.compared_tables["LocalPlayer"], 0);
+        assert!(run(&frame, &save, [0, 999]).is_err());
+        save.player = Some(b"ITA".to_vec());
+        assert_eq!(run(&frame, &save, [101, 0]).unwrap().differences.len(), 1);
+        save.player = None;
+        assert_eq!(run(&frame, &save, [101, 0]).unwrap().differences.len(), 1);
+        for table in [
+            TableView::Unavailable {
+                reason: "read failed".into(),
+            },
+            TableView::Complete(TableRows::LocalPlayer(Vec::new())),
+        ] {
+            *frame.tables[TableId::LocalPlayer.index()] = table;
+            let context = super::super::country_context(&frame).unwrap();
+            assert!(compare_local_player(&frame, &save, &context, &mut Report::default()).is_err());
+        }
+    }
 }

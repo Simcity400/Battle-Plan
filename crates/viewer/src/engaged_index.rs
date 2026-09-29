@@ -182,10 +182,11 @@ pub(crate) fn kept_frames(
 type IconPoints = BTreeMap<u64, Vec<(Hour, Option<Kept>)>>;
 
 /// The tables every kind needs: the viewer and its relations.
-const VIEWER_TABLES: [TableId; 8] = [
+const VIEWER_TABLES: [TableId; 9] = [
     TableId::Campaign,
     TableId::CountryLinks,
     TableId::Countries,
+    TableId::LocalPlayer,
     TableId::Players,
     TableId::HumanControllers,
     TableId::FactionMembers,

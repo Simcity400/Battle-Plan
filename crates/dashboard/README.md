@@ -47,3 +47,5 @@ Generation updates `ui/src/generated/dashboard.ts`; do not hand-edit it. Follow 
 ## Rules
 
 Preserve recorded values exactly and keep missing, unavailable and zero distinct. Never bridge a gap or carry a value across missing hours. A changed recording revision invalidates every reply.
+
+The initial country selection uses LocalPlayer at the first readable country catalogue (including an observer's selected country), joined through that frame's CountryLinks. The human roster does not determine the recording client.

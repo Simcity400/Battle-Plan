@@ -4807,6 +4807,8 @@ mod tests {
             TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
         tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
+        tables[TableId::LocalPlayer.index()] =
+            TableView::Complete(TableRows::LocalPlayer(vec![Default::default()]));
         tables[TableId::SimulationFeatures.index()] =
             TableView::Complete(TableRows::SimulationFeatures(vec![
                 replay::rows::SimulationFeatureRow::default(),

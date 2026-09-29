@@ -222,6 +222,10 @@ pub const fn cadence(table: TableId) -> Cadence {
         // The DLC mask is fixed for the session, but `human_ai`
         // hour; both are single reads.
         TableId::SimulationFeatures => Cadence::Hourly,
+        // A tag switch or observer command can run between any two ticks, and
+        // each tick's combat manager (140BA9890) tests the viewing choice once;
+        // one eight-byte read.
+        TableId::LocalPlayer => Cadence::Hourly,
         _ => Cadence::Hourly,
     }
 }

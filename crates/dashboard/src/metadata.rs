@@ -2,7 +2,7 @@
 //! every product uses.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     io,
     path::Path,
     sync::{
@@ -176,26 +176,13 @@ pub fn tagged_country<'a>(
         .unwrap_or(TaggedCountry::Unresolved)
 }
 
-/// The viewer's default perspective: the single player's country, else the
-/// lowest human-controlled slot.
+/// The recording client's stored viewpoint, including an observer's selected
+/// country. Multiplayer roster order never identifies the local client.
 fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> Option<u32> {
-    let slot = |raw: u32| link_slot(links, raw);
-    let players: BTreeSet<u32> = frame
-        .complete::<tables::Players>()
-        .ok()?
-        .iter()
-        .filter_map(|player| slot(player.country))
-        .collect();
-    if players.len() == 1 {
-        return players.into_iter().next();
-    }
-    frame
-        .complete::<tables::HumanControllers>()
-        .ok()?
-        .iter()
-        .filter(|row| row.count > 0)
-        .filter_map(|row| slot(row.country))
-        .min()
+    let [player] = frame.complete::<tables::LocalPlayer>().ok()? else {
+        return None;
+    };
+    link_slot(links, player.viewing_country()?)
 }
 
 /// Identical campaign guard to Replay::seek, including intermediate frames.
@@ -361,5 +348,55 @@ pub fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
         ))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod local_player_tests {
+    use super::*;
+    use replay::rows::{LocalPlayerRow, PlayerRow, TableRows};
+
+    #[test]
+    fn initial_country_uses_the_client_and_its_observer_view_not_the_mp_roster() {
+        let links = [
+            CountryLinkRow {
+                id: 101,
+                canonical_slot: 7,
+            },
+            CountryLinkRow {
+                id: 102,
+                canonical_slot: 9,
+            },
+        ];
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 0,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "fixture".into(),
+                }
+                .into()
+            }),
+        };
+        *frame.tables[TableId::Players.index()] =
+            TableView::Complete(TableRows::Players(vec![PlayerRow {
+                country: 101,
+                ..Default::default()
+            }]));
+        assert_eq!(player_slot(&frame, &links), None);
+        for (country, observer_country, expected) in [
+            (102, 0, Some(9)),
+            (0, 101, Some(7)),
+            (0, 0, None),
+            (103, 101, None),
+        ] {
+            *frame.tables[TableId::LocalPlayer.index()] =
+                TableView::Complete(TableRows::LocalPlayer(vec![LocalPlayerRow {
+                    country,
+                    observer_country,
+                }]));
+            assert_eq!(player_slot(&frame, &links), expected);
+        }
     }
 }
