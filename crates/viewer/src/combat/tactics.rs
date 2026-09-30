@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{document::Document, map::perspective::Vision, table_access::rows};
 use dashboard::triggers::{
-    Combat, Eval, Evaluator, Scope, Scopes, World, compare, required, shown, trigger_boolean,
+    Combat, Eval, Evaluator, Scope, Scopes, World, compare, shown, trigger_boolean,
 };
 use installed_content::{
     combat_tactics::EFFECTS,
@@ -764,7 +764,9 @@ impl Context<'_> {
         };
         let side = &self.detail.sides[self.side];
         let numeric = |actual: i64, fixed| {
-            let required = required(bytes, item.quoted(), fixed).map_err(|why| fail(&why))?;
+            let required = evaluator
+                .required(bytes, item.quoted(), fixed, Scopes::combat())
+                .map_err(|why| fail(&why))?;
             Ok(compare(actual, required, comparison, fixed))
         };
         let skill = |side: &replay::rows::LandCombatSideDetails| {
@@ -2064,6 +2066,7 @@ mod tests {
                 .into(),
             )))),
             invasion_prepare_days: Err("the test has no invasion define"),
+            script_constants: Err("the test has no script constants"),
         }
     }
 
@@ -3157,10 +3160,11 @@ mod tests {
     /// (CScopedVariable::vf3 140539440 -> 140539B50), evaluated when the
     /// modifier holds (1405455A0): a constant of `-+0123456789.` text
     /// (ParseFixed5String 1424B7050), empty text setting nothing, and any
-    /// other text a variable or scope evaluated at run time, refused by
-    /// name; each occurrence in order replaces the last. A block is one
-    /// value token (`{`) with no block skipped: its contents are the
-    /// modifier's conditions and its `}` ends the modifier.
+    /// other text a variable or scope read from the tactic scope's stores,
+    /// which this fixture does not sample, so they are refused by name; each
+    /// occurrence in order replaces the last. A block is one value token
+    /// (`{`) with no block skipped: its contents are the modifier's
+    /// conditions and its `}` ends the modifier.
     #[test]
     fn modifier_factors_are_scoped_variables() {
         let detail = skilled();
@@ -3168,8 +3172,7 @@ mod tests {
         let refused = |body: &str, operand: &str| {
             let reason = weight(body).unwrap_err();
             assert!(
-                reason.contains(&format!("base weight modifier {operand}:"))
-                    && reason.contains("evaluates at run time"),
+                reason.contains(&format!("base weight modifier {operand}:")),
                 "{body}: {reason}"
             );
         };
@@ -4006,6 +4009,27 @@ mod tests {
                     .into(),
             ),
         );
+        // Every walked store has a row; GER's `x` holds GER's own scope
+        set(
+            TableId::ScriptVariables,
+            TableRows::ScriptVariables(
+                std::iter::once((0, 0))
+                    .chain(countries.map(|(country, ..)| (1, country)))
+                    .map(|(scope_kind, scope_id)| replay::rows::ScriptVariablesRow {
+                        scope_kind,
+                        scope_id,
+                        entries: if scope_id == 100 {
+                            vec![replay::rows::ScriptVariableEntry {
+                                name: b"x".to_vec(),
+                                value_raw: 0x4052_4547,
+                            }]
+                        } else {
+                            Vec::new()
+                        },
+                    })
+                    .collect(),
+            ),
+        );
         let detail = skilled();
         let aliases = BTreeMap::from([(100, 0), (200, 1), (300, 2)]);
         let tokens: &[(&[u8], u32)] = &[
@@ -4057,10 +4081,9 @@ mod tests {
             weigh("ENG = { tag = ENG }"),
             Err("trigger ENG = { ... }: ENG owns no state, and the countries with it as original tag are unknown: CountryAppearance is incomplete since hour 1".into())
         );
-        assert_eq!(
-            weigh("var:x = { tag = GER }"),
-            Err("trigger var:x = { ... }: var:x: runtime script variables are not recorded".into())
-        );
+        // A `var:` key decodes the stored value (1405382B0 -> 140537A10).
+        assert_eq!(weigh("var:x = { tag = GER }"), Ok(100_000));
+        assert_eq!(weigh("var:missing = { tag = GER }"), Ok(0));
         let state = weigh("64 = { tag = GER }").unwrap_err();
         assert!(
             state.starts_with("trigger 64 = { ... }: state 64 has no recorded States row"),
@@ -4068,10 +4091,11 @@ mod tests {
         );
         // `tag`'s operand (141394CA0, 1413928A0): a scope selector by token
         // (14053E330) reads that scope's country; a tag resolves as a scope
-        // key's does (140BA5D10); anything else is a runtime variable.
+        // key's does (140BA5D10); anything else is a scoped variable decoded
+        // to its country (EvaluateCountryTag 140536ED0).
         assert_eq!(weigh("tag = ROOT"), Ok(100_000));
         // The tag lookup takes the C string (141394CA0); bytes after its
-        // first NUL cannot turn an existing tag into a runtime variable.
+        // first NUL cannot turn an existing tag into a variable.
         assert_eq!(weigh("tag = \"GER\0suffix\""), Ok(100_000));
         assert_eq!(weigh("tag = \"SOV\0suffix\""), Ok(0));
         assert_eq!(weigh("SOV = { tag = THIS }"), Ok(100_000));
@@ -4087,11 +4111,11 @@ mod tests {
             assert_eq!(weigh(&format!("tag = {selector}")), Ok(0), "{selector}");
         }
         refused("tag = event_target:foe", "an event target (14053E330)");
-        refused(
-            "tag = \"ROOT\"",
-            "ROOT is no scope selector and no country tag",
-        );
-        refused("tag = XYZ", "XYZ is no scope selector and no country tag");
+        // A quoted ROOT is no selector: as a variable it names ROOT's scope.
+        assert_eq!(weigh("tag = \"ROOT\""), Ok(100_000));
+        assert_eq!(weigh("tag = x"), Ok(100_000));
+        // XYZ is no tag: the variable `xyz`, which GER does not hold, is 0.
+        assert_eq!(weigh("tag = XYZ"), Ok(0));
         refused("tag = ENG", "ENG owns no state");
     }
 

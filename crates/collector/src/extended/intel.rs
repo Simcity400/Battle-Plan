@@ -76,8 +76,9 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
 pub const GLOBAL_SCOPE: u8 = 0;
 pub const COUNTRY_SCOPE: u8 = 1;
 pub const STATE_SCOPE: u8 = 2;
-/// ScriptFlags only: a character's own flags (`CCharacter+0x110`), keyed by
-/// its id (`CCharacter+0xC`, the Characters id).
+/// A character's own flags (`CCharacter+0x110`) and script variables
+/// (`CCharacter+0xD8`), keyed by its id (`CCharacter+0xC`, the Characters
+/// id).
 pub const CHARACTER_SCOPE: u8 = 3;
 
 /// Spool-owned membership scratch, not another captured-frame lease. Bits are
@@ -136,7 +137,8 @@ impl Default for Capacities {
 impl Capacities {
     /// At most one row per canonical country for Capitulation, Subjects,
     /// Autonomy and IntelligenceAgencies; ScriptVariables has one scope row
-    /// for the global scope, every country and every state.
+    /// for the global scope, every country and every state (and every
+    /// character, which [`Self::raise_for_script_variables`] counts).
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         for index in [0, 1, 2, 3] {
@@ -163,6 +165,55 @@ impl Capacities {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[7], rows(flags, 1));
     }
+
+    /// ScriptVariables keeps one row per walked store and every store's
+    /// entries and key bytes, which the stores' own headers give
+    /// (`script_variable_demand`).
+    pub(crate) fn raise_for_script_variables(&mut self, demand: VariableDemand) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[8], rows(demand.scopes, 1));
+        raise(&mut self.variable_entries, rows(demand.entries, 1));
+        raise(&mut self.variable_names, rows(demand.bytes, 1));
+    }
+}
+
+/// The live ScriptVariables demand: its stores, entries and key bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VariableDemand {
+    pub scopes: usize,
+    pub entries: usize,
+    pub bytes: usize,
+}
+
+impl VariableDemand {
+    /// The field-wise maximum.
+    pub fn max(self, other: Self) -> Self {
+        Self {
+            scopes: self.scopes.max(other.scopes),
+            entries: self.entries.max(other.entries),
+            bytes: self.bytes.max(other.bytes),
+        }
+    }
+}
+
+/// Sizing only: every ScriptVariables store, entry and key byte, from each
+/// store's header, through the walk itself with no room for rows.
+pub(crate) fn script_variable_demand(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Option<VariableDemand> {
+    let walk = cvariables::walk_scopes(memory, base, state, &mut [], &mut [], &mut []);
+    let scopes = match walk.outcome {
+        Outcome::Rows { len } => len,
+        Outcome::Truncated { len, unread_rows } => len + unread_rows as usize,
+        Outcome::Unavailable { .. } => return None,
+    };
+    Some(VariableDemand {
+        scopes,
+        entries: walk.required_entries,
+        bytes: walk.required_bytes,
+    })
 }
 
 /// Sizing only: the live flag count of every ScriptFlags scope, from each
@@ -1494,6 +1545,7 @@ fn scope_identity(scope: cvariables::Scope) -> (u8, u32) {
         cvariables::Scope::Global => (GLOBAL_SCOPE, 0),
         cvariables::Scope::Country(id) => (COUNTRY_SCOPE, id),
         cvariables::Scope::State(id) => (STATE_SCOPE, id),
+        cvariables::Scope::Character(id) => (CHARACTER_SCOPE, id),
     }
 }
 

@@ -644,31 +644,13 @@ impl<B: SegmentBackend> Campaign<B> {
                             reason: reason.clone(),
                         }
                     }
-                    // Authenticate the current comparison token before retaining
-                    // these rows for a later recovery snapshot.
-                    TableInput::ComparedEqual(token) => {
-                        match self.encoder.comparison_baseline::<tables::ScriptVariables>(
-                            source.branch,
-                            source.hour,
-                            false,
-                        ) {
-                            Some((expected, rows))
-                                if table == TableId::ScriptVariables && *token == expected =>
-                            {
-                                let retained = match self.staggered_cache.get(&table) {
-                                    Some(CachedTable::Complete(previous)) => Arc::clone(previous),
-                                    _ => Arc::new(TableRows::ScriptVariables(rows.to_vec())),
-                                };
-                                CachedTable::Complete(retained)
-                            }
-                            _ => CachedTable::Unavailable {
-                                reason: "native comparison has no matching current baseline".into(),
-                            },
+                    // Only hourly tables are compared natively.
+                    TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
+                        CachedTable::Unavailable {
+                            reason: "a native comparison cannot supply a shared recovery snapshot"
+                                .into(),
                         }
                     }
-                    TableInput::ComparedChanges { .. } => CachedTable::Unavailable {
-                        reason: "row replacements cannot supply a shared recovery snapshot".into(),
-                    },
                 };
                 // Keep the latest sample even if encoding or writing fails.
                 // Recovery resets the encoder, but can snapshot this allocation
@@ -5056,14 +5038,11 @@ mod tests {
         }
     }
 
+    /// Rows of a staggered (daily) table.
     fn daily_rows(value: u8) -> TableRows {
-        TableRows::ScriptVariables(vec![replay::rows::ScriptVariablesRow {
-            scope_kind: 1,
-            scope_id: 7,
-            entries: vec![replay::rows::ScriptVariableEntry {
-                name: vec![0, 0xff, value],
-                value_raw: i64::from(value),
-            }],
+        TableRows::ProvinceNames(vec![replay::rows::ProvinceNameRow {
+            province: 7,
+            name: vec![0, 0xff, value],
         }])
     }
 
@@ -5556,7 +5535,7 @@ mod tests {
     fn staggered_complete_cache_and_encoder_share_refreshes_off_hours_and_keyframes() {
         let (mut campaign, store) = campaign();
         let mut reference = FrameEncoder::new();
-        let table = TableId::ScriptVariables;
+        let table = TableId::ProvinceNames;
         let mut value = 1;
         let mut previous_allocation = None;
         let mut previous_hour = None;
@@ -5591,8 +5570,8 @@ mod tests {
                 staggered_frame(branch, hour, true).into()
             };
             let sampled_literal = match &input.tables[table.index()] {
-                TableInput::Sampled(TableView::Complete(TableRows::ScriptVariables(rows))) => {
-                    Some(rows[0].entries.as_ptr())
+                TableInput::Sampled(TableView::Complete(TableRows::ProvinceNames(rows))) => {
+                    Some(rows[0].name.as_ptr())
                 }
                 _ => None,
             };
@@ -5602,8 +5581,8 @@ mod tests {
                 assert!(Arc::ptr_eq(rows, cached_complete(&campaign, table)));
                 if let Some(pointer) = sampled_literal {
                     assert_eq!(
-                        rows.rows::<tables::ScriptVariables>().unwrap()[0]
-                            .entries
+                        rows.rows::<tables::ProvinceNames>().unwrap()[0]
+                            .name
                             .as_ptr(),
                         pointer
                     );
@@ -5657,7 +5636,7 @@ mod tests {
     #[test]
     fn latest_shared_sample_survives_encoding_or_write_failure_and_recovery_snapshots_it() {
         use replay::frame::TableUpdate;
-        let table = TableId::ScriptVariables;
+        let table = TableId::ProvinceNames;
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();
             let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -5742,11 +5721,11 @@ mod tests {
         let mut second = staggered_frame(branch, 1, true);
         campaign.apply_staggered_cache(&mut second);
         assert!(
-            matches!(&*second.tables[TableId::ScriptVariables.index()], TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
+            matches!(&*second.tables[TableId::ProvinceNames.index()], TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
         );
         let encoded = campaign.encoder.encode(second, false).unwrap();
         assert_eq!(
-            encoded.tables[TableId::ScriptVariables.index()],
+            encoded.tables[TableId::ProvinceNames.index()],
             TableUpdate::Unchanged { baseline: 0 }
         );
         assert_eq!(decoder.apply(&encoded).unwrap(), first.clone_with_hour(1));
@@ -5767,21 +5746,21 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let mut first = staggered_frame(branch, 0, false);
         let skipped = campaign.apply_staggered_cache(&mut first);
-        assert!(!skipped[TableId::ScriptVariables.index()]);
+        assert!(!skipped[TableId::ProvinceNames.index()]);
         let frame = encoder.encode(first.clone(), false).unwrap();
         assert!(matches!(
-            frame.tables[TableId::ScriptVariables.index()],
+            frame.tables[TableId::ProvinceNames.index()],
             TableUpdate::Snapshot(_)
         ));
         assert_eq!(decoder.apply(&frame).unwrap(), first);
         let mut second = staggered_frame(branch, 1, true);
         let skipped = campaign.apply_staggered_cache(&mut second);
-        assert!(skipped[TableId::ScriptVariables.index()]);
+        assert!(skipped[TableId::ProvinceNames.index()]);
         assert!(!skipped[TableId::Clock.index()]);
         assert_eq!(second, first.clone_with_hour(1));
         let frame = encoder.encode(second.clone(), false).unwrap();
         assert_eq!(
-            frame.tables[TableId::ScriptVariables.index()],
+            frame.tables[TableId::ProvinceNames.index()],
             TableUpdate::Unchanged { baseline: 0 }
         );
         assert_eq!(decoder.apply(&frame).unwrap(), second);
@@ -5817,7 +5796,7 @@ mod tests {
         let mut expected_tables: [Option<TableView>; TABLE_COUNT] = std::array::from_fn(|_| None);
         for hour in 0..48 {
             let mut hourly = staggered_frame(branch, hour, false);
-            *hourly.tables[TableId::ScriptVariables.index()] =
+            *hourly.tables[TableId::ProvinceNames.index()] =
                 TableView::Complete(daily_rows(hour as u8));
             let hourly_frame = hourly_encoder.encode(hourly.clone(), false).unwrap();
             let hourly_decoded = hourly_decoder.apply(&hourly_frame).unwrap().clone();
@@ -5854,10 +5833,10 @@ mod tests {
         campaign.apply_staggered_cache(&mut first);
         let mut second = staggered_frame(2, 1, true);
         let skipped = campaign.apply_staggered_cache(&mut second);
-        assert!(skipped[TableId::ScriptVariables.index()]);
+        assert!(skipped[TableId::ProvinceNames.index()]);
         assert!(
             matches!(
-                &*second.tables[TableId::ScriptVariables.index()],
+                &*second.tables[TableId::ProvinceNames.index()],
                 TableView::Unavailable { reason } if reason.contains("full refresh required")
             ),
             "new branch must not carry stale rows"

@@ -44,6 +44,8 @@ pub mod regions;
 pub mod resources;
 pub mod save;
 pub mod scope;
+pub mod scoped_variable;
+pub mod script_constants;
 pub mod script_files;
 pub mod scripted_localisation;
 pub mod scripted_triggers;
@@ -58,6 +60,7 @@ pub mod trigger_keys;
 pub mod triggers;
 pub mod unit_leader;
 pub mod unit_path;
+pub mod variable_builtins;
 pub mod weather;
 
 pub use content::{

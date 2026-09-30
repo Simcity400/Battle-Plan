@@ -17,6 +17,7 @@ pub(crate) struct Environment {
     bonuses: [i64; 2],
     roles: Result<LeaderRoles, String>,
     invasion_days: Result<i32, String>,
+    constants: Result<installed_content::script_constants::Constants, String>,
     /// The unit-leader and country-leader trait databases a character's
     /// `has_trait` reads.
     traits: Result<
@@ -76,6 +77,7 @@ impl Environment {
             invasion_days: defines
                 .int32("NNavy", "NAVAL_INVASION_PREPARE_DAYS")
                 .map_err(|e| e.to_string()),
+            constants: installed_content::script_constants::read(layers).map_err(|e| e.to_string()),
             traits: installed_content::unit_leader::Traits::registered(layers)
                 .and_then(|units| Ok((units, installed_content::leader_traits::read(layers)?.0)))
                 .map_err(|e| e.to_string()),
@@ -95,6 +97,7 @@ impl Environment {
             resource_bonuses: Ok(self.bonuses),
             leader_roles: self.roles.as_ref().map_err(String::as_str),
             invasion_prepare_days: self.invasion_days.as_ref().copied().map_err(String::as_str),
+            script_constants: self.constants.as_ref().map_err(String::as_str),
             character_traits: self
                 .traits
                 .as_ref()
@@ -303,6 +306,7 @@ impl Environment {
             bonuses: [0; 2],
             roles: Ok(LeaderRoles::new(Vec::new())),
             invasion_days: Ok(0),
+            constants: Ok(Default::default()),
             traits: Ok(Default::default()),
         }
     }

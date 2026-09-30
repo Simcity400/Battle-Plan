@@ -1875,8 +1875,9 @@ mod tests {
                 };
                 assert!(encoder.encode_input(input, false).is_err());
             }
+            // A staggered table's baseline takes no row replacements.
             let (token, _) = encoder
-                .comparison_baseline::<tables::ScriptVariables>(1, 1, false)
+                .comparison_baseline::<tables::DivisionTemplates>(1, 1, false)
                 .unwrap();
             assert!(!token.allows_row_updates());
         }

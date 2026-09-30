@@ -978,6 +978,7 @@ mod tests {
                         token: b"script_token".to_vec(),
                         template: Some(b"GER_template".to_vec()),
                         flags: None,
+                        variables: None,
                         name: Some(b"saved literal name".to_vec()),
                         country_leaders: Vec::new(),
                         advisors: Vec::new(),

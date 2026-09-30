@@ -549,6 +549,19 @@ fn raid_frame() -> DecodedFrame {
             })
             .collect(),
     );
+    // Every store the collector walks has a row: the global store and
+    // each country's, all empty.
+    set::<tables::ScriptVariables>(
+        &mut f,
+        std::iter::once((0, 0))
+            .chain(countries.iter().map(|&(id, ..)| (1, id)))
+            .map(|(scope_kind, scope_id)| ScriptVariablesRow {
+                scope_kind,
+                scope_id,
+                entries: Vec::new(),
+            })
+            .collect(),
+    );
     f
 }
 

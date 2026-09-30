@@ -390,11 +390,13 @@ impl Capacities {
         self.intel.raise_for_country_intel(native_rows);
     }
 
-    /// Presize Characters and ScriptFlags from the live roster and flag
-    /// managers (`country_scale::observe_characters`).
+    /// Presize Characters, ScriptFlags and ScriptVariables from the live
+    /// roster, flag managers and variable stores
+    /// (`country_scale::observe_characters`).
     pub fn raise_for_characters(&mut self, demand: crate::country_scale::CharacterDemand) {
         self.characters.raise_for_characters(demand.characters);
         self.intel.raise_for_script_flags(demand.flags);
+        self.intel.raise_for_script_variables(demand.variables);
     }
 
     /// Presize the raid arenas whose per-country demand content decides.

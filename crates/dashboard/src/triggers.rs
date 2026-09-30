@@ -29,10 +29,12 @@ mod load;
 mod operands;
 #[cfg(test)]
 mod tests;
+mod variables;
 mod world;
 
 pub use eval::{Combat, Evaluator};
-pub use operands::{Selected, Selector, compare, required, scope_selector, shown, trigger_boolean};
+pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_boolean};
+pub use variables::Temps;
 pub use world::{
     ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, RecordedTemplate, World,
     required_invasion_hours,

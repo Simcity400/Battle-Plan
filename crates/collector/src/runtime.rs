@@ -1161,13 +1161,16 @@ impl RegistryWatch {
         self.last_characters = Some(Instant::now());
         let demand = crate::country_scale::observe_characters(memory, base)?;
         let seen = &mut self.characters;
+        let variables = seen.variables.max(demand.variables);
         (demand.characters.rows > seen.characters.rows
             || demand.characters.bytes > seen.characters.bytes
-            || demand.flags > seen.flags)
+            || demand.flags > seen.flags
+            || variables != seen.variables)
             .then(|| {
                 seen.characters.rows = seen.characters.rows.max(demand.characters.rows);
                 seen.characters.bytes = seen.characters.bytes.max(demand.characters.bytes);
                 seen.flags = seen.flags.max(demand.flags);
+                seen.variables = variables;
                 *seen
             })
     }

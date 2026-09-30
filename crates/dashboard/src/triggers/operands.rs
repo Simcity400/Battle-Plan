@@ -5,6 +5,7 @@ use installed_content::{
     parser::{Item, Operator, Value, c_string},
 };
 
+use super::{Scopes, eval::Evaluator};
 use crate::state_resources::ONE;
 
 /// How a value reads in a refusal: its text, or that it is a block.
@@ -113,32 +114,6 @@ pub fn trigger_boolean(item: &Item) -> Result<bool, String> {
     Ok(item.value.scalar().map(c_string) == Some(b"yes"))
 }
 
-/// A comparison trigger's operand, fixed5. CIntTrigger::vf4 (14138D4E0)
-/// reads a number token through `%i` and any other, a quoted one included,
-/// as a scoped variable whose constant is ParseFixed5String's
-/// (installed_content::fixed5::int_operand); CIntTrigger::Evaluate (14138CC70)
-/// compares the scoped value as `(int)(value / 100000)`. CValueTrigger's
-/// reader (`fixed`, 14138D630) takes every token as a scoped variable
-/// (140539370) and compares the fixed5 value (14138D120).
-pub fn required(bytes: &[u8], quoted: bool, fixed: bool) -> Result<i64, String> {
-    match int_operand(bytes, quoted || fixed) {
-        IntOperand::Integer(value) => Ok(i64::from(value) * ONE),
-        IntOperand::Constant(value) if fixed => Ok(value),
-        IntOperand::Constant(value) => Ok(i64::from((value / ONE) as i32) * ONE),
-        IntOperand::Unreadable => {
-            Err("the operand is a number `%i` (1424B02C0) cannot scan".into())
-        }
-        IntOperand::Empty => Err(
-            "the operand is empty: the scoped-variable reader (140539B50) logs it and sets nothing"
-                .into(),
-        ),
-        IntOperand::Scoped => Err(
-            "the operand names a variable or scope the game evaluates at run time (140539370)"
-                .into(),
-        ),
-    }
-}
-
 /// CIntTrigger::Evaluate (14138CC70) preserves equality; CValueTrigger's
 /// (14138D120, `fixed`) selects `<` only for that token and otherwise takes
 /// the strict `>` arm.
@@ -151,28 +126,86 @@ pub fn compare(actual: i64, required: i64, comparison: Operator, fixed: bool) ->
     }
 }
 
-/// A CMTTHModifier's `factor` or `add` as it reads each occurrence in order
-/// (140545820 -> CScopedVariable::vf3 140539440 -> 140539B50, the
-/// scoped-variable reader CValueTrigger's operands share): a constant
-/// replaces the value, empty text is logged and sets nothing, and any other
-/// text is a variable or scope CMeanTimeToHappen::Evaluate (1405455A0)
-/// evaluates at run time (CScopedVariable::Evaluate 1405382B0), refused by
-/// name. `default` is the modifier's own.
-pub fn mtth_operand(what: &str, items: &[Item], key: &str, default: i64) -> Result<i64, String> {
-    let mut value = Ok(default);
-    for item in items.iter().filter(|item| item.keyword_is(key)) {
-        let text = item.value.scalar().unwrap_or_default();
-        if text.is_empty() {
-            continue;
+impl Evaluator<'_, '_> {
+    /// A comparison trigger's operand, fixed5, in `scopes`. CIntTrigger::vf4
+    /// (14138D4E0) reads a number token through `%i` and any other, a quoted
+    /// one included, as a scoped variable (a constant through
+    /// ParseFixed5String, installed_content::fixed5::int_operand);
+    /// CIntTrigger::Evaluate (14138CC70) compares the scoped value as
+    /// `(int)(value / 100000)`. CValueTrigger's reader (`fixed`, 14138D630)
+    /// takes every token as a scoped variable (140539370) and compares the
+    /// fixed5 value (14138D120). A scoped variable is evaluated in the
+    /// trigger's scope (CScopedVariable::Evaluate 1405382B0).
+    pub fn required(
+        &self,
+        bytes: &[u8],
+        quoted: bool,
+        fixed: bool,
+        scopes: Scopes,
+    ) -> Result<i64, String> {
+        let scoped = |value: i64| {
+            if fixed {
+                value
+            } else {
+                i64::from((value / ONE) as i32) * ONE
+            }
+        };
+        match int_operand(bytes, quoted || fixed) {
+            IntOperand::Integer(value) => Ok(i64::from(value) * ONE),
+            IntOperand::Constant(value) => Ok(scoped(value)),
+            IntOperand::Unreadable => {
+                Err("the operand is a number `%i` (1424B02C0) cannot scan".into())
+            }
+            IntOperand::Empty => Err(
+                "the operand is empty: the scoped-variable reader (140539B50) logs it and sets nothing"
+                    .into(),
+            ),
+            IntOperand::Scoped => self.scoped_value(bytes, scopes).map(scoped),
         }
-        value = required(text, true, true).map_err(|why| {
+    }
+
+    /// A CMTTHModifier's `factor` or `add` as it reads each occurrence in
+    /// order (140545820 -> CScopedVariable::vf3 140539440 -> 140539B50, the
+    /// scoped-variable reader CValueTrigger's operands share): empty text is
+    /// logged and sets nothing, any other text is parsed into the one
+    /// operand, which CMeanTimeToHappen::Evaluate (1405455A0) evaluates in
+    /// the mean time's scope. `default` is the modifier's own.
+    ///
+    /// A later parse does not reset every field an earlier one set (the temp
+    /// flag, the scope chain), so only a last literal, which Evaluate
+    /// returns before reading any other field, is exact after another
+    /// assignment; any other repeated assignment is refused by name.
+    pub(super) fn mtth_operand(
+        &self,
+        what: &str,
+        items: &[Item],
+        key: &str,
+        default: i64,
+        scopes: Scopes,
+    ) -> Result<i64, String> {
+        let texts: Vec<&[u8]> = items
+            .iter()
+            .filter(|item| item.keyword_is(key))
+            .filter_map(|item| item.value.scalar())
+            .filter(|text| !text.is_empty())
+            .collect();
+        let Some(&text) = texts.last() else {
+            return Ok(default);
+        };
+        let within = |why: String| {
             format!(
                 "{what} modifier {key} = {}: {why}",
                 String::from_utf8_lossy(text)
             )
-        });
+        };
+        if texts.len() > 1 && self.operand(text).map_err(within)?.literal.is_none() {
+            return Err(within(super::refused(format!(
+                "{key} is assigned {} times, and a later assignment into the one operand keeps fields an earlier one set (140539B50), which is not reproduced",
+                texts.len()
+            ))));
+        }
+        self.scoped_value(text, scopes).map_err(within)
     }
-    value
 }
 
 /// A CMeanTimeToHappen's base value as its reader keeps it: 100000 from its

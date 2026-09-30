@@ -126,13 +126,14 @@ pub fn observe_raid_arenas(memory: &impl Memory, base: usize) -> Option<RaidAren
     })
 }
 
-/// Live character and script flag demand: the Characters rows and text
-/// bytes, and the flags of every ScriptFlags scope (global, countries, states
-/// and characters).
+/// Live character and script scope demand: the Characters rows and text
+/// bytes, the flags of every ScriptFlags scope and the ScriptVariables
+/// stores (global, countries, states and characters).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CharacterDemand {
     pub characters: engine::ccharacter::Demand,
     pub flags: usize,
+    pub variables: extended::intel::VariableDemand,
 }
 
 /// Live character roster and flag demand, or `None` when either census is
@@ -146,6 +147,7 @@ pub fn observe_characters(memory: &impl Memory, base: usize) -> Option<Character
     Some(CharacterDemand {
         characters: engine::ccharacter::demand(memory, base, state).ok()?,
         flags: extended::intel::script_flag_demand(memory, base, state)?,
+        variables: extended::intel::script_variable_demand(memory, base, state)?,
     })
 }
 
