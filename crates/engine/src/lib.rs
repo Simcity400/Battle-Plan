@@ -592,6 +592,7 @@ pub mod naval_air_efficiency_inputs;
 pub mod naval_combat_air_hit;
 pub mod naval_combat_hit;
 pub mod naval_combat_summary_inputs;
+pub mod naval_combat_transfers;
 pub mod naval_commander_inputs;
 pub mod naval_dominance_entry;
 pub mod naval_ship_modifier_inputs;

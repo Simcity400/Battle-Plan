@@ -19,15 +19,34 @@
 //! The pass folds each hour on its own thread and then appends that hour's
 //! changes under a brief lock, which the UI thread also takes every frame.
 //!
-//! A combat kind registers its sides as a [`Sides`] source in [`SOURCES`];
-//! only land does so far. The pass is one more decoder consumer: it reads
+//! A combat kind registers its sides as a [`Sides`] source in [`SOURCES`]:
+//! land and naval. The pass is one more decoder consumer: it reads
 //! blocks through [`Replay::read_block_selected`] and never shares the
 //! playback decoder.
+//!
+//! Whatever the perspective, the pass also folds every kind's flags for the
+//! recording's own player (LocalPlayer's viewing choice), whose history
+//! follows its player changes (each rebuilds every side for the new player
+//! only: 140BA9890 → 1413CEBC0 → 1413CEBE0). A tag switch rebuilds at once
+//! (14113E4B0 → 140BABC00), so the sample that shows it holds the rebuilt
+//! flags; a view set by an `observe` (the client's own or another player's)
+//! or by `CSetCountryControllerCommand::Execute@140CD8720` rebuilds only at
+//! the next tick, so its history takes that change one sample later
+//! ([`Pass::fold_hour`]). The client's combat icons keep their frames from
+//! the same history (`1418B4BD0` and `1418E3E30` read the client's own
+//! `+0xBA`), so they are folded over it too. That history, which is the client's flag itself,
+//! answers any lookup for a viewer who is that player at the hour; the
+//! perspective's own history answers the rest and takes no rebuild from those
+//! changes. The naval part is checked against the recorded bytes
+//! ([`crate::combat::naval_check`]) on the pass thread, which publishes a
+//! small summary ([`EngagedIndex::byte_check`]); [`check_recorded_bytes`]
+//! runs the same fold for a dump.
 
 use crate::{
     combat::{
         engaged::{self, Continuity, Engaged},
         icon_frames::{self, IconFold, IconHour, Kept},
+        naval_check::{self, ByteCheck, Summary},
     },
     map::{
         perspective::{self, Country},
@@ -41,7 +60,7 @@ use replay::{
     branches::{BranchReason, BranchStart},
     container::{BlockIndex, Replay},
     frame::{DecodedFrame, FrameDecoder},
-    rows::{TableId, tables},
+    rows::{NavalProvinceCombatRow, TableId, tables},
 };
 use std::{
     collections::BTreeMap,
@@ -56,6 +75,7 @@ use std::{
 };
 
 /// One hour's sides of one combat kind.
+#[derive(Clone)]
 pub(crate) struct HourSides {
     /// Keyed by (combat, side).
     pub(crate) sides: BTreeMap<(u64, u8), engaged::Side>,
@@ -76,8 +96,12 @@ pub(crate) trait Sides: Sync {
 }
 
 pub(crate) const LAND: usize = 0;
-/// Indexed by kind. Only land registers; naval would follow it.
-static SOURCES: [&dyn Sides; 1] = [&crate::combat::progress::LandSides];
+pub(crate) const NAVAL: usize = 1;
+/// Indexed by kind.
+static SOURCES: [&dyn Sides; 2] = [
+    &crate::combat::progress::LandSides,
+    &crate::combat::naval_sides::NavalSides,
+];
 
 /// Combat icon kinds whose unseen frame the index carries
 /// ([`icon_frames`]).
@@ -86,31 +110,32 @@ pub(crate) const NAVAL_ICON: usize = 1;
 const ICON_KINDS: usize = 2;
 
 /// The tables the icon kinds read besides the viewer's.
-const ICON_TABLES: [TableId; 6] = [
+const ICON_TABLES: [TableId; 5] = [
     TableId::LandCombats,
     TableId::LandCombatSides,
     TableId::NavalCombats,
-    TableId::NavalCombatParticipants,
-    TableId::Ships,
+    TableId::NavalCombatShips,
     TableId::NavalCombatDetails,
 ];
 
-/// One icon kind's hour for `viewer`. Land reads its seen test from the
-/// engaged `flag`; naval from the members' sharing
+/// The engaged source whose flag an icon kind's seen test reads.
+fn icon_source(kind: usize) -> usize {
+    if kind == LAND_ICON { LAND } else { NAVAL }
+}
+
+/// One icon kind's hour. Both read their seen test from the engaged `flag`
+/// of their own kind: land in `1418B4BD0`, naval in `1418E3E30`, which sets
+/// the frame only when `any_side_engaged@1413CD880` holds
 /// ([`crate::map::counters::naval_icon_hour`]).
 fn icon_hour(
     kind: usize,
     frame: &DecodedFrame,
-    viewer: u32,
-    links: &BTreeMap<u32, u32>,
-    relations: Result<&Relations, &'static str>,
     flag: &dyn Fn(u64) -> Engaged,
 ) -> io::Result<IconHour> {
     if kind == LAND_ICON {
         icon_frames::land_hour(frame, flag)
     } else {
-        let vision = perspective::Vision::relating(viewer, relations, links.values().copied());
-        crate::map::counters::naval_icon_hour(frame, &vision, &|raw| links.get(&raw).copied())
+        crate::map::counters::naval_icon_hour(frame, flag)
     }
 }
 
@@ -137,14 +162,12 @@ fn icon_combats(kind: usize, frame: &DecodedFrame) -> io::Result<Vec<u64>> {
 /// What each live combat icon of `kind` keeps for its frame at this hour
 /// ([`icon_frames`]): the index's fold when it covers the hour. Otherwise
 /// only this hour is known: a seen icon's own frame, and
-/// [`Kept::Unindexed`] for every unseen one. `flags` are the hour's land
-/// engaged flags ([`combats`]).
+/// [`Kept::Unindexed`] for every unseen one. `flags` are the hour's engaged
+/// flags of the icon's own kind ([`combats`]).
 pub(crate) fn kept_frames(
     frame: &DecodedFrame,
     kind: usize,
     viewer: u32,
-    links: &BTreeMap<u32, u32>,
-    relations: Result<&Relations, &'static str>,
     flags: &BTreeMap<u64, Engaged>,
     index: Option<&EngagedIndex>,
 ) -> io::Result<(BTreeMap<u64, Kept>, Provenance)> {
@@ -159,7 +182,7 @@ pub(crate) fn kept_frames(
         None => Provenance::Unindexed,
     };
     let flag = |combat: u64| flags.get(&combat).copied().unwrap_or(Engaged::Unknown);
-    let hour = icon_hour(kind, frame, viewer, links, relations, &flag)?;
+    let hour = icon_hour(kind, frame, &flag)?;
     let mut fold = IconFold::default();
     fold.advance(&hour, Continuity::Gap, &mut Vec::new());
     Ok((
@@ -272,6 +295,34 @@ impl Viewer {
         })
     }
 
+    /// The recording's own player's inputs, when the recording names it
+    /// ([`naval_check::recording_player`]), and whether its client observes.
+    fn recording(frame: &DecodedFrame) -> io::Result<Option<(Self, bool)>> {
+        let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
+            .iter()
+            .map(|link| (link.id, link.canonical_slot))
+            .collect();
+        let Some(slot) = naval_check::recording_player(frame, &links)? else {
+            return Ok(None);
+        };
+        // `GetViewingCountryTag@140B2D250` takes `CGameState+0x520` when it is
+        // positive, else the observer's `+0x524`.
+        let observing = frame
+            .complete::<tables::LocalPlayer>()
+            .is_ok_and(|rows| rows.iter().all(|row| row.country as i32 <= 0));
+        let relations = Relations::read(frame, &links);
+        let controllers = controllers(frame, &links)?;
+        Ok(Some((
+            Self {
+                slot,
+                links,
+                relations,
+                controllers,
+            },
+            observing,
+        )))
+    }
+
     fn sample(&self, sides: HourSides) -> engaged::Sample<'_> {
         engaged::Sample {
             viewer: self.slot,
@@ -369,6 +420,94 @@ pub(crate) fn combats(
     ))
 }
 
+/// The hour's flag of every land and naval combat for one viewer, with where
+/// each kind's came from.
+#[derive(Clone, Debug)]
+pub(crate) struct CombatFlags {
+    pub(crate) land: BTreeMap<u64, Engaged>,
+    pub(crate) naval: BTreeMap<u64, Engaged>,
+    pub(crate) land_provenance: Provenance,
+    pub(crate) naval_provenance: Provenance,
+}
+
+impl Default for CombatFlags {
+    fn default() -> Self {
+        Self {
+            land: BTreeMap::new(),
+            naval: BTreeMap::new(),
+            land_provenance: Provenance::Unindexed,
+            naval_provenance: Provenance::Unindexed,
+        }
+    }
+}
+
+impl CombatFlags {
+    /// Both kinds' [`combats`]; an undecided naval flag of the recording's
+    /// own player takes its recorded byte ([`naval_check::settle_recorded`]).
+    pub(crate) fn read(
+        frame: &DecodedFrame,
+        viewer: u32,
+        links: &BTreeMap<u32, u32>,
+        relations: Result<&Relations, &'static str>,
+        index: Option<&EngagedIndex>,
+    ) -> io::Result<Self> {
+        let (mut naval, naval_provenance) = combats(frame, NAVAL, viewer, links, relations, index)?;
+        naval_check::settle_recorded(frame, links, viewer, &mut naval)?;
+        let (land, land_provenance) = combats(frame, LAND, viewer, links, relations, index)?;
+        Ok(Self {
+            land,
+            naval,
+            land_provenance,
+            naval_provenance,
+        })
+    }
+
+    /// `any_side_engaged@1413CD880` of one entry of a province's combat vector
+    /// (`CProvince+0x170`), by its recorded class; a combat the hour does not
+    /// hold is unknown.
+    pub(crate) fn entry(&self, combat: u64, kind: u8) -> Engaged {
+        let flags = if kind == NavalProvinceCombatRow::NAVAL {
+            &self.naval
+        } else {
+            &self.land
+        };
+        flags.get(&combat).copied().unwrap_or(Engaged::Unknown)
+    }
+
+    /// Whether at least `count` entries of a province's combat vector are
+    /// engaged, walking it in order and stopping there, as `1418E3E30` (two,
+    /// the progress size) and `140E69830` (one, the battle picture) do. `row`
+    /// is the province's row, `complete` whether an absent row is an empty
+    /// vector; `None` when an undecided flag or an unknown vector could
+    /// change the answer.
+    pub(crate) fn engaged_entries(
+        &self,
+        row: Option<&NavalProvinceCombatRow>,
+        complete: bool,
+        count: usize,
+    ) -> Option<bool> {
+        let Some(row) = row else {
+            return complete.then_some(count == 0);
+        };
+        let (mut engaged, mut undecided) = (0, 0);
+        for (&combat, &kind) in row.combats.iter().zip(&row.kinds) {
+            if engaged >= count {
+                break;
+            }
+            match self.entry(combat, kind) {
+                Engaged::Yes => engaged += 1,
+                Engaged::No => {}
+                Engaged::Ambiguous(_) | Engaged::Unknown => undecided += 1,
+            }
+        }
+        if engaged >= count {
+            Some(true)
+        } else {
+            (engaged + undecided < count).then_some(false)
+        }
+    }
+}
+
 /// Per combat side: the hours its flag took a new value, ascending.
 type Changes = BTreeMap<(u64, u8), Vec<(Hour, Engaged)>>;
 
@@ -377,25 +516,78 @@ type Changes = BTreeMap<(u64, u8), Vec<(Hour, Engaged)>>;
 struct Covered {
     first: Hour,
     last: Hour,
-    /// Per kind and side: the hours its flag took a new value, ascending.
+    /// Per kind and side: the hours its flag took a new value, ascending, for
+    /// the perspective's viewer.
     points: Vec<Changes>,
-    /// Per icon kind and combat: the hours its kept frame changed.
+    /// The same for the recording's own player, whose history follows its
+    /// player changes.
+    recording: Vec<Changes>,
+    /// Per icon kind and combat: the hours its kept frame changed, for the
+    /// perspective's viewer.
     icons: Vec<IconPoints>,
+    /// The same for the recording's own player, whose icons take their frames
+    /// from its own flag history.
+    recording_icons: Vec<IconPoints>,
     /// The viewer per hour where it changed, ascending; a lookup for another
     /// viewer is not covered.
     viewers: Vec<(Hour, u32)>,
+    /// The recording's player per hour where it changed, ascending; `None`
+    /// where the recording does not name one.
+    players: Vec<(Hour, Option<u32>)>,
+}
+
+/// The value in effect at `hour` of an ascending change list.
+fn at<T: Copy>(changes: &[(Hour, T)], hour: Hour) -> Option<T> {
+    let at = changes.partition_point(|(from, _)| *from <= hour);
+    Some(changes.get(at.checked_sub(1)?)?.1)
 }
 
 impl Covered {
+    fn new(hour: Hour) -> Self {
+        Self {
+            first: hour,
+            last: hour,
+            points: vec![BTreeMap::new(); SOURCES.len()],
+            recording: vec![BTreeMap::new(); SOURCES.len()],
+            icons: vec![BTreeMap::new(); ICON_KINDS],
+            recording_icons: vec![BTreeMap::new(); ICON_KINDS],
+            viewers: Vec::new(),
+            players: Vec::new(),
+        }
+    }
+
     fn viewer(&self, hour: Hour) -> Option<u32> {
-        let at = self.viewers.partition_point(|(from, _)| *from <= hour);
-        Some(self.viewers.get(at.checked_sub(1)?)?.1)
+        at(&self.viewers, hour)
+    }
+
+    /// The perspective's viewer at `hour`, or why a lookup for `viewer`
+    /// cannot use the perspective's history.
+    fn perspective(&self, hour: Hour, viewer: u32) -> Result<(), Provenance> {
+        match self.viewer(hour) {
+            Some(folded) if folded == viewer => Ok(()),
+            Some(_) => Err(Provenance::OtherViewer),
+            None => Err(Provenance::Unread),
+        }
+    }
+
+    /// The change points that answer `viewer` at `hour`: the recording
+    /// player's own history when `viewer` is that player, which is the
+    /// client's flag itself, else the perspective's when it resolved to
+    /// `viewer`.
+    fn points_for(&self, hour: Hour, viewer: u32) -> Result<&[Changes], Provenance> {
+        if at(&self.players, hour).flatten() == Some(viewer) {
+            return Ok(&self.recording);
+        }
+        self.perspective(hour, viewer)?;
+        Ok(&self.points)
     }
 }
 
 #[derive(Default)]
 struct Shared {
     branches: Mutex<BTreeMap<BranchId, Covered>>,
+    /// The byte check's published summary; the pass folds it privately.
+    check: Mutex<Summary>,
     cancelled: AtomicBool,
 }
 
@@ -421,11 +613,7 @@ impl EngagedIndex {
         let shared = Arc::new(Shared::default());
         let (snapshots, inbox) = mpsc::channel();
         let folding = Arc::clone(&replay);
-        let pass = Pass {
-            shared: Arc::clone(&shared),
-            country: country.clone(),
-            folds: BTreeMap::new(),
-        };
+        let pass = Pass::new(Arc::clone(&shared), country.clone());
         thread::Builder::new()
             .name("engaged index".into())
             .spawn(move || {
@@ -457,6 +645,16 @@ impl EngagedIndex {
         true
     }
 
+    /// The recorded naval engaged bytes checked against the recording
+    /// player's derivation over the hours folded so far: a small summary.
+    pub(crate) fn byte_check(&self) -> Summary {
+        self.shared
+            .check
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     /// Whether the pass has folded this hour.
     pub(crate) fn covers(&self, branch: BranchId, hour: Hour) -> bool {
         let branches = self
@@ -474,11 +672,7 @@ impl EngagedIndex {
     #[cfg(test)]
     pub(crate) fn folded(frames: &[DecodedFrame], country: Country, load: Option<Hour>) -> Self {
         let shared = Arc::new(Shared::default());
-        let mut pass = Pass {
-            shared: Arc::clone(&shared),
-            country: country.clone(),
-            folds: BTreeMap::new(),
-        };
+        let mut pass = Pass::new(Arc::clone(&shared), country.clone());
         for frame in frames {
             pass.fold_hour(frame.branch, frame.hour, Some(frame), load);
         }
@@ -502,8 +696,10 @@ impl EngagedIndex {
         })
     }
 
-    /// The flag of each combat at a covered hour, for the viewer the pass
-    /// resolved there; otherwise why the index cannot answer.
+    /// The flag of each combat at a covered hour, for `viewer`: the recording
+    /// player's history when `viewer` is that player there, else the
+    /// perspective's when the pass resolved `viewer`; otherwise why the index
+    /// cannot answer.
     fn lookup(
         &self,
         kind: usize,
@@ -521,20 +717,12 @@ impl EngagedIndex {
             .get(&branch)
             .filter(|covered| (covered.first..=covered.last).contains(&hour))
             .ok_or(Provenance::Pending)?;
-        match covered.viewer(hour) {
-            Some(folded) if folded == viewer => {}
-            Some(_) => return Err(Provenance::OtherViewer),
-            None => return Err(Provenance::Unread),
-        }
         // Every kind in SOURCES has its points from the first folded hour.
-        let points = &covered.points[kind];
+        let points = &covered.points_for(hour, viewer)?[kind];
         let side = |combat: u64, side: u8| {
             points
                 .get(&(combat, side))
-                .and_then(|points| {
-                    let at = points.partition_point(|(from, _)| *from <= hour);
-                    Some(points.get(at.checked_sub(1)?)?.1)
-                })
+                .and_then(|points| at(points, hour))
                 .unwrap_or(Engaged::Unknown)
         };
         Ok(combats
@@ -562,12 +750,14 @@ impl EngagedIndex {
             .get(&branch)
             .filter(|covered| (covered.first..=covered.last).contains(&hour))
             .ok_or(Provenance::Pending)?;
-        match covered.viewer(hour) {
-            Some(folded) if folded == viewer => {}
-            Some(_) => return Err(Provenance::OtherViewer),
-            None => return Err(Provenance::Unread),
-        }
-        let points = &covered.icons[kind];
+        // The client's icons follow its own flags: the recording player's icon
+        // history answers a viewer who is that player there, as `points_for`.
+        let points = if at(&covered.players, hour).flatten() == Some(viewer) {
+            &covered.recording_icons[kind]
+        } else {
+            covered.perspective(hour, viewer)?;
+            &covered.icons[kind]
+        };
         Ok(combats
             .iter()
             .filter_map(|&combat| {
@@ -606,19 +796,137 @@ fn extends(older: &Replay, newer: &Replay) -> bool {
             .all(|block| bytes(older, block).is_some_and(|was| bytes(newer, block) == Some(was)))
 }
 
-/// One branch's fold state on the pass thread.
+/// One viewer's histories of every kind and their per-hour change buffers.
 #[derive(Default)]
-struct Fold {
+struct Track {
     histories: Vec<engaged::History>,
-    /// The last folded hour, and whether it decoded.
-    last: Option<(Hour, bool)>,
     /// Per kind, reused each hour: the sides that took a new value, and those
     /// whose combat ended.
     changed: Vec<Vec<((u64, u8), Engaged)>>,
     ended: Vec<Vec<(u64, u8)>>,
-    /// Per icon kind: the live instances, and those that changed this hour.
+}
+
+impl Track {
+    fn sized(&mut self) {
+        self.histories.resize_with(SOURCES.len(), Default::default);
+        self.changed.resize_with(SOURCES.len(), Vec::new);
+        self.ended.resize_with(SOURCES.len(), Vec::new);
+    }
+
+    fn advance(&mut self, viewer: &Viewer, sides: Vec<HourSides>, continuity: Continuity) {
+        self.sized();
+        for (kind, sides) in sides.into_iter().enumerate() {
+            self.histories[kind].advance_reporting(
+                viewer.sample(sides),
+                continuity,
+                &mut self.changed[kind],
+                &mut self.ended[kind],
+            );
+        }
+    }
+
+    /// An hour this viewer's flags were not folded for: every side it held
+    /// becomes unknown until it rebuilds.
+    fn forget(&mut self) {
+        self.sized();
+        for ((history, changed), ended) in self
+            .histories
+            .iter_mut()
+            .zip(&mut self.changed)
+            .zip(&mut self.ended)
+        {
+            let held = mem::take(history);
+            changed.clear();
+            ended.clear();
+            changed.extend(
+                held.sides()
+                    .filter(|(_, value)| *value != Engaged::Unknown)
+                    .map(|(key, _)| (key, Engaged::Unknown)),
+            );
+        }
+    }
+
+    /// Appends the hour's changes to `points`.
+    fn record(&self, points: &mut [Changes], hour: Hour) {
+        for ((points, changed), ended) in points.iter_mut().zip(&self.changed).zip(&self.ended) {
+            record(points, hour, changed.iter().copied());
+            // An ended combat takes no more points: keep only what it holds.
+            for key in ended {
+                if let Some(changes) = points.get_mut(key) {
+                    changes.shrink_to_fit();
+                }
+            }
+        }
+    }
+}
+
+/// One branch's fold state on the pass thread.
+#[derive(Default)]
+struct Fold {
+    /// The perspective's viewer.
+    perspective: Track,
+    /// The last folded hour, and whether its perspective folded.
+    last: Option<(Hour, bool)>,
+    /// The recording's own player.
+    recording: Track,
+    /// The last folded hour, and whether the recording player's folded.
+    recording_last: Option<(Hour, bool)>,
+    /// The recording client's view (its slot) at the last hour its history
+    /// folded.
+    client_view: Option<u32>,
+    /// Per icon kind, for the perspective's viewer: the live instances, and
+    /// those that changed this hour.
     icons: Vec<IconFold>,
     icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
+    /// The same for the recording's own player.
+    recording_icons: Vec<IconFold>,
+    recording_icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
+}
+
+/// Advances one track's icon folds by the hour, reading each kind's seen test
+/// from that track's engaged `histories`; an hour the track did not fold
+/// (`None`) loses every icon. `bytes`, for the recording's own player, are the
+/// hour's recorded naval bytes: the client's `+0xBA` whatever view its flags
+/// were rebuilt for, which settle an undecided naval flag
+/// ([`naval_check::settle`]), since `1418E3E30` sets the frame from that byte
+/// (`1413CD880`) and keeps it after. The byte check keeps the derivation.
+fn advance_icons(
+    icons: &mut [IconFold],
+    changed: &mut [Vec<(u64, Option<Kept>)>],
+    folded: Option<(&DecodedFrame, &[engaged::History])>,
+    bytes: Option<&BTreeMap<u64, [u8; 2]>>,
+    continuity: Continuity,
+) {
+    for (kind, (icons, changed)) in icons.iter_mut().zip(changed).enumerate() {
+        let Some((frame, histories)) = folded else {
+            icons.lose(changed);
+            continue;
+        };
+        let history = &histories[icon_source(kind)];
+        let bytes = bytes.filter(|_| kind == NAVAL_ICON);
+        let flag = |combat: u64| {
+            let flag = history.combat(combat);
+            bytes.map_or(flag, |bytes| naval_check::settle(flag, bytes.get(&combat)))
+        };
+        // A frame decoded, so an icon table it cannot read is one the hour
+        // holds nothing of: its icons are lost.
+        match icon_hour(kind, frame, &flag) {
+            Ok(hour) => icons.advance(&hour, continuity, changed),
+            Err(_) => icons.lose(changed),
+        }
+    }
+}
+
+/// How an hour follows the last one a track folded.
+fn continuity(last: Option<(Hour, bool)>, hour: Hour, load: Option<Hour>) -> Continuity {
+    match last {
+        None if load == Some(hour) => Continuity::Load,
+        // A branch that joined a running game, or whose first hours were not
+        // folded, starts after unobserved rebuilds.
+        None => Continuity::Gap,
+        Some((last, true)) if last.checked_add(1) == Some(hour) => Continuity::Next,
+        Some(_) => Continuity::Gap,
+    }
 }
 
 /// The hour a branch starts with a native load, which rebuilds every side
@@ -638,24 +946,55 @@ struct Pass {
     shared: Arc<Shared>,
     country: Country,
     folds: BTreeMap<BranchId, Fold>,
+    /// The byte check, folded here and published as a summary.
+    check: ByteCheck,
+}
+
+/// Every table the pass decodes.
+fn pass_tables() -> Vec<TableId> {
+    let mut tables: Vec<TableId> = VIEWER_TABLES.to_vec();
+    for source in SOURCES {
+        tables.extend_from_slice(source.tables());
+    }
+    tables.extend_from_slice(&ICON_TABLES);
+    tables.sort_by_key(|table| table.index());
+    tables.dedup();
+    tables
+}
+
+/// Folds every hour of `replay` on this thread and returns the naval byte
+/// check, as the index's pass does in the background: the headless dump's
+/// count.
+pub(crate) fn check_recorded_bytes(replay: &Replay) -> Summary {
+    let mut pass = Pass::new(Arc::new(Shared::default()), Country::Recorded);
+    pass.fold(replay, &pass_tables());
+    pass.check.summary.complete = true;
+    mem::take(&mut pass.check.summary)
 }
 
 impl Pass {
-    fn run(mut self, mut replay: Arc<Replay>, inbox: Receiver<Arc<Replay>>) {
-        let mut tables: Vec<TableId> = VIEWER_TABLES.to_vec();
-        for source in SOURCES {
-            tables.extend_from_slice(source.tables());
+    fn new(shared: Arc<Shared>, country: Country) -> Self {
+        Self {
+            shared,
+            country,
+            folds: BTreeMap::new(),
+            check: ByteCheck::default(),
         }
-        tables.extend_from_slice(&ICON_TABLES);
-        tables.sort_by_key(|table| table.index());
-        tables.dedup();
+    }
+
+    fn run(mut self, mut replay: Arc<Replay>, inbox: Receiver<Arc<Replay>>) {
+        let tables = pass_tables();
         let mut opened = true;
         loop {
             let started = Instant::now();
+            self.check.summary.complete = false;
+            self.publish();
             let hours = self.fold(&replay, &tables);
             if self.cancelled() {
                 return;
             }
+            self.check.summary.complete = true;
+            self.publish();
             // The open cost is always logged; each extension only when profiling.
             if opened || crate::map::counter_move::profiling() {
                 let (sides, points, bytes) = self.size();
@@ -678,6 +1017,15 @@ impl Pass {
         self.shared.cancelled.load(Ordering::Acquire)
     }
 
+    /// Copies the check's small summary out under a brief lock.
+    fn publish(&self) {
+        self.shared
+            .check
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone_from(&self.check.summary);
+    }
+
     /// Folds every hour past each branch's last folded one; returns how many.
     fn fold(&mut self, replay: &Replay, tables: &[TableId]) -> usize {
         let mut blocks: Vec<_> = replay.index.iter().collect();
@@ -692,14 +1040,15 @@ impl Pass {
             if self.cancelled() {
                 return hours;
             }
-            let fold = self.folds.entry(block.branch).or_default();
-            let folded = fold.last.map(|(hour, _)| hour);
+            let folded = self
+                .folds
+                .get(&block.branch)
+                .and_then(|fold| fold.last.map(|(hour, _)| hour));
             if folded.is_some_and(|last| block.last_hour <= last) {
                 continue;
             }
             let Ok(frames) = replay.read_block_selected(block, tables) else {
-                // The next folded hour follows unobserved ones.
-                fold.last = Some((block.last_hour, false));
+                self.failed_block(block.branch, block.last_hour);
                 continue;
             };
             let mut decoder = FrameDecoder::for_tables(tables);
@@ -724,11 +1073,24 @@ impl Pass {
         hours
     }
 
-    /// Folds one hour; an undecodable one leaves every side unknown until it
-    /// rebuilds. `load` is the hour the branch starts with a native load.
+    /// A block that could not be read: both tracks follow unobserved hours,
+    /// and the check counts it.
+    fn failed_block(&mut self, branch: BranchId, last_hour: Hour) {
+        let fold = self.folds.entry(branch).or_default();
+        fold.last = Some((last_hour, false));
+        fold.recording_last = Some((last_hour, false));
+        self.check.summary.failed_blocks += 1;
+        self.publish();
+    }
+
+    /// Folds one hour for the perspective's viewer, with its icons, and for
+    /// the recording's own player, and checks the latter's naval flags
+    /// against the recorded bytes. An undecodable hour, or one whose sides
+    /// cannot be read, leaves every side unknown until it rebuilds and loses
+    /// every icon. `load` is the hour the branch starts with a native load.
     ///
-    /// The fold runs without the lock; the lock is held only to append the
-    /// hour's changes.
+    /// The fold runs without the locks; each is held only to append or copy
+    /// the hour's results.
     fn fold_hour(
         &mut self,
         branch: BranchId,
@@ -737,123 +1099,193 @@ impl Pass {
         load: Option<Hour>,
     ) {
         let fold = self.folds.entry(branch).or_default();
-        fold.histories.resize_with(SOURCES.len(), Default::default);
-        fold.changed.resize_with(SOURCES.len(), Vec::new);
-        fold.ended.resize_with(SOURCES.len(), Vec::new);
         fold.icons.resize_with(ICON_KINDS, Default::default);
         fold.icon_changed.resize_with(ICON_KINDS, Vec::new);
-        let continuity = match fold.last {
-            None if load == Some(hour) => Continuity::Load,
-            // A branch that joined a running game, or whose first hours
-            // were not folded, starts after unobserved rebuilds.
-            None => Continuity::Gap,
-            Some((last, true)) if last.checked_add(1) == Some(hour) => Continuity::Next,
-            Some(_) => Continuity::Gap,
-        };
-        let read = frame.and_then(|frame| {
-            let viewer = Viewer::read(frame, &self.country).ok()?;
-            let sides = SOURCES
+        fold.recording_icons
+            .resize_with(ICON_KINDS, Default::default);
+        fold.recording_icon_changed
+            .resize_with(ICON_KINDS, Vec::new);
+        let perspective_continuity = continuity(fold.last, hour, load);
+        let recording_continuity = continuity(fold.recording_last, hour, load);
+        let summary = &mut self.check.summary;
+        summary.hours += 1;
+        // The sides do not depend on who views them.
+        let sides = frame.zip(frame.and_then(|frame| {
+            SOURCES
                 .iter()
                 .map(|source| source.sides(frame))
                 .collect::<io::Result<Vec<_>>>()
-                .ok()?;
-            Some((viewer, sides))
+                .ok()
+        }));
+        let viewer = sides
+            .as_ref()
+            .and_then(|(frame, _)| Viewer::read(frame, &self.country).ok());
+        // The client's stored viewpoint (LocalPlayer). A change of it
+        // is a player change, which rebuilds every side for the new player
+        // only (CCombatManager hourly 140BA9890 through 1413CEBC0 to
+        // 1413CEBE0); its history's viewer change is that rebuild. The
+        // perspective's viewer takes no rebuild from it.
+        let player = sides
+            .as_ref()
+            .and_then(|(frame, _)| Viewer::recording(frame).ok().flatten());
+        // The view the client's flags were last rebuilt for, which its history
+        // evaluates at this hour. `CChangeCountryControllerCommand::Execute`
+        // (14113E4B0) refreshes every combat (140BABC00 at 1411405F5) only when
+        // the viewing country (14113FC98: `+0x520` when positive, else `+0x524`)
+        // is the command's target country (`+0x28`, 14113FCB2..14113FCCD), so a
+        // tag switch or a controller given the viewed country rebuilds at once.
+        // A client that observes after the change was set there by an
+        // `observe`, its own (14026D810 refuses "Already observing." while
+        // `+0x520 < 1`, so it starts from a playing client, and runs 14113E4B0
+        // with target none: `+0x520 = 0` at 14113F007, `+0x524` the old country
+        // at 14113F608, or with no states another at 14113F747..14113F9B7) or
+        // another player's (the `+0x524` writes), or by
+        // `CSetCountryControllerCommand::Execute@140CD8720`, which never reaches
+        // 140BABC00. None rebuilds then: the next tick's hourly check
+        // (140BA9890) rebuilds for the new view, which the next hour's sample
+        // shows. So an hour whose client observes is evaluated for the previous
+        // view, and the next hour takes the view change. Not followed: a
+        // controller given the newly viewed country in that same interval,
+        // which would rebuild at once (the rosters are tested against the
+        // evaluated view); and a side's own rebuild from a command after the
+        // view change in that batch (`AddUnit` 1413CC2B0, `RemoveUnit`
+        // 1413CE340, `AddTransferToGroup` 1416084E0, for example through
+        // `CancelMovement` 140BEBF70), which tests the new view because
+        // 1413CEBE0 reads it at each call: the fold evaluates it for the
+        // previous view, a definite value where the samples cannot order the two.
+        let previous_view = fold
+            .client_view
+            .filter(|_| recording_continuity == Continuity::Next);
+        // Each is (the evaluated viewer, the client's view).
+        let player = player.map(|(mut viewer, observing)| {
+            let view = viewer.slot;
+            if let Some(slot) = previous_view
+                && observing
+            {
+                viewer.slot = slot;
+            }
+            (viewer, view)
         });
-        fold.last = Some((hour, read.is_some()));
-        let slot = read.as_ref().map(|(viewer, _)| viewer.slot);
-        match read {
-            Some((viewer, sides)) => {
-                for (kind, sides) in sides.into_iter().enumerate() {
-                    fold.histories[kind].advance_reporting(
-                        viewer.sample(sides),
-                        continuity,
-                        &mut fold.changed[kind],
-                        &mut fold.ended[kind],
-                    );
+        match &sides {
+            None => summary.unreadable_hours += 1,
+            Some((_, sides)) => {
+                let naval = &sides[NAVAL];
+                if !naval.complete {
+                    summary.incomplete_hours += 1;
                 }
-                let land = &fold.histories[LAND];
-                let flag = |combat: u64| land.combat(combat);
-                for (kind, (icons, changed)) in fold
-                    .icons
-                    .iter_mut()
-                    .zip(&mut fold.icon_changed)
-                    .enumerate()
-                {
-                    // A frame decoded, so an icon table it cannot read is
-                    // one the hour holds nothing of: its icons are lost.
-                    match frame.map(|frame| {
-                        icon_hour(
-                            kind,
-                            frame,
-                            viewer.slot,
-                            &viewer.links,
-                            viewer.relations.as_ref().map_err(|reason| *reason),
-                            &flag,
-                        )
-                    }) {
-                        Some(Ok(hour)) => icons.advance(&hour, continuity, changed),
-                        _ => icons.lose(changed),
+                if !naval.sides.is_empty() {
+                    summary.naval_hours += 1;
+                    if player.is_none() {
+                        summary.unidentified_hours += 1;
                     }
                 }
             }
-            None => {
-                for ((history, changed), ended) in fold
-                    .histories
-                    .iter_mut()
-                    .zip(&mut fold.changed)
-                    .zip(&mut fold.ended)
+        }
+        match (&sides, &player) {
+            (Some((frame, sides)), Some((viewer, view))) => {
+                fold.recording
+                    .advance(viewer, sides.clone(), recording_continuity);
+                fold.recording_last = Some((hour, true));
+                fold.client_view = Some(*view);
+                // An unreadable detail table settles nothing.
+                let bytes = naval_check::recorded_bytes(frame).ok();
+                advance_icons(
+                    &mut fold.recording_icons,
+                    &mut fold.recording_icon_changed,
+                    Some((frame, &fold.recording.histories)),
+                    bytes.as_ref(),
+                    recording_continuity,
+                );
+                // The check reads the recording player's history after the hour.
+                if self
+                    .check
+                    .compare(
+                        branch,
+                        hour,
+                        frame,
+                        &sides[NAVAL].sides,
+                        &fold.recording.histories[NAVAL],
+                    )
+                    .is_err()
                 {
-                    let held = mem::take(history);
-                    changed.clear();
-                    ended.clear();
-                    changed.extend(
-                        held.sides()
-                            .filter(|(_, value)| *value != Engaged::Unknown)
-                            .map(|(key, _)| (key, Engaged::Unknown)),
-                    );
-                }
-                for (icons, changed) in fold.icons.iter_mut().zip(&mut fold.icon_changed) {
-                    icons.lose(changed);
+                    self.check.summary.unreadable_hours += 1;
                 }
             }
+            _ => {
+                fold.recording.forget();
+                fold.recording_last = Some((hour, false));
+                fold.client_view = None;
+                advance_icons(
+                    &mut fold.recording_icons,
+                    &mut fold.recording_icon_changed,
+                    None,
+                    None,
+                    recording_continuity,
+                );
+            }
         }
-        let mut branches = self
-            .shared
-            .branches
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let covered = branches.entry(branch).or_insert_with(|| Covered {
-            first: hour,
-            last: hour,
-            points: vec![BTreeMap::new(); SOURCES.len()],
-            icons: vec![BTreeMap::new(); ICON_KINDS],
-            viewers: Vec::new(),
-        });
-        covered.last = hour;
-        if let Some(slot) = slot
-            && covered.viewers.last().is_none_or(|(_, last)| *last != slot)
+        let slot = viewer.as_ref().map(|viewer| viewer.slot);
+        match (sides, viewer) {
+            (Some((frame, sides)), Some(viewer)) => {
+                fold.perspective
+                    .advance(&viewer, sides, perspective_continuity);
+                fold.last = Some((hour, true));
+                advance_icons(
+                    &mut fold.icons,
+                    &mut fold.icon_changed,
+                    Some((frame, &fold.perspective.histories)),
+                    None,
+                    perspective_continuity,
+                );
+            }
+            _ => {
+                fold.perspective.forget();
+                fold.last = Some((hour, false));
+                advance_icons(
+                    &mut fold.icons,
+                    &mut fold.icon_changed,
+                    None,
+                    None,
+                    perspective_continuity,
+                );
+            }
+        }
         {
-            covered.viewers.push((hour, slot));
-        }
-        for ((points, changed), ended) in covered
-            .points
-            .iter_mut()
-            .zip(&fold.changed)
-            .zip(&fold.ended)
-        {
-            record(points, hour, changed.iter().copied());
-            // An ended combat takes no more points: keep only what it holds.
-            for key in ended {
-                if let Some(changes) = points.get_mut(key) {
-                    changes.shrink_to_fit();
+            let mut branches = self
+                .shared
+                .branches
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let covered = branches.entry(branch).or_insert_with(|| Covered::new(hour));
+            covered.last = hour;
+            if let Some(slot) = slot
+                && covered.viewers.last().is_none_or(|(_, last)| *last != slot)
+            {
+                covered.viewers.push((hour, slot));
+            }
+            // A lookup for the client's view is the client's flag, stale or not.
+            let player_slot = player.as_ref().map(|(_, view)| *view);
+            if covered
+                .players
+                .last()
+                .is_none_or(|(_, last)| *last != player_slot)
+            {
+                covered.players.push((hour, player_slot));
+            }
+            fold.perspective.record(&mut covered.points, hour);
+            fold.recording.record(&mut covered.recording, hour);
+            for (icons, changed) in [
+                (&mut covered.icons, &fold.icon_changed),
+                (&mut covered.recording_icons, &fold.recording_icon_changed),
+            ] {
+                for (points, changed) in icons.iter_mut().zip(changed) {
+                    for &(combat, kept) in changed {
+                        points.entry(combat).or_default().push((hour, kept));
+                    }
                 }
             }
         }
-        for (points, changed) in covered.icons.iter_mut().zip(&fold.icon_changed) {
-            for &(combat, kept) in changed {
-                points.entry(combat).or_default().push((hour, kept));
-            }
-        }
+        self.publish();
     }
 
     /// Combat sides, change points and an estimate of their bytes.
@@ -865,8 +1297,9 @@ impl Pass {
             .unwrap_or_else(|p| p.into_inner());
         let (mut sides, mut points, mut bytes) = (0, 0, 0);
         for covered in branches.values() {
-            bytes += covered.viewers.capacity() * size_of::<(Hour, u32)>();
-            for kind in &covered.points {
+            bytes += covered.viewers.capacity() * size_of::<(Hour, u32)>()
+                + covered.players.capacity() * size_of::<(Hour, Option<u32>)>();
+            for kind in covered.points.iter().chain(&covered.recording) {
                 sides += kind.len();
                 for changes in kind.values() {
                     points += changes.len();
@@ -915,7 +1348,7 @@ mod tests {
                             engaged::Side {
                                 // A unit joins every tenth hour: a rebuild.
                                 units: Some(vec![combat, (hour / 10) as u64]),
-                                added: None,
+                                added: engaged::Added::NoTrigger,
                                 lists: Some((
                                     vec![2 * combat as u32 + u32::from(side) + 1],
                                     vec![],
@@ -1006,11 +1439,7 @@ mod tests {
             frame.branch = start.id;
             let shared = Arc::new(Shared::default());
             let country = Country::Tag("AAA".into());
-            let mut pass = Pass {
-                shared: Arc::clone(&shared),
-                country: country.clone(),
-                folds: BTreeMap::new(),
-            };
+            let mut pass = Pass::new(Arc::clone(&shared), country.clone());
             pass.fold_hour(frame.branch, frame.hour, Some(&frame), native_load(&start));
             let (snapshots, _inbox) = mpsc::channel();
             let index = EngagedIndex {
@@ -1100,7 +1529,7 @@ mod tests {
                             (combat, side),
                             engaged::Side {
                                 units: Some(vec![combat]),
-                                added: None,
+                                added: engaged::Added::NoTrigger,
                                 lists: Some((
                                     vec![(combat as u32 * 3 + u32::from(side)) % COUNTRIES + 1],
                                     vec![],
@@ -1153,13 +1582,763 @@ mod tests {
         assert!(points.values().all(|changes| changes.len() == 1));
     }
 
+    /// 140E69830's battle picture needs one engaged entry of the province's
+    /// vector, of any class; an undecided entry before it leaves it undecided
+    /// only when no later entry decides it.
+    #[test]
+    fn one_engaged_entry_of_any_class_makes_a_battle_ongoing() {
+        let row = NavalProvinceCombatRow {
+            province: 10,
+            combats: vec![1, 2],
+            kinds: vec![NavalProvinceCombatRow::NAVAL, NavalProvinceCombatRow::LAND],
+        };
+        let flags = |naval, land| CombatFlags {
+            naval: BTreeMap::from([(1, naval)]),
+            land: BTreeMap::from([(2, land)]),
+            ..CombatFlags::default()
+        };
+        let ongoing = |flags: CombatFlags| flags.engaged_entries(Some(&row), true, 1);
+        assert_eq!(ongoing(flags(Engaged::No, Engaged::Yes)), Some(true));
+        assert_eq!(ongoing(flags(Engaged::No, Engaged::No)), Some(false));
+        assert_eq!(ongoing(flags(Engaged::Unknown, Engaged::Yes)), Some(true));
+        let ambiguous = Engaged::Ambiguous(engaged::Ambiguity::Scope);
+        assert_eq!(ongoing(flags(ambiguous, Engaged::No)), None);
+        // The entry's class picks the kind: a naval flag under the land entry's id is not it.
+        let crossed = CombatFlags {
+            naval: BTreeMap::from([(2, Engaged::Yes)]),
+            land: BTreeMap::from([(1, Engaged::Yes)]),
+            ..CombatFlags::default()
+        };
+        assert_eq!(crossed.engaged_entries(Some(&row), true, 1), None);
+    }
+
+    /// Countries at slots 1..=`countries` (raw id = slot, tag `C<slot>`), the
+    /// `players` rows, `factions` pairs allied in one faction each, and
+    /// `combats` naval combats `c`: attackers task force `2c + 7` of country
+    /// `2 + c`, defenders task force `2c + 8` of country 5, both sides' stored
+    /// bytes `bytes`. Land combat 100 always stands beside them: division 300
+    /// of country 2 attacks division 301 of country 5.
+    fn naval_frame(
+        countries: u32,
+        players: &[u32],
+        factions: &[(u32, u32)],
+        combats: u64,
+        bytes: [u8; 2],
+    ) -> DecodedFrame {
+        use replay::{
+            frame::TableView,
+            rows::{
+                CountryLinkRow, CountryRow, FactionMemberRow, NavalCombatDetailsRow,
+                NavalCombatRow, PlayerRow, TableRows, TaskForceRow,
+            },
+        };
+        let mut frame = DecodedFrame {
+            branch: 3,
+            hour: 0,
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "not captured".into(),
+                }
+                .into()
+            }),
+            metrics: Default::default(),
+        };
+        let mut set = |rows: TableRows| {
+            let table = rows.table();
+            *frame.tables[table.index()] = TableView::Complete(rows);
+        };
+        set(TableRows::Countries(
+            (1..=countries)
+                .map(|slot| CountryRow {
+                    id: slot,
+                    canonical_slot: slot,
+                    tag: format!("C{slot}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        set(TableRows::CountryLinks(
+            (1..=countries)
+                .map(|slot| CountryLinkRow {
+                    id: slot,
+                    canonical_slot: slot,
+                })
+                .collect(),
+        ));
+        set(TableRows::Players(
+            players
+                .iter()
+                .enumerate()
+                .map(|(id, &country)| PlayerRow {
+                    id: id as i32,
+                    country,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        set(TableRows::LocalPlayer(vec![replay::rows::LocalPlayerRow {
+            country: players.first().copied().unwrap_or(0),
+            observer_country: 0,
+        }]));
+        set(TableRows::FactionMembers(
+            factions
+                .iter()
+                .enumerate()
+                .flat_map(|(faction, &(a, b))| {
+                    [(a, 0), (b, 1)].map(|(country, ordinal)| FactionMemberRow {
+                        country,
+                        faction: faction as u64 + 1,
+                        ordinal,
+                    })
+                })
+                .collect(),
+        ));
+        for table in [
+            TableId::HumanControllers,
+            TableId::WarRelations,
+            TableId::Subjects,
+            TableId::NavalCombatParticipants,
+        ] {
+            set(TableRows::empty(table));
+        }
+        set(TableRows::NavalCombats(
+            (0..combats)
+                .map(|id| NavalCombatRow {
+                    id,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        let attacker = |combat: u64| (combat as u32 % (countries - 5)) + 2;
+        set(TableRows::NavalCombatDetails(
+            (0..combats)
+                .map(|combat| {
+                    let mut row = NavalCombatDetailsRow {
+                        combat,
+                        ..Default::default()
+                    };
+                    for (side, country) in [attacker(combat), 5].into_iter().enumerate() {
+                        let detail = &mut row.sides[side];
+                        detail.units = vec![2 * combat + 7 + side as u64];
+                        detail.summary.countries = vec![country];
+                        detail.engaged = bytes[side];
+                    }
+                    row
+                })
+                .collect(),
+        ));
+        set(TableRows::LandCombats(vec![replay::rows::LandCombatRow {
+            id: 100,
+            attackers: vec![300],
+            defenders: vec![301],
+            ..Default::default()
+        }]));
+        set(TableRows::LandCombatSides(vec![
+            replay::rows::LandCombatSideRow {
+                combat: 100,
+                attacker_primary: vec![2],
+                defender_primary: vec![5],
+                ..Default::default()
+            },
+        ]));
+        set(TableRows::TaskForces(
+            (0..combats)
+                .flat_map(|combat| {
+                    [(0, attacker(combat)), (1, 5)].map(|(side, country)| TaskForceRow {
+                        id: 2 * combat + 7 + side,
+                        logical_owner: country,
+                        roster_owner: country,
+                        ..Default::default()
+                    })
+                })
+                .collect(),
+        ));
+        frame
+    }
+
+    /// A pass for the perspective `tag`, folding `hours` of combat 0 (whose
+    /// attacker is country 2) on branch 3 from a load at the first; each hour
+    /// is (hour, players, factions, bytes).
+    #[allow(clippy::type_complexity)]
+    fn fold_hours(tag: &str, hours: &[(Hour, &[u32], &[(u32, u32)], [u8; 2])]) -> Pass {
+        let mut pass = Pass::new(Arc::default(), Country::Tag(tag.into()));
+        let load = hours.first().map(|hour| hour.0);
+        for &(hour, players, factions, bytes) in hours {
+            let frame = naval_frame(6, players, factions, 1, bytes);
+            pass.fold_hour(3, hour, Some(&frame), load);
+        }
+        pass
+    }
+
+    fn index(pass: &Pass, tag: &str) -> EngagedIndex {
+        let (snapshots, _inbox) = mpsc::channel();
+        EngagedIndex {
+            country: Country::Tag(tag.into()),
+            shared: Arc::clone(&pass.shared),
+            snapshots,
+            folding: Mutex::new(Arc::new(crate::playback::tests::fixture())),
+        }
+    }
+
+    /// The flags `CombatFlags::read` serves `viewer` at `hour` of that frame.
+    fn flags(
+        index: &EngagedIndex,
+        frame: &mut DecodedFrame,
+        hour: Hour,
+        viewer: u32,
+    ) -> CombatFlags {
+        frame.branch = 3;
+        frame.hour = hour;
+        let links: BTreeMap<u32, u32> = (1..=6).map(|slot| (slot, slot)).collect();
+        let relations = Relations::read(frame, &links);
+        CombatFlags::read(
+            frame,
+            viewer,
+            &links,
+            relations.as_ref().map_err(|reason| *reason),
+            Some(index),
+        )
+        .unwrap()
+    }
+
+    /// Naval combat 0's flag of [`flags`].
+    fn naval_flag(
+        index: &EngagedIndex,
+        frame: &mut DecodedFrame,
+        hour: Hour,
+        viewer: u32,
+    ) -> Engaged {
+        flags(index, frame, hour, viewer).naval[&0]
+    }
+
+    /// The recording player goes A (1), B (2), A while A and B ally in
+    /// between, with no unit change. The client rebuilt every side for B and
+    /// again for A on its return (140BA9890 → 1413CEBC0 → 1413CEBE0), so A
+    /// is engaged through its new ally at the last hour: a fixed-A view
+    /// serves that, not its own held answer, and it agrees with the byte.
+    #[test]
+    fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
+        let none: &[(u32, u32)] = &[];
+        let allied: &[(u32, u32)] = &[(1, 2)];
+        let pass = fold_hours(
+            "C1",
+            &[
+                (10, &[1], none, [0, 0]),
+                (11, &[2], none, [1, 0]),
+                (12, &[2], allied, [1, 0]),
+                (13, &[1], allied, [1, 0]),
+            ],
+        );
+        let summary = &pass.check.summary;
+        assert_eq!((summary.agreements, summary.mismatches), (8, 0));
+        let index = index(&pass, "C1");
+        let mut frame = naval_frame(6, &[1], allied, 1, [1, 0]);
+        // Land combat 100 has the same sides: A is served its rebuilt Yes for
+        // both kinds.
+        let served = flags(&index, &mut frame, 13, 1);
+        assert_eq!(
+            (served.naval[&0], served.land[&100]),
+            (Engaged::Yes, Engaged::Yes)
+        );
+        // The perspective's own history held its load-hour answer until the
+        // roster moved a player into its country, which it can only take as a
+        // possible controller refresh (14113E4B0 then 140BABC00).
+        let branches = pass.shared.branches.lock().unwrap();
+        for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
+            let points = &branches[&3].points[kind][&(combat, 0)];
+            assert_eq!(at(points, 12), Some(Engaged::No));
+            assert_eq!(
+                at(points, 13),
+                Some(Engaged::Ambiguous(engaged::Ambiguity::Scope))
+            );
+        }
+    }
+
+    /// Another viewer's flags take no rebuild from the recording player's
+    /// change: country 5 stays unengaged on the attacking side it allied
+    /// with at the player change, until that side rebuilds.
+    #[test]
+    fn a_player_change_rebuilds_nothing_for_another_viewer() {
+        let none: &[(u32, u32)] = &[];
+        let allied: &[(u32, u32)] = &[(2, 5)];
+        let pass = fold_hours(
+            "C5",
+            &[(10, &[1], none, [0, 0]), (11, &[2], allied, [1, 1])],
+        );
+        let index = index(&pass, "C5");
+        let mut frame = naval_frame(6, &[2], allied, 1, [1, 1]);
+        // Country 5 defends: engaged either way, so read the attacking side,
+        // of the naval combat and of the land one beside it.
+        let branches = pass.shared.branches.lock().unwrap();
+        for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
+            assert_eq!(
+                at(&branches[&3].points[kind][&(combat, 0)], 11),
+                Some(Engaged::No)
+            );
+        }
+        drop(branches);
+        assert_eq!(naval_flag(&index, &mut frame, 11, 5), Engaged::Yes);
+        // The recording player (2) is engaged as the attacker, and agrees; its
+        // defending side's player-change rebuild cannot be ordered against the
+        // alliance, so that side is undecided.
+        let summary = &pass.check.summary;
+        assert_eq!((summary.agreements, summary.undecided), (3, 1));
+    }
+
+    /// Viewing a fixed B (3): the recording player changes from A (1) to B
+    /// inside an unreadable block, and B then allies with both combats'
+    /// attacker (2) with no unit change. The rebuild for B happened at the
+    /// hidden change, before the alliance, and the alliance refreshes
+    /// nothing, so on recovery neither history may evaluate it: land stays
+    /// unknown, and the naval flag for B, the recording player, is the
+    /// recorded byte.
+    #[test]
+    fn a_player_change_hidden_in_an_unreadable_block_rebuilds_nothing_on_recovery() {
+        let none: &[(u32, u32)] = &[];
+        let allied: &[(u32, u32)] = &[(2, 3)];
+        let mut pass = Pass::new(Arc::default(), Country::Tag("C3".into()));
+        pass.fold_hour(
+            3,
+            10,
+            Some(&naval_frame(6, &[1], none, 1, [0, 0])),
+            Some(10),
+        );
+        pass.failed_block(3, 19);
+        let mut frame = naval_frame(6, &[3], allied, 1, [0, 0]);
+        pass.fold_hour(3, 20, Some(&frame), Some(10));
+        let index = index(&pass, "C3");
+        let served = flags(&index, &mut frame, 20, 3);
+        assert_eq!(served.land[&100], Engaged::Unknown);
+        assert_eq!(served.naval[&0], Engaged::No);
+        let summary = &pass.check.summary;
+        assert_eq!((summary.failed_blocks, summary.undecided), (1, 2));
+    }
+
+    /// A byte the derivation contradicts is a named mismatch; a side the
+    /// derivation cannot decide (the branch joined a running game) is
+    /// counted apart, and the byte settles it for the recording player.
+    #[test]
+    fn mismatches_are_named_and_undecided_sides_counted_apart() {
+        let none: &[(u32, u32)] = &[];
+        let pass = fold_hours("C1", &[(10, &[1], none, [0, 1])]);
+        let summary = &pass.check.summary;
+        assert_eq!((summary.agreements, summary.mismatches), (1, 1));
+        assert_eq!(
+            summary.first,
+            [naval_check::Mismatch {
+                branch: 3,
+                hour: 10,
+                combat: 0,
+                side: 1,
+                derived: false,
+            }]
+        );
+        // Without a load the first hour follows unobserved rebuilds.
+        let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+        let mut frame = naval_frame(6, &[1], none, 1, [0, 1]);
+        pass.fold_hour(3, 10, Some(&frame), None);
+        assert_eq!(pass.check.summary.undecided, 2);
+        let index = index(&pass, "C1");
+        assert_eq!(naval_flag(&index, &mut frame, 10, 1), Engaged::Yes);
+        // Another viewer (3, on neither side) keeps its own derivation, not the byte.
+        assert_eq!(naval_flag(&index, &mut frame, 10, 3), Engaged::No);
+    }
+
+    /// Hours the check could not compare are counted, never mistaken for an
+    /// hour without naval combat.
+    #[test]
+    fn unread_and_unnamed_hours_are_counted_through_the_pass() {
+        let none: &[(u32, u32)] = &[];
+        let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+        // An undecodable hour.
+        pass.fold_hour(3, 10, None, Some(10));
+        // Country links unavailable while naval combats are recorded: neither
+        // the perspective nor the recording player resolves.
+        let mut frame = naval_frame(6, &[1], none, 1, [0, 0]);
+        *frame.tables[TableId::CountryLinks.index()] = replay::frame::TableView::Unavailable {
+            reason: "not captured".into(),
+        };
+        pass.fold_hour(3, 11, Some(&frame), Some(10));
+        // A failed client read is unidentified even with two humans.
+        let mut frame = naval_frame(6, &[1, 5], none, 1, [0, 0]);
+        *frame.tables[TableId::LocalPlayer.index()] = replay::frame::TableView::Unavailable {
+            reason: "not captured".into(),
+        };
+        pass.fold_hour(3, 12, Some(&frame), Some(10));
+        // An unreadable block.
+        pass.failed_block(3, 20);
+        pass.fold_hour(
+            3,
+            21,
+            Some(&naval_frame(6, &[1], none, 0, [0, 0])),
+            Some(10),
+        );
+        let summary = pass.shared.check.lock().unwrap().clone();
+        assert_eq!(
+            (
+                summary.hours,
+                summary.naval_hours,
+                summary.unreadable_hours,
+                summary.unidentified_hours,
+                summary.failed_blocks,
+            ),
+            (4, 2, 1, 2, 1)
+        );
+        assert_eq!(summary.agreements + summary.undecided, 0);
+        let lines = summary.lines();
+        assert!(lines[1].contains("2 hours whose player the recording does not name, 1 unreadable hours, 1 unreadable blocks"), "{lines:?}");
+        // Only a fully read span without naval sides says it had none.
+        let mut clean = Pass::new(Arc::default(), Country::Tag("C1".into()));
+        clean.fold_hour(
+            3,
+            10,
+            Some(&naval_frame(6, &[1], none, 0, [0, 0])),
+            Some(10),
+        );
+        assert!(
+            clean.check.summary.lines()[0].contains("no naval combat side in the 1 folded hours")
+        );
+    }
+
+    /// The recording client observes (`CGameState+0x520` zero, so the view is
+    /// `+0x524`) and another player's `observe` moves its view from 3 to 4
+    /// between hours 10 and 11. `CChangeCountryControllerCommand::Execute`
+    /// (14113E4B0) refreshes every combat (140BABC00) only when the viewing
+    /// country is the command's target country (14113FC98..14113FCCD), and an
+    /// observe's target is none, so nothing rebuilds at once: the hour-11
+    /// sample still holds 3's flags, and the next tick's `CCombatManager`
+    /// hourly check (140BA9890) rebuilds for 4, which hour 12 shows. Country 3
+    /// allies with the attacker (2); 4 with no one. A tag switch, whose target
+    /// is the new country, rebuilds at once instead.
+    #[test]
+    fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
+        let allied: &[(u32, u32)] = &[(2, 3)];
+        let fold = |views: [(u32, u32, [u8; 2]); 3]| {
+            let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+            for (hour, (country, observer_country, bytes)) in (10..).zip(views) {
+                let mut frame = naval_frame(6, &[1], allied, 1, bytes);
+                *frame.tables[TableId::LocalPlayer.index()] =
+                    replay::frame::TableView::Complete(replay::rows::TableRows::LocalPlayer(vec![
+                        replay::rows::LocalPlayerRow {
+                            country,
+                            observer_country,
+                        },
+                    ]));
+                pass.fold_hour(3, hour, Some(&frame), Some(10));
+            }
+            pass
+        };
+        // The observer's bytes: 3's flags at 10 and 11, 4's at 12.
+        let pass = fold([(0, 3, [1, 0]), (0, 4, [1, 0]), (0, 4, [0, 0])]);
+        let summary = &pass.check.summary;
+        assert_eq!(
+            (summary.agreements, summary.mismatches, summary.undecided),
+            (6, 0, 0),
+            "{:?}",
+            summary.first
+        );
+        // Viewing 4, the recording's client, is served its stale flag at 11.
+        let index = index(&pass, "C1");
+        let mut frame = naval_frame(6, &[1], allied, 1, [1, 0]);
+        *frame.tables[TableId::LocalPlayer.index()] =
+            replay::frame::TableView::Complete(replay::rows::TableRows::LocalPlayer(vec![
+                replay::rows::LocalPlayerRow {
+                    country: 0,
+                    observer_country: 4,
+                },
+            ]));
+        assert_eq!(naval_flag(&index, &mut frame, 11, 4), Engaged::Yes);
+        assert_eq!(naval_flag(&index, &mut frame, 12, 4), Engaged::No);
+        // A tag switch to 4 rebuilds at once: 4's flags already at 11.
+        let pass = fold([(3, 0, [1, 0]), (4, 0, [0, 0]), (4, 0, [0, 0])]);
+        let summary = &pass.check.summary;
+        assert_eq!((summary.agreements, summary.mismatches), (6, 0));
+        // The client's own `observe` (14026D810, target none) from playing 3 to
+        // observing 4 (3 annexed, so 14113F747..14113F9B7 moves the view) skips
+        // 140BABC00 as well: 3's flags at 11, 4's at 12.
+        let pass = fold([(3, 0, [1, 0]), (0, 4, [1, 0]), (0, 4, [0, 0])]);
+        let summary = &pass.check.summary;
+        assert_eq!(
+            (summary.agreements, summary.mismatches),
+            (6, 0),
+            "{:?}",
+            summary.first
+        );
+    }
+
+    /// The client's combat icons take their frames from its own flag
+    /// (`1418E3E30` reads the client's `+0xBA` through 1413CD880), so a viewer
+    /// who is the recording player at the hour is served the icon history
+    /// folded over the client's flags, not the perspective's. Viewing a fixed
+    /// C3: the client plays the attacker (2) at hours 10 and 11, engaged, its
+    /// convoy's frame 1 set; at 12 it switches to C3 (at once, 140BABC00), not
+    /// allied with 2, so the combat is unengaged and the icon keeps frame 1.
+    /// C3's own history never saw the combat engaged.
+    #[test]
+    fn the_recording_players_icons_keep_the_clients_carried_frame() {
+        use replay::{
+            frame::TableView,
+            rows::{NavalCombatShipRow, TableRows},
+        };
+        let hour = |hour: Hour, player: u32, bytes: [u8; 2]| {
+            let mut frame = naval_frame(6, &[player], &[], 1, bytes);
+            frame.hour = hour;
+            *frame.tables[TableId::NavalCombatShips.index()] =
+                TableView::Complete(TableRows::NavalCombatShips(vec![NavalCombatShipRow {
+                    combat: 0,
+                    side: 0,
+                    live_convoy: 1,
+                    ..Default::default()
+                }]));
+            frame
+        };
+        let frames = [
+            hour(10, 2, [1, 0]),
+            hour(11, 2, [1, 0]),
+            hour(12, 3, [0, 0]),
+        ];
+        let mut pass = Pass::new(Arc::default(), Country::Tag("C3".into()));
+        for frame in &frames {
+            pass.fold_hour(3, frame.hour, Some(frame), Some(10));
+        }
+        let index = index(&pass, "C3");
+        let mut frame = frames[2].clone();
+        let naval = flags(&index, &mut frame, 12, 3).naval;
+        let (kept, provenance) = kept_frames(&frame, NAVAL_ICON, 3, &naval, Some(&index)).unwrap();
+        assert_eq!(provenance, Provenance::Indexed);
+        assert_eq!((naval[&0], kept[&0]), (Engaged::No, Kept::Frame(1)));
+        // Before the switch C3 is not the recording player: its own icon
+        // history, which never saw the combat engaged.
+        let mut frame = frames[1].clone();
+        let naval = flags(&index, &mut frame, 11, 3).naval;
+        let (kept, _) = kept_frames(&frame, NAVAL_ICON, 3, &naval, Some(&index)).unwrap();
+        assert_eq!((naval[&0], kept[&0]), (Engaged::No, Kept::Unobserved));
+    }
+
+    /// A recording that joins a running game (no load) starts every flag
+    /// unknown, but the client's recorded byte (`CCombatant+0xBA`) says
+    /// whether it saw the combat engaged, and `1418E3E30` sets the icon frame
+    /// from that byte and keeps it after. The client (1) allies with the
+    /// attacker (2) at hours 10 and 11 (bytes [1, 0]); the alliance ends at 11,
+    /// and at 12 a defending task force leaves (a naval removal rebuilds both
+    /// sides, 1413CE250), so the combat is unengaged with both sides still
+    /// holding countries: the icon keeps the frame the engaged hours set.
+    #[test]
+    fn a_joined_recordings_icon_keeps_the_frame_its_recorded_bytes_set() {
+        use replay::{
+            frame::TableView,
+            rows::{NavalCombatShipRow, TableRows, TaskForceRow},
+        };
+        let hour = |hour: Hour, factions: &[(u32, u32)], defenders: &[u64], bytes: [u8; 2]| {
+            let mut frame = naval_frame(6, &[1], factions, 1, bytes);
+            frame.hour = hour;
+            *frame.tables[TableId::NavalCombatShips.index()] =
+                TableView::Complete(TableRows::NavalCombatShips(vec![NavalCombatShipRow {
+                    combat: 0,
+                    side: 0,
+                    live_convoy: 1,
+                    ..Default::default()
+                }]));
+            if let TableView::Complete(TableRows::NavalCombatDetails(rows)) =
+                &mut *frame.tables[TableId::NavalCombatDetails.index()]
+            {
+                rows[0].sides[1].units = defenders.to_vec();
+            }
+            if let TableView::Complete(TableRows::TaskForces(rows)) =
+                &mut *frame.tables[TableId::TaskForces.index()]
+            {
+                rows.push(TaskForceRow {
+                    id: 99,
+                    logical_owner: 5,
+                    roster_owner: 5,
+                    ..Default::default()
+                });
+            }
+            frame
+        };
+        let allied: &[(u32, u32)] = &[(1, 2)];
+        let frames = [
+            hour(10, allied, &[8, 99], [1, 0]),
+            hour(11, &[], &[8, 99], [1, 0]),
+            hour(12, &[], &[8], [0, 0]),
+        ];
+        let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+        for frame in &frames {
+            // No load: the branch joined a running game.
+            pass.fold_hour(3, frame.hour, Some(frame), None);
+        }
+        let index = index(&pass, "C1");
+        let mut frame = frames[2].clone();
+        let naval = flags(&index, &mut frame, 12, 1).naval;
+        let (kept, provenance) = kept_frames(&frame, NAVAL_ICON, 1, &naval, Some(&index)).unwrap();
+        assert_eq!(provenance, Provenance::Indexed);
+        assert_eq!((naval[&0], kept[&0]), (Engaged::No, Kept::Frame(1)));
+        // The byte check keeps the independent derivation: the joined hours
+        // are undecided, the rebuilt one agrees.
+        let summary = &pass.check.summary;
+        assert_eq!(
+            (summary.undecided, summary.agreements, summary.mismatches),
+            (4, 2, 0)
+        );
+    }
+
+    #[test]
+    fn mp_switch_and_observer_hours_are_checked_with_a_stable_human_roster() {
+        let mut pass = Pass::new(Arc::default(), Country::Recorded);
+        for (hour, country, observer_country) in [(10, 1, 0), (11, 2, 0), (12, 0, 5)] {
+            let mut frame = naval_frame(6, &[1, 2, 5], &[], 1, [0, 0]);
+            *frame.tables[TableId::LocalPlayer.index()] =
+                replay::frame::TableView::Complete(replay::rows::TableRows::LocalPlayer(vec![
+                    replay::rows::LocalPlayerRow {
+                        country,
+                        observer_country,
+                    },
+                ]));
+            pass.fold_hour(3, hour, Some(&frame), Some(10));
+        }
+        let summary = &pass.check.summary;
+        assert_eq!(
+            (
+                summary.hours,
+                summary.naval_hours,
+                summary.unidentified_hours
+            ),
+            (3, 3, 0)
+        );
+        assert_eq!(
+            summary.agreements + summary.mismatches + summary.undecided,
+            6
+        );
+    }
+
+    /// Both tracks and the check at 1,500 combats between 5,000 countries.
+    #[test]
+    fn the_check_folds_fifteen_hundred_combats_of_five_thousand_countries() {
+        for countries in [1_500_u32, 5_000] {
+            let frame = naval_frame(countries, &[1], &[], 1_500, [0, 0]);
+            let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+            let started = Instant::now();
+            for hour in 0..48 {
+                pass.fold_hour(3, hour, Some(&frame), Some(0));
+            }
+            let elapsed = started.elapsed();
+            println!(
+                "{countries} countries: 48 hours of 1,500 naval combats folded and checked in {:.3} ms ({:.3} ms an hour)",
+                elapsed.as_secs_f64() * 1e3,
+                elapsed.as_secs_f64() * 1e3 / 48.0
+            );
+            let summary = &pass.check.summary;
+            assert_eq!(summary.agreements, 2 * 1_500 * 48);
+            assert_eq!(summary.naval_hours, 48);
+        }
+    }
+
+    /// Every side-hour contradicting its byte is counted exactly, and only the first five are
+    /// kept by name: 1,500 combats over 48 hours are 144,000 mismatches in a summary that
+    /// stays five entries long.
+    #[test]
+    fn mismatch_counts_stay_exact_while_only_the_first_five_are_kept() {
+        let frame = naval_frame(5_000, &[1], &[], 1_500, [1, 1]);
+        let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+        for hour in 0..48 {
+            pass.fold_hour(3, hour, Some(&frame), Some(0));
+        }
+        let summary = &pass.check.summary;
+        assert_eq!(
+            (summary.agreements, summary.mismatches),
+            (0, 2 * 1_500 * 48)
+        );
+        assert_eq!(summary.first.len(), 5);
+        assert!(summary.first.iter().all(|mismatch| mismatch.hour == 0));
+        assert_eq!(
+            summary.lines().last().unwrap(),
+            &format!(
+                "Naval engaged mismatch: {} more not listed.",
+                2 * 1_500 * 48 - 5
+            )
+        );
+    }
+
+    /// Owner option B for naval icons: `1418E3E30` sets the icon's frame only
+    /// while `any_side_engaged@1413CD880` holds, so an unengaged combat's icon
+    /// keeps the frame of its last engaged hour, which the index carries. C1
+    /// shares vision with the attacker (2) at the load, so combat 0 is engaged
+    /// and its convoy (a live forward-group convoy on the attacking side, no
+    /// other ship) sets the convoy variant, frame 1. The alliance ends at
+    /// hour 11 (the flag lags, still engaged) and a task force joins the
+    /// attackers at hour 12, which rebuilds them for C1: unengaged, the icon
+    /// keeps frame 1, carried, at that hour and on a seek back to it.
+    #[test]
+    fn an_unengaged_naval_icon_keeps_its_last_engaged_frame_through_the_index() {
+        use replay::{
+            frame::TableView,
+            rows::{NavalCombatShipRow, TableRows},
+        };
+        let convoy = |frame: &mut DecodedFrame| {
+            *frame.tables[TableId::NavalCombatShips.index()] =
+                TableView::Complete(TableRows::NavalCombatShips(vec![NavalCombatShipRow {
+                    combat: 0,
+                    side: 0,
+                    live_convoy: 1,
+                    ..Default::default()
+                }]));
+        };
+        let hour = |hour: Hour, factions: &[(u32, u32)], joined: bool| {
+            let mut frame = naval_frame(6, &[1], factions, 1, [1, 0]);
+            frame.hour = hour;
+            convoy(&mut frame);
+            if joined
+                && let TableView::Complete(TableRows::NavalCombatDetails(rows)) =
+                    &mut *frame.tables[TableId::NavalCombatDetails.index()]
+            {
+                rows[0].sides[0].units.push(99);
+            }
+            frame
+        };
+        let frames = [
+            hour(10, &[(1, 2)], false),
+            hour(11, &[], false),
+            hour(12, &[], true),
+        ];
+        let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+        for frame in &frames {
+            pass.fold_hour(3, frame.hour, Some(frame), Some(10));
+        }
+        let index = index(&pass, "C1");
+        let kept = |at: usize| {
+            let mut frame = frames[at].clone();
+            let hour = frame.hour;
+            let naval = flags(&index, &mut frame, hour, 1).naval;
+            let (kept, provenance) =
+                kept_frames(&frame, NAVAL_ICON, 1, &naval, Some(&index)).unwrap();
+            assert_eq!(provenance, Provenance::Indexed);
+            (naval[&0], kept[&0])
+        };
+        assert_eq!(kept(0), (Engaged::Yes, Kept::Frame(1)));
+        assert_eq!(kept(1), (Engaged::Yes, Kept::Frame(1)));
+        assert_eq!(kept(2), (Engaged::No, Kept::Frame(1)));
+        // Without the index only the hour is known: an unengaged icon's frame is unindexed.
+        let (unindexed, provenance) = kept_frames(
+            &frames[2],
+            NAVAL_ICON,
+            1,
+            &BTreeMap::from([(0, Engaged::No)]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            (unindexed[&0], provenance),
+            (Kept::Unindexed, Provenance::Unindexed)
+        );
+    }
+
     #[test]
     fn a_side_whose_combat_ends_is_reported_once() {
         let links = BTreeMap::from([(1, 1)]);
         let relations = Relations::factions_for_tests(&[]);
         let side = || engaged::Side {
             units: Some(vec![1]),
-            added: None,
+            added: engaged::Added::NoTrigger,
             lists: Some((vec![1], vec![])),
             unit_lists: Some((vec![1], vec![])),
         };
@@ -1215,11 +2394,10 @@ mod tests {
         shared.branches.lock().unwrap().insert(
             3,
             Covered {
-                first: 10,
-                last: 20,
                 points: vec![points],
-                icons: vec![BTreeMap::new(); ICON_KINDS],
                 viewers: vec![(10, 1)],
+                last: 20,
+                ..Covered::new(10)
             },
         );
         let (snapshots, _inbox) = mpsc::channel();
@@ -1367,11 +2545,7 @@ mod tests {
     fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) {
         let shared = Arc::new(Shared::default());
         let country = Country::Tag("AAA".into());
-        let mut pass = Pass {
-            shared: Arc::clone(&shared),
-            country: country.clone(),
-            folds: BTreeMap::new(),
-        };
+        let mut pass = Pass::new(Arc::clone(&shared), country.clone());
         for frame in hours {
             pass.fold_hour(frame.branch, frame.hour, Some(frame), Some(0));
         }
@@ -1438,11 +2612,7 @@ mod tests {
         let yes = BTreeMap::from([(62, Engaged::Yes)]);
         assert_eq!(rebuilt(None), (yes.clone(), Provenance::Unindexed));
         let shared = Arc::new(Shared::default());
-        let mut pass = Pass {
-            shared: Arc::clone(&shared),
-            country: Country::Tag("AAA".into()),
-            folds: BTreeMap::new(),
-        };
+        let mut pass = Pass::new(Arc::clone(&shared), Country::Tag("AAA".into()));
         pass.fold_hour(1, 0, Some(&frames[0]), Some(0));
         let (snapshots, _inbox) = mpsc::channel();
         let index = EngagedIndex {

@@ -347,9 +347,27 @@ fn compare_results(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut rows = BTreeMap::new();
+    let mut buckets: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     for row in complete::<tables::NavalResults>(frame)? {
         if row.id == 0 || rows.insert(row.id, row).is_some() {
             return Err(invalid("null or duplicate retained naval result id"));
+        }
+        buckets
+            .entry(row.province)
+            .or_default()
+            .push(row.province_ordinal);
+    }
+    // Each province bucket holds its results once, at ordinals 0..n.
+    for ordinals in buckets.values_mut() {
+        ordinals.sort_unstable();
+        if ordinals
+            .iter()
+            .enumerate()
+            .any(|(index, &ordinal)| ordinal as usize != index)
+        {
+            return Err(invalid(
+                "retained naval result province ordinals are not dense",
+            ));
         }
     }
     let mut compared = 0;
@@ -402,6 +420,10 @@ fn compare_results(
     }
     report.compared("NavalResults", compared);
     report.limitation("CD73D0 does not serialize winner/loser side selectors, subtype or readiness; captured raw fields are not verified by inferred battle outcomes", "NavalResults");
+    report.limitation(
+        "the province bucket order is not serialized; only its density is checked",
+        "NavalResults.province_ordinal",
+    );
     Ok(())
 }
 

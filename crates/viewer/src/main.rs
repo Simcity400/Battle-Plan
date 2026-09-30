@@ -921,12 +921,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     break drawn;
                 }
             };
+            // The window's warnings say why an undecided flag showed nothing, so they print
+            // whether or not it drew.
+            for warning in window.warnings(&document) {
+                eprintln!("Warning: {warning}");
+            }
             if let Some(drawn) = drawn {
                 println!("Combat window: {selection:?}, rect {:?}", drawn.rect);
-                for warning in window.warnings(&document) {
-                    eprintln!("Warning: {warning}");
-                }
                 label_batch.quads.extend(drawn.batch.quads);
+            } else {
+                println!(
+                    "Combat window: {selection:?} not shown: its combat is not engaged for the viewing country at this hour, or the flag is undecided (see the warnings)"
+                );
             }
         }
         // borders: the hour's recorded StateFlags, plus whatever --demilitarized added.
@@ -1391,7 +1397,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // counters
         println!(
-            "Counters: {} land ({} between provinces), {} naval ({} task forces not drawn, {} standing for an unplaced route); {} air bases ({} showing their plane count, {} hidden by fog of war), {} naval bases, {} naval HQs, {} facilities ({} unresolved sprites; undecided: {} bases, {} HQs, {} facilities); {} land combats, {} naval combats; {} stacks with no anchor",
+            "Counters: {} land ({} between provinces), {} naval ({} task forces not drawn, {} standing for an unplaced route); {} air bases ({} showing their plane count, {} hidden by fog of war), {} naval bases, {} naval HQs, {} facilities ({} unresolved sprites; undecided: {} bases, {} HQs, {} facilities); {} land combats, {} naval combats ({} undecided), {} naval result icons ({} undecided); {} stacks with no anchor",
             counter_report.land_counters,
             counter_report.moving,
             counter_report.naval_counters,
@@ -1420,14 +1426,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.unknown_bases.totals()[2],
             counter_report.land_combats,
             counter_report.naval_combats,
+            counter_report.unavailable_naval_combats,
+            counter_report.naval_result_icons,
+            counter_report.unavailable_naval_results,
             counter_report.unanchored
         );
         for line in counter_report.combat_gap_lines() {
             println!("{line}");
         }
+        // The refused tokens, the task forces and base icons not drawn and the undecided naval
+        // icons, as the window lists them.
         for warning in counter_report.warnings() {
             println!("{warning}");
         }
+        // The recorded naval engaged bytes against the flag derived for the recording's
+        // player, over every recorded hour: the count offline runs read.
+        let started = std::time::Instant::now();
+        let check = engaged_index::check_recorded_bytes(document.playback.replay());
+        let lines = check.lines();
+        if lines.is_empty() {
+            println!("Naval engaged check: the recording holds no hour to fold.");
+        }
+        for line in lines {
+            println!("{line}");
+        }
+        println!(
+            "Naval engaged check folded the recording in {:.2} s.",
+            started.elapsed().as_secs_f64()
+        );
         // counters: faction-theatre pins
         let pings = &counter_report.faction_ping_limits;
         println!(

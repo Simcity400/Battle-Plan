@@ -235,6 +235,7 @@ fn task(r: &ctask_force::CounterRow) -> TaskForceCounterInputRow {
         detached_activity: r.detached_activity,
         repair_last_mission: r.repair_last_mission,
         received_supply_ratio: r.received_supply_ratio,
+        attached_headquarters: r.attached_headquarters,
     }
 }
 

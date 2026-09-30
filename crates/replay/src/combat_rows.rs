@@ -373,7 +373,11 @@ pub struct NavalCombatSummaryInputs {
     pub recent_join_penalty: i64,
     pub escort_bonus: i64,
     pub is_attacker: u8,
+    /// The side's ordered primary country list (`+0x38`), raw references.
     pub countries: Vec<u32>,
+    /// Its ordered roster-owner list (`+0x50`), which admits a viewer to the combat's
+    /// shared vision (`UpdateCombatSharedVisionFlag@1413CEBE0`).
+    pub secondary_countries: Vec<u32>,
     pub modifiers: [[NavalCombatSummaryModifier; 5]; 5],
     pub modifier_metadata: [[u32; 2]; 5],
     pub feature_flags: u32,
@@ -381,7 +385,7 @@ pub struct NavalCombatSummaryInputs {
     pub fixed_defines: [i64; 18],
     pub integer_defines: [i32; 3],
 }
-value_struct!(NavalCombatSummaryInputs { recent_join_penalty: i64, escort_bonus: i64, is_attacker: u8, countries: Vec<u32>, modifiers: [[NavalCombatSummaryModifier; 5]; 5], modifier_metadata: [[u32; 2]; 5], feature_flags: u32, eligibility_callback: u8, fixed_defines: [i64; 18], integer_defines: [i32; 3] });
+value_struct!(NavalCombatSummaryInputs { recent_join_penalty: i64, escort_bonus: i64, is_attacker: u8, countries: Vec<u32>, secondary_countries: Vec<u32>, modifiers: [[NavalCombatSummaryModifier; 5]; 5], modifier_metadata: [[u32; 2]; 5], feature_flags: u32, eligibility_callback: u8, fixed_defines: [i64; 18], integer_defines: [i32; 3] });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatAirEfficiencyModifier {
@@ -494,8 +498,12 @@ pub struct NavalCombatSideDetails {
     pub planes: Vec<NavalCombatPlane>,
     pub summary: NavalCombatSummaryInputs,
     pub commander_inputs: Option<NavalCommanderInputs>,
+    /// The side's task-force handles (`CCombatant+0x20`) in stored order:
+    /// `CNavalCombatant::AddUnit@141608EC0` admits only navies, and
+    /// `CNavalCombatant::Serialize@14160FF40` saves each as `unit`.
+    pub units: Vec<u64>,
 }
-value_struct!(NavalCombatSideDetails { commander: u64, engaged: u8, retreating: u8, capital_screening: i64, carrier_screening: i64, positioning: i64, anti_air: i64, planes: Vec<NavalCombatPlane>, summary: NavalCombatSummaryInputs, commander_inputs: Option<NavalCommanderInputs> });
+value_struct!(NavalCombatSideDetails { commander: u64, engaged: u8, retreating: u8, capital_screening: i64, carrier_screening: i64, positioning: i64, anti_air: i64, planes: Vec<NavalCombatPlane>, summary: NavalCombatSummaryInputs, commander_inputs: Option<NavalCommanderInputs>, units: Vec<u64> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatDamage {

@@ -12,10 +12,12 @@ mod fixed;
 mod hq;
 pub(crate) mod icon_frames;
 pub(crate) mod land_details;
-mod layout;
+pub(crate) mod layout;
 pub(crate) mod modifier_text;
+pub(crate) mod naval_check;
 mod naval_details;
 mod naval_environment;
+pub(crate) mod naval_sides;
 mod presentation;
 pub(crate) mod progress;
 mod reinforcement_speed;
@@ -159,32 +161,61 @@ pub struct Window {
     tactics_position: Option<[f32; 2]>,
     dragging_tactics: bool,
     hover: tooltip_painter::HoverState,
-    /// The bindings for (branch, hour, selection, perspective), whether the
-    /// engaged index covered that hour, and whether the window shows.
-    cached: Option<(
-        replay::BranchId,
-        i32,
-        Selection,
-        crate::map::perspective::Choice,
-        Bindings,
-        bool,
-        bool,
-    )>,
+    cached: Option<Cached>,
 }
 
-/// 1415C8950 hides an active land window when 1413CD880 finds neither side
-/// engaged. An undecided flag keeps the window, whose marker reports the gap.
-fn visible(
-    frame: &replay::frame::DecodedFrame,
+/// Where a window's contents were read: the branch and hour, the combat, the
+/// perspective choice and the viewing country it resolved to there.
+#[derive(Clone, Debug, PartialEq)]
+struct Scope {
+    branch: replay::BranchId,
+    hour: i32,
     selection: Selection,
+    perspective: crate::map::perspective::Choice,
+    viewer: u32,
+}
+
+impl Scope {
+    /// Whether contents read at `self` are the window's last refresh at
+    /// `now`: the same combat on the same branch, seen by the same viewing
+    /// country under the same choice, no later than `now`. Another branch's
+    /// contents, or another resolved viewer's, are not this window's.
+    fn holds_at(&self, now: &Scope) -> bool {
+        self.branch == now.branch
+            && self.selection == now.selection
+            && self.perspective == now.perspective
+            && self.viewer == now.viewer
+            && self.hour <= now.hour
+    }
+}
+
+/// A window's contents and where they were read.
+type Contents = (Scope, Bindings);
+
+/// The window's state at one (branch, hour, selection, perspective).
+struct Cached {
+    /// The hour drawn, and its resolved viewer.
+    at: Scope,
+    /// Whether the engaged index covered that hour.
+    covered: bool,
+    /// The contents and where they were read: `at` itself after a refresh, an
+    /// earlier hour while held. `None` when the window never refreshed.
+    contents: Option<Contents>,
+    /// Whether the window shows.
+    shown: bool,
+    /// Why the window holds contents it may not show natively, reported.
+    held: Option<String>,
+}
+
+/// The hour's engaged flags (1413CD880) for the viewer, of every land and
+/// naval combat.
+fn combat_flags(
+    frame: &replay::frame::DecodedFrame,
     ours: u32,
     engaged: Option<&crate::engaged_index::EngagedIndex>,
-) -> io::Result<bool> {
+) -> io::Result<crate::engaged_index::CombatFlags> {
     use crate::map::tables::rows;
     use replay::rows::tables;
-    let Selection::Land(id) = selection else {
-        return Ok(true);
-    };
     let links: BTreeMap<u32, u32> = rows::<tables::CountryLinks>(frame)?
         .rows()
         .iter()
@@ -193,15 +224,81 @@ fn visible(
     let relations = crate::map::visibility::Relations::read(frame, &links);
     // A load-rebuilt flag's provenance is named with the hour's marker lines
     // (CounterReport::combat_limits), which cover this combat too.
-    let (flags, _) = crate::engaged_index::combats(
+    crate::engaged_index::CombatFlags::read(
         frame,
-        crate::engaged_index::LAND,
         ours,
         &links,
         relations.as_ref().map_err(|reason| *reason),
         engaged,
-    )?;
-    Ok(flags.get(&id) != Some(&engaged::Engaged::No))
+    )
+}
+
+/// What the window does at an hour, from its combat's flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Update {
+    /// Rebuild its contents; `false` hides it.
+    Refresh(bool),
+    /// Keep the contents of the last hour it refreshed, or do not open.
+    /// `undecided` says why the hour cannot tell whether the combat is
+    /// engaged, which is reported.
+    Hold {
+        combat: u64,
+        undecided: Option<&'static str>,
+    },
+}
+
+/// 1415C8950 hides an active land window when 1413CD880 finds neither side
+/// engaged; an undecided land flag keeps the window, whose marker reports the
+/// gap. A naval window opens only for an engaged combat (1418E3B40) and
+/// 1417DA2F0 refreshes it only while the combat stays engaged, both on
+/// 1413CD880's positive answer, so every other hour holds the last engaged
+/// contents (owner decision, 2026-09-27): a disengaged one silently, an
+/// undecided or absent one reported.
+fn update(selection: Selection, flags: &crate::engaged_index::CombatFlags) -> Update {
+    use engaged::Engaged;
+    let flag = |flags: &BTreeMap<u64, Engaged>, id| flags.get(&id).copied();
+    match selection {
+        Selection::Land(id) => Update::Refresh(flag(&flags.land, id) != Some(Engaged::No)),
+        Selection::Naval(combat) => {
+            let undecided = match flag(&flags.naval, combat) {
+                Some(Engaged::Yes) => return Update::Refresh(true),
+                Some(Engaged::No) => None,
+                Some(Engaged::Ambiguous(cause)) => Some(cause.reason()),
+                Some(Engaged::Unknown) => Some("its engaged flag is unknown"),
+                None => Some("it is absent"),
+            };
+            Update::Hold { combat, undecided }
+        }
+        Selection::NavalResult(_) => Update::Refresh(true),
+    }
+}
+
+/// The contents a holding window keeps at `now` and the note it reports;
+/// `None` when it has nothing to keep and nothing to report, so it closes.
+/// Only contents read under the same [`Scope::holds_at`] are kept.
+fn hold(
+    previous: Option<Contents>,
+    now: &Scope,
+    combat: u64,
+    undecided: Option<&'static str>,
+) -> Option<(Option<Contents>, Option<String>)> {
+    let contents = previous.filter(|(read, _)| read.holds_at(now));
+    if contents.is_none() && undecided.is_none() {
+        return None;
+    }
+    let note = undecided.map(|reason| match &contents {
+        Some((read, _)) => format!(
+            "Naval combat {combat}: at hour {} {reason}; the window keeps the contents it last \
+             refreshed while engaged, at hour {}.",
+            now.hour, read.hour
+        ),
+        None => format!(
+            "Naval combat {combat}: at hour {} {reason}; the window opens only while the combat \
+             is engaged, so it shows nothing.",
+            now.hour
+        ),
+    });
+    Some((contents, note))
 }
 impl Window {
     /// What the open window cannot show exactly: its bindings' gaps and the
@@ -211,7 +308,10 @@ impl Window {
         let Some(cache) = self.cached.as_ref().filter(|_| self.selection.is_some()) else {
             return Vec::new();
         };
-        let mut warnings = cache.4.warnings.clone();
+        let mut warnings: Vec<String> = cache.held.iter().cloned().collect();
+        if let Some((_, bindings)) = &cache.contents {
+            warnings.extend(bindings.warnings.iter().cloned());
+        }
         warnings.extend(document.icons.combat.warnings.iter().cloned());
         warnings
     }
@@ -346,33 +446,67 @@ impl Window {
         let branch = document.playback.branch();
         let hour = document.playback.hour();
         let covered = engaged.is_some_and(|index| index.covers(branch, hour));
-        if !self.cached.as_ref().is_some_and(|(b, h, s, p, _, c, _)| {
-            (*b, *h, *s, *c) == (branch, hour, selection, covered) && p == perspective
+        if !self.cached.as_ref().is_some_and(|cached| {
+            (
+                cached.at.branch,
+                cached.at.hour,
+                cached.at.selection,
+                cached.covered,
+            ) == (branch, hour, selection, covered)
+                && cached.at.perspective == *perspective
         }) {
             let vision = document.vision(perspective)?;
-            let window_shown = visible(document.frame()?, selection, vision.ours(), engaged)?;
-            let mut bindings = Bindings::read(document, selection, &vision)?;
-            if let Some((_, _, previous, _, shown, _, _)) = &self.cached
-                && *previous == selection
-            {
-                for (next, shown) in bindings.entries.iter_mut().zip(&shown.entries) {
-                    keep_list_order(next, shown);
-                }
-            }
-            self.cached = Some((
+            let now = Scope {
                 branch,
                 hour,
                 selection,
-                perspective.clone(),
-                bindings,
-                covered,
-                window_shown,
-            ));
+                perspective: perspective.clone(),
+                viewer: vision.ours(),
+            };
+            let flags = combat_flags(document.frame()?, vision.ours(), engaged)?;
+            let cached = match update(selection, &flags) {
+                Update::Hold { combat, undecided } => {
+                    let previous = self.cached.take().and_then(|cached| cached.contents);
+                    let Some((contents, held)) = hold(previous, &now, combat, undecided) else {
+                        // Never engaged for this viewer on this branch: it does not open.
+                        self.close();
+                        return Ok(None);
+                    };
+                    Cached {
+                        at: now,
+                        covered,
+                        shown: contents.is_some(),
+                        contents,
+                        held,
+                    }
+                }
+                Update::Refresh(shown) => {
+                    let mut bindings = Bindings::read(document, selection, &vision, &flags)?;
+                    if let Some((read, previous)) = self
+                        .cached
+                        .as_ref()
+                        .and_then(|cached| cached.contents.as_ref())
+                        && read.selection == selection
+                    {
+                        for (next, shown) in bindings.entries.iter_mut().zip(&previous.entries) {
+                            keep_list_order(next, shown);
+                        }
+                    }
+                    Cached {
+                        at: now.clone(),
+                        covered,
+                        contents: Some((now, bindings)),
+                        shown,
+                        held: None,
+                    }
+                }
+            };
+            self.cached = Some(cached);
         }
-        let (.., bindings, _, shown) = self.cached.as_ref().expect("bound above");
-        if !shown {
+        let cached = self.cached.as_ref().expect("bound above");
+        let Some((_, bindings)) = cached.contents.as_ref().filter(|_| cached.shown) else {
             return Ok(None);
-        }
+        };
         let assets = &document.icons.combat;
         let root = &assets.windows[match selection {
             Selection::Land(_) => "landcombatview",
@@ -1681,6 +1815,121 @@ fn clip_quads(batch: &mut Batch, first: usize, clip: [f32; 4]) {
 
 #[cfg(test)]
 mod tests {
+    /// A land window hides for an unengaged combat and refreshes on an undecided flag; a naval
+    /// one refreshes only while engaged and holds otherwise, reporting an undecided or absent
+    /// combat.
+    #[test]
+    fn the_window_updates_only_while_its_combat_is_engaged() {
+        use super::{Selection, Update, engaged::Engaged, update};
+        use std::collections::BTreeMap;
+        let flags = |flag: Engaged| crate::engaged_index::CombatFlags {
+            land: BTreeMap::from([(1, flag)]),
+            naval: BTreeMap::from([(2, flag)]),
+            ..Default::default()
+        };
+        assert_eq!(
+            update(Selection::Land(1), &flags(Engaged::No)),
+            Update::Refresh(false)
+        );
+        for flag in [
+            Engaged::Yes,
+            Engaged::Unknown,
+            Engaged::Ambiguous(engaged::Ambiguity::Scope),
+        ] {
+            assert_eq!(
+                update(Selection::Land(1), &flags(flag)),
+                Update::Refresh(true)
+            );
+        }
+        assert_eq!(
+            update(Selection::Naval(2), &flags(Engaged::Yes)),
+            Update::Refresh(true)
+        );
+        let held = |selection, flag| match update(selection, &flags(flag)) {
+            Update::Hold { combat, undecided } => Some((combat, undecided)),
+            Update::Refresh(_) => None,
+        };
+        assert_eq!(held(Selection::Naval(2), Engaged::No), Some((2, None)));
+        assert_eq!(
+            held(Selection::Naval(2), Engaged::Unknown),
+            Some((2, Some("its engaged flag is unknown")))
+        );
+        assert_eq!(
+            held(
+                Selection::Naval(2),
+                Engaged::Ambiguous(engaged::Ambiguity::Scope)
+            ),
+            Some((2, Some(engaged::Ambiguity::Scope.reason())))
+        );
+        // A combat the hour no longer holds is not engaged either.
+        assert_eq!(
+            held(Selection::Naval(3), Engaged::Yes),
+            Some((3, Some("it is absent")))
+        );
+        assert_eq!(
+            update(Selection::NavalResult(4), &flags(Engaged::No)),
+            Update::Refresh(true)
+        );
+    }
+
+    fn scope(branch: u64, hour: i32, viewer: u32) -> super::Scope {
+        super::Scope {
+            branch,
+            hour,
+            selection: super::Selection::Naval(2),
+            perspective: crate::map::perspective::Choice::default(),
+            viewer,
+        }
+    }
+
+    /// Held contents are kept only for the branch, combat, choice and resolved viewing
+    /// country they were read under, and never from a later hour; an undecided hour reports
+    /// what it kept, and one with nothing to keep still reports and shows nothing.
+    #[test]
+    fn a_held_window_keeps_only_its_own_branch_and_viewers_contents() {
+        use super::{Bindings, hold};
+        let read = || Some((scope(0, 10, 1), Bindings::default()));
+        let kept = |now: &super::Scope, undecided| {
+            hold(read(), now, 2, undecided)
+                .map(|(contents, note)| (contents.map(|(read, _)| read.hour), note))
+        };
+        // A disengaged hour keeps them silently.
+        assert_eq!(kept(&scope(0, 12, 1), None), Some((Some(10), None)));
+        // Another branch holding the same combat handle, or the recorded player resolving to
+        // another country under the same choice: not this window's contents, so it closes.
+        assert_eq!(kept(&scope(1, 12, 1), None), None);
+        assert_eq!(kept(&scope(0, 12, 7), None), None);
+        let mut fogless = scope(0, 12, 1);
+        fogless.perspective.fog = false;
+        assert_eq!(kept(&fogless, None), None);
+        // A seek back before the read.
+        assert_eq!(kept(&scope(0, 9, 1), None), None);
+        // An undecided flag keeps and reports; without contents it only reports.
+        assert_eq!(
+            kept(&scope(0, 12, 1), Some("its engaged flag is unknown")),
+            Some((
+                Some(10),
+                Some(
+                    "Naval combat 2: at hour 12 its engaged flag is unknown; the window keeps the \
+                     contents it last refreshed while engaged, at hour 10."
+                        .into()
+                )
+            ))
+        );
+        assert_eq!(
+            kept(&scope(1, 12, 1), Some("it is absent")),
+            Some((
+                None,
+                Some(
+                    "Naval combat 2: at hour 12 it is absent; the window opens only while the \
+                     combat is engaged, so it shows nothing."
+                        .into()
+                )
+            ))
+        );
+        assert!(hold(None, &scope(0, 12, 1), 2, None).is_none());
+    }
+
     #[test]
     fn the_combat_window_sorts_above_every_map_icon() {
         use crate::map::{counters, sprites::layer};

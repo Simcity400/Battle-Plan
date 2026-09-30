@@ -173,7 +173,7 @@ fn land_sides(frame: &DecodedFrame) -> io::Result<engaged_index::HourSides> {
                 // rest (1413CE340), so the recorded lists are the unit lists.
                 engaged::Side {
                     units: Some(units),
-                    added: None,
+                    added: engaged::Added::NoTrigger,
                     unit_lists: lists.clone(),
                     lists,
                 },
@@ -302,7 +302,7 @@ mod tests {
             sample.sides[&(62, 0)],
             engaged::Side {
                 units: Some(vec![1, 2]),
-                added: None,
+                added: engaged::Added::NoTrigger,
                 lists: Some((vec![4], vec![])),
                 unit_lists: Some((vec![4], vec![])),
             }

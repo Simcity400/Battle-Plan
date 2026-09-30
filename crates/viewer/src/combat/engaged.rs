@@ -1,5 +1,7 @@
 //! The combat "engaged" flag (`CCombatant+0xBA`) for any viewing country.
-//! The core is common to land and naval combatants; only land feeds it so far.
+//! The core is common to land and naval combatants; each kind feeds it its
+//! sides (land in [`super::progress::LandSides`], naval in
+//! [`super::naval_sides::NavalSides`]).
 //!
 //! `UpdateCombatSharedVisionFlag@1413CEBE0` is its only writer. A side is
 //! engaged when a country in its `+0x38` list is the viewer or shares vision
@@ -29,19 +31,22 @@
 //! The recording keeps each side's hourly units and lists, not the flag, so it
 //! is replayed from them with its lag. [`Previous::refresh`] alone classifies
 //! each side's hour. An hour proves a side's rebuild when its own units
-//! changed, an [`Side::added`] id appeared, its combat started or the viewer
-//! moved, and allows one it cannot prove when the other side lost a unit under
-//! a kind whose removals may be one-sided ([`Removal`]) or the controller
-//! rosters show a controller that may have joined the viewer's country
-//! ([`Controllers`]). Each rebuild the hour allows is evaluated with the lists
-//! it would have tested (the recorded lists after a join or an every-side
-//! refresh, the unit-derived lists after a removal) under both the previous and
-//! the current sample's relations, each with its own sample's country links (a
-//! refresh resolves the list references at its instant, and a reference may
-//! change country between samples), and a side that may not have rebuilt keeps
-//! its held value as a candidate: when the candidates agree that is the flag,
-//! an unresolved one makes it [`Engaged::Unknown`], and otherwise it is
-//! [`Engaged::Ambiguous`] with its [`Ambiguity`].
+//! changed, an [`Side::added`] id appeared that the previous hour observed
+//! without, its combat started or the viewer moved, and allows one it cannot
+//! prove when the other side lost a unit under a kind whose removals may be
+//! one-sided ([`Removal`]), when a kind's [`Added`] ids are unavailable this
+//! hour or were the hour before (a new id may then have come in either), or
+//! when the controller rosters show a controller that may have joined the
+//! viewer's country ([`Controllers`]). Each rebuild the hour allows is
+//! evaluated with the lists it would have tested (the recorded lists after a
+//! join or an every-side refresh, the unit-derived lists after a removal)
+//! under both the previous and the current sample's relations, each with its
+//! own sample's country links (a refresh resolves the list references at its
+//! instant, and a reference may change country between samples), and a side
+//! that may not have rebuilt keeps its held value as a candidate: when the
+//! candidates agree that is the flag, an unresolved one makes it
+//! [`Engaged::Unknown`], and otherwise it is [`Engaged::Ambiguous`] with its
+//! [`Ambiguity`].
 //!
 //! Known misses: a rebuild that leaves the unit set unchanged (a present unit
 //! re-added), a controller change the hourly rosters do not show (one given
@@ -155,9 +160,7 @@ pub(crate) fn test(
     (!unknown).then_some(false)
 }
 
-/// How a kind's unit removal refreshes the other side of the combat. A kind
-/// whose every removal is `RemoveUnitFromCombat` (1413CE250) adds a variant
-/// that proves the other side's rebuild.
+/// How a kind's unit removal refreshes the other side of the combat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Removal {
     /// Land: `RemoveUnitFromCombat` rebuilds both sides from their remaining
@@ -165,6 +168,10 @@ pub(crate) enum Removal {
     /// side, and the recording cannot tell the two apart, so the other side
     /// may have rebuilt.
     BothSidesUnlessRoundRetreat,
+    /// Naval: every removal is `RemoveUnitFromCombat` (1413CE250), which
+    /// rebuilds both sides, so a unit leaving one side proves the other's
+    /// rebuild from its remaining units.
+    BothSides,
 }
 
 /// Which lists a rebuild in the hour tested.
@@ -238,15 +245,33 @@ pub(crate) fn step(
     }
 }
 
+/// A kind's rebuild trigger beyond its unit joins and removals, for one side
+/// and hour: ids whose appearance proves a rebuild that tested the recorded
+/// lists. Only naval has one: `CNavalCombatant::AddTransferToGroup@1416084E0`
+/// gives each joining convoy member a fresh combat-wide battle slot
+/// (`++CNavalCombat+0x108`) and refreshes the flag (1413CEBE0).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Added {
+    /// The kind has no such trigger (land).
+    #[default]
+    NoTrigger,
+    /// The recording's census of the ids failed this hour (the participant
+    /// table is incomplete). This is not a native state: the game joined
+    /// convoys or did not, and the recording cannot tell, so a rebuild of the
+    /// recorded lists may have happened.
+    Unavailable,
+    /// The convoy members' battle slots present this hour, sorted. A slot the
+    /// previous hour observed without proves a rebuild; one only an earlier
+    /// observation lacked, with unavailable hours between, allows one.
+    Observed(Vec<u64>),
+}
+
 /// One combat side's recorded inputs for one hour.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Side {
     /// The side's unit handles, sorted; `None` when the hour cannot tell.
     pub(crate) units: Option<Vec<u64>>,
-    /// Sorted ids whose appearance this hour proves a rebuild that tested the
-    /// recorded lists (naval convoy battle slots from `AddTransferToGroup`);
-    /// `None` for a kind without them.
-    pub(crate) added: Option<Vec<u64>>,
+    pub(crate) added: Added,
     /// Raw references of the `+0x38` and `+0x50` lists; `None` when unrecorded.
     pub(crate) lists: Option<(Vec<u32>, Vec<u32>)>,
     /// The lists a removal rebuild tests, built from the remaining units'
@@ -310,10 +335,36 @@ pub(crate) enum Continuity {
     Gap,
 }
 
+/// A side's [`Added`] ids as the next sample compares them.
+enum Trigger {
+    /// The kind has none.
+    Untracked,
+    /// Observed this hour.
+    Observed(Vec<u64>),
+    /// Unavailable this hour; the last observation before it, if any.
+    Unavailable(Option<Vec<u64>>),
+}
+
+impl Trigger {
+    /// What `now` proves and allows of a rebuild of the recorded lists.
+    fn refresh(&self, now: &Added) -> (bool, bool) {
+        match (self, now) {
+            (_, Added::NoTrigger) => (false, false),
+            (_, Added::Unavailable) => (false, true),
+            (Self::Observed(was), Added::Observed(now)) => (gained(was, now), false),
+            // A new id may have come in the unavailable hours instead.
+            (Self::Unavailable(Some(was)), Added::Observed(now)) => (false, gained(was, now)),
+            (Self::Unavailable(None) | Self::Untracked, Added::Observed(now)) => {
+                (false, !now.is_empty())
+            }
+        }
+    }
+}
+
 /// A side as the next sample compares it.
 struct Kept {
     units: Option<Vec<u64>>,
-    added: Option<Vec<u64>>,
+    added: Trigger,
 }
 
 struct Previous {
@@ -406,11 +457,7 @@ impl Previous {
         let (Some(was), Some(now)) = (before.units.as_deref(), side.units.as_deref()) else {
             return None;
         };
-        let added = match (before.added.as_deref(), side.added.as_deref()) {
-            (_, None) => false,
-            (Some(was), Some(now)) => gained(was, now),
-            (None, Some(now)) => !now.is_empty(),
-        };
+        let (added, may_have_added) = before.added.refresh(&side.added);
         let proven = Lists {
             recorded: gained(was, now) || added,
             units: gained(now, was),
@@ -429,8 +476,15 @@ impl Previous {
             (Some(was), Some(now)) => Some(gained(now, was)),
             _ => None,
         };
-        Some(match (sample.removal, other_lost) {
+        let (proven, mut possible) = match (sample.removal, other_lost) {
             (_, Some(false)) => (proven, Lists::default()),
+            (Removal::BothSides, Some(true)) => (
+                Lists {
+                    units: true,
+                    ..proven
+                },
+                Lists::default(),
+            ),
             (Removal::BothSidesUnlessRoundRetreat, Some(true)) | (_, None) => (
                 proven,
                 Lists {
@@ -438,7 +492,9 @@ impl Previous {
                     units: true,
                 },
             ),
-        })
+        };
+        possible.recorded |= may_have_added;
+        Some((proven, possible))
     }
 }
 
@@ -528,6 +584,8 @@ impl History {
             let held_before = self.held.get(key).copied().unwrap_or(Engaged::Unknown);
             held.insert(*key, step(held_before, refresh, evaluate));
         }
+        // An unavailable hour carries the last observation forward; a load starts without one.
+        let mut earlier = previous.map(|previous| previous.sides).unwrap_or_default();
         self.previous = Some(Previous {
             viewer: sample.viewer,
             links: sample.links.clone(),
@@ -537,11 +595,24 @@ impl History {
                 .sides
                 .into_iter()
                 .map(|(key, side)| {
+                    let added = match side.added {
+                        Added::NoTrigger => Trigger::Untracked,
+                        Added::Observed(ids) => Trigger::Observed(ids),
+                        Added::Unavailable => {
+                            Trigger::Unavailable(earlier.remove(&key).and_then(|kept| {
+                                match kept.added {
+                                    Trigger::Observed(ids) => Some(ids),
+                                    Trigger::Unavailable(ids) => ids,
+                                    Trigger::Untracked => None,
+                                }
+                            }))
+                        }
+                    };
                     (
                         key,
                         Kept {
                             units: side.units,
-                            added: side.added,
+                            added,
                         },
                     )
                 })
@@ -753,7 +824,7 @@ mod tests {
         let lists = Some((primary.to_vec(), vec![]));
         Side {
             units: Some(units.to_vec()),
-            added: None,
+            added: Added::NoTrigger,
             unit_lists: lists.clone(),
             lists,
         }
@@ -820,31 +891,166 @@ mod tests {
         assert_eq!(history.side(62, 0), Engaged::Yes);
     }
 
+    /// A viewer change after unobserved hours proves no rebuild in this
+    /// sample: the player change rebuilt at an unknown time, before the
+    /// alliance this sample holds, so the flag stays unknown. Between
+    /// consecutive samples it is a proven every-side refresh the samples
+    /// cannot order against the alliance, so both relations are candidates.
+    #[test]
+    fn a_viewer_change_across_a_gap_is_not_a_rebuild_now() {
+        let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
+        let (apart, allied) = (relations(false), relations(true));
+        fn viewed<'a>(
+            links: &'a BTreeMap<u32, u32>,
+            relations: &'a Relations,
+            viewer: u32,
+        ) -> Sample<'a> {
+            Sample {
+                viewer,
+                ..sample(links, relations, &[7], &[2])
+            }
+        }
+        let mut history = History::default();
+        history.advance(viewed(&links, &apart, 5), Continuity::Load);
+        history.advance(viewed(&links, &allied, 1), Continuity::Gap);
+        assert_eq!(history.side(62, 0), Engaged::Unknown);
+        let mut history = History::default();
+        history.advance(viewed(&links, &apart, 5), Continuity::Load);
+        history.advance(viewed(&links, &allied, 1), Continuity::Next);
+        assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
+        // With the alliance already in the previous sample, the refresh is Yes either way.
+        let mut history = History::default();
+        history.advance(viewed(&links, &allied, 5), Continuity::Load);
+        history.advance(viewed(&links, &allied, 1), Continuity::Next);
+        assert_eq!(history.side(62, 0), Engaged::Yes);
+    }
+
+    /// A naval removal is always `RemoveUnitFromCombat` (1413CE250), so a unit
+    /// leaving the defenders proves the attackers rebuilt from their own
+    /// units: the faction joined earlier engages them, where land's round
+    /// retreat leaves the same hour ambiguous.
+    #[test]
+    fn a_naval_removal_rebuilds_the_other_side() {
+        let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
+        let (apart, allied) = (relations(false), relations(true));
+        fn naval<'a>(
+            links: &'a BTreeMap<u32, u32>,
+            relations: &'a Relations,
+            defenders: &[u64],
+        ) -> Sample<'a> {
+            Sample {
+                removal: Removal::BothSides,
+                ..defended(links, relations, &[7], &[2], defenders)
+            }
+        }
+        let mut history = History::default();
+        history.advance(naval(&links, &apart, &[8, 9]), Continuity::Load);
+        history.advance(naval(&links, &allied, &[8, 9]), Continuity::Next);
+        assert_eq!(history.side(62, 0), Engaged::No);
+        history.advance(naval(&links, &allied, &[9]), Continuity::Next);
+        assert_eq!(history.side(62, 0), Engaged::Yes);
+        assert_eq!(history.side(62, 1), Engaged::No);
+        // The alliance ending rebuilds nothing on its own.
+        history.advance(naval(&links, &apart, &[9]), Continuity::Next);
+        assert_eq!(history.side(62, 0), Engaged::Yes);
+        // Only the rebuilt lists decide: the attackers' remaining owners, not their recorded
+        // lists, which can hold convoy owners no rebuild tested.
+        let mut split = naval(&links, &apart, &[]);
+        split.sides.get_mut(&(62, 0)).unwrap().lists = Some((vec![1], vec![]));
+        history.advance(split, Continuity::Next);
+        assert_eq!(history.side(62, 0), Engaged::No);
+    }
+
     /// An id in [`Side::added`] that the previous sample lacked proves a
     /// rebuild of the recorded lists, with no unit change.
     #[test]
     fn a_new_added_id_proves_a_rebuild() {
         let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
         let (apart, allied) = (relations(false), relations(true));
-        fn with<'a>(mut sample: Sample<'a>, added: &[u64]) -> Sample<'a> {
-            sample.sides.get_mut(&(62, 0)).unwrap().added = Some(added.to_vec());
-            sample
-        }
         let mut history = History::default();
         history.advance(
-            with(sample(&links, &apart, &[7], &[2]), &[3]),
+            added(&links, &apart, Added::Observed(vec![3])),
             Continuity::Load,
         );
         history.advance(
-            with(sample(&links, &allied, &[7], &[2]), &[3]),
+            added(&links, &allied, Added::Observed(vec![3])),
             Continuity::Next,
         );
         assert_eq!(history.side(62, 0), Engaged::No);
         history.advance(
-            with(sample(&links, &allied, &[7], &[2]), &[3, 4]),
+            added(&links, &allied, Added::Observed(vec![3, 4])),
             Continuity::Next,
         );
         assert_eq!(history.side(62, 0), Engaged::Yes);
+    }
+
+    /// The attackers' sample with their [`Side::added`] ids.
+    fn added<'a>(
+        links: &'a BTreeMap<u32, u32>,
+        relations: &'a Relations,
+        added: Added,
+    ) -> Sample<'a> {
+        let mut sample = sample(links, relations, &[7], &[2]);
+        sample.sides.get_mut(&(62, 0)).unwrap().added = added;
+        sample
+    }
+
+    /// An hour whose ids are unavailable may hide a join (`AddTransferToGroup@1416084E0`
+    /// refreshes the flag), so it cannot hold a value the recorded lists contradict; and the
+    /// first observation after it proves a join only against the previous hour, which it cannot
+    /// compare with, so an id already seen before the gap proves nothing and a new one only
+    /// allows a rebuild.
+    #[test]
+    fn unavailable_added_ids_leave_a_possible_rebuild_until_two_observations_compare() {
+        let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
+        let (apart, allied) = (relations(false), relations(true));
+        let mut history = History::default();
+        history.advance(
+            added(&links, &apart, Added::Observed(vec![3])),
+            Continuity::Load,
+        );
+        history.advance(
+            added(&links, &allied, Added::Observed(vec![3])),
+            Continuity::Next,
+        );
+        assert_eq!(history.side(62, 0), Engaged::No);
+        // A join would test the allied lists: not a definite No.
+        history.advance(added(&links, &allied, Added::Unavailable), Continuity::Next);
+        assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+        // Slot 3 was already there before the gap: no join is invented.
+        history.advance(
+            added(&links, &allied, Added::Observed(vec![3])),
+            Continuity::Next,
+        );
+        assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+        // Two comparable observations prove the join again.
+        history.advance(
+            added(&links, &allied, Added::Observed(vec![3, 4])),
+            Continuity::Next,
+        );
+        assert_eq!(history.side(62, 0), Engaged::Yes);
+
+        let mut history = History::default();
+        history.advance(
+            added(&links, &apart, Added::Observed(vec![3])),
+            Continuity::Load,
+        );
+        // Every candidate agrees: whether or not a convoy joined, the flag is No.
+        history.advance(added(&links, &apart, Added::Unavailable), Continuity::Next);
+        assert_eq!(history.side(62, 0), Engaged::No);
+        // Slot 4 is new against the last observation, but may have joined in the unavailable
+        // hour, before the alliance: only possible, so the held No and the allied Yes disagree,
+        // and the samples cannot order that join against the alliance.
+        history.advance(
+            added(&links, &allied, Added::Observed(vec![3, 4])),
+            Continuity::Next,
+        );
+        assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
+        // A kind without the trigger (land) is unaffected by any of this.
+        let mut land = History::default();
+        land.advance(added(&links, &apart, Added::NoTrigger), Continuity::Load);
+        land.advance(added(&links, &allied, Added::NoTrigger), Continuity::Next);
+        assert_eq!(land.side(62, 0), Engaged::No);
     }
 
     /// A viewer change inside unobserved hours is not placed at the hour the

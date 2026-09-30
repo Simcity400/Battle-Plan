@@ -1080,6 +1080,15 @@ impl Viewer {
             warnings.extend(overlay.raid_report().warnings());
         }
         warnings.extend(self.counter_report.warnings());
+        // The recorded naval engaged bytes against the flag derived for the recording's
+        // player, over the hours the engaged index has folded so far.
+        if let Some(Ok(index)) = self
+            .hours
+            .as_ref()
+            .map(|hours| hours.engaged(&self.perspective.country))
+        {
+            warnings.extend(index.byte_check().lines());
+        }
         // A capture renders at the dump's scale, not Match game's.
         let pinned = self
             .capture

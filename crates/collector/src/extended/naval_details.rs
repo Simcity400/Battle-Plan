@@ -34,6 +34,7 @@ pub struct Capacities {
     commanders: usize,
     weapon_sources: usize,
     weapon_terms: usize,
+    side_units: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -52,6 +53,7 @@ impl Default for Capacities {
             commanders: 16,
             weapon_sources: 4096,
             weapon_terms: 16384,
+            side_units: 256,
         }
     }
 }
@@ -71,6 +73,8 @@ pub struct Captured {
     commanders: Arena<engine::naval_commander_inputs::Row>,
     weapon_sources: Arena<naval_ship_modifier_inputs::SourceRow>,
     weapon_terms: Arena<naval_ship_modifier_inputs::ModifierTerm>,
+    /// Each side's task-force handles (`CCombatant+0x20`), grown after the hour.
+    side_units: Arena<u64>,
     /// Side country tags; grown by the worker at admission, retained on recycle.
     summary_countries: Vec<u32>,
     summary_countries_len: usize,
@@ -93,6 +97,7 @@ impl Captured {
             commanders: 0,
             weapon_sources: 0,
             weapon_terms: 0,
+            side_units: 0,
         })
     }
 
@@ -113,6 +118,7 @@ impl Captured {
             commanders: Arena::new(c.commanders),
             weapon_sources: Arena::new(c.weapon_sources),
             weapon_terms: Arena::new(c.weapon_terms),
+            side_units: Arena::new(c.side_units),
             summary_countries: Vec::new(),
             summary_countries_len: 0,
         }
@@ -131,6 +137,7 @@ impl Captured {
         self.commanders.reset();
         self.weapon_sources.reset();
         self.weapon_terms.reset();
+        self.side_units.reset();
         self.summary_countries_len = 0;
         self.required_groups = 0;
     }
@@ -148,6 +155,7 @@ impl Captured {
             + self.commanders.allocated_bytes()
             + self.weapon_sources.allocated_bytes()
             + self.weapon_terms.allocated_bytes()
+            + self.side_units.allocated_bytes()
             + self.groups.capacity() * size_of::<usize>()
             + self.summary_countries.capacity() * size_of::<u32>()
     }
@@ -176,6 +184,7 @@ impl Captured {
         self.commanders.grow(&mut c.commanders);
         self.weapon_sources.grow(&mut c.weapon_sources);
         self.weapon_terms.grow(&mut c.weapon_terms);
+        self.side_units.grow(&mut c.side_units);
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let mut read_phase = crate::read_accounting::table(TABLES[0]);
@@ -202,6 +211,9 @@ impl Captured {
             commander_inputs: &mut self.commanders.first,
             commander_inputs_len: 0,
             commander_inputs_required: 0,
+            side_units: &mut self.side_units.first,
+            side_units_len: 0,
+            side_units_required: 0,
             summary_countries: &mut self.summary_countries,
             summary_countries_len: 0,
             weapon_sources: &mut self.weapon_sources.first,
@@ -242,6 +254,8 @@ impl Captured {
         self.plane_kills.required = buffers.plane_kills_required;
         self.commanders.len = buffers.commander_inputs_len;
         self.commanders.required = buffers.commander_inputs_required;
+        self.side_units.len = buffers.side_units_len;
+        self.side_units.required = buffers.side_units_required;
         self.weapon_sources.len = buffers.weapon_lengths[0];
         self.weapon_sources.required = buffers.weapon_required[0];
         self.weapon_terms.len = buffers.weapon_lengths[1];
@@ -271,6 +285,7 @@ impl Captured {
                         commander_inputs: range(&self.commanders.first, s.commander_inputs)
                             .first()
                             .map(commander_inputs),
+                        units: range(&self.side_units.first, s.units).to_vec(),
                         engaged: s.engaged,
                         retreating: s.retreating,
                         capital_screening: s.capital_screening,
@@ -283,6 +298,11 @@ impl Captured {
                             is_attacker: s.summary.is_attacker,
                             countries: range(&self.summary_countries, s.summary.countries)
                                 .to_vec(),
+                            secondary_countries: range(
+                                &self.summary_countries,
+                                s.summary.secondary_countries,
+                            )
+                            .to_vec(),
                             modifiers: s.summary.modifiers.map(|scope| {
                                 scope.map(|m| rows::NavalCombatSummaryModifier {
                                     raw: m.raw,
@@ -588,6 +608,7 @@ mod tests {
             commanders: 1,
             weapon_sources: 1,
             weapon_terms: 1,
+            side_units: 1,
         };
         let mut captured = Captured::with_capacities(&capacity);
         captured.details.rows[0].combat = 42;
@@ -618,6 +639,7 @@ mod tests {
         captured.plane_names.required = 6;
         captured.plane_kills.required = 7;
         captured.commanders.required = 3;
+        captured.side_units.required = 4;
         captured.grow(&mut capacity);
         assert_eq!(
             [
@@ -634,6 +656,7 @@ mod tests {
         assert_eq!(Captured::vacant().allocated_bytes(), 0);
         assert!(capacity.plane_air >= 9 && capacity.plane_hits >= 5);
         assert!(capacity.plane_names >= 6 && capacity.plane_kills >= 7 && capacity.commanders >= 3);
+        assert!(capacity.side_units >= 4 && captured.side_units.first.len() == capacity.side_units);
         assert_eq!(captured.plane_air.first.len(), capacity.plane_air);
         assert_eq!(captured.details.rows[0].combat, 42);
         assert_eq!(captured.ships.rows[0].member.combat, 42);

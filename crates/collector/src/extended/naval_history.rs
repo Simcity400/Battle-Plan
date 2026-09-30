@@ -103,6 +103,8 @@ pub struct Captured {
     results: CaptureRows<cnaval_combat_results::Row>,
     result_members: CaptureRows<cnaval_combat_results::MemberRow>,
     result_countries: CaptureRows<cnaval_combat_results::CountryRow>,
+    /// One scratch slot per result row: the walk pairs rows with their province buckets in it.
+    result_slots: Vec<cnaval_combat_results::ResultSlot>,
     sunk: CaptureRows<csunk_ship_info::Record>,
     groups: CaptureRows<corders_group::GroupRow>,
     group_members: CaptureRows<corders_group::MemberRow>,
@@ -205,6 +207,7 @@ impl Captured {
             results: CaptureRows::new(capacity.rows[10]),
             result_members: CaptureRows::new(capacity.rows[11]),
             result_countries: CaptureRows::new(capacity.rows[12]),
+            result_slots: vec![Default::default(); capacity.rows[10]],
             sunk: CaptureRows::new(capacity.rows[13]),
             groups: CaptureRows::new(capacity.rows[14]),
             group_members: CaptureRows::new(capacity.rows[15]),
@@ -295,6 +298,7 @@ impl Captured {
             + self.results.allocated_bytes()
             + self.result_members.allocated_bytes()
             + self.result_countries.allocated_bytes()
+            + self.result_slots.capacity() * size_of::<cnaval_combat_results::ResultSlot>()
             + self.sunk.allocated_bytes()
             + self.groups.allocated_bytes()
             + self.group_members.allocated_bytes()
@@ -318,6 +322,7 @@ impl Captured {
         self.air_groups.grow(&mut capacity.rows[8]);
         self.air_members.grow(&mut capacity.rows[9]);
         self.results.grow(&mut capacity.rows[10]);
+        crate::table_capture::grow_vec(&mut self.result_slots, self.results.rows.len());
         self.result_members.grow(&mut capacity.rows[11]);
         self.result_countries.grow(&mut capacity.rows[12]);
         self.sunk.grow(&mut capacity.rows[13]);
@@ -599,6 +604,7 @@ impl Captured {
             base,
             game_state,
             &mut self.results.rows,
+            &mut self.result_slots,
             &mut self.result_members.rows,
             &mut self.result_countries.rows,
         );
@@ -834,6 +840,7 @@ impl Captured {
                     readiness: r.readiness,
                     winning_side: r.winning_side,
                     losing_side: r.losing_side,
+                    province_ordinal: r.province_ordinal,
                 }
             }),
             table::<tables::NavalResultMembers, _>(outcomes[11], &self.result_members.rows, |r| {

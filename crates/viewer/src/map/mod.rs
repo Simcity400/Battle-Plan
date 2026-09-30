@@ -51,6 +51,7 @@ pub mod mapframe;
 pub mod name_pass;
 pub mod name_shader;
 pub mod names;
+pub mod naval_combat_occurrences;
 // counters: the viewing country and what it can see
 pub mod perspective;
 pub mod presentation;

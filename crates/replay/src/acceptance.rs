@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 240] = [
+const DOMAIN_TABLES: [TableId; 243] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -204,6 +204,9 @@ const DOMAIN_TABLES: [TableId; 240] = [
     TableId::NavalBases,
     TableId::FloatingHarborDeployments,
     TableId::FacilityMapFlags,
+    TableId::NavalProvinceCombats,
+    TableId::NavalCombatTransfers,
+    TableId::NavalTransferUnits,
     TableId::ResearchInputs,
     TableId::ResearchAppliedBonuses,
     TableId::ResearchModifiers,
@@ -520,6 +523,7 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 defender_positioning: scalar(1),
                 attacker_anti_air: scalar(2),
                 defender_anti_air: scalar(3),
+                registry_ordinal: [0, u32::MAX, tick as u32][tick % 3],
             },
         );
         push_map::<tables::NavalCombatParticipants>(

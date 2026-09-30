@@ -735,9 +735,32 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         );
         for (side, actual) in row.sides.iter().enumerate() {
             let label = format!("{label}:{side}");
+            // 1413CC0D0 inserts only positive, canonically distinct roster owners.
+            let mut seen = BTreeSet::new();
+            if actual
+                .summary
+                .secondary_countries
+                .iter()
+                .any(|&raw| (raw as i32) <= 0 || !seen.insert(raw))
+            {
+                return Err(invalid(
+                    "naval side secondary country list is not positive and distinct",
+                ));
+            }
             if let Some(commander) = &actual.commander_inputs {
                 naval_commander_values(r, &format!("{label} commander"), commander, save)?;
             }
+            // 14160FF40 writes every entry of the side's +0x20 unit array, in order.
+            equal(
+                r,
+                format!("{label} units"),
+                &actual.units,
+                if side == 0 {
+                    &saved.attackers
+                } else {
+                    &saved.defenders
+                },
+            );
             let (positioning, anti_air) = if side == 0 {
                 (&saved.attacker_positioning, &saved.attacker_anti_air)
             } else {
@@ -821,7 +844,7 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         }
     }
     r.compared("NavalCombatDetails", rows.len());
-    r.limitation("Saved province/day/duration, positioning/anti-air, recent-join/escort operands, present commander handles, retreat truthiness and ordered serialized-group live/retired planes (counts, casualties, duration, wings, date, flags, names, damage multiplier, naval hits and first air-hit vector) are compared. Null/invalid leader omission does not prove raw null identity; boolean serialization loses nonzero byte distinctions. Capital/carrier screening, engaged flag, raw air-base handles omitted for unresolved references, independent source2 planes, paired orphan groups outside the serialized forward group list, carrier state, variant, five nonserialized plane caches and second air-hit vectors lack exact coverage here; matching other fields does not validate these caches or tick freshness", "NavalCombatDetails");
+    r.limitation("Saved province/day/duration, ordered side unit lists, positioning/anti-air, recent-join/escort operands, present commander handles, retreat truthiness and ordered serialized-group live/retired planes (counts, casualties, duration, wings, date, flags, names, damage multiplier, naval hits and first air-hit vector) are compared. Null/invalid leader omission does not prove raw null identity; boolean serialization loses nonzero byte distinctions. Capital/carrier screening, engaged flag, the secondary roster-owner lists (checked only as positive and distinct), raw air-base handles omitted for unresolved references, independent source2 planes, paired orphan groups outside the serialized forward group list, carrier state, variant, five nonserialized plane caches and second air-hit vectors lack exact coverage here; matching other fields does not validate these caches or tick freshness", "NavalCombatDetails");
     Ok(())
 }
 
@@ -1420,6 +1443,55 @@ mod tests {
     use super::*;
     use replay::rows::{LandCombatCommanderTimedTrait, LandCombatSideDetails};
 
+    /// Each side's task forces compare with the saved `unit` list in writer order.
+    #[test]
+    fn naval_side_units_compare_with_the_saved_unit_list_in_order() {
+        use replay::{
+            frame::TableView,
+            rows::{NavalCombatDetailsRow, TableId, TableRows},
+        };
+        let (frame, mut saved, _, _) = crate::oracle::tests::fixture();
+        let combat = (5_u64 << 32) | 4713;
+        let zero = || installed_content::save::Decimal::parse(b"0").unwrap();
+        let units = [(244_u64 << 32) | 61, (9 << 32) | 61];
+        saved.naval_combats.insert(
+            combat,
+            installed_content::save::NavalCombat {
+                id: combat,
+                province: 2,
+                attacker_positioning: zero(),
+                defender_positioning: zero(),
+                attacker_anti_air: zero(),
+                defender_anti_air: zero(),
+                details: Default::default(),
+                transfers: Vec::new(),
+                attackers: units.to_vec(),
+                defenders: Vec::new(),
+            },
+        );
+        let differences = |recorded: Vec<u64>| {
+            let mut row = NavalCombatDetailsRow {
+                combat,
+                province: 2,
+                ..Default::default()
+            };
+            row.sides[0].units = recorded;
+            let mut frame = frame.clone();
+            *frame.tables[TableId::NavalCombatDetails.index()] =
+                TableView::Complete(TableRows::NavalCombatDetails(vec![row]));
+            let mut report = Report::default();
+            naval(&frame, &saved, &mut report).unwrap();
+            report
+                .differences
+                .iter()
+                .filter(|line| line.contains(" units:"))
+                .count()
+        };
+        assert_eq!(differences(units.to_vec()), 0);
+        assert_eq!(differences(vec![units[1], units[0]]), 1);
+        assert_eq!(differences(vec![units[0]]), 1);
+    }
+
     #[test]
     fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
         let save = installed_content::save::parse(
@@ -1496,6 +1568,7 @@ mod tests {
                 province: 2,
                 attackers: Vec::new(),
                 defenders: Vec::new(),
+                transfers: Vec::new(),
                 attacker_positioning: zero.clone(),
                 defender_positioning: zero.clone(),
                 attacker_anti_air: zero.clone(),

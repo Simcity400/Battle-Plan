@@ -14,6 +14,11 @@ use cnaval_combatant::field;
 pub const COUNTRIES: usize = 0x38;
 /// Signed i32 node count, incremented by1413CC0D0.
 pub const COUNTRY_COUNT: usize = 0x48;
+/// The second ordered list1413CC0D0 fills: canonically distinct roster owners of the side's
+/// units. `UpdateCombatSharedVisionFlag@1413CEBE0` admits the viewer through it.
+pub const SECONDARY_COUNTRIES: usize = 0x50;
+/// Each list's signed count follows its head by 0x10.
+const LIST_COUNT: usize = COUNTRY_COUNT - COUNTRIES;
 /// Node layout written by1413CC0D0: raw u32 tag +0, next pointer +0x10.
 pub const NODE_TAG: usize = 0;
 pub const NODE_NEXT: usize = 0x10;
@@ -50,6 +55,8 @@ pub struct Row {
     pub is_attacker: u8,
     /// Start and length in the caller-owned country arena, in native order.
     pub countries: [usize; 2],
+    /// The [`SECONDARY_COUNTRIES`] list, in the same arena.
+    pub secondary_countries: [usize; 2],
     /// Country, regional weather, sea terrain, own admiral, opposing admiral.
     pub modifiers: [[Modifier; 5]; 5],
     /// Per key: raw flags and feature selector.
@@ -113,8 +120,20 @@ pub fn countries(
     arena: &mut Vec<u32>,
     len: &mut usize,
 ) -> Result<[usize; 2], &'static str> {
-    let head = field::<u64>(memory, side, COUNTRIES)? as usize;
-    let count = field::<i32>(memory, side, COUNTRY_COUNT)?;
+    list(memory, side, COUNTRIES, slots, arena, len)
+}
+
+/// [`countries`] for the list whose head is at `offset`.
+fn list(
+    memory: &impl Memory,
+    side: usize,
+    offset: usize,
+    slots: u32,
+    arena: &mut Vec<u32>,
+    len: &mut usize,
+) -> Result<[usize; 2], &'static str> {
+    let head = field::<u64>(memory, side, offset)? as usize;
+    let count = field::<i32>(memory, side, offset + LIST_COUNT)?;
     let count = u32::try_from(count).map_err(|_| "naval summary country count negative")?;
     if count > slots {
         return Err("naval summary country count exceeds the country table");
@@ -157,9 +176,10 @@ pub fn read(
     len: &mut usize,
 ) -> Result<Row, &'static str> {
     let count = field::<i32>(memory, side, COUNTRY_COUNT)?;
+    let secondary = field::<i32>(memory, side, SECONDARY_COUNTRIES + LIST_COUNT)?;
     // Native1415B4BB0 only resolves countries for nonempty membership; the
-    // country-table header then also bounds the list walk.
-    let reader = if count > 0 {
+    // country-table header then also bounds the list walks.
+    let reader = if count > 0 || secondary > 0 {
         Some(ccountry::Reader::new(memory, base, state)?)
     } else {
         None
@@ -170,13 +190,9 @@ pub fn read(
         is_attacker: field(memory, side, 0xb8)?,
         ..Default::default()
     };
-    row.countries = countries(
-        memory,
-        side,
-        reader.as_ref().map_or(0, |reader| reader.count()),
-        arena,
-        len,
-    )?;
+    let slots = reader.as_ref().map_or(0, |reader| reader.count());
+    row.countries = countries(memory, side, slots, arena, len)?;
+    row.secondary_countries = list(memory, side, SECONDARY_COUNTRIES, slots, arena, len)?;
     for (value, rva) in row.fixed_defines.iter_mut().zip(FIXED_DEFINES) {
         *value = field(memory, base, rva)?;
     }
@@ -219,7 +235,7 @@ pub fn read(
     }
     // Native1415B4BB0 only runs country/region/terrain branches for nonempty
     // side-country membership. Its country is the first linked-list node.
-    if let Some(reader) = reader {
+    if let Some(reader) = reader.filter(|_| count > 0) {
         let country = reader.resolve(arena[row.countries[0]])?;
         row.modifiers[0] = values(
             memory,
@@ -261,6 +277,34 @@ mod tests {
         data
     }
     const BASE: usize = 0x10_0000;
+
+    #[test]
+    fn the_secondary_list_follows_its_own_head_and_count() {
+        let mut data = side_list(2);
+        // Move the list to the secondary head; the primary list is then empty.
+        let (head, count) = (
+            data[COUNTRIES..COUNTRIES + 8].to_vec(),
+            data[COUNTRY_COUNT..COUNTRY_COUNT + 4].to_vec(),
+        );
+        data[COUNTRIES..COUNTRY_COUNT + 4].fill(0);
+        data[SECONDARY_COUNTRIES..SECONDARY_COUNTRIES + 8].copy_from_slice(&head);
+        data[SECONDARY_COUNTRIES + LIST_COUNT..SECONDARY_COUNTRIES + LIST_COUNT + 4]
+            .copy_from_slice(&count);
+        let memory = crate::memory::SliceMemory {
+            base: BASE,
+            bytes: &data,
+        };
+        let (mut arena, mut len) = (Vec::new(), 0);
+        assert_eq!(
+            countries(&memory, BASE, 4, &mut arena, &mut len),
+            Ok([0, 0])
+        );
+        assert_eq!(
+            list(&memory, BASE, SECONDARY_COUNTRIES, 4, &mut arena, &mut len),
+            Ok([0, 2])
+        );
+        assert_eq!(arena[..len], [1000, 1001]);
+    }
 
     #[test]
     fn country_list_beyond_the_old_cap_fills_the_caller_arena_in_order() {

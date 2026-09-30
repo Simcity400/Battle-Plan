@@ -269,6 +269,7 @@ fn naval_combats(
             defender_positioning: row.defender_positioning,
             attacker_anti_air: row.attacker_anti_air,
             defender_anti_air: row.defender_anti_air,
+            registry_ordinal: row.registry_ordinal,
         },
     )
 }
@@ -567,6 +568,7 @@ mod tests {
                 defender_positioning: i64::MAX,
                 attacker_anti_air: i64::MIN + 1,
                 defender_anti_air: i64::MAX - 1,
+                registry_ordinal: u32::MAX,
             }],
         );
         set(
@@ -676,6 +678,7 @@ mod tests {
                 defender_positioning: i64::MAX,
                 attacker_anti_air: i64::MIN + 1,
                 defender_anti_air: i64::MAX - 1,
+                registry_ordinal: u32::MAX,
             }]),
             TableRows::NavalCombatParticipants(vec![NavalCombatParticipantRow {
                 combat: u64::MAX,
