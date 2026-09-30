@@ -1345,7 +1345,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .join(", ");
         let gates = document.unit_models.gates;
         println!(
-            "Unit models: {} stacks by ladder level ({levels}); {} took the sub-unit's sprite key, {} ride a transport, {} stand along a route, {} have no recorded template, {} have no known country operands, {} have no anchor, {} are hidden from this perspective, {} carry attached entities and {} of those are an attachment rig with no geometry of their own; {} drawn at height {:.3} (land cutoff {}, ship cutoff {}); {} at-sea hulls prepared",
+            "Unit models: {} stacks by ladder level ({levels}); {} took the sub-unit's sprite key, {} ride a transport, {} stand along a route, {} have no recorded template, {} have no known country operands, {} have no anchor, {} are hidden from this perspective, {} carry attached entities and {} of those are an attachment rig with no geometry of their own; {} drawn at height {:.3} (land cutoff {}, ship cutoff {}); {} at-sea hulls prepared, {} formations undecided by the mission skip",
             unit_report.stacks,
             unit_report.sprite_key,
             unit_report.transports,
@@ -1361,6 +1361,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             gates.units,
             gates.ships,
             unit_report.ship_hulls,
+            unit_report.undecided_mission_formations,
         );
         if let Some(reason) = &unit_report.disabled {
             println!("  the unit-model layer is off: {reason}");
@@ -1488,8 +1489,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for line in counter_report.combat_gap_lines() {
             println!("{line}");
         }
-        // The refused tokens, the task forces and base icons not drawn and the undecided naval
-        // icons, as the window lists them.
+        // counters: naval mission icons
+        println!(
+            "Naval mission icons: {} entries drawn ({} children hidden until their inputs are recorded), {} with their button's authored sprite for an undefined kind sprite, {} icons without a region position, {} entries or parts not drawn",
+            counter_report.naval_mission_entries,
+            counter_report
+                .undecided_naval_mission_children
+                .values()
+                .sum::<usize>(),
+            counter_report.authored_naval_mission_buttons,
+            counter_report.unanchored_naval_missions,
+            counter_report.naval_mission_gaps.values().sum::<usize>(),
+        );
+        // The refused tokens, the task forces and base icons not drawn, the undecided naval
+        // icons and the naval mission gaps, as the window lists them.
         for warning in counter_report.warnings() {
             println!("{warning}");
         }

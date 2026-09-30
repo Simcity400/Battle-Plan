@@ -1,5 +1,6 @@
 //! Hourly task-force mission, link and supply operands, fleet colour, region count and ordered
-//! roster, and each task force's movement operands, all from one fleet walk.
+//! roster, each task force's movement operands and its registered mission regions, all from
+//! one fleet walk.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -9,22 +10,24 @@ use engine::{Memory, cfleet, ctask_force, cunit::FirstCombatMemo, walk::Outcome}
 use replay::{
     frame::TableView,
     rows::{
-        FleetCounterInputRow, TableId, TaskForceCounterInputRow, TaskForceMapMotionRow, tables,
+        FleetCounterInputRow, TableId, TaskForceCounterInputRow, TaskForceMapMotionRow,
+        TaskForceMissionRow, tables,
     },
 };
 
-pub const N: usize = 3;
+pub const N: usize = 4;
 pub const TABLES: [TableId; N] = [
     TableId::TaskForceCounterInputs,
     TableId::FleetCounterInputs,
     TableId::TaskForceMapMotion,
+    TableId::TaskForceMissions,
 ];
-/// One country/fleet/task-force traversal serves all three tables; its time is charged to task
+/// One country/fleet/task-force traversal serves all four tables; its time is charged to task
 /// forces.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "fleet and task-force counter and motion operands",
+    "fleet and task-force counter, motion and mission operands",
     0,
-    &[0, 1, 2],
+    &[0, 1, 2, 3],
 )];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,6 +37,8 @@ pub struct Capacities {
     rosters: usize,
     motion: usize,
     paths: usize,
+    missions: usize,
+    regions: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -43,6 +48,8 @@ impl Default for Capacities {
             rosters: 4096,
             motion: 4096,
             paths: 4096,
+            missions: 2048,
+            regions: 8192,
         }
     }
 }
@@ -56,6 +63,8 @@ pub struct Captured {
     /// First-combat answers for this capture's task forces. The fleet walk runs apart from the
     /// division and railway-gun captures, so it keeps its own memo, sized off-thread.
     combats: FirstCombatMemo,
+    missions: CaptureRows<ctask_force::MissionRow>,
+    regions: Arena<u32>,
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -66,6 +75,8 @@ impl Captured {
             rosters: 0,
             motion: 0,
             paths: 0,
+            missions: 0,
+            regions: 0,
         })
     }
 
@@ -77,6 +88,8 @@ impl Captured {
             motion: CaptureRows::new(capacity.motion),
             paths: Arena::new(capacity.paths),
             combats: FirstCombatMemo::new(capacity.motion),
+            missions: CaptureRows::new(capacity.missions),
+            regions: Arena::new(capacity.regions),
         }
     }
     pub fn reset(&mut self) {
@@ -86,6 +99,8 @@ impl Captured {
         self.motion.reset();
         self.paths.reset();
         self.combats.clear();
+        self.missions.reset();
+        self.regions.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
         self.task_forces.allocated_bytes()
@@ -94,6 +109,8 @@ impl Captured {
             + self.motion.allocated_bytes()
             + self.paths.allocated_bytes()
             + self.combats.allocated_bytes()
+            + self.missions.allocated_bytes()
+            + self.regions.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.task_forces.grow(&mut capacity.task_forces);
@@ -104,6 +121,9 @@ impl Captured {
         grow_capacity(&mut capacity.paths, self.paths.required);
         self.paths.grow(&mut capacity.paths);
         self.combats.reserve(capacity.motion);
+        self.missions.grow(&mut capacity.missions);
+        grow_capacity(&mut capacity.regions, self.regions.required);
+        self.regions.grow(&mut capacity.regions);
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
@@ -118,6 +138,13 @@ impl Captured {
             &mut self.paths.first,
             &mut self.combats,
         );
+        let mut missions = ctask_force::MissionCollector::new(
+            memory,
+            base,
+            state,
+            &mut self.missions.rows,
+            &mut self.regions.first,
+        );
         let captured = cfleet::walk_counter_inputs(
             memory,
             base,
@@ -125,13 +152,21 @@ impl Captured {
             &mut self.fleets.rows,
             &mut self.rosters.first,
             &mut self.task_forces.rows,
-            |pointer, id| motion.visit(pointer, id),
+            |pointer, id| {
+                motion.visit(pointer, id);
+                missions.visit(pointer, id);
+            },
         );
-        // A walk that fails leaves the motion census unknown too.
-        let walked = motion.finish(match captured.task_forces {
+        // A walk that fails leaves the motion and mission censuses unknown too.
+        let failed = match captured.task_forces {
             Outcome::Unavailable { reason } => Some(reason),
             _ => None,
-        });
+        };
+        let walked = motion.finish(failed);
+        let registered = missions.finish(failed);
+        self.missions.outcome = registered.outcome;
+        self.regions.len = registered.regions_len;
+        self.regions.required = registered.required_regions;
         self.task_forces.outcome = captured.task_forces;
         self.fleets.outcome = captured.fleets;
         self.rosters.len = captured.roster_len;
@@ -139,26 +174,29 @@ impl Captured {
         self.motion.outcome = walked.outcome;
         self.paths.len = walked.paths_len;
         self.paths.required = walked.required_paths;
-        [qpc().saturating_sub(begin).max(0) as u64, 0, 0]
+        [qpc().saturating_sub(begin).max(0) as u64, 0, 0, 0]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.task_forces.outcome,
             self.fleets.outcome,
             self.motion.outcome,
+            self.missions.outcome,
         ]
     }
 
     pub fn tables(&self) -> [TableView; N] {
-        let [tasks, fleets, _] = self.outcomes();
+        let [tasks, fleets, ..] = self.outcomes();
         let task_table =
             || table::<tables::TaskForceCounterInputs, _>(tasks, &self.task_forces.rows, task);
         let motion = self.motion_table();
+        let missions = self.mission_table();
         let Some(rosters) = self.rosters.first.get(..self.rosters.len) else {
             return [
                 task_table(),
                 unavailable("fleet roster arena length invalid"),
                 motion,
+                missions,
             ];
         };
         let fleet_rows = &self.fleets.rows[..fleets.len().min(self.fleets.rows.len())];
@@ -171,6 +209,7 @@ impl Captured {
                 task_table(),
                 unavailable("fleet roster lies outside captured arena"),
                 motion,
+                missions,
             ];
         }
         [
@@ -187,7 +226,31 @@ impl Captured {
                 }
             }),
             motion,
+            missions,
         ]
+    }
+
+    fn mission_table(&self) -> TableView {
+        let Some(regions) = self.regions.first.get(..self.regions.len) else {
+            return unavailable("task-force mission region arena length invalid");
+        };
+        let rows =
+            &self.missions.rows[..self.missions.outcome.len().min(self.missions.rows.len())];
+        if rows.iter().any(|row| {
+            row.regions_start
+                .checked_add(row.regions_len)
+                .is_none_or(|end| end > regions.len())
+        }) {
+            return unavailable("task-force mission regions lie outside the captured arena");
+        }
+        table::<tables::TaskForceMissions, _>(self.missions.outcome, &self.missions.rows, |r| {
+            TaskForceMissionRow {
+                task_force: r.id,
+                owner: r.owner,
+                current_region: r.current_region,
+                regions: regions[r.regions_start..r.regions_start + r.regions_len].to_vec(),
+            }
+        })
     }
 
     fn motion_table(&self) -> TableView {
@@ -257,6 +320,8 @@ mod tests {
             rosters: 2,
             motion: 1,
             paths: 1,
+            missions: 1,
+            regions: 1,
         });
         capture.capture(&memory, 0, 0);
         assert!(
@@ -278,7 +343,7 @@ mod tests {
         capture.fleets.outcome = Outcome::Rows { len: 1 };
         capture.task_forces.outcome = Outcome::Rows { len: 0 };
         capture.motion.outcome = Outcome::Rows { len: 0 };
-        let [_, TableView::Complete(TableRows::FleetCounterInputs(rows)), _] = capture.tables()
+        let [_, TableView::Complete(TableRows::FleetCounterInputs(rows)), ..] = capture.tables()
         else {
             panic!("complete");
         };
@@ -296,6 +361,8 @@ mod tests {
             rosters: 1,
             motion: 2,
             paths: 3,
+            missions: 1,
+            regions: 1,
         };
         let mut capture = Captured::with_capacities(&capacity);
         capture.motion.rows[0] = ctask_force::MapMotionRow {
@@ -337,5 +404,49 @@ mod tests {
         capture.paths.required = 12;
         capture.grow(&mut capacity);
         assert!(capacity.paths >= 12 && capture.paths.first.len() >= 12);
+    }
+
+    #[test]
+    fn mission_regions_split_from_the_arena_and_stray_ranges_are_refused() {
+        let mut capacity = Capacities {
+            task_forces: 1,
+            fleets: 1,
+            rosters: 1,
+            motion: 1,
+            paths: 1,
+            missions: 1,
+            regions: 3,
+        };
+        let mut capture = Captured::with_capacities(&capacity);
+        capture.missions.rows[0] = ctask_force::MissionRow {
+            id: (5 << 32) | 61,
+            owner: 42,
+            current_region: 2,
+            regions_start: 0,
+            regions_len: 3,
+        };
+        capture.regions.first.copy_from_slice(&[2, 1, 2]);
+        capture.regions.len = 3;
+        capture.missions.outcome = Outcome::Rows { len: 1 };
+        let TableView::Complete(TableRows::TaskForceMissions(rows)) = capture.mission_table() else {
+            panic!("complete mission table");
+        };
+        assert_eq!(
+            (rows[0].task_force, rows[0].owner, rows[0].current_region),
+            ((5 << 32) | 61, 42, 2)
+        );
+        assert_eq!(rows[0].regions, [2, 1, 2]);
+        capture.missions.rows[0].regions_len = 4;
+        assert!(matches!(
+            capture.mission_table(),
+            TableView::Unavailable { .. }
+        ));
+        capture.missions.outcome = Outcome::Truncated {
+            len: 0,
+            unread_rows: 1,
+        };
+        capture.regions.required = 9;
+        capture.grow(&mut capacity);
+        assert!(capacity.regions >= 9 && capture.regions.first.len() >= 9);
     }
 }

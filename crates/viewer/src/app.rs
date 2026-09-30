@@ -1099,7 +1099,7 @@ impl Viewer {
         // index has not yet covered a session-start branch's hour).
         warnings.extend(self.counter_report.combat_gap_lines());
         // The overlay's refused tokens: the raid icons' as laid out for this
-        // camera, the counters' as last drawn.
+        // camera, the counters' (with the naval mission icons' gaps) as last drawn.
         if let Some(overlay) = &self.prepared_overlay {
             warnings.extend(overlay.raid_report().warnings());
         }
