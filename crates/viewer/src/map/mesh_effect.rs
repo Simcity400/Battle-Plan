@@ -11,7 +11,7 @@ impl Materials {
     pub fn new(layers: &ResolvedLayers, map: [u32; 2]) -> Self {
         Self {
             library: Library::new(Arc::new(layers.clone()))
-                .with_globals(shader_pipeline::library::globals(map)),
+                .with_globals(super::shader_sources::globals(map)),
         }
     }
 
@@ -29,7 +29,7 @@ impl Materials {
         };
         let effect = self
             .library
-            .load(file, &defines)
+            .load(file.as_bytes(), &defines)
             .map_err(io::Error::other)?;
         let skinned = sub.skin.is_some();
         let base = material.shader.as_deref().unwrap_or_default();
@@ -42,7 +42,7 @@ impl Materials {
         // 142251E30 stores their handles. Only a missing fallback skips the record.
         let fallback = self
             .library
-            .load("gfx/FX/pdxmesh.lua", &[])
+            .load(b"gfx/FX/pdxmesh.lua", &[])
             .map_err(io::Error::other)?;
         let name = if skinned {
             "PdxMeshColorSkinned"

@@ -116,10 +116,12 @@ pub struct State<T> {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Program {
+    /// The effect as the sprite names it, as text for messages (its bytes may not be UTF-8).
     pub effect: String,
     /// SHA256 of the resolved root, ordered includes (including absent files) and backend header.
     pub identity: [u8; 32],
-    pub dependencies: Vec<String>,
+    /// Every file the effect reads, by the bytes the content stack is asked for.
+    pub dependencies: Vec<Vec<u8>>,
     pub warnings: Vec<String>,
     pub common: Declarations,
     pub vertex: Declarations,
@@ -133,35 +135,41 @@ pub struct Program {
 
 #[derive(Default)]
 struct File {
-    includes: Vec<String>,
+    /// Each `Includes` name as the file holds it (`ReadStringList@1401426E0`): bytes, opened
+    /// under `gfx/FX/` as they are.
+    includes: Vec<Vec<u8>>,
     program: Program,
 }
 
 /// Effect sources are artwork outside the current hash coverage. Diagnostics must retain
-/// `Program::warnings`, just as consumers do for other uncovered visual assets.
-pub fn read(layers: &ResolvedLayers, effect: &str) -> Result<Program, String> {
+/// `Program::warnings`, just as consumers do for other uncovered visual assets. `effect` is the
+/// sprite's name as its bytes, and every path is opened by its bytes
+/// ([`ResolvedLayers::read_uncovered_path`]), as `PHYSFS_openRead@1424DFAC0` is given them.
+pub fn read(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, String> {
     let errors = std::cell::RefCell::new(Vec::new());
-    let result = read_with(effect, &|path| match layers.read_uncovered(path) {
+    let result = read_with(effect, &|path| match layers.read_uncovered_path(path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
-            errors.borrow_mut().push(format!("{path}: {error}"));
+            errors
+                .borrow_mut()
+                .push(format!("{}: {error}", lossy(path)));
             None
         }
     });
     let errors = errors.into_inner();
     if !errors.is_empty() {
-        return Err(format!("effect {effect:?}: {}", errors.join("; ")));
+        return Err(format!("effect {:?}: {}", lossy(effect), errors.join("; ")));
     }
     let mut program = result?;
     let uncovered: Vec<_> = program
         .dependencies
         .iter()
-        .filter(|path| !crate::content::covered(path))
-        .cloned()
+        .filter(|path| !crate::content::covered_path(path))
+        .map(|path| lossy(path))
         .collect();
     if !uncovered.is_empty() {
-        program.warnings.push(format!("Effect {effect:?} reads sources outside the content coverage policy; these bytes are not hash-verified: {}", uncovered.join(", ")));
+        program.warnings.push(format!("Effect {:?} reads sources outside the content coverage policy; these bytes are not hash-verified: {}", lossy(effect), uncovered.join(", ")));
     }
     Ok(program)
 }
@@ -169,14 +177,17 @@ pub fn read(layers: &ResolvedLayers, effect: &str) -> Result<Program, String> {
 /// Resolves each complete file through the caller's recorded content stack. Missing includes
 /// contribute nothing, as `1423457F0` does after its diagnostic. A missing root is the
 /// empty lookup record (1423F5D60); a present root still requires its backend header.
-pub fn read_with(effect: &str, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Program, String> {
+pub fn read_with(
+    effect: &[u8],
+    read: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
+) -> Result<Program, String> {
     use sha2::{Digest, Sha256};
     let digest = std::cell::RefCell::new(Sha256::new());
     let mut program = read_with_inner(effect, &|path| {
         let bytes = read(path);
         let mut hash = digest.borrow_mut();
         hash.update((path.len() as u64).to_le_bytes());
-        hash.update(path.as_bytes());
+        hash.update(path);
         hash.update([u8::from(bytes.is_some())]);
         if let Some(bytes) = &bytes {
             hash.update((bytes.len() as u64).to_le_bytes());
@@ -188,20 +199,30 @@ pub fn read_with(effect: &str, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result
     Ok(program)
 }
 
+/// `gfx/FX/` and an `Includes` name, byte for byte.
+fn include(name: &[u8]) -> Vec<u8> {
+    [b"gfx/FX/".as_slice(), name].concat()
+}
+
+/// A path or name as text, for messages and `#line` labels only.
+fn lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 fn read_with_inner(
-    effect: &str,
-    read: &dyn Fn(&str) -> Option<Vec<u8>>,
+    effect: &[u8],
+    read: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
 ) -> Result<Program, String> {
     fn walk(
-        path: &str,
-        read: &dyn Fn(&str) -> Option<Vec<u8>>,
-        seen: &mut BTreeSet<String>,
-        out: &mut Vec<(String, File)>,
+        path: &[u8],
+        read: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
+        seen: &mut BTreeSet<Vec<u8>>,
+        out: &mut Vec<(Vec<u8>, File)>,
     ) -> Result<(), String> {
         // Native child-first, once-only traversal; authored nesting never consumes the Rust stack.
         enum Visit {
-            Open(String),
-            Close(String, Box<File>),
+            Open(Vec<u8>),
+            Close(Vec<u8>, Box<File>),
         }
         let mut stack = vec![Visit::Open(path.to_owned())];
         while let Some(visit) = stack.pop() {
@@ -214,12 +235,12 @@ fn read_with_inner(
                     let Some(bytes) = read(&path) else {
                         continue;
                     };
-                    let file = parse(&path, &bytes)?;
+                    let file = parse(&lossy(&path), &bytes)?;
                     let children: Vec<_> = file
                         .includes
                         .iter()
                         .rev()
-                        .map(|name| Visit::Open(format!("gfx/FX/{name}")))
+                        .map(|name| Visit::Open(include(name)))
                         .collect();
                     stack.push(Visit::Close(path, Box::new(file)));
                     stack.extend(children);
@@ -228,31 +249,32 @@ fn read_with_inner(
         }
         Ok(())
     }
+    let name = lossy(effect);
     let result = || {
-        // The effect's path by its bytes, read here through a text path.
-        let path = String::from_utf8_lossy(&effect_path(effect.as_bytes())).into_owned();
+        let path = effect_path(effect);
         let mut files = Vec::new();
         let Some(bytes) = read(&path) else {
             // LookupShaderEffectHandle@1423F5D60 returns 1435C1970 when no effect exists.
             // Keep this distinct from malformed present source or a failed filesystem read.
             return Ok(Program {
-                effect: effect.to_owned(),
-                dependencies: vec![path.clone()],
+                effect: name.clone(),
                 warnings: vec![format!(
-                    "effect {effect:?}: missing {path}; native null technique record (1423F5D60)"
+                    "effect {name:?}: missing {}; native null technique record (1423F5D60)",
+                    lossy(&path)
                 )],
+                dependencies: vec![path],
                 ..Program::default()
             });
         };
-        let root = parse(&path, &bytes)?;
+        let root = parse(&lossy(&path), &bytes)?;
         let mut seen = BTreeSet::new();
-        for include in &root.includes {
-            walk(&format!("gfx/FX/{include}"), read, &mut seen, &mut files)?;
+        for name in &root.includes {
+            walk(&include(name), read, &mut seen, &mut files)?;
         }
         // States/effects belong to the root file. Only stage declarations are accumulated
         // from includes (`1423445D0`, `1423F6E10`).
         let mut program = Program {
-            effect: effect.to_owned(),
+            effect: name.clone(),
             techniques: root.program.techniques,
             blends: root.program.blends,
             depth_stencils: root.program.depth_stencils,
@@ -263,9 +285,10 @@ fn read_with_inner(
             .iter()
             .filter(|path| !files.iter().any(|(name, _)| name == *path))
         {
-            program
-                .warnings
-                .push(format!("shader include {missing:?} not loaded (1423457F0)"));
+            program.warnings.push(format!(
+                "shader include {:?} not loaded (1423457F0)",
+                lossy(missing)
+            ));
         }
         for (name, file) in files {
             program.dependencies.push(name);
@@ -281,13 +304,15 @@ fn read_with_inner(
         let header = "gfx/FX/defines_hlsl_dx11.fxh";
         program.header = Source {
             path: header.into(),
-            text: String::from_utf8(read(header).ok_or_else(|| format!("missing {header}"))?)
-                .map_err(|e| format!("{header}: {e}"))?,
+            text: String::from_utf8(
+                read(header.as_bytes()).ok_or_else(|| format!("missing {header}"))?,
+            )
+            .map_err(|e| format!("{header}: {e}"))?,
         };
         program.dependencies.push(header.into());
         Ok(program)
     };
-    result().map_err(|reason: String| format!("effect {effect:?}: {reason}"))
+    result().map_err(|reason: String| format!("effect {name:?}: {reason}"))
 }
 
 impl Program {
@@ -524,11 +549,7 @@ fn parse(path: &str, bytes: &[u8]) -> Result<File, String> {
     let file = super::read_file(bytes);
     let [common, vertex, pixel] = file.stages;
     Ok(File {
-        includes: file
-            .includes
-            .iter()
-            .map(|s| text(path, s))
-            .collect::<Result<_, _>>()?,
+        includes: file.includes,
         program: Program {
             common: declarations(path, common)?,
             vertex: declarations(path, vertex)?,
@@ -578,18 +599,22 @@ mod tests {
 
     #[test]
     fn source_order_and_first_entry_follow_native() {
-        let read = |path: &str| {
+        let read = |path: &[u8]| {
             Some(match path {
-            "gfx/FX/test.shader" => "Includes = { a.fxh b.fxh } MainCode PS [[ float4 main() : PDX_COLOR { return 1; } ]] PixelShader = { MainCode PS [[ WRONG ]] } Effect Up { PixelShader = PS Defines = { EXTRA } }",
-            "gfx/FX/a.fxh" => "Includes = { b.fxh } Code [[\nA\n]]",
-            "gfx/FX/b.fxh" => "Includes = { a.fxh } Code [[\nB\n]]",
-            "gfx/FX/defines_hlsl_dx11.fxh" => "HEADER", _ => return None,
+            b"gfx/FX/test.shader" => "Includes = { a.fxh b.fxh } MainCode PS [[ float4 main() : PDX_COLOR { return 1; } ]] PixelShader = { MainCode PS [[ WRONG ]] } Effect Up { PixelShader = PS Defines = { EXTRA } }",
+            b"gfx/FX/a.fxh" => "Includes = { b.fxh } Code [[\nA\n]]",
+            b"gfx/FX/b.fxh" => "Includes = { a.fxh } Code [[\nB\n]]",
+            b"gfx/FX/defines_hlsl_dx11.fxh" => "HEADER", _ => return None,
         }.as_bytes().to_vec())
         };
-        let program = read_with("gfx/FX/test.lua", &read).unwrap();
+        let program = read_with(b"gfx/FX/test.lua", &read).unwrap();
         assert_eq!(
             &program.dependencies[..3],
-            &["gfx/FX/b.fxh", "gfx/FX/a.fxh", "gfx/FX/test.shader"]
+            &[
+                b"gfx/FX/b.fxh".to_vec(),
+                b"gfx/FX/a.fxh".to_vec(),
+                b"gfx/FX/test.shader".to_vec()
+            ]
         );
         let code = program
             .hlsl(
@@ -605,10 +630,10 @@ mod tests {
 
     #[test]
     fn only_cube_samplers_change_the_dx11_texture_type() {
-        let program = read_with("gfx/FX/t.lua", &|path| {
+        let program = read_with(b"gfx/FX/t.lua", &|path| {
             Some(match path {
-                "gfx/FX/t.shader" => "PixelShader = { Samplers = { A = { Index = 0 Type = cube } B = { Index = 1 Type = 3d } C = { Index = 2 Type = shadow } } MainCode P [[ ]] } DepthStencilState Depth { DepthEnable = no } Effect Up { PixelShader = P DepthStencilState = DEPTH }",
-                "gfx/FX/defines_hlsl_dx11.fxh" => "",
+                b"gfx/FX/t.shader" => "PixelShader = { Samplers = { A = { Index = 0 Type = cube } B = { Index = 1 Type = 3d } C = { Index = 2 Type = shadow } } MainCode P [[ ]] } DepthStencilState Depth { DepthEnable = no } Effect Up { PixelShader = P DepthStencilState = DEPTH }",
+                b"gfx/FX/defines_hlsl_dx11.fxh" => "",
                 _ => return None,
             }.as_bytes().to_vec())
         })
@@ -640,11 +665,11 @@ mod tests {
 
     #[test]
     fn includes_contribute_declarations_but_never_replace_root_states() {
-        let program = read_with("gfx/FX/mod.lua", &|path| {
+        let program = read_with(b"gfx/FX/mod.lua", &|path| {
             Some(match path {
-                "gfx/FX/mod.shader" => "Includes = { child.fxh missing.fxh child.fxh } BlendState Alpha { BlendEnable = yes } Effect Up { PixelShader = P BlendState = Alpha } Effect up { PixelShader = Wrong }",
-                "gfx/FX/child.fxh" => "BlendState Alpha { BlendEnable = no } Effect Up { PixelShader = Wrong } MainCode P [[ float4 main() : PDX_COLOR { return 1; } ]]",
-                "gfx/FX/defines_hlsl_dx11.fxh" => "#define PDX_COLOR SV_TARGET\n",
+                b"gfx/FX/mod.shader" => "Includes = { child.fxh missing.fxh child.fxh } BlendState Alpha { BlendEnable = yes } Effect Up { PixelShader = P BlendState = Alpha } Effect up { PixelShader = Wrong }",
+                b"gfx/FX/child.fxh" => "BlendState Alpha { BlendEnable = no } Effect Up { PixelShader = Wrong } MainCode P [[ float4 main() : PDX_COLOR { return 1; } ]]",
+                b"gfx/FX/defines_hlsl_dx11.fxh" => "#define PDX_COLOR SV_TARGET\n",
                 _ => return None,
             }.as_bytes().to_vec())
         }).unwrap();
@@ -659,11 +684,11 @@ mod tests {
     #[test]
     fn parse_failures_name_the_effect_and_missing_main_names_the_technique() {
         let error =
-            read_with("mod/broken.lua", &|_| Some(b"Code [[ \x80 ]]".to_vec())).unwrap_err();
+            read_with(b"mod/broken.lua", &|_| Some(b"Code [[ \x80 ]]".to_vec())).unwrap_err();
         assert!(error.contains("mod/broken.lua"));
         assert!(error.contains("non-UTF8 shader token/code"));
-        let program = read_with("mod/empty.lua", &|path| {
-            Some(if path.ends_with(".shader") {
+        let program = read_with(b"mod/empty.lua", &|path| {
+            Some(if path.ends_with(b".shader") {
                 b"Effect Down { VertexShader = V PixelShader = P }\n".to_vec()
             } else {
                 Vec::new()
@@ -676,6 +701,40 @@ mod tests {
         assert!(error.contains("mod/empty.lua"));
         assert!(error.contains("Down"));
         assert!(error.contains("missing Pixel MainCode"));
+    }
+
+    /// An effect name and an `Includes` name that are not UTF-8 open by their bytes, as
+    /// `PHYSFS_openRead@1424DFAC0` is given them; the U+FFFD spelling of either finds nothing.
+    /// Their text is only the label.
+    #[test]
+    fn effect_and_include_names_open_by_their_bytes() {
+        let read = |path: &[u8]| {
+            Some(match path {
+                b"gfx/FX/\x80.shader" => b"Includes = { \"\x81.fxh\" }\nMainCode P [[ float4 main() : PDX_COLOR { return 1; } ]]\nEffect Up { PixelShader = P }".to_vec(),
+                b"gfx/FX/\x81.fxh" => b"Code [[\nINCLUDED\n]]".to_vec(),
+                b"gfx/FX/defines_hlsl_dx11.fxh" => Vec::new(),
+                _ => return None,
+            })
+        };
+        let program = read_with(b"gfx/FX/\x80.lua", &read).unwrap();
+        assert_eq!(
+            program.dependencies,
+            [
+                b"gfx/FX/\x81.fxh".to_vec(),
+                b"gfx/FX/\x80.shader".to_vec(),
+                b"gfx/FX/defines_hlsl_dx11.fxh".to_vec()
+            ]
+        );
+        assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+        assert_eq!(program.effect, "gfx/FX/\u{FFFD}.lua");
+        let code = program
+            .hlsl(&program.techniques[0], Stage::Pixel, &[])
+            .unwrap();
+        assert!(code.contains("\nINCLUDED\n"));
+        // The lossy spelling is another path.
+        let missing = read_with("gfx/FX/\u{FFFD}.lua".as_bytes(), &read).unwrap();
+        assert!(missing.techniques.is_empty());
+        assert!(missing.warnings[0].contains("1423F5D60"));
     }
 
     #[test]

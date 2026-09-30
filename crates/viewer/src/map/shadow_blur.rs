@@ -22,7 +22,7 @@ pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Eff
     // 1422C4730 supplies an empty caller-define array for both techniques.
     let (mut library, defines) = shader_sources::library(layers, map);
     library
-        .load("gfx/FX/shadowblur.shader", &defines)
+        .load(b"gfx/FX/shadowblur.shader", &defines)
         .map_err(refuse)
 }
 

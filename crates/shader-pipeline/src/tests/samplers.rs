@@ -11,8 +11,8 @@ fn point_float32_uses_actual_sampler_pairs_without_filterable_feature() {
             .features()
             .contains(wgpu::Features::FLOAT32_FILTERABLE)
     );
-    let program = installed_content::pdxshader::program::read_with("point.shader", &|path| {
-        Some(if path == "point.shader" {
+    let program = installed_content::pdxshader::program::read_with(b"point.shader", &|path| {
+        Some(if path == b"point.shader" {
             br#"VertexStruct I {
 float3 position : POSITION;
 float2 uv : TEXCOORD0;
@@ -241,8 +241,8 @@ MainCode P [[ float4 main(Output v) : PDX_COLOR {{ return Map_Texture.{method}(M
 Effect Test {{ VertexShader = V PixelShader = P }}
 "#
         );
-        let program = installed_content::pdxshader::program::read_with("sampler.shader", &|path| {
-            Some(if path == "sampler.shader" {
+        let program = installed_content::pdxshader::program::read_with(b"sampler.shader", &|path| {
+            Some(if path == b"sampler.shader" {
                 source.as_bytes().to_vec()
             } else {
                 b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()
@@ -347,6 +347,7 @@ Effect Test {{ VertexShader = V PixelShader = P }}
                 bytemuck::cast_slice(&vertices),
                 20,
                 vertices.len(),
+                wgpu::PrimitiveTopology::TriangleList,
                 wgpu::TextureFormat::Rgba8Unorm,
                 1,
             )
@@ -544,8 +545,8 @@ MainCode P [[ float4 main(Output v) : PDX_COLOR {{ return {expression}; }} ]]
 Effect Test {{ VertexShader = V PixelShader = P }}
 "#
         );
-        let program = installed_content::pdxshader::program::read_with("mirror.shader", &|path| {
-            Some(if path == "mirror.shader" {
+        let program = installed_content::pdxshader::program::read_with(b"mirror.shader", &|path| {
+            Some(if path == b"mirror.shader" {
                 source.as_bytes().to_vec()
             } else {
                 b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()

@@ -32,8 +32,13 @@ struct Harness {
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
-/// Each harness takes [`super::super::shader_tests::GPU_TESTS`] before requesting its adapter;
-/// the crate's other GPU tests take it through here.
+/// Several WARP devices used at once in one process fault inside `d3d10warp.dll` (probed
+/// 2026-09-26: 5 of 6 runs with three concurrent devices, 0 of 6 with one device shared by three
+/// threads). The viewer creates one device per process, so only tests need this.
+///
+/// The one-device-at-a-time guard every GPU test in the crate takes before its adapter
+/// ([`super::super::shader_tests::GPU_TESTS`]): each harness takes it here, the crate's other
+/// GPU tests through here too, so no second device exists while another test runs.
 pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     super::super::shader_tests::GPU_TESTS
         .lock()

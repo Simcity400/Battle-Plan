@@ -53,8 +53,8 @@ PixelShader = {{ MainCode P [[ float4 main(O v) : SV_TARGET {{ {body} }} ]] }}
 Effect Test {{ VertexShader = V PixelShader = P }}
 "#
         );
-        let program = installed_content::pdxshader::program::read_with("reads.shader", &|path| {
-            Some(if path == "reads.shader" {
+        let program = installed_content::pdxshader::program::read_with(b"reads.shader", &|path| {
+            Some(if path == b"reads.shader" {
                 source.as_bytes().to_vec()
             } else {
                 Vec::new()
@@ -91,8 +91,8 @@ Effect Test {{ VertexShader = V PixelShader = P }}
 #[test]
 fn blend_defaults_inherit_alpha_and_masks_follow_native_substring_matching() {
     let source = b"BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = inv_src_alpha WriteMask = \"RED|BLUE\" } Effect Up { }\n";
-    let mut program = installed_content::pdxshader::program::read_with("custom.shader", &|path| {
-        Some(if path == "custom.shader" {
+    let mut program = installed_content::pdxshader::program::read_with(b"custom.shader", &|path| {
+        Some(if path == b"custom.shader" {
             source.to_vec()
         } else {
             Vec::new()
@@ -122,8 +122,8 @@ Effect Stencil { DepthStencilState = STENCIL RasterizerState = lines }
 Effect Off { DepthStencilState = Off }
 Effect Default { }
 ";
-    let program = installed_content::pdxshader::program::read_with("states.shader", &|path| {
-        Some(if path == "states.shader" {
+    let program = installed_content::pdxshader::program::read_with(b"states.shader", &|path| {
+        Some(if path == b"states.shader" {
             source.to_vec()
         } else {
             Vec::new()
@@ -230,8 +230,8 @@ fn compile_installed_gui_effects() {
             continue;
         }
         let effect = format!("gfx/FX/{name}");
-        let program = match installed_content::pdxshader::program::read_with(&effect, &|p| {
-            std::fs::read(root.join(p)).ok()
+        let program = match installed_content::pdxshader::program::read_with(effect.as_bytes(), &|p| {
+            std::fs::read(root.join(String::from_utf8_lossy(p).as_ref())).ok()
         }) {
             Ok(p) => p,
             Err(e) => {
@@ -407,9 +407,9 @@ Effect Prefix { VertexShader = V PixelShader = Prefix }
 Effect Raw { VertexShader = V PixelShader = Raw }
 "#;
     let program =
-        installed_content::pdxshader::program::read_with("gfx/FX/linkage.lua", &|path| match path {
-            "gfx/FX/linkage.shader" => Some(source.as_bytes().to_vec()),
-            "gfx/FX/defines_hlsl_dx11.fxh" => {
+        installed_content::pdxshader::program::read_with(b"gfx/FX/linkage.lua", &|path| match path {
+            b"gfx/FX/linkage.shader" => Some(source.as_bytes().to_vec()),
+            b"gfx/FX/defines_hlsl_dx11.fxh" => {
                 Some(b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec())
             }
             _ => None,
@@ -434,8 +434,8 @@ Effect Raw { VertexShader = V PixelShader = Raw }
         let source = format!(
             "VertexShader = {{ MainCode V [[ float4 main() : SV_POSITION {{ return 0; }} ]] }}\nPixelShader = {{\n{declaration}\nMainCode P [[ float4 main() : SV_TARGET {{ return 1; }} ]] }}\nEffect Up {{ VertexShader = V PixelShader = P }}\n"
         );
-        let program = installed_content::pdxshader::program::read_with("limits.shader", &|path| {
-            Some(if path == "limits.shader" {
+        let program = installed_content::pdxshader::program::read_with(b"limits.shader", &|path| {
+            Some(if path == b"limits.shader" {
                 source.as_bytes().to_vec()
             } else {
                 Vec::new()
@@ -449,6 +449,110 @@ Effect Raw { VertexShader = V PixelShader = Raw }
             reason.contains(register) && reason.contains("exceeds D3D11"),
             "{reason}"
         );
+    }
+}
+
+/// The sprite constants `CSpriteType::draw@14222D5A0` binds to `b0` of both stages, as
+/// `buttonstate.fxh` declares them: `Time` at byte 96, `AnimationTime` at 100.
+const SPRITE_CONSTANTS: &str = "ConstantBuffer( 0, 0 ) { float4x4 WorldViewProjectionMatrix;\nfloat4 Color;\nfloat2 Offset;\nfloat2 NextOffset;\nfloat Time;\nfloat AnimationTime;\n};\n";
+
+/// Each compiled program answers for itself how long it changes after its restart: not at all
+/// without `Time` (`AnimationTime` alone is fixed); until its saturating function of
+/// `Time - AnimationTime` saturates (on the way down too, through `smoothstep`, and through a
+/// local variable, a loop and a branch that does not read the clock; a `step` going down only
+/// past its edge); never for `Time` read otherwise, in either stage, as a moment rather than a
+/// duration, or deciding a `discard`.
+#[test]
+#[ignore = "requires a shader compiler"]
+fn compiled_programs_answer_how_long_they_change() {
+    let source = format!(
+        r#"
+VertexStruct VS_INPUT {{ float3 vPosition : POSITION;
+float2 vTexCoord : TEXCOORD0;
+}};
+VertexStruct VS_OUTPUT {{ float4 vPosition : PDX_POSITION;
+float2 vTexCoord : TEXCOORD0;
+}};
+{SPRITE_CONSTANTS}
+VertexShader = {{
+MainCode Plain [[ VS_OUTPUT main(const VS_INPUT v) {{ VS_OUTPUT Out; Out.vPosition = mul(WorldViewProjectionMatrix, float4(v.vPosition.xyz, 1)); Out.vTexCoord = v.vTexCoord + Offset; return Out; }} ]]
+MainCode Wobble [[ VS_OUTPUT main(const VS_INPUT v) {{ VS_OUTPUT Out; Out.vPosition = mul(WorldViewProjectionMatrix, float4(v.vPosition.xyz + sin(Time), 1)); Out.vTexCoord = v.vTexCoord; return Out; }} ]]
+}}
+PixelShader = {{
+MainCode Still [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * AnimationTime; }} ]]
+MainCode Shade [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ float t = 0.9 - saturate((Time - AnimationTime) * 4); t *= t; return Color * (0.81 - t); }} ]]
+MainCode Fade [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * (1 - smoothstep(0.0, 2.0, Time - AnimationTime)); }} ]]
+MainCode Looped [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ float4 c = Color; float s = saturate((Time - AnimationTime) * 16); for (int i = 0; i < 3; ++i) {{ if (v.vTexCoord.x > 0.5) c.rgb *= s; }} return c; }} ]]
+MainCode Pulse [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * sin(Time); }} ]]
+MainCode Moment [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * saturate(Time * 4); }} ]]
+MainCode Gate [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ if (Time - AnimationTime > 0.5) discard; return Color; }} ]]
+MainCode Drop [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * step(0.0, AnimationTime - Time); }} ]]
+MainCode Rise [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * step(0.5, Time - AnimationTime); }} ]]
+}}
+Effect Still {{ VertexShader = Plain PixelShader = Still }}
+Effect Shade {{ VertexShader = Plain PixelShader = Shade }}
+Effect Fade {{ VertexShader = Plain PixelShader = Fade }}
+Effect Looped {{ VertexShader = Plain PixelShader = Looped }}
+Effect Pulse {{ VertexShader = Plain PixelShader = Pulse }}
+Effect Moment {{ VertexShader = Plain PixelShader = Moment }}
+Effect Gate {{ VertexShader = Plain PixelShader = Gate }}
+Effect Wobble {{ VertexShader = Wobble PixelShader = Still }}
+Effect Drop {{ VertexShader = Plain PixelShader = Drop }}
+Effect Rise {{ VertexShader = Plain PixelShader = Rise }}
+"#
+    );
+    let program =
+        installed_content::pdxshader::program::read_with(b"gfx/FX/clock.lua", &|path| match path {
+            b"gfx/FX/clock.shader" => Some(source.as_bytes().to_vec()),
+            b"gfx/FX/defines_hlsl_dx11.fxh" => {
+                Some(b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let compiler = Compiler::discover().unwrap();
+    let settles = |name| {
+        compiler
+            .compile(&program, program.technique(name).unwrap(), &[])
+            .unwrap()
+            .settles(0, 96, 100)
+    };
+    assert_eq!(settles("Still"), Some(0.0));
+    assert_eq!(settles("Shade"), Some(0.25));
+    assert_eq!(settles("Fade"), Some(2.0));
+    assert_eq!(settles("Looped"), Some(1.0 / 16.0));
+    // `step` is `x >= edge`: 1 at the restart going down, 0 only after it; going up, final at
+    // its edge.
+    assert_eq!(settles("Drop"), Some(0.0_f32.next_up()));
+    assert_eq!(settles("Rise"), Some(0.5));
+    for name in ["Pulse", "Moment", "Gate", "Wobble"] {
+        assert_eq!(settles(name), None, "{name}");
+    }
+}
+
+/// The game's own `buttonstate.shader`, compiled: `Over` shades for a quarter second, `Down` for
+/// a sixteenth (`saturate((Time - AnimationTime) * 4)` and `* 16`), `Up` and `Disable` not at
+/// all, with or without `MASKING`.
+#[test]
+#[ignore = "requires installed content and a shader compiler; set BATTLE_PLAN_GAME_DIR"]
+fn vanilla_button_states_settle_as_their_programs_say() {
+    let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
+    let program = installed_content::pdxshader::program::read_with(b"gfx/FX/buttonstate.lua", &|path| {
+        std::fs::read(root.join(String::from_utf8_lossy(path).as_ref())).ok()
+    })
+    .unwrap();
+    let compiler = Compiler::discover().unwrap();
+    for defines in [vec![], vec!["MASKING".to_owned()]] {
+        let settles = |name| {
+            compiler
+                .compile(&program, program.technique(name).unwrap(), &defines)
+                .unwrap()
+                .settles(0, 96, 100)
+        };
+        assert_eq!(settles("Up"), Some(0.0));
+        assert_eq!(settles("Disable"), Some(0.0));
+        assert_eq!(settles("Over"), Some(0.25));
+        assert_eq!(settles("Down"), Some(1.0 / 16.0));
     }
 }
 
@@ -476,9 +580,9 @@ float4 main(OUTPUT v) : PDX_COLOR { return float4(v.uv.x, v.uv.y, C.b, 1); }
 ]] }
 Effect Mod { VertexShader = V PixelShader = P }
 "#;
-    let program = installed_content::pdxshader::program::read_with(effect, &|path| match path {
-        "gfx/FX/arbitrary-mod.shader" => Some(source.as_bytes().to_vec()),
-        "gfx/FX/defines_hlsl_dx11.fxh" => {
+    let program = installed_content::pdxshader::program::read_with(effect.as_bytes(), &|path| match path {
+        b"gfx/FX/arbitrary-mod.shader" => Some(source.as_bytes().to_vec()),
+        b"gfx/FX/defines_hlsl_dx11.fxh" => {
             Some(b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec())
         }
         _ => None,
@@ -504,6 +608,7 @@ Effect Mod { VertexShader = V PixelShader = P }
             &state,
             wgpu::TextureFormat::Rgba8Unorm,
             1,
+            wgpu::PrimitiveTopology::TriangleList,
         )
         .unwrap();
     let second = cache
@@ -513,6 +618,7 @@ Effect Mod { VertexShader = V PixelShader = P }
             &state,
             wgpu::TextureFormat::Rgba8Unorm,
             1,
+            wgpu::PrimitiveTopology::TriangleList,
         )
         .unwrap();
     assert!(std::sync::Arc::ptr_eq(&pipeline, &second));
@@ -593,6 +699,7 @@ Effect Mod { VertexShader = V PixelShader = P }
                 bytemuck::cast_slice(&vertices),
                 20,
                 vertices.len(),
+                wgpu::PrimitiveTopology::TriangleList,
                 wgpu::TextureFormat::Rgba8Unorm,
                 1,
             )
@@ -710,7 +817,7 @@ pub(crate) fn render_with(
 fn arbitrary_map_pass_layouts_registers_and_volume_texture() {
     use wgpu::util::DeviceExt;
     let _serial = GPU_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-    let program = installed_content::pdxshader::program::read_with("arbitrary.shader", &|p| Some(if p == "arbitrary.shader" {
+    let program = installed_content::pdxshader::program::read_with(b"arbitrary.shader", &|p| Some(if p == b"arbitrary.shader" {
         br#"VertexStruct I { float2 position : POSITION;
 uint flag : FLAGS;
 };
@@ -1057,8 +1164,8 @@ fn installed_vanilla_persistent_cache_across_processes() {
     let (mut selected, mut failures) = (0, Vec::new());
     for name in &files {
         let program = std::sync::Arc::new(
-            installed_content::pdxshader::program::read_with(&format!("gfx/FX/{name}"), &|p| {
-                std::fs::read(root.join(p)).ok()
+            installed_content::pdxshader::program::read_with(format!("gfx/FX/{name}").as_bytes(), &|p| {
+                std::fs::read(root.join(String::from_utf8_lossy(p).as_ref())).ok()
             })
             .unwrap(),
         );
@@ -1103,8 +1210,8 @@ fn installed_vanilla_persistent_cache_across_processes() {
 
 #[test]
 fn authored_samplers_preserve_independent_vertex_and_pixel_slots() {
-    let program = installed_content::pdxshader::program::read_with("stages.shader", &|p| {
-        Some(if p == "stages.shader" {
+    let program = installed_content::pdxshader::program::read_with(b"stages.shader", &|p| {
+        Some(if p == b"stages.shader" {
             br#"VertexShader = { Samplers = { Height { Index = 2 AddressU = Wrap } } }
 PixelShader = { Samplers = { Color { Index = 2 AddressU = Clamp } } }
 Effect Pass { VertexShader = V PixelShader = P }

@@ -1084,6 +1084,14 @@ impl Viewer {
             warnings.extend(overlay.raid_report().warnings());
         }
         warnings.extend(self.counter_report.warnings());
+        if let Some(scene) = &self.scene {
+            warnings.extend(
+                scene
+                    .shader_refusals()
+                    .iter()
+                    .map(|(reason, count)| format!("GUI shader: {count} refused draws: {reason}")),
+            );
+        }
         // The recorded naval engaged bytes against the flag derived for the recording's
         // player, over the hours the engaged index has folded so far.
         if let Some(Ok(index)) = self

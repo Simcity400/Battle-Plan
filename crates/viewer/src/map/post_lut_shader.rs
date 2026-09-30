@@ -21,7 +21,7 @@ fn refuse(reason: impl Into<String>) -> io::Error {
 pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
     let (mut library, defines) = fullscreen::library(layers, map);
     library
-        .load("gfx/FX/lut_blender.shader", &defines)
+        .load(b"gfx/FX/lut_blender.shader", &defines)
         .map_err(refuse)
 }
 

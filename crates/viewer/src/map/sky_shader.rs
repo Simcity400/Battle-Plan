@@ -14,7 +14,7 @@ fn refuse(reason: impl Into<String>) -> io::Error {
 pub fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
     let (mut library, defines) = super::shader_sources::library(layers, map);
     // Fixed effect and technique registered by141261100.
-    library.load("gfx/FX/sky.shader", &defines).map_err(refuse)
+    library.load(b"gfx/FX/sky.shader", &defines).map_err(refuse)
 }
 
 pub struct Sky {

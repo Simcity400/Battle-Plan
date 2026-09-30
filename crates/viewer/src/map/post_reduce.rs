@@ -27,14 +27,14 @@ pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Assets>
     let (mut library, mut defines) = fullscreen::library(layers, map);
     // 140FF1410 registers both reductions; their blend is retained from seed.
     let seed = library
-        .load("gfx/FX/downsample.shader", &defines)
+        .load(b"gfx/FX/downsample.shader", &defines)
         .map_err(refuse)?;
     let normal = library
-        .load("gfx/FX/downsample_luminance.shader", &defines)
+        .load(b"gfx/FX/downsample_luminance.shader", &defines)
         .map_err(refuse)?;
     defines.push("LUMINANCE_SAMPLE_ALPHA".into());
     let alpha = library
-        .load("gfx/FX/downsample_luminance.shader", &defines)
+        .load(b"gfx/FX/downsample_luminance.shader", &defines)
         .map_err(refuse)?;
     Ok(Assets {
         seed,

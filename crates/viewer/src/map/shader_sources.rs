@@ -6,13 +6,21 @@ use std::{cell::RefCell, collections::BTreeMap, collections::BTreeSet, io, sync:
 
 use installed_content::{ResolvedLayers, pdxshader};
 
+/// The renderer's global defines for the map passes (`derive_map_shader_constants@140A4DDE0`).
+/// The map passes are ported for `force_pow2_textures = no` only (their textures unpadded:
+/// `textures::SNOW_MUD_BLOCK`, `FOW_BLOCK`), so they take that branch of the power-of-two
+/// scales; the GUI takes the client's own setting (`GuiResources::new`).
+pub fn globals(map: [u32; 2]) -> Vec<String> {
+    shader_pipeline::library::globals(map, installed_content::image::native::Decode::default())
+}
+
 /// 140A4DDE0 populates the renderer's global defines; 1423F4EC0 prepends them
 /// even when a pass's registration supplies no additional caller defines.
 pub fn library(
     layers: &ResolvedLayers,
     map: [u32; 2],
 ) -> (shader_pipeline::library::Library, Vec<String>) {
-    let defines = shader_pipeline::library::globals(map);
+    let defines = globals(map);
     (
         shader_pipeline::library::Library::new(Arc::new(layers.clone())),
         defines,

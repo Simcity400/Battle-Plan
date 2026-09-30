@@ -18,7 +18,7 @@ fn refuse(reason: impl Into<String>) -> io::Error {
 pub fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
     let (mut library, defines) = super::shader_sources::library(layers, map);
     library
-        .load("gfx/FX/border.shader", &defines)
+        .load(b"gfx/FX/border.shader", &defines)
         .map_err(refuse)
 }
 

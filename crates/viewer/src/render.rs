@@ -257,6 +257,24 @@ pub fn device_requirements(features: wgpu::Features) -> Vec<String> {
                 .to_owned(),
         );
     }
+    // The compiled GUI and map effects' own states (`shader_pipeline::gpu`): a program the
+    // device cannot build is refused by name where it is drawn.
+    if !features.contains(wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER) {
+        missing.push(
+            "the adapter lacks ADDRESS_MODE_CLAMP_TO_BORDER: compiled effects whose samplers \
+             address with Border are not drawn on this device (a viewer hardware requirement, \
+             not missing replay data)"
+                .to_owned(),
+        );
+    }
+    if !features.contains(wgpu::Features::DUAL_SOURCE_BLENDING) {
+        missing.push(
+            "the adapter lacks DUAL_SOURCE_BLENDING: compiled effects whose blend state reads \
+             the second source colour are not drawn on this device (a viewer hardware \
+             requirement, not missing replay data)"
+                .to_owned(),
+        );
+    }
     missing
 }
 
@@ -296,14 +314,20 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     crate::map::atlas_pages::record_device_limit(limits.max_texture_dimension_2d);
     // FLOAT32_FILTERABLE when the adapter offers it: a 16-bit GUI texture goes up as exact
     // `f32` channels, which the filtering samplers take only with it (`map::textures`); without
-    // it such a texture is not drawn, never quantized: a viewer hardware requirement, named
-    // here once at start-up and in the diagnostics ([`device_requirements`]).
-    for requirement in device_requirements(adapter.features()) {
-        static NAMED: std::sync::Once = std::sync::Once::new();
-        NAMED.call_once(|| eprintln!("Warning: {requirement}"));
-    }
+    // it such a texture is not drawn, never quantized. Clamp-to-border and dual-source blending
+    // when offered: compiled effects that author them are refused without them. Each missing
+    // one is a viewer hardware requirement, named here once at start-up and in the diagnostics
+    // ([`device_requirements`]).
+    static NAMED: std::sync::Once = std::sync::Once::new();
+    NAMED.call_once(|| {
+        for requirement in device_requirements(adapter.features()) {
+            eprintln!("Warning: {requirement}");
+        }
+    });
     let mut wanted = wgpu::Features::TEXTURE_COMPRESSION_BC
         | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
+        | wgpu::Features::DUAL_SOURCE_BLENDING
         // Compiled map shaders sample the native RGBA32F point-light texture.
         | wgpu::Features::FLOAT32_FILTERABLE;
     // Profiling only: per-pass GPU timestamps (`map::gpu_passes`).
@@ -534,6 +558,7 @@ fn read_texture(
 
 /// What one headless render reports back.
 pub struct DumpReport {
+    pub shader_refusals: std::collections::BTreeMap<String, u64>,
     /// Adapter name and backend, so a dump identifies the GPU it used.
     pub adapter: String,
     /// The device's missing feature requirements ([`device_requirements`]).
@@ -756,6 +781,7 @@ pub fn dump_png(
         }
         let grid = scene.grid();
         let report = DumpReport {
+            shader_refusals: scene.shader_refusals().clone(),
             adapter: format!("{} ({:?})", info.name, info.backend),
             device_requirements: device_requirements(device.features()),
             render_seconds,
@@ -899,11 +925,15 @@ mod tests {
     use wgpu::{Backend, DeviceType};
 
     /// A device without `FLOAT32_FILTERABLE` is named, with what it costs, as a viewer hardware
-    /// requirement: the line start-up logs and the diagnostics carry. A device with it has none.
+    /// requirement: the line start-up logs and the diagnostics carry. A device with it and the
+    /// compiled effects' optional states has none.
     #[test]
     fn a_missing_float32_filtering_feature_is_named_as_a_device_requirement() {
-        assert!(device_requirements(wgpu::Features::FLOAT32_FILTERABLE).is_empty());
-        let named = device_requirements(wgpu::Features::TEXTURE_COMPRESSION_BC);
+        let all = wgpu::Features::FLOAT32_FILTERABLE
+            | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
+            | wgpu::Features::DUAL_SOURCE_BLENDING;
+        assert!(device_requirements(all).is_empty());
+        let named = device_requirements(all - wgpu::Features::FLOAT32_FILTERABLE);
         assert_eq!(named.len(), 1);
         for part in [
             "FLOAT32_FILTERABLE",
@@ -913,6 +943,28 @@ mod tests {
         ] {
             assert!(named[0].contains(part), "{part}: {}", named[0]);
         }
+    }
+
+    /// The compiled effects' optional device states, clamp-to-border sampling and dual-source
+    /// blending, are named the same way when the device lacks them: effects that author them
+    /// are refused where they are drawn.
+    #[test]
+    fn missing_compiled_effect_states_are_named_as_device_requirements() {
+        let all = wgpu::Features::FLOAT32_FILTERABLE
+            | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
+            | wgpu::Features::DUAL_SOURCE_BLENDING;
+        for (feature, name) in [
+            (
+                wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER,
+                "ADDRESS_MODE_CLAMP_TO_BORDER",
+            ),
+            (wgpu::Features::DUAL_SOURCE_BLENDING, "DUAL_SOURCE_BLENDING"),
+        ] {
+            let named = device_requirements(all - feature);
+            assert_eq!(named.len(), 1, "{named:?}");
+            assert!(named[0].contains(name) && named[0].contains("hardware requirement"));
+        }
+        assert_eq!(device_requirements(wgpu::Features::empty()).len(), 3);
     }
 
     fn adapter(name: &str, device_type: DeviceType, backend: Backend) -> AdapterCandidate {

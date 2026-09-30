@@ -1,8 +1,8 @@
 use super::*;
 
 fn program(source: &str) -> installed_content::pdxshader::program::Program {
-    installed_content::pdxshader::program::read_with("arena.shader", &|path| {
-        Some(if path == "arena.shader" {
+    installed_content::pdxshader::program::read_with(b"arena.shader", &|path| {
+        Some(if path == b"arena.shader" {
             source.as_bytes().to_vec()
         } else {
             Vec::new()

@@ -26,10 +26,10 @@ pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Assets>
     let (mut library, defines) = fullscreen::library(layers, map);
     Ok(Assets {
         seed: library
-            .load("gfx/FX/downsample.shader", &defines)
+            .load(b"gfx/FX/downsample.shader", &defines)
             .map_err(refuse)?,
         luminance: library
-            .load("gfx/FX/downsample_luminance.shader", &defines)
+            .load(b"gfx/FX/downsample_luminance.shader", &defines)
             .map_err(refuse)?,
     })
 }

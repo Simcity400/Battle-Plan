@@ -30,7 +30,7 @@ pub(super) fn run(
             defines.push("PDX_MESH_UV1".into());
         }
         let effect = library
-            .load("gfx/FX/pdxmesh.lua", &defines)
+            .load(b"gfx/FX/pdxmesh.lua", &defines)
             .map_err(io::Error::other)?;
         for (case, joints, weights) in [
             ("ordinary", [0, 1, 2, 3], [0.125, 0.25, 0.125, 0.5]),

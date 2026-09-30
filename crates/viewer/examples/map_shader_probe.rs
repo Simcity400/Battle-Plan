@@ -122,7 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 140A4DDE0 derives the dimensions from the province raster. The DX11 NPOT
     // branch supplies 1 for the four ratios; no vanilla map dimensions are embedded.
     let map_size = [provinces.width, provinces.height];
-    let defines = shader_pipeline::library::globals(map_size);
+    let defines = shader_sources::globals(map_size);
     drop(provinces);
     let cache = shader_pipeline::cache::Cache::default();
     let gpu = bindings::Probe::new().map_err(io::Error::other)?;
@@ -130,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut failures = 0;
     let mut binding_failures = 0;
     for (source_index, effect) in effects.iter().enumerate() {
-        let source = match program::read(&layers, effect) {
+        let source = match program::read(&layers, effect.as_bytes()) {
             Ok(source) => source,
             Err(reason) => {
                 failures += 1;

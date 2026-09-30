@@ -84,7 +84,7 @@ fn fail(reason: impl ToString) -> io::Error {
 
 pub fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
     let (mut library, defines) = super::shader_sources::library(layers, map);
-    library.load("gfx/FX/particle.lua", &defines).map_err(fail)
+    library.load(b"gfx/FX/particle.lua", &defines).map_err(fail)
 }
 
 pub fn layouts(inputs: &[VertexInput], trail: bool) -> io::Result<Vec<gpu::VertexLayout>> {

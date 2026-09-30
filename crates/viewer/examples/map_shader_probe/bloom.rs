@@ -22,7 +22,7 @@ pub(super) fn run(
     cache: &Cache,
     output: &Path,
 ) -> io::Result<Value> {
-    let source = program::read(layers, "gfx/FX/bloom.shader").map_err(fail)?;
+    let source = program::read(layers, b"gfx/FX/bloom.shader").map_err(fail)?;
     let index = source
         .techniques
         .iter()

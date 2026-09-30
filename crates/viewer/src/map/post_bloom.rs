@@ -19,7 +19,7 @@ pub(super) fn load(layers: &ResolvedLayers, map: MapSize) -> io::Result<Arc<Effe
     let (mut library, defines) = fullscreen::library(layers, [map.width, map.height]);
     // 140FF1410 registers this effect and the `bloom` technique.
     library
-        .load("gfx/FX/bloom.shader", &defines)
+        .load(b"gfx/FX/bloom.shader", &defines)
         .map_err(refuse)
 }
 

@@ -274,7 +274,7 @@ fn mesh_writers(
     let device = arena.device();
     let (mut library, defines) = shader_sources::library(layers, map);
     let effect = library
-        .load("gfx/FX/pdxmesh.lua", &defines)
+        .load(b"gfx/FX/pdxmesh.lua", &defines)
         .map_err(io::Error::other)?;
     let mut sub = installed_content::mesh::SubMesh::default();
     for [x, y] in [

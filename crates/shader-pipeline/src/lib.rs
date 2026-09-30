@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf, process::Command};
 use installed_content::pdxshader::program::{Program, Stage, Technique};
 
 pub mod cache;
+pub mod clock;
 pub mod gpu;
 pub mod library;
 mod reads;
@@ -80,12 +81,29 @@ pub struct Shader {
     /// Actual image/sampler pairs, including pairs whose register numbers differ.
     pub sampling_pairs: Vec<(u32, u32)>,
     pub inputs: Vec<VertexInput>,
+    /// How the stage's output depends on its constant buffers, read from the program.
+    pub clock: clock::Clock,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Compiled {
     pub vertex: Shader,
     pub pixel: Shader,
+}
+
+impl Compiled {
+    /// Seconds after its restart past which the draw no longer changes on the clock alone, when
+    /// constant buffer `register` holds the clock at byte `time` and the restart at `since` in
+    /// both stages (the sprite constants `CSpriteType::draw@14222D5A0` binds to each): the
+    /// longer stage's [`clock::Clock::settles`]; `None` while either keeps changing.
+    pub fn settles(&self, register: u32, time: u32, since: u32) -> Option<f32> {
+        let mut settles = 0.0_f32;
+        for (stage, shader) in [(Stage::Vertex, &self.vertex), (Stage::Pixel, &self.pixel)] {
+            let binding = binding(register, stage);
+            settles = settles.max(shader.clock.settles((binding, time), (binding, since))?);
+        }
+        Some(settles)
+    }
 }
 
 /// `dxc --version` of the official v1.9.2607 release that tools/install-shader-compiler.ps1
@@ -374,6 +392,7 @@ fn translate(
         samplers: Vec::new(),
         sampling_pairs: Vec::new(),
         inputs: Vec::new(),
+        clock: clock::analyse(&module, &info),
     };
     let mut read_ranges = reads::reflect(&module, &info);
     for (_, variable) in module.global_variables.iter() {

@@ -21,8 +21,8 @@ PixelShader = { MainCode P [[ float4 main(O v) : SV_TARGET { return v.color; } ]
 RasterizerState Raster { CullMode = "none" }
 Effect AuthoredTrail { VertexShader = V PixelShader = P RasterizerState = Raster }
 "#;
-    let program = installed_content::pdxshader::program::read_with("fixture.shader", &|p| {
-        Some(if p == "fixture.shader" {
+    let program = installed_content::pdxshader::program::read_with(b"fixture.shader", &|p| {
+        Some(if p == b"fixture.shader" {
             source.to_vec()
         } else {
             Vec::new()

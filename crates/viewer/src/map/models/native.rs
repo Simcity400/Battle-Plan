@@ -384,7 +384,8 @@ fn select(library: &mut Library, part: &Part, caster: bool) -> io::Result<Select
             part.material
                 .shader_file
                 .as_deref()
-                .unwrap_or("gfx/FX/pdxmesh.lua"),
+                .unwrap_or("gfx/FX/pdxmesh.lua")
+                .as_bytes(),
             &defines,
         )
         .map_err(invalid)?;
@@ -404,7 +405,7 @@ fn select(library: &mut Library, part: &Part, caster: bool) -> io::Result<Select
     }
     //14208CA80/142251E30 install the fallback without material UV defines.
     library
-        .load("gfx/FX/pdxmesh.lua", &[])
+        .load(b"gfx/FX/pdxmesh.lua", &[])
         .map_err(invalid)?
         .select(&format!("PdxMeshColor{suffix}"))
         .map_err(invalid)?
@@ -425,7 +426,8 @@ fn select_alpha(library: &mut Library, part: &Part) -> io::Result<Selection> {
             part.material
                 .shader_file
                 .as_deref()
-                .unwrap_or("gfx/FX/pdxmesh.lua"),
+                .unwrap_or("gfx/FX/pdxmesh.lua")
+                .as_bytes(),
             &defines,
         )
         .map_err(invalid)?;
@@ -568,7 +570,7 @@ impl ModelPass {
                 .ok_or_else(|| invalid("mesh content stack unavailable"))?;
             *native = Some(Renderer {
                 library: Library::new(layers.clone()).with_globals(
-                    shader_pipeline::library::globals([
+                    super::super::shader_sources::globals([
                         frame.camera.map.width,
                         frame.camera.map.height,
                     ]),

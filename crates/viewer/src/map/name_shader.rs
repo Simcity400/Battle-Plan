@@ -24,7 +24,7 @@ fn refuse(pass: &str, reason: impl Into<String>) -> io::Error {
 pub fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
     let (mut library, defines) = super::shader_sources::library(layers, map);
     library
-        .load("gfx/FX/mapname.shader", &defines)
+        .load(b"gfx/FX/mapname.shader", &defines)
         .map_err(|error| refuse("country names", error))
 }
 

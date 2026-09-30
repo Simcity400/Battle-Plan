@@ -254,6 +254,8 @@ pub struct Cache {
 }
 
 impl Cache {
+    /// The packed pipeline of `selection` drawing `topology` (the draw's
+    /// `GfxSetPrimitiveTopology@1424002E0`); each topology is its own pipeline.
     pub fn get(
         &mut self,
         device: &wgpu::Device,
@@ -261,14 +263,12 @@ impl Cache {
         state: &State,
         format: wgpu::TextureFormat,
         samples: u32,
+        topology: wgpu::PrimitiveTopology,
     ) -> Result<Arc<Pipeline>, String> {
         let compiled = selection.effect.compiled(selection.index)?;
-        self.get_pass(
-            device,
-            selection,
-            state,
-            &Pass::packed(&compiled, state, format, samples),
-        )
+        let mut pass = Pass::packed(&compiled, state, format, samples);
+        pass.primitive.topology = topology;
+        self.get_pass(device, selection, state, &pass)
     }
 
     pub fn get_pass(

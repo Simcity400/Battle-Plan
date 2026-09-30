@@ -23,6 +23,9 @@
 
 use std::{collections::HashMap, io, sync::Arc};
 
+#[cfg(test)]
+pub(super) mod oracle;
+
 use eframe::wgpu;
 use installed_content::{ResolvedLayers, gfx, image::dds};
 
@@ -208,7 +211,7 @@ pub fn decode_sheet(
 }
 
 /// One textured quad in device pixels.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Quad {
     /// Texture id in [`MapIcons::images`].
     pub texture: usize,
@@ -242,8 +245,9 @@ pub struct Quad {
 /// and its effect's program runs with the effect's sampler state (see
 /// [`super::native_effects`]). `Quad::texture` is slot 0 and `Quad::color` the program's `Color`
 /// (a progress bar's first colour, a glyph's vertex colour).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Exact {
+    pub native: Option<Arc<super::native_shader::draw::Quad>>,
     /// Where the vertices land, in interface pixels.
     pub corners: [[f32; 2]; 4],
     /// Each vertex's texture coordinate as the vertex buffer holds it (before `Offset`).
@@ -580,6 +584,7 @@ struct Vertex {
 /// vertex buffer holds it and its masking coordinate, then the draw's constants.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[cfg(test)]
 struct ExactVertex {
     position: [f32; 2],
     uv: [f32; 2],
@@ -625,8 +630,16 @@ impl IconTextures {
 
     /// Uploads every page of `icons`.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, icons: &MapIcons) -> io::Result<Self> {
-        let mut bound = Vec::with_capacity(icons.images.len());
-        for (index, image) in icons.images.iter().enumerate() {
+        Self::from_images(device, queue, &icons.images)
+    }
+
+    fn from_images(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        images: &[dds::Texture],
+    ) -> io::Result<Self> {
+        let mut bound = Vec::with_capacity(images.len());
+        for (index, image) in images.iter().enumerate() {
             bound.push(upload(
                 device,
                 queue,
@@ -705,16 +718,20 @@ enum Pipe {
     /// The snapped screen-space sprites.
     Legacy,
     /// [`Exact`] quads, blended or not.
+    #[cfg(test)]
     Exact(super::native_effects::Blend),
+    Native(usize),
 }
 
 /// The textures an exact run binds: slot 0, slot 1 and the masking slot.
+#[cfg(test)]
 type Slots = [usize; 3];
 
 /// One run of consecutive vertices sharing a pipeline, its textures and a scissor.
 struct Run {
     pipe: Pipe,
     texture: usize,
+    #[cfg(test)]
     slots: Slots,
     scissor: Option<[u32; 4]>,
     range: std::ops::Range<u32>,
@@ -732,19 +749,31 @@ pub const NO_TEXTURE: usize = usize::MAX;
 
 /// The screen-space pipeline and the frame's vertices.
 pub struct SpritePass {
+    native: super::native_shader::stream::Stream,
+    native_draws: Vec<super::native_shader::stream::Submission>,
+    native_format: wgpu::TextureFormat,
+    native_samples: u32,
+    bakes: Vec<CachedBake>,
+    bake_stream: super::native_shader::stream::Stream,
+    /// Refusals of the most recent frame, by effect/path/compiler reason.
+    pub native_refusals: std::collections::BTreeMap<String, u64>,
     pipeline: wgpu::RenderPipeline,
     bind_groups: Vec<wgpu::BindGroup>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// [`Exact`] quads: blended (`src_alpha`, `inv_src_alpha`) and not.
+    #[cfg(test)]
     exact_alpha: wgpu::RenderPipeline,
+    #[cfg(test)]
     exact_off: wgpu::RenderPipeline,
+    #[cfg(test)]
     exact_layout: wgpu::BindGroupLayout,
     /// The static pages' views, which exact bind groups combine.
     views: Vec<wgpu::TextureView>,
     /// One transparent texel for an empty slot.
     empty: Bound,
     /// Exact bind groups by their slots, rebuilt when the lazy textures change.
+    #[cfg(test)]
     exact_groups: HashMap<Slots, wgpu::BindGroup>,
     /// The content's lazy textures, mirrored into `dynamic` by [`SpritePass::sync`].
     lazy: Arc<LazyTextures>,
@@ -754,7 +783,9 @@ pub struct SpritePass {
     failed: HashMap<usize, u64>,
     vertices: wgpu::Buffer,
     capacity: u64,
+    #[cfg(test)]
     exact_vertices: wgpu::Buffer,
+    #[cfg(test)]
     exact_capacity: u64,
     runs: Vec<Run>,
     count: u32,
@@ -839,6 +870,7 @@ impl SpritePass {
             multiview_mask: None,
             cache: None,
         });
+        #[cfg(test)]
         let exact_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("exact sprite textures"),
             entries: &[0, 1, 2].map(|binding| {
@@ -849,16 +881,19 @@ impl SpritePass {
                 )
             }),
         });
+        #[cfg(test)]
         let exact_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("exact sprites"),
             source: wgpu::ShaderSource::Wgsl(EXACT_SHADER.into()),
         });
+        #[cfg(test)]
         let exact_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("exact sprites"),
                 bind_group_layouts: &[Some(&exact_layout)],
                 immediate_size: 0,
             });
+        #[cfg(test)]
         let exact = |label, blend: Option<wgpu::BlendState>| {
             let targets = target(blend);
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -899,7 +934,9 @@ impl SpritePass {
         };
         // `src_alpha` over `inv_src_alpha` on colour; the write mask keeps the target's alpha,
         // so an effect's alpha operation (`text.shader`'s `BlendOpAlpha = max`) writes nothing.
+        #[cfg(test)]
         let exact_alpha = exact("exact sprites", Some(wgpu::BlendState::ALPHA_BLENDING));
+        #[cfg(test)]
         let exact_off = exact("exact sprites, no blending", None);
         let empty = upload(
             device,
@@ -913,12 +950,22 @@ impl SpritePass {
             ColorSpace::Linear,
         )?;
         Ok(Self {
+            native: Default::default(),
+            native_draws: Vec::new(),
+            bakes: Vec::new(),
+            bake_stream: Default::default(),
+            native_format: format,
+            native_samples: samples,
+            native_refusals: Default::default(),
             pipeline,
             bind_groups,
             layout,
             sampler: textures.screen_clamp().clone(),
+            #[cfg(test)]
             exact_alpha,
+            #[cfg(test)]
             exact_off,
+            #[cfg(test)]
             exact_layout,
             views: textures
                 .bound
@@ -926,6 +973,7 @@ impl SpritePass {
                 .map(|texture| texture.view.clone())
                 .collect(),
             empty,
+            #[cfg(test)]
             exact_groups: HashMap::new(),
             lazy: Arc::clone(lazy),
             synced: None,
@@ -933,7 +981,9 @@ impl SpritePass {
             failed: HashMap::new(),
             vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<Vertex>()),
             capacity: INITIAL_VERTICES,
+            #[cfg(test)]
             exact_vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<ExactVertex>()),
+            #[cfg(test)]
             exact_capacity: INITIAL_VERTICES,
             runs: Vec::new(),
             count: 0,
@@ -1012,6 +1062,7 @@ impl SpritePass {
             );
         }
         // A combination may name a page that changed or left.
+        #[cfg(test)]
         self.exact_groups.clear();
         self.synced = Some(version);
     }
@@ -1034,6 +1085,7 @@ impl SpritePass {
     }
 
     /// Makes the exact bind group of `slots`; `false` when a slot's texture is not resident.
+    #[cfg(test)]
     fn exact_group(&mut self, device: &wgpu::Device, slots: Slots) -> bool {
         if self.exact_groups.contains_key(&slots) {
             return true;
@@ -1062,21 +1114,33 @@ impl SpritePass {
         true
     }
 
-    /// Turns one frame's quads into vertices, grouped by texture.
+    /// Turns one frame's quads into vertices, grouped by texture. Compiled GUI draws upload
+    /// their constants and vertices through `arena`, the frame's one
+    /// [`shader_pipeline::gpu::Arena`] the map passes share; the caller flushes it before
+    /// submitting the commands that draw them and resets it before the next frame.
     ///
     /// `batch` is in interface pixels and `ui_scale` device pixels per
     /// interface pixel; see [`device_corners`] for the snapping and
     /// [`filter_mode`] for the sampling. [`Exact`] quads are not snapped, keep their push
     /// order within their layer and are cut by their scissor.
+    #[allow(clippy::too_many_arguments)]
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        arena: &shader_pipeline::gpu::Arena,
         batch: &Batch,
         size: [u32; 2],
         ui_scale: f32,
     ) {
         self.runs.clear();
+        self.native_draws.clear();
+        for bake in &mut self.bakes {
+            bake.used = false;
+        }
+        self.native_refusals.clear();
+        self.native.refused.clear();
+        self.native.invalidate_bindings();
         self.count = 0;
         self.exact_count = 0;
         // The lazy textures this frame draws stay pinned in their LRU.
@@ -1087,13 +1151,33 @@ impl SpritePass {
                 .flat_map(|quad| {
                     let exact = quad
                         .exact
+                        .as_ref()
                         .map_or([None, None], |exact| [exact.second, exact.masking]);
-                    std::iter::once(Some(quad.texture)).chain(exact).flatten()
+                    let native = quad
+                        .exact
+                        .as_ref()
+                        .and_then(|e| e.native.as_ref())
+                        .into_iter()
+                        .flat_map(|draw| {
+                            draw.textures
+                                .iter()
+                                .chain(
+                                    draw.bake
+                                        .iter()
+                                        .flat_map(|b| b.draws.iter().flat_map(|d| &d.textures)),
+                                )
+                                .filter_map(|(_, id)| *id)
+                        });
+                    std::iter::once(Some(quad.texture))
+                        .chain(exact)
+                        .flatten()
+                        .chain(native)
                 })
                 .filter(|texture| *texture >= DYNAMIC_BASE)
                 .collect::<std::collections::BTreeSet<_>>(),
         );
         if batch.is_empty() || size[0] == 0 || size[1] == 0 {
+            self.bakes.clear();
             return;
         }
         let mut order: Vec<usize> = (0..batch.quads.len()).collect();
@@ -1115,66 +1199,119 @@ impl SpritePass {
         let height = size[1] as f32;
         let clip = |x: f32, y: f32| [x / width * 2.0 - 1.0, 1.0 - y / height * 2.0];
         let mut vertices: Vec<Vertex> = Vec::with_capacity(order.len() * 6);
+        #[cfg(test)]
         let mut exact_vertices: Vec<ExactVertex> = Vec::new();
         let filter = filter_mode(ui_scale);
         for index in order {
-            let quad = batch.quads[index];
+            let quad = batch.quads[index].clone();
             if let Some(exact) = quad.exact {
-                let slots = [
-                    quad.texture,
-                    exact.second.unwrap_or(NO_TEXTURE),
-                    exact.masking.unwrap_or(NO_TEXTURE),
-                ];
-                if !self.exact_group(device, slots) {
+                if let Some(native) = &exact.native {
+                    match self.prepare_native(device, queue, arena, native, size, ui_scale) {
+                        Ok(submission) => {
+                            let scissor = match exact.scissor {
+                                Some(clip) => match device_scissor(clip, ui_scale, size) {
+                                    Some(clip) => Some(clip),
+                                    None => continue,
+                                },
+                                None => None,
+                            };
+                            let index = self.native_draws.len();
+                            self.native_draws.push(submission);
+                            self.runs.push(Run {
+                                pipe: Pipe::Native(index),
+                                texture: NO_TEXTURE,
+                                #[cfg(test)]
+                                slots: [NO_TEXTURE; 3],
+                                scissor,
+                                range: 0..0,
+                            });
+                        }
+                        // The refused draw left the binds the game makes for it, less what the
+                        // replay lacks ([`prepare_draw`]).
+                        Err(reason) => {
+                            if !self.native_refusals.contains_key(&reason) {
+                                eprintln!("{reason}");
+                            }
+                            *self.native_refusals.entry(reason).or_default() += 1;
+                        }
+                    }
                     continue;
                 }
-                let scissor = match exact.scissor {
-                    Some(scissor) => match device_scissor(scissor, ui_scale, size) {
-                        Some(device) => Some(device),
-                        None => continue,
-                    },
-                    None => None,
-                };
-                let vertex = |corner: usize| {
-                    let [x, y] = exact.corners[corner];
-                    let uv = exact.uv[corner];
-                    ExactVertex {
-                        position: clip(x * ui_scale, y * ui_scale),
-                        uv,
-                        // `saturate(vTexCoord * 1000)` per vertex (buttonstate's `MASKING`).
-                        mask_uv: uv.map(|value| (value * 1000.0).clamp(0.0, 1.0)),
-                        color: quad.color,
-                        second: exact.second_color,
-                        offsets: exact.offsets,
-                        inputs: exact.inputs,
-                        lod_bias: [exact.lod_bias[0], exact.lod_bias[1], exact.lod_bias[2], 0.0],
-                        pixel: exact.pixel,
-                        samplers: exact.samplers,
-                    }
-                };
-                let start = exact_vertices.len() as u32;
-                exact_vertices.extend([0, 1, 2, 0, 2, 3].map(vertex));
-                let end = exact_vertices.len() as u32;
-                let pipe = Pipe::Exact(exact.blend);
-                match self.runs.last_mut() {
-                    Some(run)
-                        if run.pipe == pipe
-                            && run.slots == slots
-                            && run.scissor == scissor
-                            && run.range.end == start =>
-                    {
-                        run.range.end = end;
-                    }
-                    _ => self.runs.push(Run {
-                        pipe,
-                        texture: quad.texture,
-                        slots,
-                        scissor,
-                        range: start..end,
-                    }),
+                #[cfg(not(test))]
+                {
+                    // What the game binds for it is unknown here.
+                    self.native.invalidate_bindings();
+                    *self
+                        .native_refusals
+                        .entry("GUI quad has no compiled effect payload".into())
+                        .or_default() += 1;
+                    continue;
                 }
-                continue;
+                #[cfg(test)]
+                {
+                    self.native.invalidate_bindings();
+                    let slots = [
+                        quad.texture,
+                        exact.second.unwrap_or(NO_TEXTURE),
+                        exact.masking.unwrap_or(NO_TEXTURE),
+                    ];
+                    if !self.exact_group(device, slots) {
+                        continue;
+                    }
+                    let scissor = match exact.scissor {
+                        Some(scissor) => match device_scissor(scissor, ui_scale, size) {
+                            Some(device) => Some(device),
+                            None => continue,
+                        },
+                        None => None,
+                    };
+                    let vertex = |corner: usize| {
+                        let [x, y] = exact.corners[corner];
+                        let uv = exact.uv[corner];
+                        ExactVertex {
+                            position: clip(x * ui_scale, y * ui_scale),
+                            uv,
+                            // `saturate(vTexCoord * 1000)` per vertex (buttonstate's `MASKING`).
+                            mask_uv: uv.map(|value| (value * 1000.0).clamp(0.0, 1.0)),
+                            color: quad.color,
+                            second: exact.second_color,
+                            offsets: exact.offsets,
+                            inputs: exact.inputs,
+                            lod_bias: [
+                                exact.lod_bias[0],
+                                exact.lod_bias[1],
+                                exact.lod_bias[2],
+                                0.0,
+                            ],
+                            pixel: exact.pixel,
+                            samplers: exact.samplers,
+                        }
+                    };
+                    let start = exact_vertices.len() as u32;
+                    exact_vertices.extend([0, 1, 2, 0, 2, 3].map(vertex));
+                    let end = exact_vertices.len() as u32;
+                    let pipe = Pipe::Exact(exact.blend);
+                    match self.runs.last_mut() {
+                        Some(run)
+                            if run.pipe == pipe
+                                && run.slots == slots
+                                && run.scissor == scissor
+                                && run.range.end == start =>
+                        {
+                            run.range.end = end;
+                        }
+                        _ => self.runs.push(Run {
+                            pipe,
+                            texture: quad.texture,
+                            slots,
+                            scissor,
+                            range: start..end,
+                        }),
+                    }
+                    continue;
+                }
             }
+            self.native.invalidate_bindings();
             if self.group(quad.texture).is_none() {
                 continue;
             }
@@ -1227,14 +1364,19 @@ impl SpritePass {
                 _ => self.runs.push(Run {
                     pipe: Pipe::Legacy,
                     texture: quad.texture,
+                    #[cfg(test)]
                     slots: [NO_TEXTURE; 3],
                     scissor: None,
                     range: start..end,
                 }),
             }
         }
+        self.bakes.retain(|bake| bake.used);
         self.count = vertices.len() as u32;
-        self.exact_count = exact_vertices.len() as u32;
+        #[cfg(test)]
+        {
+            self.exact_count = exact_vertices.len() as u32;
+        }
         if self.count > 0 {
             if u64::from(self.count) > self.capacity {
                 self.capacity = u64::from(self.count).next_power_of_two();
@@ -1242,6 +1384,7 @@ impl SpritePass {
             }
             queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&vertices));
         }
+        #[cfg(test)]
         if self.exact_count > 0 {
             if u64::from(self.exact_count) > self.exact_capacity {
                 self.exact_capacity = u64::from(self.exact_count).next_power_of_two();
@@ -1261,7 +1404,7 @@ impl SpritePass {
 
     /// Draws the uploaded quads over whatever the target already holds.
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, targets: &Targets) {
-        if self.count == 0 && self.exact_count == 0 {
+        if self.runs.is_empty() {
             return;
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1273,14 +1416,27 @@ impl SpritePass {
             multiview_mask: None,
         });
         let [width, height] = targets.size();
+        self.draw_runs(&mut pass, [width, height]);
+    }
+
+    fn draw_runs(&self, pass: &mut wgpu::RenderPass<'_>, [width, height]: [u32; 2]) {
         let mut bound = None;
         for run in &self.runs {
+            let [x, y, w, h] = run.scissor.unwrap_or([0, 0, width, height]);
+            pass.set_scissor_rect(x, y, w, h);
+            if let Pipe::Native(index) = run.pipe {
+                let submission = &self.native_draws[index];
+                submission.pipeline.draw(pass, &submission.draw);
+                bound = None;
+                continue;
+            }
             if bound != Some(run.pipe) {
                 match run.pipe {
                     Pipe::Legacy => {
                         pass.set_pipeline(&self.pipeline);
                         pass.set_vertex_buffer(0, self.vertices.slice(..));
                     }
+                    #[cfg(test)]
                     Pipe::Exact(blend) => {
                         pass.set_pipeline(match blend {
                             super::native_effects::Blend::Alpha => &self.exact_alpha,
@@ -1288,6 +1444,7 @@ impl SpritePass {
                         });
                         pass.set_vertex_buffer(0, self.exact_vertices.slice(..));
                     }
+                    Pipe::Native(_) => unreachable!(),
                 }
                 bound = Some(run.pipe);
             }
@@ -1295,7 +1452,9 @@ impl SpritePass {
             pass.set_scissor_rect(x, y, w, h);
             let group = match run.pipe {
                 Pipe::Legacy => self.group(run.texture),
+                #[cfg(test)]
                 Pipe::Exact(_) => self.exact_groups.get(&run.slots),
+                Pipe::Native(_) => unreachable!(),
             };
             let Some(group) = group else {
                 continue;
@@ -1307,8 +1466,304 @@ impl SpritePass {
 
     /// Quads the last upload produced, for reporting.
     pub fn quad_count(&self) -> u32 {
-        (self.count + self.exact_count) / 6
+        (self.count + self.exact_count) / 6 + self.native_draws.len() as u32
     }
+
+    fn prepare_native(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        arena: &shader_pipeline::gpu::Arena,
+        draw: &super::native_shader::draw::Quad,
+        size: [u32; 2],
+        scale: f32,
+    ) -> Result<super::native_shader::stream::Submission, String> {
+        let baked = draw.bake.as_ref().map(|bake| {
+            self.prepare_bake(device, queue, arena, bake)
+                .map_err(|why| {
+                    format!(
+                        "effect {:?}, text sprite {:?}: {why}",
+                        draw.effect.asset.source.effect, draw.path
+                    )
+                })
+        });
+        let views = self.native_views(draw);
+        prepare_draw(
+            &mut self.native,
+            arena,
+            draw,
+            &views,
+            baked,
+            super::native_shader::draw::gui_viewport(size, scale),
+            self.native_format,
+            self.native_samples,
+        )
+    }
+
+    /// Each slot `draw` binds: its texture, `None` for a null bind, `Err` naming a texture that
+    /// is not resident.
+    fn native_views(&self, draw: &super::native_shader::draw::Quad) -> Vec<(u32, View)> {
+        draw.textures
+            .iter()
+            .map(|&(slot, id)| {
+                (
+                    slot,
+                    id.map(|id| {
+                        self.view(id).cloned().ok_or_else(|| {
+                            format!(
+                                "effect {:?}, draw {:?}: texture {id} is not resident",
+                                draw.effect.asset.source.effect, draw.path
+                            )
+                        })
+                    })
+                    .transpose(),
+                )
+            })
+            .collect()
+    }
+
+    fn prepare_bake(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        arena: &shader_pipeline::gpu::Arena,
+        bake: &Arc<super::native_shader::draw::Bake>,
+    ) -> Result<wgpu::TextureView, String> {
+        // Changed lazy pages invalidate a bake even if its layout is unchanged. The bake
+        // inherits the caller's retained binds, so only a bake that reads nothing it does not
+        // bind itself gives the same pixels wherever it is drawn.
+        let revision = self.lazy.version();
+        let stable = bake.draws.iter().all(self_contained);
+        if stable
+            && let Some(cached) = self
+                .bakes
+                .iter_mut()
+                .find(|c| c.revision == revision && c.source == *bake)
+        {
+            cached.used = true;
+            return Ok(cached.view.clone());
+        }
+        let [width, height] = bake.size;
+        if width == 0 || height == 0 || width.max(height) > device.limits().max_texture_dimension_2d
+        {
+            return Err(format!(
+                "text bake target {width}x{height} exceeds device limits"
+            ));
+        }
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("CTextSprite bake14228C8D0"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        self.bake_stream.inherit_bindings(&self.native);
+        let mut submissions = Vec::new();
+        for draw in &bake.draws {
+            let views = self.native_views(draw);
+            submissions.push(prepare_draw(
+                &mut self.bake_stream,
+                arena,
+                draw,
+                &views,
+                None,
+                bake.size,
+                format,
+                1,
+            )?);
+        }
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("text background then alpha MAX glyphs"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            for submission in &submissions {
+                submission.pipeline.draw(&mut pass, &submission.draw);
+            }
+        }
+        // The bake is submitted before the frame: its uploads are written first.
+        arena.flush(queue);
+        queue.submit([encoder.finish()]);
+        self.bakes.push(CachedBake {
+            source: bake.clone(),
+            revision,
+            view: view.clone(),
+            used: true,
+        });
+        Ok(view)
+    }
+}
+
+struct CachedBake {
+    source: Arc<super::native_shader::draw::Bake>,
+    revision: u64,
+    view: wgpu::TextureView,
+    used: bool,
+}
+
+/// Whether `draw`'s compiled program reads only what the draw binds itself: its technique is
+/// declared, and every constant buffer, texture and sampler it reflects is one of its own binds
+/// (with the effect's own sampler state), none retained from an earlier draw.
+fn self_contained(draw: &super::native_shader::draw::Quad) -> bool {
+    use super::native_shader::binding;
+    use installed_content::pdxshader::program::Stage;
+    let Ok(Some(selection)) = draw.effect.asset.select(&draw.effect.technique) else {
+        return false;
+    };
+    let Ok(compiled) = selection.effect.compiled(selection.index) else {
+        return false;
+    };
+    let textures: Vec<u32> = draw
+        .textures
+        .iter()
+        .map(|(slot, _)| binding(*slot, Stage::Pixel))
+        .collect();
+    let mut buffers = vec![binding(0, Stage::Vertex)];
+    if draw.pixel_constants {
+        buffers.push(binding(0, Stage::Pixel));
+    }
+    for (slot, _, _) in &draw.extra_constants {
+        buffers.extend([binding(*slot, Stage::Vertex), binding(*slot, Stage::Pixel)]);
+    }
+    let source = &selection.effect.source;
+    [&compiled.vertex, &compiled.pixel]
+        .into_iter()
+        .all(|shader| {
+            shader.buffers.iter().all(|b| buffers.contains(&b.binding))
+                && shader.textures.iter().all(|(b, _)| textures.contains(b))
+                && shader
+                    .samplers
+                    .iter()
+                    .all(|b| textures.contains(b) && source.sampler(b / 2).is_some())
+        })
+}
+
+/// A slot's texture as the replay holds it: `Ok(None)` a null bind, `Err` one it does not hold.
+type View = Result<Option<wgpu::TextureView>, String>;
+
+/// Makes `draw`'s binds on `native` in the game's order, then prepares it. A draw the replay
+/// cannot make is refused with its first reason (its bake, a texture that is not resident, a
+/// technique that does not compile, its blend state), but still leaves the binds the game makes
+/// for it: its program record (`shader_program_binder@142400520`: a declared technique binds
+/// its record even when its shaders failed, `142344DF0`; an undeclared one binds nothing), its
+/// constants, and its textures and samplers (`1424005A0`). What the replay lacks of them (the
+/// program of a technique it could not compile, a texture it does not hold) is forgotten, so a
+/// later draw that reads it is refused rather than given an earlier bind.
+#[allow(clippy::too_many_arguments)]
+fn prepare_draw(
+    native: &mut super::native_shader::stream::Stream,
+    arena: &shader_pipeline::gpu::Arena,
+    draw: &super::native_shader::draw::Quad,
+    views: &[(u32, View)],
+    baked: Option<Result<wgpu::TextureView, String>>,
+    viewport: [u32; 2],
+    format: wgpu::TextureFormat,
+    samples: u32,
+) -> Result<super::native_shader::stream::Submission, String> {
+    use installed_content::pdxshader::program::Stage;
+    let label = format!(
+        "{} / {}:{}",
+        draw.path, draw.effect.asset.source.effect, draw.effect.technique
+    );
+    let mut refused = baked
+        .as_ref()
+        .and_then(|baked| baked.as_ref().err().cloned());
+    if refused.is_none() {
+        refused = views
+            .iter()
+            .find_map(|(_, view)| view.as_ref().err().cloned());
+    }
+    let selection = draw.effect.asset.select(&draw.effect.technique);
+    // A declared technique's record carries the effect's samplers, compiled or not.
+    let declared = !matches!(selection, Ok(None));
+    match selection {
+        Ok(selection) => {
+            if let Err(why) = native.bind_effect(selection, draw.declaration) {
+                refused.get_or_insert(format!("native GUI draw {label:?}: {why}"));
+            }
+        }
+        Err(why) => {
+            native.forget_program();
+            refused.get_or_insert(why);
+        }
+    }
+    if draw.default_blend {
+        native.bind_blend(None, wgpu::ColorWrites::ALL);
+    }
+    let constants = draw.projected_constants(viewport);
+    let known = [std::ops::Range {
+        start: 0,
+        end: draw.known,
+    }];
+    for stage in [Stage::Vertex, Stage::Pixel] {
+        if stage == Stage::Pixel && !draw.pixel_constants {
+            continue;
+        }
+        // The whole native allocation, of which the draw writes only `known` bytes: a read of
+        // the rest is refused by name where the draw is prepared (`Stream::check_constants`),
+        // through retained and null-technique binds alike.
+        native.bind_partial_constants(0, stage, Some(bytemuck::cast_slice(&constants)), &known);
+    }
+    // Animation records' b1: the whole allocation, known only where the game writes it.
+    for (slot, constants, known) in &draw.extra_constants {
+        for stage in [Stage::Vertex, Stage::Pixel] {
+            native.bind_partial_constants(
+                *slot,
+                stage,
+                Some(bytemuck::cast_slice(constants)),
+                known,
+            );
+        }
+    }
+    for (slot, view) in views {
+        let slot = *slot;
+        let view = match (&baked, slot) {
+            (Some(baked), 0) => baked.clone().map(Some),
+            _ => view.clone(),
+        };
+        let sampler = declared
+            .then(|| draw.effect.asset.source.sampler(slot))
+            .flatten();
+        match view {
+            Ok(view) => native.bind_texture(slot, Stage::Pixel, view, sampler),
+            Err(_) => native.forget_texture(slot, Stage::Pixel, sampler),
+        }
+    }
+    if let Some(reason) = refused {
+        return Err(reason);
+    }
+    native.prepare(
+        arena,
+        &label,
+        &draw.vertices,
+        draw.stride,
+        draw.vertices.len() / draw.stride,
+        draw.topology,
+        format,
+        samples,
+    )
 }
 
 /// What [`SpritePass::sync`] does with the lazy textures.
@@ -1447,6 +1902,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
 /// The [`Exact`] pass: the modelled programs of [`super::native_effects`], each texel read and
 /// filtered as the effect's sampler state reads it (every addressing mode, the magnifying or
 /// minifying filter by the level of detail, the mip filter over the texture's levels).
+#[cfg(test)]
 pub(super) const EXACT_SHADER: &str = r#"
 struct ExactOut {
     @builtin(position) clip: vec4<f32>,

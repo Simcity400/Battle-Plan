@@ -1028,6 +1028,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output,
             (!unverified.is_empty()).then_some(unverified.as_str()),
         )?;
+        for (reason, count) in &report.shader_refusals {
+            eprintln!("GUI shader: {count} refused draws: {reason}");
+        }
+
         println!(
             "Rendered branch {}, hour {hour}{} to {} using {}",
             document.playback.branch(),

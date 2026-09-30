@@ -19,7 +19,7 @@ pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Eff
     // 140FF1410 caller variants; the viewer's HDR scene has a resolved LUT.
     defines.extend(["HDR".into(), "COLOR_LUT".into()]);
     library
-        .load("gfx/FX/restorescene.shader", &defines)
+        .load(b"gfx/FX/restorescene.shader", &defines)
         .map_err(refuse)
 }
 

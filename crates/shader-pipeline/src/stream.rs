@@ -1,6 +1,10 @@
 //! Apply native binds in submission order. The owner must feed this after its layer sorting:
 //! a missing technique keeps the preceding program and its input declaration. Each resource
-//! changes only when its own binding command is supplied.
+//! changes only when its own binding command is supplied. A draw the owner refuses still makes
+//! the binds the game makes for it; what the owner lacks of them (a program it could not
+//! compile, a texture it does not hold) is forgotten ([`Stream::forget_program`],
+//! [`Stream::forget_texture`]), so a later draw that reads it is refused instead of given an
+//! earlier bind.
 
 use super::{
     binding, gpu,
@@ -149,25 +153,30 @@ impl Stream {
     }
 
     /// 142400520 retains program/layout on null; 142400090 selects the renderer default blend.
+    /// The program is bound even when its blend state is refused: the game binds both.
     pub fn bind_effect(
         &mut self,
         selection: Option<Selection>,
         declaration: Declaration,
     ) -> Result<(), String> {
-        let (blend, mask) = if let Some(selection) = &selection {
-            gpu::blend(
-                &selection.effect.source,
-                &selection.effect.source.techniques[selection.index],
-            )?
-        } else {
-            (None, wgpu::ColorWrites::ALL)
+        let Some(selection) = selection else {
+            self.bind_blend(None, wgpu::ColorWrites::ALL);
+            return Ok(());
         };
-        self.state.blend = blend;
-        self.state.write_mask = mask;
-        if let Some(selection) = selection {
-            self.program = Some((selection, Layout::Packed(declaration)));
-        }
+        let blend = gpu::blend(
+            &selection.effect.source,
+            &selection.effect.source.techniques[selection.index],
+        );
+        self.program = Some((selection, Layout::Packed(declaration)));
+        let (blend, mask) = blend?;
+        self.bind_blend(blend, mask);
         Ok(())
+    }
+
+    /// A declared technique the owner could not compile: the game binds its program record
+    /// (142400520 with a non-null record), which the owner does not have.
+    pub fn forget_program(&mut self) {
+        self.program = None;
     }
 
     /// 1424000F0 does nothing for a null constant-buffer handle; it does not clear the slot.
@@ -252,6 +261,17 @@ impl Stream {
         }
     }
 
+    /// A texture the owner does not hold, at a slot a draw binds: the slot's sampler binds as
+    /// [`Self::bind_texture`] binds it, and the texture is unknown to later draws.
+    pub fn forget_texture(&mut self, slot: u32, stage: Stage, sampler: Option<&Sampler>) {
+        self.bind_texture(slot, stage, None, sampler);
+        let slot = sampler.map_or(slot, |sampler| sampler.index);
+        self.textures.remove(&binding(slot, stage));
+    }
+
+    /// `count` records of `stride` bytes drawn as `topology` (the draw's own, as
+    /// `GfxSetPrimitiveTopology@1424002E0` sets it): a native four-record strip stays four
+    /// records, so `SV_VertexID` runs as it does natively.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
@@ -260,11 +280,12 @@ impl Stream {
         bytes: &[u8],
         stride: usize,
         count: usize,
+        topology: wgpu::PrimitiveTopology,
         format: wgpu::TextureFormat,
         samples: u32,
     ) -> Result<Submission, String> {
         let result = self
-            .prepare_inner(arena, bytes, stride, count, format, samples)
+            .prepare_inner(arena, bytes, stride, count, topology, format, samples)
             .map_err(|reason| format!("native draw {label:?}: {reason}"));
         if let Err(reason) = &result {
             *self.refused.entry(reason.clone()).or_default() += 1;
@@ -272,12 +293,14 @@ impl Stream {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_inner(
         &mut self,
         arena: &gpu::Arena,
         bytes: &[u8],
         stride: usize,
         count: usize,
+        topology: wgpu::PrimitiveTopology,
         format: wgpu::TextureFormat,
         samples: u32,
     ) -> Result<Submission, String> {
@@ -287,9 +310,14 @@ impl Stream {
         let Layout::Packed(declaration) = declaration else {
             return Err("native vertex buffers require prepare_pass".into());
         };
-        let pipeline = self
-            .cache
-            .get(arena.device(), &selection, &self.state, format, samples)?;
+        let pipeline = self.cache.get(
+            arena.device(),
+            &selection,
+            &self.state,
+            format,
+            samples,
+            topology,
+        )?;
         let textures = self.resolve_textures(arena.device(), &selection)?;
         self.check_constants(&pipeline)?;
         let draw = pipeline
@@ -553,8 +581,8 @@ mod tests {
 
     #[test]
     fn independent_handles_survive_program_misses_and_scoped_passes() {
-        let program = installed_content::pdxshader::program::read_with("states.shader", &|path| {
-            Some(if path == "states.shader" {
+        let program = installed_content::pdxshader::program::read_with(b"states.shader", &|path| {
+            Some(if path == b"states.shader" {
                 b"Effect Draw { }".to_vec()
             } else {
                 Vec::new()

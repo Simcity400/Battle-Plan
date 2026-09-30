@@ -1,6 +1,6 @@
-//! The game's GUI effects as [`super::native_gui`] draws them: each effect file's techniques, the
-//! program each runs, its blend state and the sampler state of each texture slot, as data the
-//! sprite pass ([`super::sprites`]) executes.
+//! GUI effect handles selected by [`super::native_gui`]. Runtime loads the resolved source
+//! through the shared shader compiler. The native program and sampler data below provide
+//! independent offline test oracles.
 //!
 //! - A sprite's state picks a technique by name: `CSpriteType::initialize_animations@14222B5F0`
 //!   `engine_shader_effect_lookup@1423F4EC0` into `CSpriteType+0x150`, `+0x154`, `+0x158` and
@@ -14,18 +14,12 @@
 //!   selects the device's default (blending off, every channel written). [`Technique::Keep`]
 //!   carries that; with a masking texture bound the binder reads through the null record
 //!   (`+0x28`) and the game crashes.
-//! - The programs of the game's own effect files are modelled here ([`Pixel`]), each keyed by the
-//!   file it comes from: the effect's resolved `.shader` bytes and every include's, as sha256
-//!   ([`EffectFacts`]). The same bytes under another path draw the same. Any other effect runs
-//!   code this viewer does not run yet: it is refused as a custom effect, by name.
+//! - [`Effect::load`] compiles the content's actual programs through [`super::native_shader`].
+//!   The native models ([`Pixel`]) and their source identities remain the offline oracle.
 
 // The layers above this one resolve their effects through this module; until they are stacked on
 // it, only the tests and the native GUI module use it.
 #![cfg_attr(not(test), allow(dead_code))]
-
-use installed_content::gui::native::shader;
-
-use super::native_gui::lossy;
 
 /// A sampler's addressing on one axis (`read_address@1423F7F20`: `wrap` 0, `mirror` 1, `clamp`
 /// 2, `border` 3, `mirror_once` 4).
@@ -50,7 +44,7 @@ pub enum Filter {
 /// wraps, and `lower_filter@1424110F0` takes a `MipFilter` of `None` as point (only `Linear`
 /// blends levels).
 ///
-/// The sprite pass reads each texel itself ([`super::sprites`]), so every addressing mode, the
+/// The offline oracle reads each texel itself ([`super::sprites`]), so every addressing mode, the
 /// level of detail with its bias, and the choice between the magnifying and minifying filter are
 /// the effect's.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -290,6 +284,8 @@ pub enum Technique {
 pub struct Effect {
     /// The effect as the sprite names it.
     pub file: String,
+    /// Executable content; the native models remain available as an independent test oracle.
+    pub compiled: Option<std::sync::Arc<super::native_shader::library::Effect>>,
     pub techniques: Vec<(&'static str, Pixel, Blend)>,
     /// Each slot's sampler (`Index` 0 to 5), the last row of its index the effect declares;
     /// `None` where it declares none, which keeps the previous draw's (`1424005A0`).
@@ -297,6 +293,32 @@ pub struct Effect {
 }
 
 impl Effect {
+    /// The effect a sprite names, `file` being the name's bytes to its C string's end: opened
+    /// by those bytes through the content stack (`engine_shader_effect_lookup@1423F4EC0`,
+    /// [`installed_content::pdxshader::program::read`]), their text only its label.
+    pub fn load(
+        library: &mut super::native_shader::library::Library,
+        file: &[u8],
+        defines: &[String],
+    ) -> Result<Self, String> {
+        Ok(Self {
+            file: String::from_utf8_lossy(file).into_owned(),
+            compiled: Some(library.load(file, defines)?),
+            techniques: Vec::new(),
+            samplers: [None; 6],
+        })
+    }
+
+    pub fn has_technique(&self, name: &str) -> bool {
+        self.compiled.as_ref().map_or_else(
+            || {
+                self.techniques
+                    .iter()
+                    .any(|(own, _, _)| own.eq_ignore_ascii_case(name))
+            },
+            |effect| effect.source.technique(name).is_some(),
+        )
+    }
     /// The technique `name` looks up.
     pub fn technique(&self, name: &str) -> Technique {
         self.techniques
@@ -309,9 +331,14 @@ impl Effect {
     }
 
     /// How long after its drawable's restart the technique `name` draws differently on the
-    /// clock alone: its program's answer ([`Pixel::settles`]), or, for a technique the file
-    /// lacks, the answer of the program the previous draw bound ([`Settles::Previous`]).
+    /// clock alone: its program's answer, or, for a technique the file lacks, the answer of the
+    /// program the previous draw bound ([`Settles::Previous`]). A compiled effect answers from
+    /// its own program ([`compiled_settles`]); the models (the test oracle) from what they
+    /// model ([`Pixel::settles`]).
     pub fn settles(&self, name: &str) -> Settles {
+        if let Some(compiled) = &self.compiled {
+            return compiled_settles(compiled, name);
+        }
         match self.technique(name) {
             Technique::Run { pixel, .. } => Settles::Program(pixel.settles()),
             Technique::Keep => Settles::Previous,
@@ -332,6 +359,34 @@ pub enum Settles {
     /// and `AnimationTime` whatever the program): that program's answer, from this drawable's
     /// restart. Which program that is depends on the draw order, which the caller resolves.
     Previous,
+    /// A declared technique that does not compile here: the draw is refused (counted where it
+    /// is submitted). The game still binds its program record (`142344DF0` logs `Failed adding
+    /// vertex shader`/`pixel shader`/`Failed linking shader` and keeps the technique, whose
+    /// handle `LookupShaderEffectHandle@1423F5D60` returns and `shader_program_binder
+    /// @142400520` binds), which the replay lacks: a later kept draw ([`Settles::Previous`])
+    /// runs that unknown program and is refused where it is submitted too.
+    Refused,
+}
+
+/// [`Settles`] of technique `name` of a compiled effect, from its own program as the sprite
+/// constants bind the clock ([`super::native_shader::draw::SPRITE_TIME`]): a program that reads
+/// `Time` other than as a saturating function of `Time - AnimationTime` never settles, one that
+/// does settles when that function saturates, one that does not read `Time` at once
+/// ([`super::native_shader::Compiled::settles`]). A technique the file lacks is the zeroed
+/// record ([`Settles::Previous`]).
+pub fn compiled_settles(
+    effect: &std::sync::Arc<super::native_shader::library::Effect>,
+    name: &str,
+) -> Settles {
+    use super::native_shader::draw::{SPRITE_ANIMATION_TIME, SPRITE_TIME};
+    match effect.select(name) {
+        Ok(Some(selection)) => match selection.effect.compiled(selection.index) {
+            Ok(program) => Settles::Program(program.settles(0, SPRITE_TIME, SPRITE_ANIMATION_TIME)),
+            Err(_) => Settles::Refused,
+        },
+        Ok(None) => Settles::Previous,
+        Err(_) => Settles::Refused,
+    }
 }
 
 impl Pixel {
@@ -355,6 +410,7 @@ impl Pixel {
 /// The facts of an effect file as the content stack resolves it: its sha256 and its includes'
 /// (`None` for an include no layer holds, which reads empty).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub struct EffectFacts {
     pub file: String,
     pub identity: [u8; 32],
@@ -362,6 +418,7 @@ pub struct EffectFacts {
 }
 
 /// A 64-digit hexadecimal sha256.
+#[cfg(test)]
 const fn digest(hex: &str) -> [u8; 32] {
     let bytes = hex.as_bytes();
     let mut out = [0u8; 32];
@@ -374,6 +431,7 @@ const fn digest(hex: &str) -> [u8; 32] {
 }
 
 /// One lowercase hexadecimal digit's value.
+#[cfg(test)]
 const fn nibble(byte: u8) -> u8 {
     match byte {
         b'0'..=b'9' => byte - b'0',
@@ -381,15 +439,19 @@ const fn nibble(byte: u8) -> u8 {
     }
 }
 
+#[cfg(test)]
 const BUTTONSTATE_FXH: [u8; 32] =
     digest("8a0e70eb222f1d71b1660fad3c19625859e95e72959995b3f26d478a8b95dd93");
+#[cfg(test)]
 const SPRITE_ANIMATION_FXH: [u8; 32] =
     digest("b32e1007b2e41df9ad3c41f49c6df32b7f7fce58bf0f86f55207505a1382238f");
+#[cfg(test)]
 const FADE_FRAMES_FXH: [u8; 32] =
     digest("c42254a202b0e0160fd74ba4d1564ae45e8b502dc2dfb838d953e038be4a6e70");
 
 /// One modelled file: its identity, its includes' identities in the order they are read, and
 /// its techniques.
+#[cfg(test)]
 struct Modelled {
     identity: [u8; 32],
     includes: &'static [[u8; 32]],
@@ -397,6 +459,7 @@ struct Modelled {
 }
 
 /// The four button states of a program family.
+#[cfg(test)]
 fn states(
     up: SpriteProgram,
     down: SpriteProgram,
@@ -415,6 +478,7 @@ fn states(
 /// `buttonstate.shader`: Up the texture times `Color`; Down and Over add their timed shade after
 /// `Color`; Disable greys first. Under `MASKING` Up reads the mask at the saturated coordinate,
 /// the others at the frame's.
+#[cfg(test)]
 fn buttonstate(masked: bool) -> Vec<(&'static str, Pixel, Blend)> {
     let mask = |at| masked.then_some(at);
     let up = SpriteProgram {
@@ -445,6 +509,7 @@ fn buttonstate(masked: bool) -> Vec<(&'static str, Pixel, Blend)> {
 
 /// The three files whose constant buffer moves only `x`: Down plain, Over (and `linear`'s Down)
 /// a tenth added before `Color`.
+#[cfg(test)]
 fn x_offset(down: Mix, disable_grey: bool) -> Vec<(&'static str, Pixel, Blend)> {
     let plain = SpriteProgram {
         x_offset_only: true,
@@ -473,6 +538,7 @@ fn x_offset(down: Mix, disable_grey: bool) -> Vec<(&'static str, Pixel, Blend)> 
 }
 
 /// The game's own effect files whose programs this module runs.
+#[cfg(test)]
 const MODELLED: &[Modelled] = &[
     Modelled {
         identity: digest("1eddb371702289f4cc9d9d565aef21cf77c9261bd4324194295eeea6309f413a"),
@@ -665,6 +731,7 @@ const MODELLED: &[Modelled] = &[
 ];
 
 /// `maskedflag.shader`'s four states.
+#[cfg(test)]
 fn masked_flag() -> Vec<(&'static str, Pixel, Blend)> {
     vec![
         ("Up", Pixel::MaskedFlag(FlagMix::None), Blend::Alpha),
@@ -675,6 +742,7 @@ fn masked_flag() -> Vec<(&'static str, Pixel, Blend)> {
 }
 
 /// A progress file's `Color` and `Texture` techniques.
+#[cfg(test)]
 fn progress(program: ProgressProgram, flip_v: bool) -> Vec<(&'static str, Pixel, Blend)> {
     let pixel = |texture| Pixel::Progress {
         program,
@@ -687,9 +755,9 @@ fn progress(program: ProgressProgram, flip_v: bool) -> Vec<(&'static str, Pixel,
     ]
 }
 
-/// The modelled effect `facts` names, with `samplers` its slots' rows; a file this module does
-/// not run is refused as a custom effect. `masked` is whether the sprite's `masking_texture`
-/// loads (the `MASKING` define).
+/// The independent model oracle; production loads executable programs with [`Effect::load`].
+/// `masked` is whether the sprite's `masking_texture` loads (the `MASKING` define).
+#[cfg(test)]
 pub fn resolve(
     facts: &EffectFacts,
     samplers: [Option<Sampler>; 6],
@@ -706,93 +774,16 @@ pub fn resolve(
     });
     let Some(modelled) = modelled else {
         return Err(format!(
-            "custom effect {}: its programs are not the game's own files, which this viewer runs \
-             (political/l5s-shader-pipeline runs a mod's effect code)",
+            "custom effect {}: no independent native model for these source bytes",
             facts.file
         ));
     };
     Ok(Effect {
         file: facts.file.clone(),
+        compiled: None,
         techniques: (modelled.techniques)(masked),
         samplers,
     })
-}
-
-/// A sampler row as `lower_d3d11@1423FD550` lowers it: `None` filters as point
-/// (`lower_filter@1424110F0`); an anisotropic filter is D3D11's 0x55, which the sprite pass does
-/// not run.
-fn lowered(row: &shader::SamplerRow, file: &str) -> Result<Sampler, String> {
-    let address = |address: shader::Address| match address {
-        shader::Address::Wrap => Address::Wrap,
-        shader::Address::Mirror => Address::Mirror,
-        shader::Address::Clamp => Address::Clamp,
-        shader::Address::Border => Address::Border,
-        shader::Address::MirrorOnce => Address::MirrorOnce,
-    };
-    let filter = |filter: shader::Filter| match filter {
-        shader::Filter::None | shader::Filter::Point => Ok(Filter::Point),
-        shader::Filter::Linear => Ok(Filter::Linear),
-        shader::Filter::Anisotropic => Err(format!(
-            "{file} samples slot {} anisotropically (lower_d3d11@1423FD550's filter 0x55), which \
-             the sprite pass does not run",
-            row.index
-        )),
-    };
-    Ok(Sampler {
-        u: address(row.address_u),
-        v: address(row.address_v),
-        mag: filter(row.mag)?,
-        min: filter(row.min)?,
-        mip: filter(row.mip)?,
-        lod_bias: row.lod_bias,
-    })
-}
-
-/// The effect a sprite's `effect` names, as `engine_shader_effect_lookup@1423F4EC0` finds it
-/// through the content stack ([`shader::load`]): a file no layer holds is the zero record
-/// `1435C1970` (every technique [`Technique::Keep`]); a file this module models draws with its
-/// programs and the sampler slots the file declares (`populate@142345450`, slots 0 to 5, which
-/// the GUI programs read); any other is refused as a custom effect.
-pub fn load(
-    layers: &installed_content::ResolvedLayers,
-    effect: &[u8],
-    masked: bool,
-) -> Result<Effect, String> {
-    // Read by the name's bytes; the name as given, to its C string's end, labels it.
-    let loaded = shader::load(layers, effect);
-    let end = effect
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(effect.len());
-    from_file(&lossy(&effect[..end]), loaded.as_ref(), masked)
-}
-
-/// [`load`] of a file already read (`None` when no layer holds it).
-pub fn from_file(
-    name: &str,
-    loaded: Option<&shader::Effect>,
-    masked: bool,
-) -> Result<Effect, String> {
-    let Some(loaded) = loaded else {
-        return Ok(Effect {
-            file: name.to_owned(),
-            techniques: Vec::new(),
-            samplers: [None; 6],
-        });
-    };
-    let facts = EffectFacts {
-        file: loaded.path.clone(),
-        identity: loaded.identity,
-        includes: loaded.includes.clone(),
-    };
-    let mut effect = resolve(&facts, [None; 6], masked)?;
-    effect.file = name.to_owned();
-    for (index, row) in loaded.sampler_slots()?.into_iter().enumerate().take(6) {
-        if let Some(row) = row {
-            effect.samplers[index] = Some(lowered(row, &loaded.path)?);
-        }
-    }
-    Ok(effect)
 }
 
 /// The game's own effects as the shipped files declare them, for other modules' tests.
@@ -836,6 +827,7 @@ pub mod shipped {
         );
         Effect {
             file: "gfx/FX/buttonstate.lua".into(),
+            compiled: None,
             techniques: super::buttonstate(false),
             samplers: [
                 Some(Sampler {
@@ -868,6 +860,7 @@ pub mod shipped {
         );
         Effect {
             file: "gfx/FX/progress.lua".into(),
+            compiled: None,
             techniques: super::progress(ProgressProgram::Plain, true),
             samplers: [Some(wrap), Some(wrap), None, None, None, None],
         }
@@ -885,6 +878,7 @@ pub mod shipped {
             0.0,
         );
         Effect {
+            compiled: None,
             file: "gfx/FX/circularprogressbar.shader".into(),
             techniques: vec![("CircularProgressBar", Pixel::Circular, Blend::Alpha)],
             samplers: [Some(wrap), Some(wrap), None, None, None, None],
@@ -894,6 +888,7 @@ pub mod shipped {
     pub fn text() -> Effect {
         Effect {
             file: "gfx/FX/text.lua".into(),
+            compiled: None,
             techniques: vec![("Text", Pixel::Text, Blend::Alpha)],
             samplers: [
                 Some(sampler(

@@ -16,7 +16,9 @@ fn refuse(reason: impl Into<String>) -> io::Error {
 
 pub fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
     let (mut library, defines) = super::shader_sources::library(layers, map);
-    library.load("gfx/FX/tree.shader", &defines).map_err(refuse)
+    library
+        .load(b"gfx/FX/tree.shader", &defines)
+        .map_err(refuse)
 }
 
 /// 140223170 initializes the scene block;141269930 replaces just its first matrix.

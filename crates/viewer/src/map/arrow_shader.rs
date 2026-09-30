@@ -79,7 +79,7 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], name: &str) -> io::Result<Ar
         .ok_or_else(|| fail(format!("maparrows.txt has no {name} effect")))?
         .1;
     let (mut library, defines) = super::shader_sources::library(layers, map);
-    library.load(&path, &defines).map_err(fail)
+    library.load(path.as_bytes(), &defines).map_err(fail)
 }
 
 ///141250462 copies the authored depth descriptor;468/46F/477 replace ref/masks.
