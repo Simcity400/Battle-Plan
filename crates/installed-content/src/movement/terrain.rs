@@ -4,11 +4,15 @@
 //! load, append and lookup rules; this module only derives what movement
 //! samples from it: each category's one-based ordinal and each terrain bitmap
 //! palette index's movement cost. `FindTerrainByHashedName` (`1403bca00`)
-//! falls back to the null terrain, ordinal zero and cost zero.
+//! falls back to the null terrain, ordinal zero and cost zero. The ordinal is
+//! the database's signed category count when the category was read
+//! (`140AC7035` passes `+0x4C` to `CTerrainType::CTerrainType@141429930`,
+//! which stores it as the i32 at `+0x88`), so a mod may declare any number of
+//! categories.
 
 use std::io;
 
-use crate::{ResolvedLayers, fields::invalid, terrain::TerrainDefinitions};
+use crate::{ResolvedLayers, terrain::TerrainDefinitions};
 
 #[derive(Debug, Default)]
 pub(crate) struct TerrainDatabase {
@@ -17,24 +21,16 @@ pub(crate) struct TerrainDatabase {
 
 impl TerrainDatabase {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
-        Self::new(crate::terrain::read_definitions(layers)?)
-    }
-
-    fn new(definitions: TerrainDefinitions) -> io::Result<Self> {
-        if definitions.categories.len() > usize::from(u8::MAX) {
-            return Err(invalid(format!(
-                "{} terrain categories exceed the one-byte terrain index",
-                definitions.categories.len()
-            )));
-        }
-        Ok(Self { definitions })
+        Ok(Self {
+            definitions: crate::terrain::read_definitions(layers)?,
+        })
     }
 
     /// The one-based ordinal the name resolves to; zero is the null terrain.
-    pub fn ordinal(&self, name: &[u8]) -> u8 {
+    pub fn ordinal(&self, name: &[u8]) -> i32 {
         self.definitions
             .category(name)
-            .map_or(0, |position| position as u8 + 1)
+            .map_or(0, |position| position as i32 + 1)
     }
 
     /// The movement cost of a terrain bitmap palette index. An index no entry
@@ -58,7 +54,7 @@ pub(crate) fn database(sources: &[&str]) -> TerrainDatabase {
     for source in sources {
         definitions.append(source.as_bytes()).unwrap();
     }
-    TerrainDatabase::new(definitions).unwrap()
+    TerrainDatabase { definitions }
 }
 
 #[cfg(test)]
@@ -95,12 +91,11 @@ mod tests {
     }
 
     #[test]
-    fn more_categories_than_a_byte_are_refused() {
-        let categories: String = (0..256).map(|i| format!("c{i}={{}} ")).collect();
-        let mut definitions = TerrainDefinitions::default();
-        definitions
-            .append(format!("categories={{{categories}}}").as_bytes())
-            .unwrap();
-        assert!(TerrainDatabase::new(definitions).is_err());
+    fn ordinals_past_a_byte_keep_counting() {
+        // KaiserreduX declares 1,581 categories.
+        let categories: String = (0..1581).map(|i| format!("c{i}={{}} ")).collect();
+        let costs = database(&[&format!("categories={{{categories}}}")]);
+        assert_eq!(costs.ordinal(b"c255"), 256);
+        assert_eq!(costs.ordinal(b"C1580"), 1581);
     }
 }

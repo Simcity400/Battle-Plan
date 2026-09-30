@@ -1,4 +1,4 @@
-//! Windows BMP decoding for the map's index and normal bitmaps.
+//! Windows BMP decoding for the map's index and colour bitmaps.
 //!
 //! Both entry points return rows from the top-left corner whichever way the
 //! file stores them. The shipped map bitmaps declare a `biSizeImage` two bytes

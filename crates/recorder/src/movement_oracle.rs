@@ -326,7 +326,7 @@ fn compare(census: &MovementCensus, map: &MovementMap) -> Report {
                         terrain.flags,
                     );
                 }
-                if i32::from(terrain.index) != definition.terrain_index {
+                if terrain.index != definition.terrain_index {
                     report.differ(
                         province,
                         None,

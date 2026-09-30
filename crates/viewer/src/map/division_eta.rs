@@ -453,7 +453,10 @@ mod tests {
             speed_modifier: 100_000,
             speed_base: SPEED,
             current_speed: SPEED,
-            terrain_speed: vec![0],
+            terrain_speed: vec![replay::rows::TerrainSpeed {
+                terrain: 1,
+                modifier: 0,
+            }],
             ..Default::default()
         }
     }

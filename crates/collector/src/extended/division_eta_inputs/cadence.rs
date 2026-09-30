@@ -214,8 +214,8 @@ impl Store {
                         + size_of::<DivisionEtaInputsRow>()
                         + 64
                         + entry.witness.route.capacity() * 4
-                        + (row.terrain_speed.capacity()
-                            + row.leg_river_combined.capacity()
+                        + row.terrain_speed.capacity() * size_of::<TerrainSpeed>()
+                        + (row.leg_river_combined.capacity()
                             + row.leg_transport_speed.capacity()
                             + row.leg_rail_speed.capacity())
                             * 8

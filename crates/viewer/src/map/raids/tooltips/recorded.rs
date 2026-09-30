@@ -315,8 +315,9 @@ impl Context<'_, '_> {
                 .map
                 .terrain(province)
                 .ok_or("target province terrain unavailable")?;
-            let index = usize::from(terrain.index)
-                .checked_sub(1)
+            let index = usize::try_from(terrain.index)
+                .ok()
+                .and_then(|index| index.checked_sub(1))
                 .ok_or("target province has null terrain")?;
             let name = self
                 .assets

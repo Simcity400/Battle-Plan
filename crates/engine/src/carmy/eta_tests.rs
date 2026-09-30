@@ -835,7 +835,7 @@ impl<M: Memory> Memory for Production<'_, M> {
 pub(super) struct Captured {
     pub walk: EtaInputWalk,
     pub rows: Vec<EtaInputRow>,
-    pub terrain: Vec<(u8, i64)>,
+    pub terrain: Vec<(i32, i64)>,
     pub river: Vec<i64>,
     pub transport: Vec<i64>,
     pub rail: Vec<i64>,

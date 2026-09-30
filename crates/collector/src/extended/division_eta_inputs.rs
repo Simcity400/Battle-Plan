@@ -21,7 +21,7 @@ use engine::{
 };
 use replay::{
     frame::TableView,
-    rows::{DivisionEtaInputsRow, TableId, tables},
+    rows::{DivisionEtaInputsRow, TableId, TerrainSpeed, tables},
 };
 use std::{cell::RefCell, sync::Arc};
 mod cadence;
@@ -572,18 +572,10 @@ impl RangeCaptured {
             .map(|r| {
                 let terrain = self.packet.terrain();
                 let legs = self.packet.legs();
-                let pairs = &terrain[r.terrain_start..r.terrain_start + r.terrain_len];
-                let mut terrain_speed = vec![
-                    0;
-                    pairs
-                        .iter()
-                        .map(|(index, _)| usize::from(*index))
-                        .max()
-                        .unwrap_or(0)
-                ];
-                for &(index, value) in pairs {
-                    terrain_speed[usize::from(index) - 1] = value;
-                }
+                let terrain_speed = terrain[r.terrain_start..r.terrain_start + r.terrain_len]
+                    .iter()
+                    .map(|&(terrain, modifier)| TerrainSpeed { terrain, modifier })
+                    .collect();
                 let span = r.leg_start..r.leg_start + r.leg_len;
                 let optional = |values: &[i64], present: bool| {
                     if present {
