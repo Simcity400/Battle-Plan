@@ -316,6 +316,7 @@ packs!(
     ship_models,
     province_unit_order,
     naval_bases,
+    map_facilities,
     character_portraits,
     leader_portraits,
     supply_trains,
@@ -1089,6 +1090,7 @@ impl Captured {
         );
         std::mem::swap(&mut self.country_appearance, &mut packs.country_appearance);
         std::mem::swap(&mut self.naval_bases, &mut packs.naval_bases);
+        std::mem::swap(&mut self.map_facilities, &mut packs.map_facilities);
         std::mem::swap(&mut self.naval_counters, &mut packs.naval_counters);
         std::mem::swap(&mut self.railway_guns, &mut packs.railway_guns);
         std::mem::swap(&mut self.active_abilities, &mut packs.active_abilities);
@@ -2502,6 +2504,7 @@ pub(crate) struct OrdinaryPacks {
     pub(crate) naval_result_details: naval_result_details::Captured,
     pub(crate) country_appearance: country_appearance::Captured,
     pub(crate) naval_bases: naval_bases::Captured,
+    pub(crate) map_facilities: map_facilities::Captured,
     pub(crate) naval_counters: naval_counters::Captured,
     pub(crate) railway_guns: railway_guns::Captured,
     pub(crate) active_abilities: active_abilities::Captured,
@@ -2518,6 +2521,7 @@ impl OrdinaryPacks {
         &naval_result_details::TABLES,
         &country_appearance::TABLES,
         &naval_bases::TABLES,
+        &map_facilities::TABLES,
         &naval_counters::TABLES,
         &railway_guns::TABLES,
         &active_abilities::TABLES,
@@ -2532,6 +2536,7 @@ impl OrdinaryPacks {
             + self.naval_result_details.allocated_bytes()
             + self.country_appearance.allocated_bytes()
             + self.naval_bases.allocated_bytes()
+            + self.map_facilities.allocated_bytes()
             + self.naval_counters.allocated_bytes()
             + self.railway_guns.allocated_bytes()
             + self.active_abilities.allocated_bytes()
@@ -2545,6 +2550,7 @@ impl OrdinaryPacks {
         self.naval_result_details.reset();
         self.country_appearance.reset();
         self.naval_bases.reset();
+        self.map_facilities.reset();
         self.naval_counters.reset();
         self.railway_guns.reset();
         self.active_abilities.reset();
@@ -2562,6 +2568,7 @@ impl OrdinaryPacks {
             naval_result_details: naval_result_details::Captured::vacant(),
             country_appearance: country_appearance::Captured::vacant(),
             naval_bases: naval_bases::Captured::vacant(),
+            map_facilities: map_facilities::Captured::vacant(),
             naval_counters: naval_counters::Captured::vacant(),
             railway_guns: railway_guns::Captured::vacant(),
             active_abilities: active_abilities::Captured::vacant(),
@@ -2585,6 +2592,7 @@ impl OrdinaryPacks {
             naval_result_details,
             country_appearance,
             naval_bases,
+            map_facilities,
             naval_counters,
             railway_guns,
             active_abilities,

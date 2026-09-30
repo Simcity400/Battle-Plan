@@ -8,8 +8,9 @@ use std::{
 };
 
 use engine::{
-    cair_base_access_relation, cattache_relation, cmilitary_access_relation,
-    coffer_air_base_access_relation, coffer_military_access_relation,
+    cair_base_access_relation, cattache_relation, cdocking_rights_relation,
+    cmilitary_access_relation, coffer_air_base_access_relation, coffer_docking_rights_relation,
+    coffer_military_access_relation,
 };
 use installed_content::save::Save;
 use replay::{
@@ -59,7 +60,10 @@ pub(super) fn compare(
 /// country's status toward the second at `+0x2C0` through `140D18680`;
 /// `CMilitaryAccessRelation::apply_link@140D143F0` sets the first country's
 /// status toward the second at `+0x2A0` and `COfferMilitaryAccessRelation`
-/// (`140D14970`) the second's toward the first; `clear_link` removes them, so
+/// (`140D14970`) the second's toward the first;
+/// `CDockingRightsRelation::apply_link@14196E2C0` sets the first's toward the
+/// second at `+0x2B0` and `COfferDockingRightsRelation` (`14196E3C0`) the
+/// second's toward the first; `clear_link` removes them, so
 /// each saved relation of those types is one set slot. A relation is saved
 /// under both endpoints; the slot is counted once. The co-belligerent byte
 /// (`+0x310`) is rebuilt at load by `RebuildWartimeAllies@140D31E20` and never
@@ -86,6 +90,8 @@ pub(super) fn compare_links(
     ];
     let access = spelling(cmilitary_access_relation::TYPE)?;
     let offered_access = spelling(coffer_military_access_relation::TYPE)?;
+    let docking = spelling(cdocking_rights_relation::TYPE)?;
+    let offered_docking = spelling(coffer_docking_rights_relation::TYPE)?;
     let mut expected: BTreeMap<(&[u8], &[u8]), u8> = BTreeMap::new();
     for relation in &save.relation_tuples {
         let kind = relation.kind.as_slice();
@@ -99,6 +105,10 @@ pub(super) fn compare_links(
             (forward, RelationLinkRow::MILITARY_ACCESS)
         } else if kind == offered_access {
             (reverse, RelationLinkRow::MILITARY_ACCESS)
+        } else if kind == docking {
+            (forward, RelationLinkRow::DOCKING_RIGHTS)
+        } else if kind == offered_docking {
+            (reverse, RelationLinkRow::DOCKING_RIGHTS)
         } else {
             continue;
         };

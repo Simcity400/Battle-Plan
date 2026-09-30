@@ -777,6 +777,7 @@ pub mod ship_class_definition;
 pub(crate) mod slot_set;
 pub mod snow_mud_scene_constants_layout;
 pub mod snow_mud_staging_layout;
+pub mod special_facility_flags;
 pub mod sprite_constant_buffer_layout;
 pub mod sprite_functions;
 pub mod sprite_vertex;

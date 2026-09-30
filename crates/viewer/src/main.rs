@@ -1235,7 +1235,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
              {} rows with an unnamed type token, {} with no slot at their location; \
              {} slots hidden by fog of war, {} hub slots the port or city graphics carry \
              ({} kept, naval bases incomplete), {} undetected foreign need_detection slots hidden, \
-             {} kept with detection unrecorded",
+             {} kept with detection unrecorded, {} floating harbours undecided",
             building_summary.slots,
             building_summary.built,
             building_summary.placed,
@@ -1249,7 +1249,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             building_summary.hubs_left_to_another_layer,
             building_summary.unknown_hub_membership,
             building_summary.undetected,
-            building_summary.unknown_detection
+            building_summary.unknown_detection,
+            building_summary
+                .unknown_floating_harbors
+                .values()
+                .sum::<usize>()
         );
         for (name, count) in &building_summary.missing_by_type {
             println!("  no authored slot: {name} x{count}");
@@ -1257,8 +1261,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for (name, count) in &building_summary.unresolved_by_type {
             println!("  no entity: {name} x{count}");
         }
-        for (reason, count) in &building_summary.refused_tokens {
-            println!("  refused token: {reason} x{count}");
+        // The refused tokens and the floating harbours by reason, as the window, a capture and
+        // map details list them.
+        for line in building_summary.warnings() {
+            println!("  {line}");
         }
         println!(
             "Railways: {} recorded graph curves, {} dropped for a missing anchor, {} curve samples, \
@@ -1385,7 +1391,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // counters
         println!(
-            "Counters: {} land ({} between provinces), {} naval ({} task forces not drawn, {} standing for an unplaced route); {} air bases ({} showing their plane count, {} hidden by fog of war), {} naval bases ({} with an unreadable country list); {} land combats, {} naval combats; {} stacks with no anchor",
+            "Counters: {} land ({} between provinces), {} naval ({} task forces not drawn, {} standing for an unplaced route); {} air bases ({} showing their plane count, {} hidden by fog of war), {} naval bases, {} naval HQs, {} facilities ({} unresolved sprites; undecided: {} bases, {} HQs, {} facilities); {} land combats, {} naval combats; {} stacks with no anchor",
             counter_report.land_counters,
             counter_report.moving,
             counter_report.naval_counters,
@@ -1403,7 +1409,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.air_base_counts,
             counter_report.hidden_air_bases,
             counter_report.naval_bases,
-            counter_report.unknown_naval_base_lists,
+            counter_report.naval_headquarters,
+            counter_report.facilities,
+            counter_report
+                .unresolved_facility_sprites
+                .values()
+                .sum::<usize>(),
+            counter_report.unknown_bases.totals()[0],
+            counter_report.unknown_bases.totals()[1],
+            counter_report.unknown_bases.totals()[2],
             counter_report.land_combats,
             counter_report.naval_combats,
             counter_report.unanchored

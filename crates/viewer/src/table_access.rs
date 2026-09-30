@@ -219,14 +219,19 @@ impl TokenKeys {
 
     /// The content key a spelling names; `None` when content has none.
     pub fn resolve(&self, spelling: &str) -> Result<Option<&str>, String> {
-        match self.0.get(&fold_token(spelling)).map(Vec::as_slice) {
-            None => Ok(None),
-            Some([key]) => Ok(Some(key)),
-            Some(keys) => Err(format!(
+        match self.keys(spelling) {
+            [] => Ok(None),
+            [key] => Ok(Some(key)),
+            keys => Err(format!(
                 "token {spelling} names several content keys: {}",
                 keys.join(", ")
             )),
         }
+    }
+
+    /// Every content key equal to a spelling under the lexer's fold, in the order given.
+    pub fn keys(&self, spelling: &str) -> &[String] {
+        self.0.get(&fold_token(spelling)).map_or(&[], Vec::as_slice)
     }
 }
 
