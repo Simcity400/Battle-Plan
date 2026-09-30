@@ -188,11 +188,19 @@ impl Catalogue {
         for (label, count) in [
             ("unparsed localisation lines", localisation.unparsed.len()),
             ("duplicate localisation keys", localisation.duplicates.len()),
-            ("recovered sprite files", sprites.recovered.len()),
         ] {
             if count > 0 {
                 warnings.push(format!("Recorded content contains {count} {label}."));
             }
+        }
+        // What the game does not define in the interface files, named and counted; a widget
+        // asking for a refused sprite is told why (`SpriteSet::find`).
+        if !sprites.refused.is_empty() {
+            warnings.push(format!(
+                "Recorded content contains {} refusals in its interface files: {}.",
+                sprites.refused.len(),
+                sprites.refused.join("; ")
+            ));
         }
         Ok(Self {
             content,

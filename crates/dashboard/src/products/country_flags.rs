@@ -219,28 +219,24 @@ impl ShieldStyle {
                     "{TOPBAR_GUI} declares no {PLAYER_FLAG} button with a sprite"
                 ))
             })?;
-        let sprites = installed_content::gfx::sprites(&content.layers)?;
-        let sprite = sprites
-            .get(name)
-            .ok_or_else(|| invalid(format!("{name} is not declared in the recorded content")))?;
-        let texture = |key: &str| {
-            sprite
-                .items
-                .iter()
-                .rev()
-                .find(|item| {
-                    item.key
-                        .as_deref()
-                        .is_some_and(|name| name.eq_ignore_ascii_case(key.as_bytes()))
-                })
-                .and_then(|item| item.value.scalar_str())
+        let sprites = installed_content::gfx::read(&content.layers)?;
+        let sprite = sprites.lookup(name).map_err(invalid)?;
+        let installed_content::gui::native::sprites::SpriteKind::MaskedShield { shield, .. } =
+            &sprite.facts.kind
+        else {
+            return Err(invalid(format!("{name} is not a maskedShieldType")));
+        };
+        let texture = |bytes: &[u8]| {
+            std::str::from_utf8(bytes)
+                .ok()
+                .filter(|text| !text.is_empty())
                 .map(asset_path)
         };
-        let mask = texture("textureFile2")
+        let mask = texture(&shield.texture2)
             .ok_or_else(|| invalid(format!("{name} declares no mask texture")))?;
         Ok(Self {
             mask: interface_texture(&content.layers, &mask)?,
-            overlay: texture("textureFile1")
+            overlay: texture(&shield.texture1)
                 .map(|path| interface_texture(&content.layers, &path))
                 .transpose()?,
         })

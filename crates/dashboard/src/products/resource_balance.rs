@@ -504,10 +504,7 @@ fn icons(catalogue: &Catalogue) -> io::Result<(Icons, Vec<String>)> {
                 "{TRADE_VIEW_GUI} declares no {RESOURCE_ICON} with a sprite in {RESOURCE_ROW}"
             ))
         })?;
-    let sprite =
-        catalogue.sprites.sprites.get(name).ok_or_else(|| {
-            crate::invalid(format!("{name} is not declared in the recorded content"))
-        })?;
+    let sprite = catalogue.sprites.lookup(name).map_err(crate::invalid)?;
     let texture = sprite
         .texture
         .clone()

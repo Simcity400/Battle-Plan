@@ -19,7 +19,6 @@ mod fields;
 pub mod fixed5;
 pub mod flags;
 pub mod focus;
-pub mod fonts;
 pub mod gfx;
 pub mod gui;
 pub mod ideas;

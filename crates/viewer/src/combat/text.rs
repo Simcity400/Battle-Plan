@@ -1,6 +1,7 @@
 //! Text shared by combat windows and ordinary-map hovers. Call sites own native keys and scopes.
 use super::{Chunk, INLINE_FLAG, text_icon};
 use dashboard::scripted_text::stored_text;
+use installed_content::gui::native::fonts::TextColors;
 use installed_content::localisation::{Argument as Arg, Localisation, Piece, pieces};
 
 /// CState::display_name (1409CC380): the custom name (+0x38), else the owner
@@ -116,7 +117,7 @@ impl Colours {
     /// previous one. Otherwise the code's colour (`!`: the font's) becomes
     /// current and is pushed; a code with no colour is logged and changes
     /// nothing.
-    fn apply(&mut self, code: char, table: &installed_content::fonts::TextColors) {
+    fn apply(&mut self, code: char, table: &TextColors) {
         if code == '!' && self.stack.len() > 1 {
             self.stack.pop();
             self.current = self.stack[self.stack.len() - 1];
@@ -124,13 +125,8 @@ impl Colours {
         }
         let colour = if code == '!' {
             self.base
-        } else if let Some(rgb) = table.get(&code) {
-            [
-                rgb[0] as f32 / 255.0,
-                rgb[1] as f32 / 255.0,
-                rgb[2] as f32 / 255.0,
-                1.0,
-            ]
+        } else if let Some(colour) = u8::try_from(code).ok().and_then(|code| table.get(&code)) {
+            *colour
         } else {
             return;
         };
@@ -154,7 +150,7 @@ pub(crate) fn checked_chunks(
 fn checked_runs(
     icons: &(impl super::binding::TextIcons + ?Sized),
     raw: &str,
-    colors: &installed_content::fonts::TextColors,
+    colors: &TextColors,
     colours: &mut Colours,
     icon: impl FnMut(&str) -> Option<(Box<super::Sprite>, i64)>,
 ) -> Result<Vec<Chunk>, String> {
@@ -177,7 +173,7 @@ pub(crate) fn chunks(assets: &super::Assets, raw: &str, colours: &mut Colours) -
 
 fn chunk_runs(
     raw: &str,
-    colors: &installed_content::fonts::TextColors,
+    colors: &TextColors,
     colours: &mut Colours,
     mut icon: impl FnMut(&str) -> Option<(Box<super::Sprite>, i64)>,
 ) -> Vec<Chunk> {
@@ -261,7 +257,7 @@ mod tests {
     /// pushes the font's own colour, so the next `!` returns to the first.
     #[test]
     fn colour_codes_nest_as_the_font_draws_them() {
-        let colors = [('Y', [255, 255, 0]), ('R', [255, 0, 0])]
+        let colors = [(b'Y', [1., 1., 0., 1.]), (b'R', [1., 0., 0., 1.])]
             .into_iter()
             .collect();
         let (base, yellow, red) = ([1.; 4], [1., 1., 0., 1.], [1., 0., 0., 1.]);
@@ -299,7 +295,7 @@ mod tests {
 
     #[test]
     fn a_withheld_line_still_sets_the_colour_of_the_lines_after_it() {
-        let colors = [('Y', [255, 255, 0])].into_iter().collect();
+        let colors = [(b'Y', [1., 1., 0., 1.])].into_iter().collect();
         let (base, yellow) = ([1.; 4], [1., 1., 0., 1.]);
         let mut color = Colours::new(base);
         let icons = &super::super::binding::NoIcons;
@@ -318,7 +314,7 @@ mod tests {
         .into_iter()
         .collect();
         let raw = localise(&loc, "line", &[]).unwrap();
-        let colors = [('Y', [255, 255, 0])].into_iter().collect();
+        let colors = [(b'Y', [1., 1., 0., 1.])].into_iter().collect();
         let base = [1.; 4];
         let yellow = [1., 1., 0., 1.];
         let mut color = Colours::new(base);

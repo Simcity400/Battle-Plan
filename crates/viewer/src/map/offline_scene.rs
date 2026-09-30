@@ -23,6 +23,9 @@ struct Input {
     hour: i32,
     language: String,
     camera_tilt: f32,
+    /// The client's `settings.txt` `force_pow2_textures`, which the font pages decode under.
+    #[serde(default)]
+    force_pow2_textures: bool,
     #[serde(default = "default_steps")]
     presentation_steps: u32,
     #[serde(default)]
@@ -95,7 +98,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     eprintln!("Content scene: interface assets");
     let map_data = installed_content::map::load(layers)?;
     // No settings.txt here: the constructor's 1280 x 720 frame (`142212BD0`), which decides
-    // only which resources the map-icon windows load, and the default texture decode.
+    // only which resources the map-icon windows load.
     let icons = sprites::MapIcons::load(
         layers,
         &defines,
@@ -103,7 +106,9 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         &input.language,
         [map_data.width, map_data.height],
         [1280, 720],
-        Default::default(),
+        installed_content::image::native::Decode {
+            force_pow2_textures: input.force_pow2_textures,
+        },
     )?;
     let camera_defines = camera::MapDefines::load(&defines, input.camera_tilt)?;
     let heights = HeightField {

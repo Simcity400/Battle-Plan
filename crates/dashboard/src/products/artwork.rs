@@ -153,17 +153,19 @@ impl Context {
     fn artwork(&self, token: &str) -> io::Result<Artwork> {
         let definition = self.definitions.get(token);
         let name = self.name(token);
-        let sprites = &self.catalogue.sprites.sprites;
-        let icon = match definition
-            .and_then(|d| d.icon.as_ref())
-            .and_then(|id| sprites.get(id))
-            // The installed technology interface declares GFX_<technology>_medium
-            // (e.g. basic_machine_tools). Resolve only actual authored sprites.
-            .or_else(|| {
-                (self.kind == Kind::Technology)
-                    .then(|| sprites.get(&format!("GFX_{token}_medium")))
-                    .flatten()
-            }) {
+        let sprites = &self.catalogue.sprites;
+        let find = |name: &str| sprites.find(name).map_err(invalid);
+        let declared = match definition.and_then(|d| d.icon.as_ref()) {
+            Some(id) => find(id)?,
+            None => None,
+        };
+        // The installed technology interface declares GFX_<technology>_medium
+        // (e.g. basic_machine_tools). Resolve only actual authored sprites.
+        let declared = match declared {
+            None if self.kind == Kind::Technology => find(&format!("GFX_{token}_medium"))?,
+            declared => declared,
+        };
+        let icon = match declared {
             Some(sprite) => match &sprite.texture {
                 Some(path) => Some(catalogue::texture_png(
                     &self.catalogue.content.layers,

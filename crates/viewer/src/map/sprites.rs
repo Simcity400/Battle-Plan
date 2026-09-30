@@ -27,7 +27,10 @@ use std::{collections::HashMap, io, sync::Arc};
 pub(super) mod oracle;
 
 use eframe::wgpu;
-use installed_content::{ResolvedLayers, gfx, image::dds};
+use installed_content::{
+    ResolvedLayers, gfx,
+    image::{dds, native::Decode},
+};
 
 use super::{
     // counters
@@ -102,6 +105,9 @@ impl MapIcons {
     /// `interface` and `gfx/interface` are covered content and go through
     /// [`ResolvedLayers::read`]; `gfx/fonts` is not, and [`text::Fonts::load`]
     /// states that limitation ([archived rendering notes](#) section 4).
+    ///
+    /// `decode` is the client's texture decode state
+    /// ([`installed_content::settings::SettingsKeys::texture_decode`]), which the font pages load under.
     pub fn load(
         layers: &ResolvedLayers,
         defines: &installed_content::defines::Defines,
@@ -109,7 +115,7 @@ impl MapIcons {
         language: &str,
         map_size: [u32; 2],
         gui_viewport: [u32; 2],
-        decode: installed_content::image::native::Decode,
+        decode: Decode,
     ) -> io::Result<Self> {
         let mut images = Vec::new();
         // The label sprite and font are the ones `mapicons.gui` names.
@@ -124,8 +130,16 @@ impl MapIcons {
         let mut font_warnings = Vec::new();
         // The battle-plan label font is named by `maparrows.txt`'s `arrowText`.
         let arrow_font = super::orders::arrow_text_font(layers)?;
+        // The fonts and sprites of one read of the interface files, as the game reads them.
+        let registry = installed_content::gui::native::resources::Registry::load(layers)?;
+        let interface = Interface {
+            sprites: gfx::SpriteSet::new(&registry.files),
+            registry,
+            decode,
+        };
         let fonts = text::Fonts::load(
             layers,
+            &interface,
             language,
             &text::DeclaredFonts {
                 label: &labels.font,
@@ -140,8 +154,8 @@ impl MapIcons {
             &mut images,
             &mut font_warnings,
         )?;
-        let sprites = gfx::sprites(layers)?;
-        let victory_points = load_sheet(layers, &sprites, &labels.sprite, &mut images)?;
+        let sprites = &interface.sprites;
+        let victory_points = load_sheet(layers, sprites, &labels.sprite, &mut images)?;
         // Flag and portrait reads happen after this load returns, so the lazy
         // stores keep their own handle on the layers.
         let shared = Arc::new(layers.clone());
@@ -151,22 +165,47 @@ impl MapIcons {
             &shared,
             (layouts, windows),
             defines,
-            &sprites,
+            sprites,
             (language, map_size, decode),
             &mut images,
             &lazy,
         )?;
         counters.warnings.extend(font_warnings);
+        // What the game does not define in the interface files (each file's own level, each
+        // sprite and each font declaration), named and counted; a consumer asking for a refused
+        // sprite is told why ([`gfx::SpriteSet::lookup`]), and a refused font does not load
+        // ([`text::load`]).
+        let refused: Vec<String> = sprites
+            .refused
+            .iter()
+            .cloned()
+            .chain(
+                interface
+                    .registry
+                    .fonts
+                    .fonts()
+                    .iter()
+                    .flat_map(|font| &font.facts.refusals)
+                    .map(|refusal| format!("font {refusal}")),
+            )
+            .collect();
+        if !refused.is_empty() {
+            counters.warnings.push(format!(
+                "Interface files: {} refusals of what the game does not define: {}.",
+                refused.len(),
+                refused.join("; ")
+            ));
+        }
         let combat = crate::combat::Assets::load(
             &shared,
             defines,
-            &sprites,
+            &interface,
             &counters.flags,
             language,
             &mut images,
             &lazy,
         )?;
-        let raids = super::raids::RaidAssets::load(layers, defines, map, &mut images)?;
+        let raids = super::raids::RaidAssets::load(layers, defines, map, sprites, &mut images)?;
         if images.len() >= DYNAMIC_BASE {
             return Err(invalid("more static icon pages than texture ids"));
         }
@@ -201,10 +240,18 @@ impl MapIcons {
     }
 }
 
+/// The interface files as the game read them (the resources and each sprite by name), and the
+/// client's texture decode state.
+pub struct Interface {
+    pub registry: installed_content::gui::native::resources::Registry,
+    pub sprites: gfx::SpriteSet,
+    pub decode: Decode,
+}
+
 /// Loads one declared sprite and appends its texture to `images`.
 pub fn load_sheet(
     layers: &ResolvedLayers,
-    sprites: &std::collections::BTreeMap<String, gfx::SpriteType>,
+    sprites: &gfx::SpriteSet,
     name: &str,
     images: &mut Vec<dds::Texture>,
 ) -> io::Result<SpriteSheet> {
@@ -223,12 +270,10 @@ pub fn load_sheet(
 /// callers can decode sheets on scoped threads and append in a fixed order.
 pub fn decode_sheet(
     layers: &ResolvedLayers,
-    sprites: &std::collections::BTreeMap<String, gfx::SpriteType>,
+    sprites: &gfx::SpriteSet,
     name: &str,
 ) -> io::Result<(dds::Texture, u32, [u32; 2])> {
-    let sprite = sprites
-        .get(name)
-        .ok_or_else(|| invalid(format!("interface/*.gfx declares no sprite {name}")))?;
+    let sprite = sprites.lookup(name).map_err(invalid)?;
     let path = sprite
         .texture
         .as_deref()

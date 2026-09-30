@@ -10,7 +10,8 @@ use installed_content::{
     ResolvedLayers,
     defines::Defines,
     flags::FlagSet,
-    fonts, gfx, gui,
+    gfx, gui,
+    gui::native::{fonts::TextColors, sprites::SpriteKind},
     image::{dds, tga},
 };
 use std::{
@@ -31,7 +32,6 @@ enum WantedSprite {
     /// A leader portrait: decoded the first time a window draws it.
     Lazy(String),
     Load {
-        progress: bool,
         first: String,
         second: Option<String>,
     },
@@ -59,7 +59,7 @@ pub struct Assets {
     sprites: BTreeMap<String, Sprite>,
     /// Leader portrait sprites by name: their texture and declaration, drawn
     /// once `portraits` has decoded the texture.
-    lazy_sprites: BTreeMap<String, (String, gfx::SpriteType, Flags)>,
+    lazy_sprites: BTreeMap<String, (String, Declaration, Flags)>,
     portraits: Arc<LazyImages>,
     pub fonts: BTreeMap<String, text::Font>,
     /// The normal set, decoded as windows draw it.
@@ -70,7 +70,8 @@ pub struct Assets {
     pub inline_flag_size: [f32; 2],
     /// The range of convoy weapon values the content allows, fixed5.
     pub convoy_weapon_bound: Result<[i64; 2], String>,
-    pub text_colors: fonts::TextColors,
+    /// The global `textcolors` table, as the game's last block read left it.
+    pub text_colors: TextColors,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
     /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF` (1415B06C0),
@@ -118,7 +119,6 @@ impl Assets {
             declaration,
             *flags,
             sheet,
-            false,
             None,
         )))
     }
@@ -189,49 +189,152 @@ struct Flags {
     tiling_center: bool,
 }
 
-/// The declaration's boolean fields, or which one is a block, which the
-/// game's reader takes as the declaration's own fields ([`boolean`]).
-fn sprite_flags(declaration: &gfx::SpriteType) -> Result<Flags, String> {
-    Ok(Flags {
-        vertical: boolean(&declaration.items, "horizontal")? == Some(false),
-        tiling_center: boolean(&declaration.items, "tilingCenter")? == Some(true),
-    })
+/// What a combat widget draws from a declaration: a sprite's fields as the game reads them, the
+/// `core.gui` tooltip box's own, or a bare texture.
+#[derive(Clone, Debug)]
+struct Declaration {
+    /// The kind's texture, else its `textureFile1`.
+    first: Option<String>,
+    /// `textureFile2`.
+    second: Option<String>,
+    frames: u32,
+    progress: bool,
+    /// `size`, each axis the sheet's frame size when the declaration does not give it.
+    size: Option<[Option<f32>; 2]>,
+    /// `effectFile = gfx/FX/progress_startend.lua`.
+    start_end: bool,
+    /// A cornered tile's `borderSize`.
+    border: Option<[f32; 2]>,
+    /// The flags, or which one the game reads as the declaration's own fields.
+    flags: Result<Flags, String>,
+}
+
+impl Declaration {
+    /// A declared sprite, from the fields its kind's reader stores.
+    fn sprite(sprite: &gfx::SpriteType) -> Self {
+        let text = |bytes: &[u8]| {
+            std::str::from_utf8(bytes)
+                .ok()
+                .filter(|text| !text.is_empty())
+                .map(path)
+        };
+        let start_end = |effect: &[u8]| effect.ends_with(b"progress_startend.lua");
+        let size = |size: &[i32; 2]| Some(size.map(|axis| Some(axis as f32)));
+        let mut declaration = Self::texture(sprite.texture.clone());
+        declaration.frames = sprite.frames;
+        match &sprite.facts.kind {
+            SpriteKind::Plain(plain) | SpriteKind::FrameAnimated { plain, .. } => {
+                declaration.start_end = start_end(&plain.effect_file);
+            }
+            SpriteKind::Tile { plain, size: tile } => {
+                declaration.start_end = start_end(&plain.effect_file);
+                declaration.size = size(tile);
+            }
+            SpriteKind::MaskedShield { shield, .. } => {
+                declaration.first = declaration.first.or_else(|| text(&shield.texture1));
+                declaration.second = text(&shield.texture2);
+                declaration.start_end = start_end(&shield.effect_file);
+            }
+            SpriteKind::CorneredTile(tile) => {
+                declaration.size = size(&tile.size);
+                declaration.start_end = start_end(&tile.effect_file);
+                declaration.border = Some(tile.border.map(|axis| axis as f32));
+                declaration.flags = Ok(Flags {
+                    vertical: false,
+                    tiling_center: tile.tiling_center,
+                });
+            }
+            SpriteKind::Progress(progress) => {
+                declaration.first = text(&progress.texture1);
+                declaration.second = text(&progress.texture2);
+                declaration.progress = true;
+                declaration.size = size(&progress.size);
+                declaration.start_end = start_end(&progress.effect_file);
+                declaration.flags = Ok(Flags {
+                    vertical: !progress.horizontal,
+                    tiling_center: false,
+                });
+            }
+            SpriteKind::CircularProgress(circular) => {
+                declaration.first = text(&circular.texture1);
+                declaration.second = text(&circular.texture2);
+            }
+            SpriteKind::Text(text) => declaration.start_end = start_end(&text.effect_file),
+            SpriteKind::Resizeable(resizeable) => declaration.size = size(&resizeable.size),
+            SpriteKind::LineChart(chart) => declaration.size = size(&chart.size),
+            // A pie chart's `size` is one number, not the `{ x y }` this painter takes.
+            SpriteKind::PieChart(_) => {}
+        }
+        declaration
+    }
+
+    /// One texture drawn whole.
+    fn texture(first: Option<String>) -> Self {
+        Self {
+            first,
+            second: None,
+            frames: 1,
+            progress: false,
+            size: None,
+            start_end: false,
+            border: None,
+            flags: Ok(Flags {
+                vertical: false,
+                tiling_center: false,
+            }),
+        }
+    }
+
+    /// `core.gui`'s `ToolTip` text box as a cornered tile: CTextBox forwards its authored
+    /// border and texture to CTextSprite (14228E580/14228EE80).
+    fn tooltip(items: &[installed_content::parser::Item], texture: &str) -> Self {
+        Self {
+            first: Some(path(texture)),
+            second: string(items, "textureFile2").map(path),
+            frames: 1,
+            progress: false,
+            size: value(items, "size").and_then(|v| v.items()).map(|items| {
+                ["x", "y"].map(|axis| string(items, axis).and_then(|s| s.parse().ok()))
+            }),
+            start_end: string(items, "effectFile")
+                .is_some_and(|file| file.ends_with("progress_startend.lua")),
+            border: value(items, "borderSize")
+                .and_then(|v| v.items())
+                .map(|items| [number(items, "x", 0.0), number(items, "y", 0.0)]),
+            // The boolean fields, or which one is a block, which the game's reader takes as
+            // the declaration's own fields ([`boolean`]).
+            flags: (|| {
+                Ok(Flags {
+                    vertical: boolean(items, "horizontal")? == Some(false),
+                    tiling_center: boolean(items, "tilingCenter")? == Some(true),
+                })
+            })(),
+        }
+    }
 }
 
 /// One combat sprite from its declaration and its first texture's sheet.
 fn build_sprite(
     name: &str,
-    declaration: &gfx::SpriteType,
+    declaration: &Declaration,
     flags: Flags,
     mut sheet: SpriteSheet,
-    progress: bool,
     second: Option<SpriteSheet>,
 ) -> Sprite {
     sheet.frames = declaration.frames;
     sheet.name = name.to_owned();
-    let size = value(&declaration.items, "size")
-        .and_then(|v| v.items())
-        .map(|items| {
-            [
-                number(items, "x", sheet.frame_size()[0]),
-                number(items, "y", sheet.frame_size()[1]),
-            ]
-        })
-        .unwrap_or(sheet.frame_size());
+    let frame = sheet.frame_size();
+    let size = declaration.size.map_or(frame, |size| {
+        [0, 1].map(|axis| size[axis].unwrap_or(frame[axis]))
+    });
     Sprite {
         sheet,
         second,
         size,
         vertical: flags.vertical,
-        progress,
-        start_end: string(&declaration.items, "effectFile")
-            .is_some_and(|file| file.ends_with("progress_startend.lua")),
-        border: (declaration
-            .kind
-            .eq_ignore_ascii_case("corneredTileSpriteType"))
-        .then(|| value(&declaration.items, "borderSize").and_then(|v| v.items()))
-        .flatten()
-        .map(|items| [number(items, "x", 0.0), number(items, "y", 0.0)]),
+        progress: declaration.progress,
+        start_end: declaration.start_end,
+        border: declaration.border,
         tiling_center: flags.tiling_center,
     }
 }
@@ -294,17 +397,6 @@ fn collect(node: &Node, sprites: &mut BTreeSet<String>, fonts: &mut BTreeSet<Str
     }
 }
 
-fn texture_declaration(name: String, texture: String, source: &str) -> gfx::SpriteType {
-    gfx::SpriteType {
-        name,
-        kind: "spriteType".into(),
-        texture: Some(texture),
-        frames: 1,
-        always_transparent: false,
-        items: Vec::new(),
-        source: source.into(),
-    }
-}
 fn portrait_paths(items: &[installed_content::parser::Item], paths: &mut BTreeSet<String>) {
     for item in items {
         if let Some(text) = item.value.scalar_str() {
@@ -351,19 +443,18 @@ impl Assets {
     pub fn load(
         shared: &Arc<ResolvedLayers>,
         defines: &Defines,
-        declarations: &BTreeMap<String, gfx::SpriteType>,
+        interface: &crate::map::sprites::Interface,
         small: &Arc<FlagAtlas>,
         language: &str,
         images: &mut Vec<dds::Texture>,
         lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
         let layers: &ResolvedLayers = shared;
-        // Combat widgets also reference the naval leader module's nested .gfx.
-        let mut declarations = declarations.clone();
-        let nested = "interface/building_roster/naval_leader_module.gfx";
-        for declaration in gfx::parse_sprites(&layers.read(nested)?, nested)? {
-            declarations.insert(declaration.name.clone(), declaration);
-        }
+        let mut declarations: BTreeMap<String, Declaration> = interface
+            .sprites
+            .iter()
+            .map(|(name, sprite)| (name.clone(), Declaration::sprite(sprite)))
+            .collect();
         // Inventory literal portrait references once per content set, never by
         // decoding every historical hour. DDS compression stays intact on upload.
         // Each file as the characters reader reads it (the reader replay).
@@ -381,10 +472,7 @@ impl Assets {
         }
         for texture in direct_portraits {
             let key = format!("combat_portrait:{texture}");
-            declarations.insert(
-                key.clone(),
-                texture_declaration(key, texture, "common/characters"),
-            );
+            declarations.insert(key, Declaration::texture(Some(texture)));
         }
         // The one trait-name inventory (append_trait 140AD7890) and the one
         // sub-unit database, for has_trait, has_artillery_ratio, the trait
@@ -409,10 +497,7 @@ impl Assets {
                 )
                 .with_country_leader_traits(country_leader_traits.clone());
         for (key, texture) in tactics.pictures() {
-            declarations.insert(
-                key.to_owned(),
-                texture_declaration(key.to_owned(), texture, "common/combat_tactics.txt"),
-            );
+            declarations.insert(key.to_owned(), Declaration::texture(Some(texture)));
         }
         let mut windows = BTreeMap::new();
         for (file, names) in [
@@ -469,24 +554,15 @@ impl Assets {
             }
         }
         let core = gui::read(layers, "interface/core.gui")?;
-        // CTextBox forwards its authored border and texture to CTextSprite
-        // (14228E580/14228EE80); core.gfx's ToolTip sprite has no textbox
-        // border, so the GUI definition is the drawable.
+        // core.gfx's ToolTip sprite has no textbox border, so the GUI definition is the
+        // drawable.
         let tooltip = gui::find(&core, "textBoxType", "ToolTip")
             .ok_or_else(|| super::invalid("core.gui has no ToolTip"))?;
         let tooltip_texture = string(tooltip, "textureFile")
             .ok_or_else(|| super::invalid("core.gui ToolTip has no textureFile"))?;
         declarations.insert(
             "ToolTip".into(),
-            gfx::SpriteType {
-                name: "ToolTip".into(),
-                kind: "corneredTileSpriteType".into(),
-                texture: Some(path(tooltip_texture)),
-                frames: 1,
-                always_transparent: false,
-                items: tooltip.to_vec(),
-                source: "interface/core.gui".into(),
-            },
+            Declaration::tooltip(tooltip, tooltip_texture),
         );
         windows.insert("ToolTip".into(), Node::new("textBoxType", tooltip));
         for name in ["left_vertical_slider", "right_vertical_slider"] {
@@ -521,7 +597,7 @@ impl Assets {
                 || name.starts_with("combat_tactic:")
                 || name.starts_with("combat_portrait:")
                 || declarations[*name]
-                    .texture
+                    .first
                     .as_ref()
                     .is_some_and(|p| p.starts_with("gfx/leaders/"))
                 || name == &"GFX_organization_texticon"
@@ -563,43 +639,31 @@ impl Assets {
                 continue;
             }
             let Some(declaration) = declarations.get(&name) else {
-                let warning =
-                    format!("Combat UI: sprite {name} is not declared; its widget stays empty.");
+                // Why no drawable declaration: none, or a refused one.
+                let why = interface.sprites.lookup(&name).err().unwrap_or_default();
+                let warning = format!("Combat UI: {why}; its widget stays empty.");
                 planned.push((name, WantedSprite::Warn(warning)));
                 continue;
             };
-            let progress = declaration.kind.eq_ignore_ascii_case("progressbartype");
-            let first = declaration
-                .texture
-                .as_deref()
-                .or_else(|| string(&declaration.items, "textureFile1"));
-            let Some(first) = first else {
+            let Some(first) = declaration.first.clone() else {
                 let warning = format!("Combat UI: {name} has no texture; widget stays empty.");
                 planned.push((name, WantedSprite::Warn(warning)));
                 continue;
             };
-            let first = path(first);
             if is_uncovered(&first) {
                 uncovered_portraits = true;
             }
-            let second = string(&declaration.items, "textureFile2").map(path);
+            let second = declaration.second.clone();
             // A plain leader portrait decodes on first draw: a content set can
             // declare one for every character of thousands of countries.
-            if !progress && second.is_none() && first.starts_with("gfx/leaders/") {
+            if !declaration.progress && second.is_none() && first.starts_with("gfx/leaders/") {
                 planned.push((name, WantedSprite::Lazy(first)));
                 continue;
             }
             if !first_paths.contains(&first) {
                 first_paths.push(first.clone());
             }
-            planned.push((
-                name,
-                WantedSprite::Load {
-                    progress,
-                    first,
-                    second,
-                },
-            ));
+            planned.push((name, WantedSprite::Load { first, second }));
         }
         // First textures decode on a bounded pool; the merge keeps the serial
         // warning order and texture ids.
@@ -611,7 +675,7 @@ impl Assets {
             .collect();
         let mut lazy_sprites = BTreeMap::new();
         for (name, sprite) in planned {
-            let (progress, first, second) = match sprite {
+            let (first, second) = match sprite {
                 WantedSprite::Skip => continue,
                 WantedSprite::Warn(warning) => {
                     warnings.push(warning);
@@ -619,7 +683,7 @@ impl Assets {
                 }
                 WantedSprite::Lazy(first) => {
                     let declaration = declarations[&name].clone();
-                    match sprite_flags(&declaration) {
+                    match declaration.flags.clone() {
                         Ok(flags) => {
                             lazy_sprites.insert(name, (first, declaration, flags));
                         }
@@ -629,16 +693,12 @@ impl Assets {
                     }
                     continue;
                 }
-                WantedSprite::Load {
-                    progress,
-                    first,
-                    second,
-                } => (progress, first, second),
+                WantedSprite::Load { first, second } => (first, second),
             };
             let declaration = declarations
                 .get(&name)
                 .expect("wanted sprite declared up front");
-            let flags = match sprite_flags(declaration) {
+            let flags = match declaration.flags.clone() {
                 Ok(flags) => flags,
                 Err(reason) => {
                     warnings.push(format!(
@@ -676,7 +736,7 @@ impl Assets {
             let second = second
                 .map(|p| load_image(layers, &p, images, false))
                 .transpose()?;
-            let sprite = build_sprite(&name, declaration, flags, sheet, progress, second);
+            let sprite = build_sprite(&name, declaration, flags, sheet, second);
             sprites.insert(name, sprite);
         }
         let reader = Arc::clone(shared);
@@ -695,16 +755,22 @@ impl Assets {
         if uncovered_portraits {
             warnings.push("Combat portraits and inline icons under gfx/leaders and gfx/texticons are outside this recording's content hash coverage; their visual identity is UNVERIFIED without a covered content manifest.".into());
         }
-        let definitions = fonts::read_definitions(layers)?;
         let fonts = wanted_fonts
             .into_iter()
             .map(|name| {
                 Ok((
                     name.clone(),
-                    text::load(layers, &definitions, &name, language, images)?,
+                    text::load(layers, interface, &name, language, images)?,
                 ))
             })
-            .collect::<io::Result<_>>()?;
+            .collect::<io::Result<BTreeMap<_, _>>>()?;
+        for font in fonts.values() {
+            warnings.extend(
+                font.logged
+                    .iter()
+                    .map(|note| format!("Combat UI: {note}, as in the game.")),
+            );
+        }
         // 14162FC20: maskedShieldType defaults to the normal flag atlas; the
         // medium one is a different ordinary-sprite path. Bake only the point
         // sampled shield alpha at twice its resolution, preserving native2:1
@@ -755,7 +821,7 @@ impl Assets {
             small_flags: Arc::clone(small),
             inline_flag_size: small_cell.map(|side| side as f32),
             convoy_weapon_bound,
-            text_colors: fonts::read_text_colors(layers)?,
+            text_colors: interface.registry.text_colors.clone(),
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),
             naval_name_defines: ["BATTLE_NAME_VP_FACTOR", "BATTLE_NAME_VP_CUTOFF"]
