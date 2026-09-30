@@ -7,9 +7,11 @@
 //! Fixed5 weight, and `1409F3010` reverses each model list and keeps the first
 //! occurrence of each entity. No chosen model or eligible-pool cache is input.
 //!
-//! A pool bucket is `default`, a continent `map/default.map` names, a country
-//! tag `common/country_tags` declares, or `FACTION_` and such a tag; anything
-//! else is refused rather than guessed.
+//! Each `graphic_db` file is read as `1409F6100` reads it ([`document`]): a
+//! bucket is the `default` keyword, a continent `map/default.map` names, a
+//! three-letter country tag `common/country_tags` declares (upper-cased), or
+//! `FACTION_` and three characters; the game reports any other key and skips
+//! its block.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,7 +20,11 @@ use std::{
 
 use installed_content::{
     ResolvedLayers,
-    parser::{self, Item, Value},
+    fixed5::script_fixed5,
+    parser::{
+        self, Item, Operator, Value,
+        native::{self, Shape},
+    },
     save::Decimal,
 };
 
@@ -101,16 +107,28 @@ impl Limit {
             .iter()
             .map(|item| {
                 let name = key(item)?;
-                // A comparison other than `=` arrives as an unkeyed operator
-                // item; only the scope-free equality forms are modelled.
-                Ok(match (name.to_ascii_lowercase().as_str(), &item.value) {
-                    ("has_dlc", value) => match value.scalar_str() {
+                if item.operator != Operator::Equals {
+                    return Ok(Self::Unsupported(format!(
+                        "{name} {}",
+                        String::from_utf8_lossy(item.operator.text())
+                    )));
+                }
+                // Only the scope-free equality forms are modelled, and a
+                // built-in only on its keyword token: LoadKey (1405434F0)
+                // gives a quoted key (token 0xF) no built-in, and whether a
+                // scripted trigger of that name exists is not resolved here.
+                let keyword = item.keyword().map(parser::Keyword::folded);
+                Ok(match (keyword.as_deref(), &item.value) {
+                    (Some(b"has_dlc"), value) => match value.scalar_str() {
                         Some(dlc) if !dlc.starts_with('@') => Self::Dlc(dlc.to_owned()),
                         _ => Self::Unsupported(format!("has_dlc {value:?}")),
                     },
-                    ("and", Value::Block(inner)) => Self::All(Self::parse(inner)?),
-                    ("or", Value::Block(inner)) => Self::Any(Self::parse(inner)?),
-                    ("not", Value::Block(inner)) => Self::Not(Self::parse(inner)?),
+                    (Some(b"and"), Value::Block(inner)) => Self::All(Self::parse(inner)?),
+                    (Some(b"or"), Value::Block(inner)) => Self::Any(Self::parse(inner)?),
+                    (Some(b"not"), Value::Block(inner)) => Self::Not(Self::parse(inner)?),
+                    (None, _) if item.key_quoted => {
+                        Self::Unsupported(format!("quoted {name:?} (no built-in token)"))
+                    }
                     _ => Self::Unsupported(name.to_owned()),
                 })
             })
@@ -222,6 +240,87 @@ pub struct Names {
     pub continents: BTreeSet<String>,
 }
 
+impl Names {
+    /// The bucket a top-level key names (`1409F6100`), `None` for a key the
+    /// game reports and skips.
+    fn bucket(&self, key: &[u8], default: bool) -> Option<Bucket> {
+        if default {
+            return Some(Bucket::Default);
+        }
+        let key = std::str::from_utf8(parser::c_string(key)).ok()?;
+        // FindTokenFromSsoString (1424A7060) and the continent entry's valid
+        // flag (140AAE420, +0x28): the lexer's lookup folds case.
+        let folded = key.to_ascii_lowercase();
+        if self.continents.contains(&folded) {
+            return Some(Bucket::Continent(folded));
+        }
+        if key.len() == 3 {
+            // SsoStringToUpperInPlace, then FindCountryIndexByTag (14070F050).
+            let tag = key.to_ascii_uppercase();
+            return self
+                .countries
+                .contains(&tag)
+                .then_some(Bucket::Country(tag));
+        }
+        // SplitStringOnChar on `_`: exactly `FACTION` and three characters,
+        // hashed as written (FNV-1a), whether or not a country has the tag.
+        match key.split('_').collect::<Vec<_>>()[..] {
+            ["FACTION", tag] if tag.len() == 3 => Some(Bucket::Faction(tag.to_owned())),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Node {
+    File,
+    /// CEquipmentGraphicPoolTypeMap: each key through `1409F9EA0`.
+    Bucket,
+    /// `1409F9EA0`'s loop: `pool` (0x4B29) read when its value is `{`.
+    Equipment,
+    /// CEquipmentGraphicPool::vf4 (`1409F93C0`).
+    Pool,
+}
+
+/// One `graphic_db` file through the native reader replay: `1409F6100`
+/// loops to the end of the text; its buckets are CPersistent objects.
+fn document(bytes: &[u8], names: &Names) -> io::Result<Vec<Item>> {
+    // 1409F8C30 constructs each file's lexer in mode 1 (1424A6370).
+    let read = native::read(
+        bytes,
+        native::Mode::SkipMark,
+        Node::File,
+        &mut |node, field| match node {
+            Node::File => match names.bucket(&field.key.text, field.keyword_is("default")) {
+                // ReadObjectFromParser (1424ABB40).
+                Some(_) => Shape::Object(Node::Bucket),
+                // RecordError (1424ACF90).
+                None => Shape::Skip,
+            },
+            // Anything but `{` is RecordError.
+            Node::Bucket => Shape::ObjectOrSkip(Node::Equipment),
+            Node::Equipment if field.keyword_is("pool") => Shape::ObjectOrSkip(Node::Pool),
+            Node::Equipment => Shape::Skip,
+            Node::Pool => match field.keyword().as_deref() {
+                // ReadFixed5 (1424ABB10) into the three weights (+0x60).
+                Some(b"weight" | b"models_weight" | b"icons_weight") => Shape::One,
+                // The lexer's tokens to `}`, `@` names resolved, only after `{`.
+                Some(b"models" | b"icons") if field.opens() => Shape::RawList,
+                // 1409F3710, 1409F3A70, 1409F33B0: the value slot's tokens to `}`.
+                Some(b"ideologies" | b"cultures" | b"sub_units") => Shape::List,
+                // The pool's CAndTrigger (+8, vtable +0x28).
+                Some(b"limit") => Shape::Trigger,
+                // ReportUnexpectedToken (1424AD100).
+                _ => Shape::Skip,
+            },
+        },
+    );
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(cause.to_string()));
+    }
+    Ok(read.items)
+}
+
 impl Content {
     pub fn load(layers: &ResolvedLayers, names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
@@ -230,9 +329,8 @@ impl Content {
         for path in
             layers.descriptor_paths("gfx/interface/equipmentdesigner/graphic_db", &[".txt"])?
         {
-            let document = parser::parse(&layers.read_uncovered(&path)?)?;
-            content
-                .read_document(&document, names)
+            document(&layers.read_uncovered(&path)?, names)
+                .and_then(|items| content.read_document(&items, names))
                 .map_err(|error| invalid(format!("{path}: {error}")))?;
         }
         Ok(content)
@@ -242,61 +340,62 @@ impl Content {
     #[cfg(test)]
     pub(crate) fn from_test_document(text: &[u8], names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
-        content.read_document(&parser::parse(text)?, names)?;
+        content.read_document(&document(text, names)?, names)?;
         Ok(content)
     }
 
-    fn read_document(&mut self, document: &parser::Document, names: &Names) -> io::Result<()> {
-        for root in &document.items {
-            let name = key(root)?;
-            let bucket = if name.eq_ignore_ascii_case("default") {
-                Bucket::Default
-            } else if names.continents.contains(&name.to_ascii_lowercase()) {
-                Bucket::Continent(name.to_ascii_lowercase())
-            } else if names.countries.contains(name) {
-                Bucket::Country(name.to_owned())
-            } else if let Some(tag) = name.strip_prefix("FACTION_")
-                && names.countries.contains(tag)
-            {
-                Bucket::Faction(tag.to_owned())
-            } else {
-                return Err(invalid(format!(
-                    "unsupported equipment graphics context {name:?}"
-                )));
+    fn read_document(&mut self, items: &[Item], names: &Names) -> io::Result<()> {
+        for root in items {
+            let Some(bucket) = names.bucket(
+                root.key.as_deref().unwrap_or_default(),
+                root.keyword_is("default"),
+            ) else {
+                continue;
             };
             let definitions = self.buckets.entry(bucket).or_default();
-            for equipment in block(&root.value)? {
-                let name = key(equipment)?;
+            for equipment in root.value.items().unwrap_or_default() {
+                let Some(items) = equipment.value.items() else {
+                    continue;
+                };
                 // CHashedString uses ASCII-folded FNV and _stricmp
                 // (140BBA1B0 / 14253D9F8); entity identifiers below stay exact.
-                let pools = definitions.entry(name.to_ascii_lowercase()).or_default();
-                for item in block(&equipment.value)? {
-                    if !key(item)?.eq_ignore_ascii_case("pool") {
-                        return Err(invalid(
-                            "equipment graphics definition requires pool blocks",
-                        ));
-                    }
+                let pools = definitions
+                    .entry(key(equipment)?.to_ascii_lowercase())
+                    .or_default();
+                for item in items.iter().filter(|item| item.keyword_is("pool")) {
+                    let Some(fields) = item.value.items() else {
+                        continue;
+                    };
                     let mut pool = Pool::default();
-                    for field in block(&item.value)? {
-                        match key(field)?.to_ascii_lowercase().as_str() {
-                            "weight" => pool.weight = fixed(&field.value)?,
-                            "models_weight" => pool.models_weight = fixed(&field.value)?,
-                            "icons_weight" => {
-                                fixed(&field.value)?;
+                    for field in fields {
+                        // ReadFixed5: a failed conversion keeps the slot.
+                        let fixed = |slot: &mut i64| {
+                            if let Some(value) =
+                                script_fixed5(field.value.scalar().unwrap_or_default())
+                            {
+                                *slot = value;
                             }
-                            "models" => pool.models.extend(strings(&field.value)?),
-                            "icons" => {
-                                strings(&field.value)?;
+                        };
+                        match field.keyword().map(parser::Keyword::folded).as_deref() {
+                            Some(b"weight") => fixed(&mut pool.weight),
+                            Some(b"models_weight") => fixed(&mut pool.models_weight),
+                            // Any other value is RecordError, the list unread.
+                            Some(b"models") if field.value.items().is_some() => {
+                                pool.models.extend(strings(&field.value)?)
                             }
-                            "sub_units" => pool.subunits.extend(folded_strings(&field.value)?),
-                            "ideologies" => pool.ideologies.extend(folded_strings(&field.value)?),
-                            "cultures" => pool.cultures.extend(folded_strings(&field.value)?),
-                            "limit" => pool.limit.extend(Limit::parse(block(&field.value)?)?),
-                            other => {
-                                return Err(invalid(format!(
-                                    "unsupported equipment graphics pool field {other:?}"
-                                )));
+                            Some(b"sub_units") => {
+                                pool.subunits.extend(folded_strings(&field.value)?)
                             }
+                            Some(b"ideologies") => {
+                                pool.ideologies.extend(folded_strings(&field.value)?)
+                            }
+                            Some(b"cultures") => {
+                                pool.cultures.extend(folded_strings(&field.value)?)
+                            }
+                            Some(b"limit") => {
+                                pool.limit.extend(Limit::parse(block(&field.value)?)?)
+                            }
+                            _ => {}
                         }
                     }
                     // Icon-only pools contribute no model entries in native.
@@ -395,33 +494,17 @@ fn block(value: &Value) -> io::Result<&[Item]> {
     }
 }
 
+/// A list's entries as stored text, `@` names already resolved.
 fn strings(value: &Value) -> io::Result<Vec<String>> {
     block(value)?
         .iter()
         .map(|item| {
-            if item.key.is_some() {
-                return Err(invalid("equipment graphics list contains a keyed entry"));
-            }
-            let text = item
-                .value
-                .scalar_str()
-                .ok_or_else(|| invalid("equipment graphics list contains a non-string"))?;
-            if text.starts_with('@') {
-                return Err(invalid(
-                    "equipment graphics script variables are unsupported",
-                ));
-            }
-            Ok(text.to_owned())
+            item.value
+                .c_str()
+                .map(str::to_owned)
+                .map_err(|error| invalid(format!("equipment graphics list: {error}")))
         })
         .collect()
-}
-
-fn fixed(value: &Value) -> io::Result<i64> {
-    authored_fixed5(
-        value
-            .scalar()
-            .ok_or_else(|| invalid("equipment graphics weight is not a scalar"))?,
-    )
 }
 
 /// An authored decimal as the engine reads it: CReader::ReadFixed5 ->
@@ -459,7 +542,7 @@ mod tests {
 
     fn content(text: &[u8]) -> io::Result<Content> {
         let mut content = Content::default();
-        content.read_document(&parser::parse(text).unwrap(), &names())?;
+        content.read_document(&document(text, &names())?, &names())?;
         Ok(content)
     }
 
@@ -478,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn buckets_accept_declared_tags_factions_and_continents_and_refuse_the_rest() {
+    fn buckets_accept_declared_tags_factions_and_continents_and_skip_the_rest() {
         let factions = ["EN2".to_owned()];
         let pools = content(
             br#"
@@ -503,9 +586,24 @@ mod tests {
             .lookup(&context(None, &[]), |_| Some(true), |_| true)
             .unwrap();
         assert_eq!(found.len(), 2);
-        for rejected in [&b"NOPE = {}"[..], b"FACTION_XX = {}", b"africa = {}"] {
-            assert!(content(rejected).is_err());
-        }
+        // 1409F6100 upper-cases a three-letter key before the country lookup,
+        // and reports and skips a key that names no bucket.
+        let pools = content(
+            br#"
+            ger = { tank = { pool = { models = { lower } } } }
+            NOPE = { tank = { pool = { models = { nope } } } }
+            FACTION_XX = { tank = { pool = { models = { short } } } }
+            "default" = { tank = { pool = { models = { quoted } } } }
+            africa = { tank = { pool = { models = { africa } } } }
+            FACTION_XYZ = { tank = { pool = { models = { unknown_faction } } } }
+        "#,
+        )
+        .unwrap();
+        let found = pools
+            .lookup(&context(Some("GER"), &factions), |_| Some(true), |_| true)
+            .unwrap();
+        let entities: Vec<_> = found.iter().map(|c| c.entity.as_str()).collect();
+        assert_eq!(entities, ["lower"]);
     }
 
     #[test]
@@ -536,6 +634,17 @@ mod tests {
         let scoped =
             content(b"default = { tank = { pool = { limit = { tag = GER } models = { x } } } }")
                 .unwrap();
+        // A quoted `"has_dlc"` is no built-in (LoadKey 1405434F0): undecided.
+        let quoted = content(
+            br#"default = { tank = { pool = { limit = { "has_dlc" = x } models = { q } } } }"#,
+        )
+        .unwrap();
+        assert!(
+            quoted
+                .lookup(&context(None, &[]), |_| Some(true), |_| true)
+                .unwrap_err()
+                .contains("quoted")
+        );
         assert!(
             scoped
                 .lookup(&context(None, &[]), |_| Some(true), |_| true)
@@ -565,9 +674,37 @@ mod tests {
         );
         let order: Vec<_> = candidates.iter().map(|c| c.entity.as_str()).collect();
         assert_eq!(order, ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn pools_follow_the_native_field_readers() {
+        let pools = content(
+            br#"
+            @weight = 4
+            default = {
+                tank = {
+                    pool = { weight = 0.1234567 models = { @weight fixed } }
+                    pool = { weight = bad models_weight = x models = kept_out unknown = { a } }
+                    other = { models = { skipped } }
+                    pool = { models = { equal } }
+                }
+                tank_1 = scalar
+            }
+        "#,
+        )
+        .unwrap();
+        let found = pools
+            .lookup(&context(None, &[]), |_| Some(true), |_| true)
+            .unwrap();
+        let found: Vec<_> = found
+            .iter()
+            .map(|c| (c.entity.as_str(), c.weight))
+            .collect();
+        // ReadFixed5 truncates past five digits and keeps the slot when it
+        // fails; `models` is read only from `{`; `@` names resolve.
         assert_eq!(
-            fixed(&Value::Scalar(b"0.1234567".to_vec())).unwrap(),
-            12_345
+            found,
+            [("equal", 100_000), ("fixed", 12_345), ("4", 12_345)]
         );
     }
 }

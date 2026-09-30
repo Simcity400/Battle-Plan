@@ -560,43 +560,28 @@ pub struct BaseResources {
 }
 
 impl BaseResources {
-    pub fn add_state_history(&mut self, input: &[u8]) -> io::Result<()> {
-        let document = crate::parser::parse(input)?;
-        let state = required_block(&document.items, b"state")?;
-        let state_id: u32 = number(state, b"id")?;
+    /// Initial resources already read by CStateTemplate's native replay
+    /// (140AAF580): ordered, repeated blocks appended, decimal i32 amounts.
+    pub fn add_state_history(&mut self, state: &crate::states::StateDefinition) -> io::Result<()> {
+        let state_id = state.id;
         if !self.states.insert(state_id) {
             return Err(invalid("duplicate base resource state history"));
         }
-        // AAF580 appends on each resources field; repeated blocks share one
-        // native vector, without clearing it or restarting its ordinals.
-        let mut ordinal = 0_u32;
-        for resources in state
-            .iter()
-            .filter(|item| item.key.as_deref() == Some(b"resources"))
-        {
-            for item in block(&resources.value)? {
-                let name = item
-                    .key
-                    .clone()
-                    .filter(|key| !key.is_empty())
-                    .ok_or_else(|| invalid("base resource has no name"))?;
-                // AAF580 -> 24B0080 reads the signed decimal prefix, then scales.
-                let amount = state_resource_integer(scalar(&item.value)?)?;
-                match self.rows.entry((state_id, name)) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert((ordinal, i64::from(amount) * super::FIXED_SCALE));
-                    }
-                    std::collections::btree_map::Entry::Occupied(_) => {
-                        // The native loader appends duplicate tokens too, but
-                        // the recorded table rejects their duplicate row key.
-                        return Err(invalid(
-                            "duplicate state/base resource declaration cannot be represented by the recorded (state, resource) key",
-                        ));
-                    }
-                }
-                ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| invalid("base resource ordinal exceeds u32"))?;
+        let resources = state
+            .resources
+            .as_ref()
+            .map_err(|why| invalid(why.clone()))?;
+        for (ordinal, (name, amount)) in resources.iter().enumerate() {
+            let ordinal =
+                u32::try_from(ordinal).map_err(|_| invalid("base resource ordinal exceeds u32"))?;
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                self.rows.entry((state_id, name.as_bytes().to_vec()))
+            {
+                entry.insert((ordinal, i64::from(*amount) * super::FIXED_SCALE));
+            } else {
+                return Err(invalid(format!(
+                    "duplicate state/base resource declaration {state_id}/{name} cannot be represented by the recorded (state, resource) key"
+                )));
             }
         }
         Ok(())
@@ -604,50 +589,11 @@ impl BaseResources {
 
     pub fn read(layers: &crate::ResolvedLayers) -> io::Result<Self> {
         let mut result = Self::default();
-        for path in layers.paths().filter(|path| {
-            path.to_ascii_lowercase().starts_with("history/states/")
-                && path.to_ascii_lowercase().ends_with(".txt")
-        }) {
-            let input = layers.read(path)?;
-            result
-                .add_state_history(&input)
-                .map_err(|error| invalid(format!("{path}: {error}")))?;
-        }
-        if result.states.is_empty() {
-            return Err(invalid("verified content contains no state history"));
+        for state in super::content_state_history(layers)?.definitions().values() {
+            result.add_state_history(state)?;
         }
         Ok(result)
     }
-}
-
-/// 24B0080 -> 254AF28 -> 253C770 uses base 10 and signed mode: stop at
-/// the first non-digit, return zero without digits, and clamp i32 overflow.
-/// This is the engine's content conversion, before AAF580 multiplies by 100000.
-fn state_resource_integer(input: &[u8]) -> io::Result<i32> {
-    let input = input
-        .iter()
-        .position(|&byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
-        .map_or(&[][..], |start| &input[start..]);
-    if input.first().is_some_and(|byte| !byte.is_ascii()) {
-        return Err(invalid(
-            "base resource has an unsupported locale-dependent leading byte",
-        ));
-    }
-    let (negative, digits) = match input {
-        [b'-', digits @ ..] => (true, digits),
-        [b'+', digits @ ..] => (false, digits),
-        digits => (false, digits),
-    };
-    let mut amount = 0_i32;
-    for &byte in digits.iter().take_while(|byte| byte.is_ascii_digit()) {
-        let digit = i32::from(byte - b'0');
-        amount = if negative {
-            amount.saturating_mul(10).saturating_sub(digit)
-        } else {
-            amount.saturating_mul(10).saturating_add(digit)
-        };
-    }
-    Ok(amount)
 }
 
 #[cfg(test)]
@@ -834,9 +780,7 @@ mod tests {
     fn base_resources_use_initial_declarations_and_preserve_native_integer_scale() {
         let mut resources = BaseResources::default();
         resources
-            .add_state_history(
-                b"state={id=1 resources={steel=-2147483648 oil=3 aluminium=10.000 chromium=-1.9 rubber=2147483648.0} history={resources={steel=999}}}",
-            )
+            .add_state_history(&super::super::history_fixture(b"state={id=1 resources={steel=-2147483648 oil=3 aluminium=10.000 chromium=-1.9 rubber=2147483648.0} history={resources={steel=999}}}"))
             .unwrap();
         assert_eq!(
             resources.rows[&(1, b"steel".to_vec())],
@@ -849,54 +793,18 @@ mod tests {
             resources.rows[&(1, b"rubber".to_vec())],
             (4, 214_748_364_700_000)
         );
-        assert!(resources.add_state_history(b"state={id=1}").is_err());
-    }
-
-    #[test]
-    fn state_resource_numbers_follow_native_decimal_prefix_and_signed_saturation() {
-        for (text, expected) in [
-            ("10.000", 10),
-            ("1.99999", 1),
-            ("-1.99999", -1),
-            ("-0.99999", 0),
-            ("+.5", 0),
-            ("+00019.25", 19),
-            ("\t\n\r\u{b}\u{c} -7.5", -7),
-            ("1e9", 1),
-            ("0x10", 0),
-            ("19suffix", 19),
-            ("", 0),
-            ("-", 0),
-            ("word", 0),
-            ("2147483646.99999", i32::MAX - 1),
-            ("2147483647.99999", i32::MAX),
-            ("2147483648", i32::MAX),
-            ("214748364800000suffix000", i32::MAX),
-            ("4294967295", i32::MAX),
-            ("4294967296", i32::MAX),
-            ("999999999999999999999999999999999999", i32::MAX),
-            ("-2147483647.99999", i32::MIN + 1),
-            ("-2147483648.99999", i32::MIN),
-            ("-2147483649", i32::MIN),
-            ("-4294967296", i32::MIN),
-            ("-999999999999999999999999999999999999", i32::MIN),
-        ] {
-            assert_eq!(
-                state_resource_integer(text.as_bytes()).unwrap(),
-                expected,
-                "{text:?}"
-            );
-        }
-        assert!(state_resource_integer(b"\xa010").is_err());
+        assert!(
+            resources
+                .add_state_history(&super::super::history_fixture(b"state={id=1}"))
+                .is_err()
+        );
     }
 
     #[test]
     fn repeated_resource_blocks_append_in_document_order() {
         let mut resources = BaseResources::default();
         resources
-            .add_state_history(
-                b"state={id=949 resources={aluminium=1} history={resources={steel=999}} resources={} resources={oil=1 steel=-1.9}}",
-            )
+            .add_state_history(&super::super::history_fixture(b"state={id=949 resources={aluminium=1} history={resources={steel=999}} resources={} resources={oil=1 steel=-1.9}}"))
             .unwrap();
         assert_eq!(resources.rows.len(), 3);
         assert_eq!(resources.rows[&(949, b"aluminium".to_vec())], (0, 100_000));
@@ -911,7 +819,9 @@ mod tests {
             b"state={id=1 resources={steel=2} resources={steel=7}}".as_slice(),
         ] {
             let mut resources = BaseResources::default();
-            let error = resources.add_state_history(input).unwrap_err();
+            let error = resources
+                .add_state_history(&super::super::history_fixture(input))
+                .unwrap_err();
             assert!(error.to_string().contains("recorded (state, resource) key"));
             assert_eq!(resources.rows[&(1, b"steel".to_vec())], (0, 200_000));
         }

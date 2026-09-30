@@ -6,7 +6,10 @@
 
 use crate::{
     ResolvedLayers,
-    parser::{self, Item},
+    crt::{Scanned, scan_i32},
+    fields::invalid,
+    modifiers,
+    parser::native::{self, Shape},
     script_files,
 };
 use std::io;
@@ -19,35 +22,80 @@ pub struct Resource {
     pub icon_frame: Option<u32>,
 }
 
-fn key(item: &Item) -> Option<&str> {
-    std::str::from_utf8(item.key.as_deref()?).ok()
-}
-
 pub fn parse(input: &[u8]) -> io::Result<Vec<Resource>> {
-    Ok(from_document(&parser::parse_unclosed(input)?.0))
-}
-
-fn from_document(document: &parser::Document) -> Vec<Resource> {
+    #[derive(Clone, Copy)]
+    enum Node {
+        File,
+        Resources,
+        Resource,
+        Modifier(modifiers::Node),
+    }
+    let mut undecided = Vec::new();
+    // LoadFile 140AB2ED0 reads both loops without an opening-brace check.
+    // CStrategicResource::vf4 140BBD150 reads icon_frame (0x2F58), cic
+    // (0x305F), convoys (0x3062), and reports/skips every unknown field.
+    // Its modifier branch (0x2965) forwards this same field to CModifier's
+    // vf4, NOT Read: verified by the tail jump at 140BBD1B0.
+    // 140AB3660 constructs each file's lexer in mode 0 (1424A6370).
+    let read = native::read(
+        input,
+        native::Mode::KeepMark,
+        Node::File,
+        &mut |node, field| match node {
+            Node::File if field.keyword_is("resources") => Shape::Object(Node::Resources),
+            Node::File => Shape::Skip,
+            Node::Resources => Shape::Object(Node::Resource),
+            Node::Resource => match field.keyword().as_deref() {
+                Some(b"icon_frame" | b"cic" | b"convoys") => Shape::One,
+                Some(b"modifier") => modifiers::shape(
+                    modifiers::Node::Modifier,
+                    field,
+                    modifiers::UNKNOWN,
+                    &mut undecided,
+                )
+                .map(Node::Modifier),
+                _ => Shape::Skip,
+            },
+            Node::Modifier(node) => {
+                modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided)
+                    .map(Node::Modifier)
+            }
+        },
+    );
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!("resources: {cause}")));
+    }
+    if let Some(cause) = undecided.first() {
+        return Err(invalid(format!("resources: {cause}")));
+    }
     let mut resources = Vec::new();
-    for root in document.get_all(b"resources") {
-        for item in root.items().unwrap_or_default() {
-            let (Some(token), Some(items)) = (key(item), item.value.items()) else {
-                continue;
-            };
-            let icon_frame = items
-                .iter()
-                .rev()
-                .find(|i| i.key.as_deref() == Some(b"icon_frame".as_slice()))
-                .and_then(|i| i.value.scalar_str())
-                .and_then(|text| text.parse::<u32>().ok())
-                .filter(|frame| *frame > 0);
+    for root in read
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("resources"))
+    {
+        for item in root.value.items().unwrap_or_default() {
+            let token = item
+                .key_str()
+                .map_err(|error| invalid(format!("resource name: {error}")))?;
+            // Constructor 140BBB090 initializes +0xDC to zero. Each %i
+            // scan (1424AB970 -> 1424B02C0) retains it on a failed scan.
+            let mut icon_frame = 0;
+            for field in item.value.items().unwrap_or_default() {
+                if field.keyword_is("icon_frame")
+                    && let Scanned::Stored(value) =
+                        scan_i32(field.value.scalar().unwrap_or_default())
+                {
+                    icon_frame = value;
+                }
+            }
             resources.push(Resource {
                 token: token.to_owned(),
-                icon_frame,
+                icon_frame: (icon_frame > 0).then_some(icon_frame as u32),
             });
         }
     }
-    resources
+    Ok(resources)
 }
 
 /// Every resource declaration in load order. A token declared again is kept as
@@ -57,10 +105,11 @@ fn from_document(document: &parser::Document) -> Vec<Resource> {
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Vec<Resource>, Vec<String>)> {
     let mut warnings = Vec::new();
     let mut result: Vec<Resource> = Vec::new();
-    for (_, document) in
-        script_files::documents(layers, "common/resources/", "Resources", &mut warnings)?
-    {
-        result.extend(from_document(&document));
+    for path in script_files::paths(layers, "common/resources/", Some(".txt")) {
+        match parse(&layers.read(&path)?) {
+            Ok(resources) => result.extend(resources),
+            Err(error) => warnings.push(format!("Resources unavailable in {path}: {error}")),
+        }
     }
     Ok((result, warnings))
 }
@@ -68,6 +117,40 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Vec<Resource>, Vec<String>)>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_dispatch_variables_recovery_and_integer_scans() {
+        let resources = parse(
+            br#"
+            @frame = "0x10"
+            "resources" = { ignored = { icon_frame = 2 } }
+            RESOURCES = { ore = {
+                unknown = { icon_frame = 99 @frame = 77 }
+                ICON_FRAME = @frame icon_frame = invalid
+                "icon_frame" = 3
+            } }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            resources,
+            [Resource {
+                token: "ore".into(),
+                icon_frame: Some(16)
+            }]
+        );
+        // A scalar reader consumes only `{`; the enclosing reader then
+        // reads icon_frame=7 and the close ends that resource.
+        let resources = parse(b"resources={ore={cic={icon_frame=7}}}").unwrap();
+        assert_eq!(resources[0].icon_frame, Some(7));
+        assert!(
+            parse(b"resources={ore={modifier={x=1}}}")
+                .unwrap_err()
+                .to_string()
+                .contains("modifier")
+        );
+        assert!(parse(b"resources={\xff").unwrap().is_empty());
+    }
 
     #[test]
     fn resources_keep_their_icon_frames_and_refuse_unusable_ones() {

@@ -14,7 +14,13 @@ use std::{
     io,
 };
 
-use installed_content::{ResolvedLayers, map::ProvinceDefinition, parser, states, terrain::DefaultMap};
+use installed_content::{
+    ResolvedLayers,
+    map::ProvinceDefinition,
+    parser::native::{self, Shape},
+    states,
+    terrain::DefaultMap,
+};
 use replay::{frame::DecodedFrame, rows::tables};
 
 /// Each authored state's continent: `None` is the native null-continent entry,
@@ -50,21 +56,35 @@ impl Content {
     }
 }
 
-/// `map/default.map`'s continent list, folded, in authored order.
+/// `map/default.map`'s continent list, folded, in authored order, as
+/// `140AAED50` reads it: to the end of the text, `continents` (0x305E) takes
+/// the lexer's tokens (`@` names resolved) to `}` whatever its value, each a
+/// new continent; any other key is skipped (SkipBlock 1424AD270). A repeated
+/// or empty name leaves which continent a name finds undecided: refused.
 pub fn continent_names(input: &[u8]) -> io::Result<Vec<String>> {
-    let document = parser::parse(input)?;
-    let entries = document
-        .get(b"continents")
-        .and_then(parser::Value::items)
-        .ok_or_else(|| invalid("the continent file has no continents list"))?;
-    let mut names = Vec::with_capacity(entries.len());
+    // 140AAED50 constructs the lexer in mode 0 (1424A63A0).
+    let read = native::read(input, native::Mode::KeepMark, (), &mut |(), field| {
+        if field.keyword_is("continents") {
+            Shape::RawList
+        } else {
+            Shape::Skip
+        }
+    });
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!("the continent file: {cause}")));
+    }
+    let mut names = Vec::new();
     let mut seen = BTreeSet::new();
-    for entry in entries {
+    for entry in read
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("continents"))
+        .flat_map(|item| item.value.items().unwrap_or_default())
+    {
         let name = entry
             .value
-            .scalar_str()
-            .filter(|_| entry.key.is_none())
-            .ok_or_else(|| invalid("the continent file has a keyed or non-text continent"))?
+            .c_str()
+            .map_err(|error| invalid(format!("the continent file: {error}")))?
             .to_ascii_lowercase();
         if name.is_empty() || !seen.insert(name.clone()) {
             return Err(invalid(
@@ -72,6 +92,9 @@ pub fn continent_names(input: &[u8]) -> io::Result<Vec<String>> {
             ));
         }
         names.push(name);
+    }
+    if !read.items.iter().any(|item| item.keyword_is("continents")) {
+        return Err(invalid("the continent file has no continents list"));
     }
     Ok(names)
 }
@@ -236,6 +259,12 @@ mod tests {
         );
         assert!(continent_names(b"continents = { europe EUROPE }").is_err());
         assert!(continent_names(b"other = { }").is_err());
+        // 140AAED50 skips other keys, resolves `@` names, and reads the
+        // tokens after a non-brace value as the list.
+        assert_eq!(
+            continent_names(b"@c = asia other = { europe } continents = x africa @c }").unwrap(),
+            ["africa", "asia"]
+        );
     }
 
     #[test]

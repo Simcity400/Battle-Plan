@@ -12,9 +12,10 @@ use std::io;
 
 use crate::{
     ResolvedLayers,
-    fields::{block, integer, invalid, number, require, text},
+    crt::{self, Scanned},
+    fields::{block, invalid},
     image::{IndexedImage, bmp},
-    parser,
+    parser::native::{self, Shape},
 };
 
 /// One `building` block: a distance ring and the entities that may stand in it.
@@ -74,67 +75,123 @@ impl Cities {
     }
 }
 
-/// Parses `map/cities.txt`.
-///
-/// Errors are named `InvalidData` for a missing `types_source`, a pixel step
-/// that is not a positive integer, a `city_group` with no `color_index`, a
-/// `color_index` outside a byte, and a `building` block with no `distance`.
+/// Replays CCitySettings (141640CF0), SGroup (1416411B0), and
+/// SDistanceMesh (141640F50). Their vtables inherit CPersistent::Read.
 pub fn parse(input: &[u8]) -> io::Result<Cities> {
-    let document = parser::parse(input)?;
-    let items = &document.items;
-    let mut cities = Cities {
-        types_source: text(
-            require(items, "types_source", "map/cities.txt")?,
-            "types_source",
-        )?
-        .to_owned(),
-        pixel_step_x: integer(
-            require(items, "pixel_step_x", "map/cities.txt")?,
-            "pixel_step_x",
-        )?,
-        pixel_step_y: integer(
-            require(items, "pixel_step_y", "map/cities.txt")?,
-            "pixel_step_y",
-        )?,
-        groups: Vec::new(),
-    };
-    if cities.pixel_step_x == 0 || cities.pixel_step_y == 0 {
-        return Err(invalid("map/cities.txt has a zero pixel step"));
+    #[derive(Clone, Copy)]
+    enum Node {
+        File,
+        Group,
+        Building,
     }
-    for value in crate::fields::all(items, b"city_group") {
-        let entries = block(value, "city_group")?;
-        let index: u32 = integer(
-            require(entries, "color_index", "city_group")?,
-            "color_index",
-        )?;
-        let color_index = u8::try_from(index)
-            .map_err(|_| invalid(format!("city_group color_index {index} is not a byte")))?;
-        let mut group = CityGroup {
-            color_index,
-            density: match crate::fields::last(entries, b"density") {
-                Some(value) => number(value, "density")?,
-                None => 1.0,
-            },
-            buildings: Vec::new(),
-        };
-        for value in crate::fields::all(entries, b"building") {
-            let fields = block(value, "city_group building")?;
-            let mut meshes = Vec::new();
-            if let Some(list) = crate::fields::last(fields, b"mesh") {
-                for item in block(list, "city_group building mesh")? {
-                    meshes.push(text(&item.value, "city_group building mesh")?.to_owned());
+    // build_city_population (14163F450) constructs the lexer in mode 0.
+    let document = native::read_persistent(
+        input,
+        native::Mode::KeepMark,
+        Node::File,
+        &mut |node, field| match (node, field.keyword().as_deref()) {
+            (Node::File, Some(b"city_group")) => Shape::Object(Node::Group),
+            (Node::Group, Some(b"building")) => Shape::Object(Node::Building),
+            (Node::Building, Some(b"mesh")) => Shape::List,
+            (Node::File, Some(b"types_source" | b"pixel_step_x" | b"pixel_step_y"))
+            | (Node::Group, Some(b"color_index" | b"density"))
+            | (Node::Building, Some(b"distance")) => Shape::One,
+            _ => Shape::Skip,
+        },
+    );
+    let mut cities = Cities::default();
+    for field in &document.items {
+        match field.keyword().map(|key| key.folded()).as_deref() {
+            Some(b"types_source") => {
+                cities.types_source = field
+                    .value
+                    .read_str()
+                    .map_err(|e| invalid(format!("cities types_source: {e}")))?
+                    .into()
+            }
+            Some(b"pixel_step_x" | b"pixel_step_y") => {
+                let dst = if field.keyword_is("pixel_step_x") {
+                    &mut cities.pixel_step_x
+                } else {
+                    &mut cities.pixel_step_y
+                };
+                if let Scanned::Stored(value) =
+                    crt::scan_i32(field.value.scalar().unwrap_or_default())
+                {
+                    *dst = u32::try_from(value).map_err(|_| {
+                        invalid(format!(
+                            "cities {}: negative step {value}",
+                            String::from_utf8_lossy(field.key.as_deref().unwrap_or_default())
+                        ))
+                    })?;
                 }
             }
-            group.buildings.push(CityBuilding {
-                distance: integer(
-                    require(fields, "distance", "city_group building")?,
-                    "distance",
-                )?,
-                meshes,
-            });
+            Some(b"city_group") => {
+                // 141640CF0 initializes the index and density to zero.
+                let mut group = CityGroup::default();
+                for field in block(&field.value, "city_group")? {
+                    match field.keyword().map(|key| key.folded()).as_deref() {
+                        Some(b"color_index") => {
+                            // The local int is uninitialized on a failed scan. Do not guess it.
+                            let Scanned::Stored(value) =
+                                crt::scan_i32(field.value.scalar().unwrap_or_default())
+                            else {
+                                return Err(invalid(
+                                    "city_group color_index: unsupported failed integer scan",
+                                ));
+                            };
+                            group.color_index = value as u8;
+                        }
+                        Some(b"density") => {
+                            if let Some(value) =
+                                crt::scan_f32(field.value.scalar().unwrap_or_default())
+                            {
+                                if !value.is_finite() {
+                                    return Err(invalid("city_group density: nonfinite value"));
+                                }
+                                group.density = f64::from(value);
+                            }
+                        }
+                        Some(b"building") => {
+                            let mut building = CityBuilding::default();
+                            for field in block(&field.value, "city_group building")? {
+                                if field.keyword_is("distance") {
+                                    if let Scanned::Stored(value) =
+                                        crt::scan_i32(field.value.scalar().unwrap_or_default())
+                                    {
+                                        building.distance = u32::try_from(value).map_err(|_| invalid(format!("city_group building distance: negative value {value}")))?;
+                                    }
+                                } else if field.keyword_is("mesh") {
+                                    for item in block(&field.value, "city_group building mesh")? {
+                                        building.meshes.push(
+                                            item.value
+                                                .read_str()
+                                                .map_err(|e| {
+                                                    invalid(format!(
+                                                        "city_group building mesh: {e}"
+                                                    ))
+                                                })?
+                                                .into(),
+                                        );
+                                    }
+                                }
+                            }
+                            group.buildings.push(building);
+                        }
+                        _ => {}
+                    }
+                }
+                group.buildings.sort_by_key(|building| building.distance);
+                cities.groups.push(group);
+            }
+            _ => {}
         }
-        group.buildings.sort_by_key(|building| building.distance);
-        cities.groups.push(group);
+    }
+    if cities.types_source.is_empty() {
+        return Err(invalid("cities types_source is absent or empty"));
+    }
+    if cities.pixel_step_x == 0 || cities.pixel_step_y == 0 {
+        return Err(invalid("map/cities.txt has a zero or absent pixel step"));
     }
     Ok(cities)
 }
@@ -170,12 +227,28 @@ city_group = {
 "#;
 
     #[test]
+    fn native_tokens_defaults_and_repeated_meshes() {
+        let cities = parse(
+            br#"@step=02 TYPES_SOURCE=x pixel_step_x=@step pixel_step_y=2
+            unknown={city_group={color_index=9}}
+            city_group={color_index=0x10F "density"=9 building={distance=03 mesh={a} mesh={b}}}
+            } city_group={color_index=7}"#,
+        )
+        .unwrap();
+        assert_eq!(cities.groups.len(), 1);
+        assert_eq!(cities.groups[0].color_index, 15);
+        assert_eq!(cities.groups[0].density, 0.0);
+        assert_eq!(cities.groups[0].buildings[0].meshes, ["a", "b"]);
+        assert_eq!(cities.groups[0].buildings[0].distance, 3);
+    }
+
+    #[test]
     fn reads_groups_sorted_by_distance() {
         let cities = parse(SAMPLE).unwrap();
         assert_eq!(cities.types_source, "map/cities.bmp");
         assert_eq!((cities.pixel_step_x, cities.pixel_step_y), (2, 2));
         let group = cities.group_for(15).unwrap();
-        assert_eq!(group.density, 0.9);
+        assert_eq!(group.density, f64::from(0.9_f32));
         assert_eq!(group.buildings[0].distance, 1);
         assert_eq!(group.buildings[1].meshes, ["b", "c"]);
         assert!(cities.group_for(3).is_none());

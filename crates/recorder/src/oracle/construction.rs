@@ -1394,6 +1394,18 @@ fn manpower(
 mod tests {
     use super::*;
 
+    fn history_fixture(input: &[u8]) -> installed_content::states::StateDefinition {
+        let context = installed_content::states::Context {
+            resource: &|_| installed_content::states::Resource::Found,
+            max_building_levels: 20,
+            province_count: 1000,
+        };
+        installed_content::states::parse_states(input, &context)
+            .unwrap()
+            .0
+            .remove(0)
+    }
+
     /// The save's country-side `cores`, inverted, against the recorded state
     /// lists: order and alias spelling do not matter; membership does, and
     /// only states read at the frame's hour are compared.
@@ -1934,7 +1946,7 @@ mod tests {
 
         let mut content = saved::BaseResources::default();
         content
-            .add_state_history(b"state={id=1 resources={steel=3 oil=7}}")
+            .add_state_history(&history_fixture(b"state={id=1 resources={steel=3 oil=7}}"))
             .unwrap();
         let resources = [
             replay::rows::StateBaseResourceRow {
@@ -1998,7 +2010,7 @@ mod tests {
 
         let mut content = saved::BaseResources::default();
         content
-            .add_state_history(b"state={id=1 resources={oil=3 steel=0}}")
+            .add_state_history(&history_fixture(b"state={id=1 resources={oil=3 steel=0}}"))
             .unwrap();
         base_resources(
             &[replay::rows::StateBaseResourceRow {
@@ -2191,7 +2203,7 @@ mod tests {
     #[test]
     fn resolved_base_resources_compare_repeated_initial_blocks_and_native_ordinals() {
         let mut content = saved::BaseResources::default();
-        content.add_state_history(b"state={id=949 resources={steel=0 oil=-2147483648.9} history={resources={steel=999 aluminium=888}} resources={} resources={aluminium=10.000}}")
+        content.add_state_history(&history_fixture(b"state={id=949 resources={steel=0 oil=-2147483648.9} history={resources={steel=999 aluminium=888}} resources={} resources={aluminium=10.000}}"))
             .unwrap();
         let names = BTreeMap::from([
             (91, b"steel".as_slice()),

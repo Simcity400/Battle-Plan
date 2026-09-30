@@ -5,9 +5,9 @@ use std::{collections::BTreeMap, io};
 
 use crate::{
     ResolvedLayers,
-    fields::{all, block, boolean, invalid, last, require, text},
+    fields::{block, invalid},
     mesh::{self, Descriptors},
-    parser,
+    parser::native::{self, Shape},
     particles::{Catalog, Particle},
 };
 
@@ -31,29 +31,203 @@ pub type Effects = BTreeMap<(usize, bool), Vec<EffectPair>>;
 
 type Names = BTreeMap<(usize, bool), Vec<[Option<String>; 2]>>;
 
-fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
-    let document = parser::parse(bytes)?;
-    let effects = block(
-        require(&document.items, "weather_effects", "weather.txt")?,
-        "weather_effects",
-    )?;
+// 140F08970 loads the file to EOF. Unknown settings terminate that loader;
+// the presentation reader refuses them by name, including malformed ranges,
+// instead of returning effects the native loader would never reach.
+#[derive(Clone, Copy)]
+enum WeatherNode {
+    File,
+    TerrainKinds,
+    TerrainList,
+    Terrain,
+    Settings,
+    Temperature,
+    Mud,
+    Snow,
+    Chance,
+    Duration,
+    Performance,
+    Arctic,
+    Effects,
+    List,
+    Pair,
+}
+
+pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
+    use WeatherNode::*;
+    let mut refused = Vec::new();
+    // 140F08970 constructs the lexer in mode 0 (1424A63A0).
+    let document = native::read(bytes, native::Mode::KeepMark, File, &mut |node, field| {
+        let key = field.keyword();
+        match (node, key.as_deref()) {
+            (File, Some(b"weather_effects")) => Shape::Object(Effects),
+            (File, Some(b"terrain_modifiers")) => Shape::Object(TerrainKinds),
+            (File, Some(b"settings")) => Shape::Object(Settings),
+            // 1419FBD90 maps an unrecognized kind to slot zero.
+            (TerrainKinds, _) => Shape::Object(TerrainList),
+            (TerrainList, Some(b"terrain")) => Shape::Object(Terrain),
+            (Terrain, _) => Shape::One, // 1419FBB70: no unknown-field skip.
+            (Settings, Some(b"temperature")) => Shape::Object(Temperature),
+            (Settings, Some(b"mud")) => Shape::Object(Mud),
+            (Settings, Some(b"snowing")) => Shape::Object(Snow),
+            (Settings, Some(b"chance_increase")) => Shape::Object(Chance),
+            (Settings, Some(b"duration")) => Shape::Object(Duration),
+            (Settings, Some(b"performance")) => Shape::Object(Performance),
+            (Settings, Some(b"arctic_water")) => Shape::Object(Arctic),
+            (Settings, Some(b"visual_mud_effects")) => Shape::List,
+            (
+                Temperature,
+                Some(
+                    b"temperature_variation"
+                    | b"max_temperature_change"
+                    | b"temperature_neighbor_smoothing"
+                    | b"temperature_change_neighbor_smoothing",
+                ),
+            )
+            | (
+                Mud,
+                Some(
+                    b"water_gain_on_rain_light"
+                    | b"water_gain_on_rain_heavy"
+                    | b"water_gain_max"
+                    | b"water_gain_min"
+                    | b"water_gain_to_cm"
+                    | b"min_temperature",
+                ),
+            )
+            | (
+                Snow,
+                Some(
+                    b"snow_gain_on_snowing"
+                    | b"snow_gain_on_blizzard"
+                    | b"snow_gain_max"
+                    | b"snow_gain_to_cm"
+                    | b"snow_visual_min",
+                ),
+            )
+            | (
+                Performance,
+                Some(
+                    b"provinces_per_update"
+                    | b"regions_per_update"
+                    | b"init_run_passes"
+                    | b"texture_refresh_freq",
+                ),
+            ) => Shape::One,
+            // 140F0AD80 -> 140604600: raw fixed5 list; exactly two values
+            // required or the outer loader aborts. Validated below.
+            (
+                Temperature,
+                Some(
+                    b"weather_extreme_cold"
+                    | b"weather_very_cold"
+                    | b"weather_very_hot"
+                    | b"weather_extreme_hot",
+                ),
+            )
+            | (Mud, Some(b"water_dryout_temperature" | b"water_dryout_multiplier"))
+            | (
+                Snow,
+                Some(
+                    b"snow_melt_temperature"
+                    | b"snow_melt_multiplier"
+                    | b"temperature"
+                    | b"weather_ground_snow_medium"
+                    | b"weather_ground_snow_high",
+                ),
+            )
+            | (Chance, Some(b"mud"))
+            | (
+                Duration,
+                Some(
+                    b"no_phenomenon" | b"rain_light" | b"rain_heavy" | b"snow" | b"blizzard"
+                    | b"sandstorm",
+                ),
+            )
+            | (Arctic, Some(b"arctic_water_temperature" | b"arctic_water_end_temperature")) => {
+                // 140F0AD80 -> 140604600: the lexer's tokens, value slot
+                // (+0xC0) unchanged.
+                Shape::RawList
+            }
+            // SWeatherEffectsReader 140F0B0D0, SWeatherEffectListReader
+            // 140F0B050, SWeatherEffectEntityReader 140F0AEC0.
+            (
+                Effects,
+                Some(b"rain_light" | b"rain_heavy" | b"snow" | b"blizzard" | b"sandstorm"),
+            ) => Shape::Object(List),
+            (List, Some(b"weather_effect")) => Shape::Object(Pair),
+            (Pair, Some(b"entity" | b"fading_entity" | b"small")) => Shape::One,
+            (Effects | List | Pair, _) => Shape::Skip,
+            _ => {
+                refused.push(format!(
+                    "weather loader field {} at line {}",
+                    String::from_utf8_lossy(&field.key.text),
+                    field.key.line
+                ));
+                Shape::Skip
+            }
+        }
+    });
+    if let Some(cause) = refused.first() {
+        return Err(invalid(format!("unsupported {cause}")));
+    }
+    for settings in document
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("settings"))
+    {
+        for group in block(&settings.value, "weather settings")? {
+            if group.keyword_is("visual_mud_effects") {
+                continue;
+            }
+            for field in block(&group.value, "weather settings group")? {
+                if let Some(values) = field.value.items()
+                    && values.len() != 2
+                {
+                    return Err(invalid(format!(
+                        "weather range {} has {} values; native loader aborts",
+                        field.key_str().unwrap_or_default(),
+                        values.len()
+                    )));
+                }
+            }
+        }
+    }
     let mut out = Names::new();
-    for (kind, key) in EFFECT_KINDS.iter().enumerate() {
-        for list in all(effects, key.as_bytes()) {
-            for value in all(block(list, key)?, b"weather_effect") {
-                let fields = block(value, "weather_effect")?;
-                let name = |key: &str| -> io::Result<Option<String>> {
-                    Ok(match last(fields, key.as_bytes()) {
-                        Some(value) => Some(text(value, key)?.to_owned()).filter(|v| !v.is_empty()),
-                        None => None,
-                    })
-                };
-                let pair = [name("entity")?, name("fading_entity")?];
-                let small = match last(fields, b"small") {
-                    Some(value) => boolean(value, "weather_effect small")?,
-                    None => false,
-                };
-                // `140f0b050` keeps a pair only when an entity resolved.
+    for effects in document
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("weather_effects"))
+    {
+        // A repeated effects block clears all banks (140F08970).
+        out.clear();
+        for list in block(&effects.value, "weather_effects")? {
+            let Some(kind) = EFFECT_KINDS.iter().position(|key| list.keyword_is(key)) else {
+                continue;
+            };
+            for value in block(&list.value, "weather effect list")?
+                .iter()
+                .filter(|item| item.keyword_is("weather_effect"))
+            {
+                let mut pair = [None, None];
+                let mut small = false;
+                for field in block(&value.value, "weather_effect")? {
+                    if field.keyword_is("entity") || field.keyword_is("fading_entity") {
+                        let name = field
+                            .value
+                            .read_str()
+                            .map_err(|e| invalid(format!("weather entity: {e}")))?;
+                        pair[usize::from(field.keyword_is("fading_entity"))] =
+                            (!name.is_empty()).then(|| name.to_owned());
+                    } else if field.keyword_is("small") {
+                        // read_bool_field 1424ABCA0, byte unchanged on failed scan.
+                        match field.value.c_str().unwrap_or_default() {
+                            "yes" => small = true,
+                            "no" => small = false,
+                            _ => {}
+                        }
+                    }
+                }
                 if pair.iter().any(Option::is_some) {
                     out.entry((kind, small)).or_default().push(pair);
                 }
@@ -206,6 +380,26 @@ pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_variables_keyword_tokens_and_error_recovery() {
+        let names = parse_effect_names(br#"@sprite=rain weather_effects={RAIN_LIGHT={
+            weather_effect={unknown={entity=hidden} "entity"=ignored ENTITY=@sprite small=yes small=bad}
+        }}"#).unwrap();
+        assert_eq!(names[&(0, true)][0][0].as_deref(), Some("rain"));
+        assert!(
+            parse_effect_names(b"settings={temperature={weather_very_hot={1}}}")
+                .unwrap_err()
+                .to_string()
+                .contains("weather_very_hot")
+        );
+        assert!(
+            parse_effect_names(b"settings={unsupported={}} ")
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported")
+        );
+    }
 
     #[test]
     fn effects_keep_banks_pair_members_and_authored_order() {

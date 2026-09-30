@@ -4129,6 +4129,13 @@ mod tests {
             "common/buildings/00_buildings.txt",
             "buildings = { arms_factory = { base_cost = 7200 local_resources_steel = 2 } }",
         );
+        // CBuildingTemplate reads `local_resources_<name>` only for a
+        // registered resource.
+        write(
+            "vanilla",
+            "common/resources/00_resources.txt",
+            "resources = { steel = { icon_frame = 2 } }",
+        );
         write(
             "vanilla",
             "common/ideologies/00_ideologies.txt",

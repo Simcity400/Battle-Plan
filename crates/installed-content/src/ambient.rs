@@ -13,9 +13,13 @@
 use std::io;
 
 use crate::{
-    ResolvedLayers,
-    fields::{block, boolean, invalid, last, number, text},
-    parser::{self, Item, Value},
+    ResolvedLayers, crt,
+    fields::{block, invalid},
+    fixed5::script_fixed5,
+    parser::{
+        Item, Value,
+        native::{self, Shape},
+    },
 };
 
 /// The conventional filename; `read` uses the path authored in `default.map`.
@@ -71,121 +75,131 @@ impl Default for AmbientObjectType {
     }
 }
 
-/// Parses `map/ambient_object.txt`.
-///
-/// A `type` block with no `type` key, or with a non-numeric position, is an
-/// error rather than a skipped block: the file is authored content, not user
-/// input, and a silently dropped placement is a missing piece of the map.
+/// Replays CGraphicalMap's ambient reader (140B479B0), type (141634490)
+/// and object (141634350); all three use CPersistent::Read.
 pub fn parse(input: &[u8]) -> io::Result<Vec<AmbientObjectType>> {
-    let document = parser::parse(input)?;
-    let mut out = Vec::new();
-    for item in &document.items {
-        if item.key.as_deref() != Some(b"type") {
-            continue;
+    #[derive(Clone, Copy)]
+    enum Node {
+        File,
+        Type,
+        Object,
+    }
+    // The loader's lexer mode is not traced; the two modes differ only on
+    // a leading byte-order mark, which is refused by name.
+    if input.starts_with(b"\xef\xbb\xbf") {
+        return Err(invalid(
+            "ambient objects: a leading byte-order mark (the loader's lexer mode is not traced)",
+        ));
+    }
+    let document = native::read_persistent(
+        input,
+        native::Mode::KeepMark,
+        Node::File,
+        &mut |node, field| match (node, field.keyword().as_deref()) {
+            (Node::File, Some(b"type")) => Shape::Object(Node::Type),
+            (Node::Type, Some(b"object")) => Shape::Object(Node::Object),
+            (Node::Type, Some(b"dlc_allowed")) => Shape::Trigger,
+            (
+                Node::Type,
+                Some(
+                    b"type" | b"animation" | b"scale" | b"use_animation" | b"always_visible"
+                    | b"time_duration" | b"max_visible" | b"sound_effect",
+                ),
+            )
+            | (Node::Object, Some(b"name")) => Shape::One,
+            (Node::Object, Some(b"position" | b"rotation")) => Shape::BoundedList(3),
+            _ => Shape::Skip,
+        },
+    );
+    if let Some(cause) = document.unsettled {
+        return Err(invalid(format!("ambient objects: {cause}")));
+    }
+    document
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("type"))
+        .map(|item| parse_type(block(&item.value, "ambient object type")?))
+        .collect()
+}
+
+fn parse_type(items: &[Item]) -> io::Result<AmbientObjectType> {
+    let mut out = AmbientObjectType::default();
+    for field in items {
+        if field.keyword_is("type") {
+            out.entity = field
+                .value
+                .read_str()
+                .map_err(|e| invalid(format!("ambient entity: {e}")))?
+                .into();
+        } else if field.keyword_is("scale") {
+            out.scale =
+                crt::scan_f32(field.value.scalar().unwrap_or_default()).unwrap_or(out.scale);
+            if !out.scale.is_finite() {
+                return Err(invalid(format!(
+                    "ambient {} scale is nonfinite",
+                    out.entity
+                )));
+            }
+        } else if field.keyword_is("use_animation") || field.keyword_is("always_visible") {
+            let dst = if field.keyword_is("use_animation") {
+                &mut out.use_animation
+            } else {
+                &mut out.always_visible
+            };
+            match field.value.c_str().unwrap_or_default() {
+                "yes" => *dst = true,
+                "no" => *dst = false,
+                _ => {}
+            }
+        } else if field.keyword_is("time_duration") {
+            // 1424AB9D0: a failed conversion keeps the value.
+            out.duration =
+                crt::scan_f32(field.value.scalar().unwrap_or_default()).unwrap_or(out.duration);
+        } else if field.keyword_is("max_visible") {
+            // ReadScriptSignedInt32 (1424AB970): a failed `%i` keeps the value.
+            if let crt::Scanned::Stored(value) =
+                crt::scan_i32(field.value.scalar().unwrap_or_default())
+            {
+                out.max_visible = value;
+            }
+        } else if field.keyword_is("dlc_allowed") {
+            // Each field is a new CAndTrigger; the last is kept.
+            out.dlc = Some(field.value.items().unwrap_or_default().to_vec());
+        } else if field.keyword_is("object") {
+            // 141634490 routes the placement with the flag it has now.
+            let mut object = AmbientObject {
+                always_queued: out.always_visible,
+                ..Default::default()
+            };
+            for field in block(&field.value, "ambient object")? {
+                if field.keyword_is("name") {
+                    object.name = field
+                        .value
+                        .read_str()
+                        .map_err(|e| invalid(format!("ambient object name: {e}")))?
+                        .into();
+                } else if field.keyword_is("position") {
+                    object.position = triple(&field.value)?;
+                } else if field.keyword_is("rotation") {
+                    object.rotation = triple(&field.value)?;
+                }
+            }
+            out.objects.push(object);
         }
-        out.push(parse_type(block(&item.value, "ambient object type")?)?);
+    }
+    if out.entity.is_empty() {
+        return Err(invalid("an ambient object type names no entity"));
     }
     Ok(out)
 }
 
-fn parse_type(items: &[Item]) -> io::Result<AmbientObjectType> {
-    let entity = text(
-        last(items, b"type").ok_or_else(|| invalid("an ambient object type names no entity"))?,
-        "ambient object entity",
-    )?
-    .trim_matches('"')
-    .to_owned();
-    if entity.is_empty() {
-        return Err(invalid("an ambient object type names an empty entity"));
-    }
-    let mut result = AmbientObjectType {
-        entity,
-        ..Default::default()
-    };
-    for item in items {
-        match item.key.as_deref() {
-            Some(b"scale") => result.scale = number(&item.value, "ambient scale")? as f32,
-            Some(b"use_animation") => {
-                result.use_animation = boolean(&item.value, "ambient use_animation")?;
-            }
-            Some(b"always_visible") => {
-                result.always_visible = boolean(&item.value, "ambient always_visible")?;
-            }
-            Some(b"time_duration") => {
-                result.duration = number(&item.value, "ambient time_duration")? as f32
-            }
-            Some(b"max_visible") => {
-                let token = text(&item.value, "ambient max_visible")?;
-                if token.starts_with('@') {
-                    return Err(invalid(format!(
-                        "ambient max_visible: unresolved authored variable {token:?}"
-                    )));
-                }
-                if let crate::crt::Scanned::Stored(value) = crate::crt::scan_i32(token.as_bytes()) {
-                    result.max_visible = value;
-                }
-            }
-            Some(b"dlc_allowed") => {
-                result.dlc = Some(block(&item.value, "ambient dlc_allowed trigger")?.to_vec())
-            }
-            Some(b"object") => {
-                let mut object =
-                    parse_object(block(&item.value, "ambient object")?, &result.entity)?;
-                object.always_queued = result.always_visible;
-                result.objects.push(object);
-            }
-            _ => {}
-        }
-    }
-    Ok(result)
-}
-
-fn parse_object(items: &[Item], entity: &str) -> io::Result<AmbientObject> {
-    Ok(AmbientObject {
-        name: match last(items, b"name") {
-            Some(value) => text(value, "ambient object name")?
-                .trim_matches('"')
-                .to_owned(),
-            None => String::new(),
-        },
-        position: triple(last(items, b"position"), entity, "position")?,
-        rotation: match last(items, b"rotation") {
-            Some(value) => triple(Some(value), entity, "rotation")?,
-            None => [0.0; 3],
-        },
-        always_queued: false,
-    })
-}
-
-/// The file writes a vector as three bare numbers inside a block.
-fn triple(value: Option<&Value>, entity: &str, what: &str) -> io::Result<[f32; 3]> {
-    let value = value.ok_or_else(|| invalid(format!("{entity} object has no {what}")))?;
-    let items = block(value, what)?;
-    let mut out = [0.0f32; 3];
-    let mut seen = 0;
-    for item in items {
-        if item.key.is_some() {
-            return Err(invalid(format!(
-                "{entity} {what} holds a key, not a number"
-            )));
-        }
-        if seen == 3 {
-            return Err(invalid(format!(
-                "{entity} {what} holds more than three numbers"
-            )));
-        }
-        //141634350 ->1410DB8F0 ->1424ABB10 reads fixed5 first, then converts
-        //the integer to float before division by142709C48 (100000.0f).
-        let token = text(&item.value, what)?;
-        let raw = crate::fixed5::script_fixed5(token.as_bytes())
-            .ok_or_else(|| invalid(format!("{entity} {what}: unsupported number {token:?}")))?;
-        out[seen] = raw as f32 / 100_000.;
-        seen += 1;
-    }
-    if seen != 3 {
-        return Err(invalid(format!(
-            "{entity} {what} holds {seen} numbers, not three"
-        )));
+/// 141634350 initializes three fixed5 words to zero, reads the span with
+/// 1410DB8F0, then converts each int64 to f32 and divides by 100000f32.
+fn triple(value: &Value) -> io::Result<[f32; 3]> {
+    let mut out = [0.0; 3];
+    for (dst, item) in out.iter_mut().zip(block(value, "ambient vector")?) {
+        *dst =
+            script_fixed5(item.value.scalar().unwrap_or_default()).unwrap_or(0) as f32 / 100_000.0;
     }
     Ok(out)
 }
@@ -271,6 +285,37 @@ type={
     }
 
     #[test]
+    fn native_span_reads_tokens_and_recovers_only_at_first_overflow() {
+        let types = parse(
+            br#"@x=1 TYPE={type=a object={position={@x 2}} object={position={x=1 2 3}}
+            object={position={1 2 3 {ignored={}} 9} name=kept} object={}}"#,
+        )
+        .unwrap();
+        assert_eq!(types[0].objects[0].position, [1.0, 2.0, 0.0]);
+        assert_eq!(types[0].objects[1].position, [0.0, 0.0, 1.0]);
+        assert_eq!(types[0].objects[2].position, [1.0, 2.0, 3.0]);
+        assert_eq!(types[0].objects[2].name, "kept");
+        assert_eq!(types[0].objects[3].position, [0.0; 3]);
+        // The overflow token is checked after `@` resolution: a variable
+        // holding `{` has its block skipped (RecordError 1424ACF90).
+        let types = parse(
+            br#"@open={
+            type={type=a object={
+                position={1 2 3 @open ignored=1}
+                name=wrong
+            } name=right}}"#,
+        )
+        .unwrap();
+        assert_eq!(types[0].objects[0].name, "right");
+        assert!(
+            parse(b"type={object={}}")
+                .unwrap_err()
+                .to_string()
+                .contains("entity")
+        );
+    }
+
+    #[test]
     fn routing_uses_the_flag_at_each_object_but_actor_inputs_use_final_type_values() {
         let types = parse(
             br#"type={type=changed
@@ -300,16 +345,11 @@ type={
         let raw: [i64; 3] = [123456, -12345, 300012345];
         assert_eq!(object.position, raw.map(|value| value as f32 / 100_000.));
         assert_eq!(object.rotation, [0., 30., 0.]);
-        assert!(parse(b"type={type=a max_visible=@limit}").is_err());
-    }
-
-    #[test]
-    fn a_short_or_keyed_position_is_refused() {
-        assert!(parse(b"type={ type=\"a\" object={ position={ 1 2 } } }").is_err());
-        assert!(parse(b"type={ type=\"a\" object={ position={ x=1 2 3 } } }").is_err());
-        assert!(parse(b"type={ type=\"a\" object={ position={ 1 2 3 4 } } }").is_err());
-        assert!(parse(b"type={ type=\"a\" object={ } }").is_err());
-        assert!(parse(b"type={ object={ position={ 1 2 3 } } }").is_err());
+        // `@limit` is resolved or stays its text, which `%i` does not scan.
+        assert_eq!(
+            parse(b"type={type=a max_visible=@limit}").unwrap()[0].max_visible,
+            -1
+        );
     }
 
     #[test]
