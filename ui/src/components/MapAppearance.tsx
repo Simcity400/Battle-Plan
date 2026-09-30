@@ -8,8 +8,8 @@ import type { CampaignMapSettings, DashboardClient, DashboardSource, MapGraphics
 const ANTI_ALIASING = 'Anti-aliasing';
 const TEXTURE_QUALITY = 'Texture quality';
 const graphics: [Exclude<keyof MapGraphics, "samples" | "textureQuality">, string][] = [
-  ['trees', 'Trees'], ['shadows', 'Shadows'], ['rivers', 'Rivers'], ['citySprawl', 'City sprawl'],
-  ['buildings', '3D buildings'], ['units', '3D units'], ['weather', 'Weather effects'],
+  ['highGfxShaders', 'High-quality shaders'], ['waterReflections', 'Water reflections'], ['trees', 'Trees'], ['shadows', 'Shadows'], ['rivers', 'Rivers'], ['citySprawl', 'City sprawl'],
+  ['buildings', '3D buildings'], ['units', '3D units'], ['weather', 'Weather effects'], ['sky', 'Sky'],
 ];
 /** Every option row's label, in order; settings search reveals rows by these. */
 export const MAP_OPTION_LABELS = [ANTI_ALIASING, TEXTURE_QUALITY, ...graphics.map(([, label]) => label)];

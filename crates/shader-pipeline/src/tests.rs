@@ -4,7 +4,89 @@ use std::path::Path;
 
 static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+mod arena;
 mod samplers;
+
+#[test]
+fn unknown_constant_bytes_are_distinct_from_out_of_range_reads() {
+    let buffer = Buffer {
+        binding: 5,
+        size: 48,
+        reads: vec![0..12, 16..24, 32..48],
+    };
+    assert!(buffer.check_initialized(32, &[0..12, 16..24]).is_ok());
+    assert!(
+        buffer
+            .check_initialized(48, &[0..12, 16..24])
+            .unwrap_err()
+            .contains("pixel constant buffer b2 reads unavailable bytes 32..48")
+    );
+    assert!(buffer.check_initialized(20, &[0..12, 16..20]).is_ok());
+    assert!(buffer.check_initialized(32, &[0..12, 16..20]).is_err());
+    assert!(
+        buffer
+            .check_initialized(48, &[32..40, 0..12, 40..48, 16..24])
+            .is_ok()
+    );
+}
+
+#[test]
+#[ignore = "requires the pinned shader compiler"]
+fn constant_reads_exclude_padding_and_include_dynamic_array_components() {
+    let compile = |body: &str| {
+        let source = format!(
+            r#"ConstantBuffer(2,0) {{
+float4 value;
+float3 direction;
+float unused;
+float4 elements[3];
+float4x4 transform;
+}};
+VertexStruct I {{
+float3 position : POSITION;
+}};
+VertexStruct O {{
+float4 position : SV_POSITION;
+}};
+VertexShader = {{ MainCode V [[ O main(I v) {{ O o; o.position=float4(v.position,1); return o; }} ]] }}
+PixelShader = {{ MainCode P [[ float4 main(O v) : SV_TARGET {{ {body} }} ]] }}
+Effect Test {{ VertexShader = V PixelShader = P }}
+"#
+        );
+        let program = installed_content::pdxshader::program::read_with("reads.shader", &|path| {
+            Some(if path == "reads.shader" {
+                source.as_bytes().to_vec()
+            } else {
+                Vec::new()
+            })
+        })
+        .unwrap();
+        Compiler::discover()
+            .unwrap()
+            .compile(&program, &program.techniques[0], &[])
+            .unwrap()
+    };
+    let simple = compile("return float4(value.xyz + direction, 1);");
+    assert_eq!(simple.pixel.buffers[0].reads, vec![0..12, 16..28]);
+    let component = compile("return value.z;");
+    assert_eq!(component.pixel.buffers[0].reads, vec![8..12]);
+    let dynamic = compile("return float4(elements[uint(v.position.x)%3].xyz, 1);");
+    assert_eq!(dynamic.pixel.buffers[0].reads, vec![32..44, 48..60, 64..76]);
+    let matrix = compile("return mul(transform,float4(v.position.xyz,1));");
+    assert_eq!(matrix.pixel.buffers[0].reads, vec![80..144]);
+    let gap = compile("return unused;");
+    assert_eq!(gap.pixel.buffers[0].reads, vec![28..32]);
+    assert!(
+        gap.pixel.buffers[0]
+            .check_initialized(32, std::slice::from_ref(&(0..28)))
+            .is_err()
+    );
+    assert!(
+        gap.pixel.buffers[0]
+            .check_initialized(16, std::slice::from_ref(&(0..16)))
+            .is_ok()
+    );
+}
 
 #[test]
 fn blend_defaults_inherit_alpha_and_masks_follow_native_substring_matching() {
@@ -406,6 +488,7 @@ Effect Mod { VertexShader = V PixelShader = P }
     let technique = program.technique("Mod").unwrap();
     let compiled = compiler.compile(&program, technique, &[]).unwrap();
     let (device, queue) = device();
+    let arena = gpu::Arena::new(&device);
     let state = gpu::State::authored(&program, technique).unwrap();
     let effect = library::Effect::from_compiled(
         std::sync::Arc::new(program),
@@ -459,7 +542,7 @@ Effect Mod { VertexShader = V PixelShader = P }
         .collect();
     let draw = pipeline
         .prepare(
-            &device,
+            &arena,
             &BTreeMap::from([
                 (0, bytemuck::cast_slice(&c0).to_vec()),
                 (1, bytemuck::cast_slice(&c0).to_vec()),
@@ -473,7 +556,7 @@ Effect Mod { VertexShader = V PixelShader = P }
             },
         )
         .unwrap();
-    let pixels = render(&device, &queue, &pipeline, &draw);
+    let pixels = render(&device, &queue, &arena, &pipeline, &draw);
     for y in 0..16 {
         for x in 0..16 {
             let pixel = &pixels[(y * 16 + x) * 4..(y * 16 + x + 1) * 4];
@@ -505,7 +588,7 @@ Effect Mod { VertexShader = V PixelShader = P }
     for _ in 0..2 {
         let submission = stream
             .prepare(
-                &device,
+                &arena,
                 effect.source.effect.as_str(),
                 bytemuck::cast_slice(&vertices),
                 20,
@@ -514,7 +597,13 @@ Effect Mod { VertexShader = V PixelShader = P }
                 1,
             )
             .unwrap();
-        let actual = render(&device, &queue, &submission.pipeline, &submission.draw);
+        let actual = render(
+            &device,
+            &queue,
+            &arena,
+            &submission.pipeline,
+            &submission.draw,
+        );
         let mut expected = pixels.clone();
         for pixel in expected.chunks_exact_mut(4).filter(|p| p[3] != 0) {
             pixel[2] = 255;
@@ -531,15 +620,18 @@ Effect Mod { VertexShader = V PixelShader = P }
 fn render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    arena: &gpu::Arena,
     pipeline: &gpu::Pipeline,
     draw: &gpu::Draw,
 ) -> Vec<u8> {
-    render_with(device, queue, |pass| pipeline.draw(pass, draw))
+    render_with(device, queue, arena, |pass| pipeline.draw(pass, draw))
 }
 
+/// Submits `draw`, whose uploads are in `arena`, and starts the arena's next frame.
 pub(crate) fn render_with(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    arena: &gpu::Arena,
     draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
 ) -> Vec<u8> {
     let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -600,7 +692,9 @@ pub(crate) fn render_with(
         },
         target.size(),
     );
+    arena.flush(queue);
     queue.submit([encoder.finish()]);
+    arena.reset();
     let slice = read.slice(..);
     slice.map_async(wgpu::MapMode::Read, |result| result.unwrap());
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
@@ -669,6 +763,7 @@ Effect Map { VertexShader = V PixelShader = P }
         ScalarKind::Float
     );
     let (device, queue) = device();
+    let arena = gpu::Arena::new(&device);
     let state = gpu::State::authored(&program, &program.techniques[0]).unwrap();
     let mut pass = gpu::Pass::packed(&compiled, &state, wgpu::TextureFormat::Rgba8Unorm, 1);
     let location = |semantic: &str| {
@@ -736,7 +831,7 @@ Effect Map { VertexShader = V PixelShader = P }
     );
     let bindings = pipeline
         .bindings(
-            &device,
+            &arena,
             &BTreeMap::from([(
                 binding(7, Stage::Pixel),
                 bytemuck::cast_slice(&[1_f32; 4]).to_vec(),
@@ -757,7 +852,7 @@ Effect Map { VertexShader = V PixelShader = P }
         contents: bytemuck::cast_slice(&[1_u32]),
         usage: wgpu::BufferUsages::VERTEX,
     });
-    let pixels = render_with(&device, &queue, |p| {
+    let pixels = render_with(&device, &queue, &arena, |p| {
         p.set_pipeline(&pipeline.pipeline);
         bindings.bind(p);
         p.set_vertex_buffer(0, verts.slice(..));
@@ -775,8 +870,153 @@ Effect Map { VertexShader = V PixelShader = P }
         cache.created, 2,
         "render state is part of the cache identity"
     );
+    let mut stream = stream::Stream::default();
+    stream.bind_program(Some(selection.clone()), pass.vertices.clone());
+    stream.bind_constants(7, Stage::Pixel, Some(bytemuck::cast_slice(&[1_f32; 4])));
+    stream.bind_constants(7, Stage::Vertex, Some(bytemuck::cast_slice(&[0_f32; 4])));
+    stream.bind_texture(
+        4,
+        Stage::Pixel,
+        Some(tex.create_view(&Default::default())),
+        Some(&state.samplers[&binding(4, Stage::Pixel)]),
+    );
+    // Missing effects cannot replace the two native streams with an empty declaration.
+    stream.bind_program(None, Vec::new());
+    stream.bind_constants(7, Stage::Pixel, None);
+    stream.bind_partial_constants(
+        7,
+        Stage::Pixel,
+        Some(bytemuck::cast_slice(&[1_f32; 4])),
+        std::slice::from_ref(&(0..12)),
+    );
+    stream.bind_partial_constants(7, Stage::Pixel, None, std::slice::from_ref(&(0..16)));
+    assert!(
+        stream
+            .prepare_pass(&arena, "unknown alpha", &pass)
+            .err()
+            .unwrap()
+            .contains("unavailable bytes 12..16")
+    );
+    let mut inherited = stream::Stream::default();
+    inherited.inherit_bindings(&stream);
+    assert!(
+        inherited
+            .prepare_pass(&arena, "inherited unknown alpha", &pass)
+            .is_err()
+    );
+    // A complete later upload restores validity; it does not mutate the scoped copy.
+    stream.bind_constants(7, Stage::Pixel, Some(bytemuck::cast_slice(&[1_f32; 4])));
+    let padded = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("retained input declaration with replacement buffer stride"),
+        contents: bytemuck::cast_slice(&[
+            [-1_f32, 1., 91., 92.],
+            [-1., -1., 93., 94.],
+            [1., 1., 95., 96.],
+            [1., -1., 97., 98.],
+        ]),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    for (null, changed_stride) in [(false, false), (false, true), (true, true)] {
+        if changed_stride {
+            stream.bind_vertex_stride(0, 16);
+            stream.bind_program(None, Vec::new());
+            let layout = stream.vertex_layouts().unwrap();
+            assert_eq!(layout[0].stride, 16);
+            assert_eq!(layout[1], pass.vertices[1]);
+        }
+        if null {
+            // Null SRV clears texture; null PS sampler retains its physical handle.
+            stream.bind_texture(4, Stage::Pixel, None, None);
+        }
+        let submission = stream
+            .prepare_pass(&arena, "retained volume", &pass)
+            .unwrap();
+        let actual = render_with(&device, &queue, &arena, |p| {
+            p.set_pipeline(&submission.pipeline.pipeline);
+            submission.bindings.bind(p);
+            p.set_vertex_buffer(0, if changed_stride { &padded } else { &verts }.slice(..));
+            p.set_vertex_buffer(1, flags.slice(..));
+            p.draw(0..4, 0..1);
+        });
+        assert!(
+            actual
+                .chunks_exact(4)
+                .all(|p| p == if null { [0; 4] } else { [255, 128, 64, 255] })
+        );
+    }
+    assert_eq!(
+        stream.cache.created, 2,
+        "buffer stride changes pipeline identity; null SRV and template RED mask do not"
+    );
+    // Native IA permits attribute offsets beyond a bound stride. WebGPU does
+    // not, so repack the same fetches while retaining the original formats.
+    let mut overlap = pass.vertices.clone();
+    overlap[0].attributes[0].offset = 16;
+    stream.bind_program(Some(selection), overlap);
+    stream.bind_program(None, Vec::new());
+    stream.bind_vertex_stride(0, 8);
+    stream.bind_texture(
+        4,
+        Stage::Pixel,
+        Some(tex.create_view(&Default::default())),
+        None,
+    );
+    let source = [vec![91_f32; 5], vec![-1., 1., -1., -1., 1., 1., 1., -1.]].concat();
+    let submission = stream
+        .prepare_native_pass(
+            &arena,
+            "overlapping native declaration",
+            &pass,
+            &BTreeMap::from([
+                (
+                    0,
+                    Some(vertices::NativeBuffer {
+                        bytes: bytemuck::cast_slice(&source),
+                        size: 52,
+                        offset: 4,
+                        known: std::slice::from_ref(&(0..52)),
+                    }),
+                ),
+                (
+                    1,
+                    Some(vertices::NativeBuffer {
+                        bytes: bytemuck::cast_slice(&[1_u32]),
+                        size: 4,
+                        offset: 0,
+                        known: std::slice::from_ref(&(0..4)),
+                    }),
+                ),
+            ]),
+            4,
+            1,
+        )
+        .unwrap();
+    let actual = render_with(&device, &queue, &arena, |p| {
+        p.set_pipeline(&submission.pass.pipeline.pipeline);
+        submission.pass.bindings.bind(p);
+        for (slot, buffer) in submission.vertices.iter().enumerate() {
+            p.set_vertex_buffer(slot as u32, buffer.slice());
+        }
+        p.draw(0..4, 0..1);
+    });
+    assert!(
+        actual
+            .chunks_exact(4)
+            .all(|pixel| pixel == [255, 128, 64, 255])
+    );
+    assert_eq!(stream.vertex_layouts().unwrap()[0].attributes[0].offset, 16);
+    assert_eq!(stream.vertex_layouts().unwrap()[0].stride, 8);
+    stream.invalidate_bindings();
+    assert!(
+        stream
+            .prepare_pass(&arena, "invalidated", &pass)
+            .err()
+            .unwrap()
+            .contains("preceding native program")
+    );
+    assert_eq!(stream.refused.values().sum::<u64>(), 2);
     println!(
-        "PASS arbitrary pass: 256 exact pixels; split/instanced integer layout, b7, t4/s4 volume wrapping W, triangle strip and state-key invalidation"
+        "PASS arbitrary pass: 1280 exact pixels; split/instanced integer layout, independent and overlapping buffer strides, b7, t4/s4 volume wrapping W, triangle strip, retained bindings/null SRV and state-key invalidation"
     );
 }
 

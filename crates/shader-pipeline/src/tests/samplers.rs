@@ -2,10 +2,169 @@ use super::*;
 
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
+fn point_float32_uses_actual_sampler_pairs_without_filterable_feature() {
+    let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
+    let (device, queue) = device();
+    let arena = gpu::Arena::new(&device);
+    assert!(
+        !device
+            .features()
+            .contains(wgpu::Features::FLOAT32_FILTERABLE)
+    );
+    let program = installed_content::pdxshader::program::read_with("point.shader", &|path| {
+        Some(if path == "point.shader" {
+            br#"VertexStruct I {
+float3 position : POSITION;
+float2 uv : TEXCOORD0;
+};
+VertexStruct O {
+float4 position : SV_POSITION;
+};
+VertexShader = { MainCode V [[ O main(I v) { O o; o.position=float4(v.position,1); return o; } ]] }
+PixelShader = {
+Samplers = {
+ A = { Index = 0 MagFilter = Linear MinFilter = Linear MipFilter = Linear }
+ B = { Index = 4 MagFilter = Point MinFilter = Point MipFilter = Point }
+}
+MainCode P [[ float4 main(O v) : SV_TARGET {
+ return (A_Texture.SampleLevel(B_Sampler,float2(0.25,0.5),0) + B_Texture.SampleLevel(A_Sampler,float2(0.5,0.5),0)) * 0.5;
+} ]]
+}
+Effect Test { VertexShader = V PixelShader = P }
+"#.to_vec()
+        } else { Vec::new() })
+    }).unwrap();
+    let compiled = Compiler::discover()
+        .unwrap()
+        .compile(&program, &program.techniques[0], &[])
+        .unwrap();
+    assert_eq!(
+        compiled.pixel.sampling_pairs,
+        vec![
+            (binding(0, Stage::Pixel), binding(4, Stage::Pixel)),
+            (binding(4, Stage::Pixel), binding(0, Stage::Pixel))
+        ]
+    );
+    let mut state = gpu::State::authored(&program, &program.techniques[0]).unwrap();
+    let create = |format, width| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mixed sampler pair texture"),
+            size: wgpu::Extent3d {
+                width,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+    };
+    let floats = create(wgpu::TextureFormat::Rgba32Float, 2);
+    queue.write_texture(
+        floats.as_image_copy(),
+        // Avoid half-integer UNORM conversion ties in the readback oracle.
+        bytemuck::cast_slice(&[0.75_f32, 0.25, 0.5, 1., 0., 0., 0., 0.]),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(32),
+            rows_per_image: None,
+        },
+        floats.size(),
+    );
+    let bytes = create(wgpu::TextureFormat::Rgba8Unorm, 1);
+    queue.write_texture(
+        bytes.as_image_copy(),
+        &[0, 0, 0, 255],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: None,
+        },
+        bytes.size(),
+    );
+    let textures = BTreeMap::from([
+        (
+            binding(0, Stage::Pixel),
+            floats.create_view(&Default::default()),
+        ),
+        (
+            binding(4, Stage::Pixel),
+            bytes.create_view(&Default::default()),
+        ),
+    ]);
+    let pipeline = gpu::Pipeline::with_state(
+        &device,
+        &compiled,
+        &program,
+        &program.techniques[0],
+        wgpu::TextureFormat::Rgba8Unorm,
+        1,
+        &state,
+    )
+    .unwrap();
+    let vertices: Vec<[f32; 5]> = [0, 1, 2, 0, 2, 3]
+        .iter()
+        .map(|&i| [[-1., 1., 1., -1.][i], [1., 1., -1., -1.][i], 0., 0., 0.])
+        .collect();
+    let draw = pipeline
+        .prepare(
+            &arena,
+            &BTreeMap::<u32, Vec<u8>>::new(),
+            &textures,
+            &vertices::Vertices {
+                declaration: vertices::Declaration::Sprite,
+                bytes: bytemuck::cast_slice(&vertices),
+                stride: 20,
+                count: 6,
+            },
+        )
+        .unwrap();
+    let pixels = render(&device, &queue, &arena, &pipeline, &draw);
+    assert!(
+        pixels
+            .chunks_exact(4)
+            .all(|pixel| pixel == [96, 32, 64, 255]),
+        "pixel values: {:?}",
+        pixels
+            .chunks_exact(4)
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+    state
+        .samplers
+        .get_mut(&binding(4, Stage::Pixel))
+        .unwrap()
+        .min = installed_content::pdxshader::program::Filter::Linear;
+    let filtered = gpu::Pipeline::with_state(
+        &device,
+        &compiled,
+        &program,
+        &program.techniques[0],
+        wgpu::TextureFormat::Rgba8Unorm,
+        1,
+        &state,
+    )
+    .unwrap();
+    assert!(
+        filtered
+            .bindings(&arena, &BTreeMap::<u32, Vec<u8>>::new(), &textures)
+            .is_err(),
+        "float32 linear filtering still needs its real device capability"
+    );
+    println!(
+        "PASS point float32: 256 exact pixels without FLOAT32_FILTERABLE; cross-register sampler pairs; linear float32 refusal preserved"
+    );
+}
+
+#[test]
+#[ignore = "requires a shader compiler and GPU"]
 fn samples_native_addressing_and_mip_bias() {
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let compiler = Compiler::discover().unwrap();
     let (device, queue) = device();
+    let arena = gpu::Arena::new(&device);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("sampler comparison mips"),
         size: wgpu::Extent3d {
@@ -126,8 +285,8 @@ Effect Test {{ VertexShader = V PixelShader = P }}
             .collect();
         let draw = pipeline
             .prepare(
-                &device,
-                &BTreeMap::new(),
+                &arena,
+                &BTreeMap::<u32, Vec<u8>>::new(),
                 &BTreeMap::from([(
                     binding(0, Stage::Pixel),
                     texture.create_view(&Default::default()),
@@ -140,7 +299,7 @@ Effect Test {{ VertexShader = V PixelShader = P }}
                 },
             )
             .unwrap();
-        let pixels = render(&device, &queue, &pipeline, &draw);
+        let pixels = render(&device, &queue, &arena, &pipeline, &draw);
         let size = 16 >> expected_mip;
         for y in 0..16 {
             for x in 0..16 {
@@ -183,7 +342,7 @@ Effect Test {{ VertexShader = V PixelShader = P }}
         stream.bind_texture(0, Stage::Pixel, None, None);
         let submission = stream
             .prepare(
-                &device,
+                &arena,
                 "explicit null SRV",
                 bytemuck::cast_slice(&vertices),
                 20,
@@ -193,7 +352,13 @@ Effect Test {{ VertexShader = V PixelShader = P }}
             )
             .unwrap();
         assert_eq!(
-            render(&device, &queue, &submission.pipeline, &submission.draw),
+            render(
+                &device,
+                &queue,
+                &arena,
+                &submission.pipeline,
+                &submission.draw
+            ),
             vec![0; 16 * 16 * 4],
             "null SRV, retained sampler"
         );
@@ -209,6 +374,7 @@ fn mirror_once_gathers_and_offsets_match_d3d() {
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let compiler = Compiler::discover().unwrap();
     let (device, queue) = device();
+    let arena = gpu::Arena::new(&device);
     // Texel (x, y) of level l is (16x, 16y, 50l, 255).
     let texture = |levels: u32| {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -400,8 +566,8 @@ Effect Test {{ VertexShader = V PixelShader = P }}
         .unwrap();
         let draw = pipeline
             .prepare(
-                &device,
-                &BTreeMap::new(),
+                &arena,
+                &BTreeMap::<u32, Vec<u8>>::new(),
                 &BTreeMap::from([(
                     binding(0, Stage::Pixel),
                     texture(levels).create_view(&Default::default()),
@@ -414,7 +580,7 @@ Effect Test {{ VertexShader = V PixelShader = P }}
                 },
             )
             .unwrap();
-        let pixels = render(&device, &queue, &pipeline, &draw);
+        let pixels = render(&device, &queue, &arena, &pipeline, &draw);
         for y in 0..16 {
             for x in 0..16 {
                 let expected = reference(x, y).map(|c| c as u8);

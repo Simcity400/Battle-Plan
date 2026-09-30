@@ -482,11 +482,9 @@ fn fow_fade_factor() -> f32 { return globals.frame.ambient_neg_x_fow_fade.w; }
 /// `GetIntelFactor` (`fow.fxh:25-28`): how fogged this world position is,
 /// before the height, noise and camera terms.
 ///
-/// The engine's texture is one byte a texel surfaced in `.a`; wgpu has no
-/// single-channel format that lands in alpha, so the port's is `R8Unorm` and
-/// this reads `.r`. It is the same byte.
+/// Native A8_UNORM is stored as RGBA (0,0,0,a), preserving content shader reads.
 fn get_intel_factor(world: vec3<f32>) -> f32 {
-    return textureSampleLevel(intel_map, fow_sampler, map_uv_bottom_up(world), 0.0).r;
+    return textureSampleLevel(intel_map, fow_sampler, map_uv_bottom_up(world), 0.0).a;
 }
 
 /// `GetExtraFogFactor` (`fow.fxh:30-34`). Note the flipped `v`: this texture is

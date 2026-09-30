@@ -2,7 +2,7 @@
 // effects, which the engine runs twice over the screen-space shadow buffer
 // before any lit pass samples it.
 //
-// This file is compiled without `common.wgsl` ahead of it, like `post.wgsl`:
+// This file is compiled without `common.wgsl` ahead of it, like `post_copy.wgsl`:
 // the blur reads no frame constants, only its own offsets and weights.
 
 /// `ConstantBuffer( 0, 0 ) { float4 vGaussianOffsetsWeights[2]; }`.
@@ -28,7 +28,7 @@ struct FullScreen {
 }
 
 /// `VertexShader`, which passes a screen quad through untouched. One oversized
-/// triangle stands in for the quad, as it does in `post.wgsl`.
+/// triangle stands in for the quad, as it does in `post_copy.wgsl`.
 @vertex
 fn vertex_main(@builtin(vertex_index) index: u32) -> FullScreen {
     var out: FullScreen;

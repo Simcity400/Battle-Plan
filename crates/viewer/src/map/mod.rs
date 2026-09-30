@@ -8,9 +8,11 @@ mod air_registry_sources;
 pub mod aircraft;
 mod aircraft_count;
 pub mod allegiance;
+mod arrow_shader;
 pub mod atlas_pages;
 // borders
 pub mod border_pass;
+mod border_shader;
 pub mod borders;
 pub mod camera;
 // counters
@@ -47,6 +49,7 @@ pub mod lazy_icons;
 // the map's table frame
 pub mod mapframe;
 pub mod name_pass;
+pub mod name_shader;
 pub mod names;
 // counters: the viewing country and what it can see
 pub mod perspective;
@@ -62,16 +65,23 @@ pub mod railway_gun_counter;
 // colour
 pub mod post;
 // rivers
+mod rail_shader;
+mod river_shader;
 pub mod rivers;
 pub mod scene;
+mod shader_constants;
+mod shader_scene;
+pub mod shader_sources;
 // shadows: the light's depth map, the screen-space pre-pass and the blurs
 pub mod shadow;
+mod shadow_blur;
 pub mod sprawl;
 pub mod sprites;
 /// What each hour's tables hold, and what a gap in one costs the render.
 pub mod tables;
 pub mod templates;
 pub mod terrain;
+pub mod terrain_shader;
 pub mod text;
 pub mod textures;
 // trees
@@ -81,16 +91,30 @@ pub mod ui_scale;
 // close zoom: the 3D land-model selectors and their inputs
 pub mod camouflage;
 pub mod equipment_graphics;
+mod mesh_effect;
+mod mesh_pose;
+mod mesh_shader;
 pub mod model_countries;
 pub mod model_multi_fallback;
 pub mod model_selection;
+pub mod sky_shader;
+pub mod tree_caster;
+mod tree_order;
+pub mod tree_receiver;
+pub mod tree_shader;
 pub mod unit_history;
 pub mod unit_models;
 pub mod visibility;
 pub mod water;
+pub mod water_shader;
 // weather
+mod particle_shader;
 pub mod weather;
 pub mod weather_effects;
 
 #[cfg(test)]
+mod offline_scene;
+#[cfg(test)]
 mod shader_tests;
+
+mod strait_shader;

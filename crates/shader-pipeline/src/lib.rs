@@ -9,6 +9,7 @@ use installed_content::pdxshader::program::{Program, Stage, Technique};
 pub mod cache;
 pub mod gpu;
 pub mod library;
+mod reads;
 mod sampling;
 mod source;
 pub mod stream;
@@ -50,6 +51,8 @@ impl TextureKind {
 pub struct Buffer {
     pub binding: u32,
     pub size: u32,
+    /// Conservative component byte reads, excluding unused fields and padding.
+    pub reads: Vec<std::ops::Range<u32>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -74,6 +77,8 @@ pub struct Shader {
     /// Physical slots actually read, after compiler dead-code elimination.
     pub textures: Vec<(u32, TextureKind)>,
     pub samplers: Vec<u32>,
+    /// Actual image/sampler pairs, including pairs whose register numbers differ.
+    pub sampling_pairs: Vec<(u32, u32)>,
     pub inputs: Vec<VertexInput>,
 }
 
@@ -367,8 +372,10 @@ fn translate(
         buffers: Vec::new(),
         textures: Vec::new(),
         samplers: Vec::new(),
+        sampling_pairs: Vec::new(),
         inputs: Vec::new(),
     };
+    let mut read_ranges = reads::reflect(&module, &info);
     for (_, variable) in module.global_variables.iter() {
         let Some(resource) = &variable.binding else {
             continue;
@@ -388,6 +395,7 @@ fn translate(
             (naga::TypeInner::Struct { span, .. }, 0) => shader.buffers.push(Buffer {
                 binding: resource.binding,
                 size: *span,
+                reads: read_ranges.remove(&resource.binding).unwrap_or_default(),
             }),
             (
                 naga::TypeInner::Image {
@@ -418,6 +426,19 @@ fn translate(
             }
         }
     }
+    for pair in &info.get_entry_point(0).sampling_set {
+        let image = module.global_variables[pair.image]
+            .binding
+            .as_ref()
+            .ok_or("sampled image has no physical binding")?;
+        let sampler = module.global_variables[pair.sampler]
+            .binding
+            .as_ref()
+            .ok_or("sampled sampler has no physical binding")?;
+        shader.sampling_pairs.push((image.binding, sampler.binding));
+    }
+    shader.sampling_pairs.sort_unstable();
+    shader.sampling_pairs.dedup();
     if stage == Stage::Vertex {
         for argument in &module.entry_points[0].function.arguments {
             reflect_input(

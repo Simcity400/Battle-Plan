@@ -1,671 +1,471 @@
-//! The map's table frame: the stone band beyond the map's top and bottom edges.
-//!
-//! Above a camera height of about 2000 the frame is what the camera sees where
-//! the map stops. `map/ambient_object.txt` places three entities once each and
-//! never moves them:
-//!
-//! | entity | scale | position | world z it covers |
-//! |---|---|---|---|
-//! | `frame_border_entity` | 100 | `0 0 2190` | 2050.6 .. 2260.4 |
-//! | `frame_border_bottom_entity` | 100 | `0 0 -140` | -209.8 .. 0.0 |
-//! | `frame_border_logo_entity` | 300 | `3000 -1 2130` | 2072.9 .. 2187.2 |
-//!
-//! Each resolves through `gfx/entities/mapitems.asset` to a `pdxmesh` in
-//! `gfx/entities/mapitems.gfx` and so to `gfx/models/border_mesh.mesh`,
-//! `border_bottom_mesh.mesh` and `hoi4_logo.mesh`, whose materials all name the
-//! `PdxMeshBorder` effect of `gfx/FX/pdxmesh.shader` with the `map_border_*` or
-//! `map_hoi4_logo_*` texture triple. `mapframe.wgsl` is the port of that
-//! effect; its head records what makes the frame unlike the map's own meshes.
-//!
-//! # Why the frame is exactly as wide as it is
-//!
-//! `border_mesh` spans 56.32 model units, which at the placement's scale of 100
-//! is 5632 world units: the map's own width, once, with no tiling. The two
-//! bands then reach 10 units past the camera's own limits, which
-//! `CAMERA_OUTSIDE_MAP_DISTANCE_TOP` and `..._BOTTOM` (200 each) put at world z
-//! 2248 and -200 — the authored geometry is deliberately a little larger than
-//! anything the camera can frame, so its outer edge is never seen. Fitting the
-//! camera of `pairD_out40.png` confirms both numbers from the other side: at
-//! `CAMERA_MAX_HEIGHT` the fitted centre puts world z 2247 at device row 6.5
-//! and z -200 at row 1145.0 of 1152, so the whole-world frame shows the band
-//! and stops within a handful of pixels of where the clamp says it must.
-//!
-//! # Height
-//!
-//! The bands are modelled around y = 0, not around the water plane, and the
-//! ambient-object loader adds the terrain height under the object only when the
-//! placement is not `always_visible`; all three of these are, so their y is
-//! taken as authored. The top band's own geometry dips to y = -31.9 and rises
-//! to y = 14.7 at scale 100, which is what gives the band its lip.
-//!
-//! # What is not reproduced
-//!
-//! The placements carry a `rotation` of `0 0 0`, so this pass does not
-//! interpret the file's rotation units at all; a mod that rotated an ambient
-//! object would be drawn unrotated. The frame is the only ambient object drawn:
-//! the other nine blocks (`ambient_wind`, `ambient_water`, `chinese_wall` and
-//! the rest) are close-zoom scenery whose entities are gated off at the heights
-//! this pass exists for.
-
-use std::io;
-
-use bytemuck::{Pod, Zeroable};
-use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers, ambient,
-    image::dds,
-    mesh::{self, Descriptors},
-};
-
+//! Ambient actor admission140B49340, placement141633D00 and lifetime141634900.
 use super::{
-    scene::{DEPTH_FORMAT, Targets, module, sampler_entry, texture_entry},
-    textures::{Bound, ColorSpace, Samplers, upload},
+    camera::Camera,
+    entity_animation,
+    models::{ModelField, ModelInstance, ModelLibrary},
 };
+use installed_content::{ResolvedLayers, ambient, image::IndexedImage};
+use std::{collections::BTreeSet, io};
 
-fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-
-// ------------------------------------------------------------------ constants
-
-/// The descriptor files that declare the frame's entities and meshes.
-pub const MAPITEMS: [&str; 2] = ["gfx/entities/mapitems.gfx", "gfx/entities/mapitems.asset"];
-
-/// The `map/ambient_object.txt` entities this pass draws, in draw order.
-///
-/// The logo is listed last so it wins the depth test against the band it sits
-/// on, which is also the order the file declares them in.
-pub const FRAME_ENTITIES: [&str; 3] = [
-    "frame_border_entity",
-    "frame_border_bottom_entity",
-    "frame_border_logo_entity",
-];
-
-/// Bytes one [`FrameVertex`] occupies.
-const VERTEX_STRIDE: u64 = 48;
-/// Bytes the shader reads from a wrap copy's uniform slot.
-const SLOT_SIZE: u64 = 16;
-/// Bytes one slot occupies, rounded up to wgpu's default uniform offset
-/// alignment so every slot can be bound at a static offset.
-const SLOT_STRIDE: u64 = 256;
-/// World-wrap copies, as the border and tree passes count them.
-const COPIES: usize = 3;
-
-// --------------------------------------------------------------------- assets
-
-/// One placed frame mesh and the textures its material names.
-pub struct FramePiece {
-    /// The `map/ambient_object.txt` entity name.
-    pub entity: String,
-    /// The `.mesh` the entity resolved to.
-    pub path: String,
-    /// `ambient object scale * entity scale * pdxmesh scale`.
-    pub scale: f32,
-    /// The placement's world position.
-    pub position: [f32; 3],
-    pub mesh: mesh::Mesh,
-    pub diffuse: dds::Texture,
-    pub normal: dds::Texture,
-    pub specular: dds::Texture,
-}
-
-/// Everything the map-frame pass reads from installed content.
 pub struct FrameAssets {
-    pub pieces: Vec<FramePiece>,
+    pub library: ModelLibrary,
+    pub field: ModelField,
+    pub presentation: Presentation,
+}
+
+#[derive(Clone)]
+struct Placement {
+    kind: usize,
+    slot: usize,
+    instance: ModelInstance,
+    bucket: Option<usize>,
+}
+#[derive(Clone)]
+struct Kind {
+    duration: f32,
+    max_visible: i32,
+}
+#[derive(Clone)]
+struct Active {
+    placement: usize,
+    remaining: f32,
+    epoch: u32,
+    last: Option<f32>,
+}
+
+///Presentation starts at observation; no recorded native process clock or RNG.
+#[derive(Clone, Default)]
+pub struct Presentation {
+    placements: Vec<Placement>,
+    kinds: Vec<Kind>,
+    bounds: Vec<[[f32; 3]; 2]>,
+    active: Vec<Active>,
+    counters: Vec<i32>,
+    last: Option<f32>,
+    epoch: u32,
 }
 
 impl FrameAssets {
-    /// Reads the frame's placements, meshes and textures.
-    ///
-    /// `map/ambient_object.txt` is covered content and is hash-verified;
-    /// `gfx/entities` and `gfx/models` are outside the coverage policy
-    /// ([archived rendering notes](#) section 4), so the descriptors, the meshes and their
-    /// textures go through [`ResolvedLayers::read_uncovered`] and are not
-    /// verified. The caller states that limitation once.
-    ///
-    /// A frame piece whose entity, mesh or texture will not read is reported as
-    /// a warning and dropped rather than refused: a missing band must not stop
-    /// a replay opening, and every other piece still draws.
     pub fn load(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> io::Result<Self> {
-        let placements = ambient::read(layers)?;
-        let descriptors = mesh::read_descriptors(layers, &MAPITEMS)?;
-        let mut pieces = Vec::new();
-        let mut missing = Vec::new();
-        for entity in FRAME_ENTITIES {
-            let Some(placement) = placements.iter().find(|block| block.entity == entity) else {
-                missing.push(format!("{entity} (not placed in {})", ambient::PATH));
-                continue;
-            };
-            for object in &placement.objects {
-                match load_piece(
-                    layers,
-                    &descriptors,
-                    entity,
-                    placement.scale,
-                    object.position,
-                ) {
-                    Ok(piece) => pieces.push(piece),
-                    Err(error) => missing.push(format!("{entity} ({error})")),
-                }
-            }
-        }
-        if !missing.is_empty() {
-            warnings.push(format!(
-                "The map's table frame is incomplete: {}. The map's top or bottom edge is drawn \
-                 bare where the band is missing.",
-                missing.join(", ")
-            ));
-        }
-        Ok(Self { pieces })
-    }
-}
-
-fn load_piece(
-    layers: &ResolvedLayers,
-    descriptors: &Descriptors,
-    entity: &str,
-    object_scale: f32,
-    position: [f32; 3],
-) -> io::Result<FramePiece> {
-    let resolved = descriptors.resolve(entity).ok_or_else(|| {
-        invalid(format!(
-            "{} declare no entity or pdxmesh \"{entity}\"",
-            MAPITEMS.join(" and ")
-        ))
-    })?;
-    let path = resolved.definition.file.clone();
-    let decoded = mesh::read(&layers.read_uncovered(&path)?)
-        .map_err(|error| invalid(format!("{path}: {error}")))?;
-    let material = decoded
-        .shapes
-        .iter()
-        .flat_map(|shape| shape.meshes.iter())
-        .find_map(|sub| sub.material.as_ref())
-        .ok_or_else(|| invalid(format!("{path} declares no [material]")))?;
-    // A material's texture names are relative to the `.mesh`'s own directory
-    // (R3 section 1.4).
-    let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
-    let texture = |file: &str| -> io::Result<dds::Texture> {
-        if file.is_empty() {
-            return Err(invalid(format!("{path} names no texture")));
-        }
-        let full = format!("{directory}/{file}");
-        dds::decode(&layers.read_uncovered(&full)?)
-            .map_err(|error| invalid(format!("{full}: {error}")))
-    };
-    Ok(FramePiece {
-        diffuse: texture(&material.diffuse)?,
-        normal: texture(&material.normal)?,
-        specular: texture(&material.specular)?,
-        entity: entity.to_owned(),
-        path,
-        scale: object_scale * resolved.scale,
-        position,
-        mesh: decoded,
-    })
-}
-
-// ------------------------------------------------------------------- geometry
-
-/// One frame vertex, in the order `VS_INPUT_PDXMESHSTANDARD` declares.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct FrameVertex {
-    pub position: [f32; 3],
-    pub normal: [f32; 3],
-    pub tangent: [f32; 4],
-    pub uv0: [f32; 2],
-}
-
-/// The frame's vertices and indices, already in world space.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct FrameGeometry {
-    pub vertices: Vec<FrameVertex>,
-    pub indices: Vec<u32>,
-    /// One index range per piece, in [`FrameAssets::pieces`] order.
-    pub ranges: Vec<std::ops::Range<u32>>,
-    /// The world `z` the geometry spans, for the module's own record.
-    pub z_span: [f32; 2],
-}
-
-/// Bakes each piece's LOD 0 into world space.
-///
-/// The world matrix is a uniform scale and a translation, so the positions are
-/// scaled and offset here and the normals and tangents pass through unchanged;
-/// `mapframe.wgsl` then only adds the wrap copy's x offset. LOD 0 is the only
-/// level used: `frame_border_mesh` declares `cull_distance = 99999.0` and the
-/// placement is `always_visible`, so the engine never drops the frame to a
-/// coarser level however far the camera is.
-pub fn geometry(assets: &FrameAssets) -> FrameGeometry {
-    let mut out = FrameGeometry {
-        z_span: [f32::MAX, f32::MIN],
-        ..Default::default()
-    };
-    for piece in &assets.pieces {
-        let start = out.indices.len() as u32;
-        for shape in piece.mesh.lods().first().into_iter().flatten() {
-            for sub in &shape.meshes {
-                if !sub.is_drawable() {
-                    continue;
-                }
-                let base = out.vertices.len() as u32;
-                for index in 0..sub.vertex_count() {
-                    let p = sub.positions[index];
-                    let position = [
-                        p[0] * piece.scale + piece.position[0],
-                        p[1] * piece.scale + piece.position[1],
-                        p[2] * piece.scale + piece.position[2],
-                    ];
-                    out.z_span[0] = out.z_span[0].min(position[2]);
-                    out.z_span[1] = out.z_span[1].max(position[2]);
-                    out.vertices.push(FrameVertex {
-                        position,
-                        normal: sub.normals[index],
-                        tangent: sub.tangents[index],
-                        uv0: sub.uv0[index],
-                    });
-                }
-                out.indices
-                    .extend(sub.indices.iter().map(|index| base + index));
-            }
-        }
-        out.ranges.push(start..out.indices.len() as u32);
-    }
-    if out.vertices.is_empty() {
-        out.z_span = [0.0, 0.0];
-    }
-    out
-}
-
-// ----------------------------------------------------------------------- pass
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
-struct Constants {
-    world_offset_x: f32,
-    padding: [f32; 3],
-}
-
-/// What a frame needs beyond the globals.
-pub struct MapFrameFrame<'a> {
-    /// The visible world-wrap x offsets, as `border_pass::wrap_offsets` gives
-    /// them.
-    pub offsets: &'a [f32],
-}
-
-/// The map-frame pass.
-pub struct MapFramePass {
-    pipeline: wgpu::RenderPipeline,
-    layout: wgpu::BindGroupLayout,
-    constants: wgpu::Buffer,
-    /// One texture triple per piece, in [`FrameAssets::pieces`] order.
-    textures: Vec<[Bound; 3]>,
-    /// `piece * COPIES + copy`.
-    groups: Vec<wgpu::BindGroup>,
-    vertices: Option<wgpu::Buffer>,
-    indices: Option<wgpu::Buffer>,
-    ranges: Vec<std::ops::Range<u32>>,
-}
-
-impl MapFramePass {
-    /// Builds the pipeline and uploads the frame's textures.
-    pub fn new(
-        device: &wgpu::Device,
-        samples: u32,
-        queue: &wgpu::Queue,
-        globals: &wgpu::BindGroupLayout,
-        format: wgpu::TextureFormat,
-        assets: &FrameAssets,
-    ) -> io::Result<Self> {
-        let mut entries = (0..3)
-            .map(|binding| {
-                texture_entry(
-                    binding,
-                    wgpu::ShaderStages::FRAGMENT,
-                    wgpu::TextureViewDimension::D2,
-                )
-            })
-            .collect::<Vec<_>>();
-        entries.push(sampler_entry(3));
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: 4,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: wgpu::BufferSize::new(SLOT_SIZE),
-            },
-            count: None,
-        });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("map frame inputs"),
-            entries: &entries,
-        });
-        let module = module(device, "map frame", include_str!("mapframe.wgsl"));
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("map frame"),
-            bind_group_layouts: &[Some(globals), Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("map frame"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("map_frame_vertex"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: VERTEX_STRIDE,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 12,
-                            shader_location: 1,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 24,
-                            shader_location: 2,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 40,
-                            shader_location: 3,
-                        },
-                    ],
-                })],
-            },
-            primitive: wgpu::PrimitiveState {
-                // The shipped `PdxMeshBorder` declares no `RasterizerState`,
-                // and the meshes are authored with the opposite winding to
-                // wgpu's counter-clockwise front face, so culling the back
-                // culls the whole band. The bands are closed solids seen only
-                // from above, where the depth test already picks the top
-                // surface, so nothing is left for a cull to do.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: samples,
-                ..Default::default()
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("map_frame_fragment"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    // `BlendState { BlendEnable = no  AlphaTest = yes }`: the
-                    // frame replaces what is under it, and the alpha it writes
-                    // is the shader's own zero.
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        let constants = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("map frame wrap offsets"),
-            size: SLOT_STRIDE * COPIES as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut textures = Vec::new();
-        for piece in &assets.pieces {
-            textures.push([
-                upload(
-                    device,
-                    queue,
-                    &format!("{} diffuse", piece.entity),
-                    &piece.diffuse,
-                    ColorSpace::Srgb,
-                )?,
-                upload(
-                    device,
-                    queue,
-                    &format!("{} normal", piece.entity),
-                    &piece.normal,
-                    ColorSpace::Linear,
-                )?,
-                upload(
-                    device,
-                    queue,
-                    &format!("{} specular", piece.entity),
-                    &piece.specular,
-                    ColorSpace::Linear,
-                )?,
-            ]);
-        }
-        Ok(Self {
-            pipeline,
-            layout,
-            constants,
-            textures,
-            groups: Vec::new(),
-            vertices: None,
-            indices: None,
-            ranges: Vec::new(),
-        })
-    }
-
-    /// Rebuilds the bind groups. The pass samples no scene texture, so this is
-    /// needed once, after [`Self::new`].
-    pub fn rebind(&mut self, device: &wgpu::Device, samplers: &Samplers) {
-        let mut groups = Vec::with_capacity(self.textures.len() * COPIES);
-        for piece in &self.textures {
-            for copy in 0..COPIES {
-                groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("map frame inputs"),
-                    layout: &self.layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&piece[0].view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&piece[1].view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(&piece[2].view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::Sampler(&samplers.linear_wrap),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                buffer: &self.constants,
-                                offset: SLOT_STRIDE * copy as u64,
-                                size: wgpu::BufferSize::new(SLOT_SIZE),
-                            }),
-                        },
-                    ],
-                }));
-            }
-        }
-        self.groups = groups;
-    }
-
-    /// Uploads the baked world-space geometry.
-    pub fn upload(&mut self, device: &wgpu::Device, geometry: FrameGeometry) {
-        use wgpu::util::DeviceExt;
-        if geometry.vertices.is_empty() || geometry.indices.is_empty() {
-            self.vertices = None;
-            self.indices = None;
-            self.ranges.clear();
-            return;
-        }
-        self.vertices = Some(
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("map frame vertices"),
-                contents: bytemuck::cast_slice(&geometry.vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
+        let types = ambient::read(layers)?;
+        let dlcs = layers.dlc_names()?;
+        let roster = layers.descriptor_roster()?;
+        warnings.extend(
+            roster
+                .unreadable
+                .iter()
+                .map(|e| format!("Map frame descriptor unavailable: {e}")),
         );
-        self.indices = Some(
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("map frame indices"),
-                contents: bytemuck::cast_slice(&geometry.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            }),
-        );
-        self.ranges = geometry.ranges;
-    }
-
-    /// Draws the frame, once per visible world-wrap copy.
-    pub fn draw(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        queue: &wgpu::Queue,
-        targets: &Targets,
-        globals: &wgpu::BindGroup,
-        frame: MapFrameFrame<'_>,
-    ) {
-        let (Some(vertices), Some(indices)) = (&self.vertices, &self.indices) else {
-            return;
-        };
-        if self.groups.is_empty() {
-            return;
-        }
-        let copies = frame.offsets.len().min(COPIES);
-        let mut bytes = Vec::with_capacity(COPIES * SLOT_STRIDE as usize);
-        for copy in 0..COPIES {
-            let slot = Constants {
-                world_offset_x: frame.offsets.get(copy).copied().unwrap_or(0.0),
-                padding: [0.0; 3],
-            };
-            bytes.extend_from_slice(bytemuck::bytes_of(&slot));
-            bytes.resize(bytes.len() + SLOT_STRIDE as usize - SLOT_SIZE as usize, 0);
-        }
-        queue.write_buffer(&self.constants, 0, &bytes);
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("map frame"),
-            color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
-            depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, globals, &[]);
-        pass.set_vertex_buffer(0, vertices.slice(..));
-        pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-        for (piece, range) in self.ranges.iter().enumerate() {
-            if range.is_empty() {
-                continue;
-            }
-            for copy in 0..copies {
-                pass.set_bind_group(1, &self.groups[piece * COPIES + copy], &[]);
-                pass.draw_indexed(range.clone(), 0, 0..1);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use installed_content::{
-        image::Rgba8Image,
-        mesh::{Mesh, Shape, SubMesh},
-    };
-
-    /// A one-texel stand-in: [`geometry`] never looks at a piece's textures.
-    fn flat() -> dds::Texture {
-        dds::Texture::from_rgba8(Rgba8Image {
-            width: 1,
-            height: 1,
-            pixels: vec![255; 4],
-        })
-    }
-
-    fn piece(entity: &str, scale: f32, position: [f32; 3]) -> FramePiece {
-        let sub = SubMesh {
-            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
-            normals: vec![[0.0, 1.0, 0.0]; 3],
-            tangents: vec![[1.0, 0.0, 0.0, 1.0]; 3],
-            uv0: vec![[0.0, 0.0]; 3],
-            indices: vec![0, 1, 2],
+        let default = installed_content::terrain::read_default_map(layers)?;
+        let heights = installed_content::image::bmp::decode_indexed(
+            &layers.read(&format!("map/{}", default.heightmap))?,
+        )?;
+        let bounds = buckets([heights.width, heights.height]);
+        let mut presentation = Presentation {
+            bounds,
+            counters: vec![0; types.len()],
+            kinds: types
+                .iter()
+                .map(|t| Kind {
+                    duration: t.duration,
+                    max_visible: t.max_visible,
+                })
+                .collect(),
             ..Default::default()
         };
-        FramePiece {
-            entity: entity.to_owned(),
-            path: format!("gfx/models/{entity}.mesh"),
-            scale,
-            position,
-            mesh: Mesh {
-                shapes: vec![Shape {
-                    name: entity.to_owned(),
-                    lod: None,
-                    meshes: vec![sub],
-                }],
-                ..Default::default()
-            },
-            diffuse: flat(),
-            normal: flat(),
-            specular: flat(),
+        let mut refused = Vec::new();
+        let mut candidates = Vec::new();
+        let mut mesh_names = Vec::new();
+        let mut event_names = BTreeSet::new();
+        for (kind_index, kind) in types.iter().enumerate() {
+            let condition = kind
+                .dlc
+                .as_ref()
+                .map(|items| {
+                    super::equipment_graphics::empty_scope_condition(items, |name| {
+                        Some(dlcs.contains(name))
+                    })
+                })
+                .transpose();
+            if matches!(condition, Ok(Some(false))) {
+                continue;
+            }
+            let condition_error = condition.err().map(|e| e.to_string());
+            let inherited = roster.descriptors.inherit(&kind.entity);
+            let mesh = roster.descriptors.resolve(&kind.entity).is_some();
+            let reason = if let Some(error) = condition_error.as_deref() {
+                Some(error)
+            } else if roster.ambiguous.contains(&kind.entity)
+                || roster.unordered_clones.contains(&kind.entity)
+            {
+                Some("ambiguous descriptor or unordered clone")
+            } else if !mesh && inherited.is_none() {
+                Some("no entity or mesh declaration")
+            } else if !mesh
+                && inherited
+                    .as_ref()
+                    .is_some_and(|e| !e.attachments.is_empty())
+            {
+                Some("meshless root with attachments has no native attachment transform")
+            } else {
+                None
+            };
+            for object in &kind.objects {
+                let bucket = (!object.always_queued)
+                    .then(|| {
+                        presentation
+                            .bounds
+                            .iter()
+                            .position(|b| contains(*b, object.position))
+                    })
+                    .flatten();
+                if let Some(reason) = reason.or((!object.always_queued && bucket.is_none())
+                    .then_some("placement outside native ambient buckets"))
+                {
+                    refused.push(format!("{} / {} ({reason})", kind.entity, object.name));
+                    continue;
+                }
+                let mut instance = instance(kind, object);
+                if !kind.always_visible {
+                    instance.position[1] += height(&heights, object.position);
+                }
+                instance.animation_seed =
+                    u32::try_from(candidates.len()).map_err(io::Error::other)? ^ 0x414d_4249;
+                candidates.push((kind_index, kind.entity.clone(), instance, bucket));
+                if mesh {
+                    mesh_names.push(kind.entity.clone());
+                } else {
+                    event_names.insert(kind.entity.clone());
+                }
+            }
         }
+        let mut library = ModelLibrary::load(layers, &roster.descriptors, &mesh_names, warnings)?;
+        for name in event_names {
+            library.add_event_entity(layers, &roster.descriptors, &name)?;
+        }
+        for (kind, name, instance, bucket) in candidates {
+            if let Some(slot) = library.slot(&name) {
+                presentation.placements.push(Placement {
+                    kind,
+                    slot,
+                    instance,
+                    bucket,
+                });
+            } else {
+                refused.push(format!("{name} (actor resources failed to load)"));
+            }
+        }
+        if !refused.is_empty() {
+            warnings.push(format!(
+                "Map shader map frame: {} unsupported ambient placements: {}",
+                refused.len(),
+                refused.join(", ")
+            ));
+        }
+        if presentation
+            .placements
+            .iter()
+            .any(|p| p.instance.animation != entity_animation::STOPPED)
+        {
+            warnings.push("Ambient animation and particle clocks start at viewer observation; native historical populations, RNG and process-clock phase are not recorded. Ambient sound playback is unavailable.".into());
+        }
+        let field = ModelField::build(
+            &library,
+            presentation
+                .placements
+                .iter()
+                .map(|p| (p.slot, p.instance))
+                .collect(),
+            256.,
+        );
+        Ok(Self {
+            library,
+            field,
+            presentation,
+        })
+    }
+}
+
+fn instance(kind: &ambient::AmbientObjectType, object: &ambient::AmbientObject) -> ModelInstance {
+    //141633DB5 divides by360 then multiplies TAU40C90FDB; only negative-Y rotation.
+    ModelInstance {
+        position: object.position,
+        rotation: object.rotation[1] / 360. * f32::from_bits(0x40c90fdb),
+        scale: kind.scale,
+        animation: if kind.use_animation {
+            entity_animation::AMBIENT_IDLE
+        } else {
+            entity_animation::STOPPED
+        },
+        ..Default::default()
+    }
+}
+
+///140B46EC0: 4x4 quarter-map boxes, extended one quarter outside each outer edge.
+///141634490 assigns the first inclusive box containing the authored position.
+fn buckets([width, height]: [u32; 2]) -> Vec<[[f32; 3]; 2]> {
+    let dx = (width / 4) as f32;
+    let dz = (height / 4) as f32;
+    (0..4)
+        .flat_map(|z| {
+            (0..4).map(move |x| {
+                [
+                    [
+                        if x == 0 { -dx } else { x as f32 * dx },
+                        -100.,
+                        if z == 0 { -dz } else { z as f32 * dz },
+                    ],
+                    [
+                        if x == 3 {
+                            width as f32 + dx
+                        } else {
+                            (x + 1) as f32 * dx
+                        },
+                        1000.,
+                        if z == 3 {
+                            height as f32 + dz
+                        } else {
+                            (z + 1) as f32 * dz
+                        },
+                    ],
+                ]
+            })
+        })
+        .collect()
+}
+fn contains([low, high]: [[f32; 3]; 2], p: [f32; 3]) -> bool {
+    (0..3).all(|i| low[i] <= p[i] && p[i] <= high[i])
+}
+fn in_view([low, high]: [[f32; 3]; 2], planes: &[[f32; 4]; 4], offset: f32) -> bool {
+    planes.iter().all(|plane| {
+        let p: [f32; 3] = std::array::from_fn(|i| if plane[i] < 0. { low[i] } else { high[i] });
+        (p[0] + offset) * plane[0] + p[1] * plane[1] + p[2] * plane[2] + plane[3] >= 0.
+    })
+}
+///141633DD7 passes clampSea=true to140A51CC0: nearest sample, bottom-up, no wrap.
+fn height(image: &IndexedImage, [x, _, z]: [f32; 3]) -> f32 {
+    let x = ((x + 0.5) as i32).clamp(0, image.width as i32 - 1) as usize;
+    let z = ((z + 0.5) as i32).clamp(0, image.height as i32 - 1) as usize;
+    (f32::from(image.indices[(image.height as usize - 1 - z) * image.width as usize + x]) * 0.1)
+        .max(9.5)
+}
+
+impl Presentation {
+    pub fn update(
+        &mut self,
+        camera: Camera,
+        size: [u32; 2],
+        time: f32,
+    ) -> Vec<(usize, ModelInstance)> {
+        let planes = camera.side_planes(size);
+        let visible: Vec<_> = self
+            .bounds
+            .iter()
+            .map(|b| {
+                [0., -camera.map.x(), camera.map.x()]
+                    .iter()
+                    .any(|o| in_view(*b, &planes, *o))
+            })
+            .collect();
+        self.advance(time, &visible)
     }
 
-    #[test]
-    fn the_placement_scale_and_position_are_baked_into_world_space() {
-        let assets = FrameAssets {
-            pieces: vec![piece("frame_border_entity", 100.0, [0.0, 0.0, 2190.0])],
-        };
-        let geometry = geometry(&assets);
-        assert_eq!(geometry.vertices.len(), 3);
-        assert_eq!(geometry.vertices[0].position, [0.0, 0.0, 2190.0]);
-        // 1 model unit at scale 100 is 100 world units, which is what makes the
-        // 56.32-unit band exactly one map width across.
-        assert_eq!(geometry.vertices[1].position, [100.0, 0.0, 2190.0]);
-        assert_eq!(geometry.vertices[2].position, [0.0, 0.0, 2290.0]);
-        // A uniform scale leaves the normal and tangent alone.
-        assert_eq!(geometry.vertices[0].normal, [0.0, 1.0, 0.0]);
-        assert_eq!(geometry.vertices[0].tangent, [1.0, 0.0, 0.0, 1.0]);
-        assert_eq!(geometry.ranges, vec![0..3]);
-        assert_eq!(geometry.z_span, [2190.0, 2290.0]);
+    fn advance(&mut self, time: f32, visible: &[bool]) -> Vec<(usize, ModelInstance)> {
+        if self.last.is_some_and(|last| time < last) {
+            self.active.clear();
+            self.counters.fill(0);
+            self.epoch = 0;
+            self.last = None;
+        }
+        self.last = Some(time);
+        //140B49340 visits the sixteen bucket banks, then the always-queued list.
+        for bucket in (0..self.bounds.len())
+            .map(Some)
+            .chain(std::iter::once(None))
+        {
+            if bucket.is_some_and(|i| !visible[i]) {
+                continue;
+            }
+            for (index, placement) in self
+                .placements
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.bucket == bucket)
+            {
+                let kind = &self.kinds[placement.kind];
+                //141634330's comparison is counter>max, not an active-count ceiling.
+                if self.active.iter().any(|a| a.placement == index)
+                    || (kind.max_visible > 0 && self.counters[placement.kind] > kind.max_visible)
+                {
+                    continue;
+                }
+                self.counters[placement.kind] = (self.counters[placement.kind] - 1).max(0);
+                self.epoch = self.epoch.wrapping_add(1);
+                self.active.push(Active {
+                    placement: index,
+                    remaining: kind.duration,
+                    epoch: self.epoch,
+                    last: None,
+                });
+            }
+        }
+        //141634900 first captures the clock, then subtracts elapsed process time.
+        let mut i = 0;
+        while i < self.active.len() {
+            let a = &mut self.active[i];
+            if a.remaining > 0. {
+                a.remaining -= time - a.last.unwrap_or(time);
+            }
+            a.last = Some(time);
+            if self.kinds[self.placements[a.placement].kind].duration > 0. && a.remaining <= 0. {
+                let removed = self.active.swap_remove(i);
+                self.counters[self.placements[removed.placement].kind] =
+                    self.counters[self.placements[removed.placement].kind].wrapping_add(1);
+            } else {
+                i += 1;
+            }
+        }
+        self.active
+            .iter()
+            .map(|a| {
+                let p = &self.placements[a.placement];
+                let mut instance = p.instance;
+                instance.animation_epoch = a.epoch;
+                (p.slot, instance)
+            })
+            .collect()
     }
+}
 
-    #[test]
-    fn every_piece_gets_its_own_index_range() {
-        let assets = FrameAssets {
-            pieces: vec![
-                piece("frame_border_entity", 100.0, [0.0, 0.0, 2190.0]),
-                piece("frame_border_bottom_entity", 100.0, [0.0, 0.0, -140.0]),
-            ],
-        };
-        let geometry = geometry(&assets);
-        assert_eq!(geometry.ranges, vec![0..3, 3..6]);
-        // The second piece's indices are rebased onto its own vertices.
-        assert_eq!(&geometry.indices[3..6], &[3, 4, 5]);
-        assert_eq!(geometry.z_span, [-140.0, 2290.0]);
-    }
+#[test]
+fn placement_preserves_authored_height_scale_and_only_y_rotation() {
+    let types = ambient::parse(b"type={type=mod_frame scale=2 always_visible=yes use_animation=no object={position={3 -4 5} rotation={90 90 90}}}").unwrap();
+    let value = instance(&types[0], &types[0].objects[0]);
+    assert_eq!(value.position, [3., -4., 5.]);
+    assert_eq!(value.scale, 2.);
+    assert_eq!(value.rotation, f32::from_bits(0x3fc90fdb));
+    assert_eq!((value.pitch, value.roll), (0., 0.));
+    assert_eq!(value.animation, entity_animation::STOPPED);
+}
 
-    #[test]
-    fn a_piece_with_no_drawable_geometry_contributes_an_empty_range() {
-        let mut only = piece("frame_border_logo_entity", 300.0, [3000.0, -1.0, 2130.0]);
-        only.mesh.shapes[0].meshes[0].normals.clear();
-        let geometry = geometry(&FrameAssets { pieces: vec![only] });
-        assert!(geometry.vertices.is_empty());
-        assert_eq!(geometry.ranges, vec![0..0]);
-        assert_eq!(geometry.z_span, [0.0, 0.0]);
-    }
+#[test]
+fn buckets_use_first_inclusive_match_and_native_edge_extensions() {
+    let b = buckets([405, 207]);
+    assert_eq!(b.len(), 16);
+    assert_eq!(b[0], [[-101., -100., -51.], [101., 1000., 51.]]);
+    assert_eq!(b[15], [[303., -100., 153.], [506., 1000., 258.]]);
+    assert_eq!(
+        b.iter().position(|b| contains(*b, [101., 0., 51.])),
+        Some(0)
+    );
+    assert!(!contains(b[0], [0., -100.01, 0.]));
+    assert!(in_view(b[0], &[[1., 0., 0., -101.]; 4], 0.));
+    assert!(!in_view(b[0], &[[1., 0., 0., -102.]; 4], 0.));
+}
+
+#[test]
+fn nearest_ambient_height_clamps_and_uses_bottom_up_rows() {
+    let image = IndexedImage {
+        width: 2,
+        height: 2,
+        indices: vec![100, 200, 0, 150],
+        palette: [[0; 4]; 256],
+    };
+    assert_eq!(height(&image, [-100., 0., -100.]), 9.5);
+    assert_eq!(height(&image, [0.49, 0., 0.49]), 9.5);
+    assert_eq!(height(&image, [0.5, 0., 0.5]), 20.);
+    assert_eq!(height(&image, [100., 0., 100.]), 20.);
+}
+
+#[test]
+fn ambient_admission_expiry_and_recreation_preserve_native_order() {
+    let placement = |slot, bucket| Placement {
+        kind: slot,
+        slot,
+        bucket,
+        instance: ModelInstance {
+            scale: 1.,
+            ..Default::default()
+        },
+    };
+    let mut p = Presentation {
+        placements: vec![
+            placement(0, None),
+            placement(1, Some(0)),
+            placement(2, Some(1)),
+        ],
+        kinds: vec![
+            Kind {
+                duration: 0.,
+                max_visible: -1,
+            },
+            Kind {
+                duration: 2.,
+                max_visible: 1,
+            },
+            Kind {
+                duration: 0.,
+                max_visible: -1,
+            },
+        ],
+        bounds: buckets([40, 40]),
+        counters: vec![0; 3],
+        ..Default::default()
+    };
+    let mut visible = vec![true; 16];
+    let slots =
+        |rows: Vec<(usize, ModelInstance)>| rows.into_iter().map(|(s, _)| s).collect::<Vec<_>>();
+    assert_eq!(slots(p.advance(10., &visible)), [1, 2, 0]);
+    let old_epoch = p.active[0].epoch;
+    visible[0] = false; //Leaving a bucket does not destroy its live actor.
+    assert_eq!(slots(p.advance(11., &visible)), [1, 2, 0]);
+    assert_eq!(slots(p.advance(12., &visible)), [0, 2]); //last-slot replacement
+    assert_eq!(p.counters, [0, 1, 0]);
+    visible[0] = true;
+    assert_eq!(slots(p.advance(20., &visible)), [0, 2, 1]); //first tick subtracts zero
+    assert_ne!(p.active[2].epoch, old_epoch);
+    assert_eq!(p.counters, [0, 0, 0]);
+    assert_eq!(slots(p.advance(1., &visible)), [1, 2, 0]); //seek starts a fresh presentation
+    p.active.retain(|a| a.placement != 1);
+    p.counters[1] = 2; //The signed native counter comparison deliberately stays >.
+    assert_eq!(slots(p.advance(1., &visible)), [2, 0]);
+}
+
+#[test]
+fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
+    let descriptors = installed_content::mesh::parse_descriptors(br#"entity={name=emitter scale=0.3 state={name=idle event={time=0 particle=mist keep_particle=yes}}}"#, "gfx/synthetic.asset").unwrap();
+    let mut library = ModelLibrary::default();
+    library
+        .add_event_entity(&ResolvedLayers::default(), &descriptors, "emitter")
+        .unwrap();
+    let slot = library.slot("emitter").unwrap();
+    assert!(library.meshes[slot].lods.is_empty());
+    let placed = ModelInstance {
+        position: [3., 4., 5.],
+        scale: 4.,
+        animation: entity_animation::AMBIENT_IDLE,
+        animation_epoch: 1,
+        ..Default::default()
+    };
+    let mut pass = super::models::ModelPass::new(&library, "map frame");
+    pass.update_placed(vec![(slot, placed)], 256.);
+    pass.animate(20., None, &[0.]);
+    assert_eq!(pass.events.len(), 1);
+    assert_eq!(pass.events[0].age, 0.);
+    assert_eq!(pass.events[0].transform.translation, [3., 4., 5.]);
+    assert!((pass.events[0].transform.uniform_scale() - 1.2).abs() < 1e-6);
+    pass.animate(20.5, None, &[0.]);
+    assert_eq!(pass.events[0].age, 0.5);
+    pass.update_placed(
+        vec![(
+            slot,
+            ModelInstance {
+                animation: entity_animation::STOPPED,
+                ..placed
+            },
+        )],
+        256.,
+    );
+    pass.animate(21., None, &[0.]);
+    assert!(pass.events.is_empty());
 }

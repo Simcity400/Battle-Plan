@@ -22,7 +22,7 @@ use crate::map::{
     // close zoom
     map_buildings::{MapBuildingAssets, PreparedBuildings},
     // the map's table frame
-    mapframe::{FrameAssets, FrameGeometry},
+    mapframe::FrameAssets,
     // orders: the recorded player's battle plan
     orders::{OrderAssets, OrderField},
     // political fill
@@ -66,7 +66,6 @@ pub struct MapLayers<'a> {
     pub intel_map: &'a IntelMap,
     // the map's table frame
     pub frame_assets: &'a FrameAssets,
-    pub frame_geometry: &'a FrameGeometry,
     // close zoom
     pub sprawl: &'a Sprawl,
     pub map_buildings: &'a MapBuildingAssets,
@@ -279,7 +278,9 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     // Atlases built on the CPU page to this side ([`crate::map::atlas_pages`]).
     crate::map::atlas_pages::record_device_limit(limits.max_texture_dimension_2d);
     let mut wanted = wgpu::Features::TEXTURE_COMPRESSION_BC
-        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        // Compiled map shaders sample the native RGBA32F point-light texture.
+        | wgpu::Features::FLOAT32_FILTERABLE;
     // Profiling only: per-pass GPU timestamps (`map::gpu_passes`).
     if crate::map::gpu_passes::requested() {
         wanted |= crate::map::gpu_passes::features();
@@ -320,6 +321,10 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
             max_texture_dimension_2d: limits.max_texture_dimension_2d,
             max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage,
             max_samplers_per_shader_stage: limits.max_samplers_per_shader_stage,
+            // Compiled programs bind every constant buffer at a dynamic offset into the
+            // frame's upload arena; D3D11 allows fourteen per stage.
+            max_dynamic_uniform_buffers_per_pipeline_layout: limits
+                .max_dynamic_uniform_buffers_per_pipeline_layout,
             ..base_limits
         },
         ..Default::default()
@@ -428,27 +433,44 @@ pub fn write_png(
         .targets()
         .ok_or_else(|| invalid("render a map before saving PNG"))?;
     let [width, height] = targets.size();
-    let row_bytes = width * 4;
+    let pixels = read_texture(device, queue, targets.output(), 4)?;
+    let mut encoder = png::Encoder::new(BufWriter::new(File::create(path)?), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+    let mut writer = encoder.write_header().map_err(io::Error::other)?;
+    writer.write_image_data(&pixels).map_err(io::Error::other)?;
+    writer.finish().map_err(io::Error::other)
+}
+
+fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    texel_bytes: u32,
+) -> io::Result<Vec<u8>> {
+    let [width, height] = [texture.width(), texture.height()];
+    let row_bytes = width * texel_bytes;
     let padded_row_bytes =
         row_bytes.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let readback_bytes = u64::from(padded_row_bytes) * u64::from(height);
     if readback_bytes > device.limits().max_buffer_size {
         return Err(invalid(format!(
-            "PNG readback needs {readback_bytes} bytes; GPU device buffer limit is {}",
+            "Map readback needs {readback_bytes} bytes; GPU device buffer limit is {}",
             device.limits().max_buffer_size
         )));
     }
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("map PNG readback"),
+        label: Some("map texture readback"),
         size: readback_bytes,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("map PNG copy"),
+        label: Some("map texture copy"),
     });
     encoder.copy_texture_to_buffer(
-        targets.output().as_image_copy(),
+        texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &buffer,
             layout: wgpu::TexelCopyBufferLayout {
@@ -457,7 +479,7 @@ pub fn write_png(
                 rows_per_image: Some(height),
             },
         },
-        extent(targets.size()),
+        extent([width, height]),
     );
     let submission = queue.submit([encoder.finish()]);
     let slice = buffer.slice(..);
@@ -482,13 +504,7 @@ pub fn write_png(
     }
     drop(mapped);
     buffer.unmap();
-    let mut encoder = png::Encoder::new(BufWriter::new(File::create(path)?), width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-    let mut writer = encoder.write_header().map_err(io::Error::other)?;
-    writer.write_image_data(&pixels).map_err(io::Error::other)?;
-    writer.finish().map_err(io::Error::other)
+    Ok(pixels)
 }
 
 /// What one headless render reports back.
@@ -580,12 +596,7 @@ pub fn dump_png(
             scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
         }
         // the map's table frame
-        scene.set_map_frame(
-            &device,
-            &queue,
-            layers.frame_assets,
-            layers.frame_geometry.clone(),
-        )?;
+        scene.set_map_frame(&device, &queue, layers.frame_assets)?;
         // trees
         if !layers.omitted.trees {
             scene.set_trees(
@@ -614,8 +625,6 @@ pub fn dump_png(
             scene.set_railways(&device, &queue, layers.rail_assets, layers.rail_mesh)?;
             // A dump builds the pass, so it replaces no earlier plan.
             let _ = scene.set_trains(
-                &device,
-                &queue,
                 layers.trains.clone(),
                 layers.train_plan.clone(),
                 crate::map::presentation::Continuity::Reset,
@@ -628,12 +637,7 @@ pub fn dump_png(
             )?;
         }
         if !layers.omitted.models {
-            let _ = scene.set_aircraft(
-                &device,
-                &queue,
-                layers.aircraft.clone(),
-                layers.aircraft_plan.clone(),
-            )?;
+            let _ = scene.set_aircraft(layers.aircraft.clone(), layers.aircraft_plan.clone())?;
             scene.set_unit_models(
                 &device,
                 &queue,
@@ -714,6 +718,15 @@ pub fn dump_png(
             render_banner(&scene, &device, &queue, text)?;
         }
         write_png(&scene, &device, &queue, path)?;
+        // Offline shader parity evidence before grading/8-bit quantization.
+        if let Some(path) = std::env::var_os("BATTLE_PLAN_MAP_SCENE_RGBA16F").or_else(|| std::env::var_os("HOI4_MAP_SCENE_RGBA16F")) {
+            use std::io::Write;
+            let targets = scene
+                .targets()
+                .ok_or_else(|| invalid("scene readback has no target"))?;
+            let bytes = read_texture(&device, &queue, targets.scene_texture(), 8)?;
+            File::create_new(path)?.write_all(&bytes)?;
+        }
         let grid = scene.grid();
         let report = DumpReport {
             adapter: format!("{} ({:?})", info.name, info.backend),

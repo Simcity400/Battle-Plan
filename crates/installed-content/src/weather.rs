@@ -256,6 +256,7 @@ mod tests {
                 path: "gfx/particles/x/file.asset".into(),
                 name: "unrelated_id".into(),
                 scale: 1.0,
+                registration: 0,
             }]
         );
         for name in ["timed", "orphan", "absent"] {

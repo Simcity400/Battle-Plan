@@ -208,6 +208,11 @@ fn parse_game_graphics_document(
     result.shadows =
         toggle(graphics, "shadows", true)? && toggle(map, "draw_shadows", result.shadows)?;
     result.rivers = toggle(map, "draw_rivers", result.rivers)?;
+    // 1401FAA60 token0x3699 writes map options+0x18; used by141264830.
+    result.high_gfx_shaders = toggle(map, "high_gfx_shaders", result.high_gfx_shaders)?;
+    result.water_reflections = toggle(map, "draw_water_reflections", result.water_reflections)?;
+    // 1401FAA60 token0x281c writes options+0x0e; sky141268860 reads it.
+    result.sky = toggle(map, "draw_sky", result.sky)?;
     result.buildings = toggle(map, "draw_buildings", result.buildings)?;
     result.units = toggle(map, "draw_units", result.units)?;
     result.city_sprawl = toggle(map, "draw_citysprawl", result.city_sprawl)?;
@@ -301,9 +306,12 @@ mod tests {
 
     #[test]
     fn imports_real_graphics_and_rejects_invalid_quality() {
-        let settings = parse_game_graphics(b"graphics={multi_sampling=0 shadows=no} mapRenderingOptions={draw_trees=no draw_shadows=yes texture_quality=2 draw_units=no}").unwrap();
+        let settings = parse_game_graphics(b"graphics={multi_sampling=0 shadows=no} mapRenderingOptions={draw_trees=no draw_shadows=yes texture_quality=2 draw_units=no high_gfx_shaders=no draw_water_reflections=no draw_sky=no}").unwrap();
         assert_eq!(settings.samples, 1);
         assert_eq!(settings.texture_quality, 2);
+        assert!(!settings.high_gfx_shaders);
+        assert!(!settings.water_reflections);
+        assert!(!settings.sky);
         assert!(!settings.shadows && !settings.trees && !settings.units);
         assert!(
             parse_game_graphics(b"graphics={multi_sampling=3} mapRenderingOptions={}").is_err()

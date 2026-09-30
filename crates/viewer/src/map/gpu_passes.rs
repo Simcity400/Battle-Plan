@@ -14,7 +14,8 @@ use std::sync::OnceLock;
 use eframe::wgpu;
 
 /// Timestamps one frame may write.
-const MAX: u32 = 48;
+// Three wraps revisit every map-body pass and both mesh queues.
+const MAX: u32 = 128;
 
 /// Whether per-pass GPU timing is requested.
 pub fn requested() -> bool {
@@ -160,18 +161,34 @@ fn pass_times(
         (Some(first), Some(last)) => ms(*first, *last),
         _ => 0.0,
     };
-    let parts = labels
-        .iter()
-        .skip(1)
-        .zip(ticks.windows(2))
-        .map(|(label, pair)| (*label, ms(pair[0], pair[1])))
-        .collect();
+    // A native world-wrap traversal revisits the same pass labels. Report each
+    // group once, summing its copies in first-submission order.
+    let mut parts: Vec<(&str, f64)> = Vec::new();
+    for (label, pair) in labels.iter().skip(1).zip(ticks.windows(2)) {
+        let elapsed = ms(pair[0], pair[1]);
+        if let Some((_, value)) = parts.iter_mut().find(|(name, _)| name == label) {
+            *value += elapsed;
+        } else {
+            parts.push((label, elapsed));
+        }
+    }
     (total, parts)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrap_copies_sum_without_losing_later_passes() {
+        let (total, parts) = pass_times(
+            &["start", "terrain", "water", "terrain", "water", "post"],
+            &[0, 1_000, 3_000, 7_000, 15_000, 31_000],
+            1_000.,
+        );
+        assert_eq!(total, 31.);
+        assert_eq!(parts, vec![("terrain", 5.), ("water", 10.), ("post", 16.)]);
+    }
 
     #[test]
     fn each_group_ends_at_its_own_mark_and_never_wraps() {

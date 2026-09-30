@@ -3,15 +3,12 @@
 // a per-material flag word here rather than a pipeline variant; `map::models`
 // records why and lists the branches this port drops.
 //
-// The one structural departure is the world matrix. The engine hands each
-// object a `float4x4 WorldMatrix` and then divides the position it feeds to
-// lighting by `WorldMatrix[3][3]`, in which it stores the object's uniform
-// scale (`pdxmesh.shader:265`, R3 section 2.2). This port has no world matrix:
-// a map object's transform is a translation, a rotation about Y and a uniform
-// scale, which the instance record carries directly and the mesh scale is baked
-// into the vertex positions. `_WorldSpacePos` is therefore the object's true
-// world position in map units, which is what R3 reads that division as
-// producing; the division itself is UNVERIFIED and is not reproduced.
+// The engine supplies a per-object WorldMatrix. Ordinary map producers use
+// an affine matrix:1424E7450 scales only its basis,14227BA20 applies the entity
+// transform, and1422611D0 queues the unchanged64bytes. Its homogeneous w stays1;
+// it is not a slot for uniform scale. This port instead separates translation,
+// rotation and scale and uses composed geometry. The compiled mesh migration
+// must retain the native per-actor matrix and local vertex/palette streams.
 
 /// Flag bits of the per-material word, matching `models::Effect::bits`.
 const FLAG_IMPROVED_BLINN_PHONG: u32 = 1u;
@@ -383,68 +380,4 @@ fn mesh_fragment(input: MeshOut) -> @location(0) vec4<f32> {
         return vec4<f32>(color, clip_alpha * smoothstep(0.0, 2.5, length(delta)) * slot.alpha);
     }
     return vec4<f32>(color, max(alpha, globals.frame.ambient_pos_y_min_mesh_alpha.w) * slot.alpha);
-}
-
-// ----------------------------------------------------------- the shadow effect
-/// `VS_OUTPUT_PDXMESHSHADOW` (`pdxmesh.shader`), which carries the clip depth
-/// and the uv the alpha-blend variant tests.
-struct MeshShadowOut {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) depth: vec2<f32>,
-    @location(1) uv0: vec2<f32>,
-}
-
-/// `VertexPdxMeshStandardShadow` (`pdxmesh.shader:329-342`) and its
-/// `*SkinnedShadow` twin (`:344-366`), which are the same shader up to the skin
-/// and which this port merges the way it merges the lit pair: a vertex with
-/// four zero weights takes `mesh_skin`'s early return, so one entry point
-/// serves both. `ViewProjectionMatrix` is the light's here, because
-/// `map::shadow` swaps the frame constants exactly as the engine does.
-@vertex
-fn mesh_shadow_vertex(
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) tangent: vec4<f32>,
-    @location(3) uv0: vec2<f32>,
-    @location(4) instance_position: vec3<f32>,
-    @location(5) instance_rotation: f32,
-    @location(6) instance_scale: f32,
-    @location(7) joints: vec4<u32>,
-    @location(8) weights: vec4<f32>,
-    @location(9) instance_angles: vec2<f32>,
-    @location(10) train_clip: vec4<f32>,
-    @location(11) palette_offset: u32,
-    @location(12) bind_position: vec3<f32>,
-    @location(13) bind_normal: vec3<f32>,
-    @location(14) bind_tangent: vec3<f32>,
-    @location(15) rigid_joint: u32,
-) -> MeshShadowOut {
-    let world = mesh_world(
-        mesh_rotation(instance_rotation, instance_angles.x, instance_angles.y),
-        mesh_animated(vec4<f32>(position, 1.0), vec4<f32>(bind_position, 1.0), joints, weights, rigid_joint, palette_offset),
-        instance_position,
-        instance_scale,
-    );
-    var out: MeshShadowOut;
-    out.clip = globals.frame.view_projection * vec4<f32>(world, 1.0);
-    out.depth = out.clip.zw;
-    out.uv0 = uv0;
-    return out;
-}
-
-/// `PixelPdxMeshStandardShadow` (`pdxmesh.shader:661-668`) and
-/// `PixelPdxMeshAlphaBlendShadow` (`:680-689`), which differ only in the alpha
-/// test; the flag word picks between them the way it picks between the lit
-/// variants.
-///
-/// `In.vDepthUV0.xxx / In.vDepthUV0.y` is `z / w`, where `tree.shader` writes
-/// `z * w` in the same place. The two agree only for an orthographic light, and
-/// that is the evidence `map::shadow` rests its projection on.
-@fragment
-fn mesh_shadow_fragment(input: MeshShadowOut) -> @location(0) vec4<f32> {
-    if has(FLAG_ALPHA_TEST)
-        && textureSample(diffuse_map, linear_wrap, input.uv0).a < 0.5 {
-        discard;
-    }
-    return vec4<f32>(vec3<f32>(input.depth.x / input.depth.y), 1.0);
 }

@@ -1,8 +1,8 @@
-// `gfx/FX/border.shader` and `gfx/FX/strait.shader`, ported line for line.
+// `gfx/FX/border.shader`, ported line for line.
 //
-// Both draw a flat ribbon over the terrain with the same depth trick: the clip-space z comes from a
+// Draws a flat ribbon over the terrain with the same depth trick: the clip-space z comes from a
 // position pushed `vCamLookAtDir * 0.05` toward the camera, so the strip is depth-tested against
-// the terrain but never intersects it (`border.shader` VS, `strait.shader` VS).
+// the terrain but never intersects it (`border.shader` VS).
 //
 // Deviations from the game shaders, each with the line it replaces:
 //
@@ -125,33 +125,4 @@ fn border_fragment(input: BorderVarying) -> @location(0) vec4<f32> {
     rgb = day_night_with_blend(rgb, calc_globe_normal(input.pos.xz), 1.0);
 
     return vec4<f32>(rgb, max(color.a, pulse - 0.2) * border.time_transparency.y);
-}
-
-struct StraitVarying {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) pos: vec3<f32>,
-}
-
-@vertex
-fn strait_vertex(
-    @location(0) position: vec3<f32>,
-    @location(1) uv: vec2<f32>,
-) -> StraitVarying {
-    let pos = vec4<f32>(position.x + border.world_offset_x, position.y, position.z, 1.0);
-    var out: StraitVarying;
-    out.position = globals.frame.view_projection * pos;
-    let distorted = pos - vec4<f32>(cam_look_at_dir() * 0.05, 0.0);
-    out.position.z = dot(distorted, clip_z_row());
-    out.uv = uv;
-    out.pos = pos.xyz;
-    return out;
-}
-
-/// `strait.shader`'s pixel shader: the texture alpha straight through, distance fog on the colour,
-/// no lighting, no shadow, no fog of war (its two FoW samplers are declared but never read).
-@fragment
-fn strait_fragment(input: StraitVarying) -> @location(0) vec4<f32> {
-    let color = textureSample(border_diffuse, border_sampler, input.uv);
-    return vec4<f32>(apply_distance_fog(color.rgb, input.pos), color.a);
 }

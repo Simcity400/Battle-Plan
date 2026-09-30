@@ -6,7 +6,7 @@
 //
 // Deviations from the game shader, each with the line it replaces:
 //
-// * `LOW_END_GFX` is off; the `river_low_gfx` effect is not ported.
+// * The offline oracle adds LOW_END_GFX branches from river.shader; runtime had high quality only.
 // * Nothing: `GetShadowScaled( SHADOW_WEIGHT_RIVER, ... )` is ported, and `map::shadow` fills the
 //   buffer it reads below camera height 400 and binds the all-ones clear value above it, where
 //   `ShadowFadeFactor` is 0 and the saturate inside `GetShadowScaled` pins the term to 1 anyway.
@@ -147,7 +147,8 @@ struct RiverConstants {
     world_offset_x: f32,
     /// `vTimeDirectionSeasonLerp.x * vTimeDirectionSeasonLerp.y`.
     time_direction: f32,
-    pad0: vec2<f32>,
+    low_end_gfx: f32,
+    pad0: f32,
 }
 
 @group(1) @binding(14) var<uniform> river: RiverConstants;
@@ -295,7 +296,7 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
     new_uv.y = saturate(new_uv.y * 4.0 - 3.0);
 
     var water_color = textureSample(water_color_map, linear_wrap, input.world_uv).rgb;
-    let diffuse_color = textureSample(
+    var diffuse_color = textureSample(
         river_diffuse,
         river_strip,
         vec2<f32>(new_uv.x, 1.0 - new_uv.y),
@@ -306,9 +307,15 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
         water_side_alpha = vec2<f32>(0.0, 1.0);
     }
 
+    if river.low_end_gfx != 0.0 {
+        diffuse_color = vec4<f32>(water_color, 1.0);
+        water_side_alpha = vec2<f32>(0.0, (1.0 - new_uv.y) * 0.8);
+    }
+
     let water = sample_river_water(input.uv, river.time_direction * RIVER_ANIMATION_SCALE);
 
-    let sun_dir_water = calculate_sun_direction_water(input.pre_pos_fade.xyz);
+    var sun_dir_water = calculate_sun_direction_water(input.pre_pos_fade.xyz);
+    if river.low_end_gfx != 0.0 { sun_dir_water = vec3<f32>(0.0, 1.0, 0.0); }
     let h = normalize(
         normalize(cam_pos() - input.pre_pos_fade.xyz).xzy + -sun_dir_water.xzy,
     );
@@ -341,12 +348,14 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
     );
     var normal = normalize(mix(water.normal, side_normal, water_side_alpha.x));
 
+    if river.low_end_gfx != 0.0 { normal = water.normal; }
+
     // Gradient borders, applied twice: once to the bank diffuse and once to a copy of the water
     // colour, which is then blended back by the camera-distance factor (section 3.2).
     let gradient_border_factor = 1.0 - gradient_border_camera_distance();
     let cutoff = globals.frame.gb_cam_dist_override_outline_cutoff.zw;
     let override_distance = globals.frame.gb_cam_dist_override_outline_cutoff.xy;
-    let bank = gradient_border_apply(
+    var bank = gradient_border_apply(
         diffuse_color.rgb,
         input.world_uv,
         gradient_border_channel1,
@@ -356,7 +365,7 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
         cutoff,
         override_distance,
     );
-    let bordered_water = gradient_border_apply(
+    var bordered_water = gradient_border_apply(
         water_color,
         input.world_uv,
         gradient_border_channel1,
@@ -368,6 +377,10 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
     );
     // `vBloomAlpha` is an `inout` both calls write, so the second one's value is the one that
     // reaches `DayNightWithBlend`.
+    if river.low_end_gfx != 0.0 {
+        bank = GradientResult(diffuse_color.rgb, 0.0);
+        bordered_water = GradientResult(water_color, 0.0);
+    }
     let bloom_alpha = bordered_water.bloom_alpha;
     water_color = mix(water_color, bordered_water.color, gradient_border_factor);
 
@@ -387,7 +400,7 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
         linear_wrap,
         map_uv_bottom_up(input.pre_pos_fade.xyz),
     );
-    let snow = apply_river_snow(
+    var snow = apply_river_snow(
         diffuse,
         reflective_color,
         input.pre_pos_fade.xyz,
@@ -395,6 +408,7 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
         mud_snow,
         water_side_alpha.x,
     );
+    if river.low_end_gfx != 0.0 { snow = RiverSnow(diffuse, normal, 0.0); }
     diffuse = snow.color;
     normal = snow.normal;
 
@@ -429,13 +443,13 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
     );
     // Capture 33840 binds a zero GridStart_InvCellSize in this effect's cb2.
     // Preserve that observed input: point/clamp samples index cell (0,0).
-    light = calculate_point_lights(properties, light, false, vec4<f32>(0.0));
+    if river.low_end_gfx == 0.0 { light = calculate_point_lights(properties, light, false, vec4<f32>(0.0)); }
     var out = compose_light(properties, light.diffuse, light.specular);
 
     // `ApplyFOW( vOut, ShadowMap, Input.vScreenCoord )` (`river.shader:394`),
     // whole, like the water's and unlike the terrain's.
     out = apply_fow_buffer(out, input.position);
-    out = apply_distance_fog(out, input.pre_pos_fade.xyz);
+    if river.low_end_gfx == 0.0 { out = apply_distance_fog(out, input.pre_pos_fade.xyz); }
     out = day_night_with_blend(
         out,
         calc_globe_normal(input.pre_pos_fade.xz),

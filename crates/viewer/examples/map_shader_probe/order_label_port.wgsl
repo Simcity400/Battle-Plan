@@ -1,4 +1,5 @@
-// Port of `gfx/FX/mapname.shader`, the country and state name layer.
+// Comparison port retained for order labels until their native-input gate closes.
+// Country names always execute the compiled content shader.
 //
 // The engine's `Transp_OffsetX` is `ConstantBuffer(1, 32)`, rebound once per
 // name. This pass keeps the glyphs static and reads the same two floats from

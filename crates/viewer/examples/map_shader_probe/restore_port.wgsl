@@ -1,26 +1,12 @@
-// `restorescene.shader`'s `RestoreBloom` effect, with the `downsample*.shader`
-// stages that feed its `AverageLuminanceTexture` and the `bloom.shader` blur
-// that feeds its `RestoreBloom` texture.
+// Remaining `restorescene.shader` RestoreBloom port and viewer-only scene copy.
+// Seed, luminance reductions/adaptation and bloom execute compiled content.
 //
 // This file is self-contained: it is compiled without `common.wgsl` ahead of it
 // because the post stage reads no frame constants.
 
 struct Post {
-    /// `(MiddleGrey, hdr min, hdr max, luminance adaptation blend)`.
+    /// MiddleGrey followed by uniform alignment.
     grade: vec4<f32>,
-    /// `(gather width, gather height, inverse backing width, inverse backing height)`.
-    gather: vec4<f32>,
-    /// `(BrightThreshold, EmissiveBloomStrength, unused, unused)`.
-    bloom: vec4<f32>,
-}
-
-/// `bloom.shader`'s `ConstantBuffer(2, 39)`.
-struct Blur {
-    inv_size: vec2<f32>,
-    axis: f32,
-    weight0: f32,
-    weights: vec4<f32>,
-    offsets: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> post: Post;
@@ -31,9 +17,7 @@ struct Blur {
 @group(0) @binding(5) var linear_clamp: sampler;
 @group(0) @binding(6) var<uniform> reduction_uv: vec4<f32>;
 @group(0) @binding(7) var bloom_texture: texture_2d<f32>;
-@group(0) @binding(8) var<uniform> blur: Blur;
 
-const LUMINANCE_VECTOR: vec3<f32> = vec3<f32>(0.2125, 0.7154, 0.0721);
 const CUBE_SIZE: f32 = 32.0;
 /// `LEVELS` in `restorescene.shader`'s `LevelValue`.
 const LEVELS: vec2<f32> = vec2<f32>(0.04, 0.80);
@@ -66,74 +50,6 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> FullScreen {
 @fragment
 fn copy_main(input: FullScreen) -> @location(0) vec4<f32> {
     return textureSampleLevel(scene, linear_clamp, input.uv, 0.0);
-}
-
-/// `downsample.shader`: the bright pass plus the emissive mask in RGB, log
-/// luminance in alpha. A bilinear tap at a half-size texel centre is the mean
-/// of the four scene texels under it.
-@fragment
-fn seed_main(input: FullScreen) -> @location(0) vec4<f32> {
-    let color = textureSampleLevel(scene, linear_clamp, input.uv, 0.0);
-    var bright = max(0.0, max(max(color.r, color.g), color.b) - post.bloom.x);
-    bright = bright / (0.5 + bright);
-    bright = bright + color.a * post.bloom.y;
-    let log_luminance = log(max(0.0, dot(color.rgb, LUMINANCE_VECTOR)) + 0.0001);
-    return vec4<f32>(color.rgb * bright, log_luminance);
-}
-
-/// `LuminanceDownsample`: one bilinear tap with the native `UVScale` inside a
-/// shrinking viewport; it still sees the whole fixed backing texture. The first
-/// reads the seed's alpha (`LUMINANCE_SAMPLE_ALPHA`).
-@fragment
-fn reduce_seed_main(input: FullScreen) -> @location(0) f32 {
-    return textureSampleLevel(luminance, linear_clamp, input.uv, 0.0).a;
-}
-
-@fragment
-fn reduce_main(input: FullScreen) -> @location(0) f32 {
-    return textureSampleLevel(luminance, linear_clamp, input.uv, 0.0).r;
-}
-
-/// `bloom.shader`: a centre tap and four linearly filtered pairs along one axis.
-@fragment
-fn blur_main(input: FullScreen) -> @location(0) vec4<f32> {
-    let step = blur.inv_size * vec2<f32>(blur.axis, 1.0 - blur.axis);
-    var color = textureSampleLevel(luminance, linear_clamp, input.uv, 0.0).rgb * blur.weight0;
-    for (var k = 0; k < 4; k = k + 1) {
-        let offset = step * blur.offsets[k];
-        color = color + blur.weights[k] * (
-            textureSampleLevel(luminance, linear_clamp, input.uv + offset, 0.0).rgb
-            + textureSampleLevel(luminance, linear_clamp, input.uv - offset, 0.0).rgb);
-    }
-    return vec4<f32>(color, 1.0);
-}
-
-/// `clamp(exp(vSum), MinHdr, MaxHdr)` and `CalculateAdaptedLuminance`.
-@fragment
-fn adapt_main(input: FullScreen) -> @location(0) f32 {
-    // `LuminanceGather`: sum the last active rectangle in row-major order.
-    // Repeated float UV addition, backing stride and the final float division
-    // are intentional; another rounded mip reduction is not the same operation.
-    var sum = 0.0;
-    var v = post.gather.w * 0.5;
-    for (var y = 0u; y < u32(post.gather.y); y = y + 1u) {
-        var u = post.gather.z * 0.5;
-        for (var x = 0u; x < u32(post.gather.x); x = x + 1u) {
-            sum = sum + textureSampleLevel(luminance, linear_clamp, vec2<f32>(u, v), 0.0).r;
-            u = u + post.gather.z;
-        }
-        v = v + post.gather.w;
-    }
-    let mean = sum / (post.gather.x * post.gather.y);
-    // HLSL `clamp` is `min(max(x, lo), hi)`, and the `green_night` volume ships
-    // `hdr_min_adjustment 0.8` above `hdr_max_adjustment 0.6`, so the order
-    // matters: written out rather than left to WGSL's `clamp`, which does not
-    // define the inverted case.
-    let current = min(max(exp(mean), post.grade.y), post.grade.z);
-    let previous = textureLoad(previous_luminance, vec2<i32>(0, 0), 0).r;
-    // `vLast + (vCurrent - vLast) * (1 - exp(-tau * dt))`, with the blend
-    // supplied by the caller: 1 for a headless frame and a settled camera.
-    return previous + (current - previous) * post.grade.w;
 }
 
 /// `SampleColorCube`: a 32-cubed LUT unwrapped along x into 1024x32, bilinear

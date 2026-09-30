@@ -125,7 +125,19 @@ export type ResearchProgress = { firstHour: number, lastHour: number, entryFirst
  */
 baseDaysRaw: string | null, progressRaw: string, };
 export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
-export type MapGraphics = { textureQuality: number, samples: number, trees: boolean, shadows: boolean, rivers: boolean, buildings: boolean, units: boolean, citySprawl: boolean, weather: boolean, };
+export type MapGraphics = {
+/**
+ * CMapRenderingOptions+0x18; ctor1401F9640 defaults true.
+ */
+highGfxShaders: boolean,
+/**
+ * CMapRenderingOptions+0x15; ctor1401F9640 defaults true.
+ */
+waterReflections: boolean,
+/**
+ * CMapRenderingOptions+0x0e; ctor1401F9696 defaults true.
+ */
+sky: boolean, textureQuality: number, samples: number, trees: boolean, shadows: boolean, rivers: boolean, buildings: boolean, units: boolean, citySprawl: boolean, weather: boolean, };
 export type CampaignMapSettings = {
 /**
  * Inherit graphics from the parent scope (the game -> global -> campaign -> widget).

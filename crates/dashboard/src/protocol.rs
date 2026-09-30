@@ -173,6 +173,15 @@ pub struct MapOptions {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapGraphics {
+    /// CMapRenderingOptions+0x18; ctor1401F9640 defaults true.
+    #[serde(default = "default_high_gfx_shaders")]
+    pub high_gfx_shaders: bool,
+    /// CMapRenderingOptions+0x15; ctor1401F9640 defaults true.
+    #[serde(default = "default_water_reflections")]
+    pub water_reflections: bool,
+    /// CMapRenderingOptions+0x0e; ctor1401F9696 defaults true.
+    #[serde(default = "default_sky")]
+    pub sky: bool,
     #[serde(default)]
     pub texture_quality: u8,
     #[serde(default = "default_samples")]
@@ -189,6 +198,9 @@ pub struct MapGraphics {
 impl Default for MapGraphics {
     fn default() -> Self {
         Self {
+            high_gfx_shaders: true,
+            water_reflections: true,
+            sky: true,
             texture_quality: 0,
             samples: default_samples(),
             trees: true,
@@ -200,6 +212,18 @@ impl Default for MapGraphics {
             weather: true,
         }
     }
+}
+
+fn default_high_gfx_shaders() -> bool {
+    true
+}
+
+fn default_water_reflections() -> bool {
+    true
+}
+
+fn default_sky() -> bool {
+    true
 }
 
 fn default_samples() -> u32 {
@@ -499,6 +523,8 @@ mod tests {
         let graphics: super::MapGraphics = serde_json::from_str(old).unwrap();
         assert_eq!(graphics.samples, 4);
         assert_eq!(graphics.texture_quality, 0);
+        assert!(graphics.high_gfx_shaders);
+        assert!(graphics.water_reflections && graphics.sky);
         let old_settings = format!(r#"{{"graphics":{old},"visualMods":null}}"#);
         let old_settings: CampaignMapSettings = serde_json::from_str(&old_settings).unwrap();
         assert!(!old_settings.use_game_graphics);

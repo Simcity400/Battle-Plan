@@ -155,6 +155,15 @@ fn all(limits: &[Limit], has_dlc: &impl Fn(&str) -> Option<bool>) -> Result<bool
     Ok(true)
 }
 
+/// Shared scope-free DLC predicates. Ambient admission140B47AF0 also builds an
+/// empty event scope; unresolved predicates remain named errors.
+pub(super) fn empty_scope_condition(
+    items: &[Item],
+    has_dlc: impl Fn(&str) -> Option<bool>,
+) -> io::Result<bool> {
+    all(&Limit::parse(items)?, &has_dlc).map_err(io::Error::other)
+}
+
 #[derive(Clone, Debug)]
 struct Pool {
     weight: i64,

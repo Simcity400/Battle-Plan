@@ -969,7 +969,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 intel_map: &intel_map,
                 // the map's table frame
                 frame_assets: &document.frame_assets,
-                frame_geometry: &document.frame_geometry,
                 // close zoom
                 sprawl: &document.sprawl,
                 map_buildings: &document.map_buildings,
@@ -1019,7 +1018,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ui_scale,
                 },
                 // trees
-                season: document.tree_season(),
             },
             output,
             (!unverified.is_empty()).then_some(unverified.as_str()),
@@ -1094,18 +1092,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         // the map's table frame
         println!(
-            "Map frame: {} pieces, {} vertices over world z {:.1}..{:.1} ({})",
-            document.frame_assets.pieces.len(),
-            document.frame_geometry.vertices.len(),
-            document.frame_geometry.z_span[0],
-            document.frame_geometry.z_span[1],
-            document
-                .frame_assets
-                .pieces
-                .iter()
-                .map(|piece| format!("{} x{}", piece.path, piece.scale))
-                .collect::<Vec<_>>()
-                .join(", ")
+            "Map frame: {} ambient actors, {} resolved meshes through the compiled content shader",
+            document.frame_assets.field.instances.len(),
+            document.frame_assets.library.meshes.len(),
         );
         // shadows
         println!(
@@ -1120,17 +1109,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("Grading: {grading}");
         }
         // trees
-        let season = document.tree_season();
         println!(
-            "Trees: {} instances in {} buckets over {} kinds, {} canopy vertices;              fade {:.4} at height {:.3}, season column {} lerp {:.2}; {} instances drawn in {} draw calls;              generated in {:.0} ms",
+            "Trees: {} instances in {} buckets over {} kinds, {} canopy vertices;              fade {:.4} at height {:.3}; {} instances drawn in {} draw calls;              generated in {:.0} ms",
             document.tree_field.instances.len(),
             document.tree_field.buckets.len(),
             document.tree_assets.meshes.len(),
             document.tree_geometry.vertices.len(),
-            map::trees::tree_fade(camera.height),
+            map::trees::tree_fade(&camera.defines, camera.height),
             camera.height,
-            season.column,
-            season.lerp,
             report.tree_instances,
             report.tree_draw_calls,
             document.tree_build.as_secs_f64() * 1000.0
@@ -1147,7 +1133,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "  {}: {} ({} LODs, scale {}) {instances} instances",
                 tree.name,
                 tree.path,
-                tree.mesh.shapes.len(),
+                tree.lods.len(),
                 tree.scale
             );
         }
@@ -1280,7 +1266,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             rail_mesh.segments,
             rail_mesh.unanchored,
             rail_mesh.samples,
-            rail_mesh.vertices.len(),
+            rail_mesh.native_vertices.len(),
             map::railways::RailFade::default().update(&camera, 0.0),
             camera.height,
             document.rail_build.as_secs_f64() * 1000.0

@@ -518,7 +518,10 @@ pub struct Joint {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Material {
     /// The `Effect` in `gfx/FX/pdxmesh.shader`, e.g. `PdxMeshAdvancedSnow`.
-    pub shader: String,
+    /// None is an absent key, distinct from an authored empty shader.
+    pub shader: Option<String>,
+    /// Nonempty meshsettings override of every variant's source (14224BB00).
+    pub shader_file: Option<String>,
     pub diffuse: String,
     pub normal: String,
     pub specular: String,
@@ -582,6 +585,8 @@ impl Skin {
 /// One `[mesh]` node: a vertex stream set, its triangles and its material.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SubMesh {
+    /// Ordinal among all shape children, before filtering to `[mesh]` (14224F250).
+    pub child_index: usize,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     /// `ta`: tangent in `xyz` and the bitangent handedness in `w`.
@@ -881,8 +886,12 @@ pub fn read(bytes: &[u8]) -> io::Result<Mesh> {
             skeleton.extend(read_joints(node));
         }
         let mut meshes = Vec::new();
-        for node in child.children_named("mesh") {
-            meshes.push(read_sub_mesh(&child.name, node)?);
+        for (index, node) in child.children.iter().enumerate() {
+            if node.name == "mesh" {
+                let mut mesh = read_sub_mesh(&child.name, node)?;
+                mesh.child_index = index;
+                meshes.push(mesh);
+            }
         }
         if meshes.is_empty() && child.children.is_empty() {
             // A property-only child of `[object]` is not a shape.
@@ -936,6 +945,63 @@ fn read_joints(node: &Node) -> Vec<Joint> {
             })
         })
         .collect()
+}
+
+///142250010/1423997A0 keep the first nonempty skeleton in source order.
+///`ix` must exist but its value does not select the destination record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeJoint {
+    pub name: String,
+    pub parent: u8,
+    pub inverse_bind: [f32; 12],
+}
+
+pub fn native_skeleton(root: &Node, scale: f32) -> io::Result<Vec<NativeJoint>> {
+    for object in root.children_named("object") {
+        for shape in &object.children {
+            let Some(skeleton) = shape.child("skeleton") else {
+                continue;
+            };
+            let mut joints = Vec::with_capacity(skeleton.children.len());
+            for child in &skeleton.children {
+                //142250010 copies31 Latin1 bytes and terminates;1423997A0 copies32.
+                let mut joint = NativeJoint {
+                    name: child.name.chars().take(31).collect(),
+                    parent: 0,
+                    inverse_bind: [0.; 12],
+                };
+                if let (Some(tx), Some(_index)) = (
+                    child.property("tx").and_then(Value::floats),
+                    child.property("ix").and_then(Value::ints),
+                ) {
+                    let tx = tx.get(..12).ok_or_else(|| {
+                        invalid(format!(
+                            "native skeleton joint {:?} has fewer than12 tx floats",
+                            child.name
+                        ))
+                    })?;
+                    joint.inverse_bind.copy_from_slice(tx);
+                    for value in &mut joint.inverse_bind[9..] {
+                        *value *= scale;
+                    }
+                    joint.parent = match child.property("pa") {
+                        None => 255,
+                        Some(value) => *value.ints().and_then(|v| v.first()).ok_or_else(|| {
+                            invalid(format!(
+                                "native skeleton joint {:?} has no parent integer",
+                                child.name
+                            ))
+                        })? as u8,
+                    };
+                }
+                joints.push(joint);
+            }
+            if !joints.is_empty() {
+                return Ok(joints);
+            }
+        }
+    }
+    Ok(Vec::new())
 }
 
 /// A decoded `.anim` file: the `[info]` rest pose and the `[samples]` frames.
@@ -1002,7 +1068,8 @@ impl Animation {
             .collect()
     }
 
-    fn frame_trs(&self, frame: u32) -> Vec<JointPose> {
+    /// Authored channel values before quaternion-to-matrix conversion.
+    pub fn frame_trs(&self, frame: u32) -> Vec<JointPose> {
         let [strides_t, strides_q, strides_s] = self.channel_joints();
         let frame = frame as usize;
         let (mut slot_t, mut slot_q, mut slot_s) = (0usize, 0usize, 0usize);
@@ -1296,7 +1363,8 @@ fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {
         Some(Bounds { min, max })
     });
     let material = node.child("material").map(|material| Material {
-        shader: material.string("shader").unwrap_or_default().to_string(),
+        shader: material.string("shader").map(str::to_owned),
+        shader_file: None,
         diffuse: material.string("diff").unwrap_or_default().to_string(),
         normal: material.string("n").unwrap_or_default().to_string(),
         specular: material.string("spec").unwrap_or_default().to_string(),
@@ -1306,6 +1374,7 @@ fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {
         .map(|skin| read_skin(shape, skin, vertices))
         .transpose()?;
     Ok(SubMesh {
+        child_index: 0,
         positions,
         normals,
         tangents,
@@ -1391,16 +1460,41 @@ fn triple(value: &Value) -> Option<[f32; 3]> {
 
 /// One `meshsettings` block: a per (shape, material index) override of the
 /// `.mesh`'s own textures and effect (section 1.4).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeshSetting {
     /// The shape node name inside the `.mesh`.
     pub name: String,
-    /// The material index within that shape.
-    pub index: u32,
+    /// Raw child ordinal within the named shape; exactly -1 matches every ordinal.
+    pub index: i32,
     pub diffuse: Option<String>,
     pub normal: Option<String>,
     pub specular: Option<String>,
     pub shader: Option<String>,
+    pub shader_file: Option<String>,
+}
+
+impl Default for MeshSetting {
+    fn default() -> Self {
+        // SMeshData construction in 1422F8720; signed reader 142251AE0(+D4).
+        Self {
+            name: String::new(),
+            index: -1,
+            diffuse: None,
+            normal: None,
+            specular: None,
+            shader: None,
+            shader_file: None,
+        }
+    }
+}
+
+impl MeshSetting {
+    /// 14224F250: an empty name matches immediately, regardless of index.
+    pub fn applies(&self, shape: &str, child_index: usize) -> bool {
+        self.name.is_empty()
+            || (self.name == shape
+                && (self.index == -1 || usize::try_from(self.index).ok() == Some(child_index)))
+    }
 }
 
 /// One `pdxmesh` block of a `gfx/entities/*.gfx` file (section 1.4).
@@ -1415,6 +1509,38 @@ pub struct MeshDefinition {
     /// `animation = { id = … type = … }`: the animation **name** this mesh
     /// plays for each state animation id, in file order.
     pub animations: Vec<(String, String)>,
+}
+
+impl MeshDefinition {
+    /// 14224F250 selects the first matching row. 14224CC00/14224BB00 apply only
+    /// nonempty texture/shader overrides; later matching rows are never merged.
+    pub fn material(&self, shape: &str, sub: &SubMesh) -> Material {
+        let mut material = sub.material.clone().unwrap_or_default();
+        if let Some(setting) = self
+            .settings
+            .iter()
+            .find(|s| s.applies(shape, sub.child_index))
+        {
+            for (target, source) in [
+                (&mut material.diffuse, &setting.diffuse),
+                (&mut material.normal, &setting.normal),
+                (&mut material.specular, &setting.specular),
+            ] {
+                if let Some(value) = source.as_ref().filter(|value| !value.is_empty()) {
+                    target.clone_from(value);
+                }
+            }
+            for (target, source) in [
+                (&mut material.shader, &setting.shader),
+                (&mut material.shader_file, &setting.shader_file),
+            ] {
+                if let Some(value) = source.as_ref().filter(|value| !value.is_empty()) {
+                    *target = Some(value.clone());
+                }
+            }
+        }
+        material
+    }
 }
 
 /// One `attach` block of an `entity` (section 1.5).
@@ -1469,6 +1595,78 @@ pub struct EntityDefinition {
     pub states: Vec<EntityState>,
     pub get_state_from_parent: Option<bool>,
     pub locators: Vec<(String, Locator)>,
+    pub game_data: Option<Result<EntityGameData, String>>,
+}
+
+///140B65040: allocated on the first entity-level game_data field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EntityGameData {
+    pub texture_anim_speed: f32,
+    pub atlas_size: [i32; 2],
+}
+
+impl Default for EntityGameData {
+    fn default() -> Self {
+        Self {
+            texture_anim_speed: 0.,
+            atlas_size: [1, 1],
+        }
+    }
+}
+
+fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, String>> {
+    let fields: Vec<_> = items
+        .iter()
+        .filter(|i| i.key.as_deref() == Some(b"game_data"))
+        .filter_map(|i| i.value.items())
+        .flatten()
+        .collect();
+    if fields.is_empty() {
+        return None;
+    }
+    let mut data = EntityGameData::default();
+    for field in fields {
+        match field.key.as_deref() {
+            Some(b"texture_anim_speed") => {
+                let Some(speed) = field.value.scalar_str().and_then(|v| v.parse().ok()) else {
+                    return Some(Err(
+                        "entity texture_anim_speed is not a literal float".into()
+                    ));
+                };
+                data.texture_anim_speed = speed;
+            }
+            Some(b"atlas_size") => {
+                let Some(values) = field.value.items() else {
+                    return Some(Err("entity atlas_size is not an integer vector".into()));
+                };
+                if values.len() > 2 {
+                    return Some(Err(
+                        "entity atlas_size leaves its two native integer fields".into(),
+                    ));
+                }
+                for (index, value) in values.iter().enumerate() {
+                    //1402C7A50 accepts ordered x/y labels as well as bare values.
+                    if value
+                        .key
+                        .as_deref()
+                        .is_some_and(|key| key != [b"x".as_slice(), b"y".as_slice()][index])
+                    {
+                        return Some(Err(
+                            "entity atlas_size component labels are out of native order".into(),
+                        ));
+                    }
+                    let Some(value) = value.value.scalar_str().and_then(|v| v.parse().ok()) else {
+                        return Some(Err(
+                            "entity atlas_size component is not a literal integer".into()
+                        ));
+                    };
+                    data.atlas_size[index] = value;
+                }
+            }
+            _ => {} //Native logs unknown keys after allocating the defaults.
+        }
+    }
+    Some(Ok(data))
 }
 
 /// One entity `locator`: a transform in entity space, or in the space of its
@@ -1564,6 +1762,7 @@ pub struct InheritedEntity<'a> {
     pub states: BTreeMap<&'a str, Vec<&'a EntityState>>,
     pub get_state_from_parent: Option<bool>,
     pub locators: BTreeMap<&'a str, &'a Locator>,
+    pub game_data: Option<&'a Result<EntityGameData, String>>,
 }
 
 impl Descriptors {
@@ -1592,6 +1791,7 @@ impl Descriptors {
         for _ in 0..=self.entities.len() {
             out.mesh = out.mesh.or(current.mesh.as_deref());
             out.scale = out.scale.or(current.scale);
+            out.game_data = out.game_data.or(current.game_data.as_ref());
             out.default_state = out.default_state.or(current.default_state.as_deref());
             for attachment in &current.attachments {
                 if !out
@@ -2009,16 +2209,29 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
 
 fn mesh_setting(value: &parser::Value) -> Option<MeshSetting> {
     let items = value.items()?;
-    Some(MeshSetting {
-        name: unquote(text(items, b"name")?),
-        index: text(items, b"index")
-            .and_then(|value| value.trim().parse().ok())
-            .unwrap_or(0),
-        diffuse: text(items, b"texture_diffuse").map(unquote),
-        normal: text(items, b"texture_normal").map(unquote),
-        specular: text(items, b"texture_specular").map(unquote),
-        shader: text(items, b"shader").map(unquote),
-    })
+    let mut setting = MeshSetting::default();
+    // 142251AE0 writes fields in reader order; failed numeric conversions retain the field.
+    for item in items {
+        let Some(value) = item.value.scalar_str() else {
+            continue;
+        };
+        match item.key.as_deref() {
+            Some(b"name") => setting.name = unquote(value),
+            Some(b"index") => {
+                if let crate::crt::Scanned::Stored(index) = crate::crt::scan_i32(value.as_bytes()) {
+                    setting.index = index;
+                }
+            }
+            Some(b"texture_diffuse") => setting.diffuse = Some(unquote(value)),
+            Some(b"texture_normal") => setting.normal = Some(unquote(value)),
+            Some(b"texture_specular") => setting.specular = Some(unquote(value)),
+            Some(b"shader") => setting.shader = Some(unquote(value)),
+            // Token 0x2A6 at 14008C426; reader142251AE0 writes SMeshData+A8.
+            Some(b"shader_file") => setting.shader_file = Some(unquote(value)),
+            _ => {}
+        }
+    }
+    Some(setting)
 }
 
 fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
@@ -2097,6 +2310,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         .collect();
     Some(EntityDefinition {
         name,
+        game_data: entity_game_data(items),
         mesh: text(items, b"pdxmesh").map(unquote),
         clone: text(items, b"clone").map(unquote),
         scale: text(items, b"scale").and_then(|value| value.trim().parse().ok()),
@@ -2159,6 +2373,144 @@ fn unquote(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_shader_data_retains_allocation_defaults_and_authored_fields() {
+        let source = parse_descriptors(br#"
+            entity = { name = "base" game_data = { atlas_size = { 6 2 } texture_anim_speed = 0.5 } }
+            entity = { name = "clone" clone = "base" }
+            entity = { name = "override" clone = "base" game_data = { texture_anim_speed = 0.75 } }
+            entity = { name = "empty" game_data = {} }
+            entity = { name = "partial" game_data = { atlas_size = { x = 4 } } game_data = { texture_anim_speed = 2 } }
+            entity = { name = "bad" game_data = { atlas_size = { y = 2 x = 3 } } }
+        "#, "gfx/test.asset").unwrap();
+        assert_eq!(
+            source
+                .inherit("clone")
+                .unwrap()
+                .game_data
+                .unwrap()
+                .as_ref()
+                .unwrap(),
+            &EntityGameData {
+                texture_anim_speed: 0.5,
+                atlas_size: [6, 2]
+            }
+        );
+        assert_eq!(
+            source
+                .inherit("override")
+                .unwrap()
+                .game_data
+                .unwrap()
+                .as_ref()
+                .unwrap(),
+            &EntityGameData {
+                texture_anim_speed: 0.75,
+                atlas_size: [1, 1]
+            }
+        );
+        assert_eq!(source.entities["empty"].game_data, None);
+        assert_eq!(
+            source.entities["partial"].game_data,
+            Some(Ok(EntityGameData {
+                texture_anim_speed: 2.,
+                atlas_size: [4, 1]
+            }))
+        );
+        assert!(source.entities["bad"].game_data.as_ref().unwrap().is_err());
+    }
+
+    fn native_skeleton_root(skeletons: Vec<Vec<Node>>) -> Node {
+        Node {
+            children: vec![Node {
+                name: "object".into(),
+                children: skeletons
+                    .into_iter()
+                    .map(|children| Node {
+                        children: vec![Node {
+                            name: "skeleton".into(),
+                            children,
+                            ..Node::default()
+                        }],
+                        ..Node::default()
+                    })
+                    .collect(),
+                ..Node::default()
+            }],
+            ..Node::default()
+        }
+    }
+
+    #[test]
+    fn native_skeleton_keeps_source_order_and_first_nonempty_allocation() {
+        let joint = |name: &str, index, parent| Node {
+            name: name.into(),
+            properties: vec![
+                ("ix".into(), Value::Ints(vec![index])),
+                ("pa".into(), Value::Ints(vec![parent])),
+                (
+                    "tx".into(),
+                    Value::Floats((1..=12).map(|v| v as f32).collect()),
+                ),
+            ],
+            ..Node::default()
+        };
+        let root = native_skeleton_root(vec![
+            vec![],
+            vec![joint("z", 9, 258), joint("a", 0, -1)],
+            vec![joint("ignored", 1, 0)],
+        ]);
+        let result = native_skeleton(&root, 0.5).unwrap();
+        assert_eq!(
+            result
+                .iter()
+                .map(|j| (j.name.as_str(), j.parent))
+                .collect::<Vec<_>>(),
+            [("z", 2), ("a", 255)]
+        );
+        assert_eq!(
+            result[0].inverse_bind,
+            [1., 2., 3., 4., 5., 6., 7., 8., 9., 5., 5.5, 6.]
+        );
+        let root = native_skeleton_root(vec![
+            vec![Node {
+                name: "unfilled".into(),
+                ..Node::default()
+            }],
+            vec![joint("unused", 0, -1)],
+        ]);
+        assert_eq!(
+            native_skeleton(&root, 2.).unwrap(),
+            [NativeJoint {
+                name: "unfilled".into(),
+                parent: 0,
+                inverse_bind: [0.; 12]
+            }]
+        );
+    }
+
+    #[test]
+    fn native_skeleton_names_and_missing_parent_follow_byte_fields() {
+        let mut node = Node {
+            name: "é".repeat(35),
+            properties: vec![
+                ("ix".into(), Value::Ints(vec![71])),
+                ("tx".into(), Value::Floats(vec![1.; 12])),
+            ],
+            ..Node::default()
+        };
+        let result = native_skeleton(&native_skeleton_root(vec![vec![node.clone()]]), 2.).unwrap();
+        assert_eq!(result[0].name, "é".repeat(31));
+        assert_eq!(result[0].parent, 255);
+        node.properties[1].1 = Value::Floats(vec![1.; 11]);
+        assert!(
+            native_skeleton(&native_skeleton_root(vec![vec![node]]), 1.)
+                .unwrap_err()
+                .to_string()
+                .contains("fewer than12 tx floats")
+        );
+    }
 
     #[test]
     fn entity_locators_keep_their_position_and_parent_joint() {
@@ -2438,7 +2790,8 @@ entity = { name = "c" clone = "z" }"#,
         assert_eq!(
             sub.material,
             Some(Material {
-                shader: "PdxMeshAdvancedSnow".into(),
+                shader: Some("PdxMeshAdvancedSnow".into()),
+                shader_file: None,
                 diffuse: "leaf_diffuse.dds".into(),
                 normal: "leaf_normal.dds".into(),
                 specular: "nospec.dds".into(),
@@ -2637,6 +2990,148 @@ entity = { name = "c" clone = "z" }"#,
     }
 
     #[test]
+    fn material_keeps_missing_shader_and_source_override_distinct() {
+        let bytes = Builder::new()
+            .node(1, "object")
+            .node(2, "shape")
+            .node(3, "mesh")
+            .node(4, "material")
+            .node(3, "mesh")
+            .node(4, "material")
+            .strings("shader", &[""])
+            .bytes;
+        let decoded = read(&bytes).unwrap();
+        let shape = &decoded.shapes[0];
+        assert_eq!(shape.meshes[0].material.as_ref().unwrap().shader, None);
+        assert_eq!(
+            shape.meshes[1].material.as_ref().unwrap().shader.as_deref(),
+            Some("")
+        );
+        let descriptors = parse_descriptors(
+            br#"objectTypes = { pdxmesh = { name = "m" file = "m.mesh"
+                meshsettings = { name = "shape" index = 0 shader_file = "" }
+                meshsettings = { name = "shape" index = 0 shader_file = "later.shader" }
+                meshsettings = { name = "shape" index = 1
+                    shader_file = "old.shader" shader_file = "gfx/FX/custom.shader" }
+            } }"#,
+            "fixture.gfx",
+        )
+        .unwrap();
+        let definition = &descriptors.meshes["m"];
+        assert_eq!(
+            definition.material("shape", &shape.meshes[0]).shader_file,
+            None
+        );
+        assert_eq!(
+            definition
+                .material("shape", &shape.meshes[1])
+                .shader_file
+                .as_deref(),
+            Some("gfx/FX/custom.shader")
+        );
+    }
+
+    #[test]
+    fn material_overrides_follow_native_first_match_and_raw_child_order() {
+        let bytes = Builder::new()
+            .node(1, "object")
+            .node(2, "shape")
+            .node(3, "auxiliary")
+            .node(3, "mesh")
+            .node(4, "material")
+            .strings("shader", &["base_effect"])
+            .strings("diff", &["base_diff"])
+            .strings("n", &["base_normal"])
+            .strings("spec", &["base_spec"])
+            .node(3, "mesh")
+            .node(4, "material")
+            .strings("shader", &["second_effect"])
+            .bytes;
+        let decoded = read(&bytes).unwrap();
+        let shape = &decoded.shapes[0];
+        assert_eq!(
+            shape
+                .meshes
+                .iter()
+                .map(|s| s.child_index)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        let descriptors = parse_descriptors(
+            br#"
+            objectTypes = { pdxmesh = { name = "m" file = "m.mesh"
+                meshsettings = { name = "shape" index = -2 texture_diffuse = "wrong-negative" }
+                meshsettings = { name = "shape" index = 0 texture_diffuse = "wrong-filtered-index" }
+                meshsettings = { name = "shape" index = 1 texture_diffuse = "first"
+                    texture_normal = "" texture_specular = "" shader = "" }
+                meshsettings = { name = "shape" index = 1 texture_diffuse = "later-exact" }
+                meshsettings = { name = "shape" shader = "wildcard" }
+            } }"#,
+            "fixture.gfx",
+        )
+        .unwrap();
+        let definition = &descriptors.meshes["m"];
+        let material = definition.material("shape", &shape.meshes[0]);
+        assert_eq!(
+            material,
+            Material {
+                shader: Some("base_effect".into()),
+                shader_file: None,
+                diffuse: "first".into(),
+                normal: "base_normal".into(),
+                specular: "base_spec".into(),
+            }
+        );
+        assert_eq!(
+            definition
+                .material("shape", &shape.meshes[1])
+                .shader
+                .as_deref(),
+            Some("wildcard")
+        );
+        assert_eq!(
+            definition.material("other", &shape.meshes[0]),
+            shape.meshes[0].material.clone().unwrap()
+        );
+    }
+
+    #[test]
+    fn meshsettings_keep_unnamed_rows_signed_wildcards_and_last_field_writes() {
+        let descriptors = parse_descriptors(
+            br#"
+            objectTypes = { pdxmesh = { name = "m" file = "m.mesh"
+                meshsettings = { name = "old" name = "" index = -2 shader = "first" }
+                meshsettings = { name = "shape" index = 3 shader = "later" }
+                meshsettings = { name = "shape" index = -1 }
+                meshsettings = { name = "shape" index = 2 index = 0x10tail index = invalid }
+                meshsettings = { name = "shape" index = 010 }
+                meshsettings = { name = "shape" index = 4294967295 }
+                meshsettings = { texture_diffuse = "old" texture_diffuse = "" }
+            } }"#,
+            "fixture.gfx",
+        )
+        .unwrap();
+        let definition = &descriptors.meshes["m"];
+        assert_eq!(definition.settings.len(), 7);
+        assert!(definition.settings[0].name.is_empty());
+        assert!(definition.settings[0].applies("unrelated", 999));
+        assert!(definition.settings[2].applies("shape", 999));
+        assert!(!definition.settings[2].applies("unrelated", 999));
+        assert_eq!(definition.settings[3].index, 16);
+        assert_eq!(definition.settings[4].index, 8);
+        assert_eq!(definition.settings[5].index, -1);
+        assert_eq!(definition.settings[6].diffuse.as_deref(), Some(""));
+        let sub = SubMesh {
+            child_index: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            definition.material("shape", &sub).shader.as_deref(),
+            Some("first")
+        );
+    }
+
+    #[test]
     fn the_gfx_grammar_maps_a_mapobject_name_to_its_mesh_and_scale() {
         let descriptors = parse_descriptors(
             br#"
@@ -2678,6 +3173,7 @@ entity = { name = "c" clone = "z" }"#,
                 normal: None,
                 specular: None,
                 shader: Some("PdxMeshSnow".into()),
+                shader_file: None,
             }]
         );
         assert!(descriptors.resolve("absent").is_none());

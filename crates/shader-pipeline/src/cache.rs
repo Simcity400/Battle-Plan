@@ -11,7 +11,7 @@ use std::{
 // Bump whenever source assembly, DXC flags, naga or reflection changes. This is part of
 // the filename hash as well as the payload; old caches cannot silently survive an upgrade.
 // `Compiler::at` refuses any DXC but `DXC_VERSION`, which this names.
-const ABI: &str = "pdxshader-5/dxc-1.9.0.5402-0d3ee6b55/hlsl2016/dx-layout/naga-30.0.1";
+const ABI: &str = "pdxshader-8/dxc-1.9.0.5402-0d3ee6b55/hlsl2016/dx-layout/naga-30.0.1";
 
 /// A failure names the effect and technique, as [`Compiler::compile`] does.
 pub trait Compile: Send + Sync {
@@ -233,6 +233,7 @@ pub(crate) mod tests {
                 buffers: vec![],
                 textures: vec![],
                 samplers: vec![],
+                sampling_pairs: vec![],
                 inputs: vec![],
             };
             Ok(Compiled {

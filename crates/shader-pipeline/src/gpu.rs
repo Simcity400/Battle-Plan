@@ -8,22 +8,41 @@ use installed_content::pdxshader::{
 };
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
-use wgpu::{self, util::DeviceExt};
+use wgpu;
+
+#[path = "gpu/arena.rs"]
+mod arena;
+pub use arena::{Arena, Slice};
 
 pub struct Pipeline {
     pub pipeline: wgpu::RenderPipeline,
-    layouts: [wgpu::BindGroupLayout; 3],
+    /// Constant and texture layouts; the samplers are fixed per pipeline.
+    layouts: [wgpu::BindGroupLayout; 2],
+    samplers: wgpu::BindGroup,
+    /// Ascending binding order, the order of the constant group's dynamic offsets.
     buffers: Vec<Buffer>,
     textures: Vec<(u32, super::TextureKind)>,
-    samplers: Vec<(u32, wgpu::Sampler)>,
     inputs: Vec<super::VertexInput>,
+    groups: Mutex<Groups>,
+}
+
+/// Bind groups by resource identity: constants per arena buffer, textures per view list.
+/// An entry unused for a whole frame is dropped, releasing the resources it holds.
+#[derive(Default)]
+struct Groups {
+    frame: u64,
+    constants: Vec<(wgpu::Buffer, wgpu::BindGroup, u64)>,
+    /// By the hash of the views, so a hit clones none of them.
+    textures: HashMap<u64, Vec<(Vec<wgpu::TextureView>, wgpu::BindGroup, u64)>>,
+    /// The last texture entry used: consecutive draws usually share a material.
+    last: Option<(u64, usize)>,
 }
 
 pub struct Draw {
-    groups: [wgpu::BindGroup; 3],
-    vertices: wgpu::Buffer,
+    bindings: Bindings,
+    vertices: Slice,
     count: u32,
 }
 
@@ -105,13 +124,36 @@ impl Pass {
     }
 }
 
+/// Every `binding(slot, stage)` of a constant buffer or texture is below these: D3D11's
+/// registers over both stages, which compilation enforces.
+pub const CONSTANT_BINDINGS: usize = 2 * super::BUFFER_SLOTS as usize;
+pub const TEXTURE_BINDINGS: usize = 2 * super::SAMPLER_SLOTS as usize;
+const BUFFERS: usize = CONSTANT_BINDINGS;
+const TEXTURES: usize = TEXTURE_BINDINGS;
+
 pub struct Bindings {
     groups: [wgpu::BindGroup; 3],
+    offsets: [u32; BUFFERS],
+    count: usize,
 }
 impl Bindings {
     pub fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
-        for (index, group) in self.groups.iter().enumerate() {
-            pass.set_bind_group(index as u32, group, &[]);
+        self.bind_after(pass, None);
+    }
+
+    /// Bind after `previous` of the same pipeline in the same pass, setting only the
+    /// groups that differ. Each set merges all of a group's resources into the pass.
+    pub fn bind_after(&self, pass: &mut wgpu::RenderPass<'_>, previous: Option<&Self>) {
+        let offsets = &self.offsets[..self.count];
+        if previous.is_none_or(|previous| {
+            previous.groups[0] != self.groups[0] || previous.offsets[..previous.count] != *offsets
+        }) {
+            pass.set_bind_group(0, &self.groups[0], offsets);
+        }
+        for index in 1..3 {
+            if previous.is_none_or(|previous| previous.groups[index] != self.groups[index]) {
+                pass.set_bind_group(index as u32, &self.groups[index], &[]);
+            }
         }
     }
 }
@@ -151,7 +193,6 @@ impl State {
     }
 }
 
-#[derive(PartialEq, Eq, Hash)]
 struct PipelineKey {
     effect: uuid::Uuid,
     technique: usize,
@@ -161,11 +202,53 @@ struct PipelineKey {
     pass: Pass,
 }
 
+fn sampler_key(sampler: &Sampler) -> [u32; 10] {
+    [
+        sampler.mag as u32,
+        sampler.min as u32,
+        sampler.mip as u32,
+        sampler.u as u32,
+        sampler.v as u32,
+        sampler.w as u32,
+        sampler.lod_bias.to_bits(),
+        sampler.min_lod as u32,
+        sampler.max_lod as u32,
+        u32::from(sampler.cube),
+    ]
+}
+
+impl PipelineKey {
+    /// Hash of the key a lookup would build, from borrowed parts.
+    fn hash(effect: uuid::Uuid, technique: usize, state: &State, pass: &Pass) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        (effect, technique, state.blend, state.write_mask, pass).hash(&mut hasher);
+        for (binding, sampler) in &state.samplers {
+            (binding, sampler_key(sampler)).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    fn matches(&self, effect: uuid::Uuid, technique: usize, state: &State, pass: &Pass) -> bool {
+        self.effect == effect
+            && self.technique == technique
+            && self.blend == state.blend
+            && self.write_mask == state.write_mask
+            && self.pass == *pass
+            && self.samplers.iter().copied().eq(state
+                .samplers
+                .iter()
+                .map(|(binding, sampler)| (*binding, sampler_key(sampler))))
+    }
+}
+
+type Cached = Result<Arc<Pipeline>, String>;
+
 /// Device-scoped pipelines, including validation failures, keyed by effect, technique, sampler
-/// state and the complete pass. One cache belongs to one device.
+/// state and the complete pass. One cache belongs to one device. A hit clones no key.
 #[derive(Default)]
 pub struct Cache {
-    entries: HashMap<PipelineKey, Result<Arc<Pipeline>, String>>,
+    entries: HashMap<u64, Vec<(PipelineKey, Cached)>>,
     pub refused: BTreeMap<String, u64>,
     pub created: usize,
 }
@@ -196,51 +279,45 @@ impl Cache {
         pass: &Pass,
     ) -> Result<Arc<Pipeline>, String> {
         let effect = &selection.effect;
-        let key = PipelineKey {
-            effect: effect.id,
-            technique: selection.index,
-            pass: pass.clone(),
-            samplers: state
-                .samplers
-                .iter()
-                .map(|(binding, sampler)| {
-                    (
-                        *binding,
-                        [
-                            sampler.mag as u32,
-                            sampler.min as u32,
-                            sampler.mip as u32,
-                            sampler.u as u32,
-                            sampler.v as u32,
-                            sampler.w as u32,
-                            sampler.lod_bias.to_bits(),
-                            sampler.min_lod as u32,
-                            sampler.max_lod as u32,
-                            u32::from(sampler.cube),
-                        ],
-                    )
-                })
-                .collect(),
-            blend: state.blend,
-            write_mask: state.write_mask,
-        };
-        let result = self
+        let bucket = self
             .entries
-            .entry(key)
-            .or_insert_with(|| {
-                let compiled = effect.compiled(selection.index)?;
-                let pipeline = Pipeline::for_pass(
-                    device,
-                    &compiled,
-                    &effect.source,
-                    &effect.source.techniques[selection.index],
-                    state,
-                    pass,
-                )?;
-                self.created += 1;
-                Ok(Arc::new(pipeline))
-            })
-            .clone();
+            .entry(PipelineKey::hash(effect.id, selection.index, state, pass))
+            .or_default();
+        let result = match bucket
+            .iter()
+            .find(|(key, _)| key.matches(effect.id, selection.index, state, pass))
+        {
+            Some((_, result)) => result.clone(),
+            None => {
+                let result = (|| {
+                    let compiled = effect.compiled(selection.index)?;
+                    let pipeline = Pipeline::for_pass(
+                        device,
+                        &compiled,
+                        &effect.source,
+                        &effect.source.techniques[selection.index],
+                        state,
+                        pass,
+                    )?;
+                    self.created += 1;
+                    Ok(Arc::new(pipeline))
+                })();
+                let key = PipelineKey {
+                    effect: effect.id,
+                    technique: selection.index,
+                    samplers: state
+                        .samplers
+                        .iter()
+                        .map(|(binding, sampler)| (*binding, sampler_key(sampler)))
+                        .collect(),
+                    blend: state.blend,
+                    write_mask: state.write_mask,
+                    pass: pass.clone(),
+                };
+                bucket.push((key, result.clone()));
+                result
+            }
+        };
         if let Err(reason) = &result {
             *self.refused.entry(reason.clone()).or_default() += 1;
         }
@@ -323,6 +400,16 @@ impl Pipeline {
     ) -> Result<Self, String> {
         let mut buffers = compiled.vertex.buffers.clone();
         buffers.extend_from_slice(&compiled.pixel.buffers);
+        buffers.sort_by_key(|buffer| buffer.binding);
+        let dynamic = device
+            .limits()
+            .max_dynamic_uniform_buffers_per_pipeline_layout;
+        if buffers.len() > dynamic as usize {
+            return Err(format!(
+                "{} constant buffers exceed this device's {dynamic} dynamically offset buffers",
+                buffers.len()
+            ));
+        }
         let mut textures = compiled.vertex.textures.clone();
         textures.extend_from_slice(&compiled.pixel.textures);
         let mut samplers = Vec::new();
@@ -386,7 +473,22 @@ impl Pipeline {
                 wgpu::ShaderStages::FRAGMENT
             }
         };
-        let layouts = [
+        let filtering = |binding: &u32| {
+            state.samplers.get(binding).is_some_and(|sampler| {
+                [sampler.mag, sampler.min, sampler.mip]
+                    .iter()
+                    .any(|filter| matches!(filter, Filter::Linear | Filter::Anisotropic))
+            })
+        };
+        let filterable = |binding: &u32| {
+            compiled
+                .vertex
+                .sampling_pairs
+                .iter()
+                .chain(&compiled.pixel.sampling_pairs)
+                .any(|(image, sampler)| image == binding && filtering(sampler))
+        };
+        let [constants, textures_layout, samplers_layout] = [
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("native constants"),
                 entries: &buffers
@@ -396,7 +498,7 @@ impl Pipeline {
                         visibility: visibility(b.binding),
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
+                            has_dynamic_offset: true,
                             min_binding_size: std::num::NonZeroU64::new(u64::from(b.size)),
                         },
                         count: None,
@@ -411,7 +513,9 @@ impl Pipeline {
                         binding: *binding,
                         visibility: visibility(*binding),
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            sample_type: wgpu::TextureSampleType::Float {
+                                filterable: filterable(binding),
+                            },
                             view_dimension: cube.view(),
                             multisampled: false,
                         },
@@ -426,7 +530,11 @@ impl Pipeline {
                     .map(|(binding, _)| wgpu::BindGroupLayoutEntry {
                         binding: *binding,
                         visibility: visibility(*binding),
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        ty: wgpu::BindingType::Sampler(if filtering(binding) {
+                            wgpu::SamplerBindingType::Filtering
+                        } else {
+                            wgpu::SamplerBindingType::NonFiltering
+                        }),
                         count: None,
                     })
                     .collect::<Vec<_>>(),
@@ -434,8 +542,23 @@ impl Pipeline {
         ];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(&program.effect),
-            bind_group_layouts: &layouts.iter().map(Some).collect::<Vec<_>>(),
+            bind_group_layouts: &[
+                Some(&constants),
+                Some(&textures_layout),
+                Some(&samplers_layout),
+            ],
             immediate_size: 0,
+        });
+        let samplers = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native samplers"),
+            layout: &samplers_layout,
+            entries: &samplers
+                .iter()
+                .map(|(binding, sampler)| wgpu::BindGroupEntry {
+                    binding: *binding,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                })
+                .collect::<Vec<_>>(),
         });
         let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(&technique.vertex),
@@ -493,11 +616,12 @@ impl Pipeline {
         });
         Ok(Self {
             pipeline,
-            layouts,
+            layouts: [constants, textures_layout],
+            samplers,
             buffers,
             textures,
-            samplers,
             inputs: compiled.vertex.inputs.clone(),
+            groups: Mutex::default(),
         })
     }
 
@@ -505,145 +629,204 @@ impl Pipeline {
     /// Slots without an upload must be supplied by the caller's retained bind state.
     pub fn prepare(
         &self,
-        device: &wgpu::Device,
-        constants: &BTreeMap<u32, Vec<u8>>,
+        arena: &Arena,
+        constants: &BTreeMap<u32, impl AsRef<[u8]>>,
         textures: &BTreeMap<u32, wgpu::TextureView>,
         vertices: &super::vertices::Vertices<'_>,
     ) -> Result<Draw, String> {
-        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = self.prepare_inner(device, constants, textures, vertices);
-        let error = pollster::block_on(validation.pop()).or(pollster::block_on(memory.pop()));
-        match error {
-            Some(error) => Err(error.to_string()),
-            None => result,
-        }
-    }
-
-    fn prepare_inner(
-        &self,
-        device: &wgpu::Device,
-        constants: &BTreeMap<u32, Vec<u8>>,
-        textures: &BTreeMap<u32, wgpu::TextureView>,
-        vertices: &super::vertices::Vertices<'_>,
-    ) -> Result<Draw, String> {
-        let bindings = self.bindings_inner(device, constants, textures)?;
+        let bindings = self.bindings(arena, constants, textures)?;
         let data = vertices.pack(&self.inputs)?;
         Ok(Draw {
-            groups: bindings.groups,
-            vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("native vertices"),
-                contents: bytemuck::cast_slice(&data),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
+            bindings,
+            vertices: arena.vertices(bytemuck::cast_slice(&data))?,
             count: vertices.count as u32,
         })
     }
 
     /// Bind arbitrary native register bytes and texture views. Caller supplies vertex/index
     /// buffers and draw commands; no GUI geometry, buffer names or matrix ABI is imposed.
+    /// The bytes are staged in `arena`; the bindings are valid until its next reset.
     pub fn bindings(
         &self,
-        device: &wgpu::Device,
-        constants: &BTreeMap<u32, Vec<u8>>,
+        arena: &Arena,
+        constants: &BTreeMap<u32, impl AsRef<[u8]>>,
         textures: &BTreeMap<u32, wgpu::TextureView>,
     ) -> Result<Bindings, String> {
-        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = self.bindings_inner(device, constants, textures);
-        match pollster::block_on(validation.pop()).or(pollster::block_on(memory.pop())) {
-            Some(error) => Err(error.to_string()),
-            None => result,
-        }
+        self.bind_with(
+            arena,
+            |binding| constants.get(&binding).map(AsRef::as_ref),
+            |binding| textures.get(&binding),
+        )
     }
 
-    fn bindings_inner(
+    /// `bindings` with the caller's lookups by `binding(slot, stage)`.
+    pub fn bind_with<'a>(
         &self,
-        device: &wgpu::Device,
-        constants: &BTreeMap<u32, Vec<u8>>,
-        textures: &BTreeMap<u32, wgpu::TextureView>,
+        arena: &Arena,
+        constants: impl Fn(u32) -> Option<&'a [u8]>,
+        textures: impl Fn(u32) -> Option<&'a wgpu::TextureView>,
     ) -> Result<Bindings, String> {
-        let buffers = self
-            .buffers
-            .iter()
-            .map(|buffer| {
-                let data = constants.get(&buffer.binding).ok_or_else(|| {
-                    format!(
-                        "native constant buffer {} has not been bound",
-                        buffer.binding / 2
-                    )
-                })?;
-                // D3D11 returns zero for reads past the bound constant buffer's range.
-                let mut data = data.clone();
-                data.resize(data.len().max(buffer.size as usize), 0);
-                Ok(
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("native constants"),
-                        contents: &data,
-                        usage: wgpu::BufferUsages::UNIFORM,
-                    }),
+        // Compilation refuses registers past D3D11's, so both lists fit their arrays.
+        let mut blocks: [(&[u8], u64); BUFFERS] = [(&[], 0); BUFFERS];
+        for (block, buffer) in blocks.iter_mut().zip(&self.buffers) {
+            let data = constants(buffer.binding).ok_or_else(|| {
+                format!(
+                    "native constant buffer {} has not been bound",
+                    buffer.binding / 2
                 )
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let buffer_entries: Vec<_> = self
+            })?;
+            *block = (data, u64::from(buffer.size));
+        }
+        let mut found: [Option<&wgpu::TextureView>; TEXTURES] = [None; TEXTURES];
+        for (view, (binding, _)) in found.iter_mut().zip(&self.textures) {
+            *view = Some(textures(*binding).ok_or_else(|| {
+                format!("native texture slot {} has not been bound", binding / 2)
+            })?);
+        }
+        let views = &found[..self.textures.len()];
+        let count = self.buffers.len();
+        let mut offsets = [0; BUFFERS];
+        let buffer = arena.constants(&blocks[..count], &mut offsets[..count])?;
+        let frame = arena.frame();
+        let device = arena.device();
+        let mut groups = self
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let groups = &mut *groups;
+        if groups.frame != frame {
+            groups.frame = frame;
+            let live = |used: u64| used + 1 >= frame;
+            groups.constants.retain(|(_, _, used)| live(*used));
+            for entries in groups.textures.values_mut() {
+                entries.retain(|(_, _, used)| live(*used));
+            }
+            groups.textures.retain(|_, entries| !entries.is_empty());
+            groups.last = None;
+        }
+        let constants = match groups
+            .constants
+            .iter_mut()
+            .find(|(cached, _, _)| *cached == buffer)
+        {
+            Some((_, group, used)) => {
+                *used = frame;
+                group.clone()
+            }
+            None => {
+                let group = scoped(device, || {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("native constants"),
+                        layout: &self.layouts[0],
+                        entries: &self
+                            .buffers
+                            .iter()
+                            .map(|spec| wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: &buffer,
+                                    offset: 0,
+                                    size: std::num::NonZeroU64::new(u64::from(spec.size)),
+                                }),
+                            })
+                            .collect::<Vec<_>>(),
+                    })
+                })?;
+                groups.constants.push((buffer, group.clone(), frame));
+                group
+            }
+        };
+        let same = |cached: &[wgpu::TextureView]| cached.iter().map(Some).eq(views.iter().copied());
+        let last = groups
+            .last
+            .filter(|(hash, index)| same(&groups.textures[hash][*index].0));
+        let (hash, found) = match last {
+            Some((hash, index)) => (hash, Some(index)),
+            None => {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::hash::DefaultHasher::new();
+                views.hash(&mut hasher);
+                let hash = hasher.finish();
+                let found = groups
+                    .textures
+                    .get(&hash)
+                    .and_then(|entries| entries.iter().position(|(cached, _, _)| same(cached)));
+                (hash, found)
+            }
+        };
+        let entries = groups.textures.entry(hash).or_default();
+        let textures = match found {
+            Some(index) => {
+                let (_, group, used) = &mut entries[index];
+                *used = frame;
+                groups.last = Some((hash, index));
+                group.clone()
+            }
+            None => {
+                let group = scoped(device, || {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("native textures"),
+                        layout: &self.layouts[1],
+                        entries: &self
+                            .textures
+                            .iter()
+                            .zip(views.iter().flatten())
+                            .map(|((binding, _), view)| wgpu::BindGroupEntry {
+                                binding: *binding,
+                                resource: wgpu::BindingResource::TextureView(view),
+                            })
+                            .collect::<Vec<_>>(),
+                    })
+                })?;
+                let views = views.iter().flatten().map(|view| (*view).clone()).collect();
+                entries.push((views, group.clone(), frame));
+                groups.last = Some((hash, entries.len() - 1));
+                group
+            }
+        };
+        Ok(Bindings {
+            groups: [constants, textures, self.samplers.clone()],
+            offsets,
+            count,
+        })
+    }
+
+    /// Check a physical native allocation whose initialized bytes are only partly known.
+    /// Consumers call this before `bindings`; slots absent from the program need no bytes.
+    pub fn check_initialized(
+        &self,
+        binding: u32,
+        physical: u32,
+        known: &[std::ops::Range<u32>],
+    ) -> Result<(), String> {
+        for buffer in self
             .buffers
             .iter()
-            .zip(&buffers)
-            .map(|(spec, data)| wgpu::BindGroupEntry {
-                binding: spec.binding,
-                resource: data.as_entire_binding(),
-            })
-            .collect();
-        let texture_entries = self
-            .textures
-            .iter()
-            .map(|(binding, _)| {
-                let view = textures.get(binding).ok_or_else(|| {
-                    format!("native texture slot {} has not been bound", binding / 2)
-                })?;
-                Ok(wgpu::BindGroupEntry {
-                    binding: *binding,
-                    resource: wgpu::BindingResource::TextureView(view),
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let sampler_entries: Vec<_> = self
-            .samplers
-            .iter()
-            .map(|(binding, sampler)| wgpu::BindGroupEntry {
-                binding: *binding,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            })
-            .collect();
-        let groups = [
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native constants"),
-                layout: &self.layouts[0],
-                entries: &buffer_entries,
-            }),
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native textures"),
-                layout: &self.layouts[1],
-                entries: &texture_entries,
-            }),
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native samplers"),
-                layout: &self.layouts[2],
-                entries: &sampler_entries,
-            }),
-        ];
-        Ok(Bindings { groups })
+            .filter(|buffer| buffer.binding == binding)
+        {
+            buffer.check_initialized(physical, known)?;
+        }
+        Ok(())
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, draw: &Draw) {
         pass.set_pipeline(&self.pipeline);
         // 142400090 passes a null BlendFactor pointer, whose D3D11 value is all ones.
         pass.set_blend_constant(wgpu::Color::WHITE);
-        for (index, group) in draw.groups.iter().enumerate() {
-            pass.set_bind_group(index as u32, group, &[]);
-        }
-        pass.set_vertex_buffer(0, draw.vertices.slice(..));
+        draw.bindings.bind(pass);
+        pass.set_vertex_buffer(0, draw.vertices.slice());
         pass.draw(0..draw.count, 0..1);
+    }
+}
+
+/// Validation and out-of-memory errors while creating a GPU object, as a named failure.
+fn scoped<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, String> {
+    let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let result = create();
+    match pollster::block_on(validation.pop()).or(pollster::block_on(memory.pop())) {
+        Some(error) => Err(error.to_string()),
+        None => Ok(result),
     }
 }
 

@@ -526,11 +526,13 @@ pub struct IconTextures {
     bound: Vec<Bound>,
     /// Clamped and pinned to the top mip: what a 1:1 screen quad needs.
     screen: wgpu::Sampler,
-    /// `mapname.shader`'s `DiffuseTexture`: linear mag, min and mip, clamped.
-    trilinear: wgpu::Sampler,
 }
 
 impl IconTextures {
+    pub fn views(&self) -> Vec<wgpu::TextureView> {
+        self.bound.iter().map(|bound| bound.view.clone()).collect()
+    }
+
     /// Uploads every page of `icons`.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, icons: &MapIcons) -> io::Result<Self> {
         let mut bound = Vec::with_capacity(icons.images.len());
@@ -566,11 +568,6 @@ impl IconTextures {
             // (`SpritePass::upload`); saying so outright keeps a driver's
             // derivative estimate out of the result.
             screen: clamp("icon screen sampler", wgpu::MipmapFilterMode::Nearest, 0.0),
-            trilinear: clamp(
-                "icon trilinear sampler",
-                wgpu::MipmapFilterMode::Linear,
-                32.0,
-            ),
         })
     }
 
@@ -604,10 +601,6 @@ impl IconTextures {
 
     pub fn screen_clamp(&self) -> &wgpu::Sampler {
         &self.screen
-    }
-
-    pub fn trilinear_clamp(&self) -> &wgpu::Sampler {
-        &self.trilinear
     }
 
     /// Pages uploaded, for reporting.

@@ -112,6 +112,7 @@ struct TreeVarying {
     /// as the `ExtraHeight` that lifts the canopy out of the fog-of-war's
     /// height fog (`tree.shader:253`, `:440`).
     @location(7) local_y: f32,
+    @location(8) shadow_projection: vec4<f32>,
 }
 
 /// Where one instance of one tree vertex ends up, and the rotation the vertex
@@ -199,6 +200,7 @@ fn tree_vertex(
     out.tint_uv = uv1 + vec2<f32>(placement.random, 0.0);
     out.season_u = tree.season_column / TREE_SEASON_COLUMNS + 1.0 / (2.0 * TREE_SEASON_COLUMNS);
     out.local_y = position.y;
+    out.shadow_projection = shadow_proj(p);
     return out;
 }
 
@@ -215,8 +217,7 @@ fn tree_vertex(
 /// `colormap_rgb_cityemissivemask_a.dds`, is the texture the same function
 /// binds one slot over, at index 4 as `ColorMap`.
 ///
-/// The texture is `R8Unorm` here because wgpu has no `A8Unorm`, so this takes
-/// the red channel where the game's HLSL takes `.a`; it is the same byte. The
+/// Native A8 is stored as RGBA(0,0,0,a), preserving the content shader's alpha read. The
 /// sampler is the clamped one, as `tree.shader`'s `AddressU/V = "Clamp"` asks,
 /// and `wrap_u` still sends a wrap copy back onto the map it was copied from so
 /// the clamp does not smear at the seam. Note the uv offsets differ from the
@@ -226,7 +227,7 @@ fn tree_mask(world: vec3<f32>) -> f32 {
         (world.x - 0.5) / globals.map_size.x,
         (world.z + 2.0 - globals.map_size.y) / -globals.map_size.y,
     );
-    return textureSample(tree_mask_texture, linear_clamp, wrap_u(uv)).r;
+    return textureSample(tree_mask_texture, linear_clamp, wrap_u(uv)).a;
 }
 
 /// `ApplySnowTree`: a straight lerp to `SNOW_COLOR`, without the terrain's

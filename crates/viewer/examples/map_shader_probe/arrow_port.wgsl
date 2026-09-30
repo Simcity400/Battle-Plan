@@ -107,8 +107,7 @@ fn arrow_vertex(
 }
 
 /// `HuePost` (`standardfuncsgfx.fxh:91`), a hue in sixths rather than degrees.
-/// `map/post.wgsl` carries its own copy; the two are the same function and each
-/// pass compiles alone.
+/// The compiled restore stage resolves the same function from content.
 fn arrow_hue_post(h: f32) -> vec3<f32> {
     let x = 1.0 - abs(h - 2.0 * floor(h * 0.5) - 1.0);
     if h < 1.0 { return vec3<f32>(1.0, x, 0.0); }

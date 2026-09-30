@@ -2637,21 +2637,10 @@ impl Viewer {
                 current: &raid_frame,
             },
         );
-        let replaced = scene.set_trains(
-            &state.device,
-            &state.queue,
-            document.trains.clone(),
-            trains,
-            continuity,
-        )?;
+        let replaced = scene.set_trains(document.trains.clone(), trains, continuity)?;
         retired.push(replaced);
         laps.lap("trains_upload");
-        let replaced = scene.set_aircraft(
-            &state.device,
-            &state.queue,
-            document.aircraft.clone(),
-            aircraft,
-        )?;
+        let replaced = scene.set_aircraft(document.aircraft.clone(), aircraft)?;
         retired.push(replaced);
         laps.lap("aircraft_upload");
         match unit_restart {
@@ -3448,7 +3437,6 @@ impl Viewer {
                         ui_scale,
                     },
                     // trees
-                    season: now.tree_season(),
                     no_trees: false,
                 },
             )

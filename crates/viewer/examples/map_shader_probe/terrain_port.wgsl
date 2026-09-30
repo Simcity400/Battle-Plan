@@ -488,7 +488,7 @@
 //
 // **What is left, and where to look next.** The remainder is a single
 // scene-wide gain of about 0.3, with the hue rotation and the sea's residual
-// offset that `map::post` and `water.wgsl` record. (It is the atlas decode, and
+// offset that `map::post` and the offline `water_port.wgsl` oracle record. (It is the atlas decode, and
 // the head of this file closes it; what follows is how the search got there.) No constant is
 // refitted here, because nothing in this file changed: this is a correction to
 // what the measurement means, not to what the pass computes. But it does move
@@ -606,8 +606,6 @@ const SHADOW_WEIGHT_TERRAIN: f32 = 0.7;
 @group(1) @binding(11) var gradient_border_channel1: texture_2d<f32>;
 @group(1) @binding(12) var gradient_border_channel2: texture_2d<f32>;
 // The `underwater` effect rebinds slots 0 and 2 to these two textures.
-@group(1) @binding(13) var underwater_terrain: texture_2d<f32>;
-@group(1) @binding(14) var colormap_water: texture_2d<f32>;
 // The engine uploads per-vertex heights; the grid fetches them instead.
 @group(1) @binding(15) var heightmap: texture_2d<f32>;
 @group(1) @binding(16) var linear_wrap: sampler;
@@ -824,66 +822,4 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     );
 
     return vec4<f32>(out, saturate(city_lights_mask * night_factor * CITY_LIGHTS_BLOOM_FACTOR));
-}
-
-// `PixelShaderUnderwater` (pdxmap.shader:407-455), with its plain Phong
-// effect. This writes only the separate eight-bit WaterRefraction target.
-// Frame33840 draws 61..145 bind underwater_terrain_0 and colormap_water_0
-// as sRGB, and blend half the water tint with the lit floor by
-// saturate((world_y - 5.3) / 7.7). The open floor is about y=8.9.
-// The native terrain scene is a later draw, including below the waterline.
-// [archived rendering notes](#)'s water section records the sampled inputs and pixel histories.
-@fragment
-fn underwater_main(input: TerrainVertex) -> @location(0) vec4<f32> {
-    if WATER_HEIGHT - input.prepos.y + TERRAIN_WATER_CLIP_HEIGHT < 0.0 {
-        discard;
-    }
-
-    let normal = normalize(textureSample(height_normal, linear_wrap, input.uv2).rbg - vec3<f32>(0.5));
-    let diffuse = textureSample(
-        underwater_terrain,
-        linear_wrap,
-        input.uv2 * vec2<f32>(globals.map_size.x / 32.0, globals.map_size.y / 32.0),
-    ).rgb;
-    let water_color_tint =
-        textureSample(colormap_water, linear_wrap, input.uv2).rgb * WATER_COLOR_LIGHTNESS;
-
-    // The SnowTexture slot the shader used to read here is dead in 1.19.2.
-    let water_alpha = saturate((input.prepos.y - 5.3) / (13.0 - 5.3));
-    let glossiness = MAP_SPECULAR_WIDTH;
-
-    var properties: LightingProperties;
-    properties.world_space_pos = input.prepos;
-    properties.to_camera_dir = normalize(cam_pos() - input.prepos);
-    properties.normal = normal;
-    properties.diffuse = diffuse;
-    properties.glossiness = glossiness;
-    properties.specular_color = globals.frame.sun_diffuse_intensity.rgb * 0.1;
-    properties.non_linear_glossiness = get_non_linear_glossiness(glossiness);
-
-    // `GetShadowScaled( SHADOW_WEIGHT_TERRAIN, ... )` without the lit pass's
-    // 0.1 floor (`pdxmap.shader:444`).
-    var light = calculate_sun_light_phong(
-        properties,
-        get_shadow_scaled(SHADOW_WEIGHT_TERRAIN, input.position),
-        calculate_sun_direction(input.prepos),
-    );
-    light = calculate_point_lights(properties, light, false, globals.light_grid);
-    let lit = compose_light(properties, light.diffuse, light.specular);
-    return vec4<f32>(mix(water_color_tint, lit, water_alpha), 1.0);
-}
-
-// `pdxmap.shader:457-470`: the `terrainunlit` effect, the terrain half of the
-// screen-space shadow pre-pass. It shares `VertexShader` with the lit effect,
-// so this is the same grid drawn again through the camera, writing what the lit
-// passes will read back at their own pixel.
-//
-// `GetFogFactors` fills `.g` and `.b` with the fog-of-war the recorded
-// perspective sees; `common.wgsl`'s `get_fog_factors` is the whole of it, and
-// `terrainunlit` passes an `ExtraHeight` of zero where `treeunlit` passes the
-// canopy's.
-@fragment
-fn terrain_unlit_main(input: TerrainVertex) -> @location(0) vec4<f32> {
-    let fog = get_fog_factors(input.prepos, 0.0);
-    return vec4<f32>(calculate_shadow(shadow_proj(input.prepos)), fog.x, fog.y, 1.0);
 }

@@ -1,0 +1,182 @@
+//! Country-name submission141637D20, font groups1422860E0, forced raster140B48E50.
+use eframe::wgpu;
+use installed_content::{
+    ResolvedLayers,
+    pdxshader::{RasterizerState, program::Stage},
+};
+use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
+use std::{collections::BTreeMap, io, sync::Arc};
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Vertex {
+    pub position: [f32; 3],
+    pub uv: [f32; 2],
+}
+
+fn refuse(pass: &str, reason: impl Into<String>) -> io::Error {
+    io::Error::other(format!(
+        "Map shader {pass}: 1 refused pass: {}",
+        reason.into()
+    ))
+}
+
+pub fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
+    let (mut library, defines) = super::shader_sources::library(layers, map);
+    library
+        .load("gfx/FX/mapname.shader", &defines)
+        .map_err(|error| refuse("country names", error))
+}
+
+pub struct Names {
+    retained: super::shader_scene::Program,
+    pass_name: &'static str,
+    pipeline: Arc<gpu::Pipeline>,
+    stencil_reference: u32,
+}
+
+impl Names {
+    pub fn new(
+        device: &wgpu::Device,
+        effect: &Arc<Effect>,
+        samples: u32,
+        format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+    ) -> io::Result<Self> {
+        Self::with_technique(device, effect, samples, format, depth_format, None)
+    }
+
+    pub fn with_technique(
+        device: &wgpu::Device,
+        effect: &Arc<Effect>,
+        samples: u32,
+        format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+        arrow_technique: Option<&str>,
+    ) -> io::Result<Self> {
+        let pass_name = if arrow_technique.is_some() {
+            "order labels"
+        } else {
+            "country names"
+        };
+        let refuse = |reason: String| refuse(pass_name, reason);
+        let name = arrow_technique.unwrap_or("mapname");
+        let selection = effect
+            .select(name)
+            .map_err(|error| refuse(error.to_string()))?
+            .ok_or_else(|| refuse(format!("{name} absent; retained program unavailable")))?;
+        let compiled = effect
+            .compiled(selection.index)
+            .map_err(|error| refuse(error.to_string()))?;
+        let technique = &effect.source.techniques[selection.index];
+        let mut state = gpu::State::authored(&effect.source, technique)
+            .map_err(|error| refuse(error.to_string()))?;
+        state
+            .samplers
+            .retain(|slot, _| *slot == binding(0, Stage::Pixel));
+        let mut pass = gpu::Pass::packed(&compiled, &state, format, samples);
+        let mut attributes = Vec::new();
+        for input in &compiled.vertex.inputs {
+            let (offset, format, width) = match input.semantic.as_str() {
+                "POSITION" | "POSITION0" => (0, wgpu::VertexFormat::Float32x3, 3),
+                "TEXCOORD" | "TEXCOORD0" => (12, wgpu::VertexFormat::Float32x2, 2),
+                _ => return Err(refuse(format!("native glyph cannot supply {input:?}"))),
+            };
+            if input.kind != ScalarKind::Float || input.components > width {
+                return Err(refuse(format!("native glyph cannot supply {input:?}")));
+            }
+            attributes.push(wgpu::VertexAttribute {
+                format,
+                offset,
+                shader_location: input.location,
+            });
+        }
+        pass.vertices = vec![gpu::VertexLayout {
+            stride: 20,
+            step: wgpu::VertexStepMode::Vertex,
+            attributes,
+        }];
+        let raster = RasterizerState {
+            // 14125DDB3: arrow labels retain the manager's cull-none raster.
+            cull_mode: if arrow_technique.is_some() {
+                0
+            } else {
+                RasterizerState::default().cull_mode
+            },
+            front_ccw: arrow_technique.is_none(),
+            ..Default::default()
+        };
+        pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleList).0;
+        let (depth, stencil_reference) = gpu::depth_stencil(
+            &effect.source.depth_stencil(technique),
+            &raster,
+            depth_format,
+        );
+        pass.depth_stencil = Some(depth);
+        let pipeline = gpu::Cache::default()
+            .get_pass(device, &selection, &state, &pass)
+            .map_err(|error| refuse(error.to_string()))?;
+        super::shader_constants::scene(&pipeline).map_err(|error| refuse(error.to_string()))?;
+        let retained = super::shader_scene::Program::new(
+            &selection,
+            &pass.vertices,
+            &state,
+            &raster,
+            &effect.source.depth_stencil(technique),
+        );
+        Ok(Self {
+            retained,
+            pass_name,
+            pipeline,
+            stencil_reference,
+        })
+    }
+
+    pub fn bindings(
+        &self,
+        arena: &gpu::Arena,
+        frame: &[u8],
+        alpha_offset: [f32; 2],
+        page: &wgpu::TextureView,
+    ) -> io::Result<gpu::Bindings> {
+        // 141637D20 initializes all16 bytes and binds b0/b1 to both stages.
+        let b1 = [alpha_offset[0], alpha_offset[1], 0., 0.];
+        let buffers = BTreeMap::from([
+            (binding(0, Stage::Vertex), frame.to_vec()),
+            (binding(0, Stage::Pixel), frame.to_vec()),
+            (binding(1, Stage::Vertex), bytemuck::bytes_of(&b1).to_vec()),
+            (binding(1, Stage::Pixel), bytemuck::bytes_of(&b1).to_vec()),
+        ]);
+        let textures = BTreeMap::from([(binding(0, Stage::Pixel), page.clone())]);
+        self.pipeline
+            .bindings(arena, &buffers, &textures)
+            .map_err(|error| refuse(self.pass_name, error.to_string()))
+    }
+
+    pub fn retain(
+        &self,
+        retained: &mut super::shader_scene::State,
+        frame: &[u8],
+        alpha_offset: [f32; 2],
+        page: &wgpu::TextureView,
+    ) {
+        let b1 = [alpha_offset[0], alpha_offset[1], 0., 0.];
+        self.retained.bind(
+            retained,
+            &BTreeMap::from([
+                (binding(0, Stage::Vertex), frame.to_vec()),
+                (binding(0, Stage::Pixel), frame.to_vec()),
+                (binding(1, Stage::Vertex), bytemuck::bytes_of(&b1).to_vec()),
+                (binding(1, Stage::Pixel), bytemuck::bytes_of(&b1).to_vec()),
+            ]),
+            &BTreeMap::from([(binding(0, Stage::Pixel), page.clone())]),
+        );
+        retained.stream.bind_vertex_stride(0, 20);
+    }
+
+    pub fn begin(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.pipeline.pipeline);
+        pass.set_stencil_reference(self.stencil_reference);
+        pass.set_blend_constant(wgpu::Color::WHITE);
+    }
+}

@@ -10,6 +10,7 @@ publish.workspace = true
 replay = { path = "../replay" }
 engine = { path = "../engine" }
 installed-content = { path = "../installed-content" }
+shader-pipeline = { path = "../shader-pipeline" }
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"

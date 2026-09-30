@@ -2,6 +2,8 @@
 //! program transition keeps its input layout, even when the next draw changes buffer stride.
 
 use super::{ScalarKind, VertexInput};
+mod native;
+pub use native::{NativeBuffer, PackedBuffers, pack_native};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Declaration {

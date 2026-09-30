@@ -23,9 +23,8 @@ fn validate(name: &str, source: &str) {
 fn standalone_map_shaders_validate() {
     for (name, source) in [
         ("political_fill", include_str!("political_fill.wgsl")),
-        ("post", include_str!("post.wgsl")),
-        ("post_luts", include_str!("post_luts.wgsl")),
-        ("shadow", include_str!("shadow.wgsl")),
+        ("post_copy", include_str!("post_copy.wgsl")),
+        ("texture_unpack", include_str!("texture_unpack.wgsl")),
         ("sprites", super::sprites::SHADER),
     ] {
         validate(name, source);
@@ -35,20 +34,43 @@ fn standalone_map_shaders_validate() {
 #[test]
 fn world_shaders_validate_with_shared_frame_inputs() {
     for (name, source) in [
-        ("border", include_str!("border.wgsl")),
-        ("maparrow", include_str!("maparrow.wgsl")),
-        ("mapframe", include_str!("mapframe.wgsl")),
-        ("mapname", include_str!("mapname.wgsl")),
-        ("pdxmesh", include_str!("pdxmesh.wgsl")),
-        ("railroad", include_str!("railroad.wgsl")),
-        ("river", include_str!("river.wgsl")),
-        ("terrain", include_str!("terrain.wgsl")),
-        ("tree", include_str!("tree.wgsl")),
-        ("water", include_str!("water.wgsl")),
-        ("weather_effects", include_str!("weather_effects.wgsl")),
+        (
+            "maparrow",
+            include_str!("../../examples/map_shader_probe/arrow_port.wgsl"),
+        ),
+        (
+            "mapframe offline oracle",
+            include_str!("../../examples/map_shader_probe/mapframe_port.wgsl"),
+        ),
+        (
+            "order labels offline oracle",
+            include_str!("../../examples/map_shader_probe/order_label_port.wgsl"),
+        ),
+        (
+            "pdxmesh",
+            include_str!("../../examples/map_shader_probe/mesh_legacy.wgsl"),
+        ),
+        (
+            "terrain offline oracle",
+            include_str!("../../examples/map_shader_probe/terrain_port.wgsl"),
+        ),
+        (
+            "tree caster comparison",
+            include_str!("../../examples/map_shader_probe/tree_caster_legacy.wgsl"),
+        ),
+        (
+            "weather_effects",
+            include_str!("../../examples/map_shader_probe/particle_legacy.wgsl"),
+        ),
     ] {
-        // This is the same composition used by scene::module.
-        validate(name, &format!("{}\n{source}", include_str!("common.wgsl")));
+        // Retained comparison shaders share their original frame helpers.
+        validate(
+            name,
+            &format!(
+                "{}\n{source}",
+                include_str!("../../examples/map_shader_probe/common_legacy.wgsl")
+            ),
+        );
     }
 }
 
@@ -66,8 +88,8 @@ fn arrow_normals_and_second_shadow_run_the_native_shader_laws() {
             .unwrap();
     let source = format!(
         "{}\n{}\n{}",
-        include_str!("common.wgsl"),
-        include_str!("maparrow.wgsl"),
+        include_str!("../../examples/map_shader_probe/common_legacy.wgsl"),
+        include_str!("../../examples/map_shader_probe/arrow_port.wgsl"),
         r#"
 @group(3) @binding(0) var<storage, read_write> result: array<vec4<f32>, 5>;
 @compute @workgroup_size(1)
