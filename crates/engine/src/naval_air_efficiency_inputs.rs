@@ -16,29 +16,32 @@ pub struct Modifier {
 pub struct Row {
     /// Source selection:0 no active wings,1 absent base,2 absent host,3 carrier.
     pub source: u8,
-    pub carrier: u64,
-    pub first_wing: u64,
     pub pool_type_flags: u64,
-    pub task_force: u64,
     pub mission: i32,
-    pub mission_factor: i64,
-    pub is_attacker: u8,
-    pub country: u32,
     pub container_present: u8,
     pub base_crowding: i64,
-    pub carrier_organisation: i64,
-    pub carrier_base_organisation: i64,
     pub night: i64,
-    pub combat_duration: i32,
-    pub base_efficiency: i64,
-    pub mission_duration_threshold: i32,
     /// Country night key23, combat weather key22, province weather key22.
     pub modifiers: [Modifier; 3],
-    /// Keys22,23: raw metadata flags and feature selector.
-    pub modifier_metadata: [[u32; 2]; 2],
+    /// Keys 0x22, 0x23, 0x24, 0x1B6 ([`METADATA_KEYS`]): raw metadata flags
+    /// and feature selector.
+    pub modifier_metadata: [[u32; 2]; 4],
     pub feature_flags: u32,
     pub eligibility_callback: u8,
 }
+
+/// Weather and night keys 0x22/0x23 of `141963700`, then the sortie keys
+/// 0x24/0x1B6 that `14195EEC0` reads from the `screening_bonus` and
+/// `capital_screening_bonus` static modifiers through
+/// `modifier_accumulator::value@140551820`. That getter takes a key's flags
+/// and feature selector from the global definition table whether or not any
+/// accumulator holds the key, so the table rows are read here unconditionally.
+pub const METADATA_KEYS: [u32; 4] = [
+    crate::modifier_keys::CARRIER_TRAFFIC,
+    crate::modifier_keys::CARRIER_NIGHT_TRAFFIC,
+    crate::modifier_keys::SORTIE_EFFICIENCY,
+    crate::modifier_keys::FIGHTER_SORTIE_EFFICIENCY,
+];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WingKill {
@@ -150,34 +153,30 @@ pub fn read(
         return Err("naval air base reference mismatch");
     }
     row.source = 2;
-    row.carrier = field(memory, air_base, crate::cair_base::HOST_REFERENCE)?;
-    let Some(carrier) = crate::creference_registry::resolve(memory, base, row.carrier)? else {
+    let carrier_reference = field(memory, air_base, crate::cair_base::HOST_REFERENCE)?;
+    let Some(carrier) = crate::creference_registry::resolve(memory, base, carrier_reference)?
+    else {
         return Ok(row);
     };
     auth(memory, base, carrier, crate::cship::VTABLE_RVA)?;
-    if field::<u64>(memory, carrier, crate::cship::HANDLE)? != row.carrier {
+    if field::<u64>(memory, carrier, crate::cship::HANDLE)? != carrier_reference {
         return Err("naval air carrier reference mismatch");
     }
     row.source = 3;
     let task = ptr(memory, carrier, crate::cship::TASK_FORCE)?;
     auth(memory, base, task, crate::ctask_force::VTABLE_RVA)?;
-    row.task_force = field(memory, task, crate::cunit::HANDLE)?;
-    row.country = field(memory, task, crate::cunit::ROSTER_OWNER)?;
+    let country_id = field::<u32>(memory, task, crate::cunit::ROSTER_OWNER)?;
     row.mission = field(memory, task, 0x4ec)?;
     if !(0..256).contains(&row.mission) {
         return Err("naval air mission bound exceeded");
     }
-    let mission_factors = ptr(memory, base, 0x0332_0968)?;
-    if mission_factors == 0 {
-        return Err("naval air mission factors absent");
-    }
-    row.mission_factor = field(memory, mission_factors, row.mission as usize * 8)?;
+    // 141963700 selects the authored sortie ratio by this mission. Matching
+    // content supplies the ratio table and initial/default sortie defines.
     let side = ptr(memory, group, crate::cfex_group::SIDE)?;
     auth(memory, base, side, crate::cnaval_combatant::VTABLE_RVA)?;
     if ptr(memory, side, crate::cnaval_combatant::COMBAT)? != combat {
         return Err("naval air side combat mismatch");
     }
-    row.is_attacker = field(memory, side, 0xb8)?;
     for index in 0..wings.count {
         let reference = field(memory, element(wings, index, 8)?, 0)?;
         if let Some(primary) = wing(memory, base, reference)? {
@@ -190,20 +189,14 @@ pub fn read(
                 definition,
                 crate::csub_unit_definition::VTABLE_RVA,
             )?;
-            row.first_wing = reference;
             row.pool_type_flags =
                 field(memory, definition, crate::csub_unit_definition::AIR_FLAGS)?;
             break;
         }
     }
-    row.carrier_organisation = field(memory, carrier, crate::cship::ORGANISATION)?;
-    row.carrier_base_organisation = field(memory, carrier, 0x300)?;
     row.night = field(memory, combat, 0xb8)?;
-    row.combat_duration = field(memory, combat, 0x44)?;
-    row.base_efficiency = field(memory, base, 0x0331_ef38)?;
-    row.mission_duration_threshold = field(memory, base, 0x0331_9ec8)?;
     let countries = crate::ccountry::Reader::new(memory, base, game)?;
-    let country = countries.resolve(row.country)?;
+    let country = countries.resolve(country_id)?;
     row.modifiers[0] = modifier(
         memory,
         add(country.pointer, crate::ccountry::MODIFIER_ACCUMULATOR)?,
@@ -259,10 +252,7 @@ pub fn read(
     if definitions == 0 {
         return Err("naval air modifier metadata absent");
     }
-    for (out, key) in row.modifier_metadata.iter_mut().zip([
-        crate::modifier_keys::CARRIER_TRAFFIC,
-        crate::modifier_keys::CARRIER_NIGHT_TRAFFIC,
-    ]) {
+    for (out, key) in row.modifier_metadata.iter_mut().zip(METADATA_KEYS) {
         let at = add(definitions, key as usize * md::STRIDE)?;
         *out = [
             field(memory, at, md::FLAGS)?,

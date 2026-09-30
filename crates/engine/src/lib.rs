@@ -589,6 +589,7 @@ pub mod native_texture_image_layout;
 pub mod native_texture_mip_layout;
 pub mod native_texture_resource_layout;
 pub mod naval_air_efficiency_inputs;
+pub mod naval_combat_air_base_wings;
 pub mod naval_combat_air_hit;
 pub mod naval_combat_hit;
 pub mod naval_combat_summary_inputs;

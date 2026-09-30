@@ -388,7 +388,7 @@ fn fixed_ratio(value: i64, maximum: i64) -> i128 {
     i128::from(value) * 100_000 / i128::from(maximum)
 }
 /// 140C29DF0's maximum organisation, or which operand refuses it.
-fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, String> {
+pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, String> {
     if row.live_ship == 0 {
         if row.live_convoy == 0 {
             return Err("it is neither a live ship nor a live convoy".into());

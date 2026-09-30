@@ -25,14 +25,6 @@ pub const NODE_NEXT: usize = 0x10;
 ///141609460 subtracts recent joins and adds convoy escort raw values.
 pub const RECENT_JOIN: usize = 0x140;
 pub const ESCORT: usize = 0x148;
-/// Raw fixed5 definitions, in positioning/screening/carrier/AA binder order.
-pub const FIXED_DEFINES: [usize; 18] = [
-    0x03318ca0, 0x03318d30, 0x03318e00, 0x03318ee0, 0x03318fb8, 0x03319140, 0x03319228, 0x03319930,
-    0x03319a28, 0x03319b08, 0x03319bc8, 0x0331ada8, 0x0331aea0, 0x0331af88, 0x0331b070, 0x03318f68,
-    0x0331a468, 0x0331a778,
-];
-/// Minimum ships, initial positioning duration, free carrier threshold.
-pub const INTEGER_DEFINES: [usize; 3] = [0x03319080, 0x0331d1ac, 0x03318ec0];
 /// Sorted raw lookup keys:initial positioning, screening, positioning,
 /// convoy-only screening, opponent-admiral ship-ratio penalty.
 pub const MODIFIER_KEYS: [u32; 5] = [
@@ -52,7 +44,6 @@ pub struct Modifier {
 pub struct Row {
     pub recent_join_penalty: i64,
     pub escort_bonus: i64,
-    pub is_attacker: u8,
     /// Start and length in the caller-owned country arena, in native order.
     pub countries: [usize; 2],
     /// The [`SECONDARY_COUNTRIES`] list, in the same arena.
@@ -63,8 +54,6 @@ pub struct Row {
     pub modifier_metadata: [[u32; 2]; 5],
     pub feature_flags: u32,
     pub eligibility_callback: u8,
-    pub fixed_defines: [i64; 18],
-    pub integer_defines: [i32; 3],
 }
 fn add(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
@@ -163,15 +152,16 @@ fn list(
     Ok([start, end - start])
 }
 
-/// Caller has authenticated combat and both side back-links. Retain source
-/// words without calling engine code. Country tags are appended to the
-/// caller-owned `arena` from `*len`.
+/// Caller has authenticated combat and both side back-links; `[side, opponent]` come from
+/// CNavalCombat's ordered attacker/defender roots. Retain source words without calling
+/// engine code. Country tags are appended to the caller-owned `arena` from `*len`. The
+/// authored defines the binders read come from matching game content, not from memory.
 pub fn read(
     memory: &impl Memory,
     base: usize,
     state: usize,
     combat: usize,
-    side: usize,
+    [side, opponent]: [usize; 2],
     arena: &mut Vec<u32>,
     len: &mut usize,
 ) -> Result<Row, &'static str> {
@@ -187,18 +177,11 @@ pub fn read(
     let mut row = Row {
         recent_join_penalty: field(memory, side, RECENT_JOIN)?,
         escort_bonus: field(memory, side, ESCORT)?,
-        is_attacker: field(memory, side, 0xb8)?,
         ..Default::default()
     };
     let slots = reader.as_ref().map_or(0, |reader| reader.count());
     row.countries = countries(memory, side, slots, arena, len)?;
     row.secondary_countries = list(memory, side, SECONDARY_COUNTRIES, slots, arena, len)?;
-    for (value, rva) in row.fixed_defines.iter_mut().zip(FIXED_DEFINES) {
-        *value = field(memory, base, rva)?;
-    }
-    for (value, rva) in row.integer_defines.iter_mut().zip(INTEGER_DEFINES) {
-        *value = field(memory, base, rva)?;
-    }
     let table = field::<u64>(memory, base, metadata::TABLE_RVA)? as usize;
     for (out, key) in row.modifier_metadata.iter_mut().zip(MODIFIER_KEYS) {
         let record = add(table, key as usize * metadata::STRIDE)?;
@@ -217,11 +200,6 @@ pub fn read(
     };
     row.feature_flags = field(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)?;
     let own = field::<u64>(memory, side, cnaval_combatant::COMMANDER)? as usize;
-    let opponent = field::<u64>(
-        memory,
-        combat,
-        if row.is_attacker != 0 { 0x30 } else { 0x28 },
-    )? as usize;
     let enemy = field::<u64>(memory, opponent, cnaval_combatant::COMMANDER)? as usize;
     for (scope, leader) in [(3, own), (4, enemy)] {
         if leader != 0 {

@@ -1033,32 +1033,138 @@ fn naval(
             "header_container/progress_attacker",
             detail.progress as f32 / 100_000.0,
         );
+        // The window recomputes positioning, screening and anti-air from live operands on
+        // every refresh; the combat's stored copies lag them.
+        let combat_ships = rows::<tables::NavalCombatShips>(frame)?;
+        let ship_models = rows::<tables::ShipModels>(frame)?;
+        let air_bases = rows::<tables::AirBases>(frame)?;
+        let live_ships = rows::<tables::Ships>(frame)?;
+        let defines = document.icons.combat.naval_defines.as_ref();
+        // One ShipModels lookup per refresh serves surface detection, carrier
+        // air, screening and anti-air.
+        let models = ship_models
+            .is_complete()
+            .then(|| super::keyed::Keyed::new(ship_models.rows(), |model| model.ship))
+            .flatten();
+        let screening_inputs = if combat_ships.is_complete() {
+            defines.zip(models)
+        } else {
+            None
+        };
+        let dense = rows::<tables::NavalCombatAirBaseWingHandles>(frame)?;
+        let wings = rows::<tables::AirWings>(frame)?;
+        let dense = (dense.is_complete() && wings.is_complete())
+            .then(|| super::naval_air_groups::DenseBases::new(dense.rows(), wings.rows()))
+            .flatten();
+        // The recomputations read fixed modifier keys from the recorded
+        // accumulators; a recording whose definitions spell them differently
+        // is refused by name, and the affected values are omitted.
+        let mut admitted = |family| match replay::fixed_layout::validate_recording(frame, family) {
+            Ok(()) => true,
+            Err(reason) => {
+                out.warnings.push(reason);
+                false
+            }
+        };
+        let positioning_admitted = admitted(replay::fixed_layout::NAVAL_POSITIONING);
+        let anti_air_admitted = admitted(replay::fixed_layout::NAVAL_ANTI_AIR);
+        let positioning = if positioning_admitted {
+            super::naval_positioning::positioning_values(
+                detail,
+                combat_ships.is_complete().then_some(combat_ships.rows()),
+                models,
+                air_bases.is_complete().then_some(air_bases.rows()),
+                live_ships.is_complete().then_some(live_ships.rows()),
+                dense,
+                &document.icons.combat.naval_air_groups,
+                defines,
+            )
+        } else {
+            [None; 2]
+        };
         for (side, value) in detail.sides.iter().enumerate() {
             let label = if side == 0 { "attacker" } else { "defender" };
             let wnd = if side == 0 { "left" } else { "right" };
-            for (key, raw) in [
-                ("capital", value.capital_screening),
-                ("carrier", value.carrier_screening),
-            ] {
-                // 1417D9C60: FormatFixed5Percent at precision 0 times 100
-                // (1417DA098, 1417DA0C1).
-                text(
-                    &mut out.values,
-                    &format!("{wnd}_wnd_{key}_screening_efficiency"),
-                    installed_content::fixed5::fixed5_percent(raw, 0, true),
-                );
+            // 1417D9C60: FormatFixed5Percent at precision 0 times 100
+            // (1417DA098, 1417DA0C1), of the screening the window recomputes.
+            let screening = match &screening_inputs {
+                Some((defines, models)) => super::naval_screening::calculate(
+                    id,
+                    side as u8,
+                    value,
+                    combat_ships.rows(),
+                    models,
+                    defines,
+                )
+                .map_err(|reason| {
+                    format!("Naval combat {id} {label} screening is hidden: {reason}.")
+                }),
+                None => Err(format!(
+                    "Naval combat {id} {label} screening is hidden: complete combat ships, ship models and naval defines are required."
+                )),
+            };
+            let screening_keys =
+                ["capital", "carrier"].map(|key| format!("{wnd}_wnd_{key}_screening_efficiency"));
+            match screening {
+                Ok(screening) => {
+                    for (key, raw) in screening_keys
+                        .iter()
+                        .zip([screening.capital, screening.carrier])
+                    {
+                        text(
+                            &mut out.values,
+                            key,
+                            installed_content::fixed5::fixed5_percent(raw, 0, true),
+                        );
+                    }
+                }
+                Err(refusal) => out.withhold(
+                    &[screening_keys[0].as_str(), screening_keys[1].as_str()],
+                    refusal,
+                ),
             }
             // 1417D9C60: positioning as the screening (1417DA0F8), anti-air
             // through Fixed5ToString at precision 1 (1417DA133), truncating.
-            text(
-                &mut out.values,
+            out.bind(
                 &format!("header_container/{wnd}_wnd/stat_positioning"),
-                installed_content::fixed5::fixed5_percent(value.positioning, 0, true),
+                TEXT,
+                positioning[side]
+                    .map(|raw| installed_content::fixed5::fixed5_percent(raw, 0, true))
+                    .ok_or_else(|| {
+                        format!(
+                            "Naval combat {id} {label} positioning is hidden: the positioning modifier keys are refused or a required combat, ship or carrier-air operand is unavailable."
+                        )
+                    }),
             );
-            text(
-                &mut out.values,
+            let anti_air = if let (true, Some(fresh), Some((defines, models))) =
+                (anti_air_admitted, positioning[side], &screening_inputs)
+            {
+                super::naval_anti_air::calculate(
+                    id,
+                    side as u8,
+                    fresh,
+                    combat_ships.rows(),
+                    defines.summary_fixed[13],
+                    |ship| {
+                        models
+                            .get(ship)
+                            .and_then(|row| row.counter.as_ref())
+                            .map(|counter| counter.anti_air_base)
+                    },
+                )
+                .map(|raw| installed_content::fixed5::fixed5_to_string(raw, 1))
+                .map_err(|reason| {
+                    format!("Naval combat {id} {label} anti-air is hidden: {reason}.")
+                })
+            } else {
+                Err(format!(
+                    "Naval combat {id} {label} anti-air is hidden: admitted anti-air modifier keys, positioning, complete combat ships and ship models and naval defines are required."
+                ))
+            };
+            out.bind(
                 &format!("header_container/{wnd}_wnd/stat_anti_air"),
-                installed_content::fixed5::fixed5_to_string(value.anti_air, 1),
+                TEXT,
+                anti_air,
             );
             let flag = value
                 .summary
@@ -1125,7 +1231,7 @@ fn naval(
                 );
             }
         }
-        out.warnings.push("Format-22 naval: progress, screening, positioning, AA, ordered side flags and commander name/skills are bound. Air groups, perspective-dependent progress skin and tooltips remain unported; the environment binder supplies recorded weather and weapon summaries. Phase has no separate scalar widget in navalcombat.gui; retreat/engagement operands are not relabelled as a guessed phase.".into());
+        out.warnings.push("Naval: progress, recomputed screening, positioning and AA, ordered side flags and commander name/skills are bound. Air groups, perspective-dependent progress skin and tooltips remain unported; the environment binder supplies recorded weather and weapon summaries. Phase has no separate scalar widget in navalcombat.gui; retreat/engagement operands are not relabelled as a guessed phase.".into());
     }
     Ok(())
 }

@@ -11,6 +11,72 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::NavalCombatResultDetails, |r| {
         results(frame, save, r)
     });
+    report.attempt_table(TableId::NavalCombatAirBaseWingHandles, |r| {
+        air_base_wings(frame, r)
+    });
+}
+
+/// `NavalCombatAirBaseWingHandles` joins: exactly the bases the hour's naval combats reference
+/// (active forward planes drawing on a base or host, and live ships' carrier bases) have rows,
+/// and every base and wing is in the air censuses. The save keeps no dense container order.
+fn air_base_wings(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::NavalCombatAirBaseWingHandles>()?;
+    let bases: BTreeSet<u64> = frame
+        .complete::<tables::AirBases>()?
+        .iter()
+        .map(|base| base.id)
+        .collect();
+    let wings: BTreeSet<u64> = frame
+        .complete::<tables::AirWings>()?
+        .iter()
+        .map(|wing| wing.id)
+        .collect();
+    let mut referenced = BTreeSet::new();
+    for detail in frame.complete::<tables::NavalCombatDetails>()? {
+        for plane in detail.sides.iter().flat_map(|side| &side.planes) {
+            if plane.source == 0
+                && plane.group_index != u32::MAX
+                && plane.flags[1] == 0
+                && matches!(plane.efficiency.source, 2 | 3)
+            {
+                referenced.insert(plane.air_base);
+            }
+        }
+    }
+    for ship in frame.complete::<tables::NavalCombatShips>()? {
+        if ship.live_ship != 0 && ship.weapon_context.air_base != 0 {
+            referenced.insert(ship.weapon_context.air_base);
+        }
+    }
+    let listed: BTreeSet<u64> = rows.iter().map(|row| row.base).collect();
+    equal(
+        r,
+        "NavalCombatAirBaseWingHandles bases",
+        &listed,
+        &referenced,
+    );
+    for row in rows {
+        if !bases.contains(&row.base) {
+            r.difference(
+                format!("NavalCombatAirBaseWingHandles {}", row.base),
+                "absent from AirBases",
+                "an air base",
+            );
+        }
+        for wing in row.wings.iter().filter(|wing| !wings.contains(wing)) {
+            r.difference(
+                format!("NavalCombatAirBaseWingHandles {} wing {wing}", row.base),
+                "absent from AirWings",
+                "an air wing",
+            );
+        }
+    }
+    r.compared("NavalCombatAirBaseWingHandles", rows.len());
+    r.limitation(
+        "the save keeps no dense air-base container order; only the joins are checked",
+        "NavalCombatAirBaseWingHandles",
+    );
+    Ok(())
 }
 
 /// One row per saved land combat. The save serializes neither country set of a
@@ -844,7 +910,7 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         }
     }
     r.compared("NavalCombatDetails", rows.len());
-    r.limitation("Saved province/day/duration, ordered side unit lists, positioning/anti-air, recent-join/escort operands, present commander handles, retreat truthiness and ordered serialized-group live/retired planes (counts, casualties, duration, wings, date, flags, names, damage multiplier, naval hits and first air-hit vector) are compared. Null/invalid leader omission does not prove raw null identity; boolean serialization loses nonzero byte distinctions. Capital/carrier screening, engaged flag, the secondary roster-owner lists (checked only as positive and distinct), raw air-base handles omitted for unresolved references, independent source2 planes, paired orphan groups outside the serialized forward group list, carrier state, variant, five nonserialized plane caches and second air-hit vectors lack exact coverage here; matching other fields does not validate these caches or tick freshness", "NavalCombatDetails");
+    r.limitation("Compared against the save: the combat census; province, progress, day and duration; per side the ordered task-force `unit` list, the stored positioning and anti-air, the recent-join penalty (absent read as zero) and escort bonus, the commander handle when the save names a leader, the commander's category, skill, experience, traits and component skills from the saved character, and retreat truthiness; per serialized forward group, the ordered air and airs_to_delete planes with their count, group/index, carrier slot (absent read as -1), air base where saved, both wing lists, initial/current planes, casualties, time duration, country, date, both flags as booleans, ordered naval hits and first air-hit vector. Not compared though the save stores them: each plane's names list, name and damage multiplier (CFEXAir::vf2@14196A2E0 writes +0xA8, +0x88 and +0xC0), which this table does not record because no replay consumer reads them. Not compared because the save has no counterpart: capital and carrier screening, the engaged byte, the primary country list, the secondary roster-owner list (checked only as positive and distinct), the summary modifier cells, their definition metadata, feature flags and callback, each plane's carrier-member presence (the serializer writes the +0x18 slot, not the +0x10 member pointer), carrier state, variant, wing kills, every sortie-efficiency operand (source, pool flags, mission, container and crowding, night, raw modifiers and the definition metadata of keys 0x22, 0x23, 0x24 and 0x1B6), the second air-hit vector, source-2 planes and planes of paired-only groups outside the serialized forward groups. The serializer omits an unresolved air-base reference, so its raw handle is not compared; a null or invalid leader omission does not prove raw null identity; boolean serialization loses nonzero byte distinctions. Matching fields do not validate tick freshness", "NavalCombatDetails");
     Ok(())
 }
 
@@ -1218,15 +1284,6 @@ fn plane_values(
     );
     equal(
         r,
-        format!("{label} names count"),
-        a.names.len(),
-        b.names.len(),
-    );
-    for (index, (actual, saved)) in a.names.iter().zip(&b.names).enumerate() {
-        text_value(r, &format!("{label} names {index}"), actual, saved);
-    }
-    equal(
-        r,
         format!("{label} carrier"),
         a.carrier_slot,
         b.carrier.unwrap_or(-1),
@@ -1256,13 +1313,6 @@ fn plane_values(
         format!("{label} flags"),
         a.flags.map(|v| v != 0),
         b.flags,
-    );
-    text_value(r, &format!("{label} name"), &a.name, &b.name);
-    equal(
-        r,
-        format!("{label} damage multiplier"),
-        a.cached_values[0],
-        b.damage_mult.raw,
     );
     hit_values(r, label, &a.naval_hits, &b.naval_hits);
     air_hit_values(r, label, &a.air_hits[0], &b.air_hits, links)
@@ -1441,6 +1491,71 @@ fn results(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay::{
+        frame::TableView,
+        rows::{
+            AirBaseRow, AirWingRow, NavalCombatAirBaseWingHandlesRow, NavalCombatShipRow, TableRows,
+        },
+    };
+
+    #[test]
+    fn air_base_wing_rows_must_be_exactly_the_referenced_bases_in_the_air_censuses() {
+        fn set(frame: &mut DecodedFrame, rows: TableRows) {
+            let index = rows.table().index();
+            *frame.tables[index] = TableView::Complete(rows);
+        }
+        let (mut frame, ..) = super::super::tests::fixture();
+        let base = (3_u64 << 32) | 65;
+        set(
+            &mut frame,
+            TableRows::AirBases(vec![AirBaseRow {
+                id: base,
+                ..Default::default()
+            }]),
+        );
+        set(
+            &mut frame,
+            TableRows::AirWings(vec![AirWingRow {
+                id: 9,
+                ..Default::default()
+            }]),
+        );
+        set(&mut frame, TableRows::NavalCombatDetails(Vec::new()));
+        let mut ship = NavalCombatShipRow {
+            live_ship: 1,
+            ..Default::default()
+        };
+        ship.weapon_context.air_base = base;
+        set(&mut frame, TableRows::NavalCombatShips(vec![ship]));
+        set(
+            &mut frame,
+            TableRows::NavalCombatAirBaseWingHandles(vec![NavalCombatAirBaseWingHandlesRow {
+                base,
+                wings: vec![9, 9],
+            }]),
+        );
+        let mut report = Report::default();
+        air_base_wings(&frame, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        set(
+            &mut frame,
+            TableRows::NavalCombatAirBaseWingHandles(vec![
+                NavalCombatAirBaseWingHandlesRow {
+                    base,
+                    wings: vec![10],
+                },
+                NavalCombatAirBaseWingHandlesRow {
+                    base: base + (1 << 32),
+                    wings: Vec::new(),
+                },
+            ]),
+        );
+        let mut report = Report::default();
+        air_base_wings(&frame, &mut report).unwrap();
+        // An unreferenced base, a base absent from AirBases and a wing absent from AirWings.
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    }
+
     use replay::rows::{LandCombatCommanderTimedTrait, LandCombatSideDetails};
 
     /// Each side's task forces compare with the saved `unit` list in writer order.

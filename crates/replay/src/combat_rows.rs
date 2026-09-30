@@ -372,7 +372,6 @@ value_struct!(NavalCombatSummaryModifier {
 pub struct NavalCombatSummaryInputs {
     pub recent_join_penalty: i64,
     pub escort_bonus: i64,
-    pub is_attacker: u8,
     /// The side's ordered primary country list (`+0x38`), raw references.
     pub countries: Vec<u32>,
     /// Its ordered roster-owner list (`+0x50`), which admits a viewer to the combat's
@@ -382,10 +381,8 @@ pub struct NavalCombatSummaryInputs {
     pub modifier_metadata: [[u32; 2]; 5],
     pub feature_flags: u32,
     pub eligibility_callback: u8,
-    pub fixed_defines: [i64; 18],
-    pub integer_defines: [i32; 3],
 }
-value_struct!(NavalCombatSummaryInputs { recent_join_penalty: i64, escort_bonus: i64, is_attacker: u8, countries: Vec<u32>, secondary_countries: Vec<u32>, modifiers: [[NavalCombatSummaryModifier; 5]; 5], modifier_metadata: [[u32; 2]; 5], feature_flags: u32, eligibility_callback: u8, fixed_defines: [i64; 18], integer_defines: [i32; 3] });
+value_struct!(NavalCombatSummaryInputs { recent_join_penalty: i64, escort_bonus: i64, countries: Vec<u32>, secondary_countries: Vec<u32>, modifiers: [[NavalCombatSummaryModifier; 5]; 5], modifier_metadata: [[u32; 2]; 5], feature_flags: u32, eligibility_callback: u8 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatAirEfficiencyModifier {
@@ -400,47 +397,27 @@ value_struct!(NavalCombatAirEfficiencyModifier {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatAirEfficiency {
     pub source: u8,
-    pub carrier: u64,
-    pub first_wing: u64,
     pub pool_type_flags: u64,
-    pub task_force: u64,
     pub mission: i32,
-    pub mission_factor: i64,
-    pub is_attacker: u8,
-    pub country: u32,
     pub container_present: u8,
     pub base_crowding: i64,
-    pub carrier_organisation: i64,
-    pub carrier_base_organisation: i64,
     pub night: i64,
-    pub combat_duration: i32,
-    pub base_efficiency: i64,
-    pub mission_duration_threshold: i32,
     pub modifiers: [NavalCombatAirEfficiencyModifier; 3],
-    pub modifier_metadata: [[u32; 2]; 2],
+    /// Definition-table flags and feature selector of keys 0x22, 0x23 and
+    /// the static screening sortie keys 0x24, 0x1B6, read whatever holds them.
+    pub modifier_metadata: [[u32; 2]; 4],
     pub feature_flags: u32,
     pub eligibility_callback: u8,
 }
 value_struct!(NavalCombatAirEfficiency {
     source: u8,
-    carrier: u64,
-    first_wing: u64,
     pool_type_flags: u64,
-    task_force: u64,
     mission: i32,
-    mission_factor: i64,
-    is_attacker: u8,
-    country: u32,
     container_present: u8,
     base_crowding: i64,
-    carrier_organisation: i64,
-    carrier_base_organisation: i64,
     night: i64,
-    combat_duration: i32,
-    base_efficiency: i64,
-    mission_duration_threshold: i32,
     modifiers: [NavalCombatAirEfficiencyModifier; 3],
-    modifier_metadata: [[u32; 2]; 2],
+    modifier_metadata: [[u32; 2]; 4],
     feature_flags: u32,
     eligibility_callback: u8
 });
@@ -462,9 +439,12 @@ value_struct!(NavalCombatAirWingKill {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatPlane {
     pub source: u8,
+    /// Side forward-group ordinal, or MAX for a paired-only group.
     pub group_index: u32,
     pub index: u32,
     pub carrier_slot: i32,
+    /// Whether the shared CFEXAir carrier-member pointer is present.
+    pub carrier_member_present: u8,
     pub carrier_state: u32,
     pub air_base: u64,
     pub wings: [Vec<u64>; 2],
@@ -475,16 +455,13 @@ pub struct NavalCombatPlane {
     pub country: u32,
     pub date: i32,
     pub flags: [u8; 2],
-    pub name: Vec<u8>,
     pub variant: u64,
-    pub cached_values: [i64; 6],
     pub naval_hits: Vec<NavalCombatHit>,
     pub air_hits: [Vec<NavalCombatAirHit>; 2],
-    pub names: Vec<Vec<u8>>,
     pub kills: Vec<NavalCombatAirWingKill>,
     pub efficiency: NavalCombatAirEfficiency,
 }
-value_struct!(NavalCombatPlane { source: u8, group_index: u32, index: u32, carrier_slot: i32, carrier_state: u32, air_base: u64, wings: [Vec<u64>;2], initial_planes: i32, current_planes: i32, casualties: i32, time_duration: i32, country: u32, date: i32, flags: [u8; 2], name: Vec<u8>, variant: u64, cached_values: [i64; 6], naval_hits: Vec<NavalCombatHit>, air_hits: [Vec<NavalCombatAirHit>;2], names: Vec<Vec<u8>>, kills: Vec<NavalCombatAirWingKill>, efficiency: NavalCombatAirEfficiency });
+value_struct!(NavalCombatPlane { source: u8, group_index: u32, index: u32, carrier_slot: i32, carrier_member_present: u8, carrier_state: u32, air_base: u64, wings: [Vec<u64>;2], initial_planes: i32, current_planes: i32, casualties: i32, time_duration: i32, country: u32, date: i32, flags: [u8; 2], variant: u64, naval_hits: Vec<NavalCombatHit>, air_hits: [Vec<NavalCombatAirHit>;2], kills: Vec<NavalCombatAirWingKill>, efficiency: NavalCombatAirEfficiency });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatSideDetails {
@@ -762,6 +739,19 @@ typed_codec!(NavalCombatDetailsRow, 64, |row| row.combat as u128,
  |key| Self { combat: key as u64, ..Default::default() },
  |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, day: read_value(Kind::I32, input)?, duration: read_value(Kind::I32, input)?, progress: read_value(Kind::I64, input)?, sides: read_value(Kind::Opaque, input)? }),
  { 0 => (province): U32, 1 => (day): I32, 2 => (duration): I32, 3 => (progress): I64, 4 => (sides): Opaque }, |row| { let _ = row; Ok(()) });
+
+/// Ordered wing-handle occurrences in the native dense CAirBase+0x48 walk for
+/// a base referenced by naval combat. Repeated handles are meaningful. Every
+/// resolved referenced base has a row, including one with an empty wing list.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NavalCombatAirBaseWingHandlesRow {
+    pub base: u64,
+    pub wings: Vec<u64>,
+}
+typed_codec!(NavalCombatAirBaseWingHandlesRow, 64, |row| row.base as u128,
+ |key| Self { base: key as u64, ..Default::default() },
+ |key, input| Ok(Self { base: key as u64, wings: read_value(Kind::U64List, input)? }),
+ { 0 => (wings): U64List }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatShipRow {

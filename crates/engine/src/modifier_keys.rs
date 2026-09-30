@@ -37,8 +37,12 @@ keys! {
     CARRIER_TRAFFIC = 0x22;
     /// Register@1405908e9 (token global 0x1427bfcec).
     CARRIER_NIGHT_TRAFFIC = 0x23;
+    /// Register@1405cd6b0 (token global 0x1427c0018).
+    SORTIE_EFFICIENCY = 0x24;
     /// Register@1405ce744 (token global 0x1427bfed8).
     NAVAL_SPEED_FACTOR = 0x29;
+    /// Register@1405ceb69 (token global 0x1427bfedc).
+    NAVAL_DETECTION = 0x2a;
     /// Register@1405ac460 (token global 0x1427bff64).
     ARMY_SPEED_FACTOR = 0x2b;
     /// Register@14059e8b7 (token global 0x1427bff68).
@@ -69,6 +73,10 @@ keys! {
     AIR_POWER_PROJECTION_FACTOR = 0x75;
     /// Register@14058ED71 (token global 0x1427bff7c).
     AIR_STRATEGIC_BOMBER_DEFENCE_FACTOR = 0x76;
+    /// Register@1405c903b (token global 0x1427bffb0).
+    NAVY_ANTI_AIR_ATTACK = 0x88;
+    /// Register@1405c9460 (token global 0x1427bffb4).
+    NAVY_ANTI_AIR_ATTACK_FACTOR = 0x89;
     /// Register@140562322 (token global 0x1427c0524).
     POWER_BALANCE_DAILY = 0x98;
     /// Register@140562747 (token global 0x1427c0528).
@@ -123,6 +131,8 @@ keys! {
     POSITIONING = 0x1b2;
     /// Register@1405d4abc (token global 0x1427bfc88).
     SCREENING_WITHOUT_SCREENS = 0x1b3;
+    /// Register@1405cdefa (token global 0x1427bfc74).
+    FIGHTER_SORTIE_EFFICIENCY = 0x1b6;
     /// Register@1405d7853 (token global 0x1427c02d8).
     NAVAL_DAMAGE_FACTOR = 0x1b7;
     /// Register@1405d7c78 (token global 0x1427c02dc).

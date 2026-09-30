@@ -769,6 +769,7 @@ impl Captured {
                             && row.definition_valid == counter.definition_valid
                             && row.carrier_air_base == counter.carrier_air_base
                             && row.maximum_strength == counter.maximum_strength
+                            && row.anti_air_base == counter.anti_air_base
                             && row.maximum_organisation == counter.maximum_organisation
                             && row.positive_equipment_flags == counter.positive_equipment_flags
                     })
@@ -785,6 +786,7 @@ impl Captured {
                     definition_valid: r.definition_valid,
                     carrier_air_base: r.carrier_air_base,
                     maximum_strength: r.maximum_strength,
+                    anti_air_base: r.anti_air_base,
                     maximum_organisation: r.maximum_organisation,
                     positive_equipment_flags: r.positive_equipment_flags,
                 }),
@@ -840,7 +842,7 @@ mod tests {
             frame.tables[TABLES[0].index()] = table;
             frame
         };
-        for change in 0..27 {
+        for change in 0..28 {
             let mut current = fixture();
             match change {
                 0 => {}
@@ -883,6 +885,7 @@ mod tests {
                     }
                 }
                 23..=26 => {}
+                27 => current.rows.rows[0].anti_air_base = i64::MIN,
                 _ => unreachable!(),
             }
             let mut baseline = frame(1, 100, fixture().table_inputs(None));
@@ -910,7 +913,7 @@ mod tests {
             if matches!(change, 0 | 14) {
                 assert!(matches!(inputs[0], TableInput::ComparedEqual(_)));
             }
-            if (1..=13).contains(&change) || change == 23 {
+            if (1..=13).contains(&change) || matches!(change, 23 | 27) {
                 let TableInput::ComparedChanges { indices, .. } = &inputs[0] else {
                     panic!("model field {change} must replace its row");
                 };
@@ -1300,6 +1303,7 @@ mod tests {
         row.definition_valid = u8::MAX;
         row.carrier_air_base = u64::MAX;
         row.maximum_strength = i64::MIN;
+        row.anti_air_base = i64::MIN + 1;
         row.maximum_organisation = i64::MAX;
         row.positive_equipment_flags = u64::MAX;
         capture.rows.outcome = Outcome::Rows { len: 1 };
@@ -1334,6 +1338,7 @@ mod tests {
             ),
             (i64::MIN, i64::MAX, u64::MAX)
         );
+        assert_eq!(counter.anti_air_base, i64::MIN + 1);
     }
 }
 

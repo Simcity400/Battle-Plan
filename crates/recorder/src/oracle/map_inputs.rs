@@ -224,7 +224,7 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
     eq(report, "ShipModels Ships key census", seen, parents);
     report.compared("ShipModels", rows.len());
     report.limitation("selected variant identity is independently derived from the saved equipment pool; saved registry definition keys and variant names are compared by VariantDefinitions on its refresh hours, not inferred from hull sprite bytes", "ShipModels.variant names");
-    report.limitation("ship hull/fallback sprite keys, model number, and full formation-selection flags, positive-equipment flag union, definition-valid byte, carrier airbase reference, strength maximum and derived organisation maximum have no direct counterpart in the inspected ship serializer; they cannot be independently checked against this text save", "ShipModels hull_sprite, fallback_sprite, model_number, formation_flags");
+    report.limitation("compared: the ship census against the save and the Ships table, each ship's roster ordinal and, where the saved pool identifies it, its selected variant. Ship hull/fallback sprite keys, model number, the full formation-selection flags, positive-equipment flag union, definition-valid byte, carrier air-base reference, strength maximum, anti-air base (CShip+0x218) and derived organisation maximum have no counterpart in CShip::Serialize@140C2EF80; they cannot be independently checked against this text save", "ShipModels hull_sprite, fallback_sprite, model_number, formation_flags, counter operands");
     Ok(())
 }
 

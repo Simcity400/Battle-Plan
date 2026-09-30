@@ -142,9 +142,44 @@ pub const NAVAL_SUMMARY: Family = Family {
 
 pub const NAVAL_AIR: Family = Family {
     name: "naval air efficiency",
-    keys: &[keys::CARRIER_TRAFFIC, keys::CARRIER_NIGHT_TRAFFIC],
+    keys: &[
+        keys::CARRIER_TRAFFIC,
+        keys::CARRIER_NIGHT_TRAFFIC,
+        keys::SORTIE_EFFICIENCY,
+        keys::FIGHTER_SORTIE_EFFICIENCY,
+    ],
     tokens: &[],
     tables: &[TableId::NavalCombatDetails],
+};
+
+/// The combat window's positioning recomputation: surface detection and the
+/// carrier sortie keys, read through the ship modifier port of 140C29020,
+/// which also reads the weather and critical keys.
+pub const NAVAL_POSITIONING: Family = Family {
+    name: "naval positioning modifiers",
+    keys: &[
+        keys::NAVAL_DETECTION,
+        keys::SORTIE_EFFICIENCY,
+        keys::FIGHTER_SORTIE_EFFICIENCY,
+        keys::NAVY_WEATHER_PENALTY,
+        keys::NAVAL_CRITICAL_EFFECT_FACTOR,
+    ],
+    tokens: &[],
+    tables: &[],
+};
+
+/// The combat window's anti-air recomputation, through the same ship
+/// modifier port.
+pub const NAVAL_ANTI_AIR: Family = Family {
+    name: "naval anti-air modifiers",
+    keys: &[
+        keys::NAVY_ANTI_AIR_ATTACK,
+        keys::NAVY_ANTI_AIR_ATTACK_FACTOR,
+        keys::NAVY_WEATHER_PENALTY,
+        keys::NAVAL_CRITICAL_EFFECT_FACTOR,
+    ],
+    tokens: &[],
+    tables: &[],
 };
 
 pub const RESEARCH: Family = Family {
@@ -312,6 +347,8 @@ pub const FAMILIES: &[Family] = &[
     NAVAL_WEAPONS,
     NAVAL_SUMMARY,
     NAVAL_AIR,
+    NAVAL_POSITIONING,
+    NAVAL_ANTI_AIR,
     RESEARCH,
     COUNTRY_VISIBILITY,
     STATE_VISIBILITY,
@@ -463,7 +500,12 @@ mod tests {
 
     #[test]
     fn mismatch_fixture_refuses_each_viewer_literal_by_name() {
-        for family in [NAVAL_WEAPONS, SHIP_ORGANISATION] {
+        for family in [
+            NAVAL_WEAPONS,
+            SHIP_ORGANISATION,
+            NAVAL_POSITIONING,
+            NAVAL_ANTI_AIR,
+        ] {
             for &key in family.keys {
                 let mut frame = fixture();
                 let TableView::Complete(TableRows::LexicalTokens(tokens)) =

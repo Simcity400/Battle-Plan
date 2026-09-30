@@ -1,17 +1,28 @@
 //! CFEXAir active naval air slot. Constructor141962f80, update141969b60,
 //! grouped icon/count binder1417daa40 and efficiency tooltip141963700.
-use crate::{Memory, cequipment_variant, cnaval_combatant::field, cpdx_array::Array, msvc_string};
+use crate::{Memory, cequipment_variant, cnaval_combatant::field, cpdx_array::Array};
 
 pub const VTABLE_RVA: usize = 0x02a0_a588;
 pub const WING_CAPACITY: usize = 256;
+
+// +88 display name is populated through1419660C0->140C44FC0 (including the
+// expanded carrier name); +A8 tooltip strings through141963460->140F4A4B0
+// ->140BBAA50 localization. Capture deliberately excludes both caches.
+// +C0 is the saved damage multiplier; update141969B60 recomputes the five
+// weighted wing values at +C8..+E8. None is an input to the viewer's naval
+// aircraft display, so the recorder excludes all six values.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     /// Native ordered source:0 active group,1 retained group,2 independent side.
     pub source: u8,
+    /// Side +0xc8 forward-group ordinal; MAX means opponent-paired-only group.
+    /// Independent side planes (source 2) use zero without a group traversal.
     pub group_index: u32,
     pub index: u32,
     pub carrier_slot: i32,
+    /// Raw shared link topology: CFEXAir+0x10 points to a combat member.
+    pub carrier_member_present: u8,
     pub carrier_state: u32,
     pub air_base: u64,
     pub wings: [[u64; WING_CAPACITY]; 2],
@@ -23,12 +34,9 @@ pub struct Row {
     pub country: u32,
     pub date: i32,
     pub flags: [u8; 2],
-    pub name: msvc_string::Text<256>,
     pub variant: u64,
-    pub cached_values: [i64; 6],
     pub naval_hits: [usize; 2],
     pub air_hits: [[usize; 2]; 2],
-    pub names: [usize; 2],
     pub kills: [usize; 2],
     pub efficiency: crate::naval_air_efficiency_inputs::Row,
 }
@@ -40,6 +48,7 @@ impl Default for Row {
             group_index: 0,
             index: 0,
             carrier_slot: 0,
+            carrier_member_present: 0,
             carrier_state: 0,
             air_base: 0,
             wings: [[0; WING_CAPACITY]; 2],
@@ -51,12 +60,9 @@ impl Default for Row {
             country: 0,
             date: 0,
             flags: [0; 2],
-            name: Default::default(),
             variant: 0,
-            cached_values: [0; 6],
             naval_hits: [0; 2],
             air_hits: [[0; 2]; 2],
-            names: [0; 2],
             kills: [0; 2],
             efficiency: Default::default(),
         }
@@ -89,21 +95,6 @@ pub(crate) fn read_hits(
         counts[lane] += array.count as usize;
     }
     let capacity = [buffers.plane_air_hits.len(), buffers.plane_naval_hits.len()];
-    let names = Array::read(
-        memory,
-        pointer
-            .checked_add(0xa8)
-            .ok_or("naval plane names overflow")?,
-        32,
-    )
-    .ok_or("naval plane names array invalid")?;
-    if names.count > 16384 {
-        return Err("naval plane names bound exceeded");
-    }
-    buffers.plane_names_required = buffers
-        .plane_names_required
-        .checked_add(names.count as usize)
-        .ok_or("naval plane names demand overflow")?;
     let mut fits = true;
     for lane in 0..2 {
         buffers.plane_hit_required[lane] = buffers.plane_hit_required[lane]
@@ -113,23 +104,9 @@ pub(crate) fn read_hits(
             .checked_add(counts[lane])
             .is_some_and(|n| n <= capacity[lane]);
     }
-    fits &= buffers
-        .plane_names_len
-        .checked_add(names.count as usize)
-        .is_some_and(|n| n <= buffers.plane_names.len());
     if !fits {
         return Err(DETAIL_ARENA_CAPACITY);
     }
-    row.names = append_entries(
-        memory,
-        pointer,
-        0xa8,
-        32,
-        buffers.plane_names,
-        &mut buffers.plane_names_len,
-        |p| msvc_string::read_text(memory, p).ok_or("naval plane tooltip name invalid"),
-        false,
-    )?;
     row.naval_hits = append_entries(
         memory,
         pointer,
@@ -187,6 +164,7 @@ pub(crate) fn read(
     };
     let mut row = Row {
         carrier_slot,
+        carrier_member_present: u8::from(carrier != 0),
         carrier_state,
         air_base: field(memory, pointer, 0x1c)?,
         initial_planes: field(memory, pointer, 0x58)?,
@@ -196,13 +174,6 @@ pub(crate) fn read(
         country: field(memory, pointer, 0x64)?,
         date: field(memory, pointer, 0x70)?,
         flags: [field(memory, pointer, 0x80)?, field(memory, pointer, 0x81)?],
-        name: msvc_string::read_text(
-            memory,
-            pointer
-                .checked_add(0x88)
-                .ok_or("naval plane name overflow")?,
-        )
-        .ok_or("naval plane name invalid or exceeds capacity")?,
         ..Row::default()
     };
     let variant = field::<u64>(memory, pointer, 0xf0)? as usize;
@@ -235,8 +206,64 @@ pub(crate) fn read(
             .ok_or("naval plane wing unreadable")?;
         }
     }
-    for (index, value) in row.cached_values.iter_mut().enumerate() {
-        *value = field(memory, pointer, 0xc0 + index * 8)?;
-    }
     Ok(row)
+}
+
+#[cfg(test)]
+mod presentation_cache_tests {
+    use super::*;
+
+    #[test]
+    fn active_air_excludes_names_and_unused_weighted_values() {
+        const ENTRY: usize = 0x100;
+        struct Guard(Vec<u8>);
+        impl Memory for Guard {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                assert!(address >= ENTRY + 0xc0 || address + output.len() <= ENTRY + 0x88);
+                assert!(address >= ENTRY + 0xf0 || address + output.len() <= ENTRY + 0xc0);
+                crate::memory::SliceMemory {
+                    base: 0,
+                    bytes: &self.0,
+                }
+                .copy(address, output)
+            }
+        }
+        let mut bytes = vec![0; 0x400];
+        bytes[ENTRY..ENTRY + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[ENTRY + 0x88..ENTRY + 0xc0].fill(0xff);
+        bytes[ENTRY + 0xc0..ENTRY + 0xf0].fill(0xff);
+        let memory = Guard(bytes);
+        let mut row = read(&memory, 0, ENTRY, 0).unwrap();
+        let mut buffers = crate::cfex_member::DetailBuffers {
+            damage: &mut Vec::new(),
+            air_hits: &mut Vec::new(),
+            naval_hits: &mut Vec::new(),
+            lengths: [0; 3],
+            required: [0; 3],
+            planes: &mut [],
+            planes_len: 0,
+            planes_required: 0,
+            plane_air_hits: &mut [],
+            plane_naval_hits: &mut [],
+            plane_hit_lengths: [0; 2],
+            plane_hit_required: [0; 2],
+            plane_kills: &mut [],
+            plane_kills_len: 0,
+            plane_kills_required: 0,
+            weapon_sources: &mut Vec::new(),
+            weapon_terms: &mut Vec::new(),
+            weapon_lengths: [0; 2],
+            weapon_required: [0; 2],
+            commander_inputs: &mut [],
+            commander_inputs_len: 0,
+            commander_inputs_required: 0,
+            side_units: &mut [],
+            side_units_len: 0,
+            side_units_required: 0,
+            summary_countries: &mut Vec::new(),
+            summary_countries_len: 0,
+        };
+        read_hits(&memory, 0, ENTRY, &mut row, &mut buffers).unwrap();
+        assert_eq!(row.wing_counts, [0; 2]);
+    }
 }

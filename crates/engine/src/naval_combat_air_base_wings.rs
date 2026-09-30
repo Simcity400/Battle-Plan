@@ -1,0 +1,479 @@
+//! Dense carrier-air-base wing occurrences used by naval combat calculations.
+//!
+//! `CountAirBaseAircraft` walks `CAirBase+0x48`, not the country-indexed
+//! registration vector at `+0x30`. Save loading can append the same container
+//! twice to the dense vector, so neither containers nor wing handles are
+//! deduplicated here. The caller supplies only bases referenced by captured
+//! naval combats; this is not a census of every base in the game.
+
+use crate::{
+    Memory, cair_base, cair_wing, cair_wing_pool, ccountry_air_container, cpdx_array::Array,
+    creference_registry, read, walk::Outcome,
+};
+use std::{
+    collections::HashSet,
+    hash::{BuildHasherDefault, Hasher},
+};
+
+/// Hashes one handle with the 64-bit finalizer of MurmurHash3. A handle's low
+/// word is its type (`cair_base::TYPE`), the same for every base, so a hasher
+/// whose low output bits follow the low input bits would put every base in
+/// one bucket; the finalizer mixes the id word into all of them.
+#[derive(Default)]
+struct HandleHasher(u64);
+
+impl Hasher for HandleHasher {
+    fn finish(&self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        x ^ (x >> 33)
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
+        }
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
+/// Distinct base handles in first-reference order. Membership is indexed, so
+/// selecting `n` references costs O(n); both allocations are reused across
+/// hours and grown only by [`Self::reserve`] outside the capture.
+#[derive(Clone, Debug, Default)]
+pub struct UniqueHandles {
+    order: Vec<u64>,
+    members: HashSet<u64, BuildHasherDefault<HandleHasher>>,
+}
+
+impl UniqueHandles {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            order: Vec::with_capacity(capacity),
+            members: HashSet::with_capacity_and_hasher(capacity, Default::default()),
+        }
+    }
+    pub fn clear(&mut self) {
+        self.order.clear();
+        self.members.clear();
+    }
+    /// Appends `handle` unless it is already present.
+    pub fn insert(&mut self, handle: u64) {
+        if self.members.insert(handle) {
+            self.order.push(handle);
+        }
+    }
+    pub fn as_slice(&self) -> &[u64] {
+        &self.order
+    }
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+    /// Handles both structures can hold without reallocating.
+    pub fn capacity(&self) -> usize {
+        self.order.capacity().min(self.members.capacity())
+    }
+    pub fn reserve(&mut self, capacity: usize) {
+        self.order
+            .reserve(capacity.saturating_sub(self.order.len()));
+        self.members
+            .reserve(capacity.saturating_sub(self.members.len()));
+    }
+    /// Approximate heap bytes: the order vector and the set's slots with
+    /// their one control byte each.
+    pub fn allocated_bytes(&self) -> usize {
+        self.order.capacity() * size_of::<u64>() + self.members.capacity() * (size_of::<u64>() + 1)
+    }
+}
+
+/// One explicitly resolved combat-referenced base, including an empty base.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Row {
+    pub base: u64,
+    pub wings_start: usize,
+    pub wings_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Walk {
+    pub outcome: Outcome,
+    pub wings_len: usize,
+    /// Complete wing occurrence demand, including rows omitted for space.
+    pub required_wings: usize,
+}
+
+/// Resolve each distinct nonzero base handle and retain the native dense
+/// container/pool/wing iteration order. An unresolved or stale base is unknown,
+/// never an observed empty roster. Rows are atomic when storage is short.
+pub fn walk(
+    memory: &impl Memory,
+    module_base: usize,
+    base_handles: &UniqueHandles,
+    rows: &mut [Row],
+    wings: &mut [u64],
+) -> Walk {
+    let mut state = State::default();
+    let result = (|| {
+        for &handle in base_handles.as_slice() {
+            if handle == 0 || handle as u32 != cair_base::TYPE {
+                return Err("naval combat air base handle invalid");
+            }
+            let pointer = creference_registry::resolve(memory, module_base, handle)?
+                .ok_or("naval combat air base unresolved")?;
+            let start = state.wings_len;
+            let fits = state.len < rows.len();
+            read_base(
+                memory,
+                module_base,
+                handle,
+                pointer,
+                wings,
+                fits,
+                &mut state,
+            )?;
+            if fits && state.required_wings - state.completed_wings <= wings.len() - start {
+                rows[state.len] = Row {
+                    base: handle,
+                    wings_start: start,
+                    wings_len: state.wings_len - start,
+                };
+                state.len += 1;
+            } else {
+                state.wings_len = start;
+                state.unread_rows = state
+                    .unread_rows
+                    .checked_add(1)
+                    .ok_or("naval combat air base omitted count overflow")?;
+            }
+            state.completed_wings = state.required_wings;
+        }
+        Ok(if state.unread_rows == 0 {
+            Outcome::Rows { len: state.len }
+        } else {
+            Outcome::Truncated {
+                len: state.len,
+                unread_rows: state.unread_rows,
+            }
+        })
+    })();
+    Walk {
+        outcome: result.unwrap_or_else(|reason| Outcome::Unavailable { reason }),
+        wings_len: state.wings_len,
+        required_wings: state.required_wings,
+    }
+}
+
+#[derive(Default)]
+struct State {
+    len: usize,
+    unread_rows: u32,
+    wings_len: usize,
+    required_wings: usize,
+    completed_wings: usize,
+}
+
+fn read_base(
+    memory: &impl Memory,
+    module_base: usize,
+    handle: u64,
+    pointer: usize,
+    wings: &mut [u64],
+    store: bool,
+    state: &mut State,
+) -> Result<(), &'static str> {
+    vtable(memory, module_base, pointer, cair_base::VTABLE_RVA)?;
+    if field(memory, pointer, cair_base::HANDLE)? != handle {
+        return Err("naval combat air base registry identity mismatch");
+    }
+    let containers = array(memory, pointer, cair_base::REGISTERED_CONTAINERS)?;
+    for container_index in 0..containers.count {
+        let container = member_pointer(memory, containers, container_index)?;
+        if container == 0 {
+            return Err("dense air base container pointer null");
+        }
+        vtable(
+            memory,
+            module_base,
+            container,
+            ccountry_air_container::VTABLE_RVA,
+        )?;
+        let pools = array(memory, container, ccountry_air_container::POOLS)?;
+        for pool_index in 0..pools.count {
+            let pool = member_pointer(memory, pools, pool_index)?;
+            if pool == 0 {
+                return Err("dense air base pool pointer null");
+            }
+            vtable(memory, module_base, pool, cair_wing_pool::VTABLE_RVA)?;
+            let members = array(memory, pool, cair_wing_pool::WINGS)?;
+            for wing_index in 0..members.count {
+                let wing = member_pointer(memory, members, wing_index)?;
+                if wing == 0 {
+                    return Err("dense air base wing pointer null");
+                }
+                vtable(memory, module_base, wing, cair_wing::VTABLE_RVA)?;
+                vtable(
+                    memory,
+                    module_base,
+                    wing.checked_add(cair_wing::SECONDARY)
+                        .ok_or("dense air base wing pointer overflow")?,
+                    cair_wing::SECONDARY_VTABLE_RVA,
+                )?;
+                let id = field(memory, wing, cair_wing::REFERENCE_TYPE)?;
+                if id == 0 || id as u32 != cair_wing::TYPE {
+                    return Err("dense air base wing handle invalid");
+                }
+                state.required_wings = state
+                    .required_wings
+                    .checked_add(1)
+                    .ok_or("dense air base wing demand overflow")?;
+                if store && let Some(destination) = wings.get_mut(state.wings_len) {
+                    *destination = id;
+                    state.wings_len += 1;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn field(memory: &impl Memory, pointer: usize, offset: usize) -> Result<u64, &'static str> {
+    pointer
+        .checked_add(offset)
+        .and_then(|at| read::<u64>(memory, at))
+        .ok_or("dense air base field unreadable")
+}
+
+fn array(memory: &impl Memory, pointer: usize, offset: usize) -> Result<Array, &'static str> {
+    pointer
+        .checked_add(offset)
+        .and_then(|at| Array::read(memory, at, 8))
+        .ok_or("dense air base vector unreadable or invalid")
+}
+
+fn member_pointer(memory: &impl Memory, array: Array, index: u32) -> Result<usize, &'static str> {
+    array
+        .element(index, 8)
+        .and_then(|at| read::<u64>(memory, at))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .ok_or("dense air base member pointer unreadable or overflow")
+}
+
+fn vtable(
+    memory: &impl Memory,
+    module_base: usize,
+    pointer: usize,
+    rva: usize,
+) -> Result<(), &'static str> {
+    let expected = module_base
+        .checked_add(rva)
+        .ok_or("module address overflow")? as u64;
+    if read::<u64>(memory, pointer) == Some(expected) {
+        Ok(())
+    } else {
+        Err("dense air base object vtable mismatch")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reference_bucket as bucket;
+    use std::collections::BTreeMap;
+
+    const BASE: usize = 0x4000;
+    const EMPTY_BASE: usize = 0x5000;
+    const CONTAINER: usize = 0x6000;
+    const POOL: usize = 0x7000;
+    const WING_A: usize = 0x8000;
+    const WING_B: usize = 0x9000;
+    const DENSE: usize = 0xa000;
+    const POOLS: usize = 0xb000;
+    const WINGS: usize = 0xc000;
+    const BASE_ID: u64 = (1 << 32) | cair_base::TYPE as u64;
+    const EMPTY_ID: u64 = (2 << 32) | cair_base::TYPE as u64;
+    const WING_A_ID: u64 = (3 << 32) | cair_wing::TYPE as u64;
+    const WING_B_ID: u64 = (4 << 32) | cair_wing::TYPE as u64;
+
+    #[derive(Default)]
+    struct Fixture(BTreeMap<usize, u8>);
+
+    impl Fixture {
+        fn put(&mut self, at: usize, bytes: &[u8]) {
+            self.0
+                .extend(bytes.iter().enumerate().map(|(i, &byte)| (at + i, byte)));
+        }
+
+        fn word(&mut self, at: usize, value: u64) {
+            self.put(at, &value.to_le_bytes());
+        }
+
+        fn vector(&mut self, at: usize, data: usize, count: u32) {
+            self.word(at, data as u64);
+            self.put(at + 8, &count.to_le_bytes());
+            self.put(at + 12, &count.to_le_bytes());
+        }
+
+        fn registry_entry(&mut self, handle: u64, pointer: usize) {
+            let hash = handle
+                .rotate_left(32)
+                .wrapping_mul(creference_registry::HASH_MULTIPLIER);
+            let index = ((hash >> 32) as u32 ^ hash as u32) as usize & 7;
+            let at = 0x2000 + index * bucket::STRIDE;
+            self.put(at + bucket::DISTANCE, &[1]);
+            self.word(at + bucket::TYPE, handle);
+            self.word(at + bucket::OBJECT, pointer as u64);
+        }
+
+        fn new() -> Self {
+            let mut f = Self::default();
+            f.word(
+                creference_registry::LOW_ROOTS_RVA + cair_base::TYPE as usize * 8,
+                0x1000,
+            );
+            f.word(0x1000 + creference_registry::ENTRIES, 0x2000);
+            f.put(0x1000 + creference_registry::COUNT, &2u32.to_le_bytes());
+            f.put(0x1000 + creference_registry::MASK, &7u32.to_le_bytes());
+            f.put(0x1000 + creference_registry::OVERFLOW_DISTANCE, &[5]);
+            f.put(0x2000, &[0; 14 * bucket::STRIDE]);
+            f.put(0x2000 + 13 * bucket::STRIDE + bucket::DISTANCE, &[255]);
+            f.registry_entry(BASE_ID, BASE);
+            f.registry_entry(EMPTY_ID, EMPTY_BASE);
+
+            f.word(BASE, cair_base::VTABLE_RVA as u64);
+            f.word(BASE + cair_base::HANDLE, BASE_ID);
+            f.vector(BASE + cair_base::REGISTERED_CONTAINERS, DENSE, 2);
+            f.word(DENSE, CONTAINER as u64);
+            f.word(DENSE + 8, CONTAINER as u64);
+            f.word(EMPTY_BASE, cair_base::VTABLE_RVA as u64);
+            f.word(EMPTY_BASE + cair_base::HANDLE, EMPTY_ID);
+            f.vector(EMPTY_BASE + cair_base::REGISTERED_CONTAINERS, 0, 0);
+
+            f.word(CONTAINER, ccountry_air_container::VTABLE_RVA as u64);
+            f.vector(CONTAINER + ccountry_air_container::POOLS, POOLS, 1);
+            f.word(POOLS, POOL as u64);
+            f.word(POOL, cair_wing_pool::VTABLE_RVA as u64);
+            f.vector(POOL + cair_wing_pool::WINGS, WINGS, 2);
+            f.word(WINGS, WING_A as u64);
+            f.word(WINGS + 8, WING_B as u64);
+            for (pointer, handle) in [(WING_A, WING_A_ID), (WING_B, WING_B_ID)] {
+                f.word(pointer, cair_wing::VTABLE_RVA as u64);
+                f.word(
+                    pointer + cair_wing::SECONDARY,
+                    cair_wing::SECONDARY_VTABLE_RVA as u64,
+                );
+                f.word(pointer + cair_wing::REFERENCE_TYPE, handle);
+            }
+            f
+        }
+    }
+
+    impl Memory for Fixture {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            for (i, byte) in destination.iter_mut().enumerate() {
+                let Some(source) = self.0.get(&(address + i)) else {
+                    return false;
+                };
+                *byte = *source;
+            }
+            true
+        }
+    }
+
+    fn handles(list: &[u64]) -> UniqueHandles {
+        let mut handles = UniqueHandles::default();
+        for &handle in list {
+            handles.insert(handle);
+        }
+        handles
+    }
+
+    #[test]
+    fn unique_handles_keep_first_reference_order_at_country_scale() {
+        for countries in [1_500_u64, 5_000] {
+            let mut unique = UniqueHandles::with_capacity(countries as usize);
+            let reserved = unique.allocated_bytes();
+            // Every country's base referenced three times, interleaved.
+            let started = std::time::Instant::now();
+            for round in 0..3 {
+                for country in 0..countries {
+                    let index = (country * 7 + round) % countries;
+                    unique.insert((index + 1) << 32 | u64::from(cair_base::TYPE));
+                }
+            }
+            let elapsed = started.elapsed();
+            assert_eq!(unique.len(), countries as usize);
+            let expected: Vec<u64> = (0..countries)
+                .map(|country| ((country * 7) % countries + 1) << 32 | u64::from(cair_base::TYPE))
+                .collect();
+            assert_eq!(unique.as_slice(), expected);
+            // Reserved storage absorbs the hour without reallocating.
+            assert_eq!(unique.allocated_bytes(), reserved);
+            unique.clear();
+            assert!(unique.is_empty() && unique.capacity() >= countries as usize);
+            eprintln!(
+                "naval combat air base selection, {countries} distinct bases x3 references: {elapsed:?} (test build)"
+            );
+        }
+    }
+
+    #[test]
+    fn dense_occurrences_keep_duplicates_and_empty_base_row() {
+        let f = Fixture::new();
+        let mut rows = [Row::default(); 2];
+        let mut wings = [0; 4];
+        let walked = walk(&f, 0, &handles(&[BASE_ID, EMPTY_ID]), &mut rows, &mut wings);
+        assert_eq!(walked.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(walked.wings_len, 4);
+        assert_eq!(walked.required_wings, 4);
+        assert_eq!(wings, [WING_A_ID, WING_B_ID, WING_A_ID, WING_B_ID]);
+        assert_eq!(
+            rows,
+            [
+                Row {
+                    base: BASE_ID,
+                    wings_start: 0,
+                    wings_len: 4,
+                },
+                Row {
+                    base: EMPTY_ID,
+                    wings_start: 4,
+                    wings_len: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn short_storage_keeps_rows_atomic_and_unresolved_base_fails_closed() {
+        let mut f = Fixture::new();
+        let mut rows = [Row::default(); 2];
+        let mut wings = [0; 3];
+        let walked = walk(&f, 0, &handles(&[BASE_ID, EMPTY_ID]), &mut rows, &mut wings);
+        assert_eq!(
+            walked.outcome,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1,
+            }
+        );
+        assert_eq!(walked.required_wings, 4);
+        assert_eq!(walked.wings_len, 0);
+        assert_eq!(rows[0].base, EMPTY_ID);
+        assert_eq!(rows[0].wings_len, 0);
+
+        f.registry_entry(BASE_ID, 0);
+        assert_eq!(
+            walk(&f, 0, &handles(&[BASE_ID]), &mut rows, &mut wings).outcome,
+            Outcome::Unavailable {
+                reason: "naval combat air base unresolved",
+            }
+        );
+    }
+}

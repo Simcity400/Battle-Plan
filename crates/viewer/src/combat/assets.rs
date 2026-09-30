@@ -70,6 +70,10 @@ pub struct Assets {
     pub inline_flag_size: [f32; 2],
     /// The range of convoy weapon values the content allows, fixed5.
     pub convoy_weapon_bound: Result<[i64; 2], String>,
+    /// The naval combat defines the window's positioning, screening and anti-air read;
+    /// `None`, with a warning, when the content's defines do not load.
+    pub naval_defines: Option<installed_content::naval_combat_defines::Defines>,
+    pub(super) naval_air_groups: super::naval_air_groups::Content,
     /// The global `textcolors` table, as the game's last block read left it.
     pub text_colors: TextColors,
     /// The land window's defines, or why the content lacks them.
@@ -811,6 +815,16 @@ impl Assets {
                 "Naval weapon totals with live convoys stay dash: the convoy equipment's weapon values are unknown ({reason})."
             ));
         }
+        let naval_defines = match installed_content::naval_combat_defines::read(layers) {
+            Ok(defines) => Some(defines),
+            Err(error) => {
+                warnings.push(format!(
+                    "Naval combat defines: {error}; positioning, screening and anti-air are unavailable."
+                ));
+                None
+            }
+        };
+        let naval_air_groups = super::naval_air_groups::Content::load(layers, &mut warnings);
         Ok(Self {
             windows,
             sprites,
@@ -821,6 +835,8 @@ impl Assets {
             small_flags: Arc::clone(small),
             inline_flag_size: small_cell.map(|side| side as f32),
             convoy_weapon_bound,
+            naval_defines,
+            naval_air_groups,
             text_colors: interface.registry.text_colors.clone(),
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),

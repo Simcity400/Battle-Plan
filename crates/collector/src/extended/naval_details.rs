@@ -8,16 +8,22 @@ use crate::{
 use engine::naval_air_efficiency_inputs;
 use engine::{
     Memory, cfex_air, cfex_damage_entry, cfex_member, cnaval_combat, naval_combat_air_hit,
-    naval_combat_hit, naval_ship_modifier_inputs, walk::Outcome,
+    naval_combat_air_base_wings, naval_combat_hit, naval_ship_modifier_inputs, walk::Outcome,
 };
 use replay::{
     frame::TableView,
     rows::{self, TableId, tables},
 };
-pub const N: usize = 2;
-pub const TABLES: [TableId; N] = [TableId::NavalCombatDetails, TableId::NavalCombatShips];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("shared naval combat registry census", 0, &[0, 1])];
+pub const N: usize = 3;
+pub const TABLES: [TableId; N] = [
+    TableId::NavalCombatDetails,
+    TableId::NavalCombatShips,
+    TableId::NavalCombatAirBaseWingHandles,
+];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
+    ("shared naval combat registry census", 0, &[0, 1]),
+    ("dense combat air base wing occurrences", 2, &[2]),
+];
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     details: usize,
@@ -29,11 +35,12 @@ pub struct Capacities {
     planes: usize,
     plane_air: usize,
     plane_hits: usize,
-    plane_names: usize,
     plane_kills: usize,
     commanders: usize,
     weapon_sources: usize,
     weapon_terms: usize,
+    dense_bases: usize,
+    dense_wings: usize,
     side_units: usize,
 }
 impl Default for Capacities {
@@ -48,11 +55,12 @@ impl Default for Capacities {
             planes: 128,
             plane_air: 256,
             plane_hits: 512,
-            plane_names: 512,
             plane_kills: 1024,
             commanders: 16,
             weapon_sources: 4096,
             weapon_terms: 16384,
+            dense_bases: 128,
+            dense_wings: 1024,
             side_units: 256,
         }
     }
@@ -68,11 +76,14 @@ pub struct Captured {
     planes: Arena<cfex_air::Row>,
     plane_air: Arena<naval_combat_air_hit::Row>,
     plane_hits: Arena<naval_combat_hit::Row>,
-    plane_names: Arena<engine::msvc_string::Text<256>>,
     plane_kills: Arena<naval_air_efficiency_inputs::WingKill>,
     commanders: Arena<engine::naval_commander_inputs::Row>,
     weapon_sources: Arena<naval_ship_modifier_inputs::SourceRow>,
     weapon_terms: Arena<naval_ship_modifier_inputs::ModifierTerm>,
+    /// Air bases the hour's combats reference, in first-reference order.
+    dense_bases: CaptureRows<naval_combat_air_base_wings::Row>,
+    dense_wings: Arena<u64>,
+    base_handles: naval_combat_air_base_wings::UniqueHandles,
     /// Each side's task-force handles (`CCombatant+0x20`), grown after the hour.
     side_units: Arena<u64>,
     /// Side country tags; grown by the worker at admission, retained on recycle.
@@ -92,11 +103,12 @@ impl Captured {
             planes: 0,
             plane_air: 0,
             plane_hits: 0,
-            plane_names: 0,
             plane_kills: 0,
             commanders: 0,
             weapon_sources: 0,
             weapon_terms: 0,
+            dense_bases: 0,
+            dense_wings: 0,
             side_units: 0,
         })
     }
@@ -113,11 +125,13 @@ impl Captured {
             planes: Arena::new(c.planes),
             plane_air: Arena::new(c.plane_air),
             plane_hits: Arena::new(c.plane_hits),
-            plane_names: Arena::new(c.plane_names),
             plane_kills: Arena::new(c.plane_kills),
             commanders: Arena::new(c.commanders),
             weapon_sources: Arena::new(c.weapon_sources),
             weapon_terms: Arena::new(c.weapon_terms),
+            dense_bases: CaptureRows::new(c.dense_bases),
+            dense_wings: Arena::new(c.dense_wings),
+            base_handles: naval_combat_air_base_wings::UniqueHandles::with_capacity(c.dense_bases),
             side_units: Arena::new(c.side_units),
             summary_countries: Vec::new(),
             summary_countries_len: 0,
@@ -132,11 +146,13 @@ impl Captured {
         self.planes.reset();
         self.plane_air.reset();
         self.plane_hits.reset();
-        self.plane_names.reset();
         self.plane_kills.reset();
         self.commanders.reset();
         self.weapon_sources.reset();
         self.weapon_terms.reset();
+        self.dense_bases.reset();
+        self.dense_wings.reset();
+        self.base_handles.clear();
         self.side_units.reset();
         self.summary_countries_len = 0;
         self.required_groups = 0;
@@ -150,11 +166,13 @@ impl Captured {
             + self.planes.allocated_bytes()
             + self.plane_air.allocated_bytes()
             + self.plane_hits.allocated_bytes()
-            + self.plane_names.allocated_bytes()
             + self.plane_kills.allocated_bytes()
             + self.commanders.allocated_bytes()
             + self.weapon_sources.allocated_bytes()
             + self.weapon_terms.allocated_bytes()
+            + self.dense_bases.allocated_bytes()
+            + self.dense_wings.allocated_bytes()
+            + self.base_handles.allocated_bytes()
             + self.side_units.allocated_bytes()
             + self.groups.capacity() * size_of::<usize>()
             + self.summary_countries.capacity() * size_of::<u32>()
@@ -179,12 +197,74 @@ impl Captured {
         self.planes.grow(&mut c.planes);
         self.plane_air.grow(&mut c.plane_air);
         self.plane_hits.grow(&mut c.plane_hits);
-        self.plane_names.grow(&mut c.plane_names);
         self.plane_kills.grow(&mut c.plane_kills);
         self.commanders.grow(&mut c.commanders);
         self.weapon_sources.grow(&mut c.weapon_sources);
         self.weapon_terms.grow(&mut c.weapon_terms);
+        self.dense_bases.grow(&mut c.dense_bases);
+        self.dense_wings.grow(&mut c.dense_wings);
+        if self.base_handles.len() >= c.dense_bases.saturating_sub(c.dense_bases / 4) {
+            grow_capacity(&mut c.dense_bases, self.base_handles.len().saturating_add(1));
+        }
+        if self.base_handles.capacity() < c.dense_bases {
+            self.base_handles.reserve(c.dense_bases);
+        }
         self.side_units.grow(&mut c.side_units);
+    }
+
+    /// Select only bases used by native naval-combat calculations in this
+    /// complete hourly combat census. Positions read active forward planes;
+    /// surface detection reads live ship carrier bases. The same base appears
+    /// once in the capture table even if multiple combat objects reference it.
+    fn select_dense_base_handles(&mut self) -> Result<(), &'static str> {
+        let (Outcome::Rows { len: details_len }, Outcome::Rows { len: ships_len }) =
+            (self.details.outcome, self.ships.outcome)
+        else {
+            return Err("naval combat air base source incomplete");
+        };
+        let details = self
+            .details
+            .rows
+            .get(..details_len)
+            .ok_or("naval combat air base detail source out of bounds")?;
+        let ships = self
+            .ships
+            .rows
+            .get(..ships_len)
+            .ok_or("naval combat air base ship source out of bounds")?;
+        let planes = self
+            .planes
+            .first
+            .get(..self.planes.len)
+            .ok_or("naval combat air base plane source out of bounds")?;
+        self.base_handles.clear();
+        for detail in details {
+            for side in &detail.sides {
+                let [start, count] = side.planes;
+                let end = start
+                    .checked_add(count)
+                    .ok_or("naval combat air base plane span overflow")?;
+                let source = planes
+                    .get(start..end)
+                    .ok_or("naval combat air base plane span out of bounds")?;
+                for plane in source {
+                    if plane.source == 0
+                        && plane.group_index != u32::MAX
+                        && plane.flags[1] == 0
+                        && matches!(plane.efficiency.source, 2 | 3)
+                    {
+                        self.base_handles.insert(plane.air_base);
+                    }
+                }
+            }
+        }
+        for ship in ships {
+            let handle = ship.weapon_context.air_base;
+            if ship.live_ship != 0 && handle != 0 {
+                self.base_handles.insert(handle);
+            }
+        }
+        Ok(())
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let mut read_phase = crate::read_accounting::table(TABLES[0]);
@@ -202,9 +282,6 @@ impl Captured {
             plane_naval_hits: &mut self.plane_hits.first,
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_names: &mut self.plane_names.first,
-            plane_names_len: 0,
-            plane_names_required: 0,
             plane_kills: &mut self.plane_kills.first,
             plane_kills_len: 0,
             plane_kills_required: 0,
@@ -248,8 +325,6 @@ impl Captured {
         self.plane_air.required = buffers.plane_hit_required[0];
         self.plane_hits.len = buffers.plane_hit_lengths[1];
         self.plane_hits.required = buffers.plane_hit_required[1];
-        self.plane_names.len = buffers.plane_names_len;
-        self.plane_names.required = buffers.plane_names_required;
         self.plane_kills.len = buffers.plane_kills_len;
         self.plane_kills.required = buffers.plane_kills_required;
         self.commanders.len = buffers.commander_inputs_len;
@@ -262,13 +337,35 @@ impl Captured {
         self.weapon_terms.required = buffers.weapon_required[1];
         self.summary_countries_len = buffers.summary_countries_len;
         self.required_groups = first.capture.required_group_capacity;
-        let mut ticks = first.read_ticks;
+        let dense_started = qpc();
+        read_phase.select(TABLES[2]);
+        self.dense_bases.outcome = match self.select_dense_base_handles() {
+            Ok(()) => {
+                let walked = naval_combat_air_base_wings::walk(
+                    memory,
+                    base,
+                    &self.base_handles,
+                    &mut self.dense_bases.rows,
+                    &mut self.dense_wings.first,
+                );
+                self.dense_wings.len = walked.wings_len;
+                self.dense_wings.required = walked.required_wings;
+                walked.outcome
+            }
+            Err(reason) => Outcome::Unavailable { reason },
+        };
+        let mut ticks = [first.read_ticks[0], first.read_ticks[1], 0];
+        ticks[2] = qpc().saturating_sub(dense_started).max(0) as u64;
         let total = qpc().saturating_sub(capture_started).max(0) as u64;
         ticks[0] = ticks[0].saturating_add(total.saturating_sub(ticks.iter().sum::<u64>()));
         ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.details.outcome, self.ships.outcome]
+        [
+            self.details.outcome,
+            self.ships.outcome,
+            self.dense_bases.outcome,
+        ]
     }
     pub fn tables(&self) -> [TableView; N] {
         let out = self.outcomes();
@@ -295,7 +392,6 @@ impl Captured {
                         summary: rows::NavalCombatSummaryInputs {
                             recent_join_penalty: s.summary.recent_join_penalty,
                             escort_bonus: s.summary.escort_bonus,
-                            is_attacker: s.summary.is_attacker,
                             countries: range(&self.summary_countries, s.summary.countries)
                                 .to_vec(),
                             secondary_countries: range(
@@ -312,8 +408,6 @@ impl Captured {
                             modifier_metadata: s.summary.modifier_metadata,
                             feature_flags: s.summary.feature_flags,
                             eligibility_callback: s.summary.eligibility_callback,
-                            fixed_defines: s.summary.fixed_defines,
-                            integer_defines: s.summary.integer_defines,
                         },
                         planes: range(&self.planes.first, s.planes)
                             .iter()
@@ -322,6 +416,7 @@ impl Captured {
                                 group_index: p.group_index,
                                 index: p.index,
                                 carrier_slot: p.carrier_slot,
+                                carrier_member_present: p.carrier_member_present,
                                 carrier_state: p.carrier_state,
                                 air_base: p.air_base,
                                 casualties: p.casualties,
@@ -334,31 +429,14 @@ impl Captured {
                                 country: p.country,
                                 date: p.date,
                                 flags: p.flags,
-                                name: p.name.as_bytes().to_vec(),
                                 variant: p.variant,
-                                cached_values: p.cached_values,
                                 efficiency: rows::NavalCombatAirEfficiency {
                                     source: p.efficiency.source,
-                                    carrier: p.efficiency.carrier,
-                                    first_wing: p.efficiency.first_wing,
                                     pool_type_flags: p.efficiency.pool_type_flags,
-                                    task_force: p.efficiency.task_force,
                                     mission: p.efficiency.mission,
-                                    mission_factor: p.efficiency.mission_factor,
-                                    is_attacker: p.efficiency.is_attacker,
-                                    country: p.efficiency.country,
                                     container_present: p.efficiency.container_present,
                                     base_crowding: p.efficiency.base_crowding,
-                                    carrier_organisation: p.efficiency.carrier_organisation,
-                                    carrier_base_organisation: p
-                                        .efficiency
-                                        .carrier_base_organisation,
                                     night: p.efficiency.night,
-                                    combat_duration: p.efficiency.combat_duration,
-                                    base_efficiency: p.efficiency.base_efficiency,
-                                    mission_duration_threshold: p
-                                        .efficiency
-                                        .mission_duration_threshold,
                                     modifiers: p.efficiency.modifiers.map(|m| {
                                         rows::NavalCombatAirEfficiencyModifier {
                                             raw: m.raw,
@@ -378,10 +456,6 @@ impl Captured {
                                         count: k.count,
                                     })
                                     .collect(),
-                                names: range(&self.plane_names.first, p.names)
-                                    .iter()
-                                    .map(|n| n.as_bytes().to_vec())
-                                    .collect(),
                                 air_hits: p.air_hits.map(|span| {
                                     range(&self.plane_air.first, span)
                                         .iter()
@@ -398,6 +472,14 @@ impl Captured {
                 }
             }),
             table::<tables::NavalCombatShips, _>(out[1], &self.ships.rows, |r| self.ship(r)),
+            table::<tables::NavalCombatAirBaseWingHandles, _>(
+                out[2],
+                &self.dense_bases.rows,
+                |r| rows::NavalCombatAirBaseWingHandlesRow {
+                    base: r.base,
+                    wings: range(&self.dense_wings.first, [r.wings_start, r.wings_len]).to_vec(),
+                },
+            ),
         ]
     }
     fn ship(&self, r: &cfex_member::DetailsRow) -> rows::NavalCombatShipRow {
@@ -592,6 +674,111 @@ fn naval_hit(v: &naval_combat_hit::Row) -> rows::NavalCombatHit {
 mod tests {
     use super::*;
     #[test]
+    fn dense_base_selection_uses_only_active_forward_planes_and_live_carrier_ships() {
+        let mut c = Captured::with_capacities(&Capacities::default());
+        c.details.outcome = Outcome::Rows { len: 1 };
+        c.ships.outcome = Outcome::Rows { len: 2 };
+        c.details.rows[0].sides[0].planes = [0, 3];
+        c.planes.len = 3;
+        for (index, plane) in c.planes.first[..3].iter_mut().enumerate() {
+            plane.air_base = (index as u64 + 1) << 32 | 65;
+            plane.efficiency.source = 2;
+        }
+        c.planes.first[1].source = 1;
+        c.planes.first[2].flags[1] = 1;
+        c.ships.rows[0].live_ship = 1;
+        c.ships.rows[0].weapon_context.air_base = c.planes.first[0].air_base;
+        c.ships.rows[1].live_ship = 1;
+        c.ships.rows[1].weapon_context.air_base = 4 << 32 | 65;
+        c.select_dense_base_handles().unwrap();
+        assert_eq!(c.base_handles.as_slice(), [1 << 32 | 65, 4 << 32 | 65]);
+
+        c.dense_bases.outcome = Outcome::Rows { len: 2 };
+        c.dense_bases.rows[0] = naval_combat_air_base_wings::Row {
+            base: c.base_handles.as_slice()[0],
+            wings_start: 0,
+            wings_len: 2,
+        };
+        c.dense_bases.rows[1] = naval_combat_air_base_wings::Row {
+            base: c.base_handles.as_slice()[1],
+            wings_start: 2,
+            wings_len: 0,
+        };
+        c.dense_wings.first[..2].copy_from_slice(&[69, 69]);
+        c.dense_wings.len = 2;
+        let TableView::Complete(rows::TableRows::NavalCombatAirBaseWingHandles(rows)) =
+            &c.tables()[2]
+        else {
+            panic!("complete dense base rows not projected");
+        };
+        assert_eq!(rows[0].wings, [69, 69]);
+        assert!(rows[1].wings.is_empty());
+
+        c.ships.outcome = Outcome::Unavailable {
+            reason: "ship census incomplete",
+        };
+        assert_eq!(
+            c.select_dense_base_handles(),
+            Err("naval combat air base source incomplete")
+        );
+    }
+
+    /// One carrier base per country, each referenced by two active planes on
+    /// both sides of a combat and by its live carrier ship: selection is one
+    /// indexed membership test per reference, in first-reference order, with
+    /// no allocation once the hour's capacity is reserved.
+    #[test]
+    fn dense_base_selection_is_linear_at_country_scale() {
+        for countries in [1_500_usize, 5_000] {
+            let planes = 2 * countries;
+            let mut c = Captured::with_capacities(&Capacities {
+                details: 1,
+                ships: countries,
+                planes,
+                dense_bases: countries,
+                ..Capacities::default()
+            });
+            let base = |country: usize| ((country as u64 + 1) << 32) | 65;
+            c.details.outcome = Outcome::Rows { len: 1 };
+            c.details.rows[0].sides[0].planes = [0, countries];
+            c.details.rows[0].sides[1].planes = [countries, countries];
+            c.planes.len = planes;
+            for (index, plane) in c.planes.first[..planes].iter_mut().enumerate() {
+                // Side 1 references the same bases in reverse.
+                let country = if index < countries {
+                    index
+                } else {
+                    planes - 1 - index
+                };
+                plane.air_base = base(country);
+                plane.efficiency.source = 3;
+            }
+            c.ships.outcome = Outcome::Rows { len: countries };
+            for (country, ship) in c.ships.rows[..countries].iter_mut().enumerate() {
+                ship.live_ship = 1;
+                ship.weapon_context.air_base = base(country);
+            }
+            let reserved = c.allocated_bytes();
+            let started = std::time::Instant::now();
+            c.select_dense_base_handles().unwrap();
+            let elapsed = started.elapsed();
+            assert_eq!(c.base_handles.len(), countries);
+            assert!(
+                c.base_handles
+                    .as_slice()
+                    .iter()
+                    .enumerate()
+                    .all(|(country, &handle)| handle == base(country))
+            );
+            assert_eq!(c.allocated_bytes(), reserved);
+            eprintln!(
+                "naval combat air base selection, {countries} countries ({} references): {elapsed:?} (test build)",
+                planes + countries
+            );
+        }
+    }
+
+    #[test]
     fn arena_pressure_grows_primary_storage_and_preserves_rows() {
         let mut capacity = Capacities {
             details: 1,
@@ -603,11 +790,12 @@ mod tests {
             planes: 1,
             plane_air: 1,
             plane_hits: 1,
-            plane_names: 1,
             plane_kills: 1,
             commanders: 1,
             weapon_sources: 1,
             weapon_terms: 1,
+            dense_bases: 1,
+            dense_wings: 1,
             side_units: 1,
         };
         let mut captured = Captured::with_capacities(&capacity);
@@ -636,7 +824,6 @@ mod tests {
         captured.plane_air.first[0].variant = 111;
         captured.plane_air.required = 9;
         captured.plane_hits.required = 5;
-        captured.plane_names.required = 6;
         captured.plane_kills.required = 7;
         captured.commanders.required = 3;
         captured.side_units.required = 4;
@@ -655,7 +842,7 @@ mod tests {
         );
         assert_eq!(Captured::vacant().allocated_bytes(), 0);
         assert!(capacity.plane_air >= 9 && capacity.plane_hits >= 5);
-        assert!(capacity.plane_names >= 6 && capacity.plane_kills >= 7 && capacity.commanders >= 3);
+        assert!(capacity.plane_kills >= 7 && capacity.commanders >= 3);
         assert!(capacity.side_units >= 4 && captured.side_units.first.len() == capacity.side_units);
         assert_eq!(captured.plane_air.first.len(), capacity.plane_air);
         assert_eq!(captured.details.rows[0].combat, 42);
@@ -705,6 +892,7 @@ mod tests {
         let [
             TableView::Complete(rows::TableRows::NavalCombatDetails(details)),
             TableView::Complete(rows::TableRows::NavalCombatShips(ships)),
+            _,
         ] = c.tables()
         else {
             panic!("complete naval operand rows were not projected")
