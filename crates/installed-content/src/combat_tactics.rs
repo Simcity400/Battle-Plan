@@ -293,7 +293,8 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
 
 /// Parse one combat-tactics file without requiring a game installation.
 pub fn parse(bytes: &[u8]) -> Database {
-    let read = native::read(bytes, Node::Top, &mut shape);
+    // 1406B3690 constructs the lexer in mode 0 (CTextLexer::constructor 1424A63A0).
+    let read = native::read(bytes, native::Mode::KeepMark, Node::Top, &mut shape);
     let mut database = Database {
         logged: read
             .misreads

@@ -90,24 +90,30 @@ fn pool_field(field: &native::Field<'_>) -> Shape<Node> {
 
 /// One file as 140A5AF10 reads it.
 fn read_file(input: &[u8]) -> native::Read {
-    native::read(input, Node::Top, &mut |node, field| match node {
-        Node::Top => Shape::Object(Node::Names),
-        Node::Names => match field.keyword().as_deref() {
-            Some(b"male" | b"female") => Shape::Object(Node::Pool),
-            Some(b"ace") => Shape::Object(Node::Ace),
-            _ => pool_field(field),
+    // 140A5C200 constructs the lexer in mode 1 (CTextLexer 1424A6370).
+    native::read(
+        input,
+        native::Mode::SkipMark,
+        Node::Top,
+        &mut |node, field| match node {
+            Node::Top => Shape::Object(Node::Names),
+            Node::Names => match field.keyword().as_deref() {
+                Some(b"male" | b"female") => Shape::Object(Node::Pool),
+                Some(b"ace") => Shape::Object(Node::Ace),
+                _ => pool_field(field),
+            },
+            Node::Pool => pool_field(field),
+            // The `operation` loop: each entry's key through ParseTokenInt32,
+            // its value ReadStringList.
+            Node::Operation => Shape::List,
+            // SAce::vf4 (140A5C710): `name`, `type`, `surname`, `callsign`
+            // ReadStringInto, `is_female` read_bool_field.
+            Node::Ace => match field.keyword().as_deref() {
+                Some(b"name" | b"type" | b"surname" | b"callsign" | b"is_female") => Shape::One,
+                _ => Shape::Skip,
+            },
         },
-        Node::Pool => pool_field(field),
-        // The `operation` loop: each entry's key through ParseTokenInt32,
-        // its value ReadStringList.
-        Node::Operation => Shape::List,
-        // SAce::vf4 (140A5C710): `name`, `type`, `surname`, `callsign`
-        // ReadStringInto, `is_female` read_bool_field.
-        Node::Ace => match field.keyword().as_deref() {
-            Some(b"name" | b"type" | b"surname" | b"callsign" | b"is_female") => Shape::One,
-            _ => Shape::Skip,
-        },
-    })
+    )
 }
 
 /// A list's entries as ReadStringList stores them (ReadStringInto, check on).

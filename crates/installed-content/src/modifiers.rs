@@ -663,17 +663,22 @@ mod tests {
             Modifier(Node),
         }
         let mut undecided = Vec::new();
-        let read = native::read(text, Test::Top, &mut |node, field| match node {
-            Test::Top => match field.keyword().as_deref() {
-                Some(b"block") => Shape::Object(Test::Modifier(Node::Modifier)),
-                Some(b"t") => Shape::Object(Test::Modifier(Node::Targeted)),
-                Some(b"e") => Shape::Object(Test::Modifier(Node::EquipmentBonuses)),
-                _ => Shape::Skip,
+        let read = native::read(
+            text,
+            native::Mode::KeepMark,
+            Test::Top,
+            &mut |node, field| match node {
+                Test::Top => match field.keyword().as_deref() {
+                    Some(b"block") => Shape::Object(Test::Modifier(Node::Modifier)),
+                    Some(b"t") => Shape::Object(Test::Modifier(Node::Targeted)),
+                    Some(b"e") => Shape::Object(Test::Modifier(Node::EquipmentBonuses)),
+                    _ => Shape::Skip,
+                },
+                Test::Modifier(node) => {
+                    shape(node, field, registry, &mut undecided).map(Test::Modifier)
+                }
             },
-            Test::Modifier(node) => {
-                shape(node, field, registry, &mut undecided).map(Test::Modifier)
-            }
-        });
+        );
         let misreads = read.misreads.iter().map(ToString::to_string).collect();
         (read.items, misreads, undecided)
     }

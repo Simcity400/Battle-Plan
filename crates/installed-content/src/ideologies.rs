@@ -140,36 +140,42 @@ fn group_field(field: &Field<'_>) -> Shape<Node> {
 /// One file as its reader reads it, and the misreads and refusal to note.
 fn read_file(input: &[u8]) -> (native::Read, Vec<modifiers::Undecided>) {
     let mut undecided = Vec::new();
-    let read = native::read(input, Node::Top, &mut |node, field| match node {
-        Node::Top if field.keyword_is("ideologies") => Shape::Object(Node::Groups),
-        // ReportUnexpectedToken (1424AD100).
-        Node::Top => Shape::Skip,
-        // Each key a CIdeologyGroup read through its Read (CPersistent::Read).
-        Node::Groups => Shape::Object(Node::Group),
-        Node::Group => group_field(field),
-        // Each key a CIdeology read through its Read (CPersistent::Read).
-        Node::Types => Shape::Object(Node::Ideology),
-        // `color` 0x56 its CColor (+0x100), `can_be_randomly_selected`
-        // 0x4CCF read_bool_field; any other key goes to its CModifier
-        // (+0x40, CIdeology::CIdeology 14117BEE0) through the modifier's
-        // ReadToken (vtable +0x20, 1406039A0 -> 1406031A0).
-        Node::Ideology => match field.keyword().as_deref() {
-            Some(b"color") => Shape::Color,
-            Some(b"can_be_randomly_selected") => Shape::One,
-            _ => modifiers::shape(
-                modifiers::Node::Modifier,
-                field,
-                modifiers::UNKNOWN,
-                &mut undecided,
-            )
-            .map(Node::Modifier),
+    // constructs the lexer in mode 0 (CTextLexer 1424A6370).
+    let read = native::read(
+        input,
+        native::Mode::KeepMark,
+        Node::Top,
+        &mut |node, field| match node {
+            Node::Top if field.keyword_is("ideologies") => Shape::Object(Node::Groups),
+            // ReportUnexpectedToken (1424AD100).
+            Node::Top => Shape::Skip,
+            // Each key a CIdeologyGroup read through its Read (CPersistent::Read).
+            Node::Groups => Shape::Object(Node::Group),
+            Node::Group => group_field(field),
+            // Each key a CIdeology read through its Read (CPersistent::Read).
+            Node::Types => Shape::Object(Node::Ideology),
+            // `color` 0x56 its CColor (+0x100), `can_be_randomly_selected`
+            // 0x4CCF read_bool_field; any other key goes to its CModifier
+            // (+0x40, CIdeology::CIdeology 14117BEE0) through the modifier's
+            // ReadToken (vtable +0x20, 1406039A0 -> 1406031A0).
+            Node::Ideology => match field.keyword().as_deref() {
+                Some(b"color") => Shape::Color,
+                Some(b"can_be_randomly_selected") => Shape::One,
+                _ => modifiers::shape(
+                    modifiers::Node::Modifier,
+                    field,
+                    modifiers::UNKNOWN,
+                    &mut undecided,
+                )
+                .map(Node::Modifier),
+            },
+            Node::Rule(rule) => rule_field(rule, field).map(Node::Rule),
+            Node::Modifier(modifier) => {
+                modifiers::shape(modifier, field, modifiers::UNKNOWN, &mut undecided)
+                    .map(Node::Modifier)
+            }
         },
-        Node::Rule(rule) => rule_field(rule, field).map(Node::Rule),
-        Node::Modifier(modifier) => {
-            modifiers::shape(modifier, field, modifiers::UNKNOWN, &mut undecided)
-                .map(Node::Modifier)
-        }
-    });
+    );
     (read, undecided)
 }
 

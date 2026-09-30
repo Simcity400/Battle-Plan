@@ -25,7 +25,8 @@ pub struct TagAliases {
 
 /// One file's alias names, and where its reading stops short.
 fn read_file(input: &[u8]) -> (Vec<String>, Option<String>) {
-    let read = native::read(input, (), &mut |(), field| {
+    // 140187340 constructs the lexer in mode 0 (CTextLexer 1424A6370).
+    let read = native::read(input, native::Mode::KeepMark, (), &mut |(), field| {
         if field.opens() {
             Shape::ByKey
         } else {

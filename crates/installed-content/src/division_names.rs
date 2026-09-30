@@ -281,10 +281,17 @@ impl Database {
         };
         // The line is the unsettled block's `{`: every token after it is at
         // or below it.
-        let mut names: BTreeSet<Vec<u8>> = native::lex(bytes)
+        // 1409B8510 constructs the lexer in mode 1 (CTextLexer 1424A6370).
+        let mut names: BTreeSet<Vec<u8>> = native::lex(bytes, native::Mode::SkipMark)
             .tokens
             .iter()
-            .filter(|token| token.line >= unsettled.line)
+            // A read that returned 0 names nothing unless it ended a bare
+            // token: the `?` or comment marker it may keep is no name.
+            .filter(|token| {
+                token.line >= unsettled.line
+                    && !(token.kind == parser::Kind::End
+                        && matches!(token.text.as_slice(), b"" | b"?" | b"!" | b"#" | b";"))
+            })
             .map(|token| fold(group_name(&token.text)))
             .collect();
         names.extend(read.items.last().map(|item| fold(group_key(item))));
@@ -344,47 +351,53 @@ enum Node {
 /// group through CPersistent::Read (vtable +0x18) whatever its value.
 /// Keyword ids from register_authored_keys (140082CB0).
 fn read_file(bytes: &[u8]) -> native::Read {
-    native::read(bytes, Node::Top, &mut |node, field| match node {
-        Node::Top => Shape::Object(Node::Group),
-        Node::Group => match field.keyword().as_deref() {
-            // ReadStringInto (1424ABB50): `name` 0x1B, `prefix` 0x30F8,
-            // `fallback_name` 0x38E0.
-            Some(b"name" | b"prefix" | b"fallback_name") => Shape::One,
-            // ReadStringList (1401426E0): `unique` 0x30FA, `division_types`
-            // 0x38DD, `link_numbering_with` 0x38DE, `for_countries` 0x38E4,
-            // `ship_types` 0x3C84.
-            Some(
-                b"unique"
-                | b"division_types"
-                | b"link_numbering_with"
-                | b"for_countries"
-                | b"ship_types",
-            ) => Shape::List,
-            // `ordered` 0x3907 and `unordered` 0x3908: 1409B9A20's own loops,
-            // which stop at `}` or the end as CPersistent::Read does.
-            Some(b"ordered") => Shape::Object(Node::Ordered),
-            Some(b"unordered") => Shape::Object(Node::Unordered),
-            // `can_use` 0x37AE: a CAndTrigger (vtable +0x28, CTrigger::
-            // LoadBody 1405431C0) on this reader, its fields read by key
-            // (the key-validity gap).
-            Some(b"can_use") => Shape::Trigger,
-            // `type` 0xE1 compares the value token (army 0x289D, ship
-            // 0x28A0, codename 0x3D17, railway_gun 0x4D14); any other, a `{`
-            // included, is RecordError "unexpected name type" (1424ACF90),
-            // which skips a block (1424AD270). Any other key, a quoted one
-            // included, reaches the default (1409B9FF0): RecordError
-            // "Unexpected token while reading division names database", the
-            // same skip.
-            _ => Shape::Skip,
+    // 1409B8510 constructs the lexer in mode 1 (CTextLexer 1424A6370).
+    native::read(
+        bytes,
+        native::Mode::SkipMark,
+        Node::Top,
+        &mut |node, field| match node {
+            Node::Top => Shape::Object(Node::Group),
+            Node::Group => match field.keyword().as_deref() {
+                // ReadStringInto (1424ABB50): `name` 0x1B, `prefix` 0x30F8,
+                // `fallback_name` 0x38E0.
+                Some(b"name" | b"prefix" | b"fallback_name") => Shape::One,
+                // ReadStringList (1401426E0): `unique` 0x30FA, `division_types`
+                // 0x38DD, `link_numbering_with` 0x38DE, `for_countries` 0x38E4,
+                // `ship_types` 0x3C84.
+                Some(
+                    b"unique"
+                    | b"division_types"
+                    | b"link_numbering_with"
+                    | b"for_countries"
+                    | b"ship_types",
+                ) => Shape::List,
+                // `ordered` 0x3907 and `unordered` 0x3908: 1409B9A20's own loops,
+                // which stop at `}` or the end as CPersistent::Read does.
+                Some(b"ordered") => Shape::Object(Node::Ordered),
+                Some(b"unordered") => Shape::Object(Node::Unordered),
+                // `can_use` 0x37AE: a CAndTrigger (vtable +0x28, CTrigger::
+                // LoadBody 1405431C0) on this reader, its fields read by key
+                // (the key-validity gap).
+                Some(b"can_use") => Shape::Trigger,
+                // `type` 0xE1 compares the value token (army 0x289D, ship
+                // 0x28A0, codename 0x3D17, railway_gun 0x4D14); any other, a `{`
+                // included, is RecordError "unexpected name type" (1424ACF90),
+                // which skips a block (1424AD270). Any other key, a quoted one
+                // included, reaches the default (1409B9FF0): RecordError
+                // "Unexpected token while reading division names database", the
+                // same skip.
+                _ => Shape::Skip,
+            },
+            // Each entry: 1424AC5E0, then ParseTokenInt32 (1424B0080 -> atol)
+            // on the key's text, quoted or not. Below 1 the game records "The
+            // entry index of ... is out of range" and leaves the loop, the
+            // entry's list unread; otherwise ReadStringList (1401426E0) reads
+            // to `}` whatever the value was.
+            Node::Ordered if decimal_i32(&field.key.text) < 1 => Shape::Break,
+            Node::Ordered | Node::Unordered => Shape::List,
         },
-        // Each entry: 1424AC5E0, then ParseTokenInt32 (1424B0080 -> atol)
-        // on the key's text, quoted or not. Below 1 the game records "The
-        // entry index of ... is out of range" and leaves the loop, the
-        // entry's list unread; otherwise ReadStringList (1401426E0) reads
-        // to `}` whatever the value was.
-        Node::Ordered if decimal_i32(&field.key.text) < 1 => Shape::Break,
-        Node::Ordered | Node::Unordered => Shape::List,
-    })
+    )
 }
 
 /// One group as CNameGroup::vf4 (1409B9A20) read it, in source order, with

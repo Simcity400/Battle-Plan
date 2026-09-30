@@ -338,13 +338,22 @@ pub(crate) fn looked_up(key: &[u8], quoted: bool) -> bool {
 }
 
 /// Whether CTextLexer::read_token (1424A7A90) gives a token the number id
-/// 0xC: a bare token starting with a digit or `-`, or one made only of
-/// digits, `-` and `.` that is no keyword. A quoted token is 0xF.
+/// 0xC: a bare token starting with a digit or `-`, or one whose text up to
+/// its first NUL (the lookup's `strlen` copy, and the loop `while (c != 0)`
+/// after it) is made only of digits, `-` and `.` and is no keyword. So a
+/// token starting with a NUL, an empty C string, is a number. A quoted token
+/// is 0xF. Text with no byte is no token the lexer read: the zeroed slot
+/// CReader::CReader (1424A9D30) leaves and the empty value 1424AC5E0 stores
+/// before a `}` (1424B0110) both have the id 0.
 pub fn number_token(text: &[u8], quoted: bool) -> bool {
+    let string = &text[..text
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(text.len())];
     !quoted
         && match text.first() {
             Some(b'0'..=b'9' | b'-') => true,
-            Some(_) => text
+            Some(_) => string
                 .iter()
                 .all(|byte| matches!(byte, b'0'..=b'9' | b'-' | b'.')),
             None => false,
@@ -1044,7 +1053,8 @@ mod tests {
     }
 
     /// 1424A7A90 gives the number id 0xC to a bare token starting with a
-    /// digit or `-`, or made of digits, `-` and `.`.
+    /// digit or `-`, or made of digits, `-` and `.` up to its first NUL, so
+    /// one starting with a NUL; text with no byte is the id-0 slot.
     #[test]
     fn number_tokens_follow_the_lexer() {
         for (text, quoted, number) in [
@@ -1057,6 +1067,10 @@ mod tests {
             (b"x1", false, false),
             (b"yes", false, false),
             (b"", false, false),
+            // The loop stops at the NUL: an empty C string, and `.5`.
+            (b"\0x", false, true),
+            (b".5\0x", false, true),
+            (b"x\0", false, false),
         ] {
             assert_eq!(
                 number_token(text, quoted),

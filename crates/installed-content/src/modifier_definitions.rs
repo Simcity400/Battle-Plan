@@ -113,19 +113,26 @@ enum Node {
 
 /// One file as its reader reads it.
 fn read_file(input: &[u8]) -> native::Read {
-    native::read(input, Node::Top, &mut |node, field| match node {
-        Node::Top => Shape::Object(Node::Definition),
-        // SModifierDefinitonReader::vf4 (140604040), keyword ids from
-        // register_authored_keys (140082CB0): `color_type` 0x4A62,
-        // `value_type` 0x4A63 and `postfix` 0x4A69 compare the value token's
-        // id (report_field_error 1424ACEE0, which skips nothing, on any
-        // other), `precision` 0x4A6C ReadScriptSignedInt32; `category` 0x2BE
-        // compares the value token's id, any other ReportUnexpectedToken
-        // (1424AD100), whose skip passes over a block; any other key returns
-        // with only its value token read.
-        Node::Definition if field.keyword_is("category") => Shape::Skip,
-        Node::Definition => Shape::One,
-    })
+    // LoadScriptModifierDefinitions (1406025E0) constructs the lexer in mode 0
+    // (CTextLexer::constructor 1424A63A0).
+    native::read(
+        input,
+        native::Mode::KeepMark,
+        Node::Top,
+        &mut |node, field| match node {
+            Node::Top => Shape::Object(Node::Definition),
+            // SModifierDefinitonReader::vf4 (140604040), keyword ids from
+            // register_authored_keys (140082CB0): `color_type` 0x4A62,
+            // `value_type` 0x4A63 and `postfix` 0x4A69 compare the value token's
+            // id (report_field_error 1424ACEE0, which skips nothing, on any
+            // other), `precision` 0x4A6C ReadScriptSignedInt32; `category` 0x2BE
+            // compares the value token's id, any other ReportUnexpectedToken
+            // (1424AD100), whose skip passes over a block; any other key returns
+            // with only its value token read.
+            Node::Definition if field.keyword_is("category") => Shape::Skip,
+            Node::Definition => Shape::One,
+        },
+    )
 }
 
 /// One file's definitions in order, each as its reader stored it, or the
