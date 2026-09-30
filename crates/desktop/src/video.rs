@@ -131,7 +131,7 @@ fn game_user_folder(window: &WebviewWindow) -> Result<PathBuf, String> {
 }
 fn game_settings(window: &WebviewWindow) -> Result<VideoSettings, String> {
     let user = game_user_folder(window)?;
-    parse_game_display(&installed_content::settings::read(&user).map_err(|e| e.to_string())?)
+    parse_game_display(&installed_content::settings::read_keys(&user).map_err(|e| e.to_string())?)
 }
 /// The viewer computes the same from the recording's user folder and the same monitors.
 fn game_map_ui_scale(window: &WebviewWindow) -> Option<f64> {
@@ -142,14 +142,19 @@ fn game_map_ui_scale(window: &WebviewWindow) -> Option<f64> {
         .contains(&scale)
         .then(|| (f64::from(scale) * 100.0).round())
 }
-fn parse_game_display(document: &installed_content::parser::Document) -> Result<VideoSettings, String> {
-    use installed_content::settings::{block, scalar, toggle};
-    let graphics = block(&document.items, "graphics").map_err(|e| e.to_string())?;
-    let scale = scalar(graphics, "gui_scale")
-        .map_err(|e| e.to_string())?
-        .parse::<f64>()
-        .map_err(|_| "Invalid game UI scale")?;
-    let vsync = toggle(graphics, "vsync").map_err(|e| e.to_string())?;
+/// The preferences from `settings.txt`'s keys as the game reads them
+/// ([`installed_content::settings::SettingsKeys`]: any case, the last stored value of each field).
+fn parse_game_display(keys: &installed_content::settings::SettingsKeys) -> Result<VideoSettings, String> {
+    if !keys.has(&["graphics"]) {
+        return Err("Missing graphics block in game settings".to_owned());
+    }
+    let scale = f64::from(
+        keys.f32_at(&["graphics", "gui_scale"])
+            .ok_or("Invalid game UI scale")?,
+    );
+    let vsync = keys
+        .bool_at(&["graphics", "vsync"])
+        .ok_or("Missing vsync in game settings")?;
     let settings = VideoSettings {
         use_game_settings: true,
         ui_scale: scale * 100.0,
@@ -377,8 +382,8 @@ mod tests {
     use super::*;
     #[test]
     fn game_display_defaults_keep_scale_and_vsync_without_resizing() {
-        let doc = installed_content::parser::parse(b"graphics={size={x=2048 y=1152} gui_scale=1.125 fullScreen=no borderless=yes vsync=no}").unwrap();
-        let settings = parse_game_display(&doc).unwrap();
+        let keys = installed_content::settings::SettingsKeys::read(b"graphics={size={x=2048 y=1152} gui_scale=1.125 fullScreen=no borderless=yes VSync=no}");
+        let settings = parse_game_display(&keys).unwrap();
         assert_eq!(settings.ui_scale, 112.5);
         assert!(settings.use_game_settings && !settings.vsync);
         assert_eq!(settings.map_ui_scale, None);

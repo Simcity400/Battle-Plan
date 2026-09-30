@@ -87,7 +87,18 @@ fn graph(effect: &str, read: &dyn Fn(&str) -> io::Result<Vec<u8>>) -> Graph {
         out.borrow_mut().sources.insert(path.into(), bytes.clone());
         bytes
     };
-    if pdxshader::load_with(effect.as_bytes(), &read).is_none() {
+    // The one effect reader opens every path by its bytes; this audit keys its sources by text.
+    let read_bytes = |path: &[u8]| match std::str::from_utf8(path) {
+        Ok(path) => read(path),
+        Err(_) => {
+            out.borrow_mut().errors.insert(format!(
+                "{}: a non-UTF-8 include path this audit cannot key",
+                String::from_utf8_lossy(path)
+            ));
+            None
+        }
+    };
+    if pdxshader::load_with(effect.as_bytes(), &read_bytes).is_none() {
         out.borrow_mut()
             .errors
             .insert(format!("missing shader {effect}"));
@@ -176,7 +187,12 @@ fn passes_with(read: &dyn Fn(&str) -> io::Result<Vec<u8>>) -> io::Result<Vec<(St
         let value = items.iter().rev().find(|item| item.key.as_deref().is_some_and(|key| key.eq_ignore_ascii_case(b"effect")))
             .and_then(|item| item.value.scalar())
             .ok_or_else(|| invalid(format!("{path}: {kind} has no scalar effect; shader source audit cannot establish its source")))?;
-        Ok(pdxshader::effect_path(value))
+        String::from_utf8(pdxshader::effect_path(value)).map_err(|path| {
+            invalid(format!(
+                "{path}: {kind}'s effect {:?} is not UTF-8; shader source audit cannot key it",
+                String::from_utf8_lossy(path.as_bytes())
+            ))
+        })
     };
     passes.push(("map arrows".into(), effect(&document.items, "arrows")?));
     let text = document

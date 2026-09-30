@@ -1062,6 +1062,10 @@ impl Viewer {
             return Vec::new();
         };
         let mut warnings = shown.limitations.lines();
+        // The viewer's device, when it lacks a feature some content needs to draw exactly.
+        if let Some((device, _)) = &self.gpu {
+            warnings.extend(render::device_requirements(device.features()));
+        }
         warnings.extend(document.warnings.iter().cloned());
         warnings.extend(shown.political_warnings.iter().cloned());
         warnings.extend(shown.plan_warnings.iter().cloned());

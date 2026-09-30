@@ -8,11 +8,15 @@ publish.workspace = true
 [dependencies]
 # PUC Lua 5.1, the runtime the game links, for common/defines.
 mlua = { version = "0.12", default-features = false, features = ["lua51", "vendored", "send"] }
+# The PNG plugin of the game's FreeImage decodes through libpng; see image::native.
+png = "0.18"
+# libpng's iCCP profiles are zlib streams (see image::native::png_colorspace); archive layers
+# inflate their records as raw deflate (content::physfs_zip).
+miniz_oxide = "0.8"
 replay = { path = "../replay" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
 
 [features]
 # Hand-built fixtures for other crates' unit tests, such as

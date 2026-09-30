@@ -7,6 +7,7 @@
 
 pub mod bmp;
 pub mod dds;
+pub mod native;
 pub mod rgba;
 pub mod tga;
 

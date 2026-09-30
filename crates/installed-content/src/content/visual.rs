@@ -1,4 +1,7 @@
 //! Explicit local cosmetic overlays, separate from recorded content verification.
+//!
+//! Paths are layer bytes, as the recorded layers' are: a folder file by its UTF-8 name, an
+//! archive record by its tree name through the one archive reader, [`super::physfs_zip`].
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,7 +17,7 @@ pub struct VisualMod {
 #[derive(Clone, Debug)]
 pub(super) struct VisualLayer {
     source: LayerSource,
-    files: BTreeSet<String>,
+    files: BTreeSet<LayerPath>,
 }
 
 struct Rule {
@@ -75,32 +78,34 @@ fn rules(bytes: &[u8]) -> io::Result<Vec<Rule>> {
     Ok(out)
 }
 
-fn affects_checksum(path: &str, rules: &[Rule]) -> bool {
+fn affects_checksum(path: &[u8], rules: &[Rule]) -> bool {
     let path = path.to_ascii_lowercase();
     rules.iter().any(|rule| {
-        path.strip_prefix(&format!("{}/", rule.directory))
+        path.strip_prefix(format!("{}/", rule.directory).as_bytes())
             .is_some_and(|relative| {
-                relative.ends_with(&rule.extension) && (rule.recursive || !relative.contains('/'))
+                relative.ends_with(rule.extension.as_bytes())
+                    && (rule.recursive || !relative.contains(&b'/'))
             })
     })
 }
 
-fn supported(path: &str) -> bool {
+fn supported(path: &[u8]) -> bool {
     let path = path.to_ascii_lowercase();
-    (path.starts_with("map/terrain/") || path.starts_with("gfx/"))
-        && [".dds", ".tga", ".png", ".bmp"]
+    (path.starts_with(b"map/terrain/") || path.starts_with(b"gfx/"))
+        && [&b".dds"[..], b".tga", b".png", b".bmp"]
             .iter()
             .any(|extension| path.ends_with(extension))
 }
 
-fn metadata(path: &str) -> bool {
-    !path.contains('/')
-        && (path == "descriptor.mod"
-            || path.starts_with("thumbnail")
-            || path.starts_with("preview")
-            || path.to_ascii_lowercase().starts_with("readme")
-            || path.to_ascii_lowercase().starts_with("license")
-            || path.starts_with('.'))
+fn metadata(path: &[u8]) -> bool {
+    let lower = path.to_ascii_lowercase();
+    !path.contains(&b'/')
+        && (path == b"descriptor.mod"
+            || path.starts_with(b"thumbnail")
+            || path.starts_with(b"preview")
+            || lower.starts_with(b"readme")
+            || lower.starts_with(b"license")
+            || path.starts_with(b"."))
 }
 
 fn cancelled(cancel: &AtomicBool) -> io::Result<()> {
@@ -118,12 +123,13 @@ fn files(
     source: &LayerSource,
     rules: &[Rule],
     cancel: &AtomicBool,
-) -> io::Result<BTreeSet<String>> {
+) -> io::Result<BTreeSet<LayerPath>> {
     let mut files = BTreeSet::new();
-    let admit = |path: String, files: &mut BTreeSet<String>| -> io::Result<()> {
+    let admit = |path: LayerPath, files: &mut BTreeSet<LayerPath>| -> io::Result<()> {
         if affects_checksum(&path, rules) {
             return Err(invalid(format!(
-                "Contains checksum-sensitive files: {path}"
+                "Contains checksum-sensitive files: {}",
+                display(&path)
             )));
         }
         files.insert(path);
@@ -153,7 +159,8 @@ fn files(
                             normalize_relative(text_path(
                                 path.strip_prefix(root)
                                     .map_err(|_| invalid("Mod path escaped its folder"))?,
-                            )?)?,
+                            )?)?
+                            .into_bytes(),
                             &mut files,
                         )?;
                     }
@@ -161,15 +168,14 @@ fn files(
             }
         }
         LayerSource::Archive(path) => {
-            let mut archive = zip::ZipArchive::new(File::open(path)?)?;
-            if archive.len() > 20_000 {
+            let entries = physfs_zip::Archive::open(path)?.mount()?.entries;
+            if entries.len() > 20_000 {
                 return Err(invalid("Mod exceeds the cosmetic scan limit"));
             }
-            for index in 0..archive.len() {
+            for entry in entries {
                 cancelled(cancel)?;
-                let entry = archive.by_index(index)?;
-                if !entry.is_dir() {
-                    admit(normalize_relative(entry.name())?, &mut files)?;
+                if !entry.directory {
+                    admit(entry.name, &mut files)?;
                 }
             }
         }
@@ -214,14 +220,20 @@ fn inspect(
         Err(error) => return Err(error),
     };
     let reason = if let Some(path) = files.iter().find(|path| affects_checksum(path, rules)) {
-        Some(format!("Contains checksum-sensitive files: {path}"))
+        Some(format!(
+            "Contains checksum-sensitive files: {}",
+            display(path)
+        ))
     } else if !layer.replace_paths.is_empty() {
         Some("Uses replace_path; requires separate compatibility support".into())
     } else if let Some(path) = files
         .iter()
         .find(|path| !supported(path) && !metadata(path))
     {
-        Some(format!("Requires unsupported visual features: {path}"))
+        Some(format!(
+            "Requires unsupported visual features: {}",
+            display(path)
+        ))
     } else if !files.iter().any(|path| supported(path)) {
         Some("No supported map artwork".into())
     } else {
@@ -321,21 +333,18 @@ pub fn apply(
     Ok(())
 }
 
-pub(super) fn read(layers: &[VisualLayer], relative: &str) -> io::Result<Option<Vec<u8>>> {
+pub(super) fn read(layers: &[VisualLayer], relative: &[u8]) -> io::Result<Option<Vec<u8>>> {
     for layer in layers.iter().rev() {
-        let matched = match &layer.source {
-            LayerSource::Folder(_) => layer
-                .files
-                .iter()
-                .find(|name| name.eq_ignore_ascii_case(relative)),
-            LayerSource::Archive(_) => layer.files.get(relative),
-        };
-        let Some(name) = matched else {
-            continue;
-        };
         let bytes = match &layer.source {
             LayerSource::Folder(root) => {
-                let path = root.join(name).canonicalize()?;
+                let Some(name) = layer
+                    .files
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(relative))
+                else {
+                    continue;
+                };
+                let path = root.join(folder_text(name)?).canonicalize()?;
                 if !path.starts_with(root.canonicalize()?) {
                     return Err(invalid("Visual asset escaped its mod folder"));
                 }
@@ -345,17 +354,22 @@ pub(super) fn read(layers: &[VisualLayer], relative: &str) -> io::Result<Option<
                 fs::read(path)?
             }
             LayerSource::Archive(path) => {
-                let mut archive = zip::ZipArchive::new(File::open(path)?)?;
-                let entry = archive.by_name(name)?;
-                if entry.size() > 256 * 1024 * 1024 {
+                if !layer.files.contains(relative) {
+                    continue;
+                }
+                let mut archive = physfs_zip::Archive::open(path)?;
+                let mounted = archive.mount()?;
+                let Some((entry, password)) = mounted.lookup(relative) else {
+                    continue;
+                };
+                if entry.size > 256 * 1024 * 1024 {
                     return Err(invalid("Visual asset is too large"));
                 }
-                let mut bytes = Vec::new();
-                entry.take(256 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-                if bytes.len() > 256 * 1024 * 1024 {
-                    return Err(invalid("Visual asset is too large"));
+                match archive.read(entry, password)? {
+                    Some(bytes) => bytes,
+                    // The record does not open: the search goes on.
+                    None => continue,
                 }
-                bytes
             }
         };
         return Ok(Some(bytes));
@@ -369,17 +383,56 @@ mod tests {
     #[test]
     fn checksum_rules_are_distinct_from_renderer_support() {
         let rules = rules(b"directory\nname=map\nsub_directories=yes\nfile_extension=.bmp\ndirectory\nname=common\nsub_directories=yes\nfile_extension=.txt").unwrap();
-        assert!(affects_checksum("map/provinces.bmp", &rules));
-        assert!(affects_checksum("COMMON/countries/colors.TXT", &rules));
-        assert!(!affects_checksum("map/terrain/colormap.dds", &rules));
-        assert!(supported("map/terrain/colormap.dds"));
-        assert!(!supported("gfx/FX/terrain.shader"));
-        assert!(!supported("interface/country.gui"));
+        assert!(affects_checksum(b"map/provinces.bmp", &rules));
+        assert!(affects_checksum(b"COMMON/countries/colors.TXT", &rules));
+        assert!(!affects_checksum(b"map/terrain/colormap.dds", &rules));
+        assert!(supported(b"map/terrain/colormap.dds"));
+        assert!(!supported(b"gfx/FX/terrain.shader"));
+        assert!(!supported(b"interface/country.gui"));
     }
     #[test]
     fn unknown_rules_are_not_treated_as_checksum_neutral() {
         assert!(rules(b"file\nname=map/provinces.bmp").is_err());
         assert!(rules(b"").is_err());
         assert!(rules(b"directory\nname=map\nsub_directories=maybe\nfile_extension=.txt").is_err());
+    }
+    /// A cosmetic archive is read by the one PhysFS reader: two records whose names decode
+    /// alike (`\x80` without the UTF-8 flag, `\xC3\x87` with it) are two files.
+    #[test]
+    fn archive_records_are_kept_by_their_bytes() {
+        use super::super::tests::{Record, zip_records};
+        let path = std::env::temp_dir().join(format!(
+            "hoi4_installed_content_visual_zip_{}_{:?}.zip",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let record = |name, flags| Record {
+            name,
+            host: 0,
+            flags,
+            deflate: false,
+            data: b"art",
+        };
+        fs::write(
+            &path,
+            zip_records(
+                &[],
+                &[
+                    record(b"gfx/\x80.dds", 0),
+                    record(b"gfx/\xC3\x87.dds", 0x800),
+                ],
+            ),
+        )
+        .unwrap();
+        let rules =
+            rules(b"directory\nname=map\nsub_directories=yes\nfile_extension=.bmp").unwrap();
+        let found = files(
+            &LayerSource::Archive(path.clone()),
+            &rules,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_eq!(found.len(), 2);
     }
 }

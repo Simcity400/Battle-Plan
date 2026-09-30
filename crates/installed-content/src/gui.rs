@@ -5,8 +5,13 @@
 //! and read the fields the map passes need, keeping the game's own spellings:
 //! `containerWindowType`, `instantTextboxType` and `instantTextBoxType` all
 //! occur in `mapicons.gui`.
+//!
+//! [`native`] reads a file's bytes as the game's own lexer and GUI parser read them, every key
+//! with its native semantics, so a modded layout reads as the game reads it.
 
 use std::io;
+
+pub mod native;
 
 use crate::{
     ResolvedLayers,

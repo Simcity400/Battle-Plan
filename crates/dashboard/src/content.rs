@@ -65,7 +65,7 @@ pub fn name_localisation(
 
 /// The user's game language from the configured user folder's `settings.txt`.
 pub fn language(options: &ResolveOptions) -> io::Result<String> {
-    installed_content::settings::language(&installed_content::settings::read(&options.user_dir)?.items)
+    installed_content::settings::read_keys(&options.user_dir)?.language()
 }
 
 pub fn check_verification(

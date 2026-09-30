@@ -1,0 +1,2017 @@
+//! libjpeg 9a's scaled inverse DCTs (`jidctint.c`): `jpeg_idct_NxN` for a SmartScale block
+//! size, and the square and 2:1 sizes `jpeg_calc_output_dimensions` scales a subsampled
+//! component to when the block size is 4 or less. Each is translated statement by statement
+//! (every `INT32` and `int` temporary 32-bit two's complement, as the Windows build keeps them;
+//! `FIX(x)` folded to `(INT32) (x * 8192 + 0.5)`); the decoded images match FreeImage 3.17's bit
+//! for bit.
+
+// The statements keep the C source's shape (its parentheses, its `8*k` offsets and dead
+// stores), so they can be read against `jidctint.c` line by line.
+#![allow(unused_parens, unused_assignments, unused_variables, unused_mut)]
+#![allow(clippy::all)]
+
+use std::num::Wrapping as W;
+
+use super::libjpeg::idct_limit;
+
+const CB: usize = 13;
+const P1: usize = 2;
+
+/// `jpeg_idct_1x1`: `DESCALE(dequantized DC, 3)`.
+fn idct_1x1(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], _stride: usize) {
+    let dc = i32::from(block[0]).wrapping_mul(table[0]);
+    out[0] = idct_limit(dc.wrapping_add(4) >> 3);
+}
+
+/// The transform `jddctmgr.c` selects for a `width` by `height` output block (never 8 by 8,
+/// which is `jpeg_idct_ifast`); `None` for a size it has no method for (`JERR_BAD_DCTSIZE`).
+pub(super) fn idct(
+    width: usize,
+    height: usize,
+    block: &[i16; 64],
+    table: &[i32; 64],
+    out: &mut [u8],
+    stride: usize,
+) -> Option<()> {
+    match (width, height) {
+        (1, 1) => idct_1x1(block, table, out, stride),
+        (2, 2) => idct_2x2(block, table, out, stride),
+        (3, 3) => idct_3x3(block, table, out, stride),
+        (4, 4) => idct_4x4(block, table, out, stride),
+        (5, 5) => idct_5x5(block, table, out, stride),
+        (6, 6) => idct_6x6(block, table, out, stride),
+        (7, 7) => idct_7x7(block, table, out, stride),
+        (9, 9) => idct_9x9(block, table, out, stride),
+        (10, 10) => idct_10x10(block, table, out, stride),
+        (11, 11) => idct_11x11(block, table, out, stride),
+        (12, 12) => idct_12x12(block, table, out, stride),
+        (13, 13) => idct_13x13(block, table, out, stride),
+        (14, 14) => idct_14x14(block, table, out, stride),
+        (15, 15) => idct_15x15(block, table, out, stride),
+        (16, 16) => idct_16x16(block, table, out, stride),
+        (2, 1) => idct_2x1(block, table, out, stride),
+        (1, 2) => idct_1x2(block, table, out, stride),
+        (4, 2) => idct_4x2(block, table, out, stride),
+        (2, 4) => idct_2x4(block, table, out, stride),
+        (6, 3) => idct_6x3(block, table, out, stride),
+        (3, 6) => idct_3x6(block, table, out, stride),
+        (8, 4) => idct_8x4(block, table, out, stride),
+        (4, 8) => idct_4x8(block, table, out, stride),
+        _ => return None,
+    }
+    Some(())
+}
+
+/// `jpeg_idct_2x2` (`jidctint.c`), translated statement by statement.
+fn idct_2x2(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 1];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut tmp3 = W(0_i32);
+    let mut tmp4 = W(0_i32);
+    let mut tmp5 = W(0_i32);
+    tmp4 = (W(i32::from(block[8 * 0])) * W(table[8 * 0]));
+    tmp5 = (W(i32::from(block[8 * 1])) * W(table[8 * 1]));
+    tmp4 += W(1) << 2_usize;
+    tmp0 = tmp4 + tmp5;
+    tmp2 = tmp4 - tmp5;
+    tmp4 = (W(i32::from(block[8 * 0 + 1])) * W(table[8 * 0 + 1]));
+    tmp5 = (W(i32::from(block[8 * 1 + 1])) * W(table[8 * 1 + 1]));
+    tmp1 = tmp4 + tmp5;
+    tmp3 = tmp4 - tmp5;
+    op = 0 * stride;
+    out[op + 0] = idct_limit(((tmp0 + tmp1) >> (3)).0);
+    out[op + 1] = idct_limit(((tmp0 - tmp1) >> (3)).0);
+    op = 1 * stride;
+    out[op + 0] = idct_limit(((tmp2 + tmp3) >> (3)).0);
+    out[op + 1] = idct_limit(((tmp2 - tmp3) >> (3)).0);
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_3x3` (`jidctint.c`), translated statement by statement.
+fn idct_3x3(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 9];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..3 {
+        tmp0 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp0 <<= CB;
+        tmp0 += W(1) << (CB - P1 - 1);
+        tmp2 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        tmp12 = ((tmp2) * (W(5793)));
+        tmp10 = tmp0 + tmp12;
+        tmp2 = tmp0 - tmp12 - tmp12;
+        tmp12 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        tmp0 = ((tmp12) * (W(10033)));
+        ws[wp + 3 * 0] = ((tmp10 + tmp0) >> (CB - P1)).0;
+        ws[wp + 3 * 2] = ((tmp10 - tmp0) >> (CB - P1)).0;
+        ws[wp + 3 * 1] = ((tmp2) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..3 {
+        op = ctr * stride;
+        tmp0 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp0 <<= CB;
+        tmp2 = W(ws[wp + 2]);
+        tmp12 = ((tmp2) * (W(5793)));
+        tmp10 = tmp0 + tmp12;
+        tmp2 = tmp0 - tmp12 - tmp12;
+        tmp12 = W(ws[wp + 1]);
+        tmp0 = ((tmp12) * (W(10033)));
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp10 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp2) >> (CB + P1 + 3)).0);
+        wp += 3;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_4x4` (`jidctint.c`), translated statement by statement.
+fn idct_4x4(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 16];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..4 {
+        tmp0 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp2 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        tmp10 = (tmp0 + tmp2) << P1;
+        tmp12 = (tmp0 - tmp2) << P1;
+        z2 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z3 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z1 = ((z2 + z3) * (W(4433)));
+        z1 += W(1) << (CB - P1 - 1);
+        tmp0 = ((z1 + ((z2) * (W(6270)))) >> (CB - P1));
+        tmp2 = ((z1 - ((z3) * (W(15137)))) >> (CB - P1));
+        ws[wp + 4 * 0] = (tmp10 + tmp0).0;
+        ws[wp + 4 * 3] = (tmp10 - tmp0).0;
+        ws[wp + 4 * 1] = (tmp12 + tmp2).0;
+        ws[wp + 4 * 2] = (tmp12 - tmp2).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..4 {
+        op = ctr * stride;
+        tmp0 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp2 = W(ws[wp + 2]);
+        tmp10 = (tmp0 + tmp2) << CB;
+        tmp12 = (tmp0 - tmp2) << CB;
+        z2 = W(ws[wp + 1]);
+        z3 = W(ws[wp + 3]);
+        z1 = ((z2 + z3) * (W(4433)));
+        tmp0 = z1 + ((z2) * (W(6270)));
+        tmp2 = z1 - ((z3) * (W(15137)));
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp10 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp12 + tmp2) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp12 - tmp2) >> (CB + P1 + 3)).0);
+        wp += 4;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_5x5` (`jidctint.c`), translated statement by statement.
+fn idct_5x5(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 25];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..5 {
+        tmp12 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp12 <<= CB;
+        tmp12 += W(1) << (CB - P1 - 1);
+        tmp0 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        tmp1 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z1 = ((tmp0 + tmp1) * (W(6476)));
+        z2 = ((tmp0 - tmp1) * (W(2896)));
+        z3 = tmp12 + z2;
+        tmp10 = z3 + z1;
+        tmp11 = z3 - z1;
+        tmp12 -= z2 << 2_usize;
+        z2 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z3 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z1 = ((z2 + z3) * (W(6810)));
+        tmp0 = z1 + ((z2) * (W(4209)));
+        tmp1 = z1 - ((z3) * (W(17828)));
+        ws[wp + 5 * 0] = ((tmp10 + tmp0) >> (CB - P1)).0;
+        ws[wp + 5 * 4] = ((tmp10 - tmp0) >> (CB - P1)).0;
+        ws[wp + 5 * 1] = ((tmp11 + tmp1) >> (CB - P1)).0;
+        ws[wp + 5 * 3] = ((tmp11 - tmp1) >> (CB - P1)).0;
+        ws[wp + 5 * 2] = ((tmp12) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..5 {
+        op = ctr * stride;
+        tmp12 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp12 <<= CB;
+        tmp0 = W(ws[wp + 2]);
+        tmp1 = W(ws[wp + 4]);
+        z1 = ((tmp0 + tmp1) * (W(6476)));
+        z2 = ((tmp0 - tmp1) * (W(2896)));
+        z3 = tmp12 + z2;
+        tmp10 = z3 + z1;
+        tmp11 = z3 - z1;
+        tmp12 -= z2 << 2_usize;
+        z2 = W(ws[wp + 1]);
+        z3 = W(ws[wp + 3]);
+        z1 = ((z2 + z3) * (W(6810)));
+        tmp0 = z1 + ((z2) * (W(4209)));
+        tmp1 = z1 - ((z3) * (W(17828)));
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp10 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp11 + tmp1) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp11 - tmp1) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp12) >> (CB + P1 + 3)).0);
+        wp += 5;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_6x6` (`jidctint.c`), translated statement by statement.
+fn idct_6x6(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 36];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..6 {
+        tmp0 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp0 <<= CB;
+        tmp0 += W(1) << (CB - P1 - 1);
+        tmp2 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        tmp10 = ((tmp2) * (W(5793)));
+        tmp1 = tmp0 + tmp10;
+        tmp11 = ((tmp0 - tmp10 - tmp10) >> (CB - P1));
+        tmp10 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        tmp0 = ((tmp10) * (W(10033)));
+        tmp10 = tmp1 + tmp0;
+        tmp12 = tmp1 - tmp0;
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        tmp1 = ((z1 + z3) * (W(2998)));
+        tmp0 = tmp1 + ((z1 + z2) << CB);
+        tmp2 = tmp1 + ((z3 - z2) << CB);
+        tmp1 = (z1 - z2 - z3) << P1;
+        ws[wp + 6 * 0] = ((tmp10 + tmp0) >> (CB - P1)).0;
+        ws[wp + 6 * 5] = ((tmp10 - tmp0) >> (CB - P1)).0;
+        ws[wp + 6 * 1] = (tmp11 + tmp1).0;
+        ws[wp + 6 * 4] = (tmp11 - tmp1).0;
+        ws[wp + 6 * 2] = ((tmp12 + tmp2) >> (CB - P1)).0;
+        ws[wp + 6 * 3] = ((tmp12 - tmp2) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..6 {
+        op = ctr * stride;
+        tmp0 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp0 <<= CB;
+        tmp2 = W(ws[wp + 4]);
+        tmp10 = ((tmp2) * (W(5793)));
+        tmp1 = tmp0 + tmp10;
+        tmp11 = tmp0 - tmp10 - tmp10;
+        tmp10 = W(ws[wp + 2]);
+        tmp0 = ((tmp10) * (W(10033)));
+        tmp10 = tmp1 + tmp0;
+        tmp12 = tmp1 - tmp0;
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        tmp1 = ((z1 + z3) * (W(2998)));
+        tmp0 = tmp1 + ((z1 + z2) << CB);
+        tmp2 = tmp1 + ((z3 - z2) << CB);
+        tmp1 = (z1 - z2 - z3) << CB;
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp10 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp11 + tmp1) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp11 - tmp1) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp12 + tmp2) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp12 - tmp2) >> (CB + P1 + 3)).0);
+        wp += 6;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_7x7` (`jidctint.c`), translated statement by statement.
+fn idct_7x7(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 49];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..7 {
+        tmp13 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp13 <<= CB;
+        tmp13 += W(1) << (CB - P1 - 1);
+        z1 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z2 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z3 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        tmp10 = ((z2 - z3) * (W(7223)));
+        tmp12 = ((z1 - z2) * (W(2578)));
+        tmp11 = tmp10 + tmp12 + tmp13 - ((z2) * (W(15083)));
+        tmp0 = z1 + z3;
+        z2 -= tmp0;
+        tmp0 = ((tmp0) * (W(10438))) + tmp13;
+        tmp10 += tmp0 - ((z3) * (W(637)));
+        tmp12 += tmp0 - ((z1) * (W(20239)));
+        tmp13 += ((z2) * (W(11585)));
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        tmp1 = ((z1 + z2) * (W(7663)));
+        tmp2 = ((z1 - z2) * (W(1395)));
+        tmp0 = tmp1 - tmp2;
+        tmp1 += tmp2;
+        tmp2 = ((z2 + z3) * (-W(11295)));
+        tmp1 += tmp2;
+        z2 = ((z1 + z3) * (W(5027)));
+        tmp0 += z2;
+        tmp2 += z2 + ((z3) * (W(15326)));
+        ws[wp + 7 * 0] = ((tmp10 + tmp0) >> (CB - P1)).0;
+        ws[wp + 7 * 6] = ((tmp10 - tmp0) >> (CB - P1)).0;
+        ws[wp + 7 * 1] = ((tmp11 + tmp1) >> (CB - P1)).0;
+        ws[wp + 7 * 5] = ((tmp11 - tmp1) >> (CB - P1)).0;
+        ws[wp + 7 * 2] = ((tmp12 + tmp2) >> (CB - P1)).0;
+        ws[wp + 7 * 4] = ((tmp12 - tmp2) >> (CB - P1)).0;
+        ws[wp + 7 * 3] = ((tmp13) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..7 {
+        op = ctr * stride;
+        tmp13 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp13 <<= CB;
+        z1 = W(ws[wp + 2]);
+        z2 = W(ws[wp + 4]);
+        z3 = W(ws[wp + 6]);
+        tmp10 = ((z2 - z3) * (W(7223)));
+        tmp12 = ((z1 - z2) * (W(2578)));
+        tmp11 = tmp10 + tmp12 + tmp13 - ((z2) * (W(15083)));
+        tmp0 = z1 + z3;
+        z2 -= tmp0;
+        tmp0 = ((tmp0) * (W(10438))) + tmp13;
+        tmp10 += tmp0 - ((z3) * (W(637)));
+        tmp12 += tmp0 - ((z1) * (W(20239)));
+        tmp13 += ((z2) * (W(11585)));
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        tmp1 = ((z1 + z2) * (W(7663)));
+        tmp2 = ((z1 - z2) * (W(1395)));
+        tmp0 = tmp1 - tmp2;
+        tmp1 += tmp2;
+        tmp2 = ((z2 + z3) * (-W(11295)));
+        tmp1 += tmp2;
+        z2 = ((z1 + z3) * (W(5027)));
+        tmp0 += z2;
+        tmp2 += z2 + ((z3) * (W(15326)));
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp10 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp11 + tmp1) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp11 - tmp1) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp12 + tmp2) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp12 - tmp2) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp13) >> (CB + P1 + 3)).0);
+        wp += 7;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_9x9` (`jidctint.c`), translated statement by statement.
+fn idct_9x9(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 72];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp14 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut tmp3 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    let mut z4 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..8 {
+        tmp0 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp0 <<= CB;
+        tmp0 += W(1) << (CB - P1 - 1);
+        z1 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z2 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z3 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        tmp3 = ((z3) * (W(5793)));
+        tmp1 = tmp0 + tmp3;
+        tmp2 = tmp0 - tmp3 - tmp3;
+        tmp0 = ((z1 - z2) * (W(5793)));
+        tmp11 = tmp2 + tmp0;
+        tmp14 = tmp2 - tmp0 - tmp0;
+        tmp0 = ((z1 + z2) * (W(10887)));
+        tmp2 = ((z1) * (W(8875)));
+        tmp3 = ((z2) * (W(2012)));
+        tmp10 = tmp1 + tmp0 - tmp3;
+        tmp12 = tmp1 - tmp0 + tmp2;
+        tmp13 = tmp1 - tmp2 + tmp3;
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        z4 = (W(i32::from(block[ip + 8 * 7])) * W(table[qp + 8 * 7]));
+        z2 = ((z2) * (-W(10033)));
+        tmp2 = ((z1 + z3) * (W(7447)));
+        tmp3 = ((z1 + z4) * (W(3962)));
+        tmp0 = tmp2 + tmp3 - z2;
+        tmp1 = ((z3 - z4) * (W(11409)));
+        tmp2 += z2 - tmp1;
+        tmp3 += z2 + tmp1;
+        tmp1 = ((z1 - z3 - z4) * (W(10033)));
+        ws[wp + 8 * 0] = ((tmp10 + tmp0) >> (CB - P1)).0;
+        ws[wp + 8 * 8] = ((tmp10 - tmp0) >> (CB - P1)).0;
+        ws[wp + 8 * 1] = ((tmp11 + tmp1) >> (CB - P1)).0;
+        ws[wp + 8 * 7] = ((tmp11 - tmp1) >> (CB - P1)).0;
+        ws[wp + 8 * 2] = ((tmp12 + tmp2) >> (CB - P1)).0;
+        ws[wp + 8 * 6] = ((tmp12 - tmp2) >> (CB - P1)).0;
+        ws[wp + 8 * 3] = ((tmp13 + tmp3) >> (CB - P1)).0;
+        ws[wp + 8 * 5] = ((tmp13 - tmp3) >> (CB - P1)).0;
+        ws[wp + 8 * 4] = ((tmp14) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..9 {
+        op = ctr * stride;
+        tmp0 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp0 <<= CB;
+        z1 = W(ws[wp + 2]);
+        z2 = W(ws[wp + 4]);
+        z3 = W(ws[wp + 6]);
+        tmp3 = ((z3) * (W(5793)));
+        tmp1 = tmp0 + tmp3;
+        tmp2 = tmp0 - tmp3 - tmp3;
+        tmp0 = ((z1 - z2) * (W(5793)));
+        tmp11 = tmp2 + tmp0;
+        tmp14 = tmp2 - tmp0 - tmp0;
+        tmp0 = ((z1 + z2) * (W(10887)));
+        tmp2 = ((z1) * (W(8875)));
+        tmp3 = ((z2) * (W(2012)));
+        tmp10 = tmp1 + tmp0 - tmp3;
+        tmp12 = tmp1 - tmp0 + tmp2;
+        tmp13 = tmp1 - tmp2 + tmp3;
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        z4 = W(ws[wp + 7]);
+        z2 = ((z2) * (-W(10033)));
+        tmp2 = ((z1 + z3) * (W(7447)));
+        tmp3 = ((z1 + z4) * (W(3962)));
+        tmp0 = tmp2 + tmp3 - z2;
+        tmp1 = ((z3 - z4) * (W(11409)));
+        tmp2 += z2 - tmp1;
+        tmp3 += z2 + tmp1;
+        tmp1 = ((z1 - z3 - z4) * (W(10033)));
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 8] = idct_limit(((tmp10 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp11 + tmp1) >> (CB + P1 + 3)).0);
+        out[op + 7] = idct_limit(((tmp11 - tmp1) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp12 + tmp2) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp12 - tmp2) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp13 + tmp3) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp13 - tmp3) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp14) >> (CB + P1 + 3)).0);
+        wp += 8;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_10x10` (`jidctint.c`), translated statement by statement.
+fn idct_10x10(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 80];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp14 = W(0_i32);
+    let mut tmp20 = W(0_i32);
+    let mut tmp21 = W(0_i32);
+    let mut tmp22 = W(0_i32);
+    let mut tmp23 = W(0_i32);
+    let mut tmp24 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    let mut z4 = W(0_i32);
+    let mut z5 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..8 {
+        z3 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        z3 <<= CB;
+        z3 += W(1) << (CB - P1 - 1);
+        z4 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z1 = ((z4) * (W(9373)));
+        z2 = ((z4) * (W(3580)));
+        tmp10 = z3 + z1;
+        tmp11 = z3 - z2;
+        tmp22 = ((z3 - ((z1 - z2) << 1_usize)) >> (CB - P1));
+        z2 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z3 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        z1 = ((z2 + z3) * (W(6810)));
+        tmp12 = z1 + ((z2) * (W(4209)));
+        tmp13 = z1 - ((z3) * (W(17828)));
+        tmp20 = tmp10 + tmp12;
+        tmp24 = tmp10 - tmp12;
+        tmp21 = tmp11 + tmp13;
+        tmp23 = tmp11 - tmp13;
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        z4 = (W(i32::from(block[ip + 8 * 7])) * W(table[qp + 8 * 7]));
+        tmp11 = z2 + z4;
+        tmp13 = z2 - z4;
+        tmp12 = ((tmp13) * (W(2531)));
+        z5 = z3 << CB;
+        z2 = ((tmp11) * (W(7791)));
+        z4 = z5 + tmp12;
+        tmp10 = ((z1) * (W(11443))) + z2 + z4;
+        tmp14 = ((z1) * (W(1812))) - z2 + z4;
+        z2 = ((tmp11) * (W(4815)));
+        z4 = z5 - tmp12 - (tmp13 << (CB - 1));
+        tmp12 = (z1 - tmp13 - z3) << P1;
+        tmp11 = ((z1) * (W(10323))) - z2 - z4;
+        tmp13 = ((z1) * (W(5260))) - z2 + z4;
+        ws[wp + 8 * 0] = ((tmp20 + tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 9] = ((tmp20 - tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 1] = ((tmp21 + tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 8] = ((tmp21 - tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 2] = (tmp22 + tmp12).0;
+        ws[wp + 8 * 7] = (tmp22 - tmp12).0;
+        ws[wp + 8 * 3] = ((tmp23 + tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 6] = ((tmp23 - tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 4] = ((tmp24 + tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 5] = ((tmp24 - tmp14) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..10 {
+        op = ctr * stride;
+        z3 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        z3 <<= CB;
+        z4 = W(ws[wp + 4]);
+        z1 = ((z4) * (W(9373)));
+        z2 = ((z4) * (W(3580)));
+        tmp10 = z3 + z1;
+        tmp11 = z3 - z2;
+        tmp22 = z3 - ((z1 - z2) << 1_usize);
+        z2 = W(ws[wp + 2]);
+        z3 = W(ws[wp + 6]);
+        z1 = ((z2 + z3) * (W(6810)));
+        tmp12 = z1 + ((z2) * (W(4209)));
+        tmp13 = z1 - ((z3) * (W(17828)));
+        tmp20 = tmp10 + tmp12;
+        tmp24 = tmp10 - tmp12;
+        tmp21 = tmp11 + tmp13;
+        tmp23 = tmp11 - tmp13;
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        z3 <<= CB;
+        z4 = W(ws[wp + 7]);
+        tmp11 = z2 + z4;
+        tmp13 = z2 - z4;
+        tmp12 = ((tmp13) * (W(2531)));
+        z2 = ((tmp11) * (W(7791)));
+        z4 = z3 + tmp12;
+        tmp10 = ((z1) * (W(11443))) + z2 + z4;
+        tmp14 = ((z1) * (W(1812))) - z2 + z4;
+        z2 = ((tmp11) * (W(4815)));
+        z4 = z3 - tmp12 - (tmp13 << (CB - 1));
+        tmp12 = ((z1 - tmp13) << CB) - z3;
+        tmp11 = ((z1) * (W(10323))) - z2 - z4;
+        tmp13 = ((z1) * (W(5260))) - z2 + z4;
+        out[op + 0] = idct_limit(((tmp20 + tmp10) >> (CB + P1 + 3)).0);
+        out[op + 9] = idct_limit(((tmp20 - tmp10) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp21 + tmp11) >> (CB + P1 + 3)).0);
+        out[op + 8] = idct_limit(((tmp21 - tmp11) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp22 + tmp12) >> (CB + P1 + 3)).0);
+        out[op + 7] = idct_limit(((tmp22 - tmp12) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp23 + tmp13) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp23 - tmp13) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp24 + tmp14) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp24 - tmp14) >> (CB + P1 + 3)).0);
+        wp += 8;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_11x11` (`jidctint.c`), translated statement by statement.
+fn idct_11x11(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 88];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp14 = W(0_i32);
+    let mut tmp20 = W(0_i32);
+    let mut tmp21 = W(0_i32);
+    let mut tmp22 = W(0_i32);
+    let mut tmp23 = W(0_i32);
+    let mut tmp24 = W(0_i32);
+    let mut tmp25 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    let mut z4 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..8 {
+        tmp10 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp10 <<= CB;
+        tmp10 += W(1) << (CB - P1 - 1);
+        z1 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z2 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z3 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        tmp20 = ((z2 - z3) * (W(20862)));
+        tmp23 = ((z2 - z1) * (W(3529)));
+        z4 = z1 + z3;
+        tmp24 = ((z4) * (-W(9467)));
+        z4 -= z2;
+        tmp25 = tmp10 + ((z4) * (W(11116)));
+        tmp21 = tmp20 + tmp23 + tmp25 - ((z2) * (W(14924)));
+        tmp20 += tmp25 + ((z3) * (W(17333)));
+        tmp23 += tmp25 - ((z1) * (W(12399)));
+        tmp24 += tmp25;
+        tmp22 = tmp24 - ((z3) * (W(6461)));
+        tmp24 += ((z2) * (W(15929))) - ((z1) * (W(11395)));
+        tmp25 = tmp10 - ((z4) * (W(11585)));
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        z4 = (W(i32::from(block[ip + 8 * 7])) * W(table[qp + 8 * 7]));
+        tmp11 = z1 + z2;
+        tmp14 = ((tmp11 + z3 + z4) * (W(3264)));
+        tmp11 = ((tmp11) * (W(7274)));
+        tmp12 = ((z1 + z3) * (W(5492)));
+        tmp13 = tmp14 + ((z1 + z4) * (W(3000)));
+        tmp10 = tmp11 + tmp12 + tmp13 - ((z1) * (W(7562)));
+        z1 = tmp14 - ((z2 + z3) * (W(9527)));
+        tmp11 += z1 + ((z2) * (W(16984)));
+        tmp12 += z1 - ((z3) * (W(9766)));
+        z1 = ((z2 + z4) * (-W(14731)));
+        tmp11 += z1;
+        tmp13 += z1 + ((z4) * (W(17223)));
+        tmp14 += ((z2) * (-W(12019))) + ((z3) * (W(8203))) - ((z4) * (W(13802)));
+        ws[wp + 8 * 0] = ((tmp20 + tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 10] = ((tmp20 - tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 1] = ((tmp21 + tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 9] = ((tmp21 - tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 2] = ((tmp22 + tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 8] = ((tmp22 - tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 3] = ((tmp23 + tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 7] = ((tmp23 - tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 4] = ((tmp24 + tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 6] = ((tmp24 - tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 5] = ((tmp25) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..11 {
+        op = ctr * stride;
+        tmp10 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp10 <<= CB;
+        z1 = W(ws[wp + 2]);
+        z2 = W(ws[wp + 4]);
+        z3 = W(ws[wp + 6]);
+        tmp20 = ((z2 - z3) * (W(20862)));
+        tmp23 = ((z2 - z1) * (W(3529)));
+        z4 = z1 + z3;
+        tmp24 = ((z4) * (-W(9467)));
+        z4 -= z2;
+        tmp25 = tmp10 + ((z4) * (W(11116)));
+        tmp21 = tmp20 + tmp23 + tmp25 - ((z2) * (W(14924)));
+        tmp20 += tmp25 + ((z3) * (W(17333)));
+        tmp23 += tmp25 - ((z1) * (W(12399)));
+        tmp24 += tmp25;
+        tmp22 = tmp24 - ((z3) * (W(6461)));
+        tmp24 += ((z2) * (W(15929))) - ((z1) * (W(11395)));
+        tmp25 = tmp10 - ((z4) * (W(11585)));
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        z4 = W(ws[wp + 7]);
+        tmp11 = z1 + z2;
+        tmp14 = ((tmp11 + z3 + z4) * (W(3264)));
+        tmp11 = ((tmp11) * (W(7274)));
+        tmp12 = ((z1 + z3) * (W(5492)));
+        tmp13 = tmp14 + ((z1 + z4) * (W(3000)));
+        tmp10 = tmp11 + tmp12 + tmp13 - ((z1) * (W(7562)));
+        z1 = tmp14 - ((z2 + z3) * (W(9527)));
+        tmp11 += z1 + ((z2) * (W(16984)));
+        tmp12 += z1 - ((z3) * (W(9766)));
+        z1 = ((z2 + z4) * (-W(14731)));
+        tmp11 += z1;
+        tmp13 += z1 + ((z4) * (W(17223)));
+        tmp14 += ((z2) * (-W(12019))) + ((z3) * (W(8203))) - ((z4) * (W(13802)));
+        out[op + 0] = idct_limit(((tmp20 + tmp10) >> (CB + P1 + 3)).0);
+        out[op + 10] = idct_limit(((tmp20 - tmp10) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp21 + tmp11) >> (CB + P1 + 3)).0);
+        out[op + 9] = idct_limit(((tmp21 - tmp11) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp22 + tmp12) >> (CB + P1 + 3)).0);
+        out[op + 8] = idct_limit(((tmp22 - tmp12) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp23 + tmp13) >> (CB + P1 + 3)).0);
+        out[op + 7] = idct_limit(((tmp23 - tmp13) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp24 + tmp14) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp24 - tmp14) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp25) >> (CB + P1 + 3)).0);
+        wp += 8;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_12x12` (`jidctint.c`), translated statement by statement.
+fn idct_12x12(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 96];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp14 = W(0_i32);
+    let mut tmp15 = W(0_i32);
+    let mut tmp20 = W(0_i32);
+    let mut tmp21 = W(0_i32);
+    let mut tmp22 = W(0_i32);
+    let mut tmp23 = W(0_i32);
+    let mut tmp24 = W(0_i32);
+    let mut tmp25 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    let mut z4 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..8 {
+        z3 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        z3 <<= CB;
+        z3 += W(1) << (CB - P1 - 1);
+        z4 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z4 = ((z4) * (W(10033)));
+        tmp10 = z3 + z4;
+        tmp11 = z3 - z4;
+        z1 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z4 = ((z1) * (W(11190)));
+        z1 <<= CB;
+        z2 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        z2 <<= CB;
+        tmp12 = z1 - z2;
+        tmp21 = z3 + tmp12;
+        tmp24 = z3 - tmp12;
+        tmp12 = z4 + z2;
+        tmp20 = tmp10 + tmp12;
+        tmp25 = tmp10 - tmp12;
+        tmp12 = z4 - z1 - z2;
+        tmp22 = tmp11 + tmp12;
+        tmp23 = tmp11 - tmp12;
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        z4 = (W(i32::from(block[ip + 8 * 7])) * W(table[qp + 8 * 7]));
+        tmp11 = ((z2) * (W(10703)));
+        tmp14 = ((z2) * (-W(4433)));
+        tmp10 = z1 + z3;
+        tmp15 = ((tmp10 + z4) * (W(7053)));
+        tmp12 = tmp15 + ((tmp10) * (W(2139)));
+        tmp10 = tmp12 + tmp11 + ((z1) * (W(2295)));
+        tmp13 = ((z3 + z4) * (-W(8565)));
+        tmp12 += tmp13 + tmp14 - ((z3) * (W(12112)));
+        tmp13 += tmp15 - tmp11 + ((z4) * (W(12998)));
+        tmp15 += tmp14 - ((z1) * (W(5540))) - ((z4) * (W(16244)));
+        z1 -= z4;
+        z2 -= z3;
+        z3 = ((z1 + z2) * (W(4433)));
+        tmp11 = z3 + ((z1) * (W(6270)));
+        tmp14 = z3 - ((z2) * (W(15137)));
+        ws[wp + 8 * 0] = ((tmp20 + tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 11] = ((tmp20 - tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 1] = ((tmp21 + tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 10] = ((tmp21 - tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 2] = ((tmp22 + tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 9] = ((tmp22 - tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 3] = ((tmp23 + tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 8] = ((tmp23 - tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 4] = ((tmp24 + tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 7] = ((tmp24 - tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 5] = ((tmp25 + tmp15) >> (CB - P1)).0;
+        ws[wp + 8 * 6] = ((tmp25 - tmp15) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..12 {
+        op = ctr * stride;
+        z3 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        z3 <<= CB;
+        z4 = W(ws[wp + 4]);
+        z4 = ((z4) * (W(10033)));
+        tmp10 = z3 + z4;
+        tmp11 = z3 - z4;
+        z1 = W(ws[wp + 2]);
+        z4 = ((z1) * (W(11190)));
+        z1 <<= CB;
+        z2 = W(ws[wp + 6]);
+        z2 <<= CB;
+        tmp12 = z1 - z2;
+        tmp21 = z3 + tmp12;
+        tmp24 = z3 - tmp12;
+        tmp12 = z4 + z2;
+        tmp20 = tmp10 + tmp12;
+        tmp25 = tmp10 - tmp12;
+        tmp12 = z4 - z1 - z2;
+        tmp22 = tmp11 + tmp12;
+        tmp23 = tmp11 - tmp12;
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        z4 = W(ws[wp + 7]);
+        tmp11 = ((z2) * (W(10703)));
+        tmp14 = ((z2) * (-W(4433)));
+        tmp10 = z1 + z3;
+        tmp15 = ((tmp10 + z4) * (W(7053)));
+        tmp12 = tmp15 + ((tmp10) * (W(2139)));
+        tmp10 = tmp12 + tmp11 + ((z1) * (W(2295)));
+        tmp13 = ((z3 + z4) * (-W(8565)));
+        tmp12 += tmp13 + tmp14 - ((z3) * (W(12112)));
+        tmp13 += tmp15 - tmp11 + ((z4) * (W(12998)));
+        tmp15 += tmp14 - ((z1) * (W(5540))) - ((z4) * (W(16244)));
+        z1 -= z4;
+        z2 -= z3;
+        z3 = ((z1 + z2) * (W(4433)));
+        tmp11 = z3 + ((z1) * (W(6270)));
+        tmp14 = z3 - ((z2) * (W(15137)));
+        out[op + 0] = idct_limit(((tmp20 + tmp10) >> (CB + P1 + 3)).0);
+        out[op + 11] = idct_limit(((tmp20 - tmp10) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp21 + tmp11) >> (CB + P1 + 3)).0);
+        out[op + 10] = idct_limit(((tmp21 - tmp11) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp22 + tmp12) >> (CB + P1 + 3)).0);
+        out[op + 9] = idct_limit(((tmp22 - tmp12) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp23 + tmp13) >> (CB + P1 + 3)).0);
+        out[op + 8] = idct_limit(((tmp23 - tmp13) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp24 + tmp14) >> (CB + P1 + 3)).0);
+        out[op + 7] = idct_limit(((tmp24 - tmp14) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp25 + tmp15) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp25 - tmp15) >> (CB + P1 + 3)).0);
+        wp += 8;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_13x13` (`jidctint.c`), translated statement by statement.
+fn idct_13x13(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 104];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp14 = W(0_i32);
+    let mut tmp15 = W(0_i32);
+    let mut tmp20 = W(0_i32);
+    let mut tmp21 = W(0_i32);
+    let mut tmp22 = W(0_i32);
+    let mut tmp23 = W(0_i32);
+    let mut tmp24 = W(0_i32);
+    let mut tmp25 = W(0_i32);
+    let mut tmp26 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    let mut z4 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..8 {
+        z1 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        z1 <<= CB;
+        z1 += W(1) << (CB - P1 - 1);
+        z2 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z3 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z4 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        tmp10 = z3 + z4;
+        tmp11 = z3 - z4;
+        tmp12 = ((tmp10) * (W(9465)));
+        tmp13 = ((tmp11) * (W(793))) + z1;
+        tmp20 = ((z2) * (W(11249))) + tmp12 + tmp13;
+        tmp22 = ((z2) * (W(4108))) - tmp12 + tmp13;
+        tmp12 = ((tmp10) * (W(2592)));
+        tmp13 = ((tmp11) * (W(3989))) + z1;
+        tmp21 = ((z2) * (W(8672))) - tmp12 + tmp13;
+        tmp25 = ((z2) * (-W(10258))) + tmp12 + tmp13;
+        tmp12 = ((tmp10) * (W(3570)));
+        tmp13 = ((tmp11) * (W(7678))) - z1;
+        tmp23 = ((z2) * (-W(1396))) - tmp12 - tmp13;
+        tmp24 = ((z2) * (-W(6581))) + tmp12 - tmp13;
+        tmp26 = ((tmp11 - z2) * (W(11585))) + z1;
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        z4 = (W(i32::from(block[ip + 8 * 7])) * W(table[qp + 8 * 7]));
+        tmp11 = ((z1 + z2) * (W(10832)));
+        tmp12 = ((z1 + z3) * (W(9534)));
+        tmp15 = z1 + z4;
+        tmp13 = ((tmp15) * (W(7682)));
+        tmp10 = tmp11 + tmp12 + tmp13 - ((z1) * (W(16549)));
+        tmp14 = ((z2 + z3) * (-W(2773)));
+        tmp11 += tmp14 + ((z2) * (W(6859)));
+        tmp12 += tmp14 - ((z3) * (W(12879)));
+        tmp14 = ((z2 + z4) * (-W(9534)));
+        tmp11 += tmp14;
+        tmp13 += tmp14 + ((z4) * (W(18068)));
+        tmp14 = ((z3 + z4) * (-W(5384)));
+        tmp12 += tmp14;
+        tmp13 += tmp14;
+        tmp15 = ((tmp15) * (W(2773)));
+        tmp14 = tmp15 + ((z1) * (W(2611))) - ((z2) * (W(3818)));
+        z1 = ((z3 - z2) * (W(7682)));
+        tmp14 += z1;
+        tmp15 += z1 + ((z3) * (W(3150))) - ((z4) * (W(14273)));
+        ws[wp + 8 * 0] = ((tmp20 + tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 12] = ((tmp20 - tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 1] = ((tmp21 + tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 11] = ((tmp21 - tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 2] = ((tmp22 + tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 10] = ((tmp22 - tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 3] = ((tmp23 + tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 9] = ((tmp23 - tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 4] = ((tmp24 + tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 8] = ((tmp24 - tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 5] = ((tmp25 + tmp15) >> (CB - P1)).0;
+        ws[wp + 8 * 7] = ((tmp25 - tmp15) >> (CB - P1)).0;
+        ws[wp + 8 * 6] = ((tmp26) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..13 {
+        op = ctr * stride;
+        z1 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        z1 <<= CB;
+        z2 = W(ws[wp + 2]);
+        z3 = W(ws[wp + 4]);
+        z4 = W(ws[wp + 6]);
+        tmp10 = z3 + z4;
+        tmp11 = z3 - z4;
+        tmp12 = ((tmp10) * (W(9465)));
+        tmp13 = ((tmp11) * (W(793))) + z1;
+        tmp20 = ((z2) * (W(11249))) + tmp12 + tmp13;
+        tmp22 = ((z2) * (W(4108))) - tmp12 + tmp13;
+        tmp12 = ((tmp10) * (W(2592)));
+        tmp13 = ((tmp11) * (W(3989))) + z1;
+        tmp21 = ((z2) * (W(8672))) - tmp12 + tmp13;
+        tmp25 = ((z2) * (-W(10258))) + tmp12 + tmp13;
+        tmp12 = ((tmp10) * (W(3570)));
+        tmp13 = ((tmp11) * (W(7678))) - z1;
+        tmp23 = ((z2) * (-W(1396))) - tmp12 - tmp13;
+        tmp24 = ((z2) * (-W(6581))) + tmp12 - tmp13;
+        tmp26 = ((tmp11 - z2) * (W(11585))) + z1;
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        z4 = W(ws[wp + 7]);
+        tmp11 = ((z1 + z2) * (W(10832)));
+        tmp12 = ((z1 + z3) * (W(9534)));
+        tmp15 = z1 + z4;
+        tmp13 = ((tmp15) * (W(7682)));
+        tmp10 = tmp11 + tmp12 + tmp13 - ((z1) * (W(16549)));
+        tmp14 = ((z2 + z3) * (-W(2773)));
+        tmp11 += tmp14 + ((z2) * (W(6859)));
+        tmp12 += tmp14 - ((z3) * (W(12879)));
+        tmp14 = ((z2 + z4) * (-W(9534)));
+        tmp11 += tmp14;
+        tmp13 += tmp14 + ((z4) * (W(18068)));
+        tmp14 = ((z3 + z4) * (-W(5384)));
+        tmp12 += tmp14;
+        tmp13 += tmp14;
+        tmp15 = ((tmp15) * (W(2773)));
+        tmp14 = tmp15 + ((z1) * (W(2611))) - ((z2) * (W(3818)));
+        z1 = ((z3 - z2) * (W(7682)));
+        tmp14 += z1;
+        tmp15 += z1 + ((z3) * (W(3150))) - ((z4) * (W(14273)));
+        out[op + 0] = idct_limit(((tmp20 + tmp10) >> (CB + P1 + 3)).0);
+        out[op + 12] = idct_limit(((tmp20 - tmp10) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp21 + tmp11) >> (CB + P1 + 3)).0);
+        out[op + 11] = idct_limit(((tmp21 - tmp11) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp22 + tmp12) >> (CB + P1 + 3)).0);
+        out[op + 10] = idct_limit(((tmp22 - tmp12) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp23 + tmp13) >> (CB + P1 + 3)).0);
+        out[op + 9] = idct_limit(((tmp23 - tmp13) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp24 + tmp14) >> (CB + P1 + 3)).0);
+        out[op + 8] = idct_limit(((tmp24 - tmp14) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp25 + tmp15) >> (CB + P1 + 3)).0);
+        out[op + 7] = idct_limit(((tmp25 - tmp15) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp26) >> (CB + P1 + 3)).0);
+        wp += 8;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_14x14` (`jidctint.c`), translated statement by statement.
+fn idct_14x14(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 112];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp14 = W(0_i32);
+    let mut tmp15 = W(0_i32);
+    let mut tmp16 = W(0_i32);
+    let mut tmp20 = W(0_i32);
+    let mut tmp21 = W(0_i32);
+    let mut tmp22 = W(0_i32);
+    let mut tmp23 = W(0_i32);
+    let mut tmp24 = W(0_i32);
+    let mut tmp25 = W(0_i32);
+    let mut tmp26 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    let mut z4 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..8 {
+        z1 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        z1 <<= CB;
+        z1 += W(1) << (CB - P1 - 1);
+        z4 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z2 = ((z4) * (W(10438)));
+        z3 = ((z4) * (W(2578)));
+        z4 = ((z4) * (W(7223)));
+        tmp10 = z1 + z2;
+        tmp11 = z1 + z3;
+        tmp12 = z1 - z4;
+        tmp23 = ((z1 - ((z2 + z3 - z4) << 1_usize)) >> (CB - P1));
+        z1 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z2 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        z3 = ((z1 + z2) * (W(9058)));
+        tmp13 = z3 + ((z1) * (W(2237)));
+        tmp14 = z3 - ((z2) * (W(14084)));
+        tmp15 = ((z1) * (W(5027))) - ((z2) * (W(11295)));
+        tmp20 = tmp10 + tmp13;
+        tmp26 = tmp10 - tmp13;
+        tmp21 = tmp11 + tmp14;
+        tmp25 = tmp11 - tmp14;
+        tmp22 = tmp12 + tmp15;
+        tmp24 = tmp12 - tmp15;
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        z4 = (W(i32::from(block[ip + 8 * 7])) * W(table[qp + 8 * 7]));
+        tmp13 = z4 << CB;
+        tmp14 = z1 + z3;
+        tmp11 = ((z1 + z2) * (W(10935)));
+        tmp12 = ((tmp14) * (W(9810)));
+        tmp10 = tmp11 + tmp12 + tmp13 - ((z1) * (W(9232)));
+        tmp14 = ((tmp14) * (W(6164)));
+        tmp16 = tmp14 - ((z1) * (W(8693)));
+        z1 -= z2;
+        tmp15 = ((z1) * (W(3826))) - tmp13;
+        tmp16 += tmp15;
+        z1 += z4;
+        z4 = ((z2 + z3) * (-W(1297))) - tmp13;
+        tmp11 += z4 - ((z2) * (W(3474)));
+        tmp12 += z4 - ((z3) * (W(19447)));
+        z4 = ((z3 - z2) * (W(11512)));
+        tmp14 += z4 + tmp13 - ((z3) * (W(13850)));
+        tmp15 += z4 + ((z2) * (W(5529)));
+        tmp13 = (z1 - z3) << P1;
+        ws[wp + 8 * 0] = ((tmp20 + tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 13] = ((tmp20 - tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 1] = ((tmp21 + tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 12] = ((tmp21 - tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 2] = ((tmp22 + tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 11] = ((tmp22 - tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 3] = (tmp23 + tmp13).0;
+        ws[wp + 8 * 10] = (tmp23 - tmp13).0;
+        ws[wp + 8 * 4] = ((tmp24 + tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 9] = ((tmp24 - tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 5] = ((tmp25 + tmp15) >> (CB - P1)).0;
+        ws[wp + 8 * 8] = ((tmp25 - tmp15) >> (CB - P1)).0;
+        ws[wp + 8 * 6] = ((tmp26 + tmp16) >> (CB - P1)).0;
+        ws[wp + 8 * 7] = ((tmp26 - tmp16) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..14 {
+        op = ctr * stride;
+        z1 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        z1 <<= CB;
+        z4 = W(ws[wp + 4]);
+        z2 = ((z4) * (W(10438)));
+        z3 = ((z4) * (W(2578)));
+        z4 = ((z4) * (W(7223)));
+        tmp10 = z1 + z2;
+        tmp11 = z1 + z3;
+        tmp12 = z1 - z4;
+        tmp23 = z1 - ((z2 + z3 - z4) << 1_usize);
+        z1 = W(ws[wp + 2]);
+        z2 = W(ws[wp + 6]);
+        z3 = ((z1 + z2) * (W(9058)));
+        tmp13 = z3 + ((z1) * (W(2237)));
+        tmp14 = z3 - ((z2) * (W(14084)));
+        tmp15 = ((z1) * (W(5027))) - ((z2) * (W(11295)));
+        tmp20 = tmp10 + tmp13;
+        tmp26 = tmp10 - tmp13;
+        tmp21 = tmp11 + tmp14;
+        tmp25 = tmp11 - tmp14;
+        tmp22 = tmp12 + tmp15;
+        tmp24 = tmp12 - tmp15;
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        z4 = W(ws[wp + 7]);
+        z4 <<= CB;
+        tmp14 = z1 + z3;
+        tmp11 = ((z1 + z2) * (W(10935)));
+        tmp12 = ((tmp14) * (W(9810)));
+        tmp10 = tmp11 + tmp12 + z4 - ((z1) * (W(9232)));
+        tmp14 = ((tmp14) * (W(6164)));
+        tmp16 = tmp14 - ((z1) * (W(8693)));
+        z1 -= z2;
+        tmp15 = ((z1) * (W(3826))) - z4;
+        tmp16 += tmp15;
+        tmp13 = ((z2 + z3) * (-W(1297))) - z4;
+        tmp11 += tmp13 - ((z2) * (W(3474)));
+        tmp12 += tmp13 - ((z3) * (W(19447)));
+        tmp13 = ((z3 - z2) * (W(11512)));
+        tmp14 += tmp13 + z4 - ((z3) * (W(13850)));
+        tmp15 += tmp13 + ((z2) * (W(5529)));
+        tmp13 = ((z1 - z3) << CB) + z4;
+        out[op + 0] = idct_limit(((tmp20 + tmp10) >> (CB + P1 + 3)).0);
+        out[op + 13] = idct_limit(((tmp20 - tmp10) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp21 + tmp11) >> (CB + P1 + 3)).0);
+        out[op + 12] = idct_limit(((tmp21 - tmp11) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp22 + tmp12) >> (CB + P1 + 3)).0);
+        out[op + 11] = idct_limit(((tmp22 - tmp12) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp23 + tmp13) >> (CB + P1 + 3)).0);
+        out[op + 10] = idct_limit(((tmp23 - tmp13) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp24 + tmp14) >> (CB + P1 + 3)).0);
+        out[op + 9] = idct_limit(((tmp24 - tmp14) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp25 + tmp15) >> (CB + P1 + 3)).0);
+        out[op + 8] = idct_limit(((tmp25 - tmp15) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp26 + tmp16) >> (CB + P1 + 3)).0);
+        out[op + 7] = idct_limit(((tmp26 - tmp16) >> (CB + P1 + 3)).0);
+        wp += 8;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_15x15` (`jidctint.c`), translated statement by statement.
+fn idct_15x15(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 120];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp14 = W(0_i32);
+    let mut tmp15 = W(0_i32);
+    let mut tmp16 = W(0_i32);
+    let mut tmp20 = W(0_i32);
+    let mut tmp21 = W(0_i32);
+    let mut tmp22 = W(0_i32);
+    let mut tmp23 = W(0_i32);
+    let mut tmp24 = W(0_i32);
+    let mut tmp25 = W(0_i32);
+    let mut tmp26 = W(0_i32);
+    let mut tmp27 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    let mut z4 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..8 {
+        z1 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        z1 <<= CB;
+        z1 += W(1) << (CB - P1 - 1);
+        z2 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z3 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z4 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        tmp10 = ((z4) * (W(3580)));
+        tmp11 = ((z4) * (W(9373)));
+        tmp12 = z1 - tmp10;
+        tmp13 = z1 + tmp11;
+        z1 -= (tmp11 - tmp10) << 1_usize;
+        z4 = z2 - z3;
+        z3 += z2;
+        tmp10 = ((z3) * (W(10958)));
+        tmp11 = ((z4) * (W(374)));
+        z2 = ((z2) * (W(11795)));
+        tmp20 = tmp13 + tmp10 + tmp11;
+        tmp23 = tmp12 - tmp10 + tmp11 + z2;
+        tmp10 = ((z3) * (W(4482)));
+        tmp11 = ((z4) * (W(3271)));
+        tmp25 = tmp13 - tmp10 - tmp11;
+        tmp26 = tmp12 + tmp10 - tmp11 - z2;
+        tmp10 = ((z3) * (W(6476)));
+        tmp11 = ((z4) * (W(2896)));
+        tmp21 = tmp12 + tmp10 + tmp11;
+        tmp24 = tmp13 - tmp10 + tmp11;
+        tmp11 += tmp11;
+        tmp22 = z1 + tmp11;
+        tmp27 = z1 - tmp11 - tmp11;
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z4 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        z3 = ((z4) * (W(10033)));
+        z4 = (W(i32::from(block[ip + 8 * 7])) * W(table[qp + 8 * 7]));
+        tmp13 = z2 - z4;
+        tmp15 = ((z1 + tmp13) * (W(6810)));
+        tmp11 = tmp15 + ((z1) * (W(4209)));
+        tmp14 = tmp15 - ((tmp13) * (W(17828)));
+        tmp13 = ((z2) * (-W(6810)));
+        tmp15 = ((z2) * (-W(11018)));
+        z2 = z1 - z4;
+        tmp12 = z3 + ((z2) * (W(11522)));
+        tmp10 = tmp12 + ((z4) * (W(20131))) - tmp15;
+        tmp16 = tmp12 - ((z1) * (W(9113))) + tmp13;
+        tmp12 = ((z2) * (W(10033))) - z3;
+        z2 = ((z1 + z4) * (W(4712)));
+        tmp13 += z2 + ((z1) * (W(3897))) - z3;
+        tmp15 += z2 - ((z4) * (W(7121))) + z3;
+        ws[wp + 8 * 0] = ((tmp20 + tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 14] = ((tmp20 - tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 1] = ((tmp21 + tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 13] = ((tmp21 - tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 2] = ((tmp22 + tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 12] = ((tmp22 - tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 3] = ((tmp23 + tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 11] = ((tmp23 - tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 4] = ((tmp24 + tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 10] = ((tmp24 - tmp14) >> (CB - P1)).0;
+        ws[wp + 8 * 5] = ((tmp25 + tmp15) >> (CB - P1)).0;
+        ws[wp + 8 * 9] = ((tmp25 - tmp15) >> (CB - P1)).0;
+        ws[wp + 8 * 6] = ((tmp26 + tmp16) >> (CB - P1)).0;
+        ws[wp + 8 * 8] = ((tmp26 - tmp16) >> (CB - P1)).0;
+        ws[wp + 8 * 7] = ((tmp27) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..15 {
+        op = ctr * stride;
+        z1 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        z1 <<= CB;
+        z2 = W(ws[wp + 2]);
+        z3 = W(ws[wp + 4]);
+        z4 = W(ws[wp + 6]);
+        tmp10 = ((z4) * (W(3580)));
+        tmp11 = ((z4) * (W(9373)));
+        tmp12 = z1 - tmp10;
+        tmp13 = z1 + tmp11;
+        z1 -= (tmp11 - tmp10) << 1_usize;
+        z4 = z2 - z3;
+        z3 += z2;
+        tmp10 = ((z3) * (W(10958)));
+        tmp11 = ((z4) * (W(374)));
+        z2 = ((z2) * (W(11795)));
+        tmp20 = tmp13 + tmp10 + tmp11;
+        tmp23 = tmp12 - tmp10 + tmp11 + z2;
+        tmp10 = ((z3) * (W(4482)));
+        tmp11 = ((z4) * (W(3271)));
+        tmp25 = tmp13 - tmp10 - tmp11;
+        tmp26 = tmp12 + tmp10 - tmp11 - z2;
+        tmp10 = ((z3) * (W(6476)));
+        tmp11 = ((z4) * (W(2896)));
+        tmp21 = tmp12 + tmp10 + tmp11;
+        tmp24 = tmp13 - tmp10 + tmp11;
+        tmp11 += tmp11;
+        tmp22 = z1 + tmp11;
+        tmp27 = z1 - tmp11 - tmp11;
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z4 = W(ws[wp + 5]);
+        z3 = ((z4) * (W(10033)));
+        z4 = W(ws[wp + 7]);
+        tmp13 = z2 - z4;
+        tmp15 = ((z1 + tmp13) * (W(6810)));
+        tmp11 = tmp15 + ((z1) * (W(4209)));
+        tmp14 = tmp15 - ((tmp13) * (W(17828)));
+        tmp13 = ((z2) * (-W(6810)));
+        tmp15 = ((z2) * (-W(11018)));
+        z2 = z1 - z4;
+        tmp12 = z3 + ((z2) * (W(11522)));
+        tmp10 = tmp12 + ((z4) * (W(20131))) - tmp15;
+        tmp16 = tmp12 - ((z1) * (W(9113))) + tmp13;
+        tmp12 = ((z2) * (W(10033))) - z3;
+        z2 = ((z1 + z4) * (W(4712)));
+        tmp13 += z2 + ((z1) * (W(3897))) - z3;
+        tmp15 += z2 - ((z4) * (W(7121))) + z3;
+        out[op + 0] = idct_limit(((tmp20 + tmp10) >> (CB + P1 + 3)).0);
+        out[op + 14] = idct_limit(((tmp20 - tmp10) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp21 + tmp11) >> (CB + P1 + 3)).0);
+        out[op + 13] = idct_limit(((tmp21 - tmp11) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp22 + tmp12) >> (CB + P1 + 3)).0);
+        out[op + 12] = idct_limit(((tmp22 - tmp12) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp23 + tmp13) >> (CB + P1 + 3)).0);
+        out[op + 11] = idct_limit(((tmp23 - tmp13) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp24 + tmp14) >> (CB + P1 + 3)).0);
+        out[op + 10] = idct_limit(((tmp24 - tmp14) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp25 + tmp15) >> (CB + P1 + 3)).0);
+        out[op + 9] = idct_limit(((tmp25 - tmp15) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp26 + tmp16) >> (CB + P1 + 3)).0);
+        out[op + 8] = idct_limit(((tmp26 - tmp16) >> (CB + P1 + 3)).0);
+        out[op + 7] = idct_limit(((tmp27) >> (CB + P1 + 3)).0);
+        wp += 8;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_16x16` (`jidctint.c`), translated statement by statement.
+fn idct_16x16(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 128];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut tmp20 = W(0_i32);
+    let mut tmp21 = W(0_i32);
+    let mut tmp22 = W(0_i32);
+    let mut tmp23 = W(0_i32);
+    let mut tmp24 = W(0_i32);
+    let mut tmp25 = W(0_i32);
+    let mut tmp26 = W(0_i32);
+    let mut tmp27 = W(0_i32);
+    let mut tmp3 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    let mut z4 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..8 {
+        tmp0 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp0 <<= CB;
+        tmp0 += 1 << (CB - P1 - 1);
+        z1 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        tmp1 = ((z1) * (W(10703)));
+        tmp2 = ((z1) * (W(4433)));
+        tmp10 = tmp0 + tmp1;
+        tmp11 = tmp0 - tmp1;
+        tmp12 = tmp0 + tmp2;
+        tmp13 = tmp0 - tmp2;
+        z1 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z2 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        z3 = z1 - z2;
+        z4 = ((z3) * (W(2260)));
+        z3 = ((z3) * (W(11363)));
+        tmp0 = z3 + ((z2) * (W(20995)));
+        tmp1 = z4 + ((z1) * (W(7373)));
+        tmp2 = z3 - ((z1) * (W(4926)));
+        tmp3 = z4 - ((z2) * (W(4176)));
+        tmp20 = tmp10 + tmp0;
+        tmp27 = tmp10 - tmp0;
+        tmp21 = tmp12 + tmp1;
+        tmp26 = tmp12 - tmp1;
+        tmp22 = tmp13 + tmp2;
+        tmp25 = tmp13 - tmp2;
+        tmp23 = tmp11 + tmp3;
+        tmp24 = tmp11 - tmp3;
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        z4 = (W(i32::from(block[ip + 8 * 7])) * W(table[qp + 8 * 7]));
+        tmp11 = z1 + z3;
+        tmp1 = ((z1 + z2) * (W(11086)));
+        tmp2 = ((tmp11) * (W(10217)));
+        tmp3 = ((z1 + z4) * (W(8956)));
+        tmp10 = ((z1 - z4) * (W(7350)));
+        tmp11 = ((tmp11) * (W(5461)));
+        tmp12 = ((z1 - z2) * (W(3363)));
+        tmp0 = tmp1 + tmp2 + tmp3 - ((z1) * (W(18730)));
+        tmp13 = tmp10 + tmp11 + tmp12 - ((z1) * (W(15038)));
+        z1 = ((z2 + z3) * (W(1136)));
+        tmp1 += z1 + ((z2) * (W(589)));
+        tmp2 += z1 - ((z3) * (W(9222)));
+        z1 = ((z3 - z2) * (W(11529)));
+        tmp11 += z1 - ((z3) * (W(6278)));
+        tmp12 += z1 + ((z2) * (W(16154)));
+        z2 += z4;
+        z1 = ((z2) * (-W(5461)));
+        tmp1 += z1;
+        tmp3 += z1 + ((z4) * (W(8728)));
+        z2 = ((z2) * (-W(10217)));
+        tmp10 += z2 + ((z4) * (W(25733)));
+        tmp12 += z2;
+        z2 = ((z3 + z4) * (-W(11086)));
+        tmp2 += z2;
+        tmp3 += z2;
+        z2 = ((z4 - z3) * (W(3363)));
+        tmp10 += z2;
+        tmp11 += z2;
+        ws[wp + 8 * 0] = ((tmp20 + tmp0) >> (CB - P1)).0;
+        ws[wp + 8 * 15] = ((tmp20 - tmp0) >> (CB - P1)).0;
+        ws[wp + 8 * 1] = ((tmp21 + tmp1) >> (CB - P1)).0;
+        ws[wp + 8 * 14] = ((tmp21 - tmp1) >> (CB - P1)).0;
+        ws[wp + 8 * 2] = ((tmp22 + tmp2) >> (CB - P1)).0;
+        ws[wp + 8 * 13] = ((tmp22 - tmp2) >> (CB - P1)).0;
+        ws[wp + 8 * 3] = ((tmp23 + tmp3) >> (CB - P1)).0;
+        ws[wp + 8 * 12] = ((tmp23 - tmp3) >> (CB - P1)).0;
+        ws[wp + 8 * 4] = ((tmp24 + tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 11] = ((tmp24 - tmp10) >> (CB - P1)).0;
+        ws[wp + 8 * 5] = ((tmp25 + tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 10] = ((tmp25 - tmp11) >> (CB - P1)).0;
+        ws[wp + 8 * 6] = ((tmp26 + tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 9] = ((tmp26 - tmp12) >> (CB - P1)).0;
+        ws[wp + 8 * 7] = ((tmp27 + tmp13) >> (CB - P1)).0;
+        ws[wp + 8 * 8] = ((tmp27 - tmp13) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..16 {
+        op = ctr * stride;
+        tmp0 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp0 <<= CB;
+        z1 = W(ws[wp + 4]);
+        tmp1 = ((z1) * (W(10703)));
+        tmp2 = ((z1) * (W(4433)));
+        tmp10 = tmp0 + tmp1;
+        tmp11 = tmp0 - tmp1;
+        tmp12 = tmp0 + tmp2;
+        tmp13 = tmp0 - tmp2;
+        z1 = W(ws[wp + 2]);
+        z2 = W(ws[wp + 6]);
+        z3 = z1 - z2;
+        z4 = ((z3) * (W(2260)));
+        z3 = ((z3) * (W(11363)));
+        tmp0 = z3 + ((z2) * (W(20995)));
+        tmp1 = z4 + ((z1) * (W(7373)));
+        tmp2 = z3 - ((z1) * (W(4926)));
+        tmp3 = z4 - ((z2) * (W(4176)));
+        tmp20 = tmp10 + tmp0;
+        tmp27 = tmp10 - tmp0;
+        tmp21 = tmp12 + tmp1;
+        tmp26 = tmp12 - tmp1;
+        tmp22 = tmp13 + tmp2;
+        tmp25 = tmp13 - tmp2;
+        tmp23 = tmp11 + tmp3;
+        tmp24 = tmp11 - tmp3;
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        z4 = W(ws[wp + 7]);
+        tmp11 = z1 + z3;
+        tmp1 = ((z1 + z2) * (W(11086)));
+        tmp2 = ((tmp11) * (W(10217)));
+        tmp3 = ((z1 + z4) * (W(8956)));
+        tmp10 = ((z1 - z4) * (W(7350)));
+        tmp11 = ((tmp11) * (W(5461)));
+        tmp12 = ((z1 - z2) * (W(3363)));
+        tmp0 = tmp1 + tmp2 + tmp3 - ((z1) * (W(18730)));
+        tmp13 = tmp10 + tmp11 + tmp12 - ((z1) * (W(15038)));
+        z1 = ((z2 + z3) * (W(1136)));
+        tmp1 += z1 + ((z2) * (W(589)));
+        tmp2 += z1 - ((z3) * (W(9222)));
+        z1 = ((z3 - z2) * (W(11529)));
+        tmp11 += z1 - ((z3) * (W(6278)));
+        tmp12 += z1 + ((z2) * (W(16154)));
+        z2 += z4;
+        z1 = ((z2) * (-W(5461)));
+        tmp1 += z1;
+        tmp3 += z1 + ((z4) * (W(8728)));
+        z2 = ((z2) * (-W(10217)));
+        tmp10 += z2 + ((z4) * (W(25733)));
+        tmp12 += z2;
+        z2 = ((z3 + z4) * (-W(11086)));
+        tmp2 += z2;
+        tmp3 += z2;
+        z2 = ((z4 - z3) * (W(3363)));
+        tmp10 += z2;
+        tmp11 += z2;
+        out[op + 0] = idct_limit(((tmp20 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 15] = idct_limit(((tmp20 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp21 + tmp1) >> (CB + P1 + 3)).0);
+        out[op + 14] = idct_limit(((tmp21 - tmp1) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp22 + tmp2) >> (CB + P1 + 3)).0);
+        out[op + 13] = idct_limit(((tmp22 - tmp2) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp23 + tmp3) >> (CB + P1 + 3)).0);
+        out[op + 12] = idct_limit(((tmp23 - tmp3) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp24 + tmp10) >> (CB + P1 + 3)).0);
+        out[op + 11] = idct_limit(((tmp24 - tmp10) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp25 + tmp11) >> (CB + P1 + 3)).0);
+        out[op + 10] = idct_limit(((tmp25 - tmp11) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp26 + tmp12) >> (CB + P1 + 3)).0);
+        out[op + 9] = idct_limit(((tmp26 - tmp12) >> (CB + P1 + 3)).0);
+        out[op + 7] = idct_limit(((tmp27 + tmp13) >> (CB + P1 + 3)).0);
+        out[op + 8] = idct_limit(((tmp27 - tmp13) >> (CB + P1 + 3)).0);
+        wp += 8;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_2x1` (`jidctint.c`), translated statement by statement.
+fn idct_2x1(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 1];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    op = 0 * stride;
+    tmp0 = (W(i32::from(block[0])) * W(table[0]));
+    tmp0 += W(1) << 2_usize;
+    tmp1 = (W(i32::from(block[1])) * W(table[1]));
+    out[op + 0] = idct_limit(((tmp0 + tmp1) >> (3)).0);
+    out[op + 1] = idct_limit(((tmp0 - tmp1) >> (3)).0);
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_1x2` (`jidctint.c`), translated statement by statement.
+fn idct_1x2(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 1];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    tmp0 = (W(i32::from(block[8 * 0])) * W(table[8 * 0]));
+    tmp0 += W(1) << 2_usize;
+    tmp1 = (W(i32::from(block[8 * 1])) * W(table[8 * 1]));
+    out[0 * stride] = idct_limit(((tmp0 + tmp1) >> (3)).0);
+    out[1 * stride] = idct_limit(((tmp0 - tmp1) >> (3)).0);
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_4x2` (`jidctint.c`), translated statement by statement.
+fn idct_4x2(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 8];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..4 {
+        tmp10 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp0 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        ws[wp + 4 * 0] = (tmp10 + tmp0).0;
+        ws[wp + 4 * 1] = (tmp10 - tmp0).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..2 {
+        op = ctr * stride;
+        tmp0 = W(ws[wp + 0]) + (W(1) << 2_usize);
+        tmp2 = W(ws[wp + 2]);
+        tmp10 = (tmp0 + tmp2) << CB;
+        tmp12 = (tmp0 - tmp2) << CB;
+        z2 = W(ws[wp + 1]);
+        z3 = W(ws[wp + 3]);
+        z1 = ((z2 + z3) * (W(4433)));
+        tmp0 = z1 + ((z2) * (W(6270)));
+        tmp2 = z1 - ((z3) * (W(15137)));
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + 3)).0);
+        out[op + 3] = idct_limit(((tmp10 - tmp0) >> (CB + 3)).0);
+        out[op + 1] = idct_limit(((tmp12 + tmp2) >> (CB + 3)).0);
+        out[op + 2] = idct_limit(((tmp12 - tmp2) >> (CB + 3)).0);
+        wp += 4;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_2x4` (`jidctint.c`), translated statement by statement.
+fn idct_2x4(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 8];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..2 {
+        tmp0 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp2 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        tmp10 = (tmp0 + tmp2) << CB;
+        tmp12 = (tmp0 - tmp2) << CB;
+        z2 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z3 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z1 = ((z2 + z3) * (W(4433)));
+        tmp0 = z1 + ((z2) * (W(6270)));
+        tmp2 = z1 - ((z3) * (W(15137)));
+        ws[wp + 2 * 0] = (tmp10 + tmp0).0;
+        ws[wp + 2 * 3] = (tmp10 - tmp0).0;
+        ws[wp + 2 * 1] = (tmp12 + tmp2).0;
+        ws[wp + 2 * 2] = (tmp12 - tmp2).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..4 {
+        op = ctr * stride;
+        tmp10 = W(ws[wp + 0]) + (W(1) << (CB + 2));
+        tmp0 = W(ws[wp + 1]);
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + 3)).0);
+        out[op + 1] = idct_limit(((tmp10 - tmp0) >> (CB + 3)).0);
+        wp += 2;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_6x3` (`jidctint.c`), translated statement by statement.
+fn idct_6x3(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 18];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..6 {
+        tmp0 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp0 <<= CB;
+        tmp0 += W(1) << (CB - P1 - 1);
+        tmp2 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        tmp12 = ((tmp2) * (W(5793)));
+        tmp10 = tmp0 + tmp12;
+        tmp2 = tmp0 - tmp12 - tmp12;
+        tmp12 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        tmp0 = ((tmp12) * (W(10033)));
+        ws[wp + 6 * 0] = ((tmp10 + tmp0) >> (CB - P1)).0;
+        ws[wp + 6 * 2] = ((tmp10 - tmp0) >> (CB - P1)).0;
+        ws[wp + 6 * 1] = ((tmp2) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..3 {
+        op = ctr * stride;
+        tmp0 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp0 <<= CB;
+        tmp2 = W(ws[wp + 4]);
+        tmp10 = ((tmp2) * (W(5793)));
+        tmp1 = tmp0 + tmp10;
+        tmp11 = tmp0 - tmp10 - tmp10;
+        tmp10 = W(ws[wp + 2]);
+        tmp0 = ((tmp10) * (W(10033)));
+        tmp10 = tmp1 + tmp0;
+        tmp12 = tmp1 - tmp0;
+        z1 = W(ws[wp + 1]);
+        z2 = W(ws[wp + 3]);
+        z3 = W(ws[wp + 5]);
+        tmp1 = ((z1 + z3) * (W(2998)));
+        tmp0 = tmp1 + ((z1 + z2) << CB);
+        tmp2 = tmp1 + ((z3 - z2) << CB);
+        tmp1 = (z1 - z2 - z3) << CB;
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp10 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp11 + tmp1) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp11 - tmp1) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp12 + tmp2) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp12 - tmp2) >> (CB + P1 + 3)).0);
+        wp += 6;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_3x6` (`jidctint.c`), translated statement by statement.
+fn idct_3x6(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 18];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..3 {
+        tmp0 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp0 <<= CB;
+        tmp0 += W(1) << (CB - P1 - 1);
+        tmp2 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        tmp10 = ((tmp2) * (W(5793)));
+        tmp1 = tmp0 + tmp10;
+        tmp11 = ((tmp0 - tmp10 - tmp10) >> (CB - P1));
+        tmp10 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        tmp0 = ((tmp10) * (W(10033)));
+        tmp10 = tmp1 + tmp0;
+        tmp12 = tmp1 - tmp0;
+        z1 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z3 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        tmp1 = ((z1 + z3) * (W(2998)));
+        tmp0 = tmp1 + ((z1 + z2) << CB);
+        tmp2 = tmp1 + ((z3 - z2) << CB);
+        tmp1 = (z1 - z2 - z3) << P1;
+        ws[wp + 3 * 0] = ((tmp10 + tmp0) >> (CB - P1)).0;
+        ws[wp + 3 * 5] = ((tmp10 - tmp0) >> (CB - P1)).0;
+        ws[wp + 3 * 1] = (tmp11 + tmp1).0;
+        ws[wp + 3 * 4] = (tmp11 - tmp1).0;
+        ws[wp + 3 * 2] = ((tmp12 + tmp2) >> (CB - P1)).0;
+        ws[wp + 3 * 3] = ((tmp12 - tmp2) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..6 {
+        op = ctr * stride;
+        tmp0 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp0 <<= CB;
+        tmp2 = W(ws[wp + 2]);
+        tmp12 = ((tmp2) * (W(5793)));
+        tmp10 = tmp0 + tmp12;
+        tmp2 = tmp0 - tmp12 - tmp12;
+        tmp12 = W(ws[wp + 1]);
+        tmp0 = ((tmp12) * (W(10033)));
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp10 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp2) >> (CB + P1 + 3)).0);
+        wp += 3;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_8x4` (`jidctint.c`), translated statement by statement.
+fn idct_8x4(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 32];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut tmp3 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for ctr in 0..8 {
+        tmp0 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        tmp2 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        tmp10 = (tmp0 + tmp2) << P1;
+        tmp12 = (tmp0 - tmp2) << P1;
+        z2 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z3 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        z1 = ((z2 + z3) * (W(4433)));
+        z1 += W(1) << (CB - P1 - 1);
+        tmp0 = ((z1 + ((z2) * (W(6270)))) >> (CB - P1));
+        tmp2 = ((z1 - ((z3) * (W(15137)))) >> (CB - P1));
+        ws[wp + 8 * 0] = (tmp10 + tmp0).0;
+        ws[wp + 8 * 3] = (tmp10 - tmp0).0;
+        ws[wp + 8 * 1] = (tmp12 + tmp2).0;
+        ws[wp + 8 * 2] = (tmp12 - tmp2).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..4 {
+        op = ctr * stride;
+        z2 = W(ws[wp + 2]);
+        z3 = W(ws[wp + 6]);
+        z1 = ((z2 + z3) * (W(4433)));
+        tmp2 = z1 + ((z2) * (W(6270)));
+        tmp3 = z1 - ((z3) * (W(15137)));
+        z2 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        z3 = W(ws[wp + 4]);
+        tmp0 = (z2 + z3) << CB;
+        tmp1 = (z2 - z3) << CB;
+        tmp10 = tmp0 + tmp2;
+        tmp13 = tmp0 - tmp2;
+        tmp11 = tmp1 + tmp3;
+        tmp12 = tmp1 - tmp3;
+        tmp0 = W(ws[wp + 7]);
+        tmp1 = W(ws[wp + 5]);
+        tmp2 = W(ws[wp + 3]);
+        tmp3 = W(ws[wp + 1]);
+        z2 = tmp0 + tmp2;
+        z3 = tmp1 + tmp3;
+        z1 = ((z2 + z3) * (W(9633)));
+        z2 = ((z2) * (-W(16069)));
+        z3 = ((z3) * (-W(3196)));
+        z2 += z1;
+        z3 += z1;
+        z1 = ((tmp0 + tmp3) * (-W(7373)));
+        tmp0 = ((tmp0) * (W(2446)));
+        tmp3 = ((tmp3) * (W(12299)));
+        tmp0 += z1 + z2;
+        tmp3 += z1 + z3;
+        z1 = ((tmp1 + tmp2) * (-W(20995)));
+        tmp1 = ((tmp1) * (W(16819)));
+        tmp2 = ((tmp2) * (W(25172)));
+        tmp1 += z1 + z3;
+        tmp2 += z1 + z2;
+        out[op + 0] = idct_limit(((tmp10 + tmp3) >> (CB + P1 + 3)).0);
+        out[op + 7] = idct_limit(((tmp10 - tmp3) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp11 + tmp2) >> (CB + P1 + 3)).0);
+        out[op + 6] = idct_limit(((tmp11 - tmp2) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp12 + tmp1) >> (CB + P1 + 3)).0);
+        out[op + 5] = idct_limit(((tmp12 - tmp1) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp13 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 4] = idct_limit(((tmp13 - tmp0) >> (CB + P1 + 3)).0);
+        wp += 8;
+    }
+    let _ = (ip, qp, wp, op);
+}
+
+/// `jpeg_idct_4x8` (`jidctint.c`), translated statement by statement.
+fn idct_4x8(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
+    let mut ws = [0_i32; 32];
+    let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut dcval = W(0_i32);
+    let mut tmp0 = W(0_i32);
+    let mut tmp1 = W(0_i32);
+    let mut tmp10 = W(0_i32);
+    let mut tmp11 = W(0_i32);
+    let mut tmp12 = W(0_i32);
+    let mut tmp13 = W(0_i32);
+    let mut tmp2 = W(0_i32);
+    let mut tmp3 = W(0_i32);
+    let mut z1 = W(0_i32);
+    let mut z2 = W(0_i32);
+    let mut z3 = W(0_i32);
+    qp = 0;
+    wp = 0;
+    for _ in 0..4 {
+        if block[ip + 8 * 1] == 0
+            && block[ip + 8 * 2] == 0
+            && block[ip + 8 * 3] == 0
+            && block[ip + 8 * 4] == 0
+            && block[ip + 8 * 5] == 0
+            && block[ip + 8 * 6] == 0
+            && block[ip + 8 * 7] == 0
+        {
+            dcval = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0])) << P1;
+            ws[wp + 4 * 0] = dcval.0;
+            ws[wp + 4 * 1] = dcval.0;
+            ws[wp + 4 * 2] = dcval.0;
+            ws[wp + 4 * 3] = dcval.0;
+            ws[wp + 4 * 4] = dcval.0;
+            ws[wp + 4 * 5] = dcval.0;
+            ws[wp + 4 * 6] = dcval.0;
+            ws[wp + 4 * 7] = dcval.0;
+            ip += 1;
+            qp += 1;
+            wp += 1;
+            continue;
+        }
+        z2 = (W(i32::from(block[ip + 8 * 2])) * W(table[qp + 8 * 2]));
+        z3 = (W(i32::from(block[ip + 8 * 6])) * W(table[qp + 8 * 6]));
+        z1 = ((z2 + z3) * (W(4433)));
+        tmp2 = z1 + ((z2) * (W(6270)));
+        tmp3 = z1 - ((z3) * (W(15137)));
+        z2 = (W(i32::from(block[ip + 8 * 0])) * W(table[qp + 8 * 0]));
+        z3 = (W(i32::from(block[ip + 8 * 4])) * W(table[qp + 8 * 4]));
+        z2 <<= CB;
+        z3 <<= CB;
+        z2 += W(1) << (CB - P1 - 1);
+        tmp0 = z2 + z3;
+        tmp1 = z2 - z3;
+        tmp10 = tmp0 + tmp2;
+        tmp13 = tmp0 - tmp2;
+        tmp11 = tmp1 + tmp3;
+        tmp12 = tmp1 - tmp3;
+        tmp0 = (W(i32::from(block[ip + 8 * 7])) * W(table[qp + 8 * 7]));
+        tmp1 = (W(i32::from(block[ip + 8 * 5])) * W(table[qp + 8 * 5]));
+        tmp2 = (W(i32::from(block[ip + 8 * 3])) * W(table[qp + 8 * 3]));
+        tmp3 = (W(i32::from(block[ip + 8 * 1])) * W(table[qp + 8 * 1]));
+        z2 = tmp0 + tmp2;
+        z3 = tmp1 + tmp3;
+        z1 = ((z2 + z3) * (W(9633)));
+        z2 = ((z2) * (-W(16069)));
+        z3 = ((z3) * (-W(3196)));
+        z2 += z1;
+        z3 += z1;
+        z1 = ((tmp0 + tmp3) * (-W(7373)));
+        tmp0 = ((tmp0) * (W(2446)));
+        tmp3 = ((tmp3) * (W(12299)));
+        tmp0 += z1 + z2;
+        tmp3 += z1 + z3;
+        z1 = ((tmp1 + tmp2) * (-W(20995)));
+        tmp1 = ((tmp1) * (W(16819)));
+        tmp2 = ((tmp2) * (W(25172)));
+        tmp1 += z1 + z3;
+        tmp2 += z1 + z2;
+        ws[wp + 4 * 0] = ((tmp10 + tmp3) >> (CB - P1)).0;
+        ws[wp + 4 * 7] = ((tmp10 - tmp3) >> (CB - P1)).0;
+        ws[wp + 4 * 1] = ((tmp11 + tmp2) >> (CB - P1)).0;
+        ws[wp + 4 * 6] = ((tmp11 - tmp2) >> (CB - P1)).0;
+        ws[wp + 4 * 2] = ((tmp12 + tmp1) >> (CB - P1)).0;
+        ws[wp + 4 * 5] = ((tmp12 - tmp1) >> (CB - P1)).0;
+        ws[wp + 4 * 3] = ((tmp13 + tmp0) >> (CB - P1)).0;
+        ws[wp + 4 * 4] = ((tmp13 - tmp0) >> (CB - P1)).0;
+        ip += 1;
+        qp += 1;
+        wp += 1;
+    }
+    wp = 0;
+    for ctr in 0..8 {
+        op = ctr * stride;
+        tmp0 = W(ws[wp + 0]) + (W(1) << (P1 + 2));
+        tmp2 = W(ws[wp + 2]);
+        tmp10 = (tmp0 + tmp2) << CB;
+        tmp12 = (tmp0 - tmp2) << CB;
+        z2 = W(ws[wp + 1]);
+        z3 = W(ws[wp + 3]);
+        z1 = ((z2 + z3) * (W(4433)));
+        tmp0 = z1 + ((z2) * (W(6270)));
+        tmp2 = z1 - ((z3) * (W(15137)));
+        out[op + 0] = idct_limit(((tmp10 + tmp0) >> (CB + P1 + 3)).0);
+        out[op + 3] = idct_limit(((tmp10 - tmp0) >> (CB + P1 + 3)).0);
+        out[op + 1] = idct_limit(((tmp12 + tmp2) >> (CB + P1 + 3)).0);
+        out[op + 2] = idct_limit(((tmp12 - tmp2) >> (CB + P1 + 3)).0);
+        wp += 4;
+    }
+    let _ = (ip, qp, wp, op);
+}

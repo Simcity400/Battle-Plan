@@ -32,8 +32,9 @@ struct Harness {
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
-/// Each harness takes [`super::super::shader_tests::GPU_TESTS`] before requesting its adapter.
-fn serial() -> std::sync::MutexGuard<'static, ()> {
+/// Each harness takes [`super::super::shader_tests::GPU_TESTS`] before requesting its adapter;
+/// the crate's other GPU tests take it through here.
+pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     super::super::shader_tests::GPU_TESTS
         .lock()
         .unwrap_or_else(|error| error.into_inner())

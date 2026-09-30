@@ -26,6 +26,7 @@ fn standalone_map_shaders_validate() {
         ("post_copy", include_str!("post_copy.wgsl")),
         ("texture_unpack", include_str!("texture_unpack.wgsl")),
         ("sprites", super::sprites::SHADER),
+        ("exact sprites", super::sprites::EXACT_SHADER),
     ] {
         validate(name, source);
     }

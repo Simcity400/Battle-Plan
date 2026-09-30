@@ -229,7 +229,8 @@ fn read_with_inner(
         Ok(())
     }
     let result = || {
-        let path = effect_path(effect.as_bytes());
+        // The effect's path by its bytes, read here through a text path.
+        let path = String::from_utf8_lossy(&effect_path(effect.as_bytes())).into_owned();
         let mut files = Vec::new();
         let Some(bytes) = read(&path) else {
             // LookupShaderEffectHandle@1423F5D60 returns 1435C1970 when no effect exists.

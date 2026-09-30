@@ -229,6 +229,45 @@ pub struct Quad {
     // counters
     /// The sort key [`layer`] builds; see it for the field order.
     pub layer: u64,
+    /// `buttonstate.shader`'s Over (positive) and Down (negative) techniques: after the colour,
+    /// `rgb + (0.5 + rgb) * shade`; 0 for none.
+    pub shade: f32,
+    /// A quad [`super::native_gui`] places and shades as the game does; `rect`, `uv`, `rotation`
+    /// and `shade` are then unused.
+    pub exact: Option<Exact>,
+}
+
+/// A quad drawn where the game's GUI draws it (`CSpriteType::build_geometry@14222CB90` through
+/// the composed world matrix to the rasteriser): its corners are not snapped, a scissor cuts it,
+/// and its effect's program runs with the effect's sampler state (see
+/// [`super::native_effects`]). `Quad::texture` is slot 0 and `Quad::color` the program's `Color`
+/// (a progress bar's first colour, a glyph's vertex colour).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Exact {
+    /// Where the vertices land, in interface pixels.
+    pub corners: [[f32; 2]; 4],
+    /// Each vertex's texture coordinate as the vertex buffer holds it (before `Offset`).
+    pub uv: [[f32; 2]; 4],
+    /// The scissor `x0, y0, x1, y1` in whole interface pixels: the device's is each coordinate
+    /// times the interface scale, truncated (`CGraphics::convert_coordinates@1422225B0`).
+    pub scissor: Option<[i32; 4]>,
+    /// [`super::native_effects::Pixel::packed`].
+    pub pixel: u32,
+    pub blend: super::native_effects::Blend,
+    /// The samplers of slot 0, slot 1 and the masking slot 5, ten bits each from bit 0, 10 and
+    /// 20 ([`super::native_effects::Sampler::packed`]).
+    pub samplers: u32,
+    /// Each slot's `MipMapLodBias` (slot 0, slot 1, slot 5).
+    pub lod_bias: [f32; 3],
+    /// Slot 1 (a progress bar's `TextureTwo`) and slot 5 (the masking texture).
+    pub second: Option<usize>,
+    pub masking: Option<usize>,
+    /// `Offset` and `NextOffset`.
+    pub offsets: [f32; 4],
+    /// `Time - AnimationTime`, `AnimationTime` and a progress bar's `CurrentState`.
+    pub inputs: [f32; 4],
+    /// A progress bar's `vSecondColor`, or a text's `ModColor`.
+    pub second_color: [f32; 4],
 }
 
 // counters
@@ -321,6 +360,14 @@ impl Batch {
         self.layer = layer;
     }
 
+    /// Adds `quad` at the current layer.
+    pub fn push(&mut self, quad: Quad) {
+        self.quads.push(Quad {
+            layer: self.layer,
+            ..quad
+        });
+    }
+
     /// Adds one sprite frame with its top-left corner at `at`.
     pub fn sprite(&mut self, sheet: &SpriteSheet, frame: u32, at: [f32; 2], color: [f32; 4]) {
         let size = sheet.frame_size();
@@ -331,6 +378,8 @@ impl Batch {
             color,
             rotation: 0.0,
             layer: self.layer,
+            shade: 0.0,
+            exact: None,
         });
     }
 
@@ -355,6 +404,8 @@ impl Batch {
             color,
             rotation: 0.0,
             layer: self.layer,
+            shade: 0.0,
+            exact: None,
         });
     }
 
@@ -376,6 +427,8 @@ impl Batch {
             color,
             rotation,
             layer: self.layer,
+            shade: 0.0,
+            exact: None,
         });
     }
 
@@ -396,6 +449,8 @@ impl Batch {
             color,
             rotation: 0.0,
             layer: self.layer,
+            shade: 0.0,
+            exact: None,
         });
     }
 
@@ -434,6 +489,8 @@ impl Batch {
             color,
             rotation: 0.0,
             layer: self.layer,
+            shade: 0.0,
+            exact: None,
         });
     }
 
@@ -446,6 +503,8 @@ impl Batch {
             color,
             rotation: 0.0,
             layer: self.layer,
+            shade: 0.0,
+            exact: None,
         }));
     }
 }
@@ -464,6 +523,19 @@ pub fn device_corners(rect: [f32; 4], ui_scale: f32) -> [f32; 4] {
     let y0 = rect[1].round();
     let corners = [x0, y0, x0 + rect[2].round(), y0 + rect[3].round()];
     corners.map(|value| (value * ui_scale).round())
+}
+
+/// An exact quad's scissor in device pixels, `x, y, width, height`, within a target of `size`:
+/// each coordinate times the interface scale, truncated (`CGraphics::convert_coordinates
+/// @1422225B0`), then held inside the target, which the device's rasteriser never passes.
+/// `None` when nothing is left.
+pub fn device_scissor(scissor: [i32; 4], ui_scale: f32, size: [u32; 2]) -> Option<[u32; 4]> {
+    let device = scissor.map(|value| (value as f32 * ui_scale) as i64);
+    let x0 = device[0].clamp(0, i64::from(size[0]));
+    let y0 = device[1].clamp(0, i64::from(size[1]));
+    let x1 = device[2].clamp(0, i64::from(size[0]));
+    let y1 = device[3].clamp(0, i64::from(size[1]));
+    (x1 > x0 && y1 > y0).then(|| [x0, y0, x1 - x0, y1 - y0].map(|value| value as u32))
 }
 
 /// The texel-centre window a quad's atlas rectangle is sampled inside, as the
@@ -501,6 +573,24 @@ struct Vertex {
     color: [f32; 4],
     cell: [f32; 4],
     filter: f32,
+    shade: f32,
+}
+
+/// One vertex of an [`Exact`] quad: its position in clip space, its texture coordinate as the
+/// vertex buffer holds it and its masking coordinate, then the draw's constants.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ExactVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+    mask_uv: [f32; 2],
+    color: [f32; 4],
+    second: [f32; 4],
+    offsets: [f32; 4],
+    inputs: [f32; 4],
+    lod_bias: [f32; 4],
+    pixel: u32,
+    samplers: u32,
 }
 
 /// How the shader samples a batch drawn at `ui_scale`: 0 the plain bilinear
@@ -609,18 +699,36 @@ impl IconTextures {
     }
 }
 
-/// One run of consecutive vertices sharing a texture.
+/// Which pipeline a run draws with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Pipe {
+    /// The snapped screen-space sprites.
+    Legacy,
+    /// [`Exact`] quads, blended or not.
+    Exact(super::native_effects::Blend),
+}
+
+/// The textures an exact run binds: slot 0, slot 1 and the masking slot.
+type Slots = [usize; 3];
+
+/// One run of consecutive vertices sharing a pipeline, its textures and a scissor.
 struct Run {
+    pipe: Pipe,
     texture: usize,
+    slots: Slots,
+    scissor: Option<[u32; 4]>,
     range: std::ops::Range<u32>,
 }
 
 /// A lazy texture on the GPU, at the revision it was uploaded from.
 struct DynamicPage {
     revision: u64,
-    _texture: Bound,
+    texture: Bound,
     group: wgpu::BindGroup,
 }
+
+/// A slot no texture fills: [`SpritePass`] binds its one transparent texel there.
+pub const NO_TEXTURE: usize = usize::MAX;
 
 /// The screen-space pipeline and the frame's vertices.
 pub struct SpritePass {
@@ -628,6 +736,16 @@ pub struct SpritePass {
     bind_groups: Vec<wgpu::BindGroup>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// [`Exact`] quads: blended (`src_alpha`, `inv_src_alpha`) and not.
+    exact_alpha: wgpu::RenderPipeline,
+    exact_off: wgpu::RenderPipeline,
+    exact_layout: wgpu::BindGroupLayout,
+    /// The static pages' views, which exact bind groups combine.
+    views: Vec<wgpu::TextureView>,
+    /// One transparent texel for an empty slot.
+    empty: Bound,
+    /// Exact bind groups by their slots, rebuilt when the lazy textures change.
+    exact_groups: HashMap<Slots, wgpu::BindGroup>,
     /// The content's lazy textures, mirrored into `dynamic` by [`SpritePass::sync`].
     lazy: Arc<LazyTextures>,
     synced: Option<u64>,
@@ -636,8 +754,11 @@ pub struct SpritePass {
     failed: HashMap<usize, u64>,
     vertices: wgpu::Buffer,
     capacity: u64,
+    exact_vertices: wgpu::Buffer,
+    exact_capacity: u64,
     runs: Vec<Run>,
     count: u32,
+    exact_count: u32,
 }
 
 /// Vertices a freshly built pass can hold before it grows; six per quad.
@@ -647,6 +768,7 @@ impl SpritePass {
     /// Builds the pipeline over already-uploaded icon pages.
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         samples: u32,
         textures: &IconTextures,
         lazy: &Arc<LazyTextures>,
@@ -673,6 +795,14 @@ impl SpritePass {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
+        let target = |blend| {
+            [Some(wgpu::ColorTargetState {
+                format,
+                blend,
+                write_mask: wgpu::ColorWrites::COLOR,
+            })]
+        };
+        let legacy_targets = target(Some(wgpu::BlendState::ALPHA_BLENDING));
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sprites"),
             layout: Some(&pipeline_layout),
@@ -685,7 +815,7 @@ impl SpritePass {
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![
                         0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4,
-                        4 => Float32
+                        4 => Float32, 5 => Float32
                     ],
                 })],
             },
@@ -704,28 +834,110 @@ impl SpritePass {
                 module: &module,
                 entry_point: Some("fragment_main"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::COLOR,
-                })],
+                targets: &legacy_targets,
             }),
             multiview_mask: None,
             cache: None,
         });
+        let exact_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("exact sprite textures"),
+            entries: &[0, 1, 2].map(|binding| {
+                texture_entry(
+                    binding,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::TextureViewDimension::D2,
+                )
+            }),
+        });
+        let exact_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("exact sprites"),
+            source: wgpu::ShaderSource::Wgsl(EXACT_SHADER.into()),
+        });
+        let exact_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("exact sprites"),
+                bind_group_layouts: &[Some(&exact_layout)],
+                immediate_size: 0,
+            });
+        let exact = |label, blend: Option<wgpu::BlendState>| {
+            let targets = target(blend);
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&exact_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &exact_module,
+                    entry_point: Some("exact_vertex"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<ExactVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x4,
+                            4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4,
+                            8 => Uint32, 9 => Uint32
+                        ],
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &exact_module,
+                    entry_point: Some("exact_fragment"),
+                    compilation_options: Default::default(),
+                    targets: &targets,
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        // `src_alpha` over `inv_src_alpha` on colour; the write mask keeps the target's alpha,
+        // so an effect's alpha operation (`text.shader`'s `BlendOpAlpha = max`) writes nothing.
+        let exact_alpha = exact("exact sprites", Some(wgpu::BlendState::ALPHA_BLENDING));
+        let exact_off = exact("exact sprites, no blending", None);
+        let empty = upload(
+            device,
+            queue,
+            "empty sprite slot",
+            &dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
+                width: 1,
+                height: 1,
+                pixels: vec![0; 4],
+            }),
+            ColorSpace::Linear,
+        )?;
         Ok(Self {
             pipeline,
             bind_groups,
             layout,
             sampler: textures.screen_clamp().clone(),
+            exact_alpha,
+            exact_off,
+            exact_layout,
+            views: textures
+                .bound
+                .iter()
+                .map(|texture| texture.view.clone())
+                .collect(),
+            empty,
+            exact_groups: HashMap::new(),
             lazy: Arc::clone(lazy),
             synced: None,
             dynamic: HashMap::new(),
             failed: HashMap::new(),
-            vertices: buffer(device, INITIAL_VERTICES),
+            vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<Vertex>()),
             capacity: INITIAL_VERTICES,
+            exact_vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<ExactVertex>()),
+            exact_capacity: INITIAL_VERTICES,
             runs: Vec::new(),
             count: 0,
+            exact_count: 0,
         })
     }
 
@@ -794,11 +1006,13 @@ impl SpritePass {
                 id,
                 DynamicPage {
                     revision: entry.revision,
-                    _texture: texture,
+                    texture,
                     group,
                 },
             );
         }
+        // A combination may name a page that changed or left.
+        self.exact_groups.clear();
         self.synced = Some(version);
     }
 
@@ -809,11 +1023,51 @@ impl SpritePass {
             .or_else(|| self.dynamic.get(&texture).map(|page| &page.group))
     }
 
+    /// The view of a static page or a resident lazy texture, the empty texel for no texture.
+    fn view(&self, texture: usize) -> Option<&wgpu::TextureView> {
+        if texture == NO_TEXTURE {
+            return Some(&self.empty.view);
+        }
+        self.views
+            .get(texture)
+            .or_else(|| self.dynamic.get(&texture).map(|page| &page.texture.view))
+    }
+
+    /// Makes the exact bind group of `slots`; `false` when a slot's texture is not resident.
+    fn exact_group(&mut self, device: &wgpu::Device, slots: Slots) -> bool {
+        if self.exact_groups.contains_key(&slots) {
+            return true;
+        }
+        let Some(views) = slots
+            .iter()
+            .map(|slot| self.view(*slot).cloned())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        let entries: Vec<wgpu::BindGroupEntry> = views
+            .iter()
+            .enumerate()
+            .map(|(binding, view)| wgpu::BindGroupEntry {
+                binding: binding as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            })
+            .collect();
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("exact sprite textures"),
+            layout: &self.exact_layout,
+            entries: &entries,
+        });
+        self.exact_groups.insert(slots, group);
+        true
+    }
+
     /// Turns one frame's quads into vertices, grouped by texture.
     ///
     /// `batch` is in interface pixels and `ui_scale` device pixels per
     /// interface pixel; see [`device_corners`] for the snapping and
-    /// [`filter_mode`] for the sampling.
+    /// [`filter_mode`] for the sampling. [`Exact`] quads are not snapped, keep their push
+    /// order within their layer and are cut by their scissor.
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -824,12 +1078,18 @@ impl SpritePass {
     ) {
         self.runs.clear();
         self.count = 0;
+        self.exact_count = 0;
         // The lazy textures this frame draws stay pinned in their LRU.
         self.lazy.mark_drawn(
             batch
                 .quads
                 .iter()
-                .map(|quad| quad.texture)
+                .flat_map(|quad| {
+                    let exact = quad
+                        .exact
+                        .map_or([None, None], |exact| [exact.second, exact.masking]);
+                    std::iter::once(Some(quad.texture)).chain(exact).flatten()
+                })
                 .filter(|texture| *texture >= DYNAMIC_BASE)
                 .collect::<std::collections::BTreeSet<_>>(),
         );
@@ -838,19 +1098,87 @@ impl SpritePass {
         }
         let mut order: Vec<usize> = (0..batch.quads.len()).collect();
         // counters: `(layer, texture)`, so a page batch never overtakes an
-        // icon child that has to draw under or over another.
-        order.sort_by_key(|&index| (batch.quads[index].layer, batch.quads[index].texture));
+        // icon child that has to draw under or over another. An exact quad keeps its push
+        // order in its layer: the game's GUI draws in attach order, whatever the texture.
+        order.sort_by_key(|&index| {
+            let quad = &batch.quads[index];
+            (
+                quad.layer,
+                if quad.exact.is_some() {
+                    0
+                } else {
+                    quad.texture
+                },
+            )
+        });
         let width = size[0] as f32;
         let height = size[1] as f32;
+        let clip = |x: f32, y: f32| [x / width * 2.0 - 1.0, 1.0 - y / height * 2.0];
         let mut vertices: Vec<Vertex> = Vec::with_capacity(order.len() * 6);
+        let mut exact_vertices: Vec<ExactVertex> = Vec::new();
         let filter = filter_mode(ui_scale);
         for index in order {
             let quad = batch.quads[index];
+            if let Some(exact) = quad.exact {
+                let slots = [
+                    quad.texture,
+                    exact.second.unwrap_or(NO_TEXTURE),
+                    exact.masking.unwrap_or(NO_TEXTURE),
+                ];
+                if !self.exact_group(device, slots) {
+                    continue;
+                }
+                let scissor = match exact.scissor {
+                    Some(scissor) => match device_scissor(scissor, ui_scale, size) {
+                        Some(device) => Some(device),
+                        None => continue,
+                    },
+                    None => None,
+                };
+                let vertex = |corner: usize| {
+                    let [x, y] = exact.corners[corner];
+                    let uv = exact.uv[corner];
+                    ExactVertex {
+                        position: clip(x * ui_scale, y * ui_scale),
+                        uv,
+                        // `saturate(vTexCoord * 1000)` per vertex (buttonstate's `MASKING`).
+                        mask_uv: uv.map(|value| (value * 1000.0).clamp(0.0, 1.0)),
+                        color: quad.color,
+                        second: exact.second_color,
+                        offsets: exact.offsets,
+                        inputs: exact.inputs,
+                        lod_bias: [exact.lod_bias[0], exact.lod_bias[1], exact.lod_bias[2], 0.0],
+                        pixel: exact.pixel,
+                        samplers: exact.samplers,
+                    }
+                };
+                let start = exact_vertices.len() as u32;
+                exact_vertices.extend([0, 1, 2, 0, 2, 3].map(vertex));
+                let end = exact_vertices.len() as u32;
+                let pipe = Pipe::Exact(exact.blend);
+                match self.runs.last_mut() {
+                    Some(run)
+                        if run.pipe == pipe
+                            && run.slots == slots
+                            && run.scissor == scissor
+                            && run.range.end == start =>
+                    {
+                        run.range.end = end;
+                    }
+                    _ => self.runs.push(Run {
+                        pipe,
+                        texture: quad.texture,
+                        slots,
+                        scissor,
+                        range: start..end,
+                    }),
+                }
+                continue;
+            }
             if self.group(quad.texture).is_none() {
                 continue;
             }
             let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
-            let clip = |x: f32, y: f32| [x / width * 2.0 - 1.0, 1.0 - y / height * 2.0];
             // counters: a rotated quad turns about its own centre, with `y`
             // down, so a positive angle is clockwise on screen.
             let spin = (quad.rotation != 0.0).then(|| {
@@ -874,6 +1202,7 @@ impl SpritePass {
                     color: quad.color,
                     cell: quad.uv,
                     filter,
+                    shade: quad.shade,
                 }
             };
             let [u0, v0, u1, v1] = quad.uv;
@@ -888,27 +1217,51 @@ impl SpritePass {
             ]);
             let end = vertices.len() as u32;
             match self.runs.last_mut() {
-                Some(run) if run.texture == quad.texture => run.range.end = end,
+                Some(run)
+                    if run.pipe == Pipe::Legacy
+                        && run.texture == quad.texture
+                        && run.range.end == start =>
+                {
+                    run.range.end = end
+                }
                 _ => self.runs.push(Run {
+                    pipe: Pipe::Legacy,
                     texture: quad.texture,
+                    slots: [NO_TEXTURE; 3],
+                    scissor: None,
                     range: start..end,
                 }),
             }
         }
         self.count = vertices.len() as u32;
-        if self.count == 0 {
-            return;
+        self.exact_count = exact_vertices.len() as u32;
+        if self.count > 0 {
+            if u64::from(self.count) > self.capacity {
+                self.capacity = u64::from(self.count).next_power_of_two();
+                self.vertices = buffer(device, self.capacity, std::mem::size_of::<Vertex>());
+            }
+            queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&vertices));
         }
-        if u64::from(self.count) > self.capacity {
-            self.capacity = u64::from(self.count).next_power_of_two();
-            self.vertices = buffer(device, self.capacity);
+        if self.exact_count > 0 {
+            if u64::from(self.exact_count) > self.exact_capacity {
+                self.exact_capacity = u64::from(self.exact_count).next_power_of_two();
+                self.exact_vertices = buffer(
+                    device,
+                    self.exact_capacity,
+                    std::mem::size_of::<ExactVertex>(),
+                );
+            }
+            queue.write_buffer(
+                &self.exact_vertices,
+                0,
+                bytemuck::cast_slice(&exact_vertices),
+            );
         }
-        queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&vertices));
     }
 
     /// Draws the uploaded quads over whatever the target already holds.
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, targets: &Targets) {
-        if self.count == 0 {
+        if self.count == 0 && self.exact_count == 0 {
             return;
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -919,10 +1272,32 @@ impl SpritePass {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        let [width, height] = targets.size();
+        let mut bound = None;
         for run in &self.runs {
-            let Some(group) = self.group(run.texture) else {
+            if bound != Some(run.pipe) {
+                match run.pipe {
+                    Pipe::Legacy => {
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_vertex_buffer(0, self.vertices.slice(..));
+                    }
+                    Pipe::Exact(blend) => {
+                        pass.set_pipeline(match blend {
+                            super::native_effects::Blend::Alpha => &self.exact_alpha,
+                            super::native_effects::Blend::Off => &self.exact_off,
+                        });
+                        pass.set_vertex_buffer(0, self.exact_vertices.slice(..));
+                    }
+                }
+                bound = Some(run.pipe);
+            }
+            let [x, y, w, h] = run.scissor.unwrap_or([0, 0, width, height]);
+            pass.set_scissor_rect(x, y, w, h);
+            let group = match run.pipe {
+                Pipe::Legacy => self.group(run.texture),
+                Pipe::Exact(_) => self.exact_groups.get(&run.slots),
+            };
+            let Some(group) = group else {
                 continue;
             };
             pass.set_bind_group(0, group, &[]);
@@ -932,7 +1307,7 @@ impl SpritePass {
 
     /// Quads the last upload produced, for reporting.
     pub fn quad_count(&self) -> u32 {
-        self.count / 6
+        (self.count + self.exact_count) / 6
     }
 }
 
@@ -970,10 +1345,10 @@ fn plan_sync(
     SyncPlan { drop, upload }
 }
 
-fn buffer(device: &wgpu::Device, vertices: u64) -> wgpu::Buffer {
+fn buffer(device: &wgpu::Device, vertices: u64, stride: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("sprite vertices"),
-        size: vertices * std::mem::size_of::<Vertex>() as u64,
+        size: vertices * stride as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
@@ -991,6 +1366,7 @@ struct VertexOut {
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) cell: vec4<f32>,
     @location(3) @interpolate(flat) sampling: f32,
+    @location(4) @interpolate(flat) shade: f32,
 }
 
 @group(0) @binding(0) var page: texture_2d<f32>;
@@ -1003,6 +1379,7 @@ fn vertex_main(
     @location(2) color: vec4<f32>,
     @location(3) cell: vec4<f32>,
     @location(4) sampling: f32,
+    @location(5) shade: f32,
 ) -> VertexOut {
     var out: VertexOut;
     out.clip = vec4<f32>(position, 0.0, 1.0);
@@ -1010,6 +1387,7 @@ fn vertex_main(
     out.color = color;
     out.cell = cell;
     out.sampling = sampling;
+    out.shade = shade;
     return out;
 }
 
@@ -1052,7 +1430,8 @@ fn texel(uv: vec2<f32>, cell: vec4<f32>, sampling: f32) -> vec4<f32> {
 // The atlases are authored straight, not premultiplied (R2 5.3), so the colour
 // multiplies both parts and the blend state does the compositing. A negative
 // alpha selects `buttonstate.shader`'s `PixelShaderDisable`: the texel's
-// luminance grey, then the colour with its alpha negated back.
+// luminance grey, then the colour with its alpha negated back. A shade is its
+// Over (positive) or Down (negative) technique, applied after the colour.
 @fragment
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     let sample = texel(in.uv, in.cell, in.sampling);
@@ -1060,7 +1439,355 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
         let grey = dot(sample.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
         return vec4<f32>(grey, grey, grey, sample.a) * vec4<f32>(in.color.rgb, -in.color.a);
     }
-    return sample * in.color;
+    let out = sample * in.color;
+    return vec4<f32>(out.rgb + (0.5 + out.rgb) * in.shade, out.a);
+}
+"#;
+
+/// The [`Exact`] pass: the modelled programs of [`super::native_effects`], each texel read and
+/// filtered as the effect's sampler state reads it (every addressing mode, the magnifying or
+/// minifying filter by the level of detail, the mip filter over the texture's levels).
+pub(super) const EXACT_SHADER: &str = r#"
+struct ExactOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) mask_uv: vec2<f32>,
+    @location(2) @interpolate(flat) color: vec4<f32>,
+    @location(3) @interpolate(flat) second: vec4<f32>,
+    @location(4) @interpolate(flat) offsets: vec4<f32>,
+    @location(5) @interpolate(flat) inputs: vec4<f32>,
+    @location(6) @interpolate(flat) lod_bias: vec4<f32>,
+    @location(7) @interpolate(flat) pixel: u32,
+    @location(8) @interpolate(flat) samplers: u32,
+}
+
+@group(0) @binding(0) var slot0: texture_2d<f32>;
+@group(0) @binding(1) var slot1: texture_2d<f32>;
+@group(0) @binding(2) var slot5: texture_2d<f32>;
+
+@vertex
+fn exact_vertex(
+    @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) mask_uv: vec2<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) second: vec4<f32>,
+    @location(5) offsets: vec4<f32>,
+    @location(6) inputs: vec4<f32>,
+    @location(7) lod_bias: vec4<f32>,
+    @location(8) pixel: u32,
+    @location(9) samplers: u32,
+) -> ExactOut {
+    var out: ExactOut;
+    out.clip = vec4<f32>(position, 0.0, 1.0);
+    out.uv = uv;
+    out.mask_uv = mask_uv;
+    out.color = color;
+    out.second = second;
+    out.offsets = offsets;
+    out.inputs = inputs;
+    out.lod_bias = lod_bias;
+    out.pixel = pixel;
+    out.samplers = samplers;
+    return out;
+}
+
+// A texel index on one axis: wrap, mirror, clamp, border (-1: transparent black, the only border
+// colour `lower_d3d11@1423FD550` sets), mirror once.
+fn address(c: i32, size: i32, mode: u32) -> i32 {
+    switch mode {
+        case 0u: {
+            return ((c % size) + size) % size;
+        }
+        case 1u: {
+            let period = 2 * size;
+            let m = ((c % period) + period) % period;
+            return select(m, period - 1 - m, m >= size);
+        }
+        case 2u: {
+            return clamp(c, 0, size - 1);
+        }
+        case 3u: {
+            return select(c, -1, c < 0 || c >= size);
+        }
+        default: {
+            return min(select(c, -c - 1, c < 0), size - 1);
+        }
+    }
+}
+
+fn fetch(t: texture_2d<f32>, at: vec2<i32>, level: i32, state: u32) -> vec4<f32> {
+    let size = vec2<i32>(textureDimensions(t, level));
+    let x = address(at.x, size.x, state & 7u);
+    let y = address(at.y, size.y, (state >> 3u) & 7u);
+    if (x < 0 || y < 0) {
+        return vec4<f32>(0.0);
+    }
+    return textureLoad(t, vec2<i32>(x, y), level);
+}
+
+fn filtered(t: texture_2d<f32>, uv: vec2<f32>, level: i32, linear: bool, state: u32) -> vec4<f32> {
+    let at = uv * vec2<f32>(textureDimensions(t, level));
+    if (!linear) {
+        return fetch(t, vec2<i32>(floor(at)), level, state);
+    }
+    let p = at - 0.5;
+    let base = floor(p);
+    let f = p - base;
+    let i = vec2<i32>(base);
+    let a = fetch(t, i, level, state);
+    let b = fetch(t, i + vec2<i32>(1, 0), level, state);
+    let c = fetch(t, i + vec2<i32>(0, 1), level, state);
+    let d = fetch(t, i + vec2<i32>(1, 1), level, state);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// `state` (ten bits): the addressing, the magnifying and minifying filters (bits 6 and 7), and
+// the mip filter (bits 8-9: 1 point, 2 linear). `lod` already carries the slot's bias.
+fn sample_slot(t: texture_2d<f32>, uv: vec2<f32>, state: u32, lod: f32) -> vec4<f32> {
+    let magnified = lod <= 0.0;
+    let linear = select(((state >> 7u) & 1u) == 1u, ((state >> 6u) & 1u) == 1u, magnified);
+    let mip = (state >> 8u) & 3u;
+    let top = f32(textureNumLevels(t) - 1u);
+    if (magnified) {
+        return filtered(t, uv, 0, linear, state);
+    }
+    let level = clamp(lod, 0.0, top);
+    if (mip == 1u) {
+        return filtered(t, uv, i32(floor(level + 0.5)), linear, state);
+    }
+    let low = floor(level);
+    let high = min(low + 1.0, top);
+    return mix(
+        filtered(t, uv, i32(low), linear, state),
+        filtered(t, uv, i32(high), linear, state),
+        level - low,
+    );
+}
+
+fn lod_of(t: texture_2d<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
+    let size = vec2<f32>(textureDimensions(t, 0));
+    let a = dx * size;
+    let b = dy * size;
+    return 0.5 * log2(max(dot(a, a), dot(b, b)));
+}
+
+// buttonstate's timed Over (k 4, +) and Down (k 16, -) shade.
+fn timed(c: vec4<f32>, since: f32, k: f32, sign: f32) -> vec4<f32> {
+    var t = 0.9 - saturate(since * k);
+    t = t * t;
+    t = 0.9 * 0.9 - t;
+    return vec4<f32>(c.rgb + sign * (0.5 + c.rgb) * (vec3<f32>(0.15) * t), c.a);
+}
+
+fn sprite(in: ExactOut, p: u32, lods: vec3<f32>) -> vec4<f32> {
+    let s0 = in.samplers & 1023u;
+    let s5 = (in.samplers >> 20u) & 1023u;
+    var offset = in.offsets.xy;
+    if (((p >> 5u) & 1u) == 1u) {
+        offset = vec2<f32>(in.offsets.x, 0.0);
+    }
+    let uv = in.uv + offset;
+    var c = sample_slot(slot0, uv, s0, lods.x);
+    if (((p >> 4u) & 1u) == 1u) {
+        let next = sample_slot(slot0, in.uv + in.offsets.zw, s0, lods.x);
+        c = mix(c, next, in.inputs.y);
+    }
+    if (((p >> 6u) & 1u) == 1u) {
+        let grey = dot(c.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
+        c = vec4<f32>(grey, grey, grey, c.a);
+    }
+    if (((p >> 14u) & 1u) == 1u) {
+        var at = uv;
+        if (((p >> 15u) & 1u) == 1u) {
+            at = in.mask_uv;
+        }
+        c.a = c.a * sample_slot(slot5, at, s5, lods.z).a;
+    }
+    if (((p >> 12u) & 1u) == 1u) {
+        let t = in.inputs.y;
+        c = c * (min(t / 0.05, 1.0) * min((1.0 - t) / 0.1, 1.0));
+    }
+    if (((p >> 7u) & 1u) == 1u) {
+        c = c * in.color;
+    }
+    switch (p >> 8u) & 7u {
+        case 1u: {
+            c = timed(c, in.inputs.x, 4.0, 1.0);
+        }
+        case 2u: {
+            c = timed(c, in.inputs.x, 16.0, -1.0);
+        }
+        case 3u: {
+            c = c + vec4<f32>(0.1, 0.1, 0.1, 0.0);
+        }
+        case 4u: {
+            c = c - vec4<f32>(0.1, 0.1, 0.1, 0.0);
+        }
+        case 5u: {
+            c = vec4<f32>(c.rgb + (0.5 + c.rgb) * 0.15, c.a);
+        }
+        case 6u: {
+            c = vec4<f32>(c.rgb - (0.5 + c.rgb) * 0.15, c.a);
+        }
+        default: {}
+    }
+    if (((p >> 11u) & 1u) == 1u) {
+        c = c * in.color;
+    }
+    if (((p >> 13u) & 1u) == 1u) {
+        c.a = 1.0;
+    }
+    return c;
+}
+
+// The start, middle and stop thirds of the first texture (progress_startend, _reverse).
+fn thirds(uv: vec2<f32>, state: f32, s0: u32, lod: f32) -> vec4<f32> {
+    var start = uv;
+    start.y = start.y / 3.0;
+    start.y = start.y + 1.0 / 3.0;
+    var middle = start;
+    middle.y = middle.y + 1.0 / 3.0;
+    var stop = middle;
+    stop.y = stop.y + 1.0 / 3.0;
+    stop.x = stop.x + 1.0 - state;
+    let a = sample_slot(slot0, start, s0, lod);
+    let m = sample_slot(slot0, middle, s0, lod);
+    let z = sample_slot(slot0, stop, s0, lod);
+    var c = mix(m, a, a.a);
+    c = mix(c, z, z.a);
+    c.a = m.a;
+    return c;
+}
+
+fn progress(in: ExactOut, p: u32, lods: vec3<f32>) -> vec4<f32> {
+    let texture = ((p >> 4u) & 1u) == 1u;
+    let variant = (p >> 6u) & 7u;
+    var uv = in.uv;
+    if (((p >> 5u) & 1u) == 1u) {
+        uv.y = -uv.y;
+    }
+    let state = in.inputs.z;
+    let s0 = in.samplers & 1023u;
+    let s1 = (in.samplers >> 10u) & 1023u;
+    let x = uv.x;
+    switch variant {
+        case 1u: {
+            let first = x >= 1.0 - state;
+            if (!texture) {
+                return select(in.second, in.color, first);
+            }
+            if (first) {
+                return thirds(uv, state, s0, lods.x);
+            }
+            return sample_slot(slot1, uv, s1, lods.y);
+        }
+        case 2u: {
+            let first = x <= state;
+            if (!texture) {
+                return select(in.second, in.color, first);
+            }
+            if (first) {
+                return thirds(uv, state, s0, lods.x);
+            }
+            return sample_slot(slot1, uv, s1, lods.y);
+        }
+        case 3u: {
+            if (!texture) {
+                let front = (x <= 0.5 && x <= state) || (x >= 0.5 && x >= state);
+                return select(in.second, in.color, front);
+            }
+            let front = (x < 0.5 && x >= state) || (x >= 0.5 && x <= state);
+            if (front) {
+                return sample_slot(slot0, uv, s0, lods.x);
+            }
+            return sample_slot(slot1, uv, s1, lods.y);
+        }
+        case 4u: {
+            if (!texture) {
+                return select(in.second, in.color, x <= state);
+            }
+            let diff = vec2<f32>(0.5) - uv;
+            let angle = atan2(diff.x, diff.y) + 3.14159265;
+            let t = saturate((angle - state * 3.14159265 * 2.0) * 50.0);
+            return mix(
+                sample_slot(slot0, uv, s0, lods.x),
+                sample_slot(slot1, uv, s1, lods.y),
+                t,
+            );
+        }
+        default: {
+            let first = x <= state;
+            if (!texture) {
+                return select(in.second, in.color, first);
+            }
+            if (first) {
+                return sample_slot(slot0, uv, s0, lods.x);
+            }
+            return sample_slot(slot1, uv, s1, lods.y);
+        }
+    }
+}
+
+@fragment
+fn exact_fragment(in: ExactOut) -> @location(0) vec4<f32> {
+    // Derivatives before any branch on the quad's own program.
+    let dx = dpdx(in.uv);
+    let dy = dpdy(in.uv);
+    let lods = vec3<f32>(lod_of(slot0, dx, dy), lod_of(slot1, dx, dy), lod_of(slot5, dx, dy))
+        + in.lod_bias.xyz;
+    // A masked flag's slot 0 is read at `FlagCoords.xy + uv * FlagCoords.zw`.
+    let flag_uv = in.offsets.xy + in.uv * in.offsets.zw;
+    let flag_lod = lod_of(slot0, dpdx(flag_uv), dpdy(flag_uv)) + in.lod_bias.x;
+    // circularprogressbar.shader reads both slots at half the vertex coordinate, flipped.
+    var circle = (in.uv - vec2<f32>(0.5)) * 0.5 + vec2<f32>(0.25);
+    circle.y = 1.0 - circle.y;
+    let circle_lods = vec3<f32>(
+        lod_of(slot0, dpdx(circle), dpdy(circle)),
+        lod_of(slot1, dpdx(circle), dpdy(circle)),
+        0.0,
+    ) + in.lod_bias.xyz;
+    switch in.pixel & 15u {
+        case 1u: {
+            return progress(in, in.pixel, lods);
+        }
+        case 3u: {
+            // maskedflag.shader: the flag at `FlagCoords.xy + uv * FlagCoords.zw` (carried in
+            // `offsets`), the mask's alpha at `uv`.
+            var c = sample_slot(slot0, flag_uv, in.samplers & 1023u, flag_lod);
+            c.a = sample_slot(slot1, in.uv, (in.samplers >> 10u) & 1023u, lods.y).a;
+            switch (in.pixel >> 4u) & 3u {
+                case 1u: {
+                    c = vec4<f32>(c.rgb + vec3<f32>(0.1), c.a);
+                }
+                case 2u: {
+                    c = vec4<f32>(c.rgb - vec3<f32>(0.1), c.a);
+                }
+                case 3u: {
+                    let grey = dot(c.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
+                    c = vec4<f32>(grey, grey, grey, c.a);
+                }
+                default: {}
+            }
+            return c;
+        }
+        case 4u: {
+            // circularprogressbar.shader: `lerp(TextureOne, TextureTwo, vTextureToRender.x)` at
+            // `circle - 0.5`, the sector carried in `inputs.z`.
+            let at = circle - vec2<f32>(0.5);
+            let one = sample_slot(slot0, at, in.samplers & 1023u, circle_lods.x);
+            let two = sample_slot(slot1, at, (in.samplers >> 10u) & 1023u, circle_lods.y);
+            return mix(one, two, in.inputs.z);
+        }
+        case 2u: {
+            // text.shader: the vertex program forms `vColor * ModColor`; the pixel program
+            // multiplies the glyph texel by it.
+            return sample_slot(slot0, in.uv, in.samplers & 1023u, lods.x) * (in.color * in.second);
+        }
+        default: {
+            return sprite(in, in.pixel, lods);
+        }
+    }
 }
 "#;
 

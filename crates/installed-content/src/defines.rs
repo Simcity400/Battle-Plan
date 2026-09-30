@@ -74,36 +74,45 @@ pub fn load_order<'a>(
     filter: &str,
     paths: impl Iterator<Item = &'a str>,
 ) -> Vec<String> {
-    let mut paths: Vec<String> = paths
+    load_order_paths(root.as_bytes(), filter.as_bytes(), paths.map(str::as_bytes))
+        .into_iter()
+        .map(|path| String::from_utf8(path).expect("text paths order as text"))
+        .collect()
+}
+
+/// [`load_order`] over layer paths' bytes, which the enumeration compares and
+/// returns as they are ([`crate::ResolvedLayers::listed_layer_paths`]).
+pub fn load_order_paths<'a>(
+    root: &[u8],
+    filter: &[u8],
+    paths: impl Iterator<Item = &'a [u8]>,
+) -> Vec<Vec<u8>> {
+    let mut paths: Vec<&[u8]> = paths
         .filter(|path| {
             path.len() > root.len()
-                && path
-                    .get(..root.len())
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(root))
+                && path[..root.len()].eq_ignore_ascii_case(root)
                 && path.ends_with(filter)
         })
-        .map(|path| path[root.len()..].to_owned())
+        .map(|path| &path[root.len()..])
         .collect();
     // Files sort before the subdirectories of the same directory, and each
     // level compares names bytewise.
     paths.sort_by(|a, b| {
         let (a, b) = (
-            a.split('/').collect::<Vec<_>>(),
-            b.split('/').collect::<Vec<_>>(),
+            a.split(|byte| *byte == b'/').collect::<Vec<_>>(),
+            b.split(|byte| *byte == b'/').collect::<Vec<_>>(),
         );
         for (index, (x, y)) in a.iter().zip(&b).enumerate() {
             let (x_file, y_file) = (index + 1 == a.len(), index + 1 == b.len());
             if x != y || x_file != y_file {
-                return y_file
-                    .cmp(&x_file)
-                    .then_with(|| x.as_bytes().cmp(y.as_bytes()));
+                return y_file.cmp(&x_file).then_with(|| x.cmp(y));
             }
         }
         a.len().cmp(&b.len())
     });
     paths
         .into_iter()
-        .map(|path| format!("{root}{path}"))
+        .map(|path| [root, path].concat())
         .collect()
 }
 

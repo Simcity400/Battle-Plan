@@ -1449,4 +1449,4 @@ fn runs(indices: &[usize]) -> Vec<std::ops::Range<usize>> {
 
 #[cfg(test)]
 #[path = "political_gpu_tests.rs"]
-mod tests;
+pub(crate) mod tests;

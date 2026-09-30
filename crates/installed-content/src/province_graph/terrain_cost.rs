@@ -9,7 +9,8 @@ use std::{collections::BTreeMap, io};
 use crate::{
     ResolvedLayers,
     content::normalize_relative,
-    fields::{invalid, script_fixed5 as parse_fixed5},
+    fields::invalid,
+    fixed5::script_fixed5 as parse_fixed5,
     parser::{self, Document, Item, Value},
 };
 

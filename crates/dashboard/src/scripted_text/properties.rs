@@ -217,7 +217,8 @@ impl ScriptedText<'_> {
         if index % 2 == 0 {
             Ok(text)
         } else {
-            crt_case(&text, true, true, name)
+            // SsoString_UppercaseFirstCharacter (1424B6FE0), the "C" locale's toupper.
+            Ok(crt_case_text(&text, true, true))
         }
     }
 

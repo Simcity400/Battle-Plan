@@ -243,6 +243,23 @@ pub fn select_adapter(
     Ok(adapters[index].clone())
 }
 
+/// The optional device features the viewer draws some content exactly with that a device with
+/// `features` lacks, each named with what it costs: viewer hardware requirements, not native
+/// failures or missing replay data. Named once at start-up ([`device_descriptor`]) and in the
+/// diagnostics (the App's warnings, the details output and the headless dump's).
+pub fn device_requirements(features: wgpu::Features) -> Vec<String> {
+    let mut missing = Vec::new();
+    if !features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
+        missing.push(
+            "the adapter lacks FLOAT32_FILTERABLE: 16-bit (B5G6R5/B5G5R5A1) GUI textures, which \
+             the game samples as UNORM, need f32 filtering to draw exactly and are not drawn on \
+             this device (a viewer hardware requirement, not missing replay data)"
+                .to_owned(),
+        );
+    }
+    missing
+}
+
 /// Whether a map on this adapter carries [`SOFTWARE_RENDERER_NOTICE`].
 pub fn is_software(adapter: &wgpu::Adapter) -> bool {
     adapter.get_info().device_type == wgpu::DeviceType::Cpu
@@ -277,6 +294,14 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     };
     // Atlases built on the CPU page to this side ([`crate::map::atlas_pages`]).
     crate::map::atlas_pages::record_device_limit(limits.max_texture_dimension_2d);
+    // FLOAT32_FILTERABLE when the adapter offers it: a 16-bit GUI texture goes up as exact
+    // `f32` channels, which the filtering samplers take only with it (`map::textures`); without
+    // it such a texture is not drawn, never quantized: a viewer hardware requirement, named
+    // here once at start-up and in the diagnostics ([`device_requirements`]).
+    for requirement in device_requirements(adapter.features()) {
+        static NAMED: std::sync::Once = std::sync::Once::new();
+        NAMED.call_once(|| eprintln!("Warning: {requirement}"));
+    }
     let mut wanted = wgpu::Features::TEXTURE_COMPRESSION_BC
         | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         // Compiled map shaders sample the native RGBA32F point-light texture.
@@ -511,6 +536,8 @@ fn read_texture(
 pub struct DumpReport {
     /// Adapter name and backend, so a dump identifies the GPU it used.
     pub adapter: String,
+    /// The device's missing feature requirements ([`device_requirements`]).
+    pub device_requirements: Vec<String>,
     /// Wall time of the render call alone, excluding device and texture setup.
     pub render_seconds: f64,
     /// CPU seconds of the render call before the GPU drain wait.
@@ -730,6 +757,7 @@ pub fn dump_png(
         let grid = scene.grid();
         let report = DumpReport {
             adapter: format!("{} ({:?})", info.name, info.backend),
+            device_requirements: device_requirements(device.features()),
             render_seconds,
             cpu_seconds,
             quads: grid.quads(),
@@ -869,6 +897,23 @@ fn bench_frames(
 mod tests {
     use super::*;
     use wgpu::{Backend, DeviceType};
+
+    /// A device without `FLOAT32_FILTERABLE` is named, with what it costs, as a viewer hardware
+    /// requirement: the line start-up logs and the diagnostics carry. A device with it has none.
+    #[test]
+    fn a_missing_float32_filtering_feature_is_named_as_a_device_requirement() {
+        assert!(device_requirements(wgpu::Features::FLOAT32_FILTERABLE).is_empty());
+        let named = device_requirements(wgpu::Features::TEXTURE_COMPRESSION_BC);
+        assert_eq!(named.len(), 1);
+        for part in [
+            "FLOAT32_FILTERABLE",
+            "B5G6R5/B5G5R5A1",
+            "not drawn",
+            "hardware requirement",
+        ] {
+            assert!(named[0].contains(part), "{part}: {}", named[0]);
+        }
+    }
 
     fn adapter(name: &str, device_type: DeviceType, backend: Backend) -> AdapterCandidate {
         AdapterCandidate {

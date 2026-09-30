@@ -172,60 +172,52 @@ pub fn catalogue(
 
 /// Read the user's existing game preferences; never writes to settings.txt.
 fn game_graphics(user: &std::path::Path) -> io::Result<crate::protocol::MapGraphics> {
-    parse_game_graphics_document(&installed_content::settings::read(user)?)
+    parse_game_graphics_keys(&installed_content::settings::read_keys(user)?)
 }
 #[cfg(test)]
 fn parse_game_graphics(bytes: &[u8]) -> io::Result<crate::protocol::MapGraphics> {
-    parse_game_graphics_document(&installed_content::parser::parse(bytes)?)
+    parse_game_graphics_keys(&installed_content::settings::SettingsKeys::read(bytes))
 }
-fn parse_game_graphics_document(
-    document: &installed_content::parser::Document,
+/// The preferences from `settings.txt`'s keys as the game reads them
+/// ([`installed_content::settings::SettingsKeys`]: any case, the last stored value of each field; a
+/// conversion that stores nothing keeps the field).
+fn parse_game_graphics_keys(
+    keys: &installed_content::settings::SettingsKeys,
 ) -> io::Result<crate::protocol::MapGraphics> {
-    let graphics = document
-        .get("graphics")
-        .and_then(|value| value.items())
-        .ok_or_else(|| crate::invalid("Missing graphics block in game settings"))?;
-    let map = document
-        .get("mapRenderingOptions")
-        .and_then(|value| value.items())
-        .ok_or_else(|| crate::invalid("Missing mapRenderingOptions in game settings"))?;
-    fn scalar<'a>(items: &'a [installed_content::parser::Item], key: &str) -> Option<&'a str> {
-        items
-            .iter()
-            .find(|item| item.key.as_deref() == Some(key.as_bytes()))
-            .and_then(|item| item.value.scalar_str())
+    if !keys.has(&["graphics"]) {
+        return Err(crate::invalid("Missing graphics block in game settings"));
     }
-    fn toggle(items: &[installed_content::parser::Item], key: &str, fallback: bool) -> io::Result<bool> {
-        match scalar(items, key) {
-            Some("yes") => Ok(true),
-            Some("no") => Ok(false),
-            None => Ok(fallback),
-            _ => Err(crate::invalid(format!("Invalid game setting: {key}"))),
-        }
+    if !keys.has(&["maprenderingoptions"]) {
+        return Err(crate::invalid(
+            "Missing mapRenderingOptions in game settings",
+        ));
     }
+    let map = |key: &str, fallback: bool| {
+        keys.bool_at(&["maprenderingoptions", key])
+            .unwrap_or(fallback)
+    };
     let mut result = crate::protocol::MapGraphics::default();
-    result.trees = toggle(map, "draw_trees", result.trees)?;
-    result.shadows =
-        toggle(graphics, "shadows", true)? && toggle(map, "draw_shadows", result.shadows)?;
-    result.rivers = toggle(map, "draw_rivers", result.rivers)?;
+    result.trees = map("draw_trees", result.trees);
+    result.shadows = keys.bool_at(&["graphics", "shadows"]).unwrap_or(true)
+        && map("draw_shadows", result.shadows);
+    result.rivers = map("draw_rivers", result.rivers);
     // 1401FAA60 token0x3699 writes map options+0x18; used by141264830.
-    result.high_gfx_shaders = toggle(map, "high_gfx_shaders", result.high_gfx_shaders)?;
-    result.water_reflections = toggle(map, "draw_water_reflections", result.water_reflections)?;
+    result.high_gfx_shaders = map("high_gfx_shaders", result.high_gfx_shaders);
+    result.water_reflections = map("draw_water_reflections", result.water_reflections);
     // 1401FAA60 token0x281c writes options+0x0e; sky141268860 reads it.
-    result.sky = toggle(map, "draw_sky", result.sky)?;
-    result.buildings = toggle(map, "draw_buildings", result.buildings)?;
-    result.units = toggle(map, "draw_units", result.units)?;
-    result.city_sprawl = toggle(map, "draw_citysprawl", result.city_sprawl)?;
-    result.weather = toggle(map, "draw_weather_effects", result.weather)?;
-    if let Some(value) = scalar(graphics, "multi_sampling") {
-        result.samples = value
-            .parse::<u32>()
+    result.sky = map("draw_sky", result.sky);
+    result.buildings = map("draw_buildings", result.buildings);
+    result.units = map("draw_units", result.units);
+    result.city_sprawl = map("draw_citysprawl", result.city_sprawl);
+    result.weather = map("draw_weather_effects", result.weather);
+    if let Some(value) = keys.i32_at(&["graphics", "multi_sampling"]) {
+        result.samples = u32::try_from(value)
             .map_err(|_| crate::invalid("Invalid game anti-aliasing"))?
             .max(1);
     }
-    if let Some(value) = scalar(map, "texture_quality") {
+    if let Some(value) = keys.i32_at(&["maprenderingoptions", "texture_quality"]) {
         result.texture_quality = value
-            .parse()
+            .try_into()
             .map_err(|_| crate::invalid("Invalid game texture quality"))?;
     }
     CampaignMapSettings {

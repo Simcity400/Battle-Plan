@@ -61,13 +61,7 @@ impl Value {
     /// (1424ACEE0) and stored as `Unreadable String` instead. `None` for a
     /// block, which no reader of one value is given (the replay reads `{`).
     pub fn read_string(&self) -> Option<&[u8]> {
-        let text = self.scalar()?;
-        let text = &text[..text.iter().position(|b| *b == 0).unwrap_or(text.len())];
-        Some(if text.contains(&b'\n') {
-            UNREADABLE_STRING
-        } else {
-            text
-        })
+        Some(read_string(self.scalar()?))
     }
 
     /// [`Self::read_string`] as the port's text. The game stores the bytes
@@ -153,6 +147,18 @@ pub fn c_string(bytes: &[u8]) -> &[u8] {
 /// What CReader::ReadStringInto (1424ABB50) stores for a string holding a
 /// line feed.
 pub const UNREADABLE_STRING: &[u8] = b"Unreadable String";
+
+/// CReader::ReadStringInto (1424ABB50) with its check on, of a token's text:
+/// read_string_token (1424B05E0) copies it up to its first NUL, and a text
+/// holding a line feed is stored as [`UNREADABLE_STRING`].
+pub fn read_string(text: &[u8]) -> &[u8] {
+    let text = c_string(text);
+    if text.contains(&b'\n') {
+        UNREADABLE_STRING
+    } else {
+        text
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {

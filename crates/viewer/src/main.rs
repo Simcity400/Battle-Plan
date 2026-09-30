@@ -1039,6 +1039,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output.display(),
             report.adapter
         );
+        for requirement in &report.device_requirements {
+            eprintln!("Warning: {requirement}");
+        }
         println!(
             "Camera: {},{},{}",
             camera.center[0], camera.center[1], camera.height

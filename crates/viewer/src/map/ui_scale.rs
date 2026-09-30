@@ -211,18 +211,26 @@ pub fn extent(viewport: [u32; 2], scale: f32) -> [f32; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::settings::DisplayMode;
+    use installed_content::settings::{Clamp, DisplayMode};
 
     /// The owner's borderless game on a 2560x1440 monitor at 125%.
-    const BORDERLESS: Display = Display {
-        gui_scale: 1.0,
-        clamp_size: Some([2048, 1152]),
-        clamp_borderless: true,
-        size: Some([2560, 1440]),
-        min_gui: [1280, 720],
-        mode: DisplayMode::Borderless,
-        display_index: 0,
-    };
+    fn borderless() -> Display {
+        borderless_at(1.0)
+    }
+
+    fn borderless_at(gui_scale: f32) -> Display {
+        Display {
+            clamps: vec![Clamp {
+                gui_scale: Some(gui_scale),
+                size: Some([2048, 1152]),
+                borderless: true,
+            }],
+            size: Some([2560, 1440]),
+            min_gui: [1280, 720],
+            mode: DisplayMode::Borderless,
+            display_index: 0,
+        }
+    }
     const MONITOR: Desktop = Desktop {
         physical: [2560, 1440],
         dpi: 120,
@@ -230,21 +238,15 @@ mod tests {
 
     #[test]
     fn matching_the_game_multiplies_its_scale_by_its_stretch() {
-        let (scale, note) = Setting::MatchGame.resolve(Ok(&BORDERLESS), Ok(&[MONITOR]));
+        let (scale, note) = Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[MONITOR]));
         assert_eq!((scale, note), (1.25, None));
         // At 100% the same game fills the monitor 1:1.
         let unscaled = Desktop { dpi: 96, ..MONITOR };
         assert_eq!(
-            Setting::MatchGame.resolve(Ok(&BORDERLESS), Ok(&[unscaled])),
+            Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[unscaled])),
             (1.0, None)
         );
-        let (scale, _) = Setting::MatchGame.resolve(
-            Ok(&Display {
-                gui_scale: 1.2,
-                ..BORDERLESS
-            }),
-            Ok(&[unscaled]),
-        );
+        let (scale, _) = Setting::MatchGame.resolve(Ok(&borderless_at(1.2)), Ok(&[unscaled]));
         // 2560 frame pixels over 2133 interface pixels, truncated as the game does.
         assert_eq!(scale, 2560.0 / 2133.0);
     }
@@ -254,10 +256,10 @@ mod tests {
         let (scale, note) = Setting::MatchGame.resolve(Err("Missing graphics block"), Ok(&[]));
         assert_eq!(scale, 1.0);
         assert!(note.unwrap().contains("Missing graphics block"));
-        let (scale, note) = Setting::MatchGame.resolve(Ok(&BORDERLESS), Err("not DPI aware"));
+        let (scale, note) = Setting::MatchGame.resolve(Ok(&borderless()), Err("not DPI aware"));
         assert_eq!(scale, 1.0);
         assert!(note.unwrap().contains("not DPI aware"));
-        let (scale, note) = Setting::MatchGame.resolve(Ok(&BORDERLESS), Ok(&[]));
+        let (scale, note) = Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[]));
         assert_eq!(scale, 1.0);
         assert!(note.is_some());
     }

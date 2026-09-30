@@ -387,4 +387,42 @@ mod tests {
         assert_eq!(decimal_i32(b"99999999999"), i32::MAX);
         assert_eq!(decimal_i32(b"-99999999999"), i32::MIN);
     }
+
+    /// `atoi` saturates at 32 bits (`14254AF28` through `14253C770`).
+    #[test]
+    fn atoi_saturates() {
+        assert_eq!(decimal_i32(b"99999999999"), i32::MAX);
+        assert_eq!(decimal_i32(b"-99999999999"), i32::MIN);
+        assert_eq!(decimal_i32(b"-2147483648"), i32::MIN);
+        assert_eq!(decimal_i32(b"2147483647"), i32::MAX);
+        assert_eq!(decimal_i32(b"4294967296"), i32::MAX);
+        assert_eq!(decimal_i32(b" +10.5"), 10);
+        assert_eq!(decimal_i32(b"1e2"), 1);
+        assert_eq!(decimal_i32(b"0x10"), 0);
+        assert_eq!(decimal_i32(b"px"), 0);
+    }
+
+    /// `ReadFixed5`'s digit-by-digit read (`1424ABB10` -> `1424B0480`).
+    #[test]
+    fn fixed5_reads_digit_by_digit() {
+        for (text, value) in [
+            (&b"1.5"[..], Some(150_000)),
+            (b"1.05", Some(105_000)),
+            (b"1.123456", Some(112_345)),
+            (b"-0.5", Some(-50_000)),
+            (b"-1.5", Some(-150_000)),
+            (b"+1.5", Some(150_000)),
+            (b"1.", Some(100_000)),
+            (b"1.x", Some(100_000)),
+            (b"1.5e2", Some(100_005)),
+            (b"1.-5", Some(95_000)),
+            (b"1e3", Some(100_000)),
+            (b"0x10", Some(1_600_000)),
+            (b"", Some(0)),
+            (b".5", None),
+            (b"abc", None),
+        ] {
+            assert_eq!(script_fixed5(text), value, "{text:?}");
+        }
+    }
 }

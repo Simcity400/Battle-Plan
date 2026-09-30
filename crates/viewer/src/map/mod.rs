@@ -51,6 +51,11 @@ pub mod mapframe;
 pub mod name_pass;
 pub mod name_shader;
 pub mod names;
+pub mod native_effects;
+pub mod native_flags;
+pub mod native_gui;
+pub mod native_resources;
+pub mod native_text;
 pub mod naval_combat_occurrences;
 // counters: the viewing country and what it can see
 pub mod perspective;

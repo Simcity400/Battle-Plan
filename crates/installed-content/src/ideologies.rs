@@ -11,7 +11,7 @@
 use crate::{
     ResolvedLayers,
     coverage::{Coverage, Gap},
-    crt::{Scanned, scan_f32},
+    crt::scan_f32,
     ideas::{RuleNode, rule_field},
     modifiers,
     parser::{
@@ -201,19 +201,14 @@ fn read_color(color: &mut [f32; 4], item: &Item) -> Result<(), String> {
     };
     for (index, component) in components.iter().enumerate().take(4) {
         let text = component.value.scalar().unwrap_or_default();
-        let scanned = scan_f32(text).map_err(|form| {
-            format!(
-                "colour component {} ({form}) is not converted",
-                String::from_utf8_lossy(text)
-            )
-        })?;
+        let scanned = scan_f32(text);
         if index == 3 {
-            if let Scanned::Stored(alpha) = scanned {
+            if let Some(alpha) = scanned {
                 color[3] = alpha;
             }
             continue;
         }
-        if let Scanned::Stored(value) = scanned {
+        if let Some(value) = scanned {
             color[index] = value;
         }
         if color[index] > 1.0 {

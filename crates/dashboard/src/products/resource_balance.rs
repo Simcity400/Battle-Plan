@@ -557,15 +557,7 @@ fn resource_name(
     token: &str,
     warnings: &mut Vec<String>,
 ) -> Option<String> {
-    let upper = match installed_content::localisation::crt_case_text(token, true, false) {
-        Ok(upper) => upper,
-        Err(reason) => {
-            warnings.push(format!(
-                "{token}: no name: its key needs {reason}, which is not reproduced."
-            ));
-            return None;
-        }
-    };
+    let upper = installed_content::localisation::crt_case_text(token, true, false);
     let key = format!("PRODUCTION_MATERIALS_{upper}");
     // An empty text is shown empty, as the game's text box shows it; a key
     // the content lacks is its own bytes (142230940).
@@ -851,12 +843,15 @@ mod tests {
             Some("PRODUCTION_MATERIALS_TUNGSTEN")
         );
         assert_eq!(resource_name(&localisation, "coal", &mut warnings), None);
-        assert_eq!(resource_name(&localisation, "stål", &mut warnings), None);
+        // The "C" locale's toupper leaves a byte above 0x7F.
+        assert_eq!(
+            resource_name(&localisation, "stål", &mut warnings).as_deref(),
+            Some("PRODUCTION_MATERIALS_STåL")
+        );
         assert_eq!(
             warnings,
             [
                 "coal: no name: localisation PRODUCTION_MATERIALS_COAL holds the control byte 0x14 (an authored `¤`), which plain text cannot show",
-                "stål: no name: its key needs the C runtime's case change of a byte above 0x7F, which its locale decides (14254F1FC, 14254F1D0), which is not reproduced.",
             ]
         );
     }
