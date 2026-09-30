@@ -7,7 +7,7 @@
 
 use std::{collections::BTreeMap, io, sync::OnceLock};
 
-use installed_content::{buildings::Buildings, defines::Defines, triggers::Comparison};
+use installed_content::{buildings::Buildings, defines::Defines, parser::Operator};
 use replay::{
     frame::DecodedFrame,
     rows::{
@@ -121,19 +121,17 @@ pub fn building_grant(healthy: i16, amount: i64, bonus: Option<i64>) -> i64 {
 
 /// `CIntTrigger::Evaluate@14138CC70` for `CResourceCountTrigger`: the
 /// amount truncated to whole units and to 32 bits, then compared.
-pub fn resource_comparison(amount: i64, comparison: Comparison, wanted: i32) -> Option<bool> {
+pub fn resource_comparison(amount: i64, comparison: Operator, wanted: i32) -> bool {
     int_comparison((amount / ONE) as i32, comparison, wanted)
 }
 
 /// `CIntTrigger::Evaluate@14138CC70`: `>` is `N < v`, `<` is `v < N`, `=`
-/// equality. The game reads any other comparison as equality; the parser's
-/// other forms are refused rather than assumed to reach it unchanged.
-pub fn int_comparison(value: i32, comparison: Comparison, wanted: i32) -> Option<bool> {
+/// equality, over the one-character operators the lexer reads (1424A7A90).
+pub fn int_comparison(value: i32, comparison: Operator, wanted: i32) -> bool {
     match comparison {
-        Comparison::Greater => Some(wanted < value),
-        Comparison::Less => Some(value < wanted),
-        Comparison::Equal => Some(value == wanted),
-        _ => None,
+        Operator::Greater => wanted < value,
+        Operator::Less => value < wanted,
+        Operator::Equals => value == wanted,
     }
 }
 
@@ -450,14 +448,13 @@ mod tests {
 
     #[test]
     fn resource_comparisons_truncate_to_whole_32_bit_units() {
-        use installed_content::triggers::Comparison::{Equal, Greater, GreaterEqual, Less};
+        use Operator::{Equals, Greater, Less};
         use resource_comparison as compare;
-        assert_eq!(compare(2_499_999, Greater, 24), Some(false));
-        assert_eq!(compare(2_500_000, Greater, 24), Some(true));
-        assert_eq!(compare(-150_000, Equal, -1), Some(true));
-        assert_eq!(compare(-150_000, Less, 0), Some(true));
-        assert_eq!(compare(((1_i64 << 32) + 5) * 100_000, Equal, 5), Some(true));
-        assert_eq!(compare(2_500_000, GreaterEqual, 24), None);
+        assert!(!compare(2_499_999, Greater, 24));
+        assert!(compare(2_500_000, Greater, 24));
+        assert!(compare(-150_000, Equals, -1));
+        assert!(compare(-150_000, Less, 0));
+        assert!(compare(((1_i64 << 32) + 5) * 100_000, Equals, 5));
     }
 
     #[test]

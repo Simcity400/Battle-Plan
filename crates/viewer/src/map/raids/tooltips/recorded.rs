@@ -103,6 +103,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         Scope::Province(id) => EventObject::Province(id),
         Scope::Leader(reference) => EventObject::UnitLeader(reference),
         Scope::Character(id) => EventObject::Character(id),
+        Scope::Combat => unreachable!("a raid condition is never checked in a combat scope"),
     };
     let unknown = |scope| EventScope {
         this: target(scope),
@@ -888,8 +889,7 @@ mod tests {
         run(&context);
     }
     fn triggers(text: &str) -> installed_content::triggers::Triggers {
-        installed_content::triggers::parse(&installed_content::parser::parse(text.as_bytes()).unwrap().items)
-            .unwrap()
+        installed_content::parser::parse(text.as_bytes()).unwrap().items
     }
     #[test]
     fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {

@@ -9,7 +9,7 @@ use std::{
 };
 
 use installed_content::{
-    triggers::Triggers,
+    parser::Item,
     unit_path::{
         self, Army, ArmyCombat, Country, Fact, MoveWorld, Mover, Occupant, ReachKey, Reachable,
         Search, StraitFleet,
@@ -774,7 +774,11 @@ impl MoveWorld for Moves<'_, '_> {
         Ok(modes.get(&(country, region)).copied().unwrap_or(0))
     }
 
-    fn evaluate(&self, triggers: &Triggers, country: Country) -> Fact<bool> {
+    fn has_children(&self, triggers: &[Item]) -> Fact<bool> {
+        self.world.has_children(triggers)
+    }
+
+    fn evaluate(&self, triggers: &[Item], country: Country) -> Fact<bool> {
         match self
             .world
             .evaluate(triggers, Scopes::of(Scope::Country(country)))

@@ -141,22 +141,19 @@ impl Assets {
 
     /// Hands the tactic triggers the building, ideology and resource names
     /// LoadKey's count triggers find (1405434F0), from the databases the
-    /// document already loaded, and what a state scope's resource count
-    /// reads: the building types' grants and NBuildings' origin bonuses
-    /// (crate::state_resources), or why the bonuses are unreadable.
+    /// document already loaded, and gives back the scripted triggers and
+    /// count names so settled: the one read every trigger consumer shares.
     pub(crate) fn set_count_trigger_names(
         &mut self,
         buildings: &installed_content::buildings::Buildings,
         ideologies: &installed_content::ideologies::Ideologies,
         resources: &[installed_content::resources::Resource],
-        resource_bonuses: Result<[i64; 2], String>,
-    ) {
+    ) -> std::sync::Arc<installed_content::trigger_keys::TriggerNames> {
         self.tactics
             .set_count_names(installed_content::trigger_keys::CountTriggerNames::new(
                 buildings, ideologies, resources,
             ));
-        self.tactics
-            .set_state_resources(buildings.clone(), resource_bonuses);
+        self.tactics.trigger_names()
     }
 
     /// The normal-set flag of `key`, queued when not decoded yet.
@@ -410,7 +407,6 @@ impl Assets {
                     sub_units.as_ref(),
                     installed_content::scripted_triggers::read(layers)?,
                 )
-                .with_tag_aliases(installed_content::tag_aliases::read(layers)?)
                 .with_country_leader_traits(country_leader_traits.clone());
         for (key, texture) in tactics.pictures() {
             declarations.insert(

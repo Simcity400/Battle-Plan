@@ -27,7 +27,6 @@ pub(crate) mod text;
 pub(crate) mod texture;
 mod tooltip_painter;
 mod tooltips;
-mod trigger_names;
 
 use crate::{
     document::Document,

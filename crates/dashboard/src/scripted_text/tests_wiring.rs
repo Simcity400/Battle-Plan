@@ -752,8 +752,9 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
 
 /// A promoted character (1410CDDF0) is THIS in a character scope: without
 /// a unit leader `tag` compares the character's own country and `skill` is
-/// 0; `has_trait` of a name no trait database holds is false; a trigger the
-/// character scope does not evaluate is refused by name.
+/// 0; `has_trait` of a name no trait database holds is false; a country
+/// trigger is false there (its scope mask rejects a character scope,
+/// 140542CA0), so no alternative passes.
 #[test]
 fn promoted_character_entry_evaluates_in_a_character_scope() {
     let (catalogue, _folder) = tests::catalogue(
@@ -779,6 +780,5 @@ fn promoted_character_entry_evaluates_in_a_character_scope() {
         rendered(&catalogue, &frame(), "TEST").unwrap(),
         "pass|fail|fail"
     );
-    let error = rendered(&catalogue, &frame(), "OTHER").unwrap_err();
-    assert!(error.contains("has_government"), "{error}");
+    assert_eq!(rendered(&catalogue, &frame(), "OTHER").unwrap(), "");
 }

@@ -7,7 +7,7 @@
 //! (the viewer depends on the dashboard), behind [`RecordedScopes::resolve`].
 
 use installed_content::scope::{Keyword, Names, Scope, ScopeKind};
-use installed_content::tag_aliases::TagAliases;
+use installed_content::tag_aliases::{TagAlias, TagAliases};
 use replay::{
     frame::{DecodedFrame, TableView},
     rows::{TableSchema, tables},
@@ -94,6 +94,8 @@ pub struct RecordedScopes {
     links: BTreeMap<u32, u32>,
     /// Canonical slot to tag, and back (`Countries`).
     tags: BTreeMap<u32, String>,
+    /// Whether `Countries` is complete, so `tags` is every country.
+    countries_complete: bool,
     slots: BTreeMap<String, u32>,
     /// State id to raw owner and controller links (`States`).
     states: BTreeMap<u32, (u32, u32)>,
@@ -101,9 +103,13 @@ pub struct RecordedScopes {
     capitals: BTreeMap<u32, i32>,
     /// Canonical slot to raw overlord link (`CountryAppearance.overlord`).
     overlords: BTreeMap<u32, i32>,
-    /// Character script token to its ids with their countries' slots
+    /// Character script token, folded as the lexer folds a token (the
+    /// lookup is by token ID), to its ids with their countries' slots
     /// (`Characters.name_token_id` through `LexicalTokens`).
     characters: BTreeMap<String, Vec<(u32, Option<u32>)>>,
+    /// Whether `Characters` and `LexicalTokens` are complete, so a token
+    /// no row has names no live character.
+    characters_complete: bool,
     /// Canonical slot to owned state count (CCountry+0x484,
     /// `CountryCounterInputs.owned_state_count`).
     owned: BTreeMap<u32, i32>,
@@ -154,6 +160,10 @@ impl RecordedScopes {
             .iter()
             .map(|link| (link.id, link.canonical_slot))
             .collect();
+        let countries_complete = matches!(
+            &*frame.tables[tables::Countries::ID.index()],
+            TableView::Complete(_)
+        );
         let (countries, gap) = table::<tables::Countries>(frame);
         gaps.insert("Countries", gap);
         let tags: BTreeMap<u32, String> = countries
@@ -195,6 +205,9 @@ impl RecordedScopes {
             .collect();
         // A character's script token is its name token id spelled by the
         // hour's LexicalTokens (`Characters.token` is its saved name).
+        let characters_complete = [tables::Characters::ID, tables::LexicalTokens::ID]
+            .iter()
+            .all(|id| matches!(&*frame.tables[id.index()], TableView::Complete(_)));
         let (characters, gap) = table::<tables::Characters>(frame);
         let (lexical, lexical_gap) = table::<tables::LexicalTokens>(frame);
         gaps.insert(
@@ -205,7 +218,7 @@ impl RecordedScopes {
         for row in characters {
             if let Some(token) = crate::products::character_script_token(row, lexical) {
                 by_token
-                    .entry(token.to_owned())
+                    .entry(token.to_ascii_lowercase())
                     .or_default()
                     .push((row.id, links.get(&row.country).copied()));
             }
@@ -213,11 +226,13 @@ impl RecordedScopes {
         Self {
             links,
             tags,
+            countries_complete,
             slots,
             states,
             capitals,
             overlords,
             characters: by_token,
+            characters_complete,
             owned,
             original_tags,
             aliases,
@@ -297,9 +312,9 @@ impl RecordedScopes {
         if self.slots.contains_key(tag) {
             return None;
         }
-        if self.aliases.names.contains(tag) {
+        if self.aliases.get(tag).is_some() {
             return Some(format!(
-                "tag alias {tag}: alias triggers not evaluated yet (common/country_tag_aliases, 143316AA8)"
+                "tag alias {tag}: AliasResolve (1407141F0) runs its triggers in the trigger evaluator (crate::triggers), not in a scope read alone"
             ));
         }
         (tag.len() == 3 && !self.aliases.unknown.is_empty()).then(|| {
@@ -308,6 +323,52 @@ impl RecordedScopes {
                 self.aliases.unknown.join("; ")
             )
         })
+    }
+
+    /// The body of the tag alias a three-byte name is, when it is no
+    /// recorded country tag: 140BA53F0 looks the alias database (143316AA8)
+    /// up after the country tags.
+    pub fn alias_entry(&self, tag: &str) -> Option<&TagAlias> {
+        if self.slots.contains_key(tag) {
+            return None;
+        }
+        self.aliases.get(tag)
+    }
+
+    /// Why whether a name is a tag alias is unknown: a file of the alias
+    /// database whose reading stops short.
+    pub fn aliases_unknown(&self) -> Option<String> {
+        (!self.aliases.unknown.is_empty()).then(|| self.aliases.unknown.join("; "))
+    }
+
+    /// Every country's canonical slot, in slot order (the game state's
+    /// country array, CGameState+0x310), or why the recording does not hold
+    /// them all.
+    pub fn roster(&self) -> Result<impl Iterator<Item = u32> + '_, String> {
+        if !self.countries_complete {
+            return Err(format!(
+                "the country roster (CGameState+0x310) is not complete: {}",
+                self.gaps.get("Countries").cloned().unwrap_or_default()
+            ));
+        }
+        Ok(self.tags.keys().copied())
+    }
+
+    /// A country's owned state count (CCountry+0x484), or why it is not
+    /// recorded.
+    pub fn owned_states(&self, slot: u32) -> Result<i32, String> {
+        self.owned.get(&slot).copied().ok_or_else(|| {
+            format!(
+                "the owned state count (CountryCounterInputs.owned_state_count, CCountry+0x484) of {} is not recorded: {}",
+                self.describe(Target::Country(slot)),
+                self.gaps.get("CountryCounterInputs").cloned().unwrap_or_default()
+            )
+        })
+    }
+
+    /// `_CountriesForOriginalTags` (CGameState+0x988) as derived.
+    pub fn original_tags(&self) -> &OriginalTagLists {
+        &self.original_tags
     }
 
     /// A country's tag.
@@ -363,28 +424,35 @@ impl RecordedScopes {
             Scope::Country(tag) => self.resolve_tag(tag).map(Target::Country).map_err(Missing),
             // 14146BB30 looks the token up among the scope country's
             // characters (CCountry::GetCharacters 1406E03C0, 1410D6BF0) and
-            // logs "Country is mandatory" without a country.
+            // logs "Country is mandatory" without a country; a character it
+            // does not find is logged ("could not find this character in
+            // country") and the scope's character is the invalid reference.
             Scope::Character(token) => {
                 let Some(Target::Country(country)) = context.this else {
                     return Err(Nothing(format!(
                         "character {token}: the scope has no country, which the game requires (14146BB30)"
                     )));
                 };
-                self.characters
-                    .get(token)
+                let found = self
+                    .characters
+                    .get(&token.to_ascii_lowercase())
                     .and_then(|found| {
                         found
                             .iter()
                             .find(|(_, owner)| *owner == Some(country))
                             .map(|(id, _)| Target::Character(*id))
-                    })
-                    .ok_or_else(|| {
-                        Missing(format!(
-                            "character {token} is not a recorded character of {}: {}",
-                            self.describe(Target::Country(country)),
-                            gap("Characters")
-                        ))
-                    })
+                    });
+                found.ok_or_else(|| {
+                    let why = format!(
+                        "character {token} is not a character of {}",
+                        self.describe(Target::Country(country))
+                    );
+                    if self.characters_complete {
+                        Nothing(why)
+                    } else {
+                        Missing(format!("{why} in the recording: {}", gap("Characters")))
+                    }
+                })
             }
             Scope::Keyword(keyword) => self.keyword(*keyword, context),
             Scope::Chain { head, then } => {
@@ -533,8 +601,10 @@ impl Names for RecordedScopes {
         self.slots.contains_key(tag) || self.alias(tag).is_some()
     }
 
+    /// A live character's token; the load-time classification
+    /// (14146DB00 -> 1406B0030) reads the content's templates instead.
     fn is_character(&self, token: &str) -> bool {
-        self.characters.contains_key(token)
+        self.characters.contains_key(&token.to_ascii_lowercase())
     }
 
     /// The prefixes 14146E4E0 compares (`mio` 0x4D37, `sp` 0x4D38, `scope`
@@ -849,16 +919,19 @@ pub(crate) mod tests {
             resolve("ROOT.overlord.capital_scope", &sov),
             Ok(Target::State(64))
         );
-        // A character of the scope country only (14146BB30).
-        assert_eq!(
-            resolve("GER_erwin_rommel", &Context::country(0)),
-            Ok(Target::Character(7))
-        );
-        assert!(
-            resolve("GER_erwin_rommel", &sov).unwrap_err().starts_with(
-                "character GER_erwin_rommel is not a recorded character of country SOV"
-            )
-        );
+        // A character of the scope country only (14146BB30), found by its
+        // token, so without case; another country's names nothing there.
+        for token in ["GER_erwin_rommel", "ger_ERWIN_rommel"] {
+            assert_eq!(
+                resolve(token, &Context::country(0)),
+                Ok(Target::Character(7))
+            );
+        }
+        assert!(matches!(
+            scopes.resolve_text("GER_erwin_rommel", false, &sov),
+            Err(Unresolved::Nothing(why))
+                if why == "character GER_erwin_rommel is not a character of country SOV"
+        ));
         assert!(
             resolve("64.GER_erwin_rommel", &sov).is_ok_and(|target| target == Target::State(64))
         );
@@ -915,16 +988,13 @@ pub(crate) mod tests {
     /// name; while an alias file stops short, any unknown three-byte name is.
     #[test]
     fn a_tag_alias_scope_is_refused_by_name() {
-        let aliases = TagAliases {
-            names: ["SPA".to_owned()].into(),
-            unknown: Vec::new(),
-        };
+        let aliases = installed_content::tag_aliases::parse(&[("a.txt", b"SPA = { }")]);
         let scopes = RecordedScopes::read(&frame(), Arc::new(aliases));
         let sov = Context::country(1);
         assert_eq!(
             scopes.resolve_text("SPA", false, &sov),
             Err(Unresolved::Missing(
-                "tag alias SPA: alias triggers not evaluated yet (common/country_tag_aliases, 143316AA8)"
+                "tag alias SPA: AliasResolve (1407141F0) runs its triggers in the trigger evaluator (crate::triggers), not in a scope read alone"
                     .into()
             ))
         );
@@ -933,8 +1003,8 @@ pub(crate) mod tests {
             Ok(Target::Country(0))
         );
         let short = TagAliases {
-            names: Default::default(),
             unknown: vec!["common/country_tag_aliases/a.txt: line 2: x".into()],
+            ..Default::default()
         };
         let scopes = RecordedScopes::read(&frame(), Arc::new(short));
         assert!(matches!(

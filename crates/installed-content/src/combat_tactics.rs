@@ -9,7 +9,7 @@
 //! ([`native`]): a definition `@name = value` (1424AC830) is consumed
 //! wherever the reader reads by key, so it takes no ID and is no field, and
 //! a value read after it takes its value (1424AB540). Each field goes to its
-//! own native reader ([`shape`]); where the text leaves the tree's shape the
+//! own native reader ([`Shaper`]); where the text leaves the tree's shape the
 //! reading follows the game's and is noted ([`Database::logged`]). Only a
 //! block the port cannot settle (the key-validity gap, `native::Read::
 //! unsettled`) leaves the tactic being read and every later one unproven
@@ -24,6 +24,7 @@ use crate::{
         Item, Value, c_string,
         native::{self, Field, Shape},
     },
+    trigger_keys::{self, Reader},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -82,38 +83,6 @@ pub const EFFECTS: [&str; 6] = [
     "defender_org_damage_modifier",
 ];
 
-/// The triggers the viewer evaluates whose class reads one value token
-/// through CSimpleAssignTrigger::vf5 (141395A40): CIsAttackerTrigger,
-/// CHasReservesTrigger and CFrontageFullTrigger (value reader 14138D3D0),
-/// CCombatPhaseTrigger (140473850), CHasCombatModifierTrigger (140473990),
-/// CHasUnitTypeTrigger (1404739B0), CHasTraitTrigger (14030A700),
-/// CTagTrigger (1402F90D0), CIsFightingInTerrainTrigger (140473CB0) and
-/// NDoctrines::CHasCombatTacticTrigger (1404A8120).
-pub const ASSIGN_TRIGGERS: [&str; 10] = [
-    "is_attacker",
-    "has_reserves",
-    "frontage_full",
-    "phase",
-    "has_combat_modifier",
-    "has_unit_type",
-    "has_trait",
-    "tag",
-    "is_fighting_in_terrain",
-    "has_tactic",
-];
-
-/// The triggers the viewer evaluates whose class reads its operator and one
-/// value token through ReadTriggerComparison (141394DF0): CSkillTrigger and
-/// CSkillAdvantageTrigger (CIntTrigger::vf4 14138D4E0), CHardnessTrigger,
-/// CProvinceVpTrigger and CHasArtilleryRatioTrigger (14138D630).
-pub const COMPARISON_TRIGGERS: [&str; 5] = [
-    "skill",
-    "skill_advantage",
-    "hardness",
-    "province_vp",
-    "has_artillery_ratio",
-];
-
 /// The other keys 1406B3CB0 reads as one value. Any other key is reported
 /// (1424A9CE0 -> 1424AD100 -> 1424ACF90), which skips its block through
 /// 1424AD270 and defines nothing.
@@ -162,79 +131,182 @@ pub(crate) enum Node {
     /// `meta_trigger` / `meta_effect` (1403B34F0): `text` is copied raw
     /// (141408C80) and parsed later by a reader of its own.
     Meta,
+    /// A conditional's body (`if`, `else`, `else_if`: CIfTrigger::load_key
+    /// 141395B90), by its index in [`Shaper`].
+    Conditional(usize),
+    /// A conditional's limit (the CAndTrigger at +0x58), LoadKey's children.
+    Limit(usize),
+}
+
+/// What a conditional's limit holds as its loader fills it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Limit {
+    Empty,
+    Children,
+    /// Whether it holds a child is not known where it is read, and why.
+    Unknown(String),
+}
+
+/// The trigger readers' field dispatch over one read, with the state
+/// CIfTrigger::load_key (141395B90) keeps: a `limit` is read (LoadBody
+/// into +0x58) only while the limit holds no child (+0x6C); a later one is
+/// RecordError (1424ACF90), whose skip (1424AD270) reads and defines
+/// nothing.
+#[derive(Default)]
+pub(crate) struct Shaper {
+    limits: Vec<Limit>,
+    /// Read every other field as [`native::untraced`] does: the trigger
+    /// bodies of readers the port does not evaluate.
+    untraced: bool,
 }
 
 fn is_one_of(keyword: Option<&[u8]>, names: &[&str]) -> bool {
     keyword.is_some_and(|keyword| names.iter().any(|name| name.as_bytes() == keyword))
 }
 
-/// The tactic file's field dispatch, by keyword id (register_authored_keys
-/// 140082CB0): a bare key folds, a quoted one is token 0xF (1424A7A90).
-pub(crate) fn shape(node: Node, field: &Field<'_>) -> Shape<Node> {
-    let keyword = field.keyword();
-    let keyword = keyword.as_deref();
-    match node {
-        // A text compare, not a keyword (1406B3875): a string list
-        // (ReadStringList 1401426E0), which resolves references and defines
-        // nothing. Every other key is a tactic, read through
-        // ReadObjectFromParser whatever its value (CPersistent::Read
-        // 1424A9730 does not check for `{`).
-        Node::Top if c_string(&field.key.text) == b"phases" => Shape::List,
-        Node::Top => Shape::Object(Node::Tactic),
-        Node::Tactic => match keyword {
-            // `base` 0x2C86: a CMeanTimeToHappen through ReadObjectFromParser.
-            Some(b"base") => Shape::Object(Node::Weight),
-            // `trigger` 0x2963: a CAndTrigger read by CTrigger::LoadBody,
-            // which reads nothing of a value that opens no block.
-            Some(b"trigger") => Shape::Body(Node::Trigger),
-            _ if is_one_of(keyword, &EFFECTS) || is_one_of(keyword, &SINGLE_VALUES) => Shape::One,
-            // Serializable_ReportUnexpectedToken (1424A9CE0).
-            _ => Shape::Skip,
-        },
-        // 140545850: `modifier` 0x2965 a CMTTHModifier (LoadBody); any other
-        // key only logged, nothing skipped.
-        Node::Weight if keyword == Some(b"modifier") => Shape::Body(Node::Modifier),
-        Node::Weight => Shape::One,
-        // 140545820 dispatches the key slot whatever 1424AC5E0 read.
-        Node::Modifier if matches!(keyword, Some(b"factor" | b"add")) => Shape::One,
-        Node::CustomTooltip if matches!(keyword, Some(b"tooltip" | b"not_tooltip")) => {
-            Shape::ObjectIfOpen(Node::BoundLocalization)
-        }
-        Node::BoundLocalization if keyword == Some(b"localization_key") => Shape::One,
-        Node::BoundLocalization => Shape::ObjectIfOpen(Node::BoundLocalization),
-        Node::Trigger | Node::Modifier | Node::Meta | Node::CustomTooltip => {
-            trigger_field(node == Node::Meta, field)
+impl Shaper {
+    /// The dispatch of a trigger body the port does not evaluate: its
+    /// conditionals and their limits as CIfTrigger::load_key (141395B90)
+    /// reads them, every other field as [`native::untraced`].
+    pub(crate) fn untraced() -> Self {
+        Self {
+            untraced: true,
+            ..Self::default()
         }
     }
-}
 
-/// One child of a trigger body (LoadBody 1405431C0 -> CTrigger::LoadKey
-/// 1405434F0). LoadBody calls LoadKey after every ReadKeyOperatorValue
-/// (1424AC5E0), whatever it read: a key read without an operator goes to
-/// its reader with the value slot as the last read left it. The triggers
-/// the viewer evaluates hand only the current value token to their class's
-/// value reader, which records a failed read (TryHandleOrRecordError
-/// 1424ACD40) and skips nothing: a block there is read as the enclosing
-/// trigger's children and its `}` ends that trigger. A block LoadKey hands
-/// to a reader the port knows is a LoadBody: a group of [`BODY_GROUPS`], or
-/// a key [`names_a_scope`] (the context trigger's LoadBody, 14138C3A0). Any
-/// other block is read by key (the key-validity gap, see [`Shape::ByKey`]).
-fn trigger_field(meta: bool, field: &Field<'_>) -> Shape<Node> {
-    let keyword = field.keyword();
-    let keyword = keyword.as_deref();
-    match keyword {
-        Some(b"text") if meta => Shape::Skip,
-        Some(b"meta_trigger" | b"meta_effect") if field.opens() => Shape::Object(Node::Meta),
-        _ if is_one_of(keyword, &ASSIGN_TRIGGERS) || is_one_of(keyword, &COMPARISON_TRIGGERS) => {
-            Shape::One
+    /// The tactic file's field dispatch, by keyword id (register_authored_keys
+    /// 140082CB0): a bare key folds, a quoted one is token 0xF (1424A7A90).
+    pub(crate) fn shape(&mut self, node: Node, field: &Field<'_>) -> Shape<Node> {
+        let keyword = field.keyword();
+        let keyword = keyword.as_deref();
+        match node {
+            // A text compare, not a keyword (1406B3875): a string list
+            // (ReadStringList 1401426E0), which resolves references and defines
+            // nothing. Every other key is a tactic, read through
+            // ReadObjectFromParser whatever its value (CPersistent::Read
+            // 1424A9730 does not check for `{`).
+            Node::Top if c_string(&field.key.text) == b"phases" => Shape::List,
+            Node::Top => Shape::Object(Node::Tactic),
+            Node::Tactic => match keyword {
+                // `base` 0x2C86: a CMeanTimeToHappen through ReadObjectFromParser.
+                Some(b"base") => Shape::Object(Node::Weight),
+                // `trigger` 0x2963: a CAndTrigger read by CTrigger::LoadBody,
+                // which reads nothing of a value that opens no block.
+                Some(b"trigger") => Shape::Body(Node::Trigger),
+                _ if is_one_of(keyword, &EFFECTS) || is_one_of(keyword, &SINGLE_VALUES) => {
+                    Shape::One
+                }
+                // Serializable_ReportUnexpectedToken (1424A9CE0).
+                _ => Shape::Skip,
+            },
+            // 140545850: `modifier` 0x2965 a CMTTHModifier (LoadBody); any other
+            // key only logged, nothing skipped.
+            Node::Weight if keyword == Some(b"modifier") => Shape::Body(Node::Modifier),
+            Node::Weight => Shape::One,
+            // 140545820 dispatches the key slot whatever 1424AC5E0 read.
+            Node::Modifier if matches!(keyword, Some(b"factor" | b"add")) => Shape::One,
+            Node::CustomTooltip if matches!(keyword, Some(b"tooltip" | b"not_tooltip")) => {
+                Shape::ObjectIfOpen(Node::BoundLocalization)
+            }
+            Node::BoundLocalization if keyword == Some(b"localization_key") => Shape::One,
+            Node::BoundLocalization => Shape::ObjectIfOpen(Node::BoundLocalization),
+            Node::Conditional(index) if keyword == Some(b"limit") => match &self.limits[index] {
+                Limit::Empty => Shape::Body(Node::Limit(index)),
+                Limit::Children => Shape::Skip,
+                Limit::Unknown(why) => Shape::Unsettled(format!(
+                    "CIfTrigger::load_key (141395B90) reads a later limit only into an empty one, and whether the first holds a child is not known here: {why}"
+                )),
+            },
+            Node::Limit(index) => {
+                self.note_child(index, field);
+                self.trigger_field(false, field)
+            }
+            Node::Trigger
+            | Node::Modifier
+            | Node::Meta
+            | Node::CustomTooltip
+            | Node::Conditional(_) => self.trigger_field(node == Node::Meta, field),
         }
-        Some(b"custom_trigger_tooltip") if field.opens() => Shape::Body(Node::CustomTooltip),
-        Some(name) if field.opens() && is_one_of(Some(name), &BODY_GROUPS) => {
-            Shape::Body(Node::Trigger)
+    }
+
+    /// A new conditional's body, its limit empty.
+    fn conditional(&mut self) -> Shape<Node> {
+        self.limits.push(Limit::Empty);
+        Shape::Body(Node::Conditional(self.limits.len() - 1))
+    }
+
+    /// Whether a field of a limit adds a child to it (LoadKey 1405434F0): a
+    /// coded trigger does, a scope key does; `else`/`else_if` attach to or
+    /// are dropped from its last `if` and add none; any other key adds one
+    /// only if the content names it, which is not known where it is read.
+    fn note_child(&mut self, index: usize, field: &Field<'_>) {
+        if self.limits[index] == Limit::Children {
+            return;
         }
-        _ if field.opens() && names_a_scope(field) => Shape::Body(Node::Trigger),
-        _ if field.opens() => Shape::ByKey,
-        _ => Shape::One,
+        let keyword = field.keyword();
+        if keyword
+            .as_deref()
+            .is_some_and(|keyword| matches!(keyword, b"else" | b"else_if"))
+        {
+            return;
+        }
+        let adds = keyword
+            .as_deref()
+            .is_some_and(|keyword| trigger_keys::registered_trigger(keyword).is_some())
+            || (field.opens() && names_a_scope(field));
+        if adds {
+            self.limits[index] = Limit::Children;
+        } else if self.limits[index] == Limit::Empty {
+            self.limits[index] = Limit::Unknown(format!(
+                "key {} adds a child only if it names a scope, a content count or a scripted trigger (1405434F0)",
+                String::from_utf8_lossy(&field.key.text)
+            ));
+        }
+    }
+
+    /// One child of a trigger body (LoadBody 1405431C0 -> CTrigger::LoadKey
+    /// 1405434F0). LoadBody calls LoadKey after every ReadKeyOperatorValue
+    /// (1424AC5E0), whatever it read: a key read without an operator goes to
+    /// its reader with the value slot as the last read left it. A coded
+    /// trigger's key goes to its class's value reader
+    /// ([`trigger_keys::trigger_class`], vtable slot 5): one that reads one value
+    /// token (CSimpleAssignTrigger::vf5 141395A40, ReadTriggerComparison
+    /// 141394DF0) records a failed read (TryHandleOrRecordError 1424ACD40) and
+    /// skips nothing, so a block there is read as the enclosing trigger's
+    /// children and its `}` ends that trigger; one whose class reads a body
+    /// (LoadBody) reads its children as a trigger body, as `else` and `else_if`
+    /// do (tokens 0x36D3 and 0x38ED, a CIfTrigger). A block under a key
+    /// [`names_a_scope`] is the context trigger's LoadBody (14138C3A0). Any
+    /// other block, a coded trigger with a reader of its own included, is read
+    /// by key (the key-validity gap, see [`Shape::ByKey`]).
+    fn trigger_field(&mut self, meta: bool, field: &Field<'_>) -> Shape<Node> {
+        let keyword = field.keyword();
+        let keyword = keyword.as_deref();
+        if self.untraced {
+            return match keyword {
+                Some(b"if" | b"else" | b"else_if") if field.fresh && field.opens() => {
+                    self.conditional()
+                }
+                _ => native::untraced(field),
+            };
+        }
+        let reader = keyword
+            .and_then(trigger_keys::registered_trigger)
+            .and_then(trigger_keys::trigger_class)
+            .map(|(_, reader)| reader);
+        match keyword {
+            Some(b"text") if meta => Shape::Skip,
+            Some(b"meta_trigger" | b"meta_effect") if field.opens() => Shape::Object(Node::Meta),
+            _ if matches!(reader, Some(Reader::Assign | Reader::Comparison)) => Shape::One,
+            Some(b"custom_trigger_tooltip") if field.opens() => Shape::Body(Node::CustomTooltip),
+            Some(b"else" | b"else_if") if field.opens() => self.conditional(),
+            Some(b"if") if field.opens() => self.conditional(),
+            _ if field.opens() && reader == Some(Reader::Body) => Shape::Body(Node::Trigger),
+            _ if field.opens() && names_a_scope(field) => Shape::Body(Node::Trigger),
+            _ if field.opens() => Shape::ByKey,
+            _ => Shape::One,
+        }
     }
 }
 
@@ -294,7 +366,13 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
 /// Parse one combat-tactics file without requiring a game installation.
 pub fn parse(bytes: &[u8]) -> Database {
     // 1406B3690 constructs the lexer in mode 0 (CTextLexer::constructor 1424A63A0).
-    let read = native::read(bytes, native::Mode::KeepMark, Node::Top, &mut shape);
+    let mut shaper = Shaper::default();
+    let read = native::read(
+        bytes,
+        native::Mode::KeepMark,
+        Node::Top,
+        &mut |node, field| shaper.shape(node, field),
+    );
     let mut database = Database {
         logged: read
             .misreads

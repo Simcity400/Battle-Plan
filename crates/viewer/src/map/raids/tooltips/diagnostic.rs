@@ -3,7 +3,7 @@
 use super::super::rules::Lines;
 use super::*;
 use engine::raid_tooltip_operands::{ADDITIONAL_ORDER, ESSENTIAL_ORDER, definition_key};
-use installed_content::triggers::Triggers;
+use installed_content::parser::Item;
 use std::collections::BTreeMap;
 
 fn add(lines: &mut Lines, key: &str, text: Result<String>) {
@@ -109,7 +109,7 @@ impl Context<'_, '_> {
     fn plain(&self, key: &str) -> Result<String> {
         localise(self.loc, key, &[])
     }
-    fn condition(&self, lines: &mut Lines, trigger: &Triggers, scopes: Scopes, name: &str) -> Eval {
+    fn condition(&self, lines: &mut Lines, trigger: &[Item], scopes: Scopes, name: &str) -> Eval {
         let result = self.world.evaluate(trigger, scopes);
         match &result {
             Eval::False => {
@@ -214,7 +214,7 @@ impl Context<'_, '_> {
             );
         }
         if let Some(source) = source
-            && !kind.launchable_from.0.is_empty()
+            && self.world.has_children(&kind.launchable_from) != Ok(false)
         {
             match source {
                 Ok(Some(country)) => combine(
@@ -609,9 +609,8 @@ mod tests {
         frame
     }
 
-    fn parse(text: &str) -> Triggers {
-        installed_content::triggers::parse(&installed_content::parser::parse(text.as_bytes()).unwrap().items)
-            .unwrap()
+    fn parse(text: &str) -> Vec<Item> {
+        installed_content::parser::parse(text.as_bytes()).unwrap().items
     }
 
     fn with_context(assets: &RaidAssets, frame: &DecodedFrame, run: impl FnOnce(&Context<'_, '_>)) {
@@ -808,7 +807,7 @@ mod tests {
         let mut assets = assets();
         let frame = frame();
         let mut kind = assets.catalog.types[0].clone();
-        kind.show_target = Triggers::default();
+        kind.show_target = Vec::new();
         with_context(&assets, &frame, |context| {
             assert_eq!(
                 context.conditions(

@@ -3,14 +3,14 @@
 //! and scoped custom-tooltip expansion use the shared text code.
 use super::super::rules::Lines;
 use super::*;
-use installed_content::triggers::{Trigger, TriggerValue, Triggers};
+use installed_content::{parser::Item, scripted_triggers::Lookup};
 use std::collections::BTreeSet;
 
 impl Context<'_, '_> {
-    pub(super) fn trigger_text(&self, triggers: &Triggers, scopes: Scopes, name: &str) -> Lines {
+    pub(super) fn trigger_text(&self, triggers: &[Item], scopes: Scopes, name: &str) -> Lines {
         let mut out = Vec::new();
         self.trigger_children(
-            &triggers.0,
+            triggers,
             scopes,
             (false, 0),
             &mut BTreeSet::new(),
@@ -21,7 +21,7 @@ impl Context<'_, '_> {
     }
     fn trigger_children(
         &self,
-        triggers: &[Trigger],
+        triggers: &[Item],
         scopes: Scopes,
         mode: (bool, usize),
         path: &mut BTreeSet<String>,
@@ -30,20 +30,18 @@ impl Context<'_, '_> {
     ) {
         let (invert, indent) = mode;
         for trigger in triggers {
-            let line = format!("{name}: {}", trigger.name);
-            let children = match &trigger.value {
-                TriggerValue::Block(b) => Some(b.0.as_slice()),
-                _ => None,
-            };
-            match trigger.name.as_str() {
+            let key = key_text(trigger);
+            let line = format!("{name}: {key}");
+            let children = trigger.value.items();
+            match key.as_str() {
                 "hidden_trigger" => {} // CHiddenTrigger slot 12 emits no text.
                 "AND" | "and" | "OR" | "or" | "NOT" | "not" => {
                     let Some(children) = children else {
                         out.push((line, Err("logical trigger requires block".into())));
                         continue;
                     };
-                    let not = trigger.name.eq_ignore_ascii_case("NOT");
-                    let or = trigger.name.eq_ignore_ascii_case("OR");
+                    let not = key.eq_ignore_ascii_case("NOT");
+                    let or = key.eq_ignore_ascii_case("OR");
                     let heading = or || (!not && indent > 0 && children.len() >= 2);
                     if heading {
                         // 14053F450 OR always has a heading; 14053EA10 AND
@@ -71,9 +69,13 @@ impl Context<'_, '_> {
                         name,
                     );
                 }
-                key if self.assets.catalog.scripted_triggers.contains_key(key) => {
+                key if matches!(
+                    self.assets.triggers.scripted.lookup(key.as_bytes()),
+                    Lookup::Template(_)
+                ) =>
+                {
                     // 14138E230: inversion == expected, then template slot 12.
-                    let expected = match trigger.value.scalar() {
+                    let expected = match trigger.value.scalar_str() {
                         Some("yes") => true,
                         Some("no") => false,
                         _ => {
@@ -81,13 +83,24 @@ impl Context<'_, '_> {
                             continue;
                         }
                     };
-                    if !path.insert(key.into()) {
+                    let Lookup::Template(template) =
+                        self.assets.triggers.scripted.lookup(key.as_bytes())
+                    else {
+                        continue;
+                    };
+                    let body = match &template.body {
+                        Ok(body) => body,
+                        Err(why) => {
+                            out.push((line, Err(format!("scripted trigger {key}: {why}"))));
+                            continue;
+                        }
+                    };
+                    if !path.insert(key.to_owned()) {
                         out.push((line, Err(format!("recursive scripted trigger {key}"))));
                         continue;
                     }
-                    let body = &self.assets.catalog.scripted_triggers[key];
                     self.trigger_children(
-                        &body.0,
+                        body,
                         scopes,
                         (invert == expected, indent),
                         path,
@@ -113,17 +126,14 @@ impl Context<'_, '_> {
     /// takes the fulfilled mark.
     fn trigger_prefix(
         &self,
-        trigger: &Trigger,
+        trigger: &Item,
         scopes: Scopes,
         invert: bool,
         indent: usize,
     ) -> Result<String> {
         let mut text = "   ".repeat(indent); // 142773CD8, 14053FCC0.
         if indent == 0 {
-            let value = known(
-                self.world
-                    .evaluate(&Triggers(vec![trigger.clone()]), scopes),
-            )?;
+            let value = known(self.world.evaluate(std::slice::from_ref(trigger), scopes))?;
             text.push_str(&localise(
                 self.loc,
                 if value == invert {
@@ -136,9 +146,10 @@ impl Context<'_, '_> {
         }
         Ok(text)
     }
-    fn trigger_leaf(&self, trigger: &Trigger, scopes: Scopes, invert: bool) -> Result<String> {
-        let scalar = trigger.value.scalar();
-        match trigger.name.as_str() {
+    fn trigger_leaf(&self, trigger: &Item, scopes: Scopes, invert: bool) -> Result<String> {
+        let scalar = trigger.value.scalar_str();
+        let key = key_text(trigger);
+        match key.as_str() {
             "always" | "has_war" => {
                 let expected = match scalar {
                     Some("yes") => true,
@@ -146,7 +157,7 @@ impl Context<'_, '_> {
                     _ => return Err("boolean trigger has unsupported value".into()),
                 };
                 // 1403F0820/140419F50 select by inversion==authored bool.
-                let key = match (trigger.name.as_str(), invert == expected) {
+                let key = match (key.as_str(), invert == expected) {
                     ("always", true) => "TRIGGER_ALWAYS_FALSE",
                     ("always", false) => "TRIGGER_ALWAYS_TRUE",
                     (_, true) => "TRIGGER_HAS_NOT_WAR",
@@ -156,9 +167,10 @@ impl Context<'_, '_> {
             }
             "has_war_with" => {
                 // 14041A470: string TAG@142738440 and COUNTRY@142728968.
+                scalar.ok_or("has_war_with requires country")?;
                 let country = self
                     .world
-                    .country_of(scalar.ok_or("has_war_with requires country")?, &scopes)?
+                    .country_of(trigger, scopes)?
                     .ok_or("has_war_with country does not resolve")?;
                 let tag = self
                     .countries
@@ -182,19 +194,19 @@ impl Context<'_, '_> {
                 )
             }
             "custom_override_tooltip" | "custom_trigger_tooltip" => {
-                let TriggerValue::Block(children) = &trigger.value else {
+                let Some(children) = trigger.value.items() else {
                     return Err("custom trigger tooltip requires block".into());
                 };
                 let field = if invert { "not_tooltip" } else { "tooltip" };
                 // 141396000 defaults the negative binding to positive + "_NOT".
-                let explicit = children.0.iter().rev().find(|c| c.name == field);
-                let fallback = children.0.iter().rev().find(|c| c.name == "tooltip");
+                let explicit = children.iter().rev().find(|c| key_text(c) == field);
+                let fallback = children.iter().rev().find(|c| key_text(c) == "tooltip");
                 let Some(t) = explicit.or(fallback) else {
                     return Ok(String::new());
                 };
                 let key = t
                     .value
-                    .scalar()
+                    .scalar_str()
                     .ok_or("bound tooltip requires scalar key")?;
                 let key = if invert && explicit.is_none() {
                     format!("{key}_NOT")
@@ -207,4 +219,9 @@ impl Context<'_, '_> {
             name => Err(format!("unsupported native trigger text form {name}")),
         }
     }
+}
+
+/// A trigger's key as authored.
+fn key_text(item: &Item) -> String {
+    String::from_utf8_lossy(item.key.as_deref().unwrap_or_default()).into_owned()
 }

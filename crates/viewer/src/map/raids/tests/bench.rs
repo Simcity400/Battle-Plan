@@ -192,6 +192,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             .into(),
         ..Default::default()
     };
+    super::set_counts(&mut assets);
     assets.equipment = installed_content::equipment::fixture::load(&[(
         "common/units/equipment/a.txt",
         "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } transport_plane = { is_archetype = yes type = air_transport } }",

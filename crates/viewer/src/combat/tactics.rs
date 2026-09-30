@@ -15,42 +15,25 @@
 use super::{
     Selection, Values,
     binding::{Bindings, TextIcons, builtin, hide, sprite, text, token},
-    trigger_names::{
-        Count, Dictionary, Here, Meaning, ScopeFacts, Scopes, TriggerNames, cycle, enter, frame,
-    },
 };
-use crate::{
-    document::Document,
-    map::perspective::Vision,
-    state_resources::{Links, StateResources, resource_comparison},
-    table_access::rows,
-};
-use dashboard::{
-    character_scope::{Tables as CharacterTables, TraitNames},
-    scope::{Context as ScopeContext, RecordedScopes, Target, Unresolved},
+use crate::{document::Document, map::perspective::Vision, table_access::rows};
+use dashboard::triggers::{
+    Combat, Eval, Evaluator, Scope, Scopes, World, compare, required, shown, trigger_boolean,
 };
 use installed_content::{
-    buildings::Buildings,
     combat_tactics::EFFECTS,
-    fixed5::{IntOperand, decimal_fixed5, int_operand, script_fixed5},
     leader_traits::LeaderTraits,
     localisation::{Argument, Localisation},
-    parser::{Item, Keyword, Operator, Value, c_string},
-    scope::{Keyword as ScopeKeyword, Names, Scope, ScopeKind, TriggerScopes},
-    scripted_triggers::{ScriptedTriggers, Template},
-    trigger_keys::CountTriggerNames,
-    triggers::Comparison,
+    parser::{Item, Operator, c_string},
+    scripted_triggers::ScriptedTriggers,
+    trigger_keys::{CountTriggerNames, TriggerNames},
     unit_leader::{SubUnits, Traits},
 };
 use replay::{
     frame::DecodedFrame,
-    rows::{
-        BuildingRow, CountryResourceRow, LandCombatDetailsRow, LandCombatDivisionRow,
-        LexicalTokenRow, PoliticalPartyRow, ProvinceRow, ResourceDefinitionRow, StateRow, tables,
-    },
+    rows::{LandCombatDetailsRow, LandCombatDivisionRow, LexicalTokenRow, tables},
 };
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     io,
     sync::Arc,
@@ -127,16 +110,9 @@ pub(super) struct Content {
     /// the last one read is known.
     registry_unsettled: Option<String>,
     /// The names a key reaches after the trigger registry misses: scripted
-    /// triggers and content count triggers (combat::trigger_names).
-    names: TriggerNames,
-    /// The tag alias database (143316AA8), which a tag's scope and a tag
-    /// operand consult after the country tags (140BA53F0).
-    tag_aliases: Arc<installed_content::tag_aliases::TagAliases>,
-    /// The building types (their `local_resources` grants) and NBuildings'
-    /// origin bonuses, or why the bonuses are unreadable, which a state
-    /// scope's resource count reads (crate::state_resources); `None` until
-    /// the document hands them over.
-    state_resources: Option<(Buildings, Result<[i64; 2], String>)>,
+    /// triggers and content count triggers (installed_content::trigger_keys), the one
+    /// read every trigger consumer shares.
+    names: Arc<TriggerNames>,
     warnings: Vec<String>,
 }
 
@@ -144,14 +120,6 @@ pub(super) struct Content {
 /// each occurrence keeps it.
 fn field<'a>(items: &'a [Item], name: &str) -> Option<&'a Item> {
     items.iter().rev().find(|item| item.keyword_is(name))
-}
-
-/// How a value reads in a refusal: its text, or that it is a block.
-fn shown(value: &Value) -> String {
-    match value.scalar() {
-        Some(text) => String::from_utf8_lossy(text).into_owned(),
-        None => "{ ... }".into(),
-    }
 }
 
 impl Content {
@@ -164,32 +132,14 @@ impl Content {
     /// blocks the content read cannot settle are known
     /// ([`Self::settle_one_value_blocks`]).
     pub(super) fn set_count_names(&mut self, counts: CountTriggerNames) {
-        self.names.counts = Some(counts);
+        Arc::make_mut(&mut self.names).counts = Some(counts);
         self.settle_one_value_blocks();
     }
 
-    /// The building types and NBuildings' INFRASTRUCTURE_RESOURCE_BONUS and
-    /// SUPPLY_ROUTE_RESOURCE_BONUS (or why they are unreadable) a state
-    /// scope's resource count reads (crate::state_resources).
-    pub(super) fn set_state_resources(
-        &mut self,
-        buildings: Buildings,
-        bonuses: Result<[i64; 2], String>,
-    ) {
-        self.state_resources = Some((buildings, bonuses));
-    }
-
-    /// The hour's state resource operands over this content, or why the
-    /// content lacks what they read.
-    fn state_resources<'a>(
-        &'a self,
-        frame: &'a DecodedFrame,
-    ) -> Result<StateResources<'a>, String> {
-        match &self.state_resources {
-            None => Err("the content's building types are not loaded".into()),
-            Some((_, Err(why))) => Err(why.clone()),
-            Some((buildings, Ok(bonuses))) => Ok(StateResources::new(frame, buildings, *bonuses)),
-        }
+    /// The scripted triggers and count names, as settled for the tactics:
+    /// the one read the other trigger consumers share.
+    pub(super) fn trigger_names(&self) -> Arc<TriggerNames> {
+        Arc::clone(&self.names)
     }
 
     /// A block under a key that is, or may be, a one-value count or
@@ -200,7 +150,7 @@ impl Content {
     /// body read that holds one, a replaced one included, leaves the rest of
     /// its file unknown (ScriptedTriggers::refuse_bodies).
     fn settle_one_value_blocks(&mut self) {
-        let names = &self.names;
+        let names = Arc::clone(&self.names);
         let offender = self.registry.iter().enumerate().find_map(|(index, entry)| {
             let definition = entry.definition.as_ref().ok()?;
             definition
@@ -222,15 +172,8 @@ impl Content {
                 .next()
                 .map(|why| (index, why))
         });
-        let scripted: Vec<_> = names
-            .scripted
-            .bodies
-            .iter()
-            .enumerate()
-            .filter_map(|(index, body)| Some((index, names.one_value_block(&body.items)?)))
-            .collect();
         let logged = self.names.scripted.logged.len();
-        self.names.scripted.refuse_bodies(scripted);
+        Arc::make_mut(&mut self.names).settle();
         self.warnings.extend(
             self.names.scripted.logged[logged..]
                 .iter()
@@ -306,17 +249,14 @@ impl Content {
         self
     }
 
-    /// The content's tag alias names (installed_content::tag_aliases), which every
-    /// hour's recorded scopes consult (dashboard::scope::RecordedScopes).
-    pub(super) fn with_tag_aliases(mut self, aliases: installed_content::tag_aliases::TagAliases) -> Self {
-        self.warnings.extend(
-            aliases
-                .unknown
-                .iter()
-                .map(|reason| format!("Combat tactics: tag aliases: {reason}.")),
-        );
-        self.tag_aliases = Arc::new(aliases);
-        self
+    /// The trait databases a character's `has_trait` reads, or why they
+    /// are not loaded.
+    fn character_traits(&self) -> Result<(&Traits, &LeaderTraits), &str> {
+        match &self.country_leader_traits {
+            None => Err("the country-leader traits are not loaded"),
+            Some(Err(why)) => Err(why),
+            Some(Ok(traits)) => Ok((&self.leader_traits, traits)),
+        }
     }
 
     /// The unit-leader trait names and the sub-unit database, each from its
@@ -342,7 +282,7 @@ impl Content {
                 .iter()
                 .map(|reason| format!("Combat tactics: triggers: {reason}.")),
         );
-        self.names.scripted = scripted;
+        Arc::make_mut(&mut self.names).scripted = scripted;
         self.warnings.extend(
             leader_traits
                 .unsupported
@@ -556,156 +496,6 @@ fn candidates(content: &Content, lexical: &[LexicalTokenRow]) -> Evaluation<Vec<
         .collect()
 }
 
-/// A CBoolTrigger operand (14138D3D0, the reader CScriptedTrigger shares):
-/// +0x58 is cleared, then the value token is read as a scope selector
-/// ([`scope_selector`]); only if it is none, by read_bool_token
-/// (1424B06E0), which compares `yes` and `no` with their terminating NUL,
-/// so the text to its first NUL. Any other value, a quoted or empty one, a
-/// block's `{` and another spelling of yes or no included, fails that read,
-/// so +0x58 stays false and the trigger tests `no`
-/// (CSimpleAssignTrigger::vf5 141395A40 only logs it). A selector is
-/// refused: what the trigger then tests is not reproduced.
-fn trigger_boolean(item: &Item) -> Result<bool, String> {
-    if let Some(selector) = scope_selector(item) {
-        return Err(format!(
-            "the operand {} is {}, which the trigger's reader (14138D3D0) takes instead of yes or no; what the trigger then tests is not reproduced",
-            shown(&item.value),
-            selector.describe()
-        ));
-    }
-    // read_bool_token (1424B06E0) compares bytes; a failed read leaves `no`.
-    Ok(item.value.scalar().map(c_string) == Some(b"yes"))
-}
-
-/// What ParseScopeSelector (14053E330) finds in a value token, before a
-/// trigger's own reading of it.
-#[derive(Clone, Copy)]
-enum Selected {
-    /// A selector keyword, by the token's keyword ID: never a quoted token
-    /// (0xF) or a number (0xC) (1424A7A90, [`Item::value_keyword`]).
-    Keyword(Selector),
-    /// `event_target:` compared with the text's start (strncmp 14253B770,
-    /// which stops at a NUL), whatever the token kind.
-    EventTarget,
-}
-
-impl Selected {
-    fn describe(self) -> &'static str {
-        match self {
-            Self::Keyword(_) => "a scope selector keyword (14053E330)",
-            Self::EventTarget => "an event target (14053E330)",
-        }
-    }
-}
-
-/// The one reading of a value token as a scope selector (14053E330), which
-/// the bool triggers (14138D3D0) and the country operand (141394CA0) share.
-fn scope_selector(item: &Item) -> Option<Selected> {
-    if let Some(keyword) = item.value_keyword()
-        && let Some(selector) = Selector::named(keyword.as_bytes())
-    {
-        return Some(Selected::Keyword(selector));
-    }
-    item.value
-        .scalar()?
-        .starts_with(b"event_target:")
-        .then_some(Selected::EventTarget)
-}
-
-/// A weight modifier's `factor` or `add` as the CMTTHModifier reads each
-/// occurrence in order (140545820 -> CScopedVariable::vf3 140539440 ->
-/// 140539B50, the scoped-variable reader CValueTrigger's operands share):
-/// a constant replaces the value, empty text is logged and sets nothing,
-/// and any other text is a variable or scope CMeanTimeToHappen::Evaluate
-/// (1405455A0) evaluates at run time (CScopedVariable::Evaluate 1405382B0),
-/// refused by name. `default` is the modifier's own.
-fn modifier_operand(items: &[Item], key: &str, default: i64) -> Evaluation<i64> {
-    let mut value = Ok(default);
-    for item in items.iter().filter(|item| item.keyword_is(key)) {
-        let text = item.value.scalar().unwrap_or_default();
-        if text.is_empty() {
-            continue;
-        }
-        value = required(text, true, true).map_err(|why| {
-            format!(
-                "base weight modifier {key} = {}: {why}",
-                String::from_utf8_lossy(text)
-            )
-        });
-    }
-    value
-}
-
-/// The weight's base value as CMeanTimeToHappen reads it: 100000 from its
-/// constructor (140544B60), then each field in order (140545850): `factor`
-/// through ReadFixed5 (1424ABB10, `%lli`), `base` as a decimal (1424AFF10),
-/// and `days`, `months` and `years` through ParseTokenInt32 (1424B0080)
-/// times 1, 30 and 365 in 32-bit arithmetic. A `factor` that does not scan
-/// is reported (1424ACEE0) and leaves the value as it was. The content read
-/// keeps these keys and `modifier`, which is read separately
-/// (installed_content::combat_tactics).
-fn base_value(items: &[Item]) -> Evaluation<i64> {
-    let mut base = 100_000_i64;
-    for item in items {
-        let (Some(keyword), Some(text)) = (item.keyword(), item.value.scalar()) else {
-            continue;
-        };
-        let folded = keyword.folded();
-        base = match folded.as_slice() {
-            b"factor" => script_fixed5(text).unwrap_or(base),
-            b"base" => decimal_fixed5(text),
-            unit @ (b"days" | b"months" | b"years") => {
-                let count = installed_content::fixed5::decimal_i32(text);
-                let days = match unit {
-                    b"days" => count,
-                    b"months" => count.wrapping_mul(30),
-                    _ => count.wrapping_mul(365),
-                };
-                i64::from(days) * 100_000
-            }
-            _ => continue,
-        };
-    }
-    Ok(base)
-}
-
-/// A comparison trigger's operand, fixed5. CIntTrigger::vf4 (14138D4E0)
-/// reads a number token through `%i` and any other, a quoted one included,
-/// as a scoped variable whose constant is ParseFixed5String's
-/// (installed_content::fixed5::int_operand); CIntTrigger::Evaluate (14138CC70)
-/// compares the scoped value as `(int)(value / 100000)`. CValueTrigger's
-/// reader (`fixed`, 14138D630) takes every token as a scoped variable
-/// (140539370) and compares the fixed5 value (14138D120).
-fn required(bytes: &[u8], quoted: bool, fixed: bool) -> Result<i64, String> {
-    match int_operand(bytes, quoted || fixed) {
-        IntOperand::Integer(value) => Ok(i64::from(value) * 100_000),
-        IntOperand::Constant(value) if fixed => Ok(value),
-        IntOperand::Constant(value) => Ok(i64::from((value / 100_000) as i32) * 100_000),
-        IntOperand::Unreadable => {
-            Err("the operand is a number `%i` (1424B02C0) cannot scan".into())
-        }
-        IntOperand::Empty => Err(
-            "the operand is empty: the scoped-variable reader (140539B50) logs it and sets nothing"
-                .into(),
-        ),
-        IntOperand::Scoped => Err(
-            "the operand names a variable or scope the game evaluates at run time (140539370)"
-                .into(),
-        ),
-    }
-}
-
-fn compare(actual: i64, required: i64, comparison: Operator, fixed: bool) -> bool {
-    // CIntTrigger14138CC70 preserves equality. CValueTrigger14138D120
-    // selects '<' only for that token and otherwise takes the strict '>' arm.
-    match comparison {
-        Operator::Less => actual < required,
-        Operator::Greater => actual > required,
-        Operator::Equals if fixed => actual > required,
-        Operator::Equals => actual == required,
-    }
-}
-
 type Evaluation<T> = Result<T, String>;
 
 struct Context<'a> {
@@ -739,229 +529,12 @@ struct Context<'a> {
     /// why not.
     tokens_complete: Result<(), String>,
     province_vp: Option<i32>,
-    /// The scripted triggers being evaluated, outermost first, for the
-    /// cycle the game does not guard (combat::trigger_names::cycle).
-    scripted_stack: RefCell<Vec<Vec<u8>>>,
-    /// The hour's scope facts (dashboard::scope).
-    scopes: RecordedScopes,
-    /// The hour's tables the content count triggers read, each or why the
-    /// hour lacks it.
-    counts: CountTables<'a>,
-    /// The hour's state resource operands (crate::state_resources), or why
-    /// the content lacks what they read.
-    state_resources: Result<StateResources<'a>, String>,
-}
-
-/// The recorded tables CTrigger::LoadKey's count triggers read.
-struct CountTables<'a> {
-    state_buildings: Result<&'a [BuildingRow], String>,
-    province_buildings: Result<&'a [BuildingRow], String>,
-    states: Result<&'a [StateRow], String>,
-    provinces: Result<&'a [ProvinceRow], String>,
-    resource_definitions: Result<&'a [ResourceDefinitionRow], String>,
-    country_resources: Result<&'a [CountryResourceRow], String>,
-    parties: Result<&'a [PoliticalPartyRow], String>,
-    /// The character tables `has_trait`, `skill` and `tag` read in a
-    /// character scope.
-    characters: CharacterTables<'a>,
-}
-
-impl CountTables<'_> {
-    #[cfg(test)]
-    fn unrecorded() -> Self {
-        fn none<T>() -> Result<T, String> {
-            Err("the table is not recorded here".to_owned())
-        }
-        Self {
-            state_buildings: none(),
-            province_buildings: none(),
-            states: none(),
-            provinces: none(),
-            resource_definitions: none(),
-            country_resources: none(),
-            parties: none(),
-            characters: CharacterTables::default(),
-        }
-    }
-
-    fn read(frame: &DecodedFrame) -> CountTables<'_> {
-        fn table<'f, T: replay::rows::TableSchema>(
-            frame: &'f DecodedFrame,
-            name: &str,
-        ) -> Result<&'f [T::Row], String> {
-            frame
-                .complete::<T>()
-                .map_err(|error| format!("{name} is not complete this hour: {error}"))
-        }
-        CountTables {
-            state_buildings: table::<tables::StateBuildings>(frame, "StateBuildings"),
-            province_buildings: table::<tables::ProvinceBuildings>(frame, "ProvinceBuildings"),
-            states: table::<tables::States>(frame, "States"),
-            provinces: table::<tables::Provinces>(frame, "Provinces"),
-            resource_definitions: table::<tables::ResourceDefinitions>(
-                frame,
-                "ResourceDefinitions",
-            ),
-            // Hourly (replay::cadence): its pools are rewritten at any hour.
-            country_resources: table::<tables::CountryResources>(frame, "CountryResources"),
-            parties: table::<tables::PoliticalParties>(frame, "PoliticalParties"),
-            characters: CharacterTables::read(frame),
-        }
-    }
-}
-
-impl ScopeFacts for Context<'_> {
-    fn recorded(&self) -> &RecordedScopes {
-        &self.scopes
-    }
-
-    fn tactic_country(&self) -> Result<u32, String> {
-        self.country_slot()
-    }
-}
-
-impl Dictionary for Context<'_> {
-    fn token_ids(&self, text: &[u8]) -> Vec<u32> {
-        self.tokens
-            .iter()
-            .filter(|(_, literal)| literal.eq_ignore_ascii_case(text))
-            .map(|(id, _)| *id)
-            .collect()
-    }
-
-    fn complete(&self) -> Result<(), String> {
-        self.tokens_complete.clone()
-    }
-
-    fn resource(&self, token: u32) -> Result<Option<u32>, String> {
-        let definitions = self
-            .counts
-            .resource_definitions
-            .as_ref()
-            .map_err(Clone::clone)?;
-        Ok(definitions
-            .iter()
-            .find(|row| row.token == token && row.active != 0)
-            .map(|row| row.id))
-    }
-}
-
-/// The joins a state's resource amount reads through
-/// (crate::state_resources): the hour's CountryLinks and the lexer's lookup
-/// of a bare token (1424A7A90) over the recorded dictionary.
-impl Links for Context<'_> {
-    fn slot(&self, raw: u32) -> Option<u32> {
-        self.aliases.get(&raw).copied()
-    }
-
-    fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String> {
-        let shown = String::from_utf8_lossy(name);
-        match self.token_ids(name).as_slice() {
-            [] => self.complete().map(|()| None).map_err(|why| {
-                format!(
-                    "{shown} is not in the recorded lexical dictionary, which is not the whole dictionary ({why})"
-                )
-            }),
-            [id] => Ok(Some(*id)),
-            [first, second, ..] => Err(format!(
-                "{shown} is spelled by tokens {first} and {second} in the recorded lexical dictionary, so which the lexer (1424A7A90) gives it is unknown"
-            )),
-        }
-    }
-}
-
-/// The scope kinds a scope carries (installed_content::scope::ScopeKind): the
-/// tactic scope a country and the combat (1412A77A0), a scope key's target
-/// only its own kind (ClearCarriedTargets 14052F3F0).
-fn carries(here: Here) -> impl Fn(ScopeKind) -> bool {
-    move |kind| match here {
-        Here::Tactic => matches!(kind, ScopeKind::Country | ScopeKind::Combat),
-        Here::Target(target) => target.kind() == kind,
-    }
-}
-
-/// The accepted-scope mask (vtable +0x70) of each trigger this evaluator
-/// reproduces, which CTrigger::Check tests before evaluating
-/// (scope_compatible 140542CA0): the logical groups and
-/// custom_trigger_tooltip return 0 (ReturnZero 140120030: any scope);
-/// `tag` 0x1C (CTagTrigger::vf14 1403EE810); `has_tactic` 4 (ReturnFour
-/// 1402E2C90); `has_trait` and `skill` 0x18 (ReturnTwentyFour 1403EE7F0);
-fn own_scopes(name: &str) -> Option<u32> {
-    Some(match name {
-        "and" | "or" | "not" | "custom_trigger_tooltip" => 0,
-        "tag" => 0x1C,
-        "has_tactic" => 4,
-        "has_trait" | "skill" => 0x18,
-        "is_attacker"
-        | "phase"
-        | "has_reserves"
-        | "skill_advantage"
-        | "is_fighting_in_terrain"
-        | "province_vp"
-        | "frontage_full"
-        | "hardness"
-        | "has_combat_modifier"
-        | "has_unit_type"
-        | "has_artillery_ratio" => 0x10,
-        _ => return None,
-    })
-}
-
-/// A scope selector ParseScopeSelector (14053E330) finds by the value's
-/// keyword ID, as CTrigger::ResolveCountryScope (140542000) reads it.
-#[derive(Clone, Copy)]
-enum Selector {
-    /// `this` 0x29C3, `root` 0x2C94, `prev` 0x2C95, `from` 0x298F: that
-    /// scope.
-    Scope(fn(&Scopes) -> Here),
-    /// `owner` 0x283E, `occupied` 0x3DB1 and `controller` 0x283F: the
-    /// state of THIS; `capital` 0x284B and `random` 0x27BB, whose bits
-    /// 140542000 does not test. Link 0 wherever `tag` is checked.
-    None,
-}
-
-impl Selector {
-    const NAMES: [(&'static str, Selector); 9] = [
-        ("this", Selector::Scope(|scopes| scopes.this)),
-        ("root", Selector::Scope(|scopes| scopes.root)),
-        ("prev", Selector::Scope(|scopes| scopes.prev)),
-        ("from", Selector::Scope(|scopes| scopes.from)),
-        ("owner", Selector::None),
-        ("controller", Selector::None),
-        ("occupied", Selector::None),
-        ("capital", Selector::None),
-        ("random", Selector::None),
-    ];
-
-    /// The selector a bare value names, found without case (1424A7A90).
-    fn named(text: &[u8]) -> Option<Self> {
-        Self::NAMES
-            .iter()
-            .find(|(name, _)| text.eq_ignore_ascii_case(name.as_bytes()))
-            .map(|(_, selector)| *selector)
-    }
-}
-
-/// Whether a trigger this evaluator reproduces answers, or the key is
-/// another (CTrigger::LoadKey's fallbacks, combat::trigger_names).
-enum Own {
-    Value(bool),
-    NotOwn,
+    /// The hour's recorded facts the shared trigger evaluator reads
+    /// (dashboard::triggers).
+    world: World<'a>,
 }
 
 impl Context<'_> {
-    /// Where a character's `has_trait` looks its operand up.
-    fn trait_names(&self) -> TraitNames<'_> {
-        TraitNames {
-            units: &self.content.leader_traits,
-            country_leaders: match &self.content.country_leader_traits {
-                None => Err("they are not loaded".to_owned()),
-                Some(traits) => traits.as_deref().map_err(Clone::clone),
-            },
-            lexer: self,
-        }
-    }
-
     fn preference_factor(&self, position: usize) -> Evaluation<i64> {
         self.preference_factors
             .as_ref()
@@ -997,11 +570,6 @@ impl Context<'_> {
             })
     }
 
-    /// Whether a raw owner link names `slot`; link 0 is no country.
-    fn owned_by(&self, link: u32, slot: u32) -> Evaluation<bool> {
-        Ok(link != 0 && self.canonical(link)? == slot)
-    }
-
     fn division(&self, unit: u64) -> Evaluation<&LandCombatDivisionRow> {
         self.divisions
             .get(&(self.side as u8, unit))
@@ -1012,6 +580,16 @@ impl Context<'_> {
                     side_name(self.side)
                 )
             })
+    }
+
+    /// The recorded token IDs spelling `text` without ASCII case: the lexer
+    /// looks a bare token up through a lowercased copy (1424A7A90).
+    fn token_ids(&self, text: &[u8]) -> Vec<u32> {
+        self.tokens
+            .iter()
+            .filter(|(_, literal)| literal.eq_ignore_ascii_case(text))
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     fn unlocked(
@@ -1123,464 +701,51 @@ impl Context<'_> {
         self.unlocked(candidate, definition, slot()?)
     }
 
-    /// A CCountryTrigger's operand (`tag`) as vf13 (141394CA0) prepares it
-    /// and vf23 (1413928A0) resolves it, as a canonical slot; `None` is
-    /// country link 0, which CTagTrigger::Evaluate (1403DCDF0) finds false
-    /// before it reads the scope. First a scope selector by the value's
-    /// token ID (ParseScopeSelector 14053E330), which vf23 hands to
-    /// CTrigger::ResolveCountryScope (140542000,
-    /// [`Self::selected_country`]); then a tag the country database holds
-    /// (AssignCountrySpecifierFromString 140BA53F0), resolved by
-    /// ResolveScriptCountryTag (140BA5D10, dashboard::scope), which
-    /// substitutes for a country without a state; otherwise a scoped
-    /// variable evaluated at run time (140539370, EvaluateCountryTag
-    /// 140536ED0).
-    fn country_operand(&self, item: &Item, scopes: Scopes) -> Evaluation<Option<u32>> {
-        let text = item.value.scalar().unwrap_or_default();
-        let shown = String::from_utf8_lossy(text);
-        match scope_selector(item) {
-            Some(Selected::Keyword(selector)) => {
-                return self.selected_country(selector, &shown, scopes);
-            }
-            // ResolveCountryScope reads the saved target (14052B3B0,
-            // 1401DB7B0).
-            Some(Selected::EventTarget) => {
-                return Err(format!(
-                    "the operand {shown} is an event target (14053E330), saved at run time (14052B3B0) and not recorded"
-                ));
-            }
-            None => {}
-        }
-        // 141394CA0 constructs the tag string with strlen before
-        // AssignCountrySpecifierFromString (140BA53F0). Only the fallback
-        // scoped-variable reader keeps the original token (140539370).
-        if let Ok(tag) = item.value.c_str()
-            && self.scopes.is_country(tag)
-        {
-            return self.scopes.resolve_tag(tag).map(Some);
-        }
-        if let Err(why) = &self.countries {
-            return Err(format!(
-                "whether {shown} is a country tag (140BA53F0) is unknown: {why}"
-            ));
-        }
-        Err(format!(
-            "{shown} is no scope selector and no country tag, so the game reads it as a variable evaluated at run time (140539370, EvaluateCountryTag 140536ED0)"
-        ))
+    /// A trigger body checked in the tactic scope by the shared evaluator
+    /// (dashboard::triggers), this combat answering its combat triggers.
+    fn check(&self, items: &[Item]) -> Evaluation<bool> {
+        Evaluator::new(&self.world, Some(self))
+            .evaluate(items, Scopes::combat())
+            .decided()
     }
 
-    /// CTrigger::ResolveCountryScope (140542000) of a selector, as a
-    /// canonical slot or `None` for country link 0 (140BA4BB0).
-    /// - `this`, `root`, `prev`, `from`: that scope's
-    ///   GetCountryTagOrStateOwner (14052B6A0): its country (+8), else its
-    ///   state's owner (+0xA8 -> CState+0xC8), through the shared resolver's
-    ///   Owner promotion (dashboard::scope). A state scope holds no country
-    ///   and a character scope neither (SetState 14052ECE0 and SetCharacter
-    ///   14052DAF0 clear both, 14052F3F0).
-    /// - `owner` (bit 0x10), `occupied` (0x20) and `controller` (0x40): the
-    ///   state of THIS (+0xA8: CState+0xC8, CResistance+0x50 at
-    ///   CState+0x268, CState+0xCC). `tag` passes its scope check (0x1C,
-    ///   140542CA0) only in a country, character or combat scope, none of
-    ///   which holds a state (set_country 14052DD00, SetCharacter and the
-    ///   tactic scope's set_country clear +0xA8), so each is link 0.
-    /// - `capital` (0x80) and `random` (0x100): 140542000 tests neither bit,
-    ///   so both are link 0.
-    fn selected_country(
+    /// The combat triggers this combat decides: `has_tactic` in any country
+    /// scope, the others only in the combat scope, past their scope mask
+    /// (0x10 for the combat triggers; `has_trait` and `skill` 0x18, which a
+    /// character scope also passes and the shared evaluator decides there).
+    fn combat_trigger(
         &self,
-        selector: Selector,
         name: &str,
-        scopes: Scopes,
-    ) -> Evaluation<Option<u32>> {
-        let Selector::Scope(here) = selector else {
-            return Ok(None);
-        };
-        match here(&scopes) {
-            Here::Tactic => self.country_slot().map(Some),
-            Here::Target(Target::Country(slot)) => Ok(Some(slot)),
-            Here::Target(Target::Character(_)) => Ok(None),
-            Here::Target(Target::State(id)) => {
-                let context = ScopeContext {
-                    this: Some(Target::State(id)),
-                    ..ScopeContext::default()
-                };
-                match self
-                    .scopes
-                    .resolve(&Scope::Keyword(ScopeKeyword::Owner), &context)
-                {
-                    Ok(Target::Country(slot)) => Ok(Some(slot)),
-                    Ok(other) => Err(format!(
-                        "the operand is the scope selector {name} (14053E330), and the owner of state {id} resolves to a {}",
-                        self.scopes.describe(other)
-                    )),
-                    // An owner link of 0 names no country: false, as the
-                    // game has it, not a gap.
-                    Err(Unresolved::Nothing(_)) => Ok(None),
-                    Err(Unresolved::Missing(why)) => Err(format!(
-                        "the operand is the scope selector {name} (14053E330), state {id}: {why}"
-                    )),
-                }
-            }
-        }
-    }
-
-    fn all(&self, items: &[Item], scopes: Scopes) -> Evaluation<bool> {
-        self.group(items, scopes, false)
-    }
-
-    /// A trigger block's children (CTrigger::LoadBody 1405431C0), each a
-    /// key, an operator and a value token as the content was read
-    /// (installed_content::combat_tactics): definitions consumed, operands resolved
-    /// with their quoted flags, custom-tooltip bindings removed. Weight
-    /// modifier operands are removed by their caller. `scopes` are the scopes they are
-    /// checked in (combat::trigger_names::Scopes).
-    fn group(&self, items: &[Item], scopes: Scopes, any: bool) -> Evaluation<bool> {
-        let mut unknown = None;
-        for item in items {
-            let operand = match item.keyword() {
-                Some(keyword) => match self.predicate(keyword, item, scopes) {
-                    Ok(Own::Value(value)) => Ok(Some(value)),
-                    Ok(Own::NotOwn) => self.fallback(item, scopes),
-                    Err(reason) => Err(reason),
-                },
-                None if item.key.is_some() => self.fallback(item, scopes),
-                None => Err(format!(
-                    "the value {} without a trigger name is not a condition",
-                    shown(&item.value)
-                )),
-            };
-            match operand {
-                Ok(Some(value)) if value == any => return Ok(any),
-                Ok(_) => (),
-                Err(reason) => {
-                    unknown.get_or_insert(reason);
-                }
-            }
-        }
-        unknown.map_or(Ok(!any), Err)
-    }
-
-    /// A key this evaluator does not evaluate itself, as CTrigger::LoadKey
-    /// (1405434F0) goes on to read it (combat::trigger_names). `Ok(None)` is
-    /// a key the game adds no child for.
-    fn fallback(&self, item: &Item, scopes: Scopes) -> Evaluation<Option<bool>> {
+        item: &Item,
+        this: Scope,
+        evaluator: &Evaluator,
+    ) -> Option<Evaluation<bool>> {
         let key = String::from_utf8_lossy(item.key.as_deref().unwrap_or_default()).into_owned();
-        let symbol = String::from_utf8_lossy(item.operator.text());
-        let fail = |why: &str| format!("trigger {key} {symbol} {}: {why}", shown(&item.value));
-        match self.content.names.meaning(item, self, &self.scopes)? {
-            Meaning::Coded => Err(fail("the viewer does not reproduce this trigger")),
-            // A CContextTrigger (14138C3A0): the target resolved
-            // (14146BB30) and the block checked there (14138F160).
-            // A target that names nothing is an invalid event target: the
-            // check logs it and is false (14138F160, triggerbase.cpp 0x22F).
-            Meaning::Scope(scope) => {
-                match enter(&scope, &scopes, self).map_err(|why| fail(&why))? {
-                    Some(inner) => self
-                        .all(item.value.items().unwrap_or_default(), inner)
-                        .map(Some),
-                    None => Ok(Some(false)),
-                }
-            }
-            Meaning::Count(count) => self.count(&count, item, scopes).map(Some),
-            Meaning::BlockValue(kind) => Err(fail(&format!(
-                "it names {kind}, whose reader takes one value token and skips no block (1424ACD40), so the game's parse leaves the text"
-            ))),
-            Meaning::Scripted(template) => self.scripted(template, item, scopes).map(Some),
-            Meaning::Absent => Ok(None),
-        }
-    }
-
-    /// A content count trigger (combat::trigger_names::Count), checked as
-    /// CTrigger::Check checks it: the class's scope mask (140542CA0), then its
-    /// value (vtable slot 23) compared by CIntTrigger::Evaluate (14138CC70)
-    /// or CValueTrigger::vf22 (14138D120).
-    fn count(&self, count: &Count, item: &Item, scopes: Scopes) -> Evaluation<bool> {
-        if !TriggerScopes(count.scopes()).accepts(carries(scopes.this)) {
-            return Ok(false);
-        }
-        let key = String::from_utf8_lossy(item.key.as_deref().unwrap_or_default()).into_owned();
-        let symbol = String::from_utf8_lossy(item.operator.text());
-        let fail = |why: String| {
-            format!(
-                "trigger {key} {symbol} {}: {}: {why}",
-                shown(&item.value),
-                count.describe()
-            )
-        };
-        let bytes = item.value.scalar().unwrap_or_default();
-        let target = || match scopes.this {
-            Here::Tactic => self.country_slot().map(Target::Country),
-            Here::Target(target) => Ok(target),
-        };
-        let (actual, fixed) = match count {
-            Count::Building(token) => (
-                i64::from(
-                    target()
-                        .and_then(|target| self.building_level(*token, target))
-                        .map_err(fail)?,
-                ) * 100_000,
-                false,
-            ),
-            // CIntTrigger::Evaluate (14138CC70) on the amount's whole units.
-            Count::Resource { index, token } => {
-                let amount = target()
-                    .and_then(|target| self.resource_amount(*index, *token, target))
-                    .map_err(fail)?;
-                let wanted = required(bytes, item.quoted(), false).map_err(fail)? / 100_000;
-                let comparison = match item.operator {
-                    Operator::Less => Comparison::Less,
-                    Operator::Greater => Comparison::Greater,
-                    Operator::Equals => Comparison::Equal,
-                };
-                return resource_comparison(amount, comparison, wanted as i32).ok_or_else(|| {
-                    fail(format!(
-                        "{comparison:?} is not a comparison CIntTrigger::Evaluate (14138CC70) reads"
-                    ))
-                });
-            }
-            Count::Ideology(name) => (
-                target()
-                    .and_then(|target| self.ideology_support(name, target))
-                    .map_err(fail)?,
-                true,
-            ),
-            // Only the tactic scope carries a combat (mask 0x10).
-            Count::Equipment(mask) => (self.category_share(*mask).map_err(fail)?, true),
-        };
-        let required = required(bytes, item.quoted(), fixed).map_err(fail)?;
-        Ok(compare(actual, required, item.operator, fixed))
-    }
-
-    /// CEquipmentTypeTrigger::vf23 (141390370) on the side's CLandCombatant
-    /// (vf+0x48 true): of its full unit array (+0x20, LandCombats'
-    /// attackers or defenders) the share, fixed5, whose stat block category
-    /// mask (`*(CUnit+0x138)+0x5A8`, LandCombatDivisions.categories) meets
-    /// the trigger's (+0x130): `matching * 10^10 / (units * 100000)`, 0 with
-    /// no units, 0xFFFFFFFF past its range check.
-    fn category_share(&self, mask: u64) -> Result<i64, String> {
-        let mut matching = 0_i32;
-        for unit in self.participants {
-            let row = self.division(*unit)?;
-            if row.categories & mask != 0 {
-                matching = matching.wrapping_add(1);
-            }
-        }
-        let units = self.participants.len() as i32;
-        if units == 0 {
-            return Ok(0);
-        }
-        let (matching, units) = (i64::from(matching), i64::from(units));
-        Ok(
-            if units * 100_000 != 0 && -0x7fff_ffff_ffff_ffff < matching * 100_000 {
-                matching * 10_000_000_000 / (units * 100_000)
-            } else {
-                0xffff_ffff
-            },
-        )
-    }
-
-    /// CBuildingCountTrigger::GetValue (14138FEB0): the LEVEL (+0x40, damage
-    /// included, recorded as BuildingRow.level) of the building type, summed
-    /// over a country's owned states (CCountry+0x478; States.owner) and owned
-    /// provinces (CCountry::owned_provinces 1406EA280; Provinces.owner), or
-    /// over a state and its provinces (CState+0x18; Provinces.state). A type
-    /// is a state building or a province building (template +0x2BC), so its
-    /// rows are in StateBuildings or ProvinceBuildings, never both. The sum
-    /// is a 32-bit int.
-    fn building_level(&self, token: u32, target: Target) -> Result<i32, String> {
-        let tables = &self.counts;
-        let state_rows = tables.state_buildings.as_ref().map_err(Clone::clone)?;
-        let province_rows = tables.province_buildings.as_ref().map_err(Clone::clone)?;
-        let provinces = tables.provinces.as_ref().map_err(Clone::clone)?;
-        let (states, provinces): (BTreeSet<u32>, BTreeSet<u32>) = match target {
-            Target::Country(slot) => {
-                let mut states = BTreeSet::new();
-                for state in tables.states.as_ref().map_err(Clone::clone)?.iter() {
-                    if self
-                        .owned_by(state.owner, slot)
-                        .map_err(|why| format!("the owner of state {}: {why}", state.id))?
-                    {
-                        states.insert(state.id);
-                    }
-                }
-                let mut owned = BTreeSet::new();
-                for province in provinces.iter() {
-                    if self
-                        .owned_by(province.owner, slot)
-                        .map_err(|why| format!("the owner of province {}: {why}", province.id))?
-                    {
-                        owned.insert(province.id);
-                    }
-                }
-                (states, owned)
-            }
-            Target::State(id) => (
-                BTreeSet::from([id]),
-                provinces
-                    .iter()
-                    .filter(|province| province.state == id)
-                    .map(|province| province.id)
-                    .collect(),
-            ),
-            Target::Character(_) => {
-                return Err("reads no character scope (mask 6: state, country)".into());
-            }
-        };
-        let level = |rows: &[BuildingRow], at: &BTreeSet<u32>| {
-            rows.iter()
-                .filter(|row| row.building_type == token && at.contains(&row.location))
-                .fold(0_i32, |sum, row| sum.wrapping_add(i32::from(row.level)))
-        };
-        Ok(level(state_rows, &states).wrapping_add(level(province_rows, &provinces)))
-    }
-
-    /// CResourceCountTrigger::GetValue (141390640), fixed5 before its
-    /// division by 100000. In a country scope the country's resources
-    /// (CCountry+0x11F8) of that index, produced (+0x30) plus adjustment
-    /// (+0xE0) (140C9F390 with its flag set). CountryResources is hourly
-    /// (replay::cadence names the pools' writers).
-    ///
-    /// A state scope takes CState::AccumulateStrategicResourceAmounts
-    /// (1409CC730, flags 0, 0) of the state and reads the pool slot of the
-    /// resource's index (+0xD8): crate::state_resources, which the raid
-    /// script evaluates too, over the state's recorded operands (keyed by the
-    /// resource's token) and its controller's building overrides. Those
-    /// tables are sliced (replay::cadence): the operands are the state's and
-    /// its controller's at their daily reads, so an amount can lag up to a
-    /// day, as the raid script reads it.
-    fn resource_amount(&self, index: u32, token: u32, target: Target) -> Result<i64, String> {
-        let slot = match target {
-            Target::Country(slot) => slot,
-            Target::State(state) => return self.state_resource_amount(state, token),
-            Target::Character(_) => {
-                return Err("reads no character scope (mask 6: state, country)".into());
-            }
-        };
-        let rows = self
-            .counts
-            .country_resources
-            .as_ref()
-            .map_err(Clone::clone)?;
-        let mut found = None;
-        for row in rows.iter().filter(|row| row.resource == index) {
-            if self
-                .owned_by(row.country, slot)
-                .map_err(|why| format!("a CountryResources row of resource {index}: {why}"))?
-            {
-                found = Some(row);
-                break;
-            }
-        }
-        let row = found.ok_or_else(|| {
-            format!("CountryResources has no row for resource {index} of country slot {slot}")
-        })?;
-        Ok(row.produced.wrapping_add(row.adjustment))
-    }
-
-    /// A state's amount (crate::state_resources). The building overrides are
-    /// the state's controller's (States.controller, 0 for none); their rows
-    /// join through CountryLinks, which must be whole, since a row of a
-    /// country it lacks could be the controller's.
-    fn state_resource_amount(&self, state: u32, token: u32) -> Result<i64, String> {
-        let resources = self.state_resources.as_ref().map_err(Clone::clone)?;
-        self.links.clone().map_err(|why| {
-            format!("the controllers' building overrides (CountryBuildingResources) join through CountryLinks: {why}")
-        })?;
-        let states = self.counts.states.as_ref().map_err(Clone::clone)?;
-        let row = states
-            .iter()
-            .find(|row| row.id == state)
-            .ok_or_else(|| format!("state {state} has no States row"))?;
-        let controller = match row.controller {
-            0 => None,
-            link => Some(
-                self.canonical(link)
-                    .map_err(|why| format!("the controller of state {state}: {why}"))?,
-            ),
-        };
-        resources.amount(state, token, controller, self)
-    }
-
-    /// CIdeologySupportTrigger::vf23 (141390530): the scope country's
-    /// parties (CPoliticalStatus +0x20), the popularity (+0x88) of the one
-    /// whose ideology group names the trigger's (hash then `_stricmp`,
-    /// 14253D9F8; recorded as PoliticalParties.token) times 100000 over the
-    /// sum of every party's; 0 without popularity, 0xFFFFFFFF past its
-    /// range check.
-    fn ideology_support(&self, group: &[u8], target: Target) -> Result<i64, String> {
-        let Target::Country(slot) = target else {
-            return Err("reads only a country scope (mask 4)".into());
-        };
-        let parties = self.counts.parties.as_ref().map_err(Clone::clone)?;
-        let (mut total, mut matching) = (0_i64, 0_i64);
-        for party in parties.iter() {
-            if !self
-                .owned_by(party.country, slot)
-                .map_err(|why| format!("the country of a PoliticalParties row: {why}"))?
-            {
-                continue;
-            }
-            // Group names compare without case (14253D9F8).
-            if party.token.eq_ignore_ascii_case(group) {
-                matching = party.popularity;
-            }
-            total = total.wrapping_add(party.popularity);
-        }
-        if total == 0 {
-            return Ok(0);
-        }
-        Ok(
-            if (matching as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd {
-                matching.wrapping_mul(100_000).wrapping_div(total)
-            } else {
-                0xffff_ffff
-            },
-        )
-    }
-
-    /// A CScriptedTrigger (vtable 1429A1CC0): its yes/no operand read as a
-    /// bool trigger's (14138D3D0), and its template's body checked in the
-    /// current scope (14138D030 -> CTrigger::Check 140540570), compared with
-    /// the operand.
-    fn scripted(&self, template: &Template, item: &Item, scopes: Scopes) -> Evaluation<bool> {
-        let name = String::from_utf8_lossy(&template.name).into_owned();
-        let within = |why: String| format!("scripted trigger {name}: {why}");
-        let desired = trigger_boolean(item).map_err(within)?;
-        let body = template.body.as_ref().map_err(|why| within(why.clone()))?;
-        if let Some(why) = cycle(&self.scripted_stack.borrow(), template) {
-            return Err(why);
-        }
-        self.scripted_stack.borrow_mut().push(frame(template));
-        let checked = self.all(body, scopes);
-        self.scripted_stack.borrow_mut().pop();
-        checked.map(|holds| holds == desired).map_err(within)
-    }
-
-    /// The triggers this evaluator reproduces itself; any other key is
-    /// [`Own::NotOwn`].
-    fn predicate(&self, keyword: Keyword<'_>, item: &Item, scopes: Scopes) -> Evaluation<Own> {
-        // Trigger names are keywords: 1405434F0 dispatches on the keyword ID.
-        let name = String::from_utf8_lossy(&keyword.folded()).into_owned();
-        // CTrigger::Check logs a scope the class does not accept and returns
-        // false without evaluating (140540570 -> 140542CA0).
-        match own_scopes(&name) {
-            None => return Ok(Own::NotOwn),
-            Some(mask) if !TriggerScopes(mask).accepts(carries(scopes.this)) => {
-                return Ok(Own::Value(false));
-            }
-            Some(_) => {}
-        }
-        let key = String::from_utf8_lossy(keyword.text()).into_owned();
         let (comparison, value) = (item.operator, &item.value);
         let symbol = String::from_utf8_lossy(comparison.text());
         let fail = |why: &str| format!("trigger {key} {symbol} {}: {why}", shown(value));
-        if let Some(items) = value.items() {
-            return match name.as_str() {
-                "and" | "custom_trigger_tooltip" => self.all(items, scopes),
-                "or" => self.group(items, scopes, true),
-                "not" => self.group(items, scopes, true).map(|v| !v),
-                _ => return Ok(Own::NotOwn),
-            }
-            .map(Own::Value);
+        // 1404A8120 interns the value token as a C string.
+        if name == "has_tactic" {
+            let country = || match this {
+                Scope::Combat => self.country_slot(),
+                Scope::Country(slot) => Ok(slot),
+                other => Err(format!(
+                    "the trigger's scope check (140542CA0) passed in a {} scope, which holds no country (14052F3F0)",
+                    evaluator.describe(other)
+                )),
+            };
+            let operand = value
+                .scalar()
+                .map(c_string)
+                .ok_or_else(|| fail("the operand is a block"));
+            return Some(
+                operand.and_then(|operand| {
+                    self.has_tactic(operand, country).map_err(|why| fail(&why))
+                }),
+            );
+        }
+        if this != Scope::Combat {
+            return None;
         }
         let bytes = value.scalar().unwrap_or_default();
         // The operand's whole text, for a reader of the token itself.
@@ -1609,63 +774,7 @@ impl Context<'_> {
                 side.commander_skill
             }
         };
-        // Past the scope check (mask 0x18), a character scope: the scope's
-        // character (+0x50), not the combat side's commander, whose combat
-        // (+0x60) ClearCarriedTargets (14052F3F0) cleared.
-        if let (Here::Target(Target::Character(character)), "has_trait" | "skill") =
-            (scopes.this, name.as_str())
-        {
-            let tables = &self.counts.characters;
-            return match name.as_str() {
-                "skill" => {
-                    let skill = tables.skill(character).map_err(|why| fail(&why))?;
-                    numeric(i64::from(skill) * 100_000, false)
-                }
-                _ => tables
-                    .has_trait(character, bytes, &self.trait_names(), |link| {
-                        self.canonical(link)
-                    })
-                    .map_err(|why| fail(&why)),
-            }
-            .map(Own::Value);
-        }
-        // The country a country trigger reads: the tactic scope's (a
-        // combat's first country, +0x38) or a scope key's country. The scope
-        // masks admit nothing else here: `tag` (0x1C) reads a character
-        // scope through its unit leader first ([`CharacterTables::tag`]),
-        // `has_tactic` (4) only a country.
-        let country = || match scopes.this {
-            Here::Tactic => self.country_slot(),
-            Here::Target(Target::Country(slot)) => Ok(slot),
-            Here::Target(other) => Err(format!(
-                "the trigger's scope check (140542CA0) passed in a {} scope, which holds no country (14052F3F0)",
-                self.scopes.describe(other)
-            )),
-        };
-        let value = match name.as_str() {
-            // CTagTrigger::Evaluate (1403DCDF0): the operand's country, then
-            // the scope's, compared as the same country (140BA60A0),
-            // canonical slots here.
-            "tag" => match self
-                .country_operand(item, scopes)
-                .map_err(|why| fail(&why))?
-            {
-                // An operand below 1 is false first (1403DCDF0).
-                None => Ok(false),
-                Some(tagged) => match scopes.this {
-                    Here::Target(Target::Character(character)) => {
-                        self.counts
-                            .characters
-                            .tag(character, tagged, |link| self.canonical(link))
-                    }
-                    _ => country().map(|slot| slot == tagged),
-                }
-                .map_err(|why| fail(&why)),
-            },
-            // 1404A8120 interns the value token as a C string.
-            "has_tactic" => self
-                .has_tactic(c_bytes()?, country)
-                .map_err(|why| fail(&why)),
+        Some(match name {
             "is_attacker" => trigger_boolean(item)
                 .map(|desired| desired == (self.side == 0))
                 .map_err(|why| fail(&why)),
@@ -1676,10 +785,14 @@ impl Context<'_> {
                 // The phase ID resolved as the content was read
                 // (installed_content::combat_tactics: 140473850 -> 1406B35C0);
                 // Evaluate tests equality whatever the operator.
-                operand()?
-                    .parse::<i32>()
-                    .map(|phase| phase == self.detail.phase)
-                    .map_err(|_| fail("the operand is not a phase ID resolved from the content"))
+                operand().and_then(|operand| {
+                    operand
+                        .parse::<i32>()
+                        .map(|phase| phase == self.detail.phase)
+                        .map_err(|_| {
+                            fail("the operand is not a phase ID resolved from the content")
+                        })
+                })
             }
             "has_reserves" => trigger_boolean(item)
                 .map(|desired| desired != side.reserves.is_empty())
@@ -1700,21 +813,20 @@ impl Context<'_> {
                 // scope's character, so no retired gate applies.
                 let presentation = &side.presentation;
                 if side.commander == 0 || presentation.character_state <= 1 {
-                    return Ok(Own::Value(false));
+                    return Some(Ok(false));
                 }
                 if presentation.character_state != 2 {
-                    return Err(fail(&format!(
+                    return Some(Err(fail(&format!(
                         "the commander's recorded character state {} is not one whose traits the viewer reads",
                         presentation.character_state
-                    )));
+                    ))));
                 }
                 // The character reference's id word (+0x54 of the pair).
                 let character = (presentation.character >> 32) as u32;
                 // GetUnitLeader (140F8A840): the recorded role leader and
                 // its assigned traits (CUnitLeader+0xDC8).
-                self.counts
-                    .characters
-                    .character_traits(character, bytes, &self.trait_names(), || {
+                evaluator
+                    .character_traits(character, bytes, || {
                         Ok((presentation.character_role_leader != 0).then(|| {
                             presentation
                                 .role_traits
@@ -1754,50 +866,15 @@ impl Context<'_> {
                     Some(_) => Ok(true),
                 }
             }
-            "province_vp" => {
-                let points = self.province_vp.ok_or_else(|| {
-                    fail(&format!(
-                        "province {} has no Provinces row",
-                        self.detail.province
-                    ))
-                })?;
-                numeric(i64::from(points) * 100_000, true)
-            }
-            "frontage_full" => {
-                let committed = &self.detail.sides[0].committed;
-                let directions = super::land_details::direction_count(
-                    committed,
-                    &self.divisions,
-                    self.detail.province,
-                    &self.movement_sources,
-                )
-                // 141298E00 needs every row, and the movement source of a
-                // unit in the combat province that it does not fold into an
-                // earlier direction.
-                .map_err(|reason| {
-                    fail(&format!(
-                        "the attacker's directions are unavailable: {reason}"
-                    ))
-                })?;
-                let mut used = 0_i64;
-                for unit in &side.committed {
-                    let row = self.division(*unit).map_err(|why| fail(&why))?;
-                    let width = super::land_details::division_width(row).ok_or_else(|| {
-                        fail(&format!(
-                            "division {unit}'s width modifiers are unavailable"
-                        ))
-                    })?;
-                    used = used.wrapping_add(width);
-                }
-                let terrain = self.terrain.as_ref().map_err(|why| fail(why))?;
-                let full = super::land_details::total_width(self.detail, *terrain, directions)
-                    .wrapping_sub(used)
-                    <= 0;
-                trigger_boolean(item)
-                    .map(|desired| desired == full)
-                    .map_err(|why| fail(&why))
-            }
-            "hardness" => {
+            "province_vp" => match self.province_vp {
+                None => Err(fail(&format!(
+                    "province {} has no Provinces row",
+                    self.detail.province
+                ))),
+                Some(points) => numeric(i64::from(points) * 100_000, true),
+            },
+            "frontage_full" => self.frontage_full(item).map_err(|why| fail(&why)),
+            "hardness" => (|| {
                 // 1404749D0 uses every participant, min for '>' and max for
                 // '<'. Its '=' path asserts rather than selecting a reduction.
                 if comparison == Operator::Equals {
@@ -1816,20 +893,26 @@ impl Context<'_> {
                     };
                 }
                 numeric(actual, true)
-            }
+            })(),
             // 140473990 maps the operand's keyword ID (141440AE0), which the
             // lexer finds without case; a quoted operand is token 0xF.
             "has_combat_modifier" if item.quoted() => Err(fail(
                 "the operand is quoted, so it is token 0xF (1424A7A90) and no combat-modifier keyword 140473990 maps (141440AE0); what the trigger then holds is not reproduced",
             )),
-            "has_combat_modifier" if operand()?.eq_ignore_ascii_case("river_crossing") => self
-                .marker_flags
-                .map(|flags| flags[self.side] & (1 << 10) != 0)
-                .ok_or_else(|| fail("the combat's LandCombatSides marker flags are unavailable")),
-            "has_combat_modifier" => Err(fail(
-                "only the river_crossing combat modifier is reproduced",
-            )),
-            "has_unit_type" => {
+            "has_combat_modifier" => operand().and_then(|operand| {
+                if operand.eq_ignore_ascii_case("river_crossing") {
+                    self.marker_flags
+                        .map(|flags| flags[self.side] & (1 << 10) != 0)
+                        .ok_or_else(|| {
+                            fail("the combat's LandCombatSides marker flags are unavailable")
+                        })
+                } else {
+                    Err(fail(
+                        "only the river_crossing combat modifier is reproduced",
+                    ))
+                }
+            }),
+            "has_unit_type" => (|| {
                 // 1404739B0 hashes the value token as a C string
                 // (140BBA1B0).
                 let operand = c_bytes()?;
@@ -1838,13 +921,13 @@ impl Context<'_> {
                     for term in self.composition(*unit, row).map_err(|why| fail(&why))? {
                         // 140472610's hash/string match folds ASCII case.
                         if term.1.eq_ignore_ascii_case(operand) {
-                            return Ok(Own::Value(true));
+                            return Ok(true);
                         }
                     }
                 }
                 Ok(false)
-            }
-            "has_artillery_ratio" => {
+            })(),
+            "has_artillery_ratio" => (|| {
                 if let Some(reason) = &self.content.sub_units_unreadable {
                     return Err(fail(&format!(
                         "the content's sub-unit database is unreadable: {reason}"
@@ -1883,10 +966,66 @@ impl Context<'_> {
                     },
                     true,
                 )
+            })(),
+            _ => return None,
+        })
+    }
+
+    /// CFrontageFullTrigger: whether the attacker's committed divisions fill
+    /// the combat's width (141298E00).
+    fn frontage_full(&self, item: &Item) -> Evaluation<bool> {
+        let side = &self.detail.sides[self.side];
+        let committed = &self.detail.sides[0].committed;
+        let directions = super::land_details::direction_count(
+            committed,
+            &self.divisions,
+            self.detail.province,
+            &self.movement_sources,
+        )
+        // 141298E00 needs every row, and the movement source of a unit in
+        // the combat province that it does not fold into an earlier
+        // direction.
+        .map_err(|reason| format!("the attacker's directions are unavailable: {reason}"))?;
+        let mut used = 0_i64;
+        for unit in &side.committed {
+            let row = self.division(*unit)?;
+            let width = super::land_details::division_width(row)
+                .ok_or_else(|| format!("division {unit}'s width modifiers are unavailable"))?;
+            used = used.wrapping_add(width);
+        }
+        let terrain = self.terrain.as_ref().map_err(Clone::clone)?;
+        let full = super::land_details::total_width(self.detail, *terrain, directions)
+            .wrapping_sub(used)
+            <= 0;
+        trigger_boolean(item).map(|desired| desired == full)
+    }
+
+    /// CEquipmentTypeTrigger::vf23 (141390370) on the side's CLandCombatant
+    /// (vf+0x48 true): of its full unit array (+0x20, LandCombats'
+    /// attackers or defenders) the share, fixed5, whose stat block category
+    /// mask (`*(CUnit+0x138)+0x5A8`, LandCombatDivisions.categories) meets
+    /// the trigger's (+0x130): `matching * 10^10 / (units * 100000)`, 0 with
+    /// no units, 0xFFFFFFFF past its range check.
+    fn category_share(&self, mask: u64) -> Result<i64, String> {
+        let mut matching = 0_i32;
+        for unit in self.participants {
+            let row = self.division(*unit)?;
+            if row.categories & mask != 0 {
+                matching = matching.wrapping_add(1);
             }
-            _ => return Ok(Own::NotOwn),
-        };
-        value.map(Own::Value)
+        }
+        let units = self.participants.len() as i32;
+        if units == 0 {
+            return Ok(0);
+        }
+        let (matching, units) = (i64::from(matching), i64::from(units));
+        Ok(
+            if units * 100_000 != 0 && -0x7fff_ffff_ffff_ffff < matching * 100_000 {
+                matching * 10_000_000_000 / (units * 100_000)
+            } else {
+                0xffff_ffff
+            },
+        )
     }
 
     /// A participant's sub-units as (count, recorded name), empty for a
@@ -1948,32 +1087,16 @@ impl Context<'_> {
                 .cloned()
                 .collect()
         };
-        if !self.all(&blocks("trigger"), Scopes::TACTIC)? {
+        if !self.check(&blocks("trigger"))? {
             return Ok(0);
         }
-        let base = blocks("base");
-        let mut weight = base_value(&base)?;
-        // A modifier's `factor` and `add` (keywords, 140545820) are its
-        // effect, not conditions.
-        for items in base
-            .iter()
-            .filter(|item| item.keyword_is("modifier"))
-            .filter_map(|modifier| modifier.value.items())
-        {
-            let conditions: Vec<_> = items
-                .iter()
-                .filter(|item| !item.keyword_is("factor") && !item.keyword_is("add"))
-                .cloned()
-                .collect();
-            if self.all(&conditions, Scopes::TACTIC)? {
-                let factor = modifier_operand(items, "factor", 100_000)?;
-                let add = modifier_operand(items, "add", 0)?;
-                weight = (weight.wrapping_mul(factor) / 100_000).wrapping_add(add);
-                if weight == 0 {
-                    break;
-                }
-            }
-        }
+        // The weight's CMeanTimeToHappen, its modifiers checked in the
+        // tactic scope (1405455A0).
+        let mut weight = Evaluator::new(&self.world, Some(self)).mean_time_to_happen(
+            "base weight",
+            &blocks("base"),
+            Scopes::combat(),
+        )?;
         let inputs = &self.detail.tactic_inputs;
         for preference in 0..3 {
             if inputs.preferred_tactic_ids[self.side][preference] != candidate.tactic_id {
@@ -1999,6 +1122,26 @@ impl Context<'_> {
             weight = weight.wrapping_mul(100_000_i64.wrapping_add(factor)) / 100_000;
         }
         Ok(weight)
+    }
+}
+
+/// The combat side the tactic scope is (1412A77A0), for the shared
+/// evaluator.
+impl Combat for Context<'_> {
+    fn country(&self) -> Result<u32, String> {
+        self.country_slot()
+    }
+
+    fn trigger(&self, name: &str, item: &Item, this: Scope, evaluator: &Evaluator) -> Option<Eval> {
+        self.combat_trigger(name, item, this, evaluator)
+            .map(|value| match value {
+                Ok(value) => Eval::from_bool(value),
+                Err(why) => Eval::unknown(why),
+            })
+    }
+
+    fn category_share(&self, mask: u64) -> Result<i64, String> {
+        Context::category_share(self, mask)
     }
 }
 
@@ -2229,10 +1372,16 @@ pub(super) fn bind(
             .iter()
             .find(|row| row.id == detail.province)
             .map(|row| row.victory_points),
-        scripted_stack: RefCell::default(),
-        scopes: RecordedScopes::read(frame, Arc::clone(&content.tag_aliases)),
-        counts: CountTables::read(frame),
-        state_resources: content.state_resources(frame),
+        // The raid content's facts are the triggers' content (their
+        // scripted triggers and count names are this content's,
+        // Document::load), with the trait databases.
+        world: World::read(
+            frame,
+            dashboard::triggers::ContentFacts {
+                character_traits: content.character_traits(),
+                ..document.icons.raids.facts()
+            },
+        ),
     };
     let mut weights = Vec::with_capacity(candidates.len());
     let mut unlocked = Vec::with_capacity(candidates.len());
@@ -2807,6 +1956,15 @@ fn repair_heap<T: Clone, F: Fn(&T, &T) -> bool>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashboard::triggers::ContentFacts;
+    use installed_content::fixed5::{decimal_fixed5, script_fixed5};
+    use replay::{
+        frame::{Metrics, TableView},
+        rows::{
+            BuildingRow, CountryResourceRow, PoliticalPartyRow, ProvinceRow, ResourceDefinitionRow,
+            StateRow, TableId, TableRows,
+        },
+    };
 
     /// Six absent effects, each 0 (1406B0A70).
     fn no_effects() -> [i64; 6] {
@@ -2851,10 +2009,89 @@ mod tests {
         }
     }
 
+    /// A frame holding `tables`, every other table unavailable, for the
+    /// life of the test.
+    fn frame(tables: Vec<(TableId, TableRows)>) -> &'static DecodedFrame {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 1,
+            tables: std::array::from_fn(|_| TableView::Unavailable {
+                reason: "not sampled".into(),
+            })
+            .map(Into::into),
+            metrics: Metrics::default(),
+        };
+        for (id, rows) in tables {
+            *frame.tables[id.index()] = TableView::Complete(rows);
+        }
+        Box::leak(Box::new(frame))
+    }
+
+    /// The shared evaluator's content facts: `content`'s trigger names and
+    /// trait inventory, the character templates of the GER characters the
+    /// tests record, every other content fact empty.
+    fn facts(content: &Content) -> ContentFacts<'_> {
+        ContentFacts {
+            state_provinces: Box::leak(Box::default()),
+            impassable: Box::leak(Box::default()),
+            neighbor_states: Err("the test has no state neighbours"),
+            terrain: None,
+            dlcs: Box::leak(Box::default()),
+            triggers: &content.names,
+            // Without the country-leader traits, an empty database.
+            character_traits: content
+                .character_traits()
+                .or(Ok((&content.leader_traits, Box::leak(Box::default())))),
+            tag_aliases: Box::leak(Box::default()),
+            buildings: Box::leak(Box::default()),
+            resource_bonuses: Err("the test has no resource bonuses"),
+            leader_roles: Ok(Box::leak(Box::new(dashboard::triggers::LeaderRoles::new(
+                [
+                    "GER_leader",
+                    "GER_politician",
+                    "GER_scientist",
+                    "GER_returned",
+                    "GER_operative",
+                    "GER_lost_agent",
+                    "GER_miscounted",
+                ]
+                .map(|tag| installed_content::characters::LeaderTemplate {
+                    path: "common/characters/GER.txt".into(),
+                    tag: tag.into(),
+                    line: None,
+                    role: Ok(None),
+                })
+                .into(),
+            )))),
+            invasion_prepare_days: Err("the test has no invasion define"),
+        }
+    }
+
     fn context<'a>(
         detail: &'a LandCombatDetailsRow,
         content: &'a Content,
         aliases: &'a BTreeMap<u32, u32>,
+    ) -> Context<'a> {
+        context_in(detail, content, aliases, frame(Vec::new()))
+    }
+
+    /// [`context`] over the recorded tables of `frame`.
+    fn context_in<'a>(
+        detail: &'a LandCombatDetailsRow,
+        content: &'a Content,
+        aliases: &'a BTreeMap<u32, u32>,
+        frame: &'a DecodedFrame,
+    ) -> Context<'a> {
+        context_with(detail, content, aliases, frame, facts(content))
+    }
+
+    /// [`context_in`] with the given content facts.
+    fn context_with<'a>(
+        detail: &'a LandCombatDetailsRow,
+        content: &'a Content,
+        aliases: &'a BTreeMap<u32, u32>,
+        frame: &'a DecodedFrame,
+        facts: ContentFacts<'a>,
     ) -> Context<'a> {
         Context {
             detail,
@@ -2877,10 +2114,7 @@ mod tests {
             tokens: BTreeMap::new(),
             tokens_complete: Ok(()),
             province_vp: Some(5),
-            scripted_stack: RefCell::default(),
-            scopes: RecordedScopes::default(),
-            counts: CountTables::unrecorded(),
-            state_resources: Err("the state resource operands are not recorded here".into()),
+            world: World::read(frame, facts),
         }
     }
 
@@ -3542,7 +2776,7 @@ mod tests {
             };
             let mut context = context(&detail, &content, &aliases);
             context.terrains = terrains;
-            context.all(&trigger(text), Scopes::TACTIC)
+            context.check(&trigger(text))
         };
         let terrains = || vec![b"plains".as_slice(), b"Plains", b"forest"];
         // The first case-folded match is `plains`, a different object from
@@ -3582,7 +2816,7 @@ mod tests {
         let content = content();
         let aliases = BTreeMap::new();
         let context = context(&detail, &content, &aliases);
-        let evaluate = |text: &str| context.all(&trigger(text), Scopes::TACTIC);
+        let evaluate = |text: &str| context.check(&trigger(text));
         // Side 0 is the attacker; the default side has no reserves.
         assert_eq!(evaluate("is_attacker = yes"), Ok(true));
         assert_eq!(evaluate("is_attacker = yes\0junk"), Ok(true));
@@ -3649,7 +2883,7 @@ mod tests {
         context.tokens =
             BTreeMap::from([(5, b"ARTILLERY".as_slice()), (6, b"Infantry".as_slice())]);
         context.terrains = vec![b"plains".as_slice(), b"forest"];
-        let evaluate = |context: &Context, text: &str| context.all(&trigger(text), Scopes::TACTIC);
+        let evaluate = |context: &Context, text: &str| context.check(&trigger(text));
         assert_eq!(
             evaluate(&context, "is_fighting_in_terrain = PLAINS"),
             Ok(true)
@@ -3687,7 +2921,7 @@ mod tests {
         let mut context = context(&detail, &content, &aliases);
         // A partial dictionary: an unported key's meaning is unknown.
         context.tokens_complete = Err("LexicalTokens is not complete this hour".into());
-        let evaluate = |text: &str| context.all(&trigger(text), Scopes::TACTIC);
+        let evaluate = |text: &str| context.check(&trigger(text));
         assert_eq!(
             evaluate("NOT={ is_attacker=no has_reserves=yes }"),
             Ok(true)
@@ -3712,22 +2946,22 @@ mod tests {
         let aliases = BTreeMap::new();
         let mut context = context(&detail, &content, &aliases);
         let plain = trigger("has_combat_modifier=river_crossing");
-        assert!(context.all(&plain, Scopes::TACTIC).is_err());
+        assert!(context.check(&plain).is_err());
         context.marker_flags = Some([1 << 10, 0]);
-        assert_eq!(context.all(&plain, Scopes::TACTIC), Ok(true));
+        assert_eq!(context.check(&plain), Ok(true));
         let shouted = trigger("HAS_COMBAT_MODIFIER=RIVER_CROSSING");
-        assert_eq!(context.all(&shouted, Scopes::TACTIC), Ok(true));
+        assert_eq!(context.check(&shouted), Ok(true));
         // A quoted operand is token 0xF, no combat-modifier keyword
         // (140473990 -> 141440AE0), even through a variable defined quoted.
         for quoted in [
             "has_combat_modifier = \"river_crossing\"",
             "@m = \"RIVER_CROSSING\" has_combat_modifier = @m",
         ] {
-            let error = context.all(&trigger(quoted), Scopes::TACTIC).unwrap_err();
+            let error = context.check(&trigger(quoted)).unwrap_err();
             assert!(error.contains("the operand is quoted"), "{error}");
         }
         context.side = 1;
-        assert_eq!(context.all(&plain, Scopes::TACTIC), Ok(false));
+        assert_eq!(context.check(&plain), Ok(false));
     }
 
     /// A tactic's weight through the real load (installed_content::combat_tactics)
@@ -3888,14 +3122,27 @@ mod tests {
             );
         }
         // Equipment categories by their static spelling, unless the trigger
-        // registry holds the token (`armor`, 0x2F85).
+        // registry holds the token (`armor`, 0x2F85): that coded trigger's
+        // class reads one value (ReadTriggerComparison 141394DF0), so its
+        // block leaves the text as the game reads it, noted by the content
+        // read, and the tactic is read as the game reads it.
         let content = settled(
-            b"a = { trigger = { armor = { x = 1 } } }\n\
-              b = { trigger = { infantry = { x = 1 } } }\n",
+            b"a = { trigger = { armor = { x = 1 } } }\n",
             ScriptedTriggers::default(),
         );
         assert!(content.registry[0].definition.is_ok());
-        assert!(content.registry[1].definition.is_err());
+        assert!(
+            content.warnings().iter().any(|warning| {
+                warning.contains("field `armor` is a block where its reader takes one value")
+            }),
+            "{:?}",
+            content.warnings()
+        );
+        let content = settled(
+            b"b = { trigger = { infantry = { x = 1 } } }\n",
+            ScriptedTriggers::default(),
+        );
+        assert!(content.registry[0].definition.is_err());
     }
 
     /// A commander of skill 3 on the attacker's side, in phase 0.
@@ -4038,27 +3285,82 @@ mod tests {
     }
 
     /// Every count-trigger table recorded and empty.
-    fn empty_tables() -> CountTables<'static> {
-        CountTables {
-            state_buildings: Ok(&[]),
-            province_buildings: Ok(&[]),
-            states: Ok(&[]),
-            provinces: Ok(&[]),
-            resource_definitions: Ok(&[]),
-            country_resources: Ok(&[]),
-            parties: Ok(&[]),
-            characters: CharacterTables::default(),
-        }
+    fn empty_tables() -> Vec<(TableId, TableRows)> {
+        vec![
+            (
+                TableId::StateBuildings,
+                TableRows::from_rows::<tables::StateBuildings>(Vec::new()),
+            ),
+            (
+                TableId::ProvinceBuildings,
+                TableRows::from_rows::<tables::ProvinceBuildings>(Vec::new()),
+            ),
+            (
+                TableId::States,
+                TableRows::from_rows::<tables::States>(Vec::new()),
+            ),
+            (
+                TableId::Provinces,
+                TableRows::from_rows::<tables::Provinces>(Vec::new()),
+            ),
+            (
+                TableId::ResourceDefinitions,
+                TableRows::from_rows::<tables::ResourceDefinitions>(Vec::new()),
+            ),
+            (
+                TableId::CountryResources,
+                TableRows::from_rows::<tables::CountryResources>(Vec::new()),
+            ),
+            (
+                TableId::PoliticalParties,
+                TableRows::from_rows::<tables::PoliticalParties>(Vec::new()),
+            ),
+        ]
+    }
+
+    /// Country link 10 as slot 1 (tag TST), and the recorded lexical
+    /// dictionary `tokens` (literal, token ID).
+    fn countries(tokens: &[(&[u8], u32)]) -> Vec<(TableId, TableRows)> {
+        vec![
+            (
+                TableId::CountryLinks,
+                TableRows::from_rows::<tables::CountryLinks>(vec![replay::rows::CountryLinkRow {
+                    id: 10,
+                    canonical_slot: 1,
+                }]),
+            ),
+            (
+                TableId::Countries,
+                TableRows::from_rows::<tables::Countries>(vec![replay::rows::CountryRow {
+                    id: 10,
+                    canonical_slot: 1,
+                    tag: b"TST".to_vec(),
+                    ..Default::default()
+                }]),
+            ),
+            (
+                TableId::LexicalTokens,
+                TableRows::from_rows::<tables::LexicalTokens>(
+                    tokens
+                        .iter()
+                        .map(|(literal, token)| LexicalTokenRow {
+                            token: *token,
+                            literal: literal.to_vec(),
+                        })
+                        .collect(),
+                ),
+            ),
+        ]
     }
 
     /// Weighs the first tactic of `file` with the given inventories, the
     /// recorded lexical dictionary `tokens` (literal, token ID) and the
-    /// count-trigger tables.
+    /// recorded `tables`.
     fn weigh_with(
         file: &str,
         scripted: ScriptedTriggers,
         tokens: &[(&'static [u8], u32)],
-        tables: CountTables<'_>,
+        tables: Vec<(TableId, TableRows)>,
     ) -> Evaluation<i64> {
         let detail = skilled();
         let aliases = BTreeMap::from([(10, 1)]);
@@ -4068,8 +3370,9 @@ mod tests {
             scripted,
         );
         content.set_count_names(CountTriggerNames::default());
-        let mut context = context(&detail, &content, &aliases);
-        context.counts = tables;
+        let mut recorded = countries(tokens);
+        recorded.extend(tables);
+        let mut context = context_in(&detail, &content, &aliases, frame(recorded));
         context.first_countries[0] = Some(10);
         context.tokens = tokens.iter().map(|(literal, id)| (*id, *literal)).collect();
         let definition = content.registry[0]
@@ -4094,23 +3397,28 @@ mod tests {
         let none = || ScriptedTriggers::default();
         // Steel is resource 3 (ResourceDefinitions, 140AB2EC0); country 10
         // has 7 produced less 1 adjusted away (141390640).
-        let steel = [ResourceDefinitionRow {
-            id: 3,
-            token: 0x6001,
-            active: 1,
-            ..Default::default()
-        }];
-        let stock = [CountryResourceRow {
-            country: 10,
-            resource: 3,
-            produced: 700_000,
-            adjustment: -100_000,
-            ..Default::default()
-        }];
-        let tables = || CountTables {
-            resource_definitions: Ok(&steel),
-            country_resources: Ok(&stock),
-            ..empty_tables()
+        let tables = || {
+            let mut tables = empty_tables();
+            tables.push((
+                TableId::ResourceDefinitions,
+                TableRows::from_rows::<tables::ResourceDefinitions>(vec![ResourceDefinitionRow {
+                    id: 3,
+                    token: 0x6001,
+                    active: 1,
+                    ..Default::default()
+                }]),
+            ));
+            tables.push((
+                TableId::CountryResources,
+                TableRows::from_rows::<tables::CountryResources>(vec![CountryResourceRow {
+                    country: 10,
+                    resource: 3,
+                    produced: 700_000,
+                    adjustment: -100_000,
+                    ..Default::default()
+                }]),
+            ));
+            tables
         };
         let tokens: &[(&[u8], u32)] = &[(b"if", 0x27C3), (b"steel", 0x6001), (b"nothing", 0x6002)];
         let weigh = |trigger: &str| {
@@ -4129,7 +3437,7 @@ mod tests {
         assert_eq!(weigh("NOTHING = yes"), Ok(100_000));
         assert_eq!(
             weigh("if = yes"),
-            Err("trigger if = yes: the viewer does not reproduce this trigger".into())
+            Err("trigger if = yes: the conditional is not a block (CIfTrigger 141395B90)".into())
         );
         assert_eq!(weigh("Steel > 5"), Ok(100_000));
         assert_eq!(weigh("Steel > 6"), Ok(0));
@@ -4140,14 +3448,13 @@ mod tests {
         assert_eq!(weigh("absent_word = { is_attacker = no }"), Ok(100_000));
         // No recorded country is GER here: no scope, no trigger, no child.
         assert_eq!(weigh("\"GER\" = { is_attacker = no }"), Ok(100_000));
-        // With a partial dictionary the miss proves nothing.
+        // Without the whole dictionary the miss proves nothing.
         let content = content();
         let (detail, aliases) = (LandCombatDetailsRow::default(), BTreeMap::new());
-        let mut context = context(&detail, &content, &aliases);
-        context.tokens_complete = Err("LexicalTokens is not complete this hour".into());
+        let context = context(&detail, &content, &aliases);
         assert_eq!(
-            context.all(&trigger("absent_word = yes"), Scopes::TACTIC),
-            Err("trigger absent_word is not in the recorded lexical dictionary, which is not the whole dictionary (LexicalTokens is not complete this hour), so whether it is a token (the count lookups, 1405434F0, are keyed by token ID) is unknown".into())
+            context.check(&trigger("absent_word = yes")),
+            Err("whether trigger absent_word is a token (the count lookups, 1405434F0, are keyed by token ID) is unknown: hour 1 LexicalTokens is unavailable: not sampled".into())
         );
     }
 
@@ -4535,14 +3842,12 @@ mod tests {
                     ScriptedTriggers::default(),
                 )
                 .with_country_leader_traits(Ok(Arc::clone(&country_leader_traits)));
-            let mut context = context(detail, &content, &aliases);
+            let mut context = context_in(detail, &content, &aliases, &frame);
             context.first_countries[0] = Some(100);
             context.tokens = names
                 .iter()
                 .map(|(token, literal)| (*token, literal.as_bytes()))
                 .collect();
-            context.scopes = RecordedScopes::read(&frame, Arc::default());
-            context.counts = CountTables::read(&frame);
             let definition = content.registry[0]
                 .definition
                 .as_ref()
@@ -4715,10 +4020,9 @@ mod tests {
         ];
         let weigh = |trigger: &str| {
             let content = parsed(format!("t = {{ trigger = {{ {trigger} }} }}").as_bytes());
-            let mut context = context(&detail, &content, &aliases);
+            let mut context = context_in(&detail, &content, &aliases, &frame);
             context.first_countries[0] = Some(100);
             context.tokens = tokens.iter().map(|(literal, id)| (*id, *literal)).collect();
-            context.scopes = RecordedScopes::read(&frame, Arc::default());
             context.country_tags = countries
                 .iter()
                 .map(|(_, slot, tag, _)| (tag.as_bytes(), *slot))
@@ -4881,6 +4185,18 @@ mod tests {
             let mut set = |id: TableId, rows: TableRows| {
                 *frame.tables[id.index()] = TableView::Complete(rows);
             };
+            set(
+                TableId::LexicalTokens,
+                TableRows::from_rows::<tables::LexicalTokens>(
+                    tokens
+                        .iter()
+                        .map(|(literal, token)| LexicalTokenRow {
+                            token: *token,
+                            literal: literal.to_vec(),
+                        })
+                        .collect(),
+                ),
+            );
             let countries = [(100, 0, "GER", 2), (200, 1, "SOV", 1)];
             set(
                 TableId::CountryLinks,
@@ -5085,14 +4401,15 @@ mod tests {
             let frame = frame_at(hour);
             let mut content = parsed(format!("t = {{ trigger = {{ {trigger} }} }}").as_bytes());
             content.set_count_names(CountTriggerNames::new(&buildings, &ideologies, &[]));
-            content.set_state_resources(buildings.clone(), Ok([15_000, 20_000]));
-            let mut context = context(&detail, &content, &aliases);
+            let facts = ContentFacts {
+                buildings: &buildings,
+                resource_bonuses: Ok([15_000, 20_000]),
+                ..facts(&content)
+            };
+            let mut context = context_with(&detail, &content, &aliases, &frame, facts);
             context.first_countries[0] = Some(100);
             context.tokens = tokens.iter().map(|(literal, id)| (*id, *literal)).collect();
-            context.scopes = RecordedScopes::read(&frame, Arc::default());
             context.country_tags = BTreeMap::from([(b"GER".as_slice(), 0)]);
-            context.counts = CountTables::read(&frame);
-            context.state_resources = content.state_resources(&frame);
             context.links = frame
                 .complete::<tables::CountryLinks>()
                 .map(|_| ())
@@ -5308,7 +4625,7 @@ mod tests {
             // (140472610).
             "match self.artillery.entry(name.to_ascii_lowercase()) {",
             ".get(&name.to_ascii_lowercase())",
-            "if term.1.eq_ignore_ascii_case(operand.as_bytes()) {",
+            "if term.1.eq_ignore_ascii_case(operand) {",
             // Tactic names interned into the lexer without case (1406B0A70
             // -> 1424A7A90).
             ".filter(|row| row.literal.eq_ignore_ascii_case(&entry.token));",
@@ -5321,7 +4638,7 @@ mod tests {
             // (1424A7A90), over the recorded dictionary.
             ".filter(|(_, literal)| literal.eq_ignore_ascii_case(text))",
             // A combat-modifier operand's keyword ID (140473990 -> 141440AE0).
-            "\"has_combat_modifier\" if operand.eq_ignore_ascii_case(\"river_crossing\") => self",
+            "if operand.eq_ignore_ascii_case(\"river_crossing\") {",
         ];
         let code = include_str!("tactics.rs")
             .split("#[cfg(test)]")

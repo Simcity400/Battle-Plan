@@ -11,7 +11,8 @@ pub(crate) struct Environment {
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
     terrain: Option<installed_content::movement::MovementMap>,
     dlcs: BTreeSet<String>,
-    scripted: BTreeMap<String, installed_content::triggers::Triggers>,
+    triggers: installed_content::trigger_keys::TriggerNames,
+    aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
     buildings: installed_content::buildings::Buildings,
     bonuses: [i64; 2],
     roles: Result<LeaderRoles, String>,
@@ -39,6 +40,7 @@ impl Environment {
             .iter()
             .map(|(&id, s)| (id, s.provinces.clone()))
             .collect();
+        let buildings = installed_content::buildings::read(layers)?;
         let neighbors = installed_content::province_graph::ProvinceGraph::read(layers)
             .and_then(|(graph, _)| graph.neighbor_states(&state_provinces))
             .map_err(|e| e.to_string());
@@ -56,8 +58,17 @@ impl Environment {
             neighbors,
             terrain: installed_content::movement::MovementMap::read(layers, &defines).ok(),
             dlcs: layers.dlc_names()?,
-            scripted: installed_content::triggers::read_scripted(layers)?,
-            buildings: installed_content::buildings::read(layers)?,
+            // Settled as the tactics and raids read it.
+            triggers: installed_content::trigger_keys::TriggerNames::settled(
+                installed_content::scripted_triggers::read(layers)?,
+                installed_content::trigger_keys::CountTriggerNames::new(
+                    &buildings,
+                    &installed_content::ideologies::read(layers)?.0,
+                    &installed_content::resources::read(layers)?.0,
+                ),
+            ),
+            aliases: std::sync::Arc::new(installed_content::tag_aliases::read(layers)?),
+            buildings,
             bonuses: crate::state_resources::resource_bonuses(&defines)?,
             roles: installed_content::characters::leader_templates(layers)
                 .map(LeaderRoles::new)
@@ -78,9 +89,10 @@ impl Environment {
             neighbor_states: self.neighbors.as_ref().map_err(String::as_str),
             terrain: self.terrain.as_ref(),
             dlcs: &self.dlcs,
-            scripted: &self.scripted,
+            triggers: &self.triggers,
+            tag_aliases: &self.aliases,
             buildings: &self.buildings,
-            resource_bonuses: self.bonuses,
+            resource_bonuses: Ok(self.bonuses),
             leader_roles: self.roles.as_ref().map_err(String::as_str),
             invasion_prepare_days: self.invasion_days.as_ref().copied().map_err(String::as_str),
             character_traits: self
@@ -100,6 +112,14 @@ impl<'a> ScriptedText<'a> {
                 Environment::read(&self.content.layers.layers)
                     .map_err(|e| format!("scripted localisation content: {e}"))
             })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    /// The hour's trigger inputs, read on first use.
+    pub(super) fn world(&self) -> Result<&World<'a>, String> {
+        self.world
+            .get_or_init(|| World::new(self.frame, self.environment()?.facts()))
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -125,14 +145,10 @@ impl<'a> ScriptedText<'a> {
         for text in &entry.texts {
             // 140A9CC20 skips a null value without checking its trigger.
             let Some(key) = &text.key else { continue };
-            let trigger = text.trigger.as_ref().map_err(|e| format!("{name}: {e}"))?;
-            if !trigger.0.is_empty() {
+            let trigger = &text.trigger;
+            if !trigger.is_empty() {
                 let scopes = entry_scopes(&bound, at, bare);
-                let world = self
-                    .world
-                    .get_or_init(|| World::new(self.frame, self.environment()?.facts()))
-                    .as_ref()
-                    .map_err(Clone::clone)?;
+                let world = self.world()?;
                 match world.evaluate(trigger, scopes) {
                     Eval::False => continue,
                     Eval::True => {}
@@ -281,12 +297,21 @@ impl Environment {
             neighbors: Ok(BTreeMap::new()),
             terrain: None,
             dlcs: BTreeSet::new(),
-            scripted: BTreeMap::new(),
+            triggers: Default::default(),
+            aliases: Default::default(),
             buildings: Default::default(),
             bonuses: [0; 2],
             roles: Ok(LeaderRoles::new(Vec::new())),
             invasion_days: Ok(0),
             traits: Ok(Default::default()),
         }
+    }
+
+    /// [`Self::synthetic`] with the content's tag aliases.
+    pub(super) fn with_aliases(
+        self,
+        aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
+    ) -> Self {
+        Self { aliases, ..self }
     }
 }

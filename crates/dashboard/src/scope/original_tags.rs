@@ -191,6 +191,12 @@ impl OriginalTagLists {
             .unwrap_or_default()
     }
 
+    /// A country's original tag (CCountry+0x130C, `CountryAppearance.name_tag`)
+    /// as last applied; `None` for a country without one.
+    pub fn name_tag(&self, slot: u32) -> Option<&[u8]> {
+        self.current.get(&slot).map(Vec::as_slice)
+    }
+
     /// Whether the last frame applied lacked a complete `CountryAppearance`,
     /// so the lists at that hour are not known.
     pub fn pending(&self) -> Option<Hour> {
