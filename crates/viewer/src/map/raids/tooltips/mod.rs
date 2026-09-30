@@ -10,7 +10,7 @@ mod intel;
 pub mod lane;
 mod names;
 mod recorded;
-mod requirements;
+pub(super) mod requirements;
 mod rules;
 mod success;
 pub mod view;

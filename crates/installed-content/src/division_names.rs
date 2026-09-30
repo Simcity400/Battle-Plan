@@ -46,8 +46,6 @@ use crate::{
     },
 };
 
-const DIRECTORY: &str = "common/units/names_divisions/";
-
 /// A group's names as stored bytes (ReadStringInto 1424ABB50 keeps the
 /// text's bytes); a lookup that selects one that is not UTF-8 is refused.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -172,7 +170,45 @@ impl Database {
         order: i32,
         ordered: bool,
     ) -> Result<String, Unresolved> {
-        let key = fold(group_key.as_ref());
+        self.resolve_in(group_key.as_ref(), order, ordered, Some(Table::Army))
+    }
+
+    /// [`Self::resolve`] for a member whose group the recording names
+    /// whatever table holds it (a raid's division or source ship): the
+    /// group of the key in the army, ship or code-name table.
+    pub fn resolve_any(
+        &self,
+        group_key: impl AsRef<[u8]>,
+        order: i32,
+        ordered: bool,
+    ) -> Result<String, Unresolved> {
+        self.resolve_in(group_key.as_ref(), order, ordered, None)
+    }
+
+    /// The database of these files, read in order; for other modules'
+    /// fixtures.
+    #[cfg(test)]
+    pub(crate) fn from_files(files: &[&[u8]]) -> Self {
+        let mut database = Self::default();
+        for file in files {
+            database.apply(file);
+        }
+        database
+    }
+
+    /// Each folded group name a refused file declares or could declare.
+    pub fn refused(&self) -> impl Iterator<Item = &[u8]> {
+        self.refused.iter().map(Vec::as_slice)
+    }
+
+    fn resolve_in(
+        &self,
+        group_key: &[u8],
+        order: i32,
+        ordered: bool,
+        table: Option<Table>,
+    ) -> Result<String, Unresolved> {
+        let key = fold(group_key);
         if key.is_empty() {
             return Err(
                 if self.refused.contains(&key) || self.groups.contains_key(&key) {
@@ -185,10 +221,12 @@ impl Database {
         if self.refused.contains(&key) {
             return Err(Unresolved::GroupRefused);
         }
-        let group = match self.groups.get(&key) {
-            None => return Err(Unresolved::GroupAbsent),
-            Some((Table::Army, group)) => group,
-            Some((table, _)) => return Err(Unresolved::NotArmy(*table)),
+        let group = match (self.groups.get(&key), table) {
+            (None, _) => return Err(Unresolved::GroupAbsent),
+            (Some((held, _)), Some(wanted)) if *held != wanted => {
+                return Err(Unresolved::NotArmy(*held));
+            }
+            (Some((_, group)), _) => group,
         };
         // 1409B5640 calls the simulation's allocator for an unassigned ordered
         // member. Its zero does not mean the authored fallback's first number.
@@ -580,8 +618,28 @@ fn roman(mut number: u32) -> String {
 /// Read failures are fatal. What the game only logs about a file, and the
 /// groups of a file the port cannot follow to its end, are warnings.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Database, Vec<String>)> {
+    read_directories(layers, &DIRECTORIES[..1])
+}
+
+/// The directories CBuildingDatabase::load (140191044..140191083) hands
+/// 1409B8510, in order, into the one name database.
+pub const DIRECTORIES: [&str; 4] = [
+    "common/units/names_divisions/",
+    "common/units/names_ships/",
+    "common/units/codenames_operatives/",
+    "common/units/names_railway_guns/",
+];
+
+/// [`read`] over several directories, each in the engine's order, into one
+/// database.
+pub fn read_directories(
+    layers: &ResolvedLayers,
+    directories: &[&str],
+) -> io::Result<(Database, Vec<String>)> {
     // 1409B8510: enumerate_directory_wrapper with `.txt` and depth 0.
-    let paths = crate::script_files::paths(layers, DIRECTORY, Some(".txt"));
+    let paths = directories
+        .iter()
+        .flat_map(|directory| crate::script_files::paths(layers, directory, Some(".txt")));
     let mut database = Database::default();
     let mut warnings = Vec::new();
     for path in paths {

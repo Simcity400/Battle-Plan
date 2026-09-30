@@ -67,8 +67,9 @@ fn group(
 
 pub fn build(
     loc: &Localisation,
-    equipment: &Database,
-    groups: &Groups,
+    // The equipment database and groups, or why they are unknown: only
+    // the equipment lines read them.
+    equipment: Result<(&Database, &Groups), String>,
     kind: &RaidType,
     country_name: impl Fn(&str) -> Text,
     active_subunit: impl Fn(&str) -> Result<bool, String>,
@@ -80,6 +81,7 @@ pub fn build(
                 continue;
             } // 1415790B0 IsEmpty guard.
             let text = (|| {
+                let (equipment, groups) = equipment.clone()?;
                 let types: Vec<Vec<u8>> = req
                     .types
                     .iter()
@@ -189,8 +191,7 @@ mod tests {
             };
             let lines = build(
                 &loc,
-                &Database::default(),
-                &Groups::default(),
+                Ok((&Database::default(), &Groups::default())),
                 &kind,
                 |name| Ok(format!("local {name}")),
                 |_| Ok(active),
@@ -199,8 +200,7 @@ mod tests {
             assert!(
                 build(
                     &loc,
-                    &Database::default(),
-                    &Groups::default(),
+                    Ok((&Database::default(), &Groups::default())),
                     &kind,
                     |name| Ok(name.into()),
                     |_| Err("missing witness".into())
@@ -303,8 +303,7 @@ mod tests {
         };
         let lines = build(
             &loc,
-            &equipment,
-            &groups,
+            Ok((&equipment, &groups)),
             &kind,
             |name| Ok(format!("local {name}")),
             |_| Ok(true),

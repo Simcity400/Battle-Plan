@@ -18,8 +18,7 @@ impl Context<'_, '_> {
     fn unit_requirements(&self, kind: &RaidType) -> Lines {
         super::super::requirements::build(
             self.loc,
-            &self.assets.equipment,
-            &self.assets.equipment_groups,
+            self.assets.equipment(),
             kind,
             |key| self.equipment_name(key),
             |key| {
@@ -527,7 +526,7 @@ impl Context<'_, '_> {
                         .map(|(_, v)| *v)
                         .unwrap_or(0)
                         / 100_000) as i32;
-                    let equipment = &self.assets.equipment;
+                    let (equipment, _) = self.assets.equipment()?;
                     let definition = equipment
                         .named(name)
                         .ok_or_else(|| format!("raid equipment {name} is not in the content"))?;

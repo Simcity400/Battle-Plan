@@ -98,20 +98,6 @@ pub(crate) fn key_str<'a>(item: &'a Item, what: &str) -> io::Result<&'a str> {
     std::str::from_utf8(key).map_err(|_| invalid(format!("{what} has a non-UTF-8 key")))
 }
 
-/// [`crate::fixed5::script_fixed5`] (ReadFixed5 1424ABB10 -> 1424B0480) of a scalar value,
-/// naming the field it cannot read.
-pub(crate) fn fixed5(value: &Value, what: &str) -> io::Result<i64> {
-    let scalar = value
-        .scalar()
-        .ok_or_else(|| invalid(format!("{what} is not a number")))?;
-    crate::fixed5::script_fixed5(scalar).ok_or_else(|| {
-        invalid(format!(
-            "{what} is not a native fixed5 number: {:?}",
-            String::from_utf8_lossy(scalar)
-        ))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
