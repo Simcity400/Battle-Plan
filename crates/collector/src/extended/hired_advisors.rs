@@ -2,8 +2,9 @@
 //! +0xff0): each country's appointed advisors (+0x58) in native order, with
 //! the advisor's character, idea token and slot, daily in its own slot (the
 //! advisor roles are read every hour, so also at that slot); each country's
-//! active-character records (+0x10, CountryCharacters), hourly; and the
-//! character manager's advisor idea-token set (AdvisorTokens), hourly.
+//! active-character records (+0x10, CountryCharacters) and retired ones
+//! (+0x28, CountryRetiredCharacters), hourly, in one walk; and the character
+//! manager's advisor idea-token set (AdvisorTokens), hourly.
 use crate::{
     sampling::qpc,
     spooling::{table, table_iter, unavailable},
@@ -16,13 +17,15 @@ use replay::{
     rows::{AdvisorTokenRow, CountryCharacterRow, HiredAdvisorRow, TableId, tables},
 };
 
-pub const N: usize = 3;
+pub const N: usize = 4;
 pub const TABLES: [TableId; N] = [
     TableId::HiredAdvisors,
     TableId::CountryCharacters,
     TableId::AdvisorTokens,
+    TableId::CountryRetiredCharacters,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] =
+    &[("active and retired character records", 1, &[1, 3])];
 
 /// Appointed advisors per country slot the first capture is sized for; the
 /// engine's own slot counts come from content, so this only presizes.
@@ -37,6 +40,7 @@ pub struct Capacities {
     active: usize,
     tokens: usize,
     token_bytes: usize,
+    retired: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -46,6 +50,7 @@ impl Default for Capacities {
             active: 1024,
             tokens: 256,
             token_bytes: 256 * BYTES_PER_ADVISOR,
+            retired: 256,
         }
     }
 }
@@ -58,11 +63,13 @@ impl Capacities {
         self.bytes = self.bytes.max(rows.saturating_mul(BYTES_PER_ADVISOR));
     }
 
-    /// CountryCharacters from the live record total
-    /// (`country_scale::observe_politics`), with the three-quarters growth
-    /// rule's headroom. Never lowers.
-    pub(crate) fn raise_for_active_characters(&mut self, records: usize) {
-        crate::country_scale::raise(&mut self.active, crate::country_scale::rows(records, 1));
+    /// CountryCharacters and CountryRetiredCharacters from the live record
+    /// totals (`country_scale::observe_politics`), with the three-quarters
+    /// growth rule's headroom. Never lowers.
+    pub(crate) fn raise_for_character_records(&mut self, active: usize, retired: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.active, rows(active, 1));
+        raise(&mut self.retired, rows(retired, 1));
     }
 
     /// AdvisorTokens from the live key count and key bytes
@@ -81,6 +88,7 @@ pub struct Captured {
     active: CaptureRows<native::ActiveRow>,
     tokens: CaptureRows<advisor_tokens::Row>,
     token_bytes: Arena<u8>,
+    retired: CaptureRows<native::ActiveRow>,
 }
 
 impl Captured {
@@ -91,6 +99,8 @@ impl Captured {
             .fail(super::failed_capture(TABLES[1], hour, force_full, reason));
         self.tokens
             .fail(super::failed_capture(TABLES[2], hour, force_full, reason));
+        self.retired
+            .fail(super::failed_capture(TABLES[3], hour, force_full, reason));
     }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
@@ -100,6 +110,7 @@ impl Captured {
             active: 0,
             tokens: 0,
             token_bytes: 0,
+            retired: 0,
         })
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -109,6 +120,7 @@ impl Captured {
             active: CaptureRows::new(capacity.active),
             tokens: CaptureRows::new(capacity.tokens),
             token_bytes: Arena::new(capacity.token_bytes),
+            retired: CaptureRows::new(capacity.retired),
         }
     }
     pub fn reset(&mut self) {
@@ -117,6 +129,7 @@ impl Captured {
         self.active.reset();
         self.tokens.reset();
         self.token_bytes.reset();
+        self.retired.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -124,6 +137,7 @@ impl Captured {
             + self.active.allocated_bytes()
             + self.tokens.allocated_bytes()
             + self.token_bytes.allocated_bytes()
+            + self.retired.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
@@ -133,6 +147,7 @@ impl Captured {
         self.tokens.grow(&mut capacity.tokens);
         // The token walk reports every key's bytes, read or not.
         self.token_bytes.grow(&mut capacity.token_bytes);
+        self.retired.grow(&mut capacity.retired);
     }
     pub fn capture(
         &mut self,
@@ -163,16 +178,30 @@ impl Captured {
                 reason: SKIPPED_REASON,
             };
         }
-        if should_walk(TABLES[1], hour, force_full) {
+        // Both record arrays come from one walk of each country's object,
+        // charged to CountryCharacters.
+        let active = should_walk(TABLES[1], hour, force_full);
+        let retired = should_walk(TABLES[3], hour, force_full);
+        if active || retired {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
-            self.active.outcome =
-                native::walk_active(memory, base, game_state, &mut self.active.rows);
+            let [active_outcome, retired_outcome] = native::walk_records(
+                memory,
+                base,
+                game_state,
+                if active { &mut self.active.rows } else { &mut [] },
+                if retired { &mut self.retired.rows } else { &mut [] },
+            );
+            self.active.outcome = active_outcome;
+            self.retired.outcome = retired_outcome;
             ticks[1] = qpc().saturating_sub(started).max(0) as u64;
-        } else {
-            self.active.outcome = Outcome::Unavailable {
-                reason: SKIPPED_REASON,
-            };
+        }
+        for (walked, rows) in [(active, &mut self.active), (retired, &mut self.retired)] {
+            if !walked {
+                rows.outcome = Outcome::Unavailable {
+                    reason: SKIPPED_REASON,
+                };
+            }
         }
         if should_walk(TABLES[2], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[2]);
@@ -196,19 +225,28 @@ impl Captured {
         ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.rows.outcome, self.active.outcome, self.tokens.outcome]
+        [
+            self.rows.outcome,
+            self.active.outcome,
+            self.tokens.outcome,
+            self.retired.outcome,
+        ]
     }
     pub fn tables(&self) -> [TableView; N] {
+        let record = |row: &native::ActiveRow| CountryCharacterRow {
+            country: row.country,
+            ordinal: row.ordinal,
+            character: row.character,
+        };
         [
             self.hired_table(),
-            table::<tables::CountryCharacters, _>(self.active.outcome, &self.active.rows, |row| {
-                CountryCharacterRow {
-                    country: row.country,
-                    ordinal: row.ordinal,
-                    character: row.character,
-                }
-            }),
+            table::<tables::CountryCharacters, _>(self.active.outcome, &self.active.rows, record),
             self.token_table(),
+            table::<tables::CountryRetiredCharacters, _>(
+                self.retired.outcome,
+                &self.retired.rows,
+                record,
+            ),
         ]
     }
     /// The keys sorted by their bytes, numbered in that order: the set's
@@ -320,6 +358,7 @@ mod tests {
             active: 0,
             tokens: 0,
             token_bytes: 0,
+            retired: 0,
         });
         captured.bytes.first[..12].copy_from_slice(b"idea\0slotabc");
         captured.bytes.len = 12;
@@ -342,7 +381,7 @@ mod tests {
             slot_len: 0,
         };
         captured.rows.outcome = Outcome::Rows { len: 2 };
-        let [TableView::Complete(TableRows::HiredAdvisors(rows)), _, _] = captured.tables() else {
+        let [TableView::Complete(TableRows::HiredAdvisors(rows)), _, _, _] = captured.tables() else {
             panic!("complete hired advisors");
         };
         assert_eq!(rows[0].idea, b"idea\0");
@@ -366,10 +405,12 @@ mod tests {
         for hour in 0..24 {
             captured.capture(&memory, 0, 0x1000, hour, false);
             // Hourly: never skipped, and here unreadable rather than stale.
-            assert!(matches!(
-                captured.outcomes()[1],
-                Outcome::Unavailable { reason } if reason != SKIPPED_REASON
-            ));
+            for index in [1, 3] {
+                assert!(matches!(
+                    captured.outcomes()[index],
+                    Outcome::Unavailable { reason } if reason != SKIPPED_REASON
+                ));
+            }
         }
         captured.reset();
         captured.active.rows[0] = native::ActiveRow {
@@ -383,9 +424,29 @@ mod tests {
             character: Some(1482),
         };
         captured.active.outcome = Outcome::Rows { len: 2 };
-        let [_, TableView::Complete(TableRows::CountryCharacters(rows)), _] = captured.tables() else {
+        captured.retired.rows[0] = native::ActiveRow {
+            country: 9,
+            ordinal: 0,
+            character: Some(1451),
+        };
+        captured.retired.outcome = Outcome::Rows { len: 1 };
+        let [
+            _,
+            TableView::Complete(TableRows::CountryCharacters(rows)),
+            _,
+            TableView::Complete(TableRows::CountryRetiredCharacters(retired)),
+        ] = captured.tables()
+        else {
             panic!("complete country characters");
         };
+        assert_eq!(
+            retired,
+            [CountryCharacterRow {
+                country: 9,
+                ordinal: 0,
+                character: Some(1451)
+            }]
+        );
         assert_eq!(
             rows,
             [
@@ -417,6 +478,9 @@ mod tests {
                 },
                 Outcome::Unavailable {
                     reason: "job failed"
+                },
+                Outcome::Unavailable {
+                    reason: "job failed"
                 }
             ]
         );
@@ -431,7 +495,7 @@ mod tests {
             captured.tokens.rows[index] = advisor_tokens::Row { start, len };
         }
         captured.tokens.outcome = Outcome::Rows { len: 3 };
-        let [_, _, TableView::Complete(TableRows::AdvisorTokens(rows))] = captured.tables() else {
+        let [_, _, TableView::Complete(TableRows::AdvisorTokens(rows)), _] = captured.tables() else {
             panic!("complete advisor tokens");
         };
         assert_eq!(
@@ -457,12 +521,13 @@ mod tests {
     }
 
     #[test]
-    fn active_capacity_follows_the_live_record_total() {
+    fn record_capacities_follow_the_live_record_totals() {
         let mut capacity = Capacities::default();
-        capacity.raise_for_active_characters(90_000);
+        capacity.raise_for_character_records(90_000, 3_000);
         assert!(capacity.active >= 90_000 + 90_000 / 3);
+        assert!(capacity.retired >= 3_000 + 3_000 / 3);
         let raised = capacity;
-        capacity.raise_for_active_characters(10);
+        capacity.raise_for_character_records(10, 1);
         assert!(capacity == raised);
     }
 }

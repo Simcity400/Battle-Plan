@@ -2756,7 +2756,8 @@ mod tests {
                 let counts = accounting.finish();
                 assert_eq!(captured.politics.outcome, Outcome::Rows { len: 2 });
                 assert_eq!(captured.parties.outcome, Outcome::Rows { len: 0 });
-                assert_eq!(memory.0.ideas.get() > 0, hour == 15);
+                // Ideas are hourly (replay::cadence).
+                assert!(memory.0.ideas.get() > 0, "hour={hour}");
                 for (index, slot) in [(0, 19), (3, 11)] {
                     assert_eq!(
                         counts[TABLES[index].index()].spans > 0,
@@ -2778,7 +2779,7 @@ mod tests {
                         assert_eq!(counts[TABLES[index].index()].spans, 0);
                     }
                 }
-                if fail_ideas && hour == 15 {
+                if fail_ideas {
                     assert!(matches!(
                         captured.ideas.outcome,
                         Outcome::Unavailable { .. }

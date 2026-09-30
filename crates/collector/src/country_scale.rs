@@ -151,12 +151,14 @@ pub fn observe_characters(memory: &impl Memory, base: usize) -> Option<Character
 
 /// Live demand of the political and character tables whose per-country
 /// sizes content and play decide: CountryCharacters' active-character
-/// records, PartyLeaders' party leaders, CountryAppearance's leader trait
-/// tokens, CountryCivilWars' entries, AdvisorTokens' keys and bytes, and
-/// FactionAdvisors' occupied slots and token bytes.
+/// records, CountryRetiredCharacters' retired ones, PartyLeaders' party
+/// leaders, CountryAppearance's leader trait tokens, CountryCivilWars'
+/// entries, AdvisorTokens' keys and bytes, FactionAdvisors' occupied slots
+/// and token bytes, and the character inputs' rows and values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PoliticsDemand {
     pub active_characters: usize,
+    pub retired_characters: usize,
     pub party_leaders: usize,
     pub leader_traits: usize,
     pub civil_wars: usize,
@@ -165,6 +167,7 @@ pub struct PoliticsDemand {
     pub faction_advisors: usize,
     pub faction_advisor_bytes: usize,
     pub agency_name_bytes: usize,
+    pub character_inputs: crate::extended::character_inputs::Demand,
 }
 
 impl PoliticsDemand {
@@ -172,6 +175,7 @@ impl PoliticsDemand {
     pub fn exceeds(&self, seen: &Self) -> bool {
         self.agency_name_bytes > seen.agency_name_bytes
             || self.active_characters > seen.active_characters
+            || self.retired_characters > seen.retired_characters
             || self.party_leaders > seen.party_leaders
             || self.leader_traits > seen.leader_traits
             || self.civil_wars > seen.civil_wars
@@ -179,6 +183,7 @@ impl PoliticsDemand {
             || self.advisor_token_bytes > seen.advisor_token_bytes
             || self.faction_advisors > seen.faction_advisors
             || self.faction_advisor_bytes > seen.faction_advisor_bytes
+            || self.character_inputs.exceeds(&seen.character_inputs)
     }
 
     /// The field-wise maximum.
@@ -186,6 +191,7 @@ impl PoliticsDemand {
         Self {
             agency_name_bytes: self.agency_name_bytes.max(other.agency_name_bytes),
             active_characters: self.active_characters.max(other.active_characters),
+            retired_characters: self.retired_characters.max(other.retired_characters),
             party_leaders: self.party_leaders.max(other.party_leaders),
             leader_traits: self.leader_traits.max(other.leader_traits),
             civil_wars: self.civil_wars.max(other.civil_wars),
@@ -193,6 +199,7 @@ impl PoliticsDemand {
             advisor_token_bytes: self.advisor_token_bytes.max(other.advisor_token_bytes),
             faction_advisors: self.faction_advisors.max(other.faction_advisors),
             faction_advisor_bytes: self.faction_advisor_bytes.max(other.faction_advisor_bytes),
+            character_inputs: self.character_inputs.max(other.character_inputs),
         }
     }
 }
@@ -216,15 +223,13 @@ pub fn observe_politics(memory: &impl Memory, base: usize) -> Option<PoliticsDem
     };
     let tokens = engine::advisor_tokens::walk(memory, base, state, &mut [], &mut []);
     let factions = engine::cfaction::walk_advisors(memory, base, state, &mut [], &mut []);
+    let [active, retired] =
+        engine::ccountry_characters::walk_records(memory, base, state, &mut [], &mut []);
     let agencies = engine::cintelligence_agency::walk(memory, base, state, &mut [], &mut []);
     Some(PoliticsDemand {
         agency_name_bytes: agencies.required_bytes,
-        active_characters: demand(engine::ccountry_characters::walk_active(
-            memory,
-            base,
-            state,
-            &mut [],
-        )),
+        active_characters: demand(active),
+        retired_characters: demand(retired),
         party_leaders: engine::cpolitical_status::party_leader_demand(memory, base, state)
             .unwrap_or(0),
         leader_traits: engine::ccountry::leader_trait_demand(memory, base, state).unwrap_or(0),
@@ -238,6 +243,7 @@ pub fn observe_politics(memory: &impl Memory, base: usize) -> Option<PoliticsDem
         advisor_token_bytes: tokens.required_bytes,
         faction_advisors: demand(factions.outcome),
         faction_advisor_bytes: factions.required_bytes,
+        character_inputs: crate::extended::character_inputs::Demand::observe(memory, base, state),
     })
 }
 
@@ -362,9 +368,25 @@ mod tests {
             ..Default::default()
         });
         assert!(sizing.extended != before);
+        let before = sizing.extended;
+        sizing.extended.raise_for_politics(PoliticsDemand {
+            retired_characters: 1 << 20,
+            ..Default::default()
+        });
+        assert!(sizing.extended != before);
+        let before = sizing.extended;
+        sizing.extended.raise_for_politics(PoliticsDemand {
+            character_inputs: crate::extended::character_inputs::Demand {
+                traits: 1 << 20,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(sizing.extended != before);
         let seen = PoliticsDemand {
             agency_name_bytes: 0,
             active_characters: 5,
+            retired_characters: 1,
             party_leaders: 3,
             leader_traits: 2,
             civil_wars: 1,
@@ -372,6 +394,7 @@ mod tests {
             advisor_token_bytes: 40,
             faction_advisors: 2,
             faction_advisor_bytes: 20,
+            character_inputs: Default::default(),
         };
         let before = sizing.extended;
         sizing.extended.raise_for_politics(PoliticsDemand {

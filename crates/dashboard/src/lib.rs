@@ -3,6 +3,7 @@
 //! rendered here and no live game memory is read.
 
 pub mod catalogue;
+pub mod character_scope;
 pub mod config;
 pub mod content;
 mod dto;

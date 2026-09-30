@@ -395,6 +395,11 @@ impl Assets {
         let traits = installed_content::unit_leader::Traits::registered(layers)?;
         let sub_units =
             installed_content::unit_leader::sub_units(layers).map_err(|error| error.to_string());
+        // The country-leader traits, which a character's has_trait and the
+        // advisor-trait hover lines name.
+        let country_leader_traits = installed_content::leader_traits::read(layers)
+            .map(|(traits, _)| Arc::new(traits))
+            .map_err(|error| error.to_string());
         // The tactic registry as the game reads it: the file's one read
         // (installed_content::combat_tactics). Each proven tactic's picture declares
         // its texture; the widgets look it up through the registry.
@@ -405,7 +410,8 @@ impl Assets {
                     sub_units.as_ref(),
                     installed_content::scripted_triggers::read(layers)?,
                 )
-                .with_tag_aliases(installed_content::tag_aliases::read(layers)?);
+                .with_tag_aliases(installed_content::tag_aliases::read(layers)?)
+                .with_country_leader_traits(country_leader_traits.clone());
         for (key, texture) in tactics.pictures() {
             declarations.insert(
                 key.to_owned(),
@@ -536,8 +542,12 @@ impl Assets {
         }
         let mut sprites = BTreeMap::new();
         let (division_names, mut warnings) = installed_content::division_names::read(layers)?;
-        let (commander_tooltips, skills) =
-            super::commander_tooltips::Content::load(layers, defines, sub_units)?;
+        let (commander_tooltips, skills) = super::commander_tooltips::Content::load(
+            layers,
+            defines,
+            sub_units,
+            country_leader_traits,
+        )?;
         let tooltips = super::tooltips::Content::load(skills);
         warnings.extend(tooltips.warnings().iter().cloned());
         warnings.extend(commander_tooltips.warnings());

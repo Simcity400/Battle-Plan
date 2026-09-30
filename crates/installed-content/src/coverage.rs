@@ -89,6 +89,21 @@ impl Coverage {
             .map(|(_, gap)| gap)
     }
 
+    /// The current file in load order, as [`Self::next_file`] numbers them.
+    pub fn file(&self) -> usize {
+        self.file
+    }
+
+    /// The last gap in a file before `file`, whose unread rest could hold
+    /// definitions that come before `file`'s.
+    pub fn gap_before(&self, file: usize) -> Option<&Gap> {
+        self.gaps
+            .iter()
+            .rev()
+            .find(|(gap, _)| *gap < file)
+            .map(|(_, gap)| gap)
+    }
+
     /// The last gap of all: any search over every definition could change.
     pub fn any_gap(&self) -> Option<&Gap> {
         self.gaps.last().map(|(_, gap)| gap)

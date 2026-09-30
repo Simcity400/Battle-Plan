@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 237] = [
+const DOMAIN_TABLES: [TableId; 240] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -234,6 +234,9 @@ const DOMAIN_TABLES: [TableId; 237] = [
     TableId::RaidAirScores,
     TableId::RaidIntelInputs,
     TableId::RaidTooltipOperands,
+    TableId::CountryRetiredCharacters,
+    TableId::CharacterRoleTraits,
+    TableId::CharacterOperatives,
     TableId::StockpileArchetypes,
     TableId::RaidAirSites,
     TableId::AceRangeInputs,

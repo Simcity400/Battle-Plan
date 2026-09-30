@@ -138,6 +138,12 @@ pub(super) fn compare(
         complete &= report.attempt("UnitLeaderTraitExperience", |report| {
             compare_trait_experience(frame, manager, tokens, unrepresented.as_ref(), report)
         });
+        complete &= report.attempt("CharacterRoleTraits", |report| {
+            compare_role_traits(frame, manager, tokens, report)
+        });
+        complete &= report.attempt("CharacterOperatives", |report| {
+            compare_operatives(frame, manager, report)
+        });
     } else {
         complete &= report.attempt("character manager", |_| {
             Err(invalid("save lacks character_manager; character, role and trait comparisons cannot treat missing coverage as an empty roster"))
@@ -350,6 +356,181 @@ fn compare_advisors(
     }
     report.compared("AdvisorRoles", count);
     report.limitation("advisor serializer emits slot and idea_token from the role object, not the native map key; ordered role values are compared but map-key bytes are not", "AdvisorRoles.key");
+    Ok(())
+}
+
+/// Each recorded role trait array against the role's saved `traits`, in
+/// order, the membership built from the save and the role tables alone:
+/// `CCharacter::Serialize@140F913A0` writes the country-leader roles
+/// (`CCountryLeader::vf2@140FB73E0`, traits by token) and the advisor roles
+/// (`CAdvisor::vf2@1412902F0`, traits by the trait's name, which its token
+/// was made from) in their maps' order, so the saved role at a position is
+/// the recorded CountryLeaderRoles key (ascending, signed: the map's
+/// comparator, `140F8A750`) or AdvisorRoles ordinal at that position; the
+/// scientist (`CScientist::vf2@1413F7B60`, by token) is joined directly. The
+/// saved `ideology` is `CCountryLeader+0x140`, which `set_country_leader_ideology`
+/// (`1403611C0`) rewrites without moving the role in the map, so it is not
+/// the join. Every writer omits `traits` for an empty array, which has no
+/// row.
+fn compare_role_traits(
+    frame: &DecodedFrame,
+    manager: &saved::Manager,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    use replay::rows::CharacterRoleTraitRow as Row;
+    let rows = complete::<tables::CharacterRoleTraits>(frame)?;
+    let mut recorded = BTreeMap::<(u64, u8, u32), &[u32]>::new();
+    for row in rows {
+        recorded.insert((handle(73, row.character), row.kind, row.role), &row.tokens);
+    }
+    let mut leader_keys = BTreeMap::<u64, Vec<i32>>::new();
+    for row in complete::<tables::CountryLeaderRoles>(frame)? {
+        leader_keys
+            .entry(handle(73, row.character))
+            .or_default()
+            .push(row.ideology);
+    }
+    let mut unnamed = Vec::new();
+    let mut compared = 0;
+    for (&id, character) in &manager.characters {
+        // (kind, role) -> the saved trait names, for every nonempty saved array.
+        let mut expected = BTreeMap::<(u8, u32), &[Vec<u8>]>::new();
+        let mut keys = leader_keys.remove(&id).unwrap_or_default();
+        keys.sort_unstable();
+        if keys.len() == character.country_leaders.len() {
+            for (key, role) in keys.iter().zip(&character.country_leaders) {
+                if !role.traits.is_empty() {
+                    expected.insert((Row::COUNTRY_LEADER, *key as u32), &role.traits);
+                }
+            }
+        } else {
+            // Without the positions the saved arrays are joined to none; the
+            // recorded ones then show as extra and the saved ones as missing.
+            for role in &character.country_leaders {
+                if !role.traits.is_empty() {
+                    report.difference(
+                        format!(
+                            "CharacterRoleTraits {id} country leader {}",
+                            String::from_utf8_lossy(&role.ideology)
+                        ),
+                        format!("{} recorded roles", keys.len()),
+                        format!("{} saved roles", character.country_leaders.len()),
+                    );
+                }
+            }
+        }
+        for (ordinal, role) in character.advisors.iter().enumerate() {
+            if !role.traits.is_empty() {
+                let ordinal = u32::try_from(ordinal)
+                    .map_err(|_| invalid("saved advisor ordinal exceeds u32"))?;
+                expected.insert((Row::ADVISOR, ordinal), &role.traits);
+            }
+        }
+        if let Some(traits) = character
+            .scientist
+            .as_ref()
+            .and_then(|scientist| scientist.traits.as_deref())
+        {
+            expected.insert((Row::SCIENTIST, 0), traits);
+        }
+        let recorded_keys: Vec<(u8, u32)> = recorded
+            .range((id, 0, 0)..=(id, u8::MAX, u32::MAX))
+            .map(|(&(_, kind, role), _)| (kind, role))
+            .collect();
+        for key in recorded_keys {
+            let actual = recorded.remove(&(id, key.0, key.1)).unwrap();
+            let label = format!("CharacterRoleTraits {id}/{}/{}", key.0, key.1);
+            let Some(saved) = expected.remove(&key) else {
+                membership(report, "CharacterRoleTraits", (id, key), true);
+                continue;
+            };
+            let mut names = Vec::with_capacity(actual.len());
+            for token in actual {
+                match tokens.get(token) {
+                    Some(name) => names.push(c_string(name)),
+                    None => {
+                        unnamed.push(format!("{label} token {token}"));
+                        break;
+                    }
+                }
+            }
+            if names.len() != actual.len() {
+                continue;
+            }
+            compared += 1;
+            report.scalar_checks += 1;
+            let saved: Vec<&[u8]> = saved.iter().map(Vec::as_slice).collect();
+            // Compared as bytes; the text is for the report only.
+            if names != saved {
+                let text = |names: &[&[u8]]| {
+                    names
+                        .iter()
+                        .map(|name| String::from_utf8_lossy(name).into_owned())
+                        .collect::<Vec<_>>()
+                };
+                report.difference(label, text(&names), text(&saved));
+            }
+        }
+        for key in expected.into_keys() {
+            membership(report, "CharacterRoleTraits", (id, key), false);
+        }
+    }
+    for (id, kind, role) in recorded.into_keys() {
+        membership(
+            report,
+            "CharacterRoleTraits character",
+            (id, kind, role),
+            true,
+        );
+    }
+    if !unnamed.is_empty() {
+        report.limitation(
+            "recorded trait tokens absent from the recorded lexical dictionary cannot be named",
+            unnamed.join(", "),
+        );
+    }
+    report.compared("CharacterRoleTraits", compared);
+    report.limitation(
+        "the role writers save a country-leader trait by name, not its database ordinal (CCountryLeaderTrait+0x1A0), so CharacterRoleTraits.definitions is not compared",
+        "CharacterRoleTraits.definitions",
+    );
+    Ok(())
+}
+
+/// Each recorded unit-leader reference against the character's saved
+/// `operative` (`CCharacter::Serialize@140F913A0` writes it when either word
+/// is nonzero, so a row exists exactly for a saved reference). The resolved
+/// leader's operands are the unit leader's own, which the save keeps with the
+/// intelligence agency's operatives, not with the character.
+fn compare_operatives(
+    frame: &DecodedFrame,
+    manager: &saved::Manager,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::CharacterOperatives>(frame)?;
+    let mut recorded: BTreeMap<u64, u64> = rows
+        .iter()
+        .map(|row| (handle(73, row.character), row.reference))
+        .collect();
+    for (&id, character) in &manager.characters {
+        let actual = recorded.remove(&id);
+        report.scalar_checks += 1;
+        equal(
+            report,
+            format!("CharacterOperatives {id}.reference"),
+            actual,
+            character.operative,
+        );
+    }
+    for id in recorded.into_keys() {
+        membership(report, "CharacterOperatives character", id, true);
+    }
+    report.compared("CharacterOperatives", rows.len());
+    report.limitation(
+        "the resolved unit leader's category, owner, skill level and trait definitions are not saved with the character",
+        "CharacterOperatives.resolved, category, owner, skill_level, trait_definitions",
+    );
     Ok(())
 }
 
@@ -801,6 +982,7 @@ mod tests {
                         country_leaders: Vec::new(),
                         advisors: Vec::new(),
                         scientist: None,
+                        operative: None,
                     },
                 )]),
                 unit_leaders: BTreeMap::from([(
@@ -942,6 +1124,193 @@ mod tests {
             reason: "read fault".into(),
         };
         assert!(compare(&frame, &pack, &links, &tokens, &mut Report::default()).is_err());
+    }
+
+    /// Each role's trait tokens compare, by name, with the role's saved
+    /// `traits` (a country-leader role joined by its ideology literal), and
+    /// the operative reference with the saved `operative`.
+    #[test]
+    fn role_traits_and_operative_references_compare_with_the_save() {
+        use replay::rows::{CharacterOperativeRow, CharacterRoleTraitRow as Row};
+        let (mut frame, mut pack, country) = fixture();
+        let links = BTreeMap::from([(102, &country)]);
+        let tokens = BTreeMap::from([
+            (5, b"script_token".as_slice()),
+            (6, b"assigned"),
+            (7, b"progress"),
+            (8, b"GER_template"),
+            (20, b"despotism"),
+            (21, b"rich_sultan"),
+            (22, b"captain"),
+            (23, b"inventor"),
+        ]);
+        let character = handle(73, u32::MAX);
+        let saved = pack
+            .manager
+            .as_mut()
+            .unwrap()
+            .characters
+            .get_mut(&character)
+            .unwrap();
+        saved.country_leaders = vec![saved::CountryLeader {
+            ideology: b"despotism".to_vec(),
+            id: None,
+            traits: vec![b"rich_sultan".to_vec()],
+        }];
+        saved.advisors = vec![saved::Advisor {
+            slot: None,
+            idea: None,
+            traits: vec![b"captain".to_vec()],
+        }];
+        saved.scientist = Some(saved::Scientist {
+            traits: Some(vec![b"inventor".to_vec()]),
+            skills: Vec::new(),
+        });
+        saved.operative = Some((77 << 32) | 4713);
+        let row = |kind, role, token| Row {
+            character: u32::MAX,
+            kind,
+            role,
+            tokens: vec![token],
+            definitions: if kind == Row::SCIENTIST {
+                Vec::new()
+            } else {
+                vec![1]
+            },
+        };
+        *frame.tables[TableId::CharacterRoleTraits.index()] =
+            TableView::Complete(TableRows::CharacterRoleTraits(vec![
+                row(Row::COUNTRY_LEADER, 20, 21),
+                row(Row::ADVISOR, 0, 22),
+                row(Row::SCIENTIST, 0, 23),
+            ]));
+        *frame.tables[TableId::CountryLeaderRoles.index()] =
+            TableView::Complete(TableRows::CountryLeaderRoles(vec![
+                replay::rows::CountryLeaderRoleRow {
+                    character: u32::MAX,
+                    country: 102,
+                    ideology: 20,
+                },
+            ]));
+        *frame.tables[TableId::AdvisorRoles.index()] =
+            TableView::Complete(TableRows::AdvisorRoles(vec![
+                replay::rows::AdvisorRoleRow {
+                    character: u32::MAX,
+                    country: 102,
+                    ..Default::default()
+                },
+            ]));
+        *frame.tables[TableId::CharacterOperatives.index()] =
+            TableView::Complete(TableRows::CharacterOperatives(vec![
+                CharacterOperativeRow {
+                    character: u32::MAX,
+                    reference: (77 << 32) | 4713,
+                    resolved: true,
+                    ..Default::default()
+                },
+            ]));
+        let mut report = Report::default();
+        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CharacterRoleTraits"], 3);
+        // A different trait, a missing role and a different reference.
+        let TableView::Complete(TableRows::CharacterRoleTraits(rows)) =
+            &mut *frame.tables[TableId::CharacterRoleTraits.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].tokens = vec![22];
+        rows.pop();
+        let TableView::Complete(TableRows::CharacterOperatives(rows)) =
+            &mut *frame.tables[TableId::CharacterOperatives.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].reference ^= 1 << 32;
+        let mut report = Report::default();
+        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    }
+
+    /// The saved country-leader role is joined by its map position, not by
+    /// the recorded rows: a deleted leader row is a missing array, an extra
+    /// one an extra array, and trait names compare as bytes.
+    #[test]
+    fn missing_extra_and_byte_different_role_traits_are_differences() {
+        use replay::rows::CharacterRoleTraitRow as Row;
+        let (mut frame, mut pack, country) = fixture();
+        let links = BTreeMap::from([(102, &country)]);
+        let character = handle(73, u32::MAX);
+        let saved = pack
+            .manager
+            .as_mut()
+            .unwrap()
+            .characters
+            .get_mut(&character)
+            .unwrap();
+        // The saved ideology is not the join: a rewritten one still matches.
+        saved.country_leaders = vec![saved::CountryLeader {
+            ideology: b"rewritten".to_vec(),
+            id: None,
+            traits: vec![b"\xff".to_vec()],
+        }];
+        *frame.tables[TableId::CountryLeaderRoles.index()] =
+            TableView::Complete(TableRows::CountryLeaderRoles(vec![
+                replay::rows::CountryLeaderRoleRow {
+                    character: u32::MAX,
+                    country: 102,
+                    ideology: 20,
+                },
+            ]));
+        let leader = Row {
+            character: u32::MAX,
+            kind: Row::COUNTRY_LEADER,
+            role: 20,
+            tokens: vec![21],
+            definitions: vec![1],
+        };
+        let run = |frame: &DecodedFrame, name: &'static [u8]| {
+            let tokens = BTreeMap::from([
+                (5, b"script_token".as_slice()),
+                (6, b"assigned"),
+                (7, b"progress"),
+                (8, b"GER_template"),
+                (21, name),
+            ]);
+            let mut report = Report::default();
+            compare(frame, &pack, &links, &tokens, &mut report).unwrap();
+            report.differences
+        };
+        let set = |frame: &mut DecodedFrame, rows: Vec<Row>| {
+            *frame.tables[TableId::CharacterRoleTraits.index()] =
+                TableView::Complete(TableRows::CharacterRoleTraits(rows));
+        };
+        set(&mut frame, vec![leader.clone()]);
+        assert!(run(&frame, b"\xff").is_empty());
+        // Distinct invalid bytes that read as the same replacement text.
+        assert_eq!(run(&frame, b"\xfe").len(), 1);
+        set(&mut frame, Vec::new());
+        let missing = run(&frame, b"\xff");
+        assert!(
+            missing.len() == 1 && missing[0].contains("membership"),
+            "{missing:?}"
+        );
+        set(
+            &mut frame,
+            vec![
+                leader.clone(),
+                Row {
+                    kind: Row::ADVISOR,
+                    role: 0,
+                    ..leader
+                },
+            ],
+        );
+        let extra = run(&frame, b"\xff");
+        assert!(
+            extra.len() == 1 && extra[0].contains("membership"),
+            "{extra:?}"
+        );
     }
 
     /// The template's tag compares with the saved `template`; a template on

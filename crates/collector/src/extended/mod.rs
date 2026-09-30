@@ -350,6 +350,7 @@ packs!(
     model_inputs,
     modifier_definitions,
     hired_advisors,
+    character_inputs,
     country_stability,
     new_divisions,
     country_tactic_unlocks,
@@ -413,7 +414,9 @@ impl Capacities {
     pub fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
         crate::country_scale::raise(&mut self.intel.agency_names, demand.agency_name_bytes);
         self.hired_advisors
-            .raise_for_active_characters(demand.active_characters);
+            .raise_for_character_records(demand.active_characters, demand.retired_characters);
+        self.character_inputs
+            .raise_for_demand(demand.character_inputs);
         self.governance
             .raise_for_party_leaders(demand.party_leaders);
         self.country_appearance
@@ -1471,6 +1474,7 @@ impl Captured {
             &mut packs.modifier_definitions,
         );
         std::mem::swap(&mut self.hired_advisors, &mut packs.hired_advisors);
+        std::mem::swap(&mut self.character_inputs, &mut packs.character_inputs);
         std::mem::swap(&mut self.country_stability, &mut packs.country_stability);
         std::mem::swap(
             &mut self.country_tactic_unlocks,
@@ -2216,6 +2220,7 @@ impl Captured {
                 model_inputs,
                 modifier_definitions,
                 hired_advisors,
+                character_inputs,
                 country_tactic_unlocks
             );
             // No loaned fingerprint store: only the hour's slice is read.
@@ -2629,7 +2634,7 @@ fn unpublished(outcomes: &[Outcome]) -> bool {
 
 /// The live-memory packs run as a second pool job from the first burst
 /// (map names, templates, visibility, faction theatres, model inputs,
-/// modifier definitions and hired advisors). No defines are recorded: the
+/// modifier definitions, hired advisors and character inputs). No defines are recorded: the
 /// viewer reads the movement defines from the content's `NDefines`. Each
 /// table keeps its own [`replay::cadence`]: the
 /// template dictionary is daily, its counter inputs hourly.
@@ -2641,6 +2646,7 @@ pub(crate) struct SlowPacks {
     pub(crate) model_inputs: model_inputs::Captured,
     pub(crate) modifier_definitions: modifier_definitions::Captured,
     pub(crate) hired_advisors: hired_advisors::Captured,
+    pub(crate) character_inputs: character_inputs::Captured,
     pub(crate) country_stability: country_stability::Captured,
     pub(crate) country_tactic_unlocks: country_tactic_unlocks::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
@@ -2785,6 +2791,7 @@ impl SlowPacks {
         self.modifier_definitions
             .fail_capture(hour, force_full, reason);
         self.hired_advisors.fail_capture(hour, force_full, reason);
+        self.character_inputs.fail_capture(hour, force_full, reason);
         self.country_stability
             .fail_capture(hour, force_full, reason);
         self.country_tactic_unlocks
@@ -2801,6 +2808,7 @@ impl SlowPacks {
             + self.model_inputs.allocated_bytes()
             + self.modifier_definitions.allocated_bytes()
             + self.hired_advisors.allocated_bytes()
+            + self.character_inputs.allocated_bytes()
             + self.country_stability.allocated_bytes()
             + self.country_tactic_unlocks.allocated_bytes()
     }
@@ -2814,6 +2822,7 @@ impl SlowPacks {
             model_inputs: model_inputs::Captured::vacant(),
             modifier_definitions: modifier_definitions::Captured::vacant(),
             hired_advisors: hired_advisors::Captured::vacant(),
+            character_inputs: character_inputs::Captured::vacant(),
             country_stability: country_stability::Captured::vacant(),
             country_tactic_unlocks: country_tactic_unlocks::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
@@ -2847,6 +2856,7 @@ impl SlowPacks {
             model_inputs,
             modifier_definitions,
             hired_advisors,
+            character_inputs,
             country_tactic_unlocks
         );
         let cost = self.country_stability.capture(

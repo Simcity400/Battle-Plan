@@ -198,6 +198,7 @@ pub mod cgui;
 pub mod cgui_object;
 pub mod cgui_type;
 pub mod character_advisor_node;
+pub mod character_inputs;
 pub mod character_leader_node;
 pub mod character_name_bucket;
 pub mod character_name_index;

@@ -2,9 +2,9 @@
 //! national spirits, …), with each idea's category and slot from content, for
 //! the idea-category timelines and the national spirits widgets.
 //!
-//! `ActiveIdeas` is sampled once a day and carried forward in between, so a
-//! span starts at the first hour an idea was observed: it was taken on at some
-//! point since the previous sample. Spans never bridge a gap, an incomplete
+//! `ActiveIdeas` is sampled every hour, so a span starts at the first hour an
+//! idea was observed: it was taken on at some point since the previous
+//! sample. Spans never bridge a gap, an incomplete
 //! table or a change of country identity. Appointed advisors are not ideas the
 //! game lists as active: they come from `HiredAdvisors` (the country's
 //! appointed-advisor list, also daily), each with its idea token, seat and

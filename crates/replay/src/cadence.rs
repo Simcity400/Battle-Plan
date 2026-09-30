@@ -2,8 +2,8 @@
 //!
 //! There are three cadences (owner rule): Hourly, Daily and Static.
 //! Hourly: map inputs, character identities, unit leaders, the persistent
-//! character roles and traits and scientist rosters a tactic's `has_trait`
-//! reads, and doctrine tactic unlocks. Daily: panel data and slow map
+//! character roles and traits, scientist rosters, operative links and retired
+//! records a character-scope trigger reads, and doctrine tactic unlocks. Daily: panel data and slow map
 //! inputs such as relations, read once per 24 game-hours. A daily table is
 //! walked whole in a fixed slot ([`Cadence::Daily`]) or, when one walk would
 //! make its hour spike, spread over the day one owner slice per hour
@@ -171,7 +171,6 @@ pub const fn cadence(table: TableId) -> Cadence {
         // The raid army search's strategic-region access modes, which the
         // player's UI and the AI's daily step set.
         TableId::ResearchSlots | TableId::NavalRegionAccess => Daily(11),
-        TableId::ScriptFlags => Daily(12),
         // Theatre details share one daily slot. LandTheatres itself (id,
         // owner, roster ordinal) falls to the hourly arm below: hourly
         // OrdersGroups rows name their theatre and battle plans draw in its
@@ -185,7 +184,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         // applies graph strengths (`1411AF020`) inside the hour-23 daily
         // tick. Slot 0, like CountryIntel, observes its first completed state.
         TableId::IntelNetworks => Daily(0),
-        TableId::DynamicModifiers | TableId::ActiveIdeas => Daily(15),
+        TableId::DynamicModifiers => Daily(15),
         TableId::OperativeMemberships | TableId::WingCumulative => Daily(16),
         // Script effects can change the selected balance and its presentation
         // in any tick, and scripted text reads them in the hour.
@@ -193,11 +192,11 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::PowerBalanceMembers
         | TableId::PowerBalanceRanges
         | TableId::PowerBalanceOverrides => Cadence::Hourly,
-        // Scientists and ScientistSkills, one roster walk, are hourly: a
-        // tactic's character-scope has_trait (1403D7D20) reads the roster
-        // (CCountryCharacters+0xA0) and each scientist's trait count
-        // (CScientist+0x3C), which change at any hour. CRecruitScientistCommand
-        // (141EDEE70) inserts into the roster (1410D8D70) and add_scientist_trait
+        // Scientists and ScientistSkills, one roster walk, are hourly: the
+        // roster (CCountryCharacters+0xA0) and each scientist's traits
+        // (CScientist+0x30) change between daily ticks, and accuracy comes
+        // first (owner, 2026-09-30). CRecruitScientistCommand (141EDEE70)
+        // inserts into the roster (1410D8D70) and add_scientist_trait
         // (1404919B0) appends a trait (1413F5530).
         // The fuel status and its consumers come from one walk. CountryFuel's
         // ring sums cover the last 24 hourly fuel updates, so reads on this
@@ -220,9 +219,9 @@ pub const fn cadence(table: TableId) -> Cadence {
         // Agency creation and renaming can run in any tick, and GetAgency
         // reads the stored created byte and name in the hour.
         TableId::IntelligenceAgencies => Cadence::Hourly,
-        // The persistent role and trait tables are hourly: a tactic's
-        // character-scope has_trait (1403D7D20) reads them, and their writers
-        // run at any hour. CUnitLeader::AddTrait (140BFF6F0) fills the trait
+        // The persistent role and trait tables are hourly: their writers run
+        // between daily ticks, and a tactic's character-scope has_trait
+        // (1403D7D20) reads the unit-leader traits. CUnitLeader::AddTrait (140BFF6F0) fills the trait
         // array (+0xDC8) from CLearnTraitCommand (1418304D0), the officer
         // commands (14114ACB0 -> 14143ED50 and 14114AE70 -> 14143F2B0, both
         // -> 14143F7E0), the add-trait effects
@@ -272,6 +271,16 @@ pub const fn cadence(table: TableId) -> Cadence {
         // (1413E1610) can change the raid target-intel predicate between
         // daily ticks.
         TableId::Cryptology => Cadence::Hourly,
+        // ScriptFlags and ActiveIdeas are hourly: the triggers that read
+        // them see an effect's write in the same hour, and effects run
+        // whenever an event option, decision or focus fires. Flags:
+        // CSetCountryFlagEffect::Execute (140361100),
+        // CClearCountryFlagEffect::Execute (14034F6D0),
+        // CModifyCountryFlagEffect::vf13 (14035B150) and the character
+        // flag effects (1402E9020, 1402E7830, 1402E79D0); ideas:
+        // CAddIdeasEffect::Execute (140349B50), CRemoveIdeasEffect::Execute
+        // (14035D500) and CSwapIdeasEffect::Execute (140366540).
+        TableId::ScriptFlags | TableId::ActiveIdeas => Cadence::Hourly,
         _ => Cadence::Hourly,
     }
 }
@@ -388,14 +397,22 @@ mod tests {
             TableId::StateBuildings,
             TableId::ProvinceBuildings,
             TableId::RaidTargetStatuses,
-            // A tactic's has_trait reads the roles, traits and scientist
-            // rosters of the hour; each trait and roster walk moves whole.
+            // Roles, traits and scientist rosters whose writers run between
+            // daily ticks; each trait and roster walk moves whole.
             TableId::CountryLeaderRoles,
             TableId::AdvisorRoles,
             TableId::UnitLeaderTraits,
             TableId::UnitLeaderTraitExperience,
             TableId::Scientists,
             TableId::ScientistSkills,
+            // Their other character-scope inputs: every role's traits, the
+            // operative link and the retired records.
+            TableId::CharacterRoleTraits,
+            TableId::CharacterOperatives,
+            TableId::CountryRetiredCharacters,
+            // Script-effect state the triggers read.
+            TableId::ScriptFlags,
+            TableId::ActiveIdeas,
             // Scripted text reads the balance and the agency of the hour.
             TableId::PowerBalances,
             TableId::PowerBalanceMembers,

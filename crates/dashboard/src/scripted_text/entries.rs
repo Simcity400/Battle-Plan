@@ -16,6 +16,15 @@ pub(crate) struct Environment {
     bonuses: [i64; 2],
     roles: Result<LeaderRoles, String>,
     invasion_days: Result<i32, String>,
+    /// The unit-leader and country-leader trait databases a character's
+    /// `has_trait` reads.
+    traits: Result<
+        (
+            installed_content::unit_leader::Traits,
+            installed_content::leader_traits::LeaderTraits,
+        ),
+        String,
+    >,
 }
 
 impl Environment {
@@ -56,6 +65,9 @@ impl Environment {
             invasion_days: defines
                 .int32("NNavy", "NAVAL_INVASION_PREPARE_DAYS")
                 .map_err(|e| e.to_string()),
+            traits: installed_content::unit_leader::Traits::registered(layers)
+                .and_then(|units| Ok((units, installed_content::leader_traits::read(layers)?.0)))
+                .map_err(|e| e.to_string()),
         })
     }
 
@@ -71,6 +83,11 @@ impl Environment {
             resource_bonuses: self.bonuses,
             leader_roles: self.roles.as_ref().map_err(String::as_str),
             invasion_prepare_days: self.invasion_days.as_ref().copied().map_err(String::as_str),
+            character_traits: self
+                .traits
+                .as_ref()
+                .map(|(units, country_leaders)| (units, country_leaders))
+                .map_err(String::as_str),
         }
     }
 }
@@ -110,7 +127,7 @@ impl<'a> ScriptedText<'a> {
             let Some(key) = &text.key else { continue };
             let trigger = text.trigger.as_ref().map_err(|e| format!("{name}: {e}"))?;
             if !trigger.0.is_empty() {
-                let scopes = entry_scopes(&bound, at, bare, name)?;
+                let scopes = entry_scopes(&bound, at, bare);
                 let world = self
                     .world
                     .get_or_init(|| World::new(self.frame, self.environment()?.facts()))
@@ -211,36 +228,32 @@ fn bound_scope(object: Object, scopes: &EventScopes, active: usize) -> (EventSco
 }
 
 /// The trigger scopes of event scope `at`, `bare` when its THIS was set with
-/// clearing ([`bound_scope`]). A link the caller cannot
-/// describe, or one naming a character (the evaluator reads unit-leader
-/// character scopes only), is unknown to the evaluator, so only a
-/// condition that reads it is unknown (`always` reads none, 1403CE520).
-fn entry_scopes(scopes: &EventScopes, at: usize, bare: bool, name: &str) -> Result<Scopes, String> {
+/// clearing ([`bound_scope`]). A character is a character scope
+/// (`crate::character_scope`). A link the caller cannot describe is unknown
+/// to the evaluator, so only a condition that reads it is unknown (`always`
+/// reads none, 1403CE520).
+fn entry_scopes(scopes: &EventScopes, at: usize, bare: bool) -> Scopes {
     let scope = |object| match object {
-        EventObject::Country(slot) => Some(Scope::Country(slot)),
-        EventObject::State(id) => Some(Scope::State(id)),
-        EventObject::Province(id) => Some(Scope::Province(id)),
-        EventObject::UnitLeader(reference) => Some(Scope::Leader(reference)),
-        EventObject::Character(_) => None,
+        EventObject::Country(slot) => Scope::Country(slot),
+        EventObject::State(id) => Scope::State(id),
+        EventObject::Province(id) => Scope::Province(id),
+        EventObject::UnitLeader(reference) => Scope::Leader(reference),
+        EventObject::Character(id) => Scope::Character(id),
     };
     let current = scopes.scopes[at];
-    let this = scope(current.this).ok_or_else(|| {
-        format!(
-            "{name}: THIS is a character, and event-scope triggers require a character scope (1410CDDF0); the shared evaluator currently accepts unit-leader scopes only"
-        )
-    })?;
+    let this = scope(current.this);
     let linked = |link| {
         scopes
             .linked(at, link, "")
             .ok()
-            .and_then(|to| scope(scopes.scopes[to].this))
+            .map(|to| scope(scopes.scopes[to].this))
     };
     let (root, from, prev) = (
         linked(current.root),
         linked(current.from),
         linked(current.prev),
     );
-    Ok(Scopes {
+    Scopes {
         root: root.unwrap_or(this),
         this,
         prev,
@@ -254,7 +267,7 @@ fn entry_scopes(scopes: &EventScopes, at: usize, bare: bool, name: &str) -> Resu
         target_state: scopes.variables.target_state,
         target_province: scopes.variables.target_province,
         target_leader: scopes.variables.target_leader,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +286,7 @@ impl Environment {
             bonuses: [0; 2],
             roles: Ok(LeaderRoles::new(Vec::new())),
             invasion_days: Ok(0),
+            traits: Ok(Default::default()),
         }
     }
 }

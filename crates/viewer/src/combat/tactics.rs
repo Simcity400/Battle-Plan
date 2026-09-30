@@ -25,11 +25,15 @@ use crate::{
     state_resources::{Links, StateResources, resource_comparison},
     table_access::rows,
 };
-use dashboard::scope::{Context as ScopeContext, RecordedScopes, Target, Unresolved};
+use dashboard::{
+    character_scope::{Tables as CharacterTables, TraitNames},
+    scope::{Context as ScopeContext, RecordedScopes, Target, Unresolved},
+};
 use installed_content::{
     buildings::Buildings,
     combat_tactics::EFFECTS,
     fixed5::{IntOperand, decimal_fixed5, int_operand, script_fixed5},
+    leader_traits::LeaderTraits,
     localisation::{Argument, Localisation},
     parser::{Item, Keyword, Operator, Value, c_string},
     scope::{Keyword as ScopeKeyword, Names, Scope, ScopeKind, TriggerScopes},
@@ -41,10 +45,8 @@ use installed_content::{
 use replay::{
     frame::DecodedFrame,
     rows::{
-        AdvisorRoleRow, BuildingRow, CharacterRow, CountryLeaderRoleRow, CountryResourceRow,
-        LandCombatDetailsRow, LandCombatDivisionRow, LexicalTokenRow, PoliticalPartyRow,
-        ProvinceRow, ResourceDefinitionRow, ScientistRow, StateRow, UnitLeaderRow,
-        UnitLeaderTraitRow, tables,
+        BuildingRow, CountryResourceRow, LandCombatDetailsRow, LandCombatDivisionRow,
+        LexicalTokenRow, PoliticalPartyRow, ProvinceRow, ResourceDefinitionRow, StateRow, tables,
     },
 };
 use std::{
@@ -111,6 +113,10 @@ pub(super) struct Content {
     /// The one trait-name inventory (append_trait 140AD7890,
     /// installed_content::unit_leader::Traits::registered).
     leader_traits: Traits,
+    /// The country-leader trait database (installed_content::leader_traits), which
+    /// a character's `has_trait` searches by name (140712D30) after the
+    /// unit-leader traits; `None` until loaded.
+    country_leader_traits: Option<Result<Arc<LeaderTraits>, String>>,
     /// The one sub-unit database read (installed_content::unit_leader::sub_units):
     /// a definition is found without case (140AB4070), as the recorded
     /// sub-unit token is interned (1424A7A90).
@@ -288,6 +294,16 @@ impl Content {
             warnings,
             ..Self::default()
         }
+    }
+
+    /// The country-leader trait database, or why the content cannot give
+    /// it (installed_content::leader_traits::read).
+    pub(super) fn with_country_leader_traits(
+        mut self,
+        traits: Result<Arc<LeaderTraits>, String>,
+    ) -> Self {
+        self.country_leader_traits = Some(traits);
+        self
     }
 
     /// The content's tag alias names (installed_content::tag_aliases), which every
@@ -745,21 +761,9 @@ struct CountTables<'a> {
     resource_definitions: Result<&'a [ResourceDefinitionRow], String>,
     country_resources: Result<&'a [CountryResourceRow], String>,
     parties: Result<&'a [PoliticalPartyRow], String>,
-    /// The character tables `has_trait` and `skill` read in a character
-    /// scope.
+    /// The character tables `has_trait`, `skill` and `tag` read in a
+    /// character scope.
     characters: CharacterTables<'a>,
-}
-
-/// The recorded character tables (the collector's characters and
-/// scientist roster families) a character scope's `has_trait` and `skill`
-/// read.
-struct CharacterTables<'a> {
-    characters: Result<&'a [CharacterRow], String>,
-    unit_leaders: Result<&'a [UnitLeaderRow], String>,
-    unit_leader_traits: Result<&'a [UnitLeaderTraitRow], String>,
-    country_leader_roles: Result<&'a [CountryLeaderRoleRow], String>,
-    advisor_roles: Result<&'a [AdvisorRoleRow], String>,
-    scientists: Result<&'a [ScientistRow], String>,
 }
 
 impl CountTables<'_> {
@@ -776,7 +780,7 @@ impl CountTables<'_> {
             resource_definitions: none(),
             country_resources: none(),
             parties: none(),
-            characters: CharacterTables::unrecorded(),
+            characters: CharacterTables::default(),
         }
     }
 
@@ -801,19 +805,7 @@ impl CountTables<'_> {
             // Hourly (replay::cadence): its pools are rewritten at any hour.
             country_resources: table::<tables::CountryResources>(frame, "CountryResources"),
             parties: table::<tables::PoliticalParties>(frame, "PoliticalParties"),
-            // Each hourly (replay::cadence): has_trait (1403D7D20) reads the
-            // current traits and roles, whose writers run at any hour.
-            characters: CharacterTables {
-                characters: table::<tables::Characters>(frame, "Characters"),
-                unit_leaders: table::<tables::UnitLeaders>(frame, "UnitLeaders"),
-                unit_leader_traits: table::<tables::UnitLeaderTraits>(frame, "UnitLeaderTraits"),
-                country_leader_roles: table::<tables::CountryLeaderRoles>(
-                    frame,
-                    "CountryLeaderRoles",
-                ),
-                advisor_roles: table::<tables::AdvisorRoles>(frame, "AdvisorRoles"),
-                scientists: table::<tables::Scientists>(frame, "Scientists"),
-            },
+            characters: CharacterTables::read(frame),
         }
     }
 }
@@ -873,190 +865,6 @@ impl Links for Context<'_> {
             [id] => Ok(Some(*id)),
             [first, second, ..] => Err(format!(
                 "{shown} is spelled by tokens {first} and {second} in the recorded lexical dictionary, so which the lexer (1424A7A90) gives it is unknown"
-            )),
-        }
-    }
-}
-
-impl CharacterTables<'_> {
-    #[cfg(test)]
-    fn unrecorded() -> Self {
-        fn none<T>() -> Result<T, String> {
-            Err("the table is not recorded here".to_owned())
-        }
-        Self {
-            characters: none(),
-            unit_leaders: none(),
-            unit_leader_traits: none(),
-            country_leader_roles: none(),
-            advisor_roles: none(),
-            scientists: none(),
-        }
-    }
-
-    /// GetUnitLeader (140F8A840) of the recorded character: CCharacter+0xA8,
-    /// whose leader the collector records in UnitLeaders (`character_id`,
-    /// +0xF4C). Without it the game takes the operative at CCharacter+0xC8,
-    /// which no table records, so that case is refused by name.
-    fn unit_leader(&self, character: u32) -> Evaluation<&UnitLeaderRow> {
-        let leaders = self.unit_leaders.as_ref().map_err(Clone::clone)?;
-        let mut found = leaders.iter().filter(|row| row.character_id == character);
-        let leader = found.next().ok_or_else(|| {
-            format!(
-                "character {character} has no unit leader at CCharacter+0xA8 (no UnitLeaders row), so GetUnitLeader (140F8A840) takes its operative at CCharacter+0xC8, which the recording does not hold"
-            )
-        })?;
-        if found.next().is_some() {
-            return Err(format!(
-                "character {character} has more than one UnitLeaders row, and CCharacter+0xA8 holds one unit leader"
-            ));
-        }
-        Ok(leader)
-    }
-
-    /// Why the country CTagTrigger::Evaluate (1403DCDF0) compares in a
-    /// character scope is not recorded. The scope has no combat (+0x60,
-    /// cleared by SetCharacter 14052DAF0 -> 14052F3F0), so the trigger takes
-    /// the character's unit leader (CEventScope::ability_caster_resolver
-    /// 1405294F0 -> GetUnitLeader 140F8A840: CCharacter+0xA8, else the
-    /// operative at +0xC8) and compares that leader's country
-    /// (CUnitLeader+0x120; 0 is false); only a character with neither is
-    /// compared by its own country (CCharacter::country_reference 140A5BF80,
-    /// +0x68, Characters.country). UnitLeaders records no +0x120 and no
-    /// table records +0xC8, so which country decides is unknown for every
-    /// character.
-    fn tag_country(&self, character: u32) -> String {
-        match self.unit_leader(character) {
-            Ok(leader) => format!(
-                "character {character}'s unit leader {} (CCharacter+0xA8) decides, and CTagTrigger::Evaluate (1403DCDF0) compares its country CUnitLeader+0x120, which UnitLeaders does not record",
-                leader.id
-            ),
-            Err(why) => format!(
-                "{why}; CTagTrigger::Evaluate (1403DCDF0) compares that unit leader's country (CUnitLeader+0x120) before the character's own (CCharacter+0x68)"
-            ),
-        }
-    }
-
-    /// CSkillTrigger's value (140475170) in a character scope: the scope has
-    /// no combat, so it is the character's unit leader's GetSkillLevel
-    /// (140C0A4A0: +0xE60 -> +0x1B8), compared by CIntTrigger::Evaluate
-    /// (14138CC70).
-    fn skill(&self, character: u32) -> Evaluation<i32> {
-        let leader = self.unit_leader(character)?;
-        if leader.skill_status == 0 {
-            return Err(format!(
-                "unit leader {} of character {character} has no recorded skill (UnitLeaders skill_status 0)",
-                leader.id
-            ));
-        }
-        Ok(leader.skill_level)
-    }
-
-    /// HasRetiredCharacter (14052BC80) -> IsRetired (140F8FAD0): retired
-    /// when the country (+0x68, `Characters.country`) is at or below 0, or
-    /// the name token (+0x18) is in that country's retired array
-    /// (CCountryCharacters+0x28, 1410D7A30), which is not recorded.
-    /// Retiring (1410D9330) sets the country to 0, so only a character of
-    /// the same name token with no country can be in that array.
-    fn retired(&self, character: u32) -> Evaluation<bool> {
-        let rows = self.characters.as_ref().map_err(Clone::clone)?;
-        let own = rows
-            .iter()
-            .find(|row| row.id == character)
-            .ok_or_else(|| format!("character {character} has no Characters row"))?;
-        if own.country as i32 <= 0 {
-            return Ok(true);
-        }
-        if let Some(other) = rows.iter().find(|row| {
-            row.id != character && row.name_token_id == own.name_token_id && row.country as i32 <= 0
-        }) {
-            return Err(format!(
-                "character {} has no country and the same name token as character {character}, so it may be in that country's retired array (CCountryCharacters+0x28, 1410D7A30), which the recording does not hold",
-                other.id
-            ));
-        }
-        Ok(false)
-    }
-
-    /// CHasTraitTrigger::Evaluate (1403D7D20) in a character scope: the
-    /// scope's character (character_resolver 140529310), which passes only
-    /// as an operative (GetUnitLeader 140F8A840, category +0xE7C of 3) or
-    /// when not retired (HasRetiredCharacter 14052BC80 reads the same scope
-    /// character); the operative at +0xC8 is not recorded.
-    fn has_trait(&self, character: u32, operand: &[u8], traits: &Traits) -> Evaluation<bool> {
-        let leader = self.unit_leader(character);
-        let operative = leader.as_ref().is_ok_and(|leader| leader.category == 3);
-        if !operative {
-            let retired = self.retired(character).map_err(|why| match &leader {
-                Ok(_) => why,
-                Err(no_leader) => format!("{why}; and {no_leader}"),
-            })?;
-            if retired {
-                return Ok(false);
-            }
-        }
-        self.character_traits(character, operand, traits, || {
-            let leader = leader.clone()?;
-            let assigned = self.unit_leader_traits.as_ref().map_err(Clone::clone)?;
-            let reference = (u64::from(leader.id) << 32) | u64::from(leader.reference_type);
-            Ok(Some(
-                assigned
-                    .iter()
-                    .filter(|row| row.leader_reference == reference)
-                    .map(|row| row.definition_ordinal)
-                    .collect(),
-            ))
-        })
-    }
-
-    /// 1403D7D20 past its character gate, for the character's unit leader's
-    /// assigned trait definitions (`assigned`: `None` without a unit
-    /// leader). FindTraitByName (140ADB590 -> 140AD3E30) takes the first
-    /// definition of the operand's name in any case; a unit-leader trait
-    /// with a unit leader is held when an assigned trait is that definition
-    /// (1402EF030 compares the pointers; the recorded `definition_ordinal`,
-    /// +0x8A4, names the definition, and a repeated name is another one).
-    /// Otherwise the country-leader trait lookup (140712D30) over the
-    /// advisor (+0xB0) and country leader (+0x98) roles, then the
-    /// scientist's (+0xC0) traits (14022F320).
-    fn character_traits(
-        &self,
-        character: u32,
-        operand: &[u8],
-        traits: &Traits,
-        assigned: impl FnOnce() -> Evaluation<Option<Vec<i32>>>,
-    ) -> Evaluation<bool> {
-        if let Some(ordinal) = traits.first_ordinal(operand)?
-            && let Some(assigned) = assigned()?
-        {
-            return Ok(assigned.contains(&ordinal));
-        }
-        let leads = self
-            .country_leader_roles
-            .as_ref()
-            .map_err(Clone::clone)?
-            .iter()
-            .any(|row| row.character == character);
-        let advises = self
-            .advisor_roles
-            .as_ref()
-            .map_err(Clone::clone)?
-            .iter()
-            .any(|row| row.character == character);
-        if leads || advises {
-            return Err(format!(
-                "character {character} has a country leader or advisor role, whose traits (CCountryLeader+0x50, CAdvisor+0xC8) the recording does not hold"
-            ));
-        }
-        let scientists = self.scientists.as_ref().map_err(Clone::clone)?;
-        match scientists.iter().find(|row| row.character == character) {
-            Some(row) if row.trait_count == 0 => Ok(false),
-            Some(row) => Err(format!(
-                "the scientist of character {character} has {} traits, whose names (CScientist+0x30) the recording does not hold",
-                row.trait_count
-            )),
-            None => Err(format!(
-                "character {character} is in no recorded scientist roster, and a scientist role outside the rosters (CCharacter+0xC0) is not recorded"
             )),
         }
     }
@@ -1142,6 +950,18 @@ enum Own {
 }
 
 impl Context<'_> {
+    /// Where a character's `has_trait` looks its operand up.
+    fn trait_names(&self) -> TraitNames<'_> {
+        TraitNames {
+            units: &self.content.leader_traits,
+            country_leaders: match &self.content.country_leader_traits {
+                None => Err("they are not loaded".to_owned()),
+                Some(traits) => traits.as_deref().map_err(Clone::clone),
+            },
+            lexer: self,
+        }
+    }
+
     fn preference_factor(&self, position: usize) -> Evaluation<i64> {
         self.preference_factors
             .as_ref()
@@ -1802,7 +1622,9 @@ impl Context<'_> {
                     numeric(i64::from(skill) * 100_000, false)
                 }
                 _ => tables
-                    .has_trait(character, bytes, &self.content.leader_traits)
+                    .has_trait(character, bytes, &self.trait_names(), |link| {
+                        self.canonical(link)
+                    })
                     .map_err(|why| fail(&why)),
             }
             .map(Own::Value);
@@ -1810,9 +1632,8 @@ impl Context<'_> {
         // The country a country trigger reads: the tactic scope's (a
         // combat's first country, +0x38) or a scope key's country. The scope
         // masks admit nothing else here: `tag` (0x1C) reads a character
-        // scope through its unit leader first
-        // ([`CharacterTables::tag_country`]), `has_tactic` (4) only a
-        // country.
+        // scope through its unit leader first ([`CharacterTables::tag`]),
+        // `has_tactic` (4) only a country.
         let country = || match scopes.this {
             Here::Tactic => self.country_slot(),
             Here::Target(Target::Country(slot)) => Ok(slot),
@@ -1833,7 +1654,9 @@ impl Context<'_> {
                 None => Ok(false),
                 Some(tagged) => match scopes.this {
                     Here::Target(Target::Character(character)) => {
-                        Err(self.counts.characters.tag_country(character))
+                        self.counts
+                            .characters
+                            .tag(character, tagged, |link| self.canonical(link))
                     }
                     _ => country().map(|slot| slot == tagged),
                 }
@@ -1891,7 +1714,7 @@ impl Context<'_> {
                 // its assigned traits (CUnitLeader+0xDC8).
                 self.counts
                     .characters
-                    .character_traits(character, bytes, &self.content.leader_traits, || {
+                    .character_traits(character, bytes, &self.trait_names(), || {
                         Ok((presentation.character_role_leader != 0).then(|| {
                             presentation
                                 .role_traits
@@ -4224,7 +4047,7 @@ mod tests {
             resource_definitions: Ok(&[]),
             country_resources: Ok(&[]),
             parties: Ok(&[]),
-            characters: CharacterTables::unrecorded(),
+            characters: CharacterTables::default(),
         }
     }
 
@@ -4484,18 +4307,21 @@ mod tests {
         );
     }
 
-    /// `has_trait` and `skill` in a character scope (CHasTraitTrigger
-    /// 1403D7D20, CSkillTrigger 140475170): the scope's character, found
-    /// through the recorded Characters rows (14146BB30), and its unit leader
-    /// at CCharacter+0xA8 (UnitLeaders, UnitLeaderTraits). What the
-    /// recording does not hold is refused by name: the operative at
-    /// CCharacter+0xC8, the retired array, and the traits of the country
-    /// leader, advisor and scientist roles.
+    /// `has_trait`, `skill` and `tag` in a character scope (CHasTraitTrigger
+    /// 1403D7D20, CSkillTrigger 140475170, CTagTrigger 1403DCDF0): the
+    /// scope's character, found through the recorded Characters rows
+    /// (14146BB30), its unit leader (GetUnitLeader 140F8A840: CCharacter+0xA8
+    /// in UnitLeaders, else the reference at +0xC8 in CharacterOperatives),
+    /// its retired records (CountryRetiredCharacters) and its roles' traits
+    /// (CharacterRoleTraits).
     #[test]
     fn character_scopes_read_the_recorded_character() {
         use replay::{
             frame::{Metrics, TableView},
-            rows::{CountryLinkRow, CountryRow, TableId, TableRows},
+            rows::{
+                CharacterOperativeRow, CharacterRoleTraitRow, CharacterRow, CountryCharacterRow,
+                CountryLinkRow, CountryRow, TableId, TableRows, UnitLeaderRow, UnitLeaderTraitRow,
+            },
         };
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_character_scope_{}_{:?}",
@@ -4503,15 +4329,23 @@ mod tests {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        let path = root.join("common/unit_leader/00_traits.txt");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            "leader_traits = { brilliant_strategist = { } trickster = { } Trickster = { } }",
-        )
-        .unwrap();
+        for (file, text) in [
+            (
+                "common/unit_leader/00_traits.txt",
+                "leader_traits = { brilliant_strategist = { } trickster = { } Trickster = { } }",
+            ),
+            (
+                "common/country_leader/00_traits.txt",
+                "leader_traits = { popular_figurehead = { } captain_of_industry = { } Popular_Figurehead = { } }",
+            ),
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
         let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
         let traits = Traits::registered(&layers).unwrap();
+        let country_leader_traits = Arc::new(installed_content::leader_traits::read(&layers).unwrap().0);
         std::fs::remove_dir_all(&root).unwrap();
 
         let mut frame = DecodedFrame {
@@ -4542,12 +4376,19 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        // Name tokens, in token order (dashboard's character_script_token).
+        // Name and trait tokens, in token order (dashboard's
+        // character_script_token).
         let names = [
             (0x8001, "GER_leader"),
             (0x8002, "GER_politician"),
             (0x8003, "GER_scientist"),
             (0x8004, "GER_returned"),
+            (0x8005, "GER_operative"),
+            (0x8006, "GER_lost_agent"),
+            (0x8007, "GER_miscounted"),
+            (0x9001, "popular_figurehead"),
+            (0x9002, "captain_of_industry"),
+            (0x9003, "brilliant_scientist"),
         ];
         set(
             TableId::LexicalTokens,
@@ -4561,8 +4402,6 @@ mod tests {
                     .collect(),
             ),
         );
-        // Character 5 has no country and character 4's name token: it may
-        // be in GER's retired array.
         let character = |id: u32, country: u32, name_token_id: i32| CharacterRow {
             id,
             country,
@@ -4576,7 +4415,10 @@ mod tests {
                 character(2, 100, 0x8002),
                 character(3, 100, 0x8003),
                 character(4, 100, 0x8004),
-                character(5, 0, 0x8004),
+                character(5, 100, 0x8004),
+                character(6, 100, 0x8005),
+                character(7, 100, 0x8006),
+                character(8, 100, 0x8007),
             ]),
         );
         let leader = |id: u32, character_id: u32| UnitLeaderRow {
@@ -4586,6 +4428,7 @@ mod tests {
             skill_status: 1,
             skill_valid: 1,
             skill_level: 4,
+            owner: 100,
             ..Default::default()
         };
         set(
@@ -4610,24 +4453,59 @@ mod tests {
                 assigned(51, 0, 2, b"trickster"),
             ]),
         );
+        // Country-leader definitions are ordinals 1 (popular_figurehead),
+        // 2 (captain_of_industry) and 3 (the repeated Popular_Figurehead),
+        // after the null object (1407112F0 -> 140710C80, +0x1A0).
+        let role = |character: u32, kind: u8, role: u32, token: u32, definition: Option<u32>| {
+            CharacterRoleTraitRow {
+                character,
+                kind,
+                role,
+                tokens: vec![token],
+                definitions: definition.into_iter().collect(),
+            }
+        };
         set(
-            TableId::CountryLeaderRoles,
-            TableRows::from_rows::<tables::CountryLeaderRoles>(vec![CountryLeaderRoleRow {
-                character: 2,
-                country: 100,
-                ideology: 1,
-            }]),
+            TableId::CharacterRoleTraits,
+            TableRows::from_rows::<tables::CharacterRoleTraits>(vec![
+                role(2, CharacterRoleTraitRow::COUNTRY_LEADER, 1, 0x9001, Some(1)),
+                role(2, CharacterRoleTraitRow::ADVISOR, 0, 0x9002, Some(2)),
+                // Only the later definition of the name, with its token.
+                role(3, CharacterRoleTraitRow::COUNTRY_LEADER, 1, 0x9001, Some(3)),
+                role(3, CharacterRoleTraitRow::SCIENTIST, 0, 0x9003, None),
+                // The name's token at an ordinal the content gives another
+                // name (captain_of_industry).
+                role(8, CharacterRoleTraitRow::COUNTRY_LEADER, 1, 0x9001, Some(2)),
+            ]),
         );
+        // Character 6 is an operative whose reference resolves; character
+        // 7's does not, so it has no unit leader.
         set(
-            TableId::AdvisorRoles,
-            TableRows::from_rows::<tables::AdvisorRoles>(Vec::new()),
+            TableId::CharacterOperatives,
+            TableRows::from_rows::<tables::CharacterOperatives>(vec![
+                CharacterOperativeRow {
+                    character: 6,
+                    reference: (61 << 32) | 7,
+                    resolved: true,
+                    category: 3,
+                    owner: 100,
+                    skill_level: Some(2),
+                    trait_definitions: vec![2],
+                },
+                CharacterOperativeRow {
+                    character: 7,
+                    reference: (62 << 32) | 7,
+                    ..Default::default()
+                },
+            ]),
         );
+        // GER retired character 5, which has character 4's name token.
         set(
-            TableId::Scientists,
-            TableRows::from_rows::<tables::Scientists>(vec![ScientistRow {
-                character: 3,
+            TableId::CountryRetiredCharacters,
+            TableRows::from_rows::<tables::CountryRetiredCharacters>(vec![CountryCharacterRow {
                 country: 100,
-                ..Default::default()
+                ordinal: 0,
+                character: Some(5),
             }]),
         );
 
@@ -4655,7 +4533,8 @@ mod tests {
                     traits.clone(),
                     Ok(&SubUnits::default()),
                     ScriptedTriggers::default(),
-                );
+                )
+                .with_country_leader_traits(Ok(Arc::clone(&country_leader_traits)));
             let mut context = context(detail, &content, &aliases);
             context.first_countries[0] = Some(100);
             context.tokens = names
@@ -4675,22 +4554,14 @@ mod tests {
             context.weight(&candidate, definition)
         };
         let weigh = |trigger: &str| weigh_in(&detail, trigger);
-        let refused = |trigger: &str, why: &str| {
-            let reason = weigh(trigger).unwrap_err();
-            assert!(reason.contains(why), "{trigger}: {reason}");
-        };
         // In the tactic scope, the combat's commander's character
         // (1403D7D20): the first definition of the name, by identity, among
         // the recorded role leader's traits; no retired gate (14052BC80
         // reads the scope's character, which the tactic scope lacks).
         assert_eq!(weigh("has_trait = Brilliant_Strategist"), Ok(100_000));
         assert_eq!(weigh("has_trait = trickster"), Ok(0));
-        // Not a unit-leader trait: the character's other trait databases,
-        // here a character in no scientist roster.
-        refused(
-            "has_trait = popular_figurehead",
-            "character 1 is in no recorded scientist roster",
-        );
+        // A country-leader trait: none of character 1's roles holds it.
+        assert_eq!(weigh("has_trait = popular_figurehead"), Ok(0));
         // No commander character: false before any trait lookup.
         let mut plain = skilled();
         assert_eq!(weigh_in(&plain, "has_trait = popular_figurehead"), Ok(0));
@@ -4708,44 +4579,63 @@ mod tests {
             Ok(100_000)
         );
         assert_eq!(weigh("GER_leader = { has_trait = trickster }"), Ok(0));
-        // No unit leader at +0xA8: the operative at +0xC8 decides.
-        refused("GER_politician = { skill > 0 }", "CCharacter+0xC8");
-        refused(
-            "GER_politician = { has_trait = trickster }",
-            "CCharacter+0xC8",
+        // No unit leader at either link: skill is 0, and a unit-leader trait
+        // falls through to the other databases.
+        assert_eq!(weigh("GER_politician = { skill > 0 }"), Ok(0));
+        assert_eq!(weigh("GER_politician = { skill = 0 }"), Ok(100_000));
+        assert_eq!(weigh("GER_politician = { has_trait = trickster }"), Ok(0));
+        // A country-leader trait (140712D30, without case): a country-leader
+        // or an advisor role holding it.
+        assert_eq!(
+            weigh("GER_politician = { has_trait = Popular_Figurehead }"),
+            Ok(100_000)
         );
-        // Not a unit-leader trait: the country leader's traits decide.
-        refused(
-            "GER_politician = { has_trait = popular_figurehead }",
-            "CCountryLeader+0x50",
+        assert_eq!(
+            weigh("GER_politician = { has_trait = captain_of_industry }"),
+            Ok(100_000)
         );
-        // No leader or advisor role and a scientist without traits: false.
+        // Character 3's leader role holds only the later definition of the
+        // name, which the lookup (the first definition) does not match.
         assert_eq!(
             weigh("GER_scientist = { has_trait = popular_figurehead }"),
             Ok(0)
         );
-        // A character without a country shares the name token.
-        refused(
-            "GER_returned = { has_trait = trickster }",
-            "retired array (CCountryCharacters+0x28, 1410D7A30)",
+        // Content that disagrees with the recorded ordinal is refused.
+        let refused = weigh("GER_miscounted = { has_trait = popular_figurehead }").unwrap_err();
+        assert!(refused.contains("do not give that name"), "{refused}");
+        // Any other name: the scientist's traits, by token (14022F320),
+        // whether or not a roster holds the scientist.
+        assert_eq!(
+            weigh("GER_scientist = { has_trait = brilliant_scientist }"),
+            Ok(100_000)
         );
-        // skill has no retirement gate.
+        assert_eq!(
+            weigh("GER_politician = { has_trait = brilliant_scientist }"),
+            Ok(0)
+        );
+        // GER's retired record has character 4's name token: retired, so
+        // false although its unit leader holds the trait; skill has no
+        // retirement gate.
+        assert_eq!(weigh("GER_returned = { has_trait = trickster }"), Ok(0));
         assert_eq!(weigh("GER_returned = { skill > 3 }"), Ok(100_000));
+        // An operative (category 3) is not gated, and its referenced unit
+        // leader's traits and skill decide.
+        assert_eq!(
+            weigh("GER_operative = { has_trait = trickster }"),
+            Ok(100_000)
+        );
+        assert_eq!(weigh("GER_operative = { skill > 1 }"), Ok(100_000));
         // A character scope holds no country tag (SetCharacter 14052DAF0
         // clears +8), so `tag = THIS` there is country link 0: false.
         assert_eq!(weigh("GER_leader = { tag = THIS }"), Ok(0));
-        // `tag = ROOT` there compares the character's unit leader's country
-        // first (1403DCDF0 -> 1405294F0 -> 140F8A840), named where it is
-        // not recorded: CUnitLeader+0x120 with a leader at +0xA8, else the
-        // operative at +0xC8.
-        refused(
-            "GER_leader = { tag = ROOT }",
-            "compares its country CUnitLeader+0x120, which UnitLeaders does not record",
-        );
-        refused(
-            "GER_politician = { tag = ROOT }",
-            "CCharacter+0xC8, which the recording does not hold; CTagTrigger::Evaluate (1403DCDF0) compares that unit leader's country (CUnitLeader+0x120) before the character's own (CCharacter+0x68)",
-        );
+        // `tag = ROOT` compares the unit leader's country (CUnitLeader+0x120)
+        // first, else the character's own (+0x68).
+        assert_eq!(weigh("GER_leader = { tag = ROOT }"), Ok(100_000));
+        assert_eq!(weigh("GER_operative = { tag = ROOT }"), Ok(100_000));
+        assert_eq!(weigh("GER_politician = { tag = ROOT }"), Ok(100_000));
+        // A reference the registry does not hold is no unit leader.
+        assert_eq!(weigh("GER_lost_agent = { tag = ROOT }"), Ok(100_000));
+        assert_eq!(weigh("GER_lost_agent = { skill = 0 }"), Ok(100_000));
     }
 
     /// Scope keys (CContextTrigger, 14138C3A0): the key's text parsed as the

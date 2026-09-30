@@ -7,7 +7,7 @@ There is one widget kind for every category. Its **Category** setting lists the 
 ## Data
 
 - **Product `idea-history`** (`crates/dashboard/src/products/idea_history.rs`) for the widget's country: spans of every idea held, each idea's category and slot, the content's categories with their slots, seat counts and law order, and each idea's name and icon (advisors: the character's name and small portrait).
-- `ActiveIdeas` is recorded once a day, so a bar starts on the day a holder was first seen and ends on the last day it was seen. Laws, designers and spirits are in it.
+- `ActiveIdeas` is recorded every hour, so a bar starts at the hour a holder was first seen and ends at the last hour it was seen. Laws, designers and spirits are in it.
 - **Hired advisors are not.** They come from the recorded appointed-advisor list (`HiredAdvisors`, also daily), each with the seat and character the recording gives it and that character's own name and portrait; a holder whose character details were not recorded reads "Holder not recorded" rather than borrowing another holder's. Seats fill in order.
 
 ## Settings

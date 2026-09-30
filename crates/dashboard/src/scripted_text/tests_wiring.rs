@@ -749,3 +749,36 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
         Ok("64")
     );
 }
+
+/// A promoted character (1410CDDF0) is THIS in a character scope: without
+/// a unit leader `tag` compares the character's own country and `skill` is
+/// 0; `has_trait` of a name no trait database holds is false; a trigger the
+/// character scope does not evaluate is refused by name.
+#[test]
+fn promoted_character_entry_evaluates_in_a_character_scope() {
+    let (catalogue, _folder) = tests::catalogue(
+        r#"entry = { name = Char text = { trigger = { tag = GER skill = 0 NOT = { tag = SOV } ROOT = { tag = GER } } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = Trait text = { trigger = { has_trait = unknown_trait } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = Flag text = { trigger = { has_character_flag = unset } localization_key = YES } text = { localization_key = NO } }
+           entry = { name = Other text = { trigger = { has_government = fascism } localization_key = YES } }"#,
+        " YES:0 \"pass\"
+ NO:0 \"fail\"
+ TEST:0 \"[ROOT.GER_erwin_rommel.Char]|[ROOT.GER_erwin_rommel.Trait]|[ROOT.GER_erwin_rommel.Flag]\"
+ OTHER:0 \"[ROOT.GER_erwin_rommel.Other]\"
+",
+    );
+    assert!(
+        catalogue
+            .scripted_content()
+            .unwrap()
+            .environment
+            .set(Ok(entries::Environment::synthetic()))
+            .is_ok()
+    );
+    assert_eq!(
+        rendered(&catalogue, &frame(), "TEST").unwrap(),
+        "pass|fail|fail"
+    );
+    let error = rendered(&catalogue, &frame(), "OTHER").unwrap_err();
+    assert!(error.contains("has_government"), "{error}");
+}

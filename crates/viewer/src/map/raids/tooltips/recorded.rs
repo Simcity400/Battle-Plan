@@ -102,6 +102,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         Scope::State(id) => EventObject::State(id),
         Scope::Province(id) => EventObject::Province(id),
         Scope::Leader(reference) => EventObject::UnitLeader(reference),
+        Scope::Character(id) => EventObject::Character(id),
     };
     let unknown = |scope| EventScope {
         this: target(scope),
