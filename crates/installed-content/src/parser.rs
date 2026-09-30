@@ -946,7 +946,7 @@ mod tests {
             "get_all(",
         ];
         // (file, line text) with why it compares text, not a keyword.
-        const ALLOWED: [(&str, &str); 12] = [
+        const ALLOWED: [(&str, &str); 13] = [
             // A group name: 1409B4370 finds it by the folded hash 140BBA1B0
             // and `_stricmp` (14253D9F8).
             ("division_names.rs", "key.to_ascii_lowercase()"),
@@ -995,6 +995,9 @@ mod tests {
             // The modifier a key names (1406042A0): the lexer folds a bare
             // key (1424A7A90), FindTokenNoCase a quoted one (1424A7060).
             ("modifiers.rs", "name: key.to_ascii_lowercase(),"),
+            // An ideology group's number by its token, a dynamic token
+            // (140A38190 -> 1424A6500 -> 1424A65A0 folds A-Z).
+            ("ideologies.rs", ".get(&token.to_ascii_lowercase())"),
         ];
         let mut raw = Vec::new();
         for (file, source) in READERS {

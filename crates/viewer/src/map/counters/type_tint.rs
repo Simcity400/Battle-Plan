@@ -342,6 +342,36 @@ impl Index {
             Side::Neutral
         })
     }
+
+    /// A `CNavalMissionUnitItem`'s (port item's or combat tile's) plate allegiance, as
+    /// `BuildNavalCounterData@14197B4F0` sets its bytes and `CColor::CColor@140B3C210` reads them:
+    /// ours (`+0x18`) when the first task force's roster owner (`+0x1D8`) is the viewing country;
+    /// otherwise enemy (`+0x1A`) when `1406F3A00` holds between the viewer and the roster owner,
+    /// or the logical owner (`+0x1E0`) where it is another country; only then allied (`+0x19`)
+    /// by `1406F3A90` over the same two; else other. Enemy is tested first and there is no
+    /// sent-volunteer loop, unlike the at-sea counter's type relation ([`Index::of`]). `None`
+    /// when the relations or either owner are unavailable ([`Index::problem`]).
+    pub(super) fn mission_item(&self, own: bool, roster: u32, logical: u32) -> Option<Allegiance> {
+        if own {
+            return Some(Allegiance::Ours);
+        }
+        if self.problem.is_some() {
+            return None;
+        }
+        let a = *self.countries.get(&roster)?;
+        let b = if roster == logical {
+            a
+        } else {
+            *self.countries.get(&logical)?
+        };
+        Some(if a.enemy || b.enemy {
+            Allegiance::Enemy
+        } else if a.friend || b.friend {
+            Allegiance::Allied
+        } else {
+            Allegiance::Other
+        })
+    }
 }
 
 fn canonical(links: &BTreeMap<u32, u32>, raw: u32) -> Option<u32> {
@@ -553,6 +583,61 @@ mod tests {
         // Ours needs no relation input; an unavailable relation is drawn as other.
         assert_eq!(plate(true, None), Allegiance::Ours);
         assert_eq!(plate(false, None), Allegiance::Other);
+    }
+
+    /// Port items and combat tiles (`14197B4F0`) test enemy before friend over the first task
+    /// force's roster and logical owners, with no sent-volunteer loop and no bypass for a
+    /// signed-nonpositive roster owner; the at-sea counter's relation (`1418C4B50`) differs on
+    /// each of these.
+    #[test]
+    fn mission_items_test_enemy_first_without_the_volunteer_loop() {
+        use Allegiance::*;
+        // The viewer (1) shares a faction with 2 and fights 4.
+        let (links, ids, relations) = world(&[(1, 4)], &[(1, 7), (2, 7)], &[]);
+        let index = built(&links, &ids, &relations, 1, &[], &[]).unwrap();
+        for (own, roster, logical, expected) in [
+            (true, 104, 104, Ours),
+            (false, 102, 102, Allied),
+            (false, 104, 104, Enemy),
+            (false, 106, 106, Other),
+            // A friend and an enemy: the enemy byte wins, where the counter's friend does.
+            (false, 102, 104, Enemy),
+            (false, 104, 102, Enemy),
+            (false, 106, 102, Allied),
+            // The null roster reference is no bypass here.
+            (false, 0, 104, Enemy),
+            (false, 0, 106, Other),
+        ] {
+            assert_eq!(
+                index.mission_item(own, roster, logical),
+                Some(expected),
+                "{own} {roster} {logical}"
+            );
+        }
+        assert_eq!(index.of(102, 104), Some(Side::Friend));
+        assert_eq!(index.of(0, 104), Some(Side::Friend));
+        // Volunteers the viewer sends to 2, which fights 3, colour only the counter.
+        let (links, ids, relations) = world(&[(2, 3)], &[], &[]);
+        let divisions = [DivisionRow {
+            id: 10,
+            logical_owner: 102,
+            ..Default::default()
+        }];
+        let index = built(&links, &ids, &relations, 1, &volunteers(&[10]), &divisions).unwrap();
+        assert_eq!(index.of(102, 102), Some(Side::Friend));
+        assert_eq!(index.of(103, 103), Some(Side::Enemy));
+        assert_eq!(index.mission_item(false, 102, 102), Some(Other));
+        assert_eq!(index.mission_item(false, 103, 103), Some(Other));
+        // Unavailable relations or an unlinked owner name no side.
+        assert_eq!(
+            Index::unavailable("x".into()).mission_item(false, 102, 102),
+            None
+        );
+        assert_eq!(
+            Index::unavailable("x".into()).mission_item(true, 102, 102),
+            Some(Ours)
+        );
+        assert_eq!(index.mission_item(false, 999, 999), None);
     }
 
     #[test]

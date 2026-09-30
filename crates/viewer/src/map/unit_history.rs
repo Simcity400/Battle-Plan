@@ -16,7 +16,8 @@
 //! Provinces in view update every frame. `CGraphicalMap::update@140B49340`
 //! advances a phase `(+0x130 + 1) % 100` per frame before `140B4C120`
 //! updates an off-screen province, only when its index modulo 100 equals the
-//! phase. That update destroys at once (`141277FC0` clears the show bits,
+//! phase: the view's one schedule, which also drives the provinces'
+//! presentation-dirty bits ([`super::province_schedule`]). That update destroys at once (`141277FC0` clears the show bits,
 //! `14127D260` passes camera admission false); until then the entity, its
 //! transform and its animation clock survive, so a quick pan back resumes
 //! them. Hidden entities' clocks advance (`14227CE00` -> `14226EF30`). A
@@ -45,6 +46,7 @@ use super::{
     map_buildings::{BuildingHistory, province_view},
     mesh_budget::Budget,
     models::{ModelField, ModelInstance},
+    province_schedule::Update,
     unit_models::Gates,
 };
 
@@ -398,8 +400,9 @@ pub struct History {
     bounds: Arc<BTreeMap<u32, [f32; 4]>>,
     /// The previous frame's animation clock.
     last: Option<f32>,
-    /// `CGraphicalMap+0x130`.
-    phase: u32,
+    /// The view's province schedule (`CGraphicalMap+0x130` and the dirty
+    /// bits), shared with its counters ([`Self::share_schedule`]).
+    schedule: super::province_schedule::Shared,
     /// The last incarnation handed out.
     epoch: u32,
     /// Offline frames settle for their camera instead of animating.
@@ -475,6 +478,10 @@ impl History {
     /// [`super::presentation::UnitRestart`]): their entities go and their
     /// show bits drop, so what shows next grows in on a new clock.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
+        self.schedule
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .reset(provinces);
         // A load destroys the raid arrows and their units with the rest of
         // the map (`CRaidArrowManager::Update@14166B540` builds them again);
         // a tag switch shows the new country's raids, other raid ids.
@@ -490,6 +497,36 @@ impl History {
                 };
             }
         }
+    }
+
+    /// Runs on `schedule`, the view's counters' own, from now on: a view keeps
+    /// one schedule for its units and its map icons.
+    pub fn share_schedule(&mut self, schedule: &super::province_schedule::Shared) {
+        if !Arc::ptr_eq(&self.schedule, schedule) {
+            self.schedule = Arc::clone(schedule);
+        }
+    }
+
+    /// The frame's advance of the schedule at this camera, made before the
+    /// view's map icons read the dirty bits (`CGraphicalMap::update` runs
+    /// before `CMapIconManagerImpl::update`); the frame's walk
+    /// ([`Self::update_models`]) then takes it instead of advancing again. A
+    /// frame whose walk has not yet taken the last advance advances nothing.
+    pub fn advance_schedule(&mut self, camera: Camera, viewport: [u32; 2]) {
+        let mut schedule = self
+            .schedule
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if schedule.pending() {
+            return;
+        }
+        schedule.advance_view(
+            &self.bounds,
+            self.provinces.keys().copied(),
+            camera,
+            viewport,
+            self.steady,
+        );
     }
 
     /// The scene's single frame walk: buildings then units per province,
@@ -586,21 +623,30 @@ impl History {
             steady: self.steady,
         };
         self.last = Some(time);
-        // The native literal, advanced before the province updates; never
-        // indexed by the replay hour.
-        self.phase = (self.phase + 1) % 100;
+        // The native literal, advanced before the province updates (unless
+        // the frame already advanced it for its map icons); never indexed by
+        // the replay hour.
+        let schedule = Arc::clone(&self.schedule);
+        let mut schedule = schedule
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !schedule.take_pending() {
+            schedule.advance(self.provinces.keys().copied(), &in_view, self.steady);
+            schedule.take_pending();
+        }
+        // The frame's update list, the one the map icons' owners read.
         let mut queued = Vec::new();
         for (&id, province) in &mut self.provinces {
             buildings(id, budget);
-            if in_view(id) {
-                queued.extend(
+            match schedule.update(id) {
+                Some(Update::InView) => queued.extend(
                     province
                         .visit(self.targets.get(&id), frame, &mut self.epoch, budget)
                         .into_iter()
                         .map(|(slot, shown)| (id, slot, shown)),
-                );
-            } else if self.steady || id % 100 == self.phase {
-                province.leave(self.steady);
+                ),
+                Some(Update::OffScreen) => province.leave(self.steady),
+                None => {}
             }
         }
         buildings(u32::MAX, budget);
@@ -1079,5 +1125,27 @@ pub(super) mod tests {
                 frames[150], frames[285], frames[299], builders[5], builders[9]
             );
         }
+    }
+
+    /// The view's units and map icons run on one schedule: a frame whose map icons already
+    /// advanced it (`CGraphicalMap::update` before `CMapIconManagerImpl::update`) walks its
+    /// provinces at that phase instead of advancing again, and a reset sets the dirty bits
+    /// (`ResetUnitSlots@1412771B0`).
+    #[test]
+    fn the_units_walk_the_phase_their_map_icons_advanced() {
+        let mut h = history(vec![target(1, Kind::Land)], false);
+        let schedule = super::super::province_schedule::Shared::default();
+        h.share_schedule(&schedule);
+        schedule.lock().unwrap().advance([1], |_| false, false);
+        h.step(0.0, GATES, [true, true], false, |_| false);
+        // One advance: phase 1, which updates province 1 out of view (the walk read that list).
+        assert_eq!(schedule.lock().unwrap().update(1), Some(Update::OffScreen));
+        assert!(!schedule.lock().unwrap().dirty(1));
+        // A frame the map icons did not advance: the walk advances it, and the clean province
+        // out of view is no longer in the list.
+        h.step(0.1, GATES, [true, true], false, |_| false);
+        assert_eq!(schedule.lock().unwrap().update(1), None);
+        h.reset(None);
+        assert!(schedule.lock().unwrap().dirty(1));
     }
 }

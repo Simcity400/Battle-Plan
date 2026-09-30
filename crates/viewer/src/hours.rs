@@ -99,6 +99,8 @@ pub struct Want {
     /// is still being built.
     pub playing: bool,
     pub perspective: perspective::Choice,
+    /// The window's counter options and memory, which its hours are laid out with.
+    pub counters: crate::map::counters::CounterView,
     pub view: View,
     /// The hours of this branch the window holds built, the one on screen
     /// included; the builders do not build them again.
@@ -129,7 +131,7 @@ impl Want {
 
     /// Whether a change from `self` to `next` invalidates what was built.
     fn invalidates(&self, next: &Want) -> bool {
-        self.perspective != next.perspective
+        self.perspective != next.perspective || self.counters != next.counters
     }
 
     /// Whether an hour in flight is still worth finishing: one of `keep`, or,
@@ -1459,6 +1461,7 @@ impl Coordinator {
         let (camera, viewport, ui_scale) =
             (want.view.camera, want.view.viewport, want.view.ui_scale);
         let overlay_perspective = want.perspective.clone();
+        let overlay_counters = want.counters.clone();
         // The window's index when it is for this perspective's country, so a
         // prebuilt hour carries the exact flags once the index covers it.
         let overlay_engaged = self
@@ -1479,8 +1482,13 @@ impl Coordinator {
                         Arc::default(),
                         overlay_engaged.as_deref(),
                     )?;
-                    let overlay =
-                        view.prepare_overlay_cached(camera, viewport, ui_scale, &tables)?;
+                    let overlay = view.prepare_overlay_cached(
+                        camera,
+                        viewport,
+                        ui_scale,
+                        &tables,
+                        &overlay_counters,
+                    )?;
                     Ok(Box::new((overlay, tables)))
                 })())
             }),
@@ -1928,6 +1936,7 @@ mod tests {
             behind: 0,
             playing: true,
             perspective: Default::default(),
+            counters: Default::default(),
             view: test_view(),
             have: vec![],
             received: 0,
@@ -2156,6 +2165,7 @@ mod tests {
             behind: 2,
             playing: false,
             perspective: Default::default(),
+            counters: Default::default(),
             view: test_view(),
             have: vec![10, 11],
             received: 2,

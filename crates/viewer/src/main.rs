@@ -38,7 +38,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division's counter stands at its settled route point all hour, as the game draws it
-         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --diagnostics shows technical stats and data limitations for this run; F3 or the\n        header's Diagnostics checkbox toggles and saves them (off by default)\n        --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise and the entity animation\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --settle <seconds>, play that many seconds before the frame so entity events\n             (damaged fire and smoke) and particles are under way; renders at the clock plus it\n           --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with interface rectangles\n             (device pixels at --ui-scale 1), sprite frames and text\n           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel\n             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --counter-colors allegiance|country --nato-counters on|off, the game's counter\n           options (default: the user folder's settings.txt)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --diagnostics shows technical stats and data limitations for this run; F3 or the\n        header's Diagnostics checkbox toggles and saves them (off by default)\n        --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise, the entity animation and the map-icon windows' GUI clock\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --settle <seconds>, play that many seconds before the frame so entity events\n             (damaged fire and smoke) and particles are under way; renders at the clock plus it\n           --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with interface rectangles\n             (device pixels at --ui-scale 1), sprite frames and text\n           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel\n             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -128,7 +128,9 @@ struct Options {
     /// at a screenshot taken later. What it is for is proving that the port's
     /// pattern is the game's *at the same clock*: fit it against a reference
     /// frame, then score that frame with it. Every consumer of `vGlobalTime`
-    /// reads it, which is the fog-of-war noise and the entity animation.
+    /// reads it, which is the fog-of-war noise and the entity animation, and so
+    /// does the map-icon windows' GUI clock (`Time`, `CGraphics+0x32590`, the game
+    /// idler's own real-time clock, whose epoch is not recorded either).
     presentation_time: f32,
     /// `--dump --settle <seconds>`: frames played on the presentation clock
     /// before the dump, one second apart, so entity events such as a damaged
@@ -199,6 +201,10 @@ struct Options {
     /// comparison pipeline uses 1.0, so that is the default; the window
     /// otherwise uses its setting ([`map::ui_scale`]).
     ui_scale: Option<f32>,
+    /// `--counter-colors` and `--nato-counters`: the game's counter options
+    /// ([`map::counters::CounterSettings`]) in place of `settings.txt`'s.
+    counter_colors: Option<map::counters::CounterColorMode>,
+    nato_counters: Option<bool>,
     /// `--diagnostics`: show the window's technical stats and data
     /// limitations for this run without changing the saved choice.
     diagnostics: bool,
@@ -216,6 +222,17 @@ struct Options {
 }
 
 impl Options {
+    /// `settings`, the user's counter options, with the command line's overrides.
+    pub(crate) fn counter_settings(
+        &self,
+        settings: map::counters::CounterSettings,
+    ) -> map::counters::CounterSettings {
+        map::counters::CounterSettings {
+            color_mode: self.counter_colors.unwrap_or(settings.color_mode),
+            nato: self.nato_counters.unwrap_or(settings.nato),
+        }
+    }
+
     fn parse(args: impl Iterator<Item = OsString>) -> io::Result<Self> {
         // The game renders the reference frames at 2048x1152 (R1 section 0), so
         // a dump matches that by default and `--upscale 1.25` scores it against
@@ -402,6 +419,8 @@ impl Options {
                     | "--building-camera"
                     | "--perspective"
                     | "--fog"
+                    | "--counter-colors"
+                    | "--nato-counters"
                     | "--animation-time"
                     | "--animation-step"
                     | "--window-frames"
@@ -480,6 +499,28 @@ impl Options {
                         }
                         "--fog" => {
                             options.perspective.fog = map::perspective::Choice::parse_fog(&value)?
+                        }
+                        "--counter-colors" => {
+                            options.counter_colors = Some(match value.trim() {
+                                value if value.eq_ignore_ascii_case("allegiance") => {
+                                    map::counters::CounterColorMode::Allegiance
+                                }
+                                value if value.eq_ignore_ascii_case("country") => {
+                                    map::counters::CounterColorMode::Country
+                                }
+                                _ => {
+                                    return Err(invalid(
+                                        "--counter-colors takes allegiance or country",
+                                    ));
+                                }
+                            })
+                        }
+                        "--nato-counters" => {
+                            options.nato_counters = Some(match value.trim() {
+                                value if value.eq_ignore_ascii_case("on") => true,
+                                value if value.eq_ignore_ascii_case("off") => false,
+                                _ => return Err(invalid("--nato-counters takes on or off")),
+                            })
                         }
                         _ => unreachable!(),
                     }
@@ -754,6 +795,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(error) = config_error {
             return Err(invalid(format!("viewer.json: {error}")).into());
         }
+        // The GUI textures load with the document, for the device the dump renders on.
+        render::probe_dump_device()?;
         let mut document = document::Document::load(
             options.replay.as_ref().unwrap(),
             &config.resolve_options()?,
@@ -886,6 +929,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ui_scale,
             &options.perspective,
             omitted,
+            options.counter_settings(document.game_counters),
+            // The map-icon windows' clock is the dump's presentation clock, at the time the
+            // frame renders at (`vGlobalTime`).
+            options.presentation_time + options.settle,
         )?;
         for warning in label_report.warnings() {
             eprintln!("Warning: {warning}");
@@ -1652,6 +1699,35 @@ mod tests {
         assert!(parse(&["campaign.battleplan", "--perspective", "omniscient"]).is_err());
         assert!(parse(&["campaign.battleplan", "--fog", "maybe"]).is_err());
         assert!(parse(&["campaign.battleplan", "--fog"]).is_err());
+    }
+
+    /// The counter options default to `settings.txt`'s and take the command line's overrides.
+    #[test]
+    fn counter_options_override_the_users_settings() {
+        use map::counters::{CounterColorMode, CounterSettings};
+        let from_file = CounterSettings {
+            color_mode: CounterColorMode::Country,
+            nato: true,
+        };
+        let default = parse(&["campaign.battleplan"]).unwrap();
+        assert_eq!(default.counter_settings(from_file), from_file);
+        let options = parse(&[
+            "campaign.battleplan",
+            "--counter-colors",
+            "Allegiance",
+            "--nato-counters",
+            "off",
+        ])
+        .unwrap();
+        assert_eq!(
+            options.counter_settings(from_file),
+            CounterSettings {
+                color_mode: CounterColorMode::Allegiance,
+                nato: false,
+            }
+        );
+        assert!(parse(&["campaign.battleplan", "--counter-colors", "flag"]).is_err());
+        assert!(parse(&["campaign.battleplan", "--nato-counters", "yes"]).is_err());
     }
 
     #[test]

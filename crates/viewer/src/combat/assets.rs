@@ -416,7 +416,6 @@ impl Assets {
         }
         let mut windows = BTreeMap::new();
         for (file, names) in [
-            ("interface/mapicons.gui", vec!["naval_combat_mapicon"]),
             (
                 "interface/naval_strategic_region_view.gui",
                 vec!["naval_region_modifier_entry"],
@@ -529,9 +528,6 @@ impl Assets {
                 || name == &"GFX_strenght_texticon"
                 || name == &"GFX_modifiers_weather_icons"
                 || (name.starts_with("GFX_div_templ_") && name.ends_with("_large"))
-                || name.starts_with("GFX_mapicon_naval_combat")
-                || name == &"GFX_naval_hq_combat_frame"
-                || name == &"GFX_navalcombat_bar_progress_attacker_154"
                 || name == &"GFX_flag_small2_not_masked"
         }) {
             wanted.insert(name.clone());

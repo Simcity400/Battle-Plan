@@ -221,6 +221,38 @@ pub fn choose_adapter(
         })
 }
 
+/// The features of the device the viewer creates ([`device_descriptor`] records them), which
+/// decide whether a 16-bit GUI texture uploads (`map::textures::sixteen_bit_upload`).
+static DEVICE_FEATURES: std::sync::Mutex<Option<wgpu::Features>> = std::sync::Mutex::new(None);
+
+fn record_device_features(features: wgpu::Features) {
+    *DEVICE_FEATURES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(features);
+}
+
+/// The features of the device the GUI textures go up to: the ones [`device_descriptor`] asked
+/// for, or none while no device has been asked for (no 16-bit GUI texture is then taken).
+pub fn device_features() -> wgpu::Features {
+    DEVICE_FEATURES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or(wgpu::Features::empty())
+}
+
+/// Asks, before a headless dump loads its document, for the device descriptor of the adapter
+/// the dump will render on ([`dump_png`] selects it the same way), so the GUI textures loaded
+/// with the document are decided for that device's features ([`device_features`]).
+pub fn probe_dump_device() -> io::Result<()> {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
+        let adapter = select_adapter(&adapters, None)?;
+        device_descriptor(&adapter);
+        Ok(())
+    })
+}
+
 /// Choose from enumerated adapters by [`choose_adapter`], naming a software choice on stderr.
 pub fn select_adapter(
     adapters: &[wgpu::Adapter],
@@ -335,6 +367,7 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
         wanted |= crate::map::gpu_passes::features();
     }
     let features = adapter.features() & wanted;
+    record_device_features(features);
     let sample_mask = [1, 2, 4, 8]
         .into_iter()
         .filter(|&count| {

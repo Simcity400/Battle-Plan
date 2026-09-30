@@ -127,6 +127,10 @@ impl Captured {
                 overlord: r.overlord,
                 graphical_culture: r.graphical_culture.as_bytes().to_vec(),
                 leader_character: r.leader_character,
+                ui_red: r.ui_rgba[0],
+                ui_green: r.ui_rgba[1],
+                ui_blue: r.ui_rgba[2],
+                ui_alpha: r.ui_rgba[3],
                 leader_traits: span(r).unwrap().to_vec(),
                 old_name: r.old_names.map(|names| names[0].as_bytes().to_vec()),
                 old_adjective: r.old_names.map(|names| names[1].as_bytes().to_vec()),
@@ -152,6 +156,7 @@ mod tests {
         capture.reset();
         capture.rows.rows[0].country = 17;
         capture.rows.rows[0].rgba = [0x7fc01234, 0x80000000, 0xffffffff, 0x3f800000];
+        capture.rows.rows[0].ui_rgba = [0x3f000000, 0x00000001, 0x7f800000, 0xbf800000];
         capture.rows.rows[0].cosmetic_tag.bytes[..3].copy_from_slice(&[65, 0, 255]);
         capture.rows.rows[0].cosmetic_tag.len = 3;
         capture.rows.rows[0].leader_character = Some(0);
@@ -171,6 +176,10 @@ mod tests {
         assert_eq!(rows[0].blue, 0xffffffff);
         assert_eq!(rows[0].alpha, 0x3f800000);
         assert_eq!(rows[0].leader_character, Some(0));
+        assert_eq!(
+            [rows[0].ui_red, rows[0].ui_green, rows[0].ui_blue, rows[0].ui_alpha],
+            [0x3f000000, 0x00000001, 0x7f800000, 0xbf800000]
+        );
         assert_eq!(rows[0].leader_traits, [0x2ff1, 7]);
         assert_eq!(rows[0].old_name, None);
         // A span past the captured traits withholds the table.

@@ -29,6 +29,8 @@ The oracle compares the selected branch/hour with a fresh **text** save. Naval c
 
 The oracle compares only sessions whose content the collector verified. Modded sessions are verified by the same live checks as vanilla ones ([content identity](../installed-content/README.md)); there is no override.
 
+The country writer saves neither colour object, so CountryAppearance's UI colour has no save counterpart: the oracle states it as a limitation ([map_inputs.rs](src/oracle/map_inputs.rs)), and validating it needs a matched-hour screenshot of a counter plate in country-colour mode.
+
 The [naval input comparisons](src/oracle/pass_inputs.rs) check each TaskForceMapMotion row against its saved task force's `path`, `support_attack` target and `full_path` alternate route, and its combat role against the saved naval-combat side that lists it (0 when none does). `CNavalCombat::TryJoinUnit@1415B2EF0` admits a unit only while it is in no combat, so a save listing one twice is refused as inconsistent. The task-force writer does not save TaskForceCounterInputs' received-supply ratio; it is a reported limitation, and validating it needs the game paused at the sampled hour and the ratio read from memory.
 
 To compare every daily, static and sliced table, take the save at a full-refresh hour. At any other hour the oracle compares only what was read at that hour:

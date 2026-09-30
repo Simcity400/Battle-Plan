@@ -48,6 +48,7 @@ pub mod layers;
 pub mod lazy_icons;
 // the map's table frame
 pub mod mapframe;
+pub mod msvc_stable_sort;
 pub mod name_pass;
 pub mod name_shader;
 pub mod names;
@@ -57,10 +58,13 @@ pub mod native_gui;
 pub mod native_resources;
 pub mod native_shader;
 pub mod native_text;
+pub mod naval_combat_grid;
 pub mod naval_combat_occurrences;
+pub mod naval_count_approx;
 // counters: the viewing country and what it can see
 pub mod perspective;
 pub mod presentation;
+pub mod province_schedule;
 // orders: the recorded player's battle plan
 pub mod orders;
 // political fill

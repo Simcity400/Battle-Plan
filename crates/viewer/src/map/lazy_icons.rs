@@ -372,6 +372,28 @@ impl LazyFlags {
         found
     }
 
+    /// [`Self::resolve`] with every candidate decided first, on this thread: the flag the
+    /// candidates resolve to as it would be had the set been built whole at load, as the
+    /// engine builds its flag atlases (`CGameGraphics::BuildFlagAtlases@140B31570`), so a frame
+    /// never draws a stand-in for a flag that is not decoded yet.
+    pub fn acquire(&self, candidates: &[&str]) -> Option<(usize, [f32; 4])> {
+        let queued = {
+            let mut state = lock(&self.state);
+            let mut queued = false;
+            for key in candidates {
+                if self.index.contains_key(*key) && !state.cells.contains_key(*key) {
+                    state.pending.insert((*key).to_owned());
+                    queued = true;
+                }
+            }
+            queued
+        };
+        if queued {
+            self.load_pending();
+        }
+        self.resolve(candidates)
+    }
+
     /// One exact key's cell, queued when not decoded yet.
     pub fn get(&self, key: &str) -> Option<(usize, [f32; 4])> {
         self.resolve(&[key])

@@ -267,7 +267,7 @@ pub(crate) fn appearance(frame: &replay::frame::DecodedFrame, link: u32) -> Opti
 /// only asks whether one holds; the enemy's list is searched by canonical
 /// slot (a lower bound over the sorted list, then equality). `Err` names the
 /// input the hour lacks.
-pub(crate) fn civil_war(frame: &replay::frame::DecodedFrame, slot: u32) -> Result<bool, String> {
+pub fn civil_war(frame: &replay::frame::DecodedFrame, slot: u32) -> Result<bool, String> {
     use replay::rows::tables;
     let hour = frame.hour;
     let countries = frame

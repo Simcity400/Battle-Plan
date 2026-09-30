@@ -863,49 +863,6 @@ pub struct Widget {
     pub entries: Vec<Values>,
 }
 pub type Values = BTreeMap<String, Widget>;
-/// The native naval map icon's two progress widgets, using the same authored
-/// progress textures and threshold selection as the detail window.
-pub(crate) fn naval_bubble_progress(
-    assets: &Assets,
-    rect: [f32; 4],
-    small: bool,
-    progress: i64,
-    flip: bool,
-) -> io::Result<Batch> {
-    let root = &assets.windows["naval_combat_mapicon"];
-    let name = if small { "progress_small" } else { "progress" };
-    let mut values = Values::new();
-    for node in &root.children {
-        values.insert(
-            node.name.clone(),
-            Widget {
-                hidden: node.name != name,
-                ..Widget::default()
-            },
-        );
-    }
-    values.insert(
-        name.into(),
-        Widget {
-            fill: Some(if flip {
-                1.0 - progress as f32 / 100_000.0
-            } else {
-                progress as f32 / 100_000.0
-            }),
-            rotation: Some(if flip { std::f32::consts::PI } else { 0.0 }),
-            ..Widget::default()
-        },
-    );
-    let mut drawn = Drawn::default();
-    Painter {
-        assets,
-        drawn: &mut drawn,
-        hovers: false,
-        layer_base: 0,
-    }
-    .node(root, rect, "", &values)?;
-    Ok(drawn.batch)
-}
 /// The viewer's inline flag: this marker, then the resolved flag-atlas key,
 /// ended by a space or the string end. The game writes 0x12 and a country tag
 /// (CCombatantEntry 1415BA240); the viewer resolves the tag first and marks it

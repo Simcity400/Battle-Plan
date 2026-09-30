@@ -107,10 +107,19 @@ impl MapIcons {
         defines: &installed_content::defines::Defines,
         map: &installed_content::map::MapData,
         language: &str,
+        map_size: [u32; 2],
+        gui_viewport: [u32; 2],
+        decode: installed_content::image::native::Decode,
     ) -> io::Result<Self> {
         let mut images = Vec::new();
         // The label sprite and font are the ones `mapicons.gui` names.
         let labels = super::labels::LabelLayout::read(layers)?;
+        // The natively drawn map-icon windows read nothing the legacy readers give. This read
+        // decides only which sprites, fonts and textures the windows' resources load, a set no
+        // GUI viewport changes (`max_resolution` changes a `windowType`'s size, never which
+        // elements exist); every read a view lays out and draws is at its own viewport
+        // (`CounterAssets::windows_at`).
+        let windows = super::counters::NativeWindows::load_at(layers, gui_viewport)?;
         let layouts = super::counters::Layouts::read(layers)?;
         let mut font_warnings = Vec::new();
         // The battle-plan label font is named by `maparrows.txt`'s `arrowText`.
@@ -138,8 +147,15 @@ impl MapIcons {
         let shared = Arc::new(layers.clone());
         let lazy = LazyTextures::new();
         // counters
-        let mut counters =
-            CounterAssets::load(&shared, layouts, defines, &sprites, &mut images, &lazy)?;
+        let mut counters = CounterAssets::load(
+            &shared,
+            (layouts, windows),
+            defines,
+            &sprites,
+            (language, map_size, decode),
+            &mut images,
+            &lazy,
+        )?;
         counters.warnings.extend(font_warnings);
         let combat = crate::combat::Assets::load(
             &shared,
@@ -163,6 +179,25 @@ impl MapIcons {
             raids,
             lazy,
         })
+    }
+}
+
+impl MapIcons {
+    /// Loads the map-icon windows' resources ([`CounterAssets::load_gui`]) once the names pass
+    /// has read `localisation`, appending their textures after every other static page. Returns
+    /// what does not load, for the warning area.
+    pub fn load_gui(
+        &mut self,
+        layers: &ResolvedLayers,
+        localisation: &installed_content::localisation::Localisation,
+    ) -> io::Result<Vec<String>> {
+        let warnings = self
+            .counters
+            .load_gui(layers, localisation, &mut self.images)?;
+        if self.images.len() >= DYNAMIC_BASE {
+            return Err(invalid("more static icon pages than texture ids"));
+        }
+        Ok(warnings)
     }
 }
 

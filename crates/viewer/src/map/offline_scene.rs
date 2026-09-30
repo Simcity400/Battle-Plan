@@ -94,7 +94,17 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     )?;
     eprintln!("Content scene: interface assets");
     let map_data = installed_content::map::load(layers)?;
-    let icons = sprites::MapIcons::load(layers, &defines, &map_data, &input.language)?;
+    // No settings.txt here: the constructor's 1280 x 720 frame (`142212BD0`), which decides
+    // only which resources the map-icon windows load, and the default texture decode.
+    let icons = sprites::MapIcons::load(
+        layers,
+        &defines,
+        &map_data,
+        &input.language,
+        [map_data.width, map_data.height],
+        [1280, 720],
+        Default::default(),
+    )?;
     let camera_defines = camera::MapDefines::load(&defines, input.camera_tilt)?;
     let heights = HeightField {
         width: map.width,

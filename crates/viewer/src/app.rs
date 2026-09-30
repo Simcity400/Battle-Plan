@@ -379,6 +379,18 @@ fn seek_open_target(
 /// the document's content.
 type MatchGame = ((u64, usize), (f32, Option<String>));
 
+/// What an overlay was laid out for: the hour, the camera and frame, the perspective and the
+/// counter options.
+type OverlayKey = (
+    replay::BranchId,
+    i32,
+    Camera,
+    [u32; 2],
+    f32,
+    map::perspective::Choice,
+    map::counters::CounterSettings,
+);
+
 pub struct Viewer {
     dashboard: Option<Box<crate::dashboard_maps::DashboardMaps>>,
     dashboard_active: bool,
@@ -504,14 +516,11 @@ pub struct Viewer {
     overlay: Option<Batch>,
     prepared_overlay: Option<crate::document::PreparedOverlay>,
     overlay_fraction: Option<f32>,
-    overlay_at: Option<(
-        replay::BranchId,
-        i32,
-        Camera,
-        [u32; 2],
-        f32,
-        map::perspective::Choice,
-    )>,
+    overlay_at: Option<OverlayKey>,
+    /// This view's counter options (the user's `settings.txt`, switchable in the header as the
+    /// game's options are) and its counters' memory from one update to the next; a new
+    /// document starts it afresh.
+    counter_view: map::counters::CounterView,
     /// The hour's camera-independent icon tables, parsed once per (branch,
     /// hour, perspective) and reused by every frame's icon rebuild while the
     /// camera moves. A still camera never rebuilds at all (`overlay_at`), so
@@ -591,15 +600,18 @@ pub(crate) fn load_scene(
 
 impl Viewer {
     /// Lays the overlay out afresh from the current tables and draws it at
-    /// this frame's fraction; an error unless its quads, raid report, label
-    /// report and counter report equal those of the overlay with its raid
-    /// icons installed in place.
+    /// this frame's fraction, on the view's own counter memory at the frame's
+    /// presentation clock (the same hour and time again, so its map-icon windows
+    /// advance nothing); an error unless its quads, raid report, label report and
+    /// counter report equal those of the overlay with its raid icons installed in
+    /// place.
     fn check_overlay(
         &mut self,
         now: &crate::document::Hour<'_>,
         camera: Camera,
         pixels: [u32; 2],
         ui_scale: f32,
+        time: f32,
     ) -> Result<(), String> {
         let (Some((_, _, _, tables)), Some(prepared), Some(drawn)) = (
             self.overlay_tables.as_ref(),
@@ -609,7 +621,7 @@ impl Viewer {
             return Ok(());
         };
         let mut full = now
-            .prepare_overlay_cached(camera, pixels, ui_scale, tables)
+            .prepare_overlay_cached(camera, pixels, ui_scale, tables, &self.counter_view)
             .map_err(|error| error.to_string())?;
         let (mut batch, mut report) = (Batch::default(), CounterReport::default());
         full.draw_into(
@@ -618,6 +630,7 @@ impl Viewer {
             pixels,
             ui_scale,
             Default::default(),
+            time,
             &mut batch,
             &mut report,
         )
@@ -724,6 +737,10 @@ impl Viewer {
         });
         // counters: the header's control starts where the command line put it.
         let perspective = options.perspective.clone();
+        // Replaced with the document's `settings.txt` options when one loads.
+        let counter_view = map::counters::CounterView::new(
+            options.counter_settings(map::counters::CounterSettings::default()),
+        );
         let hidden_since = embedded.as_ref().map(|_| Instant::now());
         // The monitors are read off the UI thread; start before the first map.
         map::ui_scale::refresh_monitors(|| ());
@@ -818,6 +835,7 @@ impl Viewer {
             overlay_fraction: None,
             overlay_at: None,
             overlay_tables: None,
+            counter_view,
             perspective,
             country_filter: String::new(),
             // capture
@@ -852,6 +870,8 @@ impl Viewer {
     }
 
     pub(crate) fn install_map(&mut self, document: Document, scene: Scene, revision: String) {
+        self.counter_view =
+            map::counters::CounterView::new(self.options.counter_settings(document.game_counters));
         self.document = Some(document);
         self.scene = Some(scene);
         self.revision = Some(revision);
@@ -1840,6 +1860,9 @@ impl Viewer {
                     hour: document.playback.hour(),
                     fraction: document.hour_fraction,
                 });
+                self.counter_view = map::counters::CounterView::new(
+                    self.options.counter_settings(document.game_counters),
+                );
                 self.document = Some(document);
                 // The loader built the whole hour-independent scene; the
                 // frames only upload hour data into it from here.
@@ -1953,6 +1976,35 @@ impl Viewer {
                 Err(error) => self.error = Some(format!("viewer.json: {error}")),
             }
         }
+    }
+
+    /// The game's two counter options, as its settings menu and map-mode bar switch them:
+    /// they start from `settings.txt` and take effect on the next frame.
+    fn counter_controls(&mut self, ui: &mut egui::Ui) {
+        use map::counters::CounterColorMode;
+        let settings = &mut self.counter_view.settings;
+        let label = |mode: CounterColorMode| match mode {
+            CounterColorMode::Allegiance => "Allegiance",
+            CounterColorMode::Country => "Country",
+        };
+        ui.label("Counter colours");
+        egui::ComboBox::from_id_salt("counter_color_mode")
+            .selected_text(label(settings.color_mode))
+            .show_ui(ui, |ui| {
+                for mode in [CounterColorMode::Allegiance, CounterColorMode::Country] {
+                    ui.selectable_value(&mut settings.color_mode, mode, label(mode));
+                }
+            })
+            .response
+            .on_hover_text(
+                "The game's counter colour mode (settings.txt counter_color_mode): plates by \
+                 allegiance to the viewing country, or in each owner's own colour",
+            );
+        ui.checkbox(&mut settings.nato, "NATO counters")
+            .on_hover_text(
+                "The game's NATO counter option (settings.txt template_counter): unit icons that \
+             have a NATO frame draw it",
+            );
     }
 
     fn paths(&mut self, ctx: &egui::Context) {
@@ -2348,6 +2400,7 @@ impl Viewer {
             behind,
             playing: self.playing,
             perspective: self.perspective.clone(),
+            counters: self.counter_view.clone(),
             view,
             // Not the hour on screen after a seek, which may be to that hour.
             have: self
@@ -2751,6 +2804,7 @@ impl Viewer {
             view.viewport,
             view.ui_scale,
             self.perspective.clone(),
+            self.counter_view.settings,
         ));
         self.overlay_fraction = None;
         let shown = ShownHour {
@@ -3240,8 +3294,19 @@ impl Viewer {
             pixels,
             ui_scale,
             self.perspective.clone(),
+            self.counter_view.settings,
         );
         let overlay_timer = Instant::now();
+        // capture: the animation clock is the one input a live window cannot
+        // share with a headless frame, so a capture frame renders at 0, the
+        // still frame `--dump` renders, or at its explicit sequence clock. The
+        // window runs one presentation clock: the map scene and the map-icon
+        // windows' GUI clock (`Time`, `CGraphics+0x32590`) share it.
+        let animation_time = self
+            .capture
+            .as_ref()
+            .and_then(|c| c.time)
+            .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         // A background flag or portrait load repaints the window, which then
         // lays the overlay out again with what it decoded.
         if !document.icons.lazy.has_wake() {
@@ -3343,13 +3408,20 @@ impl Viewer {
             }
             let tables = &self.overlay_tables.as_ref().expect("parsed above").3;
             self.prepared_overlay = Some(
-                now.prepare_overlay_cached(camera, pixels, ui_scale, tables)
+                now.prepare_overlay_cached(camera, pixels, ui_scale, tables, &self.counter_view)
                     .map_err(|error| error.to_string())?,
             );
             self.overlay_at = Some(overlay_key);
             self.overlay_fraction = None;
         }
         laps.lap("overlay_prepare");
+        // The frame's province schedule, advanced before its map icons read the dirty bits
+        // (`CGraphicalMap::update` runs before `CMapIconManagerImpl::update`); the scene's
+        // render takes it.
+        if let Some(scene) = self.scene.as_mut() {
+            scene.share_province_schedule(self.counter_view.presentation.schedule());
+            scene.advance_provinces(camera, pixels);
+        }
         if self.overlay_fraction != Some(document.hour_fraction) {
             // Redrawn into the last fraction's batch and report, so playback allocates nothing.
             let prepared = self.prepared_overlay.as_mut().expect("prepared above");
@@ -3360,6 +3432,7 @@ impl Viewer {
                     pixels,
                     ui_scale,
                     Default::default(),
+                    animation_time,
                     self.overlay.get_or_insert_with(Batch::default),
                     &mut self.counter_report,
                 )
@@ -3369,8 +3442,14 @@ impl Viewer {
             }
             self.overlay_fraction = Some(document.hour_fraction);
         }
+        // A map-icon window still fading in is laid out again on the next frame, as the game
+        // ticks every window each frame (`UpdateTransitions@1422AF9F0`).
+        if self.counter_view.presentation.take_running() {
+            self.overlay_at = None;
+            ui.ctx().request_repaint();
+        }
         if raids_only && check_overlay() {
-            self.check_overlay(&now, camera, pixels, ui_scale)?;
+            self.check_overlay(&now, camera, pixels, ui_scale, animation_time)?;
         }
         // Resolve clicks against this hour and camera's newly rebuilt hit regions.
         if response.clicked()
@@ -3420,16 +3499,9 @@ impl Viewer {
         } else {
             self.overlay.as_ref().expect("built above")
         };
-        // capture: the animation clock is the one input a live window cannot
-        // share with a headless frame, so a capture frame renders at 0, the
-        // still frame `--dump` renders. `Scene::render` then takes the
-        // luminance adaptation instantaneously, because the clock did not
-        // advance, which is what a dump's own pair of frames does.
-        let animation_time = self
-            .capture
-            .as_ref()
-            .and_then(|c| c.time)
-            .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
+        // capture: at a fixed clock `Scene::render` takes the luminance
+        // adaptation instantaneously, because the clock did not advance, which
+        // is what a dump's own pair of frames does.
         let scene = self.scene.as_mut().unwrap();
         scene.set_graphics(self.graphics);
         scene.label_frame(u64::from(self.profile_frame));
@@ -3715,6 +3787,7 @@ impl eframe::App for Viewer {
                     self.settings = true;
                 }
                 self.ui_scale_control(ui);
+                self.counter_controls(ui);
                 let mut diagnostics = self.diagnostics;
                 if ui
                     .checkbox(&mut diagnostics, "Diagnostics")
