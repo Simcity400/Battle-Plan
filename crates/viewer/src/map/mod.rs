@@ -62,6 +62,7 @@ pub mod political;
 pub mod political_gpu;
 pub mod raids;
 pub mod railway_gun_counter;
+pub mod task_force_visual;
 // colour
 pub mod post;
 // rivers

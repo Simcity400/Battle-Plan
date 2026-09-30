@@ -1494,6 +1494,8 @@ mod tests {
             save::NavalCombat {
                 id: combat,
                 province: 2,
+                attackers: Vec::new(),
+                defenders: Vec::new(),
                 attacker_positioning: zero.clone(),
                 defender_positioning: zero.clone(),
                 attacker_anti_air: zero.clone(),

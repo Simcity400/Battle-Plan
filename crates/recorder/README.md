@@ -29,6 +29,8 @@ The oracle compares the selected branch/hour with a fresh **text** save. Set `sa
 
 The oracle compares only sessions whose content the collector verified. Modded sessions are verified by the same live checks as vanilla ones ([content identity](../installed-content/README.md)); there is no override.
 
+The [naval input comparisons](src/oracle/pass_inputs.rs) check each TaskForceMapMotion row against its saved task force's `path`, `support_attack` target and `full_path` alternate route, and its combat role against the saved naval-combat side that lists it (0 when none does). `CNavalCombat::TryJoinUnit@1415B2EF0` admits a unit only while it is in no combat, so a save listing one twice is refused as inconsistent. The task-force writer does not save TaskForceCounterInputs' received-supply ratio; it is a reported limitation, and validating it needs the game paused at the sampled hour and the ratio read from memory.
+
 To compare every daily, static and sliced table, take the save at a full-refresh hour. At any other hour the oracle compares only what was read at that hour:
 - Relations only for the owners read at that hour; their read hours are in SliceReads, and relations are sliced by owner country. The other owners are listed as carried.
 - Research technologies only at a proven full refresh: the save has no per-owner scope, and owners without rows have no read record. Otherwise they are listed as carried.

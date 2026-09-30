@@ -91,6 +91,8 @@ Politics content readers share [script_files.rs](src/script_files.rs) (a content
 
 Ideas, characters and leader traits read each file as the game's one reader does, through the replay: in document order, with definitions registering wherever the game reads by key, conditions and effects included. A block the replay cannot settle (`Read::unsettled`, or a modifier block the content does not decide) refuses the trait or character it is in, or every idea of the group it is in, and every later one in the file, with a warning naming them and why.
 
+The [save parser](src/save.rs) reads a task force's motion fields as `CUnit::Serialize@140BF7010` writes them: `path` (the ordinary route), `support_attack` (token `0x2EDA`, the movement target, omitted when null) and `full_path` (token `0x362C`, the alternate route, omitted when empty). The writer saves no combat list for a unit; each naval combat side's repeated `unit` references (`CNavalCombatant::Serialize@14160FF40`) are that side's participants in array order.
+
 [states.rs](src/states.rs) replays state templates in native file order, keeping positive signed IDs and the first definition of each ID. Names use the shared native string conversion. If a file cannot be followed to its end, loading refuses the state inventory by file and line: naval battle naming needs every candidate province, and a later file cannot safely replace an unknown earlier state.
 
 ## Map movement and raids
