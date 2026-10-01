@@ -157,16 +157,13 @@ impl Part {
             &mut self.cache,
             observer,
         ));
-        let acquired = ccharacter::walk_portraits_with_census(
+        let acquired = ccharacter::walk_portraits(
             &self.plan.view(memory),
             context.base,
             context.game_state,
-            part,
-            PARTS,
             &mut self.rows.rows,
             &mut self.arena.first,
-            observation,
-            census,
+            ccharacter::PortraitWalk { part, parts: PARTS, observation, census },
         );
         if cfg!(feature = "portrait_changes") {
             crate::portrait_changes::record(self.cache.counts);

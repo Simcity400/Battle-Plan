@@ -489,7 +489,6 @@ pub mod foreign_homebase_node;
 pub mod frontend_presentation_functions;
 pub mod fuel_consumer_data;
 pub mod fuel_history_entry;
-pub mod fx_hash;
 pub mod g7_census_functions;
 pub mod garrison_alert_functions;
 pub mod garrison_child_allocation;

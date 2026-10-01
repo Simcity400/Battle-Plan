@@ -100,7 +100,8 @@ pub fn walk_owned(
 /// Independent matrix census for bounded consistency validation. This root does
 /// not require an owned-vector entry; compare ordered country keys and name bytes
 /// off the game thread, because order and arena offsets can differ.
-pub fn walk_matrix(
+#[cfg(test)]
+fn walk_matrix(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

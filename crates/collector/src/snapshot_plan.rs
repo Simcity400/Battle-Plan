@@ -478,6 +478,7 @@ mod tests {
                 kit::GAME_STATE,
                 &mut rows,
                 &mut entries,
+                ccharacter::PortraitWalk::default(),
             );
             (result, rows, entries)
         }
