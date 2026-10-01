@@ -928,14 +928,6 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     }) {
         // `warnings` repeats each of `unknown`.
         log.notes("scripted_localisation", Kind::Misread, &names.warnings);
-        for (name, entry) in &names.entries {
-            let name = String::from_utf8_lossy(name);
-            for text in &entry.texts {
-                if let Some(Err(why)) = &text.key {
-                    log.about("scripted_localisation", Kind::Refused, &name, why);
-                }
-            }
-        }
     }
     if let Some(database) = log.read("combat_tactics", || installed_content::combat_tactics::read(layers)) {
         log.notes("combat_tactics", Kind::Unsettled, &database.unsupported);

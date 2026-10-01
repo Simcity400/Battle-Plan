@@ -97,6 +97,7 @@ fn known(eval: Eval) -> Result<bool> {
 /// PREV is set, or THIS is not ROOT) only the linked scopes' objects are
 /// known, not their own links.
 fn event_scopes(scopes: Scopes) -> EventScopes {
+    // 140A8D3F0 -> 141580600 builds raids from default scopes (140528800).
     let target = |scope| match scope {
         Scope::Country(slot) => EventObject::Country(slot),
         Scope::State(id) => EventObject::State(id),
@@ -110,6 +111,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         root: Link::Unknown,
         from: Link::Unknown,
         prev: Link::Unknown,
+        random_seed: 1,
     };
     let top =
         scopes.prev.is_none() && scopes.this == scopes.root && scopes.unknown == Default::default();
@@ -145,6 +147,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
             },
             from,
             prev,
+            random_seed: 1,
         };
         std::iter::once(current).chain(linked).collect()
     };

@@ -27,6 +27,7 @@ mod coded;
 mod eval;
 mod load;
 mod operands;
+pub mod scripted_localisation;
 #[cfg(test)]
 mod tests;
 mod variables;

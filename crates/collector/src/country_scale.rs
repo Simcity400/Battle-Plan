@@ -433,6 +433,8 @@ mod tests {
     const INTEL_TABLES: usize = 0x5000_0000;
     const INTEL_RECORDS: usize = 0x6000_0000;
     const BLOC_LINKS: usize = 0x7000_0000;
+    const PRODUCTION: usize = 0x7100_0000;
+    const PRODUCTION_STRIDE: usize = 0x600;
     // Country air objects, their region history tables, windows and records.
     const AIR_MANAGER: usize = 0x80_0000;
     const AIR_ROOTS: usize = 0x90_0000;
@@ -647,6 +649,33 @@ mod tests {
                 let id = (address - LINKS) / 4;
                 return word(LINKS + id * 4, id as u64);
             }
+            if (PRODUCTION..PRODUCTION + self.slots * PRODUCTION_STRIDE).contains(&address) {
+                use engine::cproduction_status as production;
+                let slot = (address - PRODUCTION) / PRODUCTION_STRIDE;
+                let status = PRODUCTION + slot * PRODUCTION_STRIDE;
+                let offset = address - status;
+                return match offset {
+                    0..8 => word(status, (BASE + production::VTABLE_RVA) as u64),
+                    o if (production::COUNTRY..production::COUNTRY + 8).contains(&o) => {
+                        let index = if self.relocated == Some(slot) {
+                            self.slots
+                        } else {
+                            slot
+                        };
+                        word(
+                            status + production::COUNTRY,
+                            (OBJECTS + index * OBJECT) as u64,
+                        )
+                    }
+                    o => production::CONTROLLED_FACTORY_COUNTS
+                        .into_iter()
+                        .enumerate()
+                        .find(|(_, at)| (*at..*at + 4).contains(&o))
+                        .map_or(0, |(index, at)| {
+                            word(status + at, slot as u64 + index as u64)
+                        }),
+                };
+            }
             let objects = self.slots + usize::from(self.relocated.is_some());
             if (OBJECTS + OBJECT..OBJECTS + objects * OBJECT).contains(&address) {
                 let index = (address - OBJECTS) / OBJECT;
@@ -673,6 +702,14 @@ mod tests {
                         .contains(&o) =>
                     {
                         word(object + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64)
+                    }
+                    o if (ccountry::PRODUCTION_STATUS..ccountry::PRODUCTION_STATUS + 8)
+                        .contains(&o) =>
+                    {
+                        word(
+                            object + ccountry::PRODUCTION_STATUS,
+                            (PRODUCTION + slot * PRODUCTION_STRIDE) as u64,
+                        )
                     }
                     o if self.intel
                         && (ccountry::INTEL_TABLE..ccountry::INTEL_TABLE + 8).contains(&o) =>
@@ -944,6 +981,23 @@ mod tests {
             country_counters::Captured::with_capacities(&sizing.extended.country_counters);
         counters.capture(&memory, BASE, STATE);
         assert_eq!(counters.outcomes()[0], Outcome::Rows { len: COUNTRIES });
+        assert_eq!(counters.outcomes()[2], Outcome::Rows { len: COUNTRIES });
+        let tables = counters.tables();
+        let replay::frame::TableView::Complete(replay::rows::TableRows::CountryFactoryCounts(rows)) =
+            &tables[2]
+        else {
+            panic!("complete factories")
+        };
+        assert_eq!(rows.len(), COUNTRIES);
+        assert_eq!(
+            rows.last().unwrap(),
+            &replay::rows::CountryFactoryCountsRow {
+                country: COUNTRIES as u32,
+                military: COUNTRIES as i32,
+                naval: COUNTRIES as i32 + 1,
+                civilian: COUNTRIES as i32 + 2,
+            }
+        );
         let mut small =
             country_appearance::Captured::with_capacities(&vanilla.extended.country_appearance);
         small.capture(&memory, BASE, STATE);

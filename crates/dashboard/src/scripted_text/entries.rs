@@ -1,6 +1,6 @@
 //! Ordered scripted entries and content used by recorded triggers.
 use super::*;
-use crate::triggers::{ContentFacts, Eval, LeaderRoles, Scope, Scopes, World};
+use crate::triggers::{ContentFacts, Eval, Evaluator, LeaderRoles, Scope, Scopes, Temps, World};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct Environment {
@@ -145,14 +145,23 @@ impl<'a> ScriptedText<'a> {
         };
         let (bound, at) = bound_scope(object, scopes, active);
         let bare = object != Object::Event;
+        // 140A9CC20 checks alternatives in order; EndScopedVariableContext
+        // (140535830) leaves the checked trigger's temps for a later value.
+        let mut checked_trigger = false;
+        let mut evaluator = None;
         for text in &entry.texts {
             // 140A9CC20 skips a null value without checking its trigger.
-            let Some(key) = &text.key else { continue };
+            let Some(value) = &text.value else { continue };
+            if text.trigger_present {
+                checked_trigger = true;
+                // The next outer check starts a new context (140544190).
+                evaluator = None;
+            }
             let trigger = &text.trigger;
             if !trigger.is_empty() {
                 let scopes = entry_scopes(&bound, at, bare);
-                let world = self.world()?;
-                match world.evaluate(trigger, scopes) {
+                evaluator = Some(Evaluator::new(self.world()?, None));
+                match evaluator.as_ref().unwrap().evaluate(trigger, scopes) {
                     Eval::False => continue,
                     Eval::True => {}
                     Eval::Unknown(reasons) => {
@@ -163,9 +172,29 @@ impl<'a> ScriptedText<'a> {
                     }
                 }
             }
-            let key = key
-                .as_ref()
-                .map_err(|e| format!("scripted localisation {name}: {e}"))?;
+            let key = match value {
+                installed_content::scripted_localisation::TextValue::Key(key) => key.as_slice(),
+                installed_content::scripted_localisation::TextValue::RandomList(list) => {
+                    let key = self
+                        .random_key(
+                            list,
+                            &bound,
+                            at,
+                            entry_scopes(&bound, at, bare),
+                            evaluator.as_ref(),
+                            if checked_trigger {
+                                Temps::Fresh
+                            } else {
+                                Temps::Stale
+                            },
+                        )
+                        .map_err(|e| format!("scripted localisation {name}: {e}"))?;
+                    let Some(key) = key.filter(|key| !key.is_empty()) else {
+                        return Ok(String::new());
+                    };
+                    key
+                }
+            };
             let text = self.localisation.localise(key).map_err(|e| e.to_string())?;
             // SScopeLocalizer (1402F6340) -> ExpandLocalizationWithEventScope
             // (1410CF560): a new context in the evaluation scope, from depth
@@ -241,6 +270,7 @@ fn bound_scope(object: Object, scopes: &EventScopes, active: usize) -> (EventSco
         root: carried(current.root),
         from: carried(current.from),
         prev: Link::Scope(active),
+        random_seed: super::random::scope_seed(424242),
     });
     let at = bound.scopes.len() - 1;
     (bound, at)

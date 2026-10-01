@@ -28,6 +28,201 @@ fn rendered(
 }
 
 #[test]
+fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
+    let (catalogue, _folder) = tests::catalogue(
+        r#"
+        a = { name = Default text = { random_list = { 30 = { localization_key = A } 10 = { localization_key = B } 20 = { localization_key = C } } } }
+        a = { name = Seeded text = { random_list = { seed = 7 30 = { localization_key = A } 10 = { localization_key = B } 20 = { localization_key = C } } } }
+        a = { name = Single text = { random_list = { seed = unknown 0 = { localization_key = A modifier = { factor = random } } } } }
+        a = { name = Zero text = { random_list = { seed = unknown 0 = { localization_key = A } 0 = { localization_key = B } } } text = { localization_key = C } }
+        a = { name = Empty text = { random_list = {} } }
+        a = { name = Ordinary text = { localization_key = A } }
+        a = { name = Promoted text = { random_list = { 56 = { localization_key = A } 4 = { localization_key = B } } } }
+    "#,
+        " A:0 \"A\"\n B:0 \"B\"\n C:0 \"C\"\n",
+    );
+    let content = catalogue.scripted_content().unwrap();
+    assert!(
+        content
+            .environment
+            .set(Ok(entries::Environment::synthetic()))
+            .is_ok()
+    );
+    let f = frame();
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    assert_eq!(
+        text.expand("[Default]|[Seeded]|[SOV.Seeded]|[Single]|[Zero]|[Empty]|[Ordinary]")
+            .as_deref(),
+        Ok("C|C|B|A|||A")
+    );
+    // The default scope draws 54/60; a promoted object uses the second
+    // constructor hash lane of 424242, drawing 57/60 (1410CDDF0).
+    assert_eq!(
+        text.expand("[Promoted]|[SOV.Promoted]").as_deref(),
+        Ok("A|B")
+    );
+    let seeded = EventScopes::new(vec![EventScope {
+        random_seed: 2,
+        ..EventScope::of(EventObject::Country(0))
+    }]);
+    assert_eq!(text.expand_in("[Default]", &seeded).as_deref(), Ok("A"));
+}
+
+#[test]
+fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
+    let (catalogue, _folder) = tests::catalogue(
+        "a = { name = Pick text = { trigger = {} random_list = { seed = num_of_controlled_factories 30 = { localization_key = A } 10 = { localization_key = B } 20 = { localization_key = C } } } }",
+        " A:0 \"A\"\n B:0 \"B\"\n C:0 \"C\"\n",
+    );
+    let content = catalogue.scripted_content().unwrap();
+    assert!(
+        content
+            .environment
+            .set(Ok(entries::Environment::synthetic()))
+            .is_ok()
+    );
+    let mut f = frame();
+    set::<tables::CountryFactoryCounts>(
+        &mut f,
+        vec![CountryFactoryCountsRow {
+            country: 200,
+            military: i32::MAX,
+            naval: i32::MAX,
+            civilian: 9,
+        }],
+    );
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
+    let evaluator = crate::triggers::Evaluator::new(text.world().unwrap(), None);
+    let scopes = crate::triggers::Scopes::of(crate::triggers::Scope::Country(1));
+    assert_eq!(
+        evaluator.scoped_value(b"num_of_controlled_factories", scopes),
+        Ok(700_000)
+    );
+    // (MAX + MAX + 9) wraps to 7; raw 700000 + slot 1*31 draws
+    // 1038583950, %60 = 30: subtract 30 then 10 to choose B (140A9CD70).
+    assert_eq!(text.expand("[Pick]").as_deref(), Ok("B"));
+    drop(text);
+    set::<tables::CountryFactoryCounts>(&mut f, Vec::new());
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
+    assert!(
+        text.expand("[Pick]")
+            .unwrap_err()
+            .contains("country 200 has no CountryFactoryCounts row")
+    );
+    drop(text);
+    *f.tables[TableId::CountryFactoryCounts.index()] = TableView::Unavailable {
+        reason: "capture failed".into(),
+    };
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
+    assert!(
+        text.expand("[Pick]")
+            .unwrap_err()
+            .contains("CountryFactoryCounts is unavailable")
+    );
+}
+
+#[test]
+fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_conditions() {
+    let (catalogue, _folder) = tests::catalogue("", "");
+    let content = catalogue.scripted_content().unwrap();
+    assert!(
+        content
+            .environment
+            .set(Ok(entries::Environment::synthetic()))
+            .is_ok()
+    );
+    let f = frame();
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let evaluator = crate::triggers::Evaluator::new(text.world().unwrap(), None);
+    let scopes = crate::triggers::Scopes::of(crate::triggers::Scope::Country(0));
+    let member = |source: &str| installed_content::scripted_localisation::RandomMember {
+        weight: 1_000_000,
+        key: Vec::new(),
+        modifiers: installed_content::parser::parse(source.as_bytes())
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|item| item.value.items().unwrap().to_vec())
+            .collect(),
+    };
+    // (10 + 1 + 2) * (2 * 0.5) = 13, despite both false conditions.
+    assert_eq!(evaluator.localisation_weight(&member("modifier = { always = no add = 1 factor = 2 } modifier = { always = no add = 2 factor = 0.5 }"), scopes), Ok(13));
+    assert_eq!(
+        evaluator.localisation_weight(
+            &member("modifier = { factor = 0 } modifier = { factor = random }"),
+            scopes
+        ),
+        Ok(0)
+    );
+    assert_eq!(
+        evaluator.localisation_weight(&member("modifier = { add = -10.5 }"), scopes),
+        Ok(-1)
+    );
+    let why = evaluator
+        .localisation_weight(
+            &member("modifier = { factor = num_of_controlled_factories }"),
+            scopes,
+        )
+        .unwrap_err();
+    assert!(why.contains("CountryFactoryCounts row"), "{why}");
+}
+
+#[test]
+fn seeded_random_lists_use_canonical_slots_across_five_thousand_countries() {
+    let (catalogue, _folder) = tests::catalogue(
+        "a = { name = Pick text = { random_list = { seed = 7 30 = { localization_key = A } 10 = { localization_key = B } 20 = { localization_key = C } } } }",
+        " A:0 \"A\"\n B:0 \"B\"\n C:0 \"C\"\n",
+    );
+    let content = catalogue.scripted_content().unwrap();
+    assert!(
+        content
+            .environment
+            .set(Ok(entries::Environment::synthetic()))
+            .is_ok()
+    );
+    let mut f = frame();
+    set::<tables::CountryLinks>(
+        &mut f,
+        (0..5_000)
+            .map(|slot| CountryLinkRow {
+                id: 10_000 + slot,
+                canonical_slot: slot,
+            })
+            .collect(),
+    );
+    set::<tables::Countries>(
+        &mut f,
+        (0..5_000)
+            .map(|slot| CountryRow {
+                id: 10_000 + slot,
+                canonical_slot: slot,
+                tag: vec![
+                    b'A' + (slot / 676) as u8,
+                    b'A' + (slot / 26 % 26) as u8,
+                    b'A' + (slot % 26) as u8,
+                ],
+                ..Default::default()
+            })
+            .collect(),
+    );
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let mut counts = [0; 3];
+    for slot in 0..5_000 {
+        let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(slot))]);
+        let result = text.expand_in("[Pick]", &scopes).unwrap();
+        counts[match result.as_str() {
+            "A" => 0,
+            "B" => 1,
+            "C" => 2,
+            other => panic!("unexpected selection at slot {slot}: {other}"),
+        }] += 1;
+    }
+    // Independently worked 140A9CD70 hashes of raw seed 700000 + slot*31,
+    // modulo 60, split at 30 and 40. Raw country ids are deliberately distinct.
+    assert_eq!(counts, [2_494, 802, 1_704]);
+}
+
+#[test]
 fn first_party_leaders_and_custom_party_names_use_the_real_localiser() {
     let (catalogue, _folder) = tests::catalogue(
         "",
@@ -624,18 +819,21 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
             root: Link::Scope(1),
             from: Link::Scope(2),
             prev: Link::Scope(1),
+            random_seed: 1,
         },
         EventScope {
             this: EventObject::Country(1),
             root: Link::Unknown,
             from: Link::Unknown,
             prev: Link::Unknown,
+            random_seed: 1,
         },
         EventScope {
             this: EventObject::Country(2),
             root: Link::Unknown,
             from: Link::Unknown,
             prev: Link::Unknown,
+            random_seed: 1,
         },
     ]);
     assert_eq!(expand("[FROM.GetTag]", &nested).as_deref(), Ok("ENG"));
@@ -701,6 +899,7 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
             root: Link::Unknown,
             from: Link::Unknown,
             prev: Link::Unknown,
+            random_seed: 1,
         }])
     };
     let sov = unknown(EventObject::Country(1));
