@@ -3,6 +3,7 @@ use super::{ArrowType, OrderDraw, OrderVertex};
 use crate::map::{
     arrow_shader::{Mode, Vertex},
     camera::Camera,
+    province_admission::{admits_box, side_planes},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -21,16 +22,6 @@ pub(super) struct View {
     pub labels: Vec<usize>,
 }
 
-fn visible(bounds: [[f32; 3]; 2], offset: f32, planes: &[[f32; 4]; 4]) -> bool {
-    //14125B24B/14125B30D use the positive vertex for inside-positive planes.
-    !planes.iter().any(|[a, b, c, d]| {
-        let x = if *a >= 0. { bounds[1][0] } else { bounds[0][0] } + offset;
-        let y = if *b >= 0. { bounds[1][1] } else { bounds[0][1] };
-        let z = if *c >= 0. { bounds[1][2] } else { bounds[0][2] };
-        a * x + b * y + c * z + d < 0.
-    })
-}
-
 fn offsets(bounds: [[f32; 3]; 2], width: f32, planes: &[[f32; 4]; 4]) -> Vec<f32> {
     //141256E20..E87 creates at most one seam box, negative-X branch first.
     let seam = if bounds[0][0] < 0. {
@@ -42,7 +33,7 @@ fn offsets(bounds: [[f32; 3]; 2], width: f32, planes: &[[f32; 4]; 4]) -> Vec<f32
     };
     std::iter::once(0.)
         .chain(seam)
-        .filter(|offset| visible(bounds, *offset, planes))
+        .filter(|offset| admits_box(bounds, *offset, planes))
         .collect()
 }
 
@@ -68,7 +59,8 @@ pub(super) fn plans<'a>(
                 .map(|(view, wrap)| {
                     let mut camera = camera;
                     camera.center[0] -= wrap;
-                    let planes = camera.side_planes(viewport);
+                    //14125B24B/14125B30D read this view's margin-expanded side planes.
+                    let planes = side_planes(camera, viewport);
                     let mut result = View::default();
                     let mut base = 0;
                     for bucket in draws.chunk_by(|a, b| a.declaration_index == b.declaration_index)
@@ -213,14 +205,46 @@ mod tests {
             offsets([[-2., 0., 0.], [102., 1., 1.]], 100., &all),
             [0., 100.]
         );
-        let near_right = [[1., 0., 0., -90.], [-1., 0., 0., 110.], [0.; 4], [0.; 4]];
+        let near_right = [[-1., 0., 0., 90.], [1., 0., 0., -110.], [0.; 4], [0.; 4]];
         assert_eq!(
             offsets([[-2., 0., 0.], [2., 1., 1.]], 100., &near_right),
             [100.]
         );
         // Contact is admitted, unlike a box entirely beyond the plane.
-        assert!(visible([[90., 0., 0.]; 2], 0., &near_right));
-        assert!(!visible([[89., 0., 0.]; 2], 0., &near_right));
+        assert!(admits_box([[90., 0., 0.]; 2], 0., &near_right));
+        assert!(!admits_box([[89., 0., 0.]; 2], 0., &near_right));
+    }
+
+    #[test]
+    fn arrows_keep_the_camera_side_margin() {
+        let arrow = ArrowType::default();
+        let mut field = OrderField::default();
+        emit(
+            &mut field,
+            &arrow,
+            &[[0, 0], [100_000, 0]],
+            1.,
+            [1.; 4],
+            &|_, _, _| 0.,
+        )
+        .unwrap();
+        let camera = Camera {
+            center: [3000., 1000.],
+            height: 50.,
+            map: MapSize::TEST,
+            defines: MapDefines::test(),
+        };
+        for (x, expected) in [(3040., 1), (3060., 0)] {
+            field.draws[0].bounds = [[x, 0., 999.], [x + 2., 1., 1001.]];
+            let raw = camera.side_planes([1024, 768]).map(|p| p.map(|v| -v));
+            assert!(!admits_box(field.draws[0].bounds, 0., &raw));
+            let plan = plans(&field.draws, camera, [1024, 768], &[0.], |_, _| {
+                Some(&arrow)
+            });
+            for mode in [Mode::Shadow, Mode::Main, Mode::Seethrough, Mode::Late] {
+                assert_eq!(plan[&mode][0].buckets.len(), expected);
+            }
+        }
     }
 
     #[test]

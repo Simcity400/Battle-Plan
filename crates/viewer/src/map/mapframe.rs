@@ -3,6 +3,7 @@ use super::{
     camera::Camera,
     entity_animation,
     models::{ModelField, ModelInstance, ModelLibrary},
+    province_admission::Admission,
 };
 use installed_content::image::native::Decode;
 use installed_content::{ResolvedLayers, ambient, image::IndexedImage};
@@ -238,12 +239,6 @@ fn buckets([width, height]: [u32; 2]) -> Vec<[[f32; 3]; 2]> {
 fn contains([low, high]: [[f32; 3]; 2], p: [f32; 3]) -> bool {
     (0..3).all(|i| low[i] <= p[i] && p[i] <= high[i])
 }
-fn in_view([low, high]: [[f32; 3]; 2], planes: &[[f32; 4]; 4], offset: f32) -> bool {
-    planes.iter().all(|plane| {
-        let p: [f32; 3] = std::array::from_fn(|i| if plane[i] < 0. { low[i] } else { high[i] });
-        (p[0] + offset) * plane[0] + p[1] * plane[1] + p[2] * plane[2] + plane[3] >= 0.
-    })
-}
 ///141633DD7 passes clampSea=true to140A51CC0: nearest sample, bottom-up, no wrap.
 fn height(image: &IndexedImage, [x, _, z]: [f32; 3]) -> f32 {
     let x = ((x + 0.5) as i32).clamp(0, image.width as i32 - 1) as usize;
@@ -259,15 +254,12 @@ impl Presentation {
         size: [u32; 2],
         time: f32,
     ) -> Vec<(usize, ModelInstance)> {
-        let planes = camera.side_planes(size);
+        //140B497F7..498C8: the bucket's own box against each active map view's expanded sides.
+        let admission = Admission::new(camera, size);
         let visible: Vec<_> = self
             .bounds
             .iter()
-            .map(|b| {
-                [0., -camera.map.x(), camera.map.x()]
-                    .iter()
-                    .any(|o| in_view(*b, &planes, *o))
-            })
+            .map(|b| admission.admits_box(*b))
             .collect();
         self.advance(time, &visible)
     }
@@ -361,8 +353,48 @@ fn buckets_use_first_inclusive_match_and_native_edge_extensions() {
         Some(0)
     );
     assert!(!contains(b[0], [0., -100.01, 0.]));
-    assert!(in_view(b[0], &[[1., 0., 0., -101.]; 4], 0.));
-    assert!(!in_view(b[0], &[[1., 0., 0., -102.]; 4], 0.));
+    assert!(super::province_admission::admits_box(
+        b[0],
+        0.,
+        &[[-1., 0., 0., 101.]; 4]
+    ));
+    assert!(!super::province_admission::admits_box(
+        b[0],
+        0.,
+        &[[-1., 0., 0., 102.]; 4]
+    ));
+}
+
+#[test]
+fn ambient_buckets_keep_the_camera_side_margin() {
+    use super::camera::{MapDefines, MapSize, Placement as CameraPlacement};
+
+    let bounds = buckets([MapSize::TEST.width, MapSize::TEST.height])[5];
+    for (distance, expected) in [(84., 1), (104., 0)] {
+        let camera = CameraPlacement {
+            center: [bounds[0][0] - distance, bounds[1][2]],
+            height: 50.,
+        }
+        .on(MapSize::TEST, MapDefines::test());
+        let raw = camera.side_planes([1024, 768]).map(|p| p.map(|v| -v));
+        assert!(!super::province_admission::admits_box(bounds, 0., &raw));
+        let mut presentation = Presentation {
+            placements: vec![Placement {
+                kind: 0,
+                slot: 0,
+                instance: ModelInstance::default(),
+                bucket: Some(0),
+            }],
+            kinds: vec![Kind {
+                duration: 0.,
+                max_visible: -1,
+            }],
+            bounds: vec![bounds],
+            counters: vec![0],
+            ..Default::default()
+        };
+        assert_eq!(presentation.update(camera, [1024, 768], 0.).len(), expected);
+    }
 }
 
 #[test]
