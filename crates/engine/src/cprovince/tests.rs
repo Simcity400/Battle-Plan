@@ -1,0 +1,1742 @@
+use super::*;
+use crate::memory::SliceMemory;
+
+struct TracedMemory<'a> {
+    bytes: &'a [u8],
+    blocked: Option<usize>,
+    guards: std::cell::Cell<usize>,
+    reads: std::cell::RefCell<Vec<(usize, usize)>>,
+}
+
+impl Memory for TracedMemory<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((address, destination.len()));
+        if self
+            .blocked
+            .is_some_and(|blocked| (address..address + destination.len()).contains(&blocked))
+        {
+            destination.fill(0xff);
+            return false;
+        }
+        SliceMemory {
+            base: 0x1000,
+            bytes: self.bytes,
+        }
+        .copy(address, destination)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.guards.set(self.guards.get() + 1);
+        for (index, (address, destination)) in addresses.into_iter().zip(destinations).enumerate() {
+            if destination.is_empty() {
+                continue;
+            }
+            if address == 0
+                || address.checked_add(destination.len()).is_none()
+                || !self.copy(address, destination)
+            {
+                return index;
+            }
+        }
+        N
+    }
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        self.guards.set(self.guards.get() + 1);
+        // Count this gather once while exercising Memory's scalar default.
+        struct Scalar<'a, 'b>(&'a TracedMemory<'b>);
+        impl Memory for Scalar<'_, '_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.0.copy(address, destination)
+            }
+        }
+        Scalar(self).copy_records(sources, layout, destination)
+    }
+}
+
+/// Installs the definition and shared terrain the movement operand stage
+/// reads. The building vector stays the empty header the zeroed fixture
+/// already holds.
+fn put_movement(bytes: &mut [u8], province: usize, id: u32, definition: usize, terrain: usize) {
+    use crate::{cterrain_type, province_definition as definition_layout};
+    put(
+        bytes,
+        province + DEFINITION,
+        &(definition as u64 + 0x1000).to_le_bytes(),
+    );
+    put(bytes, definition + definition_layout::ID, &id.to_le_bytes());
+    put(
+        bytes,
+        definition + definition_layout::TERRAIN,
+        &(terrain as u64 + 0x1000).to_le_bytes(),
+    );
+    put(
+        bytes,
+        definition + definition_layout::TERRAIN_FLAGS,
+        &[(id % 4) as u8],
+    );
+    put(
+        bytes,
+        terrain,
+        &(cterrain_type::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(
+        bytes,
+        terrain + cterrain_type::DATABASE_INDEX,
+        &7_i32.to_le_bytes(),
+    );
+}
+
+fn many_provinces(count: usize) -> Vec<u8> {
+    let mut bytes = vec![0; 0x14000];
+    put(
+        &mut bytes,
+        cgame_state::PROVINCES,
+        &0x1300_u64.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        cgame_state::PROVINCES + 8,
+        &(count as u32 + 1).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        cgame_state::PROVINCES + 12,
+        &(count as u32 + 1).to_le_bytes(),
+    );
+    for index in 1..=count {
+        let offset = 0x1000 + (index - 1) * 0x200;
+        put(
+            &mut bytes,
+            0x300 + index * 8,
+            &(offset as u64 + 0x1000).to_le_bytes(),
+        );
+        put(&mut bytes, offset, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, offset + ID, &(index as u32).to_le_bytes());
+        put(&mut bytes, offset + STATE, &0x13000_u64.to_le_bytes());
+        put(
+            &mut bytes,
+            offset + CONTROLLER,
+            &(u32::MAX - index as u32).to_le_bytes(),
+        );
+        put_movement(
+            &mut bytes,
+            offset,
+            index as u32,
+            0xa000 + (index - 1) * 0x100,
+            0xf000,
+        );
+    }
+    put(
+        &mut bytes,
+        0x12000,
+        &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(&mut bytes, 0x12000 + cstate::ID, &89_u32.to_le_bytes());
+    put(&mut bytes, 0x12000 + cstate::OWNER, &u32::MAX.to_le_bytes());
+    bytes
+}
+
+fn province_names_fixture() -> Vec<u8> {
+    let mut bytes = many_provinces(3);
+    for index in 0..3 {
+        put(
+            &mut bytes,
+            0x1000 + index * 0x200 + NAME_OVERRIDE + 24,
+            &15_u64.to_le_bytes(),
+        );
+    }
+    // Province 1 is empty; province 2 has an inline literal with embedded
+    // NUL/non-UTF8, province 3 uses heap storage. No display conversion.
+    let inline = 0x1200 + NAME_OVERRIDE;
+    put(&mut bytes, inline, &[b'A', 0, 255, 0]);
+    put(&mut bytes, inline + 16, &3_u64.to_le_bytes());
+    let heap = 0x1400 + NAME_OVERRIDE;
+    put(&mut bytes, heap, &0x9000_u64.to_le_bytes());
+    put(&mut bytes, heap + 16, &6_u64.to_le_bytes());
+    put(&mut bytes, heap + 24, &31_u64.to_le_bytes());
+    put(&mut bytes, 0x8000, b"Gdansk\0");
+    bytes
+}
+
+#[test]
+fn name_census_is_sparse_lossless_and_capacity_bounded() {
+    let bytes = province_names_fixture();
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    for (row_capacity, byte_capacity, expected, missing) in
+        [(2, 9, 2, 0), (1, 9, 1, 1), (2, 3, 1, 1), (0, 0, 0, 2)]
+    {
+        let mut rows = vec![NameRow::default(); row_capacity];
+        let mut arena = vec![0; byte_capacity];
+        let report = walk_names(&memory, 0, 0x1000, &mut rows, &mut arena);
+        assert_eq!(report.required_bytes, 9);
+        assert_eq!(
+            report.outcome,
+            if missing == 0 {
+                Outcome::Rows { len: expected }
+            } else {
+                Outcome::Truncated {
+                    len: expected,
+                    unread_rows: missing,
+                }
+            }
+        );
+        if expected != 0 {
+            assert_eq!(
+                rows[0],
+                NameRow {
+                    province: 2,
+                    start: 0,
+                    len: 3
+                }
+            );
+            assert_eq!(&arena[..3], &[b'A', 0, 255]);
+        }
+        if expected == 2 {
+            assert_eq!(&arena[3..9], b"Gdansk");
+        }
+    }
+}
+
+#[test]
+fn names_require_a_real_census_even_when_no_overrides_exist() {
+    let mut bytes = province_names_fixture();
+    // Keep the authenticated, unnamed first province, removing both named
+    // slots. This is a legitimate complete empty sparse name table.
+    put(&mut bytes, 0x310, &0_u64.to_le_bytes());
+    put(&mut bytes, 0x318, &0_u64.to_le_bytes());
+    let outcome = |bytes: &[u8]| {
+        walk_names(
+            &SliceMemory {
+                base: 0x1000,
+                bytes,
+            },
+            0,
+            0x1000,
+            &mut [],
+            &mut [],
+        )
+        .outcome
+    };
+    assert_eq!(outcome(&bytes), Outcome::Rows { len: 0 });
+    put(&mut bytes, 0x308, &0_u64.to_le_bytes());
+    assert_eq!(
+        outcome(&bytes),
+        Outcome::Unavailable {
+            reason: "province names census contains no provinces",
+        }
+    );
+}
+
+#[test]
+fn names_reject_bad_identity_header_and_terminator_including_after_capacity() {
+    for (offset, value) in [
+        (0x1400, 0_u64),
+        (0x1400 + ID, 4),
+        (0x1400 + NAME_OVERRIDE + 16, 32),
+        (0x1400 + NAME_OVERRIDE, 0),
+        (0x8006, 1),
+    ] {
+        let mut bytes = province_names_fixture();
+        put(&mut bytes, offset, &value.to_le_bytes());
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let report = walk_names(&memory, 0, 0x1000, &mut [], &mut []);
+        assert!(
+            matches!(report.outcome, Outcome::Unavailable { .. }),
+            "offset {offset:x}"
+        );
+    }
+}
+
+#[test]
+fn exact_field_batches_cover_boundaries_and_shared_states_are_read_once_per_walk() {
+    let bytes = many_provinces(67);
+    let memory = TracedMemory {
+        bytes: &bytes,
+        blocked: None,
+        guards: std::cell::Cell::new(0),
+        reads: std::cell::RefCell::new(Vec::new()),
+    };
+    let mut rows = [Row::default(); 67];
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Rows { len: 67 }
+    );
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            *row,
+            Row {
+                id: index as u32 + 1,
+                state: 89,
+                owner: u32::MAX,
+                controller: u32::MAX - index as u32 - 1,
+                victory_points: 0,
+                fort_positive: 0,
+                // A land province with no owner area; the fixture has none.
+                move_gate: u8::from((index + 1) % 4 == 1) * Row::MOVE_NULL_OWNER_AREA,
+                port_sea: 0,
+            }
+        );
+    }
+    // Two root guards, two province-field guards, one state-field guard,
+    // and two movement gathers per batch (the building vector and gate
+    // words, then the definition's flags and port).
+    assert_eq!(memory.guards.get(), 9);
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(address, _)| address == 0x13000)
+            .count(),
+        1
+    );
+    memory.guards.set(0);
+    memory.reads.borrow_mut().clear();
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Rows { len: 67 }
+    );
+    assert_eq!(memory.guards.get(), 9);
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(address, _)| address == 0x13000)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn batching_preserves_holes_capacity_and_earlier_errors_before_later_prefetch_faults() {
+    let mut bytes = many_provinces(67);
+    put(&mut bytes, 0x300 + 2 * 8, &0_u64.to_le_bytes());
+    let memory = TracedMemory {
+        bytes: &bytes,
+        blocked: Some(0x2200),
+        guards: std::cell::Cell::new(0),
+        reads: std::cell::RefCell::new(Vec::new()),
+    };
+    let mut rows = [Row::default(); 1];
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 65
+        }
+    );
+    assert!(
+        !memory
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(address, _)| address == 0x2400)
+    );
+    // Roots x2, first body batch, first state, and the admitted row's
+    // two movement gathers. The empty second batch gathers nothing.
+    assert_eq!(memory.guards.get(), 6);
+
+    // The first state semantic error still wins over a later prefetched body fault.
+    put(&mut bytes, 0x12000 + cstate::ID, &0_u32.to_le_bytes());
+    let memory = TracedMemory {
+        bytes: &bytes,
+        blocked: Some(0x2400),
+        guards: std::cell::Cell::new(0),
+        reads: std::cell::RefCell::new(Vec::new()),
+    };
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut [Row::default(); 67]),
+        Outcome::Unavailable {
+            reason: "non-null state has zero id"
+        }
+    );
+
+    // The first province semantic error wins over a later unreadable root.
+    put(&mut bytes, 0x1000 + ID, &99_u32.to_le_bytes());
+    let memory = TracedMemory {
+        bytes: &bytes,
+        blocked: Some(0x1300 + 4 * 8),
+        guards: std::cell::Cell::new(0),
+        reads: std::cell::RefCell::new(Vec::new()),
+    };
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut [Row::default(); 67]),
+        Outcome::Unavailable {
+            reason: "province id differs from slot"
+        }
+    );
+}
+
+#[test]
+fn state_cache_full_pointer_keys_survive_collisions_and_failures_are_not_cached() {
+    use std::cell::Cell;
+    let first = 0x13000_usize;
+    let second = (0x14000_usize..0x1000000)
+        .step_by(16)
+        .find(|&pointer| StateCache::slot(pointer) == StateCache::slot(first))
+        .unwrap();
+    struct States {
+        pointers: [usize; 2],
+        fail: Cell<bool>,
+        owner_reads: Cell<usize>,
+    }
+    impl Memory for States {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            for (index, &pointer) in self.pointers.iter().enumerate() {
+                if address == pointer {
+                    destination.copy_from_slice(&(cstate::VTABLE_RVA as u64).to_le_bytes());
+                    return true;
+                }
+                if address == pointer + cstate::ID {
+                    destination.copy_from_slice(&(index as u32 + 1).to_le_bytes());
+                    return true;
+                }
+                if address == pointer + cstate::OWNER {
+                    self.owner_reads.set(self.owner_reads.get() + 1);
+                    if self.fail.get() {
+                        return false;
+                    }
+                    destination.copy_from_slice(&(u32::MAX - index as u32).to_le_bytes());
+                    return true;
+                }
+            }
+            false
+        }
+    }
+    let memory = States {
+        pointers: [first, second],
+        fail: Cell::new(false),
+        owner_reads: Cell::new(0),
+    };
+    let mut cache = StateCache::new();
+    assert_eq!(cache.resolve(&memory, 0, first), Ok((1, u32::MAX)));
+    assert_eq!(cache.resolve(&memory, 0, second), Ok((2, u32::MAX - 1)));
+    assert_eq!(cache.resolve(&memory, 0, first), Ok((1, u32::MAX)));
+    assert_eq!(memory.owner_reads.get(), 2);
+    assert_eq!(cache.resolve(&memory, 0, first), Ok((1, u32::MAX)));
+    assert_eq!(cache.resolve(&memory, 0, second), Ok((2, u32::MAX - 1)));
+    assert_eq!(memory.owner_reads.get(), 2);
+    // A new walk observes the live failure, and a failed first observation
+    // leaves no successful entry behind for the following retry.
+    let mut cache = StateCache::new();
+    memory.fail.set(true);
+    assert_eq!(
+        cache.resolve(&memory, 0, second),
+        Err("state owner unreadable")
+    );
+    memory.fail.set(false);
+    assert_eq!(cache.resolve(&memory, 0, second), Ok((2, u32::MAX - 1)));
+    assert_eq!(cache.resolve(&memory, 0, second), Ok((2, u32::MAX - 1)));
+    assert_eq!(memory.owner_reads.get(), 4);
+    assert!(std::mem::size_of::<StateCache>() <= 32 * 1024);
+}
+
+#[test]
+fn state_cache_probe_exhaustion_falls_back_without_evicting_successes() {
+    struct States(std::cell::Cell<usize>);
+    impl Memory for States {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            match address & 0xfff {
+                0 => destination.copy_from_slice(&(cstate::VTABLE_RVA as u64).to_le_bytes()),
+                cstate::ID => destination.copy_from_slice(&((address >> 12) as u32).to_le_bytes()),
+                cstate::OWNER => {
+                    self.0.set(self.0.get() + 1);
+                    destination.copy_from_slice(&123_u32.to_le_bytes());
+                }
+                _ => return false,
+            }
+            true
+        }
+    }
+    let pointers: Vec<_> = (1_usize..1_000_000)
+        .map(|id| id * 0x1000)
+        .filter(|&pointer| StateCache::slot(pointer) == StateCache::slot(0x1000))
+        .take(STATE_CACHE_PROBES + 1)
+        .collect();
+    assert_eq!(pointers.len(), STATE_CACHE_PROBES + 1);
+    let memory = States(std::cell::Cell::new(0));
+    let mut cache = StateCache::new();
+    for &pointer in pointers.iter().chain(pointers.iter().rev()) {
+        assert_eq!(
+            cache.resolve(&memory, 0, pointer),
+            Ok(((pointer >> 12) as u32, 123))
+        );
+    }
+    // The overflow state is acquired twice; the other 32 states keep their
+    // original exact-pointer entries despite that uncached observation.
+    assert_eq!(memory.0.get(), STATE_CACHE_PROBES + 2);
+}
+
+#[test]
+fn cache_does_not_claim_to_detect_later_state_changes_but_each_walk_reads_fresh() {
+    use std::cell::Cell;
+    struct ChangingOwner<'a> {
+        bytes: &'a [u8],
+        reads: Cell<u32>,
+    }
+    impl Memory for ChangingOwner<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if address == 0x13000 + cstate::OWNER {
+                self.reads.set(self.reads.get() + 1);
+                destination.copy_from_slice(&self.reads.get().to_le_bytes());
+                return true;
+            }
+            SliceMemory {
+                base: 0x1000,
+                bytes: self.bytes,
+            }
+            .copy(address, destination)
+        }
+    }
+    let bytes = many_provinces(3);
+    let memory = ChangingOwner {
+        bytes: &bytes,
+        reads: Cell::new(0),
+    };
+    for expected in [1, 2] {
+        let mut rows = [Row::default(); 3];
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut rows),
+            Outcome::Rows { len: 3 }
+        );
+        assert!(rows.iter().all(|row| row.owner == expected));
+    }
+    assert_eq!(memory.reads.get(), 2);
+}
+
+fn put(bytes: &mut [u8], offset: usize, data: &[u8]) {
+    bytes[offset..offset + data.len()].copy_from_slice(data);
+}
+
+fn provinces() -> Vec<u8> {
+    let mut bytes = vec![0; 0x1000];
+    put(
+        &mut bytes,
+        cgame_state::PROVINCES,
+        &0x1300_u64.to_le_bytes(),
+    );
+    put(&mut bytes, cgame_state::PROVINCES + 8, &3_u32.to_le_bytes());
+    put(
+        &mut bytes,
+        cgame_state::PROVINCES + 12,
+        &3_u32.to_le_bytes(),
+    );
+    put(&mut bytes, 0x300, &u64::MAX.to_le_bytes());
+    put(&mut bytes, 0x308, &0x1400_u64.to_le_bytes());
+    put(&mut bytes, 0x310, &0x1600_u64.to_le_bytes());
+    for (offset, id, state, controller) in [
+        (0x400, 1_u32, 0x1a00_u64, 0xf123_4567_u32),
+        (0x600, 2_u32, 0_u64, 0_u32),
+    ] {
+        put(&mut bytes, offset, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, offset + ID, &id.to_le_bytes());
+        put(&mut bytes, offset + STATE, &state.to_le_bytes());
+        put(&mut bytes, offset + CONTROLLER, &controller.to_le_bytes());
+        put_movement(
+            &mut bytes,
+            offset,
+            id,
+            0x800 + (id as usize - 1) * 0x100,
+            0xb00,
+        );
+    }
+    put(
+        &mut bytes,
+        0xa00,
+        &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(&mut bytes, 0xa00 + cstate::ID, &99_u32.to_le_bytes());
+    put(
+        &mut bytes,
+        0xa00 + cstate::OWNER,
+        &0xfedc_ba98_u32.to_le_bytes(),
+    );
+    bytes
+}
+
+struct FaultMemory<'a> {
+    bytes: &'a [u8],
+    blocked: std::ops::Range<usize>,
+}
+
+impl Memory for FaultMemory<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if address < self.blocked.end && address + destination.len() > self.blocked.start {
+            // A guarded copy may partially fill its failed destination.
+            destination[0] = 0xff;
+            return false;
+        }
+        SliceMemory {
+            base: 0x1000,
+            bytes: self.bytes,
+        }
+        .copy(address, destination)
+    }
+}
+
+#[test]
+fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
+    let bytes = provinces();
+    for blocked in [
+        0x1408..0x1438,
+        0x143c..0x14a4,
+        // +0xB0 (the border-conflict set size) and +0xD8 are now read.
+        0x14a8..0x14b0,
+        0x1a08..0x1a58,
+        0x1a5c..0x1ac8,
+    ] {
+        let memory = FaultMemory {
+            bytes: &bytes,
+            blocked,
+        };
+        let mut rows = [Row::default(); 2];
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut rows),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(
+            rows,
+            [
+                Row {
+                    id: 1,
+                    state: 99,
+                    owner: 0xfedc_ba98,
+                    controller: 0xf123_4567,
+                    victory_points: 0,
+                    fort_positive: 0,
+                    move_gate: Row::MOVE_NULL_OWNER_AREA,
+                    port_sea: 0,
+                },
+                Row {
+                    id: 2,
+                    state: 0,
+                    owner: 0,
+                    controller: 0,
+                    victory_points: 0,
+                    fort_positive: 0,
+                    move_gate: 0,
+                    port_sea: 0,
+                },
+            ]
+        );
+    }
+}
+
+#[test]
+fn each_unreadable_field_keeps_its_existing_reason() {
+    let bytes = provinces();
+    for (address, reason) in [
+        (0x1400, "province vtable mismatch"),
+        (0x14a4, "province id unreadable"),
+        (0x14c0, "province state unreadable"),
+        (0x1588, "province controller unreadable"),
+        (0x1438, "province victory points unreadable"),
+        (0x1a00, "state vtable mismatch"),
+        (0x1a58, "state id unreadable"),
+        (0x1ac8, "state owner unreadable"),
+    ] {
+        let memory = FaultMemory {
+            bytes: &bytes,
+            blocked: address..address + 1,
+        };
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+            Outcome::Unavailable { reason }
+        );
+    }
+}
+
+#[test]
+fn current_victory_points_preserve_signed_word_and_transition_to_zero() {
+    let mut bytes = provinces();
+    put(
+        &mut bytes,
+        0x400 + VICTORY_POINTS + 4,
+        &u32::MAX.to_le_bytes(),
+    );
+    let mut rows = [Row::default(); 2];
+    for value in [i32::MAX, i32::MIN, -1, 0] {
+        put(&mut bytes, 0x400 + VICTORY_POINTS, &value.to_le_bytes());
+        let memory = FaultMemory {
+            bytes: &bytes,
+            // A native i64 load would include this unrelated next dword.
+            blocked: 0x400 + 0x1000 + VICTORY_POINTS + 4..0x400 + 0x1000 + VICTORY_POINTS + 8,
+        };
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut rows),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(rows[0].victory_points, value);
+        assert_eq!(rows[1].victory_points, 0);
+    }
+}
+
+#[test]
+fn earlier_semantic_mismatches_precede_later_copy_failures() {
+    for (offset, value, blocked, reason) in [
+        (0x400, 0_u32, 0x1588, "province vtable mismatch"),
+        (0x4a4, 3_u32, 0x14c0, "province id differs from slot"),
+        (0xa00, 0_u32, 0x1ac8, "state vtable mismatch"),
+        (0xa58, 0_u32, 0x1ac8, "non-null state has zero id"),
+    ] {
+        let mut bytes = provinces();
+        put(&mut bytes, offset, &value.to_le_bytes());
+        let memory = FaultMemory {
+            bytes: &bytes,
+            blocked: blocked..blocked + 1,
+        };
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+            Outcome::Unavailable { reason }
+        );
+    }
+}
+
+#[test]
+fn output_capacity_still_skips_row_fields_but_checks_remaining_pointers() {
+    let bytes = provinces();
+    let memory = FaultMemory {
+        bytes: &bytes,
+        blocked: 0x1600..0x1608,
+    };
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut [Row::default(); 1]),
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 1
+        }
+    );
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+        Outcome::Unavailable {
+            reason: "province vtable mismatch"
+        }
+    );
+    let memory = FaultMemory {
+        bytes: &bytes,
+        blocked: 0x1310..0x1318,
+    };
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut [Row::default(); 1]),
+        Outcome::Unavailable {
+            reason: "table pointer unreadable"
+        }
+    );
+}
+
+#[test]
+fn address_overflow_keeps_the_original_field_and_semantic_precedence() {
+    struct SparseMemory<'a> {
+        bytes: &'a [u8],
+        fields: &'a [(usize, &'a [u8])],
+    }
+    impl Memory for SparseMemory<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if let Some((_, source)) = self
+                .fields
+                .iter()
+                .find(|(at, source)| *at == address && source.len() == destination.len())
+            {
+                destination.copy_from_slice(source);
+                true
+            } else {
+                SliceMemory {
+                    base: 0x1000,
+                    bytes: self.bytes,
+                }
+                .copy(address, destination)
+            }
+        }
+    }
+    let mut bytes = provinces();
+    let pointer = usize::MAX - 0x100;
+    put(&mut bytes, 0x308, &(pointer as u64).to_le_bytes());
+    let vtable = (VTABLE_RVA as u64).to_le_bytes();
+    let no_state = 0_u64.to_le_bytes();
+    for (id, reason) in [
+        (1_u32, "province address overflow"),
+        (2_u32, "province id differs from slot"),
+    ] {
+        let id = id.to_le_bytes();
+        let fields: &[(usize, &[u8])] = &[
+            (pointer, &vtable),
+            (pointer + ID, &id),
+            (pointer + STATE, &no_state),
+        ];
+        let memory = SparseMemory {
+            bytes: &bytes,
+            fields,
+        };
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+            Outcome::Unavailable { reason }
+        );
+    }
+    let mut bytes = provinces();
+    let pointer = usize::MAX - 0xa0;
+    put(&mut bytes, 0x400 + STATE, &(pointer as u64).to_le_bytes());
+    let vtable = (cstate::VTABLE_RVA as u64).to_le_bytes();
+    for (id, reason) in [
+        (99_u32, "state owner unreadable"),
+        (0_u32, "non-null state has zero id"),
+    ] {
+        let id = id.to_le_bytes();
+        let fields: &[(usize, &[u8])] = &[(pointer, &vtable), (pointer + cstate::ID, &id)];
+        let memory = SparseMemory {
+            bytes: &bytes,
+            fields,
+        };
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+            Outcome::Unavailable { reason }
+        );
+    }
+}
+
+#[test]
+fn movement_operands_sum_native_forts() {
+    use crate::{cbuilding, cbuilding_template};
+    // Province 1 carries two buildings sharing one template, so the fort
+    // sum is the native signed healthy-level product, not a count.
+    let build = |first: i16, second: i16, weight: i32| {
+        let mut bytes = provinces();
+        bytes.resize(0x4000, 0);
+        put(&mut bytes, 0x5e0, &0x2000_u64.to_le_bytes());
+        put(&mut bytes, 0x5e8, &2_u32.to_le_bytes());
+        put(&mut bytes, 0x5ec, &2_u32.to_le_bytes());
+        put(&mut bytes, 0x1000, &0x2100_u64.to_le_bytes());
+        put(&mut bytes, 0x1008, &0x2400_u64.to_le_bytes());
+        for (building, healthy) in [(0x1100, first), (0x1400, second)] {
+            put(
+                &mut bytes,
+                building + cbuilding::HEALTHY_LEVEL,
+                &healthy.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                building + cbuilding::TEMPLATE,
+                &0x3000_u64.to_le_bytes(),
+            );
+        }
+        put(
+            &mut bytes,
+            0x2000 + cbuilding_template::MOVEMENT_FORT_WEIGHT,
+            &weight.to_le_bytes(),
+        );
+        bytes
+    };
+    for (first, second, weight, fort_positive) in
+        [(2, -1, 3, 1), (1, -1, 3, 0), (0, 0, 3, 0), (5, 0, 0, 0)]
+    {
+        let bytes = build(first, second, weight);
+        let mut rows = [Row::default(); 2];
+        assert_eq!(
+            walk(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes
+                },
+                0,
+                0x1000,
+                &mut rows
+            ),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(rows[0].fort_positive, fort_positive);
+        // The second province has no buildings at all.
+        assert_eq!(rows[1].fort_positive, 0);
+    }
+}
+
+#[test]
+fn fort_scratch_keeps_exact_pointer_field_and_fault_order_across_short_batches() {
+    use crate::{cbuilding, cbuilding_template};
+    const POINTERS: usize = 0x2000;
+    const BUILDINGS: usize = 0x4000;
+    const TEMPLATE: usize = 0x18000;
+    let weight = TEMPLATE + cbuilding_template::MOVEMENT_FORT_WEIGHT;
+    let mut bytes = vec![0_u8; 0x19000];
+    for index in 0..65 {
+        let building = BUILDINGS + index * 0x200;
+        put(
+            &mut bytes,
+            POINTERS - 0x1000 + index * 8,
+            &(building as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            building - 0x1000 + cbuilding::HEALTHY_LEVEL,
+            &1_i16.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            building - 0x1000 + cbuilding::TEMPLATE,
+            &(TEMPLATE as u64).to_le_bytes(),
+        );
+    }
+    put(&mut bytes, weight - 0x1000, &3_i32.to_le_bytes());
+    let array = |count| Array {
+        data: POINTERS,
+        count,
+    };
+    let expected = |count: usize| {
+        let mut reads = Vec::new();
+        for first in (0..count).step_by(BATCH_ROWS) {
+            let end = count.min(first + BATCH_ROWS);
+            reads.extend((first..end).map(|index| {
+                (
+                    POINTERS + index * 8,
+                    8,
+                    "province building pointer unreadable",
+                )
+            }));
+            for index in first..end {
+                let building = BUILDINGS + index * 0x200;
+                reads.extend([
+                    (
+                        building + cbuilding::HEALTHY_LEVEL,
+                        2,
+                        "province building fields unreadable",
+                    ),
+                    (
+                        building + cbuilding::TEMPLATE,
+                        8,
+                        "province building fields unreadable",
+                    ),
+                ]);
+            }
+            if first == 0 {
+                reads.push((weight, 4, "province building fort weight unreadable"));
+            }
+        }
+        reads
+    };
+    for count in [0, 1, 2, 63, 64, 65] {
+        let trace = expected(count);
+        let addresses: Vec<_> = trace
+            .iter()
+            .map(|&(address, len, _)| (address, len))
+            .collect();
+        let memory = dense_trace(&bytes, None);
+        assert_eq!(
+            MovementBatch::new().fort_positive(&memory, array(count as u32)),
+            Ok(u8::from(count != 0))
+        );
+        assert_eq!(*memory.reads.borrow(), addresses);
+        for (index, &(address, len, reason)) in trace.iter().enumerate() {
+            for fault in [address, address + len - 1] {
+                let memory = dense_trace(&bytes, Some(fault));
+                let mut movement = MovementBatch::new();
+                movement.building_pointers.fill(usize::MAX);
+                movement.building_indirect.fill(0xff);
+                movement.building_fields.fill(0xff);
+                assert_eq!(
+                    movement.fort_positive(&memory, array(count as u32)),
+                    Err(reason)
+                );
+                assert_eq!(*memory.reads.borrow(), addresses[..=index]);
+            }
+        }
+    }
+    let mut movement = MovementBatch::new();
+    for count in [65, 1, 0, 2, 64, 1] {
+        let memory = dense_trace(&bytes, None);
+        assert_eq!(
+            movement.fort_positive(&memory, array(count)),
+            Ok(u8::from(count != 0))
+        );
+        let addresses: Vec<_> = expected(count as usize)
+            .into_iter()
+            .filter(|&(address, _, _)| count == 65 || address != weight)
+            .map(|(address, len, _)| (address, len))
+            .collect();
+        assert_eq!(*memory.reads.borrow(), addresses);
+    }
+    put(
+        &mut bytes,
+        BUILDINGS - 0x1000 + cbuilding::HEALTHY_LEVEL,
+        &(-1_i16).to_le_bytes(),
+    );
+    assert_eq!(
+        movement.fort_positive(&dense_trace(&bytes, None), array(1)),
+        Ok(0)
+    );
+    for (data, count, reason) in [
+        (usize::MAX, 2, "province building index invalid"),
+        (usize::MAX - 7, 1, "province building pointer unreadable"),
+        (0, 1, "province building pointer unreadable"),
+    ] {
+        let memory = dense_trace(&bytes, None);
+        assert_eq!(
+            movement.fort_positive(&memory, Array { data, count }),
+            Err(reason)
+        );
+        assert!(memory.reads.borrow().is_empty());
+    }
+}
+
+#[test]
+fn ownership_comes_from_the_state_and_raw_controller_zero_is_preserved() {
+    let mut bytes = vec![0_u8; 0x800];
+    let put = |bytes: &mut [u8], offset: usize, data: &[u8]| {
+        bytes[offset..offset + data.len()].copy_from_slice(data)
+    };
+    put(&mut bytes, 0x2b0, &0x1300_u64.to_le_bytes());
+    put(&mut bytes, 0x2b8, &2_u32.to_le_bytes());
+    put(&mut bytes, 0x2bc, &2_u32.to_le_bytes());
+    put(&mut bytes, 0x308, &0x1400_u64.to_le_bytes());
+    put(&mut bytes, 0x400, &(VTABLE_RVA as u64).to_le_bytes());
+    put(&mut bytes, 0x4a4, &1_u32.to_le_bytes());
+    put(&mut bytes, 0x4c0, &0x1600_u64.to_le_bytes());
+    put(
+        &mut bytes,
+        0x600,
+        &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(&mut bytes, 0x658, &7_u32.to_le_bytes());
+    put(&mut bytes, 0x6c8, &42_u32.to_le_bytes());
+    put_movement(&mut bytes, 0x400, 1, 0x100, 0x700);
+    let mut rows = [Row::default(); 2];
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(
+        rows[0],
+        Row {
+            id: 1,
+            state: 7,
+            owner: 42,
+            controller: 0,
+            victory_points: 0,
+            fort_positive: 0,
+            move_gate: Row::MOVE_NULL_OWNER_AREA,
+            port_sea: 0,
+        }
+    );
+    bytes[0x400] ^= 1;
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Unavailable {
+            reason: "province vtable mismatch"
+        }
+    );
+    bytes[0x400] ^= 1;
+    bytes[0x308..0x310].fill(0);
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Unavailable {
+            reason: "province table has no readable provinces"
+        }
+    );
+    bytes[0x2bc..0x2c0].copy_from_slice(&1_u32.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Unavailable {
+            reason: "province table has no province slots"
+        }
+    );
+}
+// Frozen pre-record-gather acquisition, independent of the dense branch.
+fn scattered_reference_read(
+    batch: &mut ProvinceBatch,
+    memory: &impl Memory,
+    array: Array,
+    first: u32,
+    capacity: usize,
+) {
+    batch.len = ((array.count - first) as usize).min(BATCH_ROWS);
+    let addresses = std::array::from_fn(|slot| {
+        if slot < batch.len {
+            array.element(first + slot as u32, 8).unwrap_or(0)
+        } else {
+            0
+        }
+    });
+    let mut destinations = batch.pointers.each_mut().map(|bytes| bytes.as_mut_slice());
+    for destination in &mut destinations[batch.len..] {
+        *destination = &mut [];
+    }
+    batch.pointer_count = memory
+        .copy_scattered(addresses, &mut destinations)
+        .min(batch.len);
+
+    // Only rows that fit may have their bodies read. Null holes use no row
+    // capacity; roots beyond capacity remain checked for honest truncation.
+    let mut remaining = capacity;
+    let enabled: [bool; BATCH_ROWS] = std::array::from_fn(|slot| {
+        if slot >= batch.pointer_count || batch.pointer(slot) == 0 || remaining == 0 {
+            false
+        } else {
+            remaining -= 1;
+            true
+        }
+    });
+    if !enabled.iter().any(|&value| value) {
+        batch.field_count = BATCH_ROWS * FIELDS_PER_ROW;
+        return;
+    }
+    let addresses: [usize; BATCH_ROWS * FIELDS_PER_ROW] = std::array::from_fn(|field| {
+        let slot = field / FIELDS_PER_ROW;
+        if enabled[slot] {
+            batch
+                .pointer(slot)
+                .checked_add([0, ID, STATE, CONTROLLER, VICTORY_POINTS][field % FIELDS_PER_ROW])
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    });
+    let mut destinations = batch
+        .fields
+        .each_mut()
+        .into_iter()
+        .enumerate()
+        .map(|(field, bytes)| {
+            &mut bytes[..if enabled[field / FIELDS_PER_ROW] {
+                [8, 4, 8, 4, 4][field % FIELDS_PER_ROW]
+            } else {
+                0
+            }]
+        });
+    batch.field_count = memory.copy_scattered(
+        addresses,
+        &mut std::array::from_fn(|_| destinations.next().unwrap()),
+    );
+}
+
+fn scattered_reference_walk(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut [Row],
+) -> Outcome {
+    let Some(array) = game_state
+        .checked_add(cgame_state::PROVINCES)
+        .and_then(|p| Array::read(memory, p, 8))
+    else {
+        return Outcome::Unavailable {
+            reason: "province array unreadable or invalid",
+        };
+    };
+    if array.count < 2 {
+        return Outcome::Unavailable {
+            reason: "province table has no province slots",
+        };
+    }
+    let mut states = StateCache::new();
+    let mut batch = ProvinceBatch::new();
+    let mut movement = MovementBatch::new();
+    let mut pointers = [0_usize; BATCH_ROWS];
+    let mut ids = [0_u32; BATCH_ROWS];
+    let mut fields = [MovementFields::default(); BATCH_ROWS];
+    let mut first = 1;
+    let mut len = 0;
+    let mut unread_rows = 0;
+    while first < array.count {
+        scattered_reference_read(&mut batch, memory, array, first, output.len() - len);
+        let admitted = len;
+        let mut staged = 0;
+        for slot in 0..batch.pointer_count {
+            if batch.pointer(slot) == 0 {
+                continue;
+            }
+            if len == output.len() {
+                unread_rows += 1;
+                continue;
+            }
+            match batch.row(memory, base, first + slot as u32, slot, &mut states) {
+                Ok(row) => {
+                    output[len] = row;
+                    pointers[staged] = batch.pointer(slot);
+                    ids[staged] = row.id;
+                    staged += 1;
+                    len += 1;
+                }
+                Err(reason) => return Outcome::Unavailable { reason },
+            }
+        }
+        if staged != 0
+            && let Err(reason) = movement.read(
+                memory,
+                &pointers[..staged],
+                &ids[..staged],
+                &mut fields[..staged],
+            )
+        {
+            return Outcome::Unavailable { reason };
+        }
+        for (row, fields) in output[admitted..len].iter_mut().zip(&fields[..staged]) {
+            row.fort_positive = fields.fort_positive;
+            row.move_gate = fields.move_gate;
+            row.port_sea = fields.port_sea;
+        }
+        if batch.pointer_count < batch.len {
+            return Outcome::Unavailable {
+                reason: if array
+                    .element(first + batch.pointer_count as u32, 8)
+                    .is_none()
+                {
+                    "table address overflow"
+                } else {
+                    "table pointer unreadable"
+                },
+            };
+        }
+        first += batch.len as u32;
+    }
+    if unread_rows != 0 {
+        Outcome::Truncated { len, unread_rows }
+    } else if len == 0 {
+        Outcome::Unavailable {
+            reason: "province table has no readable provinces",
+        }
+    } else {
+        Outcome::Rows { len }
+    }
+}
+
+/// The fixture bytes at base 0x1000, plus the one reference-registry root
+/// cell the conflict walk reads from the module image.
+struct ConflictMemory {
+    bytes: Vec<u8>,
+    root: [u8; 8],
+}
+
+const REGISTRY_ROOT: usize =
+    crate::creference_registry::LOW_ROOTS_RVA + crate::corders_group::REFERENCE_TYPE as usize * 8;
+
+impl Memory for ConflictMemory {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if address == REGISTRY_ROOT && destination.len() == 8 {
+            destination.copy_from_slice(&self.root);
+            return true;
+        }
+        SliceMemory {
+            base: 0x1000,
+            bytes: &self.bytes,
+        }
+        .copy(address, destination)
+    }
+}
+
+/// Province 2 of `many_provinces(3)` holds one border-war combat whose
+/// defending side fights for a group at border war (handle id 57) and whose
+/// attacking side names a group that is not (id 58). Offsets are fixture
+/// offsets; the memory base is 0x1000.
+fn conflict_fixture() -> ConflictMemory {
+    use crate::{
+        cland_border_war_combat, cland_border_war_combatant, cland_combat, corders_group,
+        creference_registry as registry, msvc_tree_node as node, province_definition,
+        reference_bucket as bucket,
+    };
+    let mut bytes = many_provinces(3);
+    bytes.resize(0x1c000, 0);
+    let at = |offset: usize| (offset + 0x1000) as u64;
+    let province = 0x1200;
+    // Province 2's definition: 0xa100. A land province with an owner area.
+    put(
+        &mut bytes,
+        0xa100 + province_definition::PORT_SEA,
+        &77_i32.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        province + OWNER_AREA,
+        &at(0x11000).to_le_bytes(),
+    );
+    let (head, leaf, combat) = (0x10000, 0x10040, 0x10100);
+    put(
+        &mut bytes,
+        province + BORDER_CONFLICT_TREE,
+        &at(head).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        province + BORDER_CONFLICT_NONZERO_QWORD,
+        &1_u64.to_le_bytes(),
+    );
+    for link in [node::LEFT, node::PARENT, node::RIGHT] {
+        put(&mut bytes, head + link, &at(leaf).to_le_bytes());
+        put(&mut bytes, leaf + link, &at(head).to_le_bytes());
+    }
+    bytes[head + node::NIL] = 1;
+    put(&mut bytes, leaf + node::PAYLOAD, &at(combat).to_le_bytes());
+    put(
+        &mut bytes,
+        combat,
+        &(cland_border_war_combat::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    // One registry with eight buckets (overflow 5, sentinel at 13).
+    let (table, entries) = (0x1a000, 0x1a100);
+    put(
+        &mut bytes,
+        table + registry::ENTRIES,
+        &at(entries).to_le_bytes(),
+    );
+    put(&mut bytes, table + registry::COUNT, &2_u32.to_le_bytes());
+    put(&mut bytes, table + registry::MASK, &7_u32.to_le_bytes());
+    bytes[table + registry::OVERFLOW_DISTANCE] = 5;
+    bytes[entries + 13 * bucket::STRIDE + bucket::DISTANCE] = bucket::TERMINAL_DISTANCE;
+    for (side, offset, group, id, border_war) in [
+        (0x16000, cland_combat::DEFENDER, 0x18000, 57_u32, 1_u64),
+        (0x17000, cland_combat::ATTACKER, 0x19000, 58, 0),
+    ] {
+        put(&mut bytes, combat + offset, &at(side).to_le_bytes());
+        put(
+            &mut bytes,
+            side,
+            &(cland_border_war_combatant::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        let handle = (u64::from(id) << 32) | u64::from(corders_group::REFERENCE_TYPE);
+        put(
+            &mut bytes,
+            side + BORDER_WAR_SIDE_GROUP,
+            &handle.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            group,
+            &(corders_group::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            group + corders_group::HANDLE,
+            &handle.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            group + corders_group::BORDER_WAR,
+            &border_war.to_le_bytes(),
+        );
+        let hash = handle
+            .rotate_left(32)
+            .wrapping_mul(registry::HASH_MULTIPLIER);
+        let cell = entries + ((((hash >> 32) as u32 ^ hash as u32) & 7) as usize) * 0x18;
+        bytes[cell + bucket::DISTANCE] = 1;
+        put(&mut bytes, cell + bucket::TYPE, &handle.to_le_bytes());
+        put(&mut bytes, cell + bucket::OBJECT, &at(group).to_le_bytes());
+    }
+    ConflictMemory {
+        bytes,
+        root: at(table).to_le_bytes(),
+    }
+}
+
+fn conflict_walk(
+    memory: &ConflictMemory,
+    rows: usize,
+    groups: usize,
+) -> (Outcome, ConflictWalk, Vec<Row>, Vec<ConflictRow>, Vec<u64>) {
+    let mut output = vec![Row::default(); 4];
+    let mut conflicts = vec![ConflictRow::default(); rows];
+    let mut handles = vec![0; groups];
+    let (outcome, walk) = walk_with_conflicts(
+        memory,
+        0,
+        0x1000,
+        &mut output,
+        ConflictOutput {
+            rows: &mut conflicts,
+            groups: &mut handles,
+        },
+    );
+    (outcome, walk, output, conflicts, handles)
+}
+
+#[test]
+fn border_conflicts_admit_only_resolved_groups_at_border_war() {
+    let memory = conflict_fixture();
+    let (outcome, walk, rows, conflicts, handles) = conflict_walk(&memory, 2, 2);
+    assert_eq!(outcome, Outcome::Rows { len: 3 });
+    assert_eq!(
+        (rows[1].move_gate, rows[1].port_sea),
+        (Row::MOVE_BORDER_CONFLICT, 77)
+    );
+    assert_eq!(rows[0].move_gate, Row::MOVE_NULL_OWNER_AREA);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+    assert_eq!((walk.groups_len, walk.required_groups), (1, 1));
+    assert_eq!(
+        conflicts[0],
+        ConflictRow {
+            province: 2,
+            groups_start: 0,
+            groups_len: 1,
+        }
+    );
+    assert_eq!(
+        handles[0],
+        (57_u64 << 32) | u64::from(crate::corders_group::REFERENCE_TYPE)
+    );
+    // No row fits: the conflict is counted, the provinces stay complete.
+    let (outcome, walk, ..) = conflict_walk(&memory, 0, 2);
+    assert_eq!(outcome, Outcome::Rows { len: 3 });
+    assert_eq!(
+        walk.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 1
+        }
+    );
+}
+
+#[test]
+fn a_broken_conflict_set_fails_its_table_without_the_provinces() {
+    for (offset, value) in [
+        // The set claims two combats but links one.
+        (0x1200 + BORDER_CONFLICT_NONZERO_QWORD, 2_u64),
+        // The head is not its sentinel.
+        (0x10000 + crate::msvc_tree_node::NIL, 0),
+        // The node holds something other than a land combat.
+        (0x10100, 0),
+    ] {
+        let mut memory = conflict_fixture();
+        put(
+            &mut memory.bytes,
+            offset,
+            &value.to_le_bytes()[..if offset == 0x10000 + crate::msvc_tree_node::NIL {
+                1
+            } else {
+                8
+            }],
+        );
+        let (outcome, walk, ..) = conflict_walk(&memory, 2, 2);
+        assert_eq!(outcome, Outcome::Rows { len: 3 });
+        assert!(
+            matches!(walk.outcome, Outcome::Unavailable { .. }),
+            "{offset:#x}"
+        );
+    }
+    // A reference that resolves to nothing admits nobody.
+    let mut memory = conflict_fixture();
+    memory.root = [0; 8];
+    let (_, walk, _, conflicts, _) = conflict_walk(&memory, 2, 2);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(conflicts[0].groups_len, 0);
+}
+
+fn dense_trace(bytes: &[u8], blocked: Option<usize>) -> TracedMemory<'_> {
+    TracedMemory {
+        bytes,
+        blocked,
+        guards: std::cell::Cell::new(0),
+        reads: std::cell::RefCell::new(Vec::new()),
+    }
+}
+
+#[test]
+fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
+    let bytes = many_provinces(2);
+    let memory = dense_trace(&bytes, None);
+    let mut packet = GeometryPacket::with_capacities(GeometryCapacities {
+        provinces: 2,
+        neighbour_entries: 0,
+    });
+    packet.begin(&memory, 0, 0x1000).unwrap();
+    assert_eq!(packet.acquire_flags(&memory, 1), Ok(1));
+    assert_eq!(packet.adjacency(&memory, 1).unwrap().1.count, 0);
+    assert_eq!(packet.acquire_definition(&memory, 1), Ok(0xb000));
+    assert_eq!(packet.acquire_pointer(&memory, 1), Ok(0x2000));
+    assert_eq!(packet.acquire_route_pointer(&memory, 1), Ok(0x2000));
+    assert_eq!(packet.acquire_province_id(&memory, 0x2000), Ok(1));
+    assert_eq!(
+        *memory.reads.borrow(),
+        [
+            (0x1000 + cgame_state::PROVINCES, 16),
+            (0x1308, 8),
+            (0x2000, 8),
+            (0x2000 + ID, 4),
+            (0x2000 + DEFINITION, 8),
+            (0xb000 + crate::province_definition::ID, 4),
+            (0xb000 + crate::province_definition::TERRAIN_FLAGS, 1),
+            (0xb000 + crate::province_definition::NEIGHBOURS, 16),
+        ]
+    );
+
+    // Requested slot 1 claims ID 2. Its observed-ID backlink remains an
+    // independent gate, even though slot 1 and its index are already owned.
+    for (alias, blocked, capacity, reason) in [
+        (false, None, 2, "unit geometry province differs from census"),
+        (true, None, 2, "unit geometry province identity mismatch"),
+        (
+            true,
+            Some(0x1310),
+            2,
+            "unit geometry province outside census or unreadable",
+        ),
+        (true, None, 1, "unit geometry province capacity exhausted"),
+    ] {
+        let mut bytes = many_provinces(2);
+        put(&mut bytes, 0x1000 + ID, &2_u32.to_le_bytes());
+        if alias {
+            put(&mut bytes, 0x310, &0x2000_u64.to_le_bytes());
+        }
+        let memory = dense_trace(&bytes, blocked);
+        let mut packet = GeometryPacket::with_capacities(GeometryCapacities {
+            provinces: capacity,
+            neighbour_entries: 0,
+        });
+        packet.begin(&memory, 0, 0x1000).unwrap();
+        assert_eq!(packet.acquire_flags(&memory, 1), Err(reason));
+        assert_eq!(packet.acquire_definition(&memory, 1), Err(reason));
+        assert_eq!(packet.acquire_pointer(&memory, 1), Err(reason));
+        assert_eq!(packet.acquire_route_pointer(&memory, 1), Err(reason));
+        let mut expected = vec![
+            (0x1000 + cgame_state::PROVINCES, 16),
+            (0x1308, 8),
+            (0x2000, 8),
+            (0x2000 + ID, 4),
+        ];
+        if capacity == 2 {
+            expected.push((0x1310, 8));
+        }
+        assert_eq!(*memory.reads.borrow(), expected);
+        assert_eq!(packet.required_capacities().provinces, 2);
+    }
+
+    // A successful route lookup of slot zero cannot relax the stricter
+    // endpoint rule when the completed identity is reused.
+    let mut bytes = many_provinces(2);
+    put(&mut bytes, 0x300, &0x2000_u64.to_le_bytes());
+    put(&mut bytes, 0x1000 + ID, &0_u32.to_le_bytes());
+    let memory = dense_trace(&bytes, None);
+    packet.begin(&memory, 0, 0x1000).unwrap();
+    assert_eq!(packet.acquire_route_pointer(&memory, 0), Ok(0x2000));
+    let reads = memory.reads.borrow().len();
+    assert_eq!(
+        packet.acquire_province_id(&memory, 0x2000),
+        Err("unit geometry province identity mismatch")
+    );
+    assert_eq!(memory.reads.borrow().len(), reads);
+}
+
+fn compare_dense_walk(bytes: &[u8], blocked: Option<usize>, capacity: usize) {
+    let current = dense_trace(bytes, blocked);
+    let reference = dense_trace(bytes, blocked);
+    let sentinel = Row {
+        id: 71,
+        state: 72,
+        owner: 73,
+        controller: 74,
+        victory_points: -75,
+        ..Row::default()
+    };
+    let mut rows = vec![sentinel; capacity];
+    let mut old_rows = rows.clone();
+    assert_eq!(
+        walk(&current, 0, 0x1000, &mut rows),
+        scattered_reference_walk(&reference, 0, 0x1000, &mut old_rows),
+        "capacity {capacity}, fault {blocked:?}"
+    );
+    assert_eq!(rows, old_rows);
+    assert_eq!(*current.reads.borrow(), *reference.reads.borrow());
+    assert_eq!(current.guards.get(), reference.guards.get());
+}
+
+#[test]
+fn dense_records_match_scattered_walk_windows_capacity_faults_and_state_order() {
+    for count in [1, 2, 63, 64, 65, 67] {
+        let bytes = many_provinces(count);
+        for capacity in [0, 1, count - 1, count, count + 1] {
+            compare_dense_walk(&bytes, None, capacity);
+        }
+        // First/last-byte failure at every root, exact field and state read.
+        let trace = dense_trace(&bytes, None);
+        let _ = scattered_reference_walk(&trace, 0, 0x1000, &mut vec![Row::default(); count]);
+        for &(address, width) in trace.reads.borrow().iter() {
+            for fault in [address, address + width - 1] {
+                compare_dense_walk(&bytes, Some(fault), count);
+            }
+        }
+    }
+
+    let mut bytes = many_provinces(67);
+    for slot in [1, 32, 64, 67] {
+        put(&mut bytes, 0x300 + slot * 8, &0_u64.to_le_bytes());
+    }
+    for capacity in [0, 1, 32, 63, 67] {
+        compare_dense_walk(&bytes, None, capacity);
+        compare_dense_walk(&bytes, Some(0x1300 + 65 * 8), capacity);
+    }
+    // A current state error still wins over a later prefetched field fault.
+    let mut bytes = many_provinces(65);
+    put(&mut bytes, 0x12000 + cstate::ID, &0_u32.to_le_bytes());
+    compare_dense_walk(&bytes, Some(0x2200 + VICTORY_POINTS), 65);
+    // Current state authentication still occurs before the first VP error.
+    let mut bytes = many_provinces(2);
+    put(&mut bytes, 0x12000, &0_u64.to_le_bytes());
+    compare_dense_walk(&bytes, Some(0x2000 + VICTORY_POINTS), 2);
+}
+
+#[test]
+fn dense_records_preserve_dirty_backing_empty_tails_and_changing_duplicate_reads() {
+    struct Changing<'a> {
+        inner: TracedMemory<'a>,
+        controllers: std::cell::Cell<u32>,
+    }
+    impl Memory for Changing<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if !self.inner.copy(address, destination) {
+                return false;
+            }
+            if address == 0x2000 + CONTROLLER && destination.len() == 4 {
+                self.controllers.set(self.controllers.get() + 1);
+                destination.copy_from_slice(&self.controllers.get().to_le_bytes());
+            }
+            true
+        }
+    }
+    for count in [0, 1, 2, 63, 64] {
+        for capacity in [0, 1, count, count + 1] {
+            for hole in [false, true] {
+                let mut bytes = many_provinces(count);
+                if count > 1 {
+                    put(
+                        &mut bytes,
+                        0x300 + 2 * 8,
+                        &(if hole { 0_u64 } else { 0x2000_u64 }).to_le_bytes(),
+                    );
+                }
+                for blocked in [None, Some(0x2000 + CONTROLLER), Some(0x1300 + 8 * count)] {
+                    let current = Changing {
+                        inner: dense_trace(&bytes, blocked),
+                        controllers: std::cell::Cell::new(0),
+                    };
+                    let reference = Changing {
+                        inner: dense_trace(&bytes, blocked),
+                        controllers: std::cell::Cell::new(0),
+                    };
+                    let mut batch = ProvinceBatch::new();
+                    let mut old = ProvinceBatch::new();
+                    batch.fields.fill([0xa5; 8]);
+                    old.fields.fill([0xa5; 8]);
+                    batch.pointers.fill([0x5a; 8]);
+                    old.pointers.fill([0x5a; 8]);
+                    let array = Array {
+                        data: 0x1300,
+                        count: count as u32 + 1,
+                    };
+                    batch.read(&current, array, 1, capacity);
+                    scattered_reference_read(&mut old, &reference, array, 1, capacity);
+                    assert_eq!(batch.fields, old.fields);
+                    assert_eq!(batch.pointers, old.pointers);
+                    assert_eq!(
+                        (batch.pointer_count, batch.field_count, batch.len),
+                        (old.pointer_count, old.field_count, old.len)
+                    );
+                    assert_eq!(
+                        *current.inner.reads.borrow(),
+                        *reference.inner.reads.borrow()
+                    );
+                    assert_eq!(current.controllers.get(), reference.controllers.get());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn dense_records_preserve_invalid_source_prefix_without_retry() {
+    struct AddressMemory {
+        pointer: usize,
+        reads: std::cell::RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for AddressMemory {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, destination.len()));
+            if address == 0x1308 {
+                destination.copy_from_slice(&(self.pointer as u64).to_le_bytes());
+                return true;
+            }
+            // Permit this synthetic first field so a following overflow
+            // must fail without retrying or skipping its earlier read.
+            if address == self.pointer && destination.len() == 8 {
+                destination.copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+                return true;
+            }
+            destination.fill(0xee);
+            false
+        }
+    }
+    for pointer in [0, 0x0000_8000_0000_0000, usize::MAX - 8, usize::MAX - 4] {
+        let current = AddressMemory {
+            pointer,
+            reads: std::cell::RefCell::new(Vec::new()),
+        };
+        let reference = AddressMemory {
+            pointer,
+            reads: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut batch = ProvinceBatch::new();
+        let mut old = ProvinceBatch::new();
+        batch.fields.fill([0xa5; 8]);
+        old.fields.fill([0xa5; 8]);
+        let array = Array {
+            data: 0x1300,
+            count: 2,
+        };
+        batch.read(&current, array, 1, 1);
+        scattered_reference_read(&mut old, &reference, array, 1, 1);
+        assert_eq!(batch.fields, old.fields);
+        assert_eq!(
+            (batch.pointer_count, batch.field_count),
+            (old.pointer_count, old.field_count)
+        );
+        assert_eq!(*current.reads.borrow(), *reference.reads.borrow());
+    }
+    // Directly exercise an invalid root extent; Array::from_header rejects
+    // this in a full walk, while the helper still preserves its prefix.
+    let current = AddressMemory {
+        pointer: 0x2000,
+        reads: std::cell::RefCell::new(Vec::new()),
+    };
+    let reference = AddressMemory {
+        pointer: 0x2000,
+        reads: std::cell::RefCell::new(Vec::new()),
+    };
+    let array = Array {
+        data: usize::MAX - 4,
+        count: 2,
+    };
+    let mut batch = ProvinceBatch::new();
+    let mut old = ProvinceBatch::new();
+    batch.read(&current, array, 1, 1);
+    scattered_reference_read(&mut old, &reference, array, 1, 1);
+    assert_eq!(
+        (batch.pointer_count, batch.field_count),
+        (old.pointer_count, old.field_count)
+    );
+    assert_eq!(*current.reads.borrow(), *reference.reads.borrow());
+}
