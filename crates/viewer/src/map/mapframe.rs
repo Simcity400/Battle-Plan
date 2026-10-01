@@ -95,10 +95,6 @@ impl FrameAssets {
             let mesh = roster.descriptors.resolve(&kind.entity).is_some();
             let reason = if let Some(error) = condition_error.as_deref() {
                 Some(error)
-            } else if roster.ambiguous.contains(&kind.entity)
-                || roster.unordered_clones.contains(&kind.entity)
-            {
-                Some("ambiguous descriptor or unordered clone")
             } else if !mesh && inherited.is_none() {
                 Some("no entity or mesh declaration")
             } else if !mesh

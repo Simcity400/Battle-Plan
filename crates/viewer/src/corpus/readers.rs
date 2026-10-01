@@ -400,22 +400,7 @@ fn interface(
         }
     }
     if let Some(roster) = log.read("mesh.roster", || layers.descriptor_roster()) {
-        for name in &roster.ambiguous {
-            log.about(
-                "mesh.roster",
-                Kind::Refused,
-                name,
-                "declared more than once",
-            );
-        }
-        for name in &roster.unordered_clones {
-            log.about(
-                "mesh.roster",
-                Kind::Refused,
-                name,
-                "clones an entry of another file",
-            );
-        }
+        log.notes("mesh.roster", Kind::Logged, &roster.logged);
         for unreadable in &roster.unreadable {
             log.note("mesh.roster", Kind::ParseFailure, unreadable.clone());
         }

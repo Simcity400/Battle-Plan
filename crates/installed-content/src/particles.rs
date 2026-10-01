@@ -25,7 +25,7 @@ const STARTUP_GFX: [&str; 3] = [
     "interface/core_bare_minimum.gfx",
 ];
 
-fn object_file_order(interface: &[String], gfx: &[String]) -> Vec<String> {
+pub(crate) fn object_file_order(interface: &[String], gfx: &[String]) -> Vec<String> {
     let mut files: Vec<_> = STARTUP_GFX
         .iter()
         .filter(|path| interface.iter().any(|file| file == **path))

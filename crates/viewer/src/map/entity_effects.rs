@@ -78,17 +78,12 @@ pub struct Lights {
     definitions: BTreeMap<String, Definition>,
 }
 impl Lights {
+    /// Every `light` the engine registers from `gfx/**/*.asset`, as the shared
+    /// descriptor roster holds them (`142338C30`, `1423C96F0`).
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
-        let doc = parser::parse(&layers.read_uncovered("gfx/entities/map_lights.asset")?)?;
+        let roster = layers.descriptor_roster()?;
         let mut definitions = BTreeMap::new();
-        for item in doc
-            .items
-            .iter()
-            .filter(|i| i.key.as_deref() == Some(b"light"))
-        {
-            let Some(v) = item.value.items() else {
-                continue;
-            };
+        for v in roster.lights.values() {
             let mut curves = BTreeMap::new();
             for a in v
                 .iter()

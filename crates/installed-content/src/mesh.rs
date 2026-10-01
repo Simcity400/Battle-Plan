@@ -1562,8 +1562,8 @@ pub struct Attachment {
 }
 
 impl Attachment {
-    /// What a `clone` overrides this attachment by: its own handle, or its
-    /// joint when the block names no handle.
+    /// The name `propagate_state` addresses the attachment by: its own
+    /// handle, or its joint when the block names no handle.
     pub fn handle(&self) -> &str {
         if self.name.is_empty() {
             &self.joint
@@ -1755,8 +1755,9 @@ pub struct InheritedEntity<'a> {
     pub scale: Option<f32>,
     /// `default_state`, from the nearest link that declares one.
     pub default_state: Option<&'a str>,
-    /// Every attachment reachable through the chain, the nearest declaration of
-    /// each `name` winning, in the order the nearest link declares them.
+    /// Every attachment reachable through the chain, merged down it as each
+    /// clone merges its own (`14227CEF0`): a declaration replaces the held
+    /// one of its slot where it stands, a new slot is appended.
     pub attachments: Vec<&'a Attachment>,
     /// State name to animation id, the nearest declaration winning.
     pub states: BTreeMap<&'a str, Vec<&'a EntityState>>,
@@ -1788,20 +1789,13 @@ impl Descriptors {
         let mut out = InheritedEntity::default();
         let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
         let mut current = self.entities.get(name)?;
+        let mut chain = Vec::new();
         for _ in 0..=self.entities.len() {
+            chain.push(current);
             out.mesh = out.mesh.or(current.mesh.as_deref());
             out.scale = out.scale.or(current.scale);
             out.game_data = out.game_data.or(current.game_data.as_ref());
             out.default_state = out.default_state.or(current.default_state.as_deref());
-            for attachment in &current.attachments {
-                if !out
-                    .attachments
-                    .iter()
-                    .any(|held| held.handle() == attachment.handle())
-                {
-                    out.attachments.push(attachment);
-                }
-            }
             out.get_state_from_parent = out.get_state_from_parent.or(current.get_state_from_parent);
             for (name, locator) in &current.locators {
                 out.locators.entry(name).or_insert(locator);
@@ -1823,6 +1817,19 @@ impl Descriptors {
                 break;
             };
             current = parent;
+        }
+        // From the farthest ancestor down, as each clone's merge left them.
+        for link in chain.into_iter().rev() {
+            for attachment in &link.attachments {
+                match out
+                    .attachments
+                    .iter()
+                    .position(|held| same_slot(held, attachment))
+                {
+                    Some(at) => out.attachments[at] = attachment,
+                    None => out.attachments.push(attachment),
+                }
+            }
         }
         Some(out)
     }
@@ -1902,29 +1909,6 @@ impl Descriptors {
             scale: entity.scale,
         })
     }
-}
-
-/// Reads the `pdxmesh` and `entity` blocks of the named descriptor files.
-///
-/// Descriptors below `gfx` are covered and verified; any other file goes
-/// through [`ResolvedLayers::read_uncovered`] unverified.
-///
-/// A file that is not present is skipped rather than refused, so a descriptor
-/// a DLC layer adds can be listed unconditionally. Errors are named for a file
-/// that is present but does not parse.
-pub fn read_descriptors(layers: &ResolvedLayers, paths: &[&str]) -> io::Result<Descriptors> {
-    let mut out = Descriptors::default();
-    for path in paths {
-        let bytes = match layers.read_uncovered(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        let document =
-            parser::parse(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
-        let _ = collect(&document, path, &mut out);
-    }
-    Ok(out)
 }
 
 /// Reads the blocks of one already-read descriptor file. `path` is the file's
@@ -2013,76 +1997,371 @@ pub fn balanced_blocks(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Every descriptor the engine loads from `gfx`, wherever content declares it.
+/// Every descriptor the engine loads, registered as the engine registers it.
 ///
-/// `14208CA80` loads the `objectTypes` of every `.gfx` and `1401806B0` the
-/// entities and animations of every `.asset` below `gfx`, recursively; no file
-/// name is derived from an identifier. Files are read in recorded (layer, path)
-/// order, with stray braces balanced as the engine's reader tolerates them.
+/// Three registries, each filled in its own pass; no file name is derived from
+/// an identifier, and stray braces are balanced as the engine's reader
+/// tolerates them:
+/// - Meshes. `SGfxFileReader::ReadToken` (`1422264C0`) reads each object of
+///   the `.gfx` files in the particle catalog's order (startup, `interface`,
+///   then `gfx`) and prepends it to its name's bucket (`1406B1110`); the
+///   lookup (`142223D70`) takes the first exact match, so the last object of a
+///   name wins. `142272140` binds an entity's `pdxmesh` only to an object of
+///   type 0x180, so a name whose last object is an `arrowType`,
+///   `animatedmaptext` or `pdxparticle` is no mesh.
+/// - Animations and lights. The asset factory (`142218E80` from
+///   `CApplication::Initialize` `142218780`, entity flag clear) reads every
+///   `gfx/**/*.asset` in `Vfs_EnumerateRecursive` order, and `142338C30`
+///   registers each `animation` whose file loads (`14224D620`: it opens and
+///   holds `[info]` and `[samples]`, `14224D6A0`), a later one replacing the
+///   clip (`142399290`), and each `light` (token 0x54, `SAnimatedLightReader`),
+///   a later one of the name rewriting the record (`1423C96F0`).
+/// - Entities. `LoadAssets` (`142218E80` from `CGameApplication::Initialize`
+///   `1401806B0`, entity flag set) reads the same files again for `entity`
+///   blocks only: see [`Entities`].
 #[derive(Clone, Debug, Default)]
 pub struct Roster {
     pub descriptors: Descriptors,
-    /// Names declared more than once. Which declaration the engine keeps is
-    /// unverified, so a consumer refuses them.
-    pub ambiguous: BTreeSet<String>,
-    /// Entities that `clone` a parent not declared earlier in their own file.
-    /// `CAssetFactory::ReadMember` (`142338C30`) registers a clone only once
-    /// its parent is registered, and the cross-file order is unverified.
-    pub unordered_clones: BTreeSet<String>,
+    /// Each `light` block's fields by name, the last declaration's.
+    pub lights: BTreeMap<String, Vec<parser::Item>>,
+    /// What entity registration logs: dropped clones and failed mesh bindings, each with why.
+    pub logged: Vec<String>,
     /// Files that do not parse even when closed, with the error.
     pub unreadable: Vec<String>,
     /// Every word such a file holds ([`lexical_names`]), with the first
     /// such file. Which of its blocks the engine still registers is
-    /// unverified, so each could be a declaration a consumer cannot see.
+    /// unverified, so each could be a declaration a consumer cannot see. A
+    /// clone whose parent is such a word is one too, with the parent's file:
+    /// the parent it copied may be that file's.
     pub unreadable_names: BTreeMap<String, String>,
 }
+
+/// The objects of the mesh registry (`1422264C0` tokens 0x180, 0x57, 0x10E
+/// and 0x181); only the first is a mesh.
+const OBJECTS: [&str; 4] = ["pdxmesh", "arrowType", "animatedmaptext", "pdxparticle"];
+
+/// `14224D6A0` copies an `animation` name, and `1423C96F0` a light's, into 64
+/// bytes, and `14233BF40` an
+/// entity's name, `clone` and `pdxmesh` into 256, each ending with a NUL. A
+/// longer name would be cut, which is not modelled.
+const ANIMATION_NAME: usize = 63;
+const ENTITY_NAME: usize = 255;
 
 impl Roster {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut roster = Self::default();
-        for path in layers.descriptor_paths("gfx", &[".gfx", ".asset"])? {
-            let bytes = layers.read_uncovered(&path)?;
-            // Sprite and particle files declare none of these blocks.
-            if ![&b"pdxmesh"[..], b"entity", b"animation"]
-                .iter()
-                .any(|word| bytes.windows(word.len()).any(|window| window == *word))
-            {
-                continue;
+        let interface = layers.descriptor_paths("interface", &[".gfx"])?;
+        let gfx = layers.descriptor_paths("gfx", &[".gfx", ".asset"])?;
+        let mut objects = BTreeMap::new();
+        for path in crate::particles::object_file_order(&interface, &gfx) {
+            if let Some(document) = roster.parse(layers, &path, &OBJECTS)? {
+                add_objects(&document, &mut objects);
             }
-            match parser::parse(&bytes).or_else(|_| parser::parse(&balanced_blocks(&bytes))) {
-                Ok(document) => roster.add(&document, &path),
-                Err(error) => {
-                    for name in lexical_names(&bytes) {
-                        roster
-                            .unreadable_names
-                            .entry(name)
-                            .or_insert_with(|| path.clone());
+        }
+        roster.descriptors.meshes = objects
+            .into_iter()
+            .filter_map(|(name, mesh)| Some((name, mesh?)))
+            .collect();
+        let mut animations = BTreeMap::<String, Vec<AnimationDefinition>>::new();
+        let mut entities = Entities::default();
+        for path in crate::defines::load_order("gfx/", ".asset", gfx.iter().map(String::as_str)) {
+            let Some(document) = roster.parse(layers, &path, &["entity", "animation", "light"])?
+            else {
+                continue;
+            };
+            let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
+            for item in &document.items {
+                if item.keyword_is("animation") {
+                    let Some(animation) = animation_definition(&item.value, directory) else {
+                        continue;
+                    };
+                    if animation.name.len() > ANIMATION_NAME {
+                        return Err(invalid(format!(
+                            "{path}: animation {} is longer than the {ANIMATION_NAME} bytes the engine keeps",
+                            animation.name
+                        )));
                     }
-                    roster.unreadable.push(format!("{path} ({error})"));
+                    animations
+                        .entry(animation.name.clone())
+                        .or_default()
+                        .push(animation);
+                } else if item.keyword_is("entity") {
+                    entities.declare(&item.value, &path, &mut roster)?;
+                } else if item.keyword_is("light")
+                    && let Some(fields) = item.value.items()
+                {
+                    let name = last_text(fields, "name").unwrap_or_default();
+                    if name.len() > ANIMATION_NAME {
+                        return Err(invalid(format!(
+                            "{path}: light {name} is longer than the {ANIMATION_NAME} bytes the engine keeps"
+                        )));
+                    }
+                    roster.lights.insert(name, fields.to_vec());
                 }
             }
         }
+        for (name, declarations) in animations {
+            let animation = loaded_animation(layers, declarations)?;
+            roster.descriptors.animations.insert(name, animation);
+        }
+        roster.descriptors.entities = entities
+            .0
+            .into_iter()
+            .map(|(name, (definition, _))| (name, definition))
+            .collect();
         Ok(roster)
     }
 
-    fn add(&mut self, document: &parser::Document, path: &str) {
-        let mut local = BTreeSet::new();
-        for item in document.get_all(b"entity") {
-            let Some(fields) = item.items() else {
-                continue;
-            };
-            let Some(name) = text(fields, b"name").map(unquote) else {
-                continue;
-            };
-            let clone = text(fields, b"clone").map(unquote);
-            if clone.is_some_and(|parent| !parent.is_empty() && !local.contains(&parent)) {
-                self.unordered_clones.insert(name.clone());
-            }
-            local.insert(name);
+    /// The file's document when it holds any of `words` (without case, as the
+    /// lexer folds keywords), else `None`; a file that does not parse is
+    /// recorded as unreadable.
+    fn parse(
+        &mut self,
+        layers: &ResolvedLayers,
+        path: &str,
+        words: &[&str],
+    ) -> io::Result<Option<parser::Document>> {
+        let bytes = layers.read_uncovered(path)?;
+        if !words.iter().any(|word| {
+            bytes
+                .windows(word.len())
+                .any(|window| window.eq_ignore_ascii_case(word.as_bytes()))
+        }) {
+            return Ok(None);
         }
-        self.ambiguous
-            .extend(collect(document, path, &mut self.descriptors));
+        match parser::parse(&bytes).or_else(|_| parser::parse(&balanced_blocks(&bytes))) {
+            Ok(document) => Ok(Some(document)),
+            Err(error) => {
+                for name in lexical_names(&bytes) {
+                    self.unreadable_names
+                        .entry(name)
+                        .or_insert_with(|| path.to_owned());
+                }
+                self.unreadable.push(format!("{path} ({error})"));
+                Ok(None)
+            }
+        }
     }
+}
+
+/// Registers one `.gfx` file's objects: the latest object of a name is the one
+/// found, a mesh or, for another kind, `None`.
+fn add_objects(
+    document: &parser::Document,
+    objects: &mut BTreeMap<String, Option<MeshDefinition>>,
+) {
+    for item in document
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("objectTypes"))
+    {
+        for object in item.value.items().unwrap_or(&[]) {
+            if object.keyword_is(OBJECTS[0]) {
+                if let Some(mesh) = mesh_definition(&object.value) {
+                    objects.insert(mesh.name.clone(), Some(mesh));
+                }
+            } else if OBJECTS[1..].iter().any(|kind| object.keyword_is(kind))
+                && let Some(name) = object
+                    .value
+                    .items()
+                    .and_then(|fields| last_text(fields, "name"))
+            {
+                objects.insert(name, None);
+            }
+        }
+    }
+}
+
+/// The declaration of an animation name the engine keeps: the last whose file
+/// loads (`14224D620`). Declarations of one file need no reading, and when
+/// none loads no clip does either, so the last stands.
+fn loaded_animation(
+    layers: &ResolvedLayers,
+    mut declarations: Vec<AnimationDefinition>,
+) -> io::Result<AnimationDefinition> {
+    let last = declarations.pop().expect("a name has a declaration");
+    if declarations.iter().all(|earlier| earlier.file == last.file) {
+        return Ok(last);
+    }
+    for declaration in std::iter::once(&last).chain(declarations.iter().rev()) {
+        let bytes = match layers.read_uncovered(&declaration.file) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if parse(&bytes)
+            .is_ok_and(|root| root.child("info").is_some() && root.child("samples").is_some())
+        {
+            return Ok(declaration.clone());
+        }
+    }
+    Ok(last)
+}
+
+/// The entity registry as `LoadAssets` fills it, block by block, each name with
+/// its definition and stored version.
+///
+/// A plain block is `create_or_reuse` (`14227D8C0`); a block with a `clone` is
+/// `update` (`14227CEF0`) of a copy of the parent as registered at that moment
+/// (`entity_definition_lookup` `14227E5F0`, exact name), and is dropped when no
+/// parent is registered yet ("Couldn't find parent clone entity",
+/// `142338C30`). Either way a name already registered keeps its definition when
+/// the block's `version` (`ParseTokenInt32`) is lower than the stored one, and
+/// is replaced otherwise. The stored version is the one the name was created
+/// with, and a clone stores its parent's (`14226C110` and `14226D5E0` copy it;
+/// neither path writes the block's).
+#[derive(Default)]
+struct Entities(BTreeMap<String, (EntityDefinition, i32)>);
+
+impl Entities {
+    fn declare(
+        &mut self,
+        value: &parser::Value,
+        path: &str,
+        roster: &mut Roster,
+    ) -> io::Result<()> {
+        let Some(fields) = value.items() else {
+            return Ok(());
+        };
+        let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty()) else {
+            return Ok(());
+        };
+        let clone = last_text(fields, "clone").filter(|parent| !parent.is_empty());
+        let mesh = last_text(fields, "pdxmesh");
+        for text in std::iter::once(&name).chain(&clone).chain(&mesh) {
+            if text.len() > ENTITY_NAME {
+                return Err(invalid(format!(
+                    "{path}: entity {name} names {text}, longer than the {ENTITY_NAME} bytes the engine keeps"
+                )));
+            }
+        }
+        let version = fields
+            .iter()
+            .rev()
+            .find(|item| item.keyword_is("version"))
+            .and_then(|item| item.value.scalar())
+            .map_or(0, crate::fixed5::decimal_i32);
+        if let Some(file) = clone
+            .as_ref()
+            .and_then(|parent| roster.unreadable_names.get(parent))
+        {
+            let file = file.clone();
+            roster.unreadable_names.entry(name.clone()).or_insert(file);
+        }
+        let parent = match &clone {
+            None => None,
+            Some(parent) => match self.0.get(parent) {
+                Some(registered) => Some(registered.clone()),
+                None => {
+                    roster.logged.push(format!(
+                        "{name} in {path}: the engine drops it, finding no entity {parent} to clone yet"
+                    ));
+                    return Ok(());
+                }
+            },
+        };
+        let registered = self.0.get(&name);
+        let stored = registered.map(|(_, stored)| *stored);
+        if stored.is_some_and(|stored| version < stored) {
+            return Ok(());
+        }
+        let Some(mut definition) = entity_definition(value) else {
+            return Ok(());
+        };
+        definition.name = name.clone();
+        definition.clone = None;
+        // 142272140 binds the named object only when it is a `pdxmesh`, and
+        // otherwise logs and leaves the bindings as they are: the parent's
+        // copy (14226C110, 14226D5E0) or the definition being redefined,
+        // whose bindings create_or_reuse (14227D8C0) does not clear.
+        let kept = match &parent {
+            Some((parent, _)) => parent.mesh.clone(),
+            None => registered.and_then(|(held, _)| held.mesh.clone()),
+        };
+        definition.mesh = match mesh.filter(|mesh| !mesh.is_empty()) {
+            Some(mesh) if roster.descriptors.meshes.contains_key(&mesh) => Some(mesh),
+            Some(mesh) => {
+                roster.logged.push(format!(
+                    "{name} in {path}: no pdxmesh {mesh} is registered, so the engine keeps its mesh binding"
+                ));
+                kept
+            }
+            None => kept,
+        };
+        let entry = match parent {
+            Some((parent, version)) => (overlay(parent, definition), version),
+            None => (definition, stored.unwrap_or(version)),
+        };
+        self.0.insert(name, entry);
+        Ok(())
+    }
+}
+
+/// A clone as `14227CEF0` builds it: the parent's definition, each field the
+/// block declares replacing the parent's as [`Descriptors::inherit`] reads a
+/// chain, and its attachments merged ([`merge_attachments`]).
+fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinition {
+    let mut attachments = parent.attachments;
+    merge_attachments(&mut attachments, child.attachments);
+    let mut locators: Vec<(String, Locator)> = Vec::new();
+    for (name, locator) in child.locators.into_iter().chain(parent.locators) {
+        if !locators.iter().any(|(held, _)| *held == name) {
+            locators.push((name, locator));
+        }
+    }
+    let own: BTreeSet<String> = child
+        .states
+        .iter()
+        .map(|state| state.name.clone())
+        .collect();
+    let mut states = child.states;
+    states.extend(
+        parent
+            .states
+            .into_iter()
+            .filter(|state| !own.contains(&state.name)),
+    );
+    EntityDefinition {
+        name: child.name,
+        mesh: child.mesh.or(parent.mesh),
+        clone: None,
+        scale: child.scale.or(parent.scale),
+        attachments,
+        default_state: child.default_state.or(parent.default_state),
+        states,
+        get_state_from_parent: child.get_state_from_parent.or(parent.get_state_from_parent),
+        locators,
+        game_data: child.game_data.or(parent.game_data),
+    }
+}
+
+/// `14227CEF0`'s attachment merge: each attachment the clone declares
+/// replaces, where it stands, the held one of the same name (of the same
+/// joint when both names are empty), and is appended otherwise.
+fn merge_attachments(held: &mut Vec<Attachment>, declared: Vec<Attachment>) {
+    for attachment in declared {
+        match held.iter().position(|slot| same_slot(slot, &attachment)) {
+            Some(at) => held[at] = attachment,
+            None => held.push(attachment),
+        }
+    }
+}
+
+/// Whether a clone's attachment replaces a held one (`14227CEF0`): the same
+/// name, and the same joint when both names are empty.
+fn same_slot(held: &Attachment, declared: &Attachment) -> bool {
+    held.name == declared.name && (!held.name.is_empty() || held.joint == declared.joint)
+}
+
+/// The text of the last `key` a block holds, as the reader's last write of
+/// that field leaves it.
+fn last_text(fields: &[parser::Item], key: &str) -> Option<String> {
+    fields
+        .iter()
+        .rev()
+        .find(|item| item.keyword_is(key))
+        .and_then(|item| item.value.scalar_str())
+        .map(unquote)
 }
 
 /// Every name a descriptor file could declare, read without parsing it:
@@ -2102,35 +2381,32 @@ pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {
 #[derive(Clone, Debug, Default)]
 pub struct TextureIndex {
     paths: BTreeMap<String, String>,
-    /// Basenames several files share. The engine keeps the first its
-    /// enumeration reaches, an order not established here.
-    ambiguous: BTreeSet<String>,
 }
 
 impl TextureIndex {
+    /// `142251F00` walks `gfx/models` with `Vfs_EnumerateRecursive`
+    /// (`1424C7630`, no filter, any depth), in [`crate::defines::load_order`].
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
-        Ok(Self::new(
-            layers.descriptor_paths("gfx/models", &[".dds", ".tga"])?,
-        ))
+        let paths = layers.descriptor_paths("gfx/models", &[".dds", ".tga"])?;
+        Ok(Self::new(crate::defines::load_order(
+            "gfx/models/",
+            "",
+            paths.iter().map(String::as_str),
+        )))
     }
 
+    /// Indexes `paths` in enumeration order: each basename keeps the first
+    /// file (the FNV-1a and byte-compare map of `142251F00`; a later file of
+    /// that basename is only reported, `1422527C0`).
     pub fn new(paths: impl IntoIterator<Item = String>) -> Self {
         let mut index = Self::default();
         for path in paths {
-            // The suffix test is byte-exact.
+            // The suffix test is byte-exact (ends_with 1424B6AB0).
             if !(path.ends_with(".dds") || path.ends_with(".tga")) {
                 continue;
             }
             let basename = path.rsplit('/').next().unwrap_or(&path).to_owned();
-            match index.paths.get(&basename) {
-                Some(existing) if existing != &path => {
-                    index.ambiguous.insert(basename);
-                }
-                Some(_) => {}
-                None => {
-                    index.paths.insert(basename, path);
-                }
-            }
+            index.paths.entry(basename).or_insert(path);
         }
         index
     }
@@ -2139,16 +2415,13 @@ impl TextureIndex {
     /// `142251230` looks the authored string up byte-exactly after spelling
     /// its first `.tga` as `.dds`; a miss keeps the mesh directory plus the
     /// authored name.
-    pub fn resolve(&self, directory: &str, authored: &str) -> Result<String, String> {
+    pub fn resolve(&self, directory: &str, authored: &str) -> String {
         let key = authored.replacen(".tga", ".dds", 1);
-        if self.ambiguous.contains(&key) {
-            return Err(format!("{key} names several gfx/models textures"));
-        }
-        Ok(match self.paths.get(&key) {
+        match self.paths.get(&key) {
             Some(path) => path.clone(),
             None if directory.is_empty() => authored.to_owned(),
             None => format!("{directory}/{authored}"),
-        })
+        }
     }
 }
 
@@ -2161,9 +2434,9 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
     }
     Some(AnimationDefinition {
         name,
-        // The `.anim` sits beside the descriptor that names it; every shipped
-        // block gives a bare file name.
-        file: if file.contains('/') || directory.is_empty() {
+        // 142338C30 joins the descriptor's directory, `/` and the file,
+        // whatever the file holds.
+        file: if directory.is_empty() {
             file
         } else {
             format!("{directory}/{file}")
@@ -2531,7 +2804,7 @@ mod tests {
     }
 
     #[test]
-    fn texture_lookup_is_byte_exact_by_basename_and_refuses_shared_names() {
+    fn texture_lookup_is_byte_exact_by_basename_and_keeps_the_first_file() {
         let index = TextureIndex::new(
             [
                 "gfx/models/buildings/a_diffuse.dds",
@@ -2543,34 +2816,288 @@ mod tests {
             .map(String::from),
         );
         let resolve = |authored| index.resolve("gfx/models/units", authored);
-        assert_eq!(resolve("nospec.dds").unwrap(), "gfx/models/nospec.dds");
+        assert_eq!(resolve("nospec.dds"), "gfx/models/nospec.dds");
         assert_eq!(
-            resolve("a_diffuse.tga").unwrap(),
+            resolve("a_diffuse.tga"),
             "gfx/models/buildings/a_diffuse.dds"
         );
-        assert_eq!(
-            resolve("Nospec.dds").unwrap(),
-            "gfx/models/units/Nospec.dds"
+        assert_eq!(resolve("Nospec.dds"), "gfx/models/units/Nospec.dds");
+        assert_eq!(resolve("upper.DDS"), "gfx/models/units/upper.DDS");
+        assert_eq!(resolve("shared.dds"), "gfx/models/x/shared.dds");
+        // Enumeration order: a directory's files before its subdirectories.
+        let order = crate::defines::load_order(
+            "gfx/models/",
+            "",
+            [
+                "gfx/models/a/deep/t.dds",
+                "gfx/models/a/t.dds",
+                "gfx/models/b.dds",
+            ]
+            .into_iter(),
         );
-        assert_eq!(resolve("upper.DDS").unwrap(), "gfx/models/units/upper.DDS");
-        assert!(resolve("shared.dds").is_err());
+        assert_eq!(
+            TextureIndex::new(order).resolve("", "t.dds"),
+            "gfx/models/a/t.dds"
+        );
     }
 
+    /// A stack's descriptor files, the overlay's second.
+    #[cfg(feature = "test-support")]
+    fn roster_of(name: &str, base: &[(&str, &[u8])], overlay: &[(&str, &[u8])]) -> Roster {
+        let root =
+            std::env::temp_dir().join(format!("installed-content-roster-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (under, over) = (root.join("base"), root.join("over"));
+        for (dir, files) in [(&under, base), (&over, overlay)] {
+            std::fs::create_dir_all(dir).unwrap();
+            for (path, bytes) in files {
+                let path = dir.join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, bytes).unwrap();
+            }
+        }
+        let layers =
+            crate::ResolvedLayers::from_folders(&[(&under, &[][..]), (&over, &[][..])]).unwrap();
+        let roster = Roster::read(&layers).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        roster
+    }
+
+    /// `LoadAssets` reads every `gfx/**/*.asset` in `Vfs_EnumerateRecursive`
+    /// order (each directory's files, then its subdirectories, across
+    /// layers); a clone copies its parent as then registered or is dropped,
+    /// and a repeated name is replaced unless its `version` is lower than the
+    /// stored one, a clone storing its parent's.
+    #[cfg(feature = "test-support")]
     #[test]
-    fn the_roster_names_repeats_and_clones_of_other_files() {
-        let mut roster = Roster::default();
-        let first = parser::parse(
-            br#"entity = { name = "a" pdxmesh = "m" }
-entity = { name = "b" clone = "a" }
-entity = { name = "c" clone = "z" }"#,
-        )
-        .unwrap();
-        roster.add(&first, "gfx/entities/one.asset");
-        let second = parser::parse(br#"entity = { name = "a" pdxmesh = "n" }"#).unwrap();
-        roster.add(&second, "gfx/entities/two.asset");
-        assert_eq!(roster.unordered_clones, BTreeSet::from(["c".to_owned()]));
-        assert_eq!(roster.ambiguous, BTreeSet::from(["a".to_owned()]));
-        assert_eq!(roster.descriptors.entities.len(), 3);
+    fn the_roster_registers_entities_as_load_assets_does() {
+        let roster = roster_of(
+            "entities",
+            &[
+                (
+                    "gfx/models/meshes.gfx",
+                    b"objectTypes = { pdxmesh = { name = f file = f.mesh } pdxmesh = { name = m file = m.mesh }
+                        pdxmesh = { name = n file = n.mesh } pdxmesh = { name = o file = o.mesh } }",
+                ),
+                (
+                    "gfx/entities/a.asset",
+                    br#"entity = { name = "base" pdxmesh = "m" scale = 2 }
+                        entity = { name = "early" clone = "late" }
+                        entity = { name = "after_first" clone = "first" }
+                        Entity = { name = "v" pdxmesh = "m" version = 2 }
+                        entity = { name = "child" clone = "base" attach = { gun = "rifle" } }"#,
+                ),
+                (
+                    "gfx/entities/b.asset",
+                    br#"entity = { name = "late" pdxmesh = "m" }
+                        entity = { name = "v" pdxmesh = "n" version = 1 }
+                        entity = { name = "base" pdxmesh = "n" }
+                        entity = { name = "cross" clone = "child" pdxmesh = "o" }"#,
+                ),
+                (
+                    "gfx/entities/sub/c.asset",
+                    br#"entity = { name = "v" pdxmesh = "o" version = 2 }
+                        entity = { name = "vc" clone = "v" version = 1 }
+                        entity = { name = "vc" pdxmesh = "m" version = 1 }
+                        "entity" = { name = "quoted" pdxmesh = "m" }"#,
+                ),
+            ],
+            &[(
+                "gfx/entities/0.asset",
+                br#"entity = { name = "first" pdxmesh = "f" }"#,
+            )],
+        );
+        let entities = &roster.descriptors.entities;
+        let mesh = |name: &str| entities[name].mesh.as_deref();
+        assert!(!entities.contains_key("early"));
+        assert_eq!(roster.logged.len(), 1, "{:?}", roster.logged);
+        assert!(roster.logged[0].starts_with("early in gfx/entities/a.asset"));
+        assert_eq!(mesh("after_first"), Some("f"));
+        assert_eq!(mesh("base"), Some("n"));
+        assert_eq!(entities["base"].scale, None);
+        // The clone kept the base it copied, not the later one.
+        assert_eq!(mesh("child"), Some("m"));
+        assert_eq!(entities["child"].scale, Some(2.0));
+        assert_eq!(entities["child"].clone, None);
+        assert_eq!(mesh("cross"), Some("o"));
+        assert_eq!(entities["cross"].scale, Some(2.0));
+        assert_eq!(entities["cross"].attachments.len(), 1);
+        assert_eq!(mesh("v"), Some("o"));
+        // "vc" stored v's version 2, so its version 1 redeclaration is kept out.
+        assert_eq!(mesh("vc"), Some("o"));
+        assert!(!entities.contains_key("quoted"));
+        assert!(roster.unreadable.is_empty());
+    }
+
+    /// A clone of a name an unreadable file holds may copy that file's
+    /// declaration, so it may be declared there too, and so may its clones.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_clone_of_an_unreadable_name_may_be_declared_there_too() {
+        let roster = roster_of(
+            "unreadable",
+            &[
+                (
+                    "gfx/models/meshes.gfx",
+                    b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+                ),
+                (
+                    "gfx/entities/a.asset",
+                    br#"entity = { name = "maybe" } }{ = ="#,
+                ),
+                (
+                    "gfx/entities/b.asset",
+                    br#"entity = { name = "child" clone = "maybe" }
+                        entity = { name = "grandchild" clone = "child" }
+                        entity = { name = "plain" pdxmesh = "m" }"#,
+                ),
+            ],
+            &[],
+        );
+        let file = |name: &str| roster.unreadable_names.get(name).map(String::as_str);
+        assert_eq!(roster.unreadable.len(), 1);
+        assert_eq!(file("maybe"), Some("gfx/entities/a.asset"));
+        assert_eq!(file("child"), Some("gfx/entities/a.asset"));
+        assert_eq!(file("grandchild"), Some("gfx/entities/a.asset"));
+        assert_eq!(file("plain"), None);
+        assert_eq!(roster.logged.len(), 2, "{:?}", roster.logged);
+        assert_eq!(
+            roster.descriptors.entities.keys().collect::<Vec<_>>(),
+            ["plain"]
+        );
+    }
+
+    /// A clone's attachments replace the parent's of the same name where
+    /// they stand and append new ones (`14227CEF0`), as vanilla
+    /// `units_infantry.asset:144` needs: its parent's rifles 1, 2, 4, 3 keep
+    /// that order when the clone declares them 1, 4, 2, 3. An unnamed one
+    /// matches by joint. A mesh override no `pdxmesh` registers keeps the
+    /// parent's mesh (142272140) and is logged; a redefinition's keeps its
+    /// own.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_clone_merges_attachments_in_place_and_keeps_an_unregistered_mesh() {
+        let roster = roster_of(
+            "merge",
+            &[
+                (
+                    "gfx/models/a.gfx",
+                    b"objectTypes = { pdxmesh = { name = m file = m.mesh } pdxmesh = { name = n file = n.mesh } }",
+                ),
+                (
+                    "gfx/entities/a.asset",
+                    br#"entity = { name = "base" pdxmesh = "m"
+                            attach = { name = rifle1 a = x1 } attach = { name = rifle2 a = x2 }
+                            attach = { name = rifle4 a = x4 } attach = { name = rifle3 a = x3 }
+                            attach = { b = joint_only } }
+                        entity = { name = "child" clone = "base" pdxmesh = "missing"
+                            attach = { name = rifle1 a = y1 } attach = { name = rifle4 a = y4 }
+                            attach = { name = rifle2 a = y2 } attach = { name = rifle3 a = y3 }
+                            attach = { b = joint_new } attach = { name = extra a = z } }
+                        entity = { name = "plain" pdxmesh = "n" }
+                        entity = { name = "plain" pdxmesh = "gone" }"#,
+                ),
+            ],
+            &[],
+        );
+        let entities = &roster.descriptors.entities;
+        let slots: Vec<_> = entities["child"]
+            .attachments
+            .iter()
+            .map(|attachment| (attachment.name.as_str(), attachment.entity.as_str()))
+            .collect();
+        assert_eq!(
+            slots,
+            [
+                ("rifle1", "y1"),
+                ("rifle2", "y2"),
+                ("rifle4", "y4"),
+                ("rifle3", "y3"),
+                ("", "joint_new"),
+                ("extra", "z"),
+            ]
+        );
+        assert_eq!(entities["child"].mesh.as_deref(), Some("m"));
+        assert_eq!(entities["plain"].mesh.as_deref(), Some("n"));
+        assert_eq!(roster.logged.len(), 2, "{:?}", roster.logged);
+        assert!(roster.logged[0].starts_with("child in gfx/entities/a.asset: no pdxmesh missing"));
+    }
+
+    /// The last `.gfx` object of a name is the one the engine finds, and only
+    /// a `pdxmesh` is a mesh; `.gfx` files declare no entities and `.asset`
+    /// files no meshes.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn the_roster_keeps_the_last_object_of_a_name() {
+        let roster = roster_of(
+            "objects",
+            &[
+                (
+                    "gfx/models/a.gfx",
+                    br#"objectTypes = {
+                            pdxmesh = { name = "m" file = "a.mesh" }
+                            pdxmesh = { name = "shadowed" file = "s.mesh" }
+                            pdxmesh = { name = "kept" file = "k.mesh" }
+                        }
+                        entity = { name = "in_gfx" pdxmesh = "m" }"#,
+                ),
+                (
+                    "gfx/models/b.gfx",
+                    br#"objectTypes = {
+                            pdxmesh = { name = "m" file = "b.mesh" }
+                            pdxparticle = { name = "shadowed" type = "x" }
+                        }"#,
+                ),
+                (
+                    "gfx/models/c.asset",
+                    br#"objectTypes = { pdxmesh = { name = "kept" file = "c.mesh" } }"#,
+                ),
+            ],
+            &[],
+        );
+        let meshes = &roster.descriptors.meshes;
+        assert_eq!(meshes["m"].file, "b.mesh");
+        assert_eq!(meshes["kept"].file, "k.mesh");
+        assert!(!meshes.contains_key("shadowed"));
+        assert!(roster.descriptors.entities.is_empty());
+    }
+
+    /// An animation name keeps the last declaration whose file loads, and its
+    /// file is always beside the descriptor; a light keeps its last.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn the_roster_keeps_the_last_animation_that_loads() {
+        let clip: &[u8] = b"@@b@[info\0[samples\0";
+        let roster = roster_of(
+            "animations",
+            &[
+                (
+                    "gfx/models/x.asset",
+                    br#"animation = { name = "walk" file = "walk.anim" }
+                        animation = { name = "run" file = "sub/run.anim" }
+                        animation = { name = "same" file = "same.anim" }
+                        light = { name = "lamp" intensity = 1 }"#,
+                ),
+                (
+                    "gfx/models/y.asset",
+                    br#"animation = { name = "walk" file = "missing.anim" }
+                        animation = { name = "run" file = "broken.anim" }
+                        animation = { name = "same" file = "same.anim" }
+                        light = { name = "lamp" intensity = 2 }"#,
+                ),
+                ("gfx/models/walk.anim", clip),
+                ("gfx/models/sub/run.anim", clip),
+                ("gfx/models/broken.anim", b"@@b@[info\0"),
+            ],
+            &[],
+        );
+        let file = |name: &str| roster.descriptors.animations[name].file.as_str();
+        assert_eq!(file("walk"), "gfx/models/walk.anim");
+        assert_eq!(file("run"), "gfx/models/sub/run.anim");
+        assert_eq!(file("same"), "gfx/models/same.anim");
+        // The last light of a name rewrites the record (1423C96F0).
+        let lamp = &roster.lights["lamp"];
+        assert_eq!(last_text(lamp, "intensity").as_deref(), Some("2"));
     }
 
     #[test]
@@ -3246,10 +3773,10 @@ entity = { name = "c" clone = "z" }"#,
                 .iter()
                 .map(|attachment| (attachment.joint.as_str(), attachment.entity.as_str()))
                 .collect::<Vec<_>>(),
-            // The child's own handle wins and the parent's other one carries.
+            // The child's handle replaces the parent's where it stands.
             vec![
-                ("infantry", "GER_crew_entity"),
                 ("artillery", "generic_gun_entity"),
+                ("infantry", "GER_crew_entity"),
             ]
         );
         assert_eq!(german.states["idle"][0].animation, "idle");

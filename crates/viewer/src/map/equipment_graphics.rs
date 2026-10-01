@@ -327,11 +327,10 @@ fn document(bytes: &[u8], names: &Names) -> io::Result<Vec<Item>> {
 impl Content {
     pub fn load(layers: &ResolvedLayers, names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
-        // Recorded (layer, path) order with replace_path; the directory is
-        // covered, so every file's bytes are verified.
-        for path in
-            layers.descriptor_paths("gfx/interface/equipmentdesigner/graphic_db", &[".txt"])?
-        {
+        // 1409F8C30 lists the directory as a database loader does
+        // (enumerate_directory_wrapper 1424C73B0, no recursion, byte order);
+        // it is covered, so every file's bytes are verified.
+        for path in layers.directory_files("gfx/interface/equipmentdesigner/graphic_db", ".txt")? {
             document(&layers.read_uncovered(&path)?, names)
                 .and_then(|items| content.read_document(&items, names, &path))
                 .map_err(|error| invalid(format!("{path}: {error}")))?;
