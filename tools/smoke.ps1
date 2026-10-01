@@ -29,8 +29,8 @@ The guarded driving actions can dismiss them. A ui-review-approved.json file in 
 must then contain the exact hour and unobscured=true. Timeout is ten minutes.
 This is a graphical pre-save checkpoint, not a waiver of any correctness check.
 .PARAMETER InputShimDir
-Directory holding inputshim.dll and inputshim-inject.exe (scratch workspace
-C:\hoi4_scratch\input_shim_20260917). In background mode Launch attaches the shim, and Click
+Directory holding inputshim.dll and inputshim-inject.exe; supply an existing shim build.
+In background mode Launch attaches the shim, and Click
 and Wheel then work with no foreground change at all: while the messages are posted the shim
 answers the game's user32 GetCursorPos, GetAsyncKeyState, GetKeyState, GetKeyboardState,
 GetForegroundWindow, GetActiveWindow and GetFocus imports from a shared control block.
@@ -42,7 +42,7 @@ Live advance in game hours. The smoke requests a full refresh (recorder refresh)
 hour's sample before comparing it with the save.
 1440 reaches the reference hour 60835691 from the record23 save.
 .EXAMPLE
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1 -Action Smoke -ExpectedSave save.hoi4 -UiConfig C:\hoi4_scratch\ui.json -Out captures\smoke_new -WaitForUiReview
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1 -Action Smoke -ExpectedSave save.hoi4 -UiConfig captures\smoke_config\ui.json -Out captures\smoke_new -WaitForUiReview
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Launch -ContinueLastSave
 .EXAMPLE
@@ -101,7 +101,7 @@ param(
     [string[]]$ExtraArgs = @()
 )
 
-# --- input shim (scratch tool, see C:\hoi4_scratch\input_shim_20260917\README.md) ---
+# --- input shim (optional binaries from InputShimDir) ---
 # While the shim is attached, hoi4.exe's user32 import thunks answer from this 4096-byte
 # mapping, so a posted click lands with the cursor, button state and focus the UI expects.
 $script:ShimMapping = 'Local\hoi4_inputshim_v1'
@@ -457,13 +457,15 @@ function Invoke-FullSmoke {
         $report.source_clean=$true
         $format=[int][regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\replay\src\lib.rs')),'FORMAT_VERSION: u16 = (\d+);').Groups[1].Value
         if ($format -lt 1) { throw 'FORMAT_VERSION not found in crates/replay/src/lib.rs.' }
-        $cargo=(Get-Command cargo -ErrorAction Stop).Source
-        $null=Run-Tool $cargo @('build','--workspace') 'build' 600
-        $tests=Run-Tool $cargo @('test','--workspace') 'test' 600
+        $null=Get-Command cargo -ErrorAction Stop
+        $powershell=(Get-Command powershell -ErrorAction Stop).Source
+        $buildArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File','tools\build-slot.ps1','-Owner','smoke','-Command')
+        $null=Run-Tool $powershell ($buildArgs + 'cargo build --workspace') 'build' 600
+        $tests=Run-Tool $powershell ($buildArgs + 'cargo test --workspace') 'test' 600
         $report.tests_passed=([regex]::Matches($tests,'test result: ok\. (\d+) passed') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
-        $null=Run-Tool $cargo @('clippy','--workspace','--all-targets','--','-D','warnings') 'clippy' 600
-        $null=Run-Tool $cargo @('fmt','--all','--','--check') 'fmt' 120
-        $null=Run-Tool $cargo @('build','--workspace','--release') 'release' 600
+        $null=Run-Tool $powershell ($buildArgs + 'cargo clippy --workspace --all-targets -- -D warnings') 'clippy' 600
+        $null=Run-Tool $powershell ($buildArgs + 'cargo fmt --all -- --check') 'fmt' 120
+        $null=Run-Tool $powershell ($buildArgs + 'cargo build --workspace --release') 'release' 600
         foreach ($file in @('recorder.exe','collector.dll','viewer.exe')) { Copy-Item (Join-Path (Join-Path $repo '.cargo-target\release') $file) (Join-Path $bin $file) }
         $report.map_mode='controller'; $report.perspective=$Perspective
         $report.binaries=@(Get-ChildItem $bin -File | ForEach-Object { @{name=$_.Name;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash;bytes=$_.Length} })

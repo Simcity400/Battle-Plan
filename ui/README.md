@@ -24,11 +24,17 @@ npm.cmd run test:ui
 npm.cmd run build:ui
 ```
 
-`dev:ui` starts only Vite. `npm.cmd run dev` also builds the viewer and starts Tauri; see the [desktop guide](../crates/desktop/README.md). Tests are pure node tests beside their modules; they need no browser, game or recording.
+`dev:ui` starts only Vite. The wrapped desktop development command also builds the viewer and starts Tauri; see the [desktop guide](../crates/desktop/README.md). Tests are pure node tests beside their modules; they need no browser, game or recording.
 
 ### Real recordings in the browser
 
-Build the adapter once with `cargo build -p dashboard --bin dashboard-bridge`. Set `BATTLE_PLAN_RECORDINGS_DIR` to a scratch folder outside Git in ignored `ui/.env.local`; `BATTLE_PLAN_GAME_DIR` and `BATTLE_PLAN_USER_DIR` add real artwork. Folders saved in Settings take precedence. `browserBridge.ts` is a development-only Vite middleware that starts the adapter on demand, forwards data commands and cancels them with the request. Production builds use the desktop transport.
+Build the adapter once using the shared [build commands](../AGENTS.md#build-commands):
+
+```powershell
+bash tools/build-slot.sh "dev/dashboard" "cargo build -p dashboard --bin dashboard-bridge"
+```
+
+Set `BATTLE_PLAN_RECORDINGS_DIR` to a scratch folder outside Git in ignored `ui/.env.local`; `BATTLE_PLAN_GAME_DIR` and `BATTLE_PLAN_USER_DIR` add real artwork. Folders saved in Settings take precedence. `browserBridge.ts` is a development-only Vite middleware that starts the adapter on demand, forwards data commands and cancels them with the request. Production builds use the desktop transport.
 
 ## Data
 

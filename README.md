@@ -2,17 +2,17 @@
 
 Record a Hearts of Iron IV campaign, replay it on an interactive map, and explore its statistics over time.
 
-The recorder reads the game's state without controlling the game. The desktop app has a native **Campaign map** tab and an **Overview** dashboard. The dashboard includes national focus order and research-slot history with game names and artwork, alongside placeholder panels for future analytics widgets. Recordings use `.battleplan` files; playback does not need access to live game memory.
+The recorder reads the game's state without controlling the game. The desktop app has a native **Campaign map** tab and an **Overview** [dashboard](crates/dashboard/README.md). Recordings use `.battleplan` files; playback does not need access to live game memory.
 
 ## Start here
 
-This is a Windows project for a specific, hash-verified HOI4 build. Unsupported game executables are refused. Rust is pinned in [rust-toolchain.toml](rust-toolchain.toml); build settings are in [.cargo/config.toml](.cargo/config.toml). Don't set `CARGO_INCREMENTAL` or `build.incremental`; they override the profile.
+This is a Windows project for a specific, hash-verified HOI4 build. Unsupported game executables are refused. Rust is pinned in [rust-toolchain.toml](rust-toolchain.toml); build settings are in [.cargo/config.toml](.cargo/config.toml). Keep incremental compilation off; don't enable it through `CARGO_INCREMENTAL` or `build.incremental`. Use the shared [build commands](AGENTS.md#build-commands).
 
 For desktop development, install the pinned Rust toolchain, Windows MSVC build tools, `lld-link`, `sccache`, Node.js 22.12 or newer, and the Microsoft Edge WebView2 Runtime. From the repository root:
 
 ```powershell
 npm.cmd ci
-npm.cmd run dev
+bash tools/build-slot.sh "dev/desktop" "npm.cmd run dev"
 ```
 
 Choose **+** beside **Campaigns** in the sidebar, set your replay folder when prompted (or in Settings), and load a campaign from the list. The map also needs the matching game and user folders; Overview widgets can read the recording without map assets.

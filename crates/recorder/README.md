@@ -4,10 +4,10 @@ The passive command-line controller for recording. It finds and verifies HOI4, i
 
 ## Record a campaign
 
-Run from the repository root:
+Use the shared [build commands](../../AGENTS.md#build-commands):
 
 ```powershell
-cargo build -p recorder -p collector --release
+bash tools/build-slot.sh "dev/recorder" "cargo build -p recorder -p collector --release"
 .\.cargo-target\release\recorder.exe --out captures
 ```
 
@@ -66,7 +66,7 @@ The raid tooltip comparisons cover facility program order and project links, sav
 
 After the first recorded hour, `status.json.fixed_layout.state` should be `verified`; `refused` names every mismatch in `layout_failures` and lists each withheld table family in `refusals`, and `unverified` means no check has completed yet. A mismatch anywhere in the built-in modifier layout withholds every table that reads a fixed modifier key. Refused tables are unavailable in the recording with the reason preserved. Text saves cannot certify the native modifier layout, so the live status and the synthetic mismatch tests cover it.
 
-[AGENTS.md](../../AGENTS.md) lists local checks. `tools/smoke.ps1` is the existing end-to-end driver; inspect its help before use. It requires coordinated game ownership, the selected local save, an isolated text-save user directory, matching continue selection, calibrated UI settings and a new output directory. It drives the game separately from the passive recorder, then checks finalization, the oracle and reference renders. Keep all outputs out of Git.
+Check each changed crate with the shared [build commands](../../AGENTS.md#build-commands). `tools/smoke.ps1` is the existing end-to-end driver; inspect its help before use. It requires coordinated game ownership, the selected local save, an isolated text-save user directory, matching continue selection, calibrated UI settings and a new output directory. It drives the game separately from the passive recorder, then checks finalization, the oracle and reference renders. Keep all outputs out of Git.
 
 Use matched save/content conditions and retained baselines. Keep builds outside timed intervals and cold work separate from steady state. Report actual game-hours per second, callback p95, memory, encoded size and finalization time. The established targets are at least 95% of non-recorder throughput and at most 16 ms p95 per game hour; replay readiness within 30 seconds and a campaign below 1 GB, with 50 MB as a size goal. These are targets, not a statement that this branch meets them.
 

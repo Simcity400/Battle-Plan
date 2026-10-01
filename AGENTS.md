@@ -13,9 +13,21 @@ Read the [project README](README.md) and the README for the component you are ch
 
 - Recorder/viewer integration also needs the relevant fresh-save oracle and existing smoke workflow in the [recorder guide](crates/recorder/README.md).
 
-- Builds: while iterating, including fix rounds, merges and re-reviews, run `cargo fmt` plus clippy and tests for only the crates you changed. Run the full workspace gate once per PR, as the last step at its exact final head immediately before merging, and never earlier. Every cargo run goes through `bash tools/build-slot.sh`.
+- Builds: while iterating, including fix rounds, merges and re-reviews, run `cargo fmt` plus clippy and tests for only the crates you changed. Run the full workspace gate once per PR, as the last step at its exact final head immediately before merging, and never earlier. Every cargo run uses the wrapper in [Build commands](#build-commands).
 
 Coordinate game ownership. Keep builds outside timed intervals; reuse matched saves/baselines and batch expensive live checks. Never waive a save difference. Report what ran, failed or remains unverified. Documentation-only changes need link and diff checks, not game captures.
+
+## Build commands
+
+Run every cargo command, and the npm entry points that build Rust (`dev`, `build:desktop`), through the wrapper from the worktree root. For a changed crate:
+
+```bash
+bash tools/build-slot.sh "dev/<task>" "cargo fmt -p <crate> -- --check"
+bash tools/build-slot.sh "dev/<task>" "cargo clippy -p <crate> --all-targets -- -D warnings"
+bash tools/build-slot.sh "dev/<task>" "cargo test -p <crate>"
+```
+
+From PowerShell without Git Bash, use `tools\build-slot.ps1 -Owner "dev/<task>" -Command "<command>"`. The wrapper sets `CARGO_INCREMENTAL=0`, matching the Cargo profiles.
 
 ## Files and documentation
 

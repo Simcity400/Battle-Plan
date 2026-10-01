@@ -37,11 +37,11 @@ Current products: national focus order, research slot history, country flags, co
 
 ## Types
 
-Rust owns the generated frontend types. Run from the repository root:
+Rust owns the generated frontend types. Use the shared [build commands](../../AGENTS.md#build-commands):
 
 ```powershell
-cargo run -p dashboard --bin export-types
-cargo run -p dashboard --bin export-types -- --check
+bash tools/build-slot.sh "dev/dashboard" "cargo run -p dashboard --bin export-types"
+bash tools/build-slot.sh "dev/dashboard" "cargo run -p dashboard --bin export-types -- --check"
 ```
 
 Generation updates `ui/src/generated/dashboard.ts`; do not hand-edit it. Follow with the checks in [AGENTS.md](../../AGENTS.md).

@@ -4,11 +4,11 @@ The Tauri host for the replay application. **Map** embeds the existing native vi
 
 ## Develop
 
-Use the repository's Rust/Windows prerequisites, Node.js 22.12 or newer and the Microsoft Edge WebView2 Runtime. Run from the repository root:
+Use the repository's Rust/Windows prerequisites, Node.js 22.12 or newer and the Microsoft Edge WebView2 Runtime. Follow the shared [build commands](../../AGENTS.md#build-commands):
 
 ```powershell
 npm.cmd ci
-npm.cmd run dev
+bash tools/build-slot.sh "dev/desktop" "npm.cmd run dev"
 ```
 
 The development command builds the native viewer, then starts Tauri and Vite. Frontend edits hot reload; desktop Rust changes rebuild. Restart the command after changing native viewer code so its sibling executable is rebuilt. Ctrl+C stops development.
@@ -16,7 +16,7 @@ The development command builds the native viewer, then starts Tauri and Vite. Fr
 Viewer arguments pass through both separators:
 
 ```powershell
-npm.cmd run dev -- -- -- C:\recordings\campaign.battleplan
+bash tools/build-slot.sh "dev/desktop" "npm.cmd run dev -- -- -- C:/recordings/campaign.battleplan"
 ```
 
 Use `npm.cmd run dev:ui` for frontend-only layout work. Native features require the desktop host.
@@ -24,7 +24,7 @@ Use `npm.cmd run dev:ui` for frontend-only layout work. Native features require 
 ## Build and launch
 
 ```powershell
-npm.cmd run build:desktop
+bash tools/build-slot.sh "dev/desktop" "npm.cmd run build:desktop"
 .\.cargo-target\release\replay-desktop.exe C:\recordings\campaign.battleplan
 ```
 
@@ -38,8 +38,8 @@ Build before testing, then keep the launcher running in a background terminal:
 
 ```powershell
 npm.cmd run build:ui
-cargo build -p viewer --bin viewer
-cargo build -p replay-desktop --features custom-protocol
+bash tools/build-slot.sh "dev/desktop" "cargo build -p viewer --bin viewer"
+bash tools/build-slot.sh "dev/desktop" "cargo build -p replay-desktop --features custom-protocol"
 python tools/desktop_ui.py --session captures\desktop-ui launch .\.cargo-target\debug\replay-desktop.exe
 ```
 

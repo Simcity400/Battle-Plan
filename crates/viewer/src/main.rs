@@ -67,16 +67,15 @@ fn parse_placement(value: &str) -> io::Result<map::camera::Placement> {
     })
 }
 
-// counters: the glide between recorded hours
+// counters: a frame between two recorded hours
 /// `--hour`'s value: a recorded engine hour, optionally with a fraction of an
 /// hour past it.
 ///
 /// `--hour 60832633` is the recorded hour and renders it exactly.
 /// `--hour 60832633.5` is half an hour later, a frame the recording does not
-/// hold: the hour's own tables are drawn and its moving divisions advanced
-/// along their recorded routes by their recorded ETA. The fraction is parsed
-/// off the text rather than through `f64` so a large engine hour cannot lose
-/// its last digits on the way.
+/// hold: the hour's own tables are drawn and moving division counters stay at
+/// their settled route points. The fraction is parsed off the text rather than
+/// through `f64` so a large engine hour cannot lose its last digits on the way.
 fn parse_hour(value: &str) -> io::Result<(Hour, Option<f32>)> {
     let Some((whole, rest)) = value.split_once('.') else {
         return Ok((
@@ -151,14 +150,13 @@ struct Options {
     /// the border selection pulse, the river flow and the waves.
     map_time: f32,
     hour: Option<Hour>,
-    // counters: the glide between recorded hours
+    // counters: a frame between two recorded hours
     /// How far past `hour` the frame is, in hours, in `[0, 1)`.
     ///
     /// `--hour 60832633.5` and `--hour-fraction 0.5` are two spellings of the
     /// same number, and it is [`document::Document::hour_fraction`]: the
-    /// recorded hour is the whole frame's state and this only advances the
-    /// moving divisions along their recorded routes. Zero renders the recorded
-    /// hour exactly.
+    /// recorded hour is the whole frame's state; moving division counters stay
+    /// at their settled route points. Zero renders the recorded hour exactly.
     hour_fraction: f32,
     branch: Option<BranchId>,
     allow_unverified: bool,
@@ -1829,7 +1827,7 @@ mod tests {
         }
     }
 
-    // counters: the glide between recorded hours
+    // counters: a frame between two recorded hours
     #[test]
     fn a_fractional_hour_names_a_frame_between_two_recorded_ones() {
         let dump = parse(&[
