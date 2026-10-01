@@ -12,7 +12,7 @@ use replay::{
     branches::Parentage,
     container::{RecoveryNote, Replay, SeekResult},
     frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableUpdate, TableView},
-    identity::{Identity, SessionStart, Verification},
+    identity::{Identity, SessionStart, Verification, is_campaign_uuid},
     rows::{TableId, TableRows, tables},
     spool::{ControlRecord, Record, Recovery, recover_prefix},
 };
@@ -77,15 +77,7 @@ fn campaign_id(segments: &[(u32, Recovery)]) -> Result<Vec<u8>> {
 }
 
 fn campaign_filename(id: &[u8]) -> Result<&str> {
-    if id.len() != 36
-        || id.iter().enumerate().any(|(position, byte)| {
-            if [8, 13, 18, 23].contains(&position) {
-                *byte != b'-'
-            } else {
-                !byte.is_ascii_hexdigit()
-            }
-        })
-    {
+    if !is_campaign_uuid(id) {
         return Err(
             "recorded campaign identity is not a UUID; refusing to use it as a file name".into(),
         );
@@ -920,6 +912,11 @@ mod tests {
 
     #[test]
     fn file_names_are_validated_without_rewriting_campaign_identity() {
+        let mixed_case = "21b7CC84-3028-4f65-8E0d-aDf2f37Ca1a6";
+        assert_eq!(
+            campaign_filename(mixed_case.as_bytes()).unwrap(),
+            mixed_case
+        );
         assert_eq!(
             campaign_filename(b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6").unwrap(),
             "21b7cc84-3028-4f65-8e0d-adf2f37ca1a6"

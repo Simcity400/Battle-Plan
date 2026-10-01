@@ -18,7 +18,7 @@ use replay::{
     branches::{BranchStart, BranchTracker, Gap},
     codec::invalid,
     frame::{BaselineToken, FrameEncoder, FrameInput, Metrics, TABLE_COUNT, TableInput, TableView},
-    identity::SessionStart,
+    identity::{SessionStart, is_campaign_uuid},
     rows::{
         BorderConflictRow, CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow,
         FactionMemberRow, FactionRow, ProvinceRow, RowCodec, ScriptVariablesRow, StateRow, TableId,
@@ -35,6 +35,16 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+/// Baseline and borrowed conversion caches for one spool frame.
+pub(crate) struct SpoolConversion<'a, 'cache> {
+    pub(crate) variables_baseline: Option<(BaselineToken, &'a [ScriptVariablesRow])>,
+    pub(crate) variables_scratch: &'a mut ScriptVariableComparison,
+    pub(crate) characters: Option<&'a mut CharacterConversion<'cache>>,
+    pub(crate) lexical: Option<&'a mut LexicalConversion<'cache>>,
+    pub(crate) intel: Option<&'a mut IntelConversion<'cache>>,
+    pub(crate) projection: Option<&'a mut Projection<'cache>>,
+}
 
 #[derive(Default)]
 pub(super) struct Distribution {
@@ -1599,12 +1609,14 @@ impl Processor {
             captured,
             clock,
             branch,
-            variables_baseline,
-            &mut campaign.variables_scratch,
-            Some(&mut characters),
-            Some(&mut lexical),
-            Some(&mut intel),
-            Some(&mut projection),
+            &mut SpoolConversion {
+                variables_baseline,
+                variables_scratch: &mut campaign.variables_scratch,
+                characters: Some(&mut characters),
+                lexical: Some(&mut lexical),
+                intel: Some(&mut intel),
+                projection: Some(&mut projection),
+            },
         );
         let outcomes = captured.extended.outcomes();
         let (sliced_retry, unpublished_families) = campaign.merge_sliced_inputs(
@@ -2070,15 +2082,7 @@ fn prepare_campaigns<'a>(
 }
 
 pub(super) fn campaign_name(bytes: &[u8]) -> io::Result<String> {
-    if bytes.len() != 36
-        || bytes.iter().enumerate().any(|(i, byte)| {
-            if [8, 13, 18, 23].contains(&i) {
-                *byte != b'-'
-            } else {
-                !byte.is_ascii_hexdigit()
-            }
-        })
-    {
+    if !is_campaign_uuid(bytes) {
         return Err(invalid(
             "campaign id is not a UUID; refusing an unsafe output path",
         ));
@@ -2227,28 +2231,24 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> replay::frame
             captured,
             clock,
             branch,
-            None,
-            &mut ScriptVariableComparison::default(),
-            None,
-            None,
-            None,
-            None,
+            &mut SpoolConversion {
+                variables_baseline: None,
+                variables_scratch: &mut ScriptVariableComparison::default(),
+                characters: None,
+                lexical: None,
+                intel: None,
+                projection: None,
+            },
         )
         .0,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn decoded_with_costs(
     captured: &Captured,
     clock: Clock,
     branch: BranchId,
-    variables_baseline: Option<(BaselineToken, &[ScriptVariablesRow])>,
-    variables_scratch: &mut ScriptVariableComparison,
-    characters: Option<&mut CharacterConversion<'_>>,
-    lexical: Option<&mut LexicalConversion<'_>>,
-    intel: Option<&mut IntelConversion<'_>>,
-    mut projection: Option<&mut Projection<'_>>,
+    conversion: &mut SpoolConversion<'_, '_>,
 ) -> (FrameInput, [Option<i64>; crate::extended::PACK_NAMES.len()]) {
     let mut pack_ticks = [None; crate::extended::PACK_NAMES.len()];
     let metrics = Metrics {
@@ -2276,7 +2276,7 @@ fn decoded_with_costs(
             naval_participants,
             air,
             orders,
-        ] = crate::map_spool::table_inputs(&captured.map, projection.as_deref_mut());
+        ] = crate::map_spool::table_inputs(&captured.map, conversion.projection.as_deref_mut());
         let core = [
             TableView::Complete(TableRows::Clock(vec![ClockRow {
                 hour: clock.hour,
@@ -2306,7 +2306,7 @@ fn decoded_with_costs(
             }]))
             .into(),
             project_table::<tables::Countries, _>(
-                projection.as_deref_mut(),
+                conversion.projection.as_deref_mut(),
                 captured.countries_result,
                 &captured.countries,
                 |country| u128::from(country.id),
@@ -2337,7 +2337,7 @@ fn decoded_with_costs(
                 },
             ),
             scalar_table::<tables::CountryLinks, _>(
-                projection.as_deref_mut(),
+                conversion.projection.as_deref_mut(),
                 captured.links_result,
                 &captured.links,
                 |link| u128::from(link.id),
@@ -2347,7 +2347,7 @@ fn decoded_with_costs(
                 },
             ),
             scalar_table::<tables::Provinces, _>(
-                projection.as_deref_mut(),
+                conversion.projection.as_deref_mut(),
                 captured.provinces_result,
                 &captured.provinces.rows,
                 |province| u128::from(province.id),
@@ -2362,9 +2362,9 @@ fn decoded_with_costs(
                     port_sea: province.port_sea,
                 },
             ),
-            state_table(captured, projection.as_deref_mut()),
+            state_table(captured, conversion.projection.as_deref_mut()),
             scalar_table::<tables::Divisions, _>(
-                projection.as_deref_mut(),
+                conversion.projection.as_deref_mut(),
                 captured.divisions_result,
                 &captured.divisions,
                 |division| u128::from(division.id),
@@ -2382,7 +2382,7 @@ fn decoded_with_costs(
                 },
             ),
             scalar_table::<tables::WarRelations, _>(
-                projection.as_deref_mut(),
+                conversion.projection.as_deref_mut(),
                 captured.wars_result,
                 &captured.wars,
                 |war| (u128::from(war.first_country) << 32) | u128::from(war.second_country),
@@ -2401,7 +2401,7 @@ fn decoded_with_costs(
             ),
             faction_table(captured).into(),
             scalar_table::<tables::FactionMembers, _>(
-                projection.as_deref_mut(),
+                conversion.projection.as_deref_mut(),
                 captured.faction_members_result,
                 &captured.faction_members,
                 |member| u128::from(member.country),
@@ -2429,15 +2429,7 @@ fn decoded_with_costs(
         tables[TableId::BorderConflicts.index()] = border_conflicts_table(captured).into();
         pack_ticks = captured
             .extended
-            .insert_tables(
-                &mut tables,
-                variables_baseline,
-                variables_scratch,
-                characters,
-                lexical,
-                intel,
-                projection,
-            )
+            .insert_tables(&mut tables, conversion)
             .map(Some);
         tables
     };
@@ -2674,12 +2666,14 @@ mod tests {
             &capture,
             clock(11),
             1,
-            Some(baseline),
-            &mut ScriptVariableComparison::default(),
-            None,
-            None,
-            None,
-            None,
+            &mut SpoolConversion {
+                variables_baseline: Some(baseline),
+                variables_scratch: &mut ScriptVariableComparison::default(),
+                characters: None,
+                lexical: None,
+                intel: None,
+                projection: None,
+            },
         );
         assert_eq!(
             input.tables,
@@ -3937,6 +3931,8 @@ mod tests {
             unavailable("walker row count exceeds allocated buffer")
         );
         assert_eq!(campaign_name(ID).unwrap().as_bytes(), ID);
+        let mixed_case = b"21b7CC84-3028-4f65-8E0d-aDf2f37Ca1a6";
+        assert_eq!(campaign_name(mixed_case).unwrap().as_bytes(), mixed_case);
         for id in [
             b"../outside".as_slice(),
             b"C:\\outside",
@@ -5164,12 +5160,14 @@ mod tests {
             &source,
             clock(1),
             branch,
-            None,
-            &mut ScriptVariableComparison::default(),
-            None,
-            Some(&mut reuse),
-            None,
-            None,
+            &mut SpoolConversion {
+                variables_baseline: None,
+                variables_scratch: &mut ScriptVariableComparison::default(),
+                characters: None,
+                lexical: Some(&mut reuse),
+                intel: None,
+                projection: None,
+            },
         );
         assert_eq!(
             invalid.tables,
@@ -5406,12 +5404,14 @@ mod tests {
             &source,
             clock(0),
             1,
-            None,
-            &mut ScriptVariableComparison::default(),
-            None,
-            None,
-            Some(&mut reuse),
-            None,
+            &mut SpoolConversion {
+                variables_baseline: None,
+                variables_scratch: &mut ScriptVariableComparison::default(),
+                characters: None,
+                lexical: None,
+                intel: Some(&mut reuse),
+                projection: None,
+            },
         );
         assert_eq!(
             current.tables,
@@ -5491,12 +5491,14 @@ mod tests {
                             &source,
                             clock(1),
                             branch,
-                            None,
-                            &mut ScriptVariableComparison::default(),
-                            Some(&mut reuse),
-                            None,
-                            None,
-                            None,
+                            &mut SpoolConversion {
+                                variables_baseline: None,
+                                variables_scratch: &mut ScriptVariableComparison::default(),
+                                characters: Some(&mut reuse),
+                                lexical: None,
+                                intel: None,
+                                projection: None,
+                            },
                         )
                         .0;
                         assert!(current.tables.iter().all(|input| matches!(

@@ -538,12 +538,14 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
             });
             captured.insert_tables(
                 &mut tables,
-                None,
-                &mut Default::default(),
-                None,
-                None,
-                None,
-                None,
+                &mut crate::spooling::SpoolConversion {
+                    variables_baseline: None,
+                    variables_scratch: &mut Default::default(),
+                    characters: None,
+                    lexical: None,
+                    intel: None,
+                    projection: None,
+                },
             );
             for (ids, reason) in [
                 (&slow, "slow acquisition failed"),

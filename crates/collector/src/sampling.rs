@@ -3731,113 +3731,64 @@ unsafe fn finish_acquisition(
             result
         }
         PendingAcquisition::Rejected(mut request) => {
-            if let acquisition::Job::Governance(governance) = &mut request {
-                let report = governance.fail("governance worker admission failed");
-                return acquisition::Completion {
-                    request,
-                    report: Ok(acquisition::Report::Governance(report)),
-                    table_reads: crate::read_accounting::ZERO,
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                };
+            let report = match &mut request {
+                acquisition::Job::Governance(governance) => {
+                    let report = governance.fail("governance worker admission failed");
+                    acquisition::Report::Governance(report)
+                }
+                acquisition::Job::Variants(variants) => {
+                    let ticks = variants.fail("variant worker admission failed");
+                    acquisition::Report::Variants(ticks)
+                }
+                acquisition::Job::Orders(orders) => {
+                    let report = orders.fail("army order worker admission failed");
+                    acquisition::Report::Orders(report)
+                }
+                // An inline part could copy megabytes of vectors on the game
+                // thread; its countries are copied afresh at the next hour.
+                acquisition::Job::AirRelations(relations) => {
+                    relations
+                        .staging
+                        .fail("air relation worker admission failed");
+                    extended::air_relations::certificates(relations.part).forget();
+                    acquisition::Report::AirRelations(acquisition::AirRelationsReport)
+                }
+                // Likewise for a history part: the hour's settle then withdraws
+                // every part's certificates and the next hour copies afresh.
+                acquisition::Job::AirHistories(histories) => {
+                    extended::air_histories::refuse(&mut histories.staging);
+                    acquisition::Report::AirHistories(acquisition::AirHistoriesReport)
+                }
+                acquisition::Job::AirMissions(missions) => {
+                    missions.refuse();
+                    acquisition::Report::AirMissions(acquisition::AirMissionsReport)
+                }
+                acquisition::Job::Ordinary(ordinary) => {
+                    let report = ordinary.fail("ordinary worker admission failed");
+                    acquisition::Report::Ordinary(report)
+                }
+                acquisition::Job::Presentation(presentation) => {
+                    let report = presentation.fail("division presentation worker admission failed");
+                    acquisition::Report::Presentation(report)
+                }
+                acquisition::Job::EtaInputs(eta) => {
+                    let report = eta
+                        .captured
+                        .fail_owned_capture("division ETA worker admission failed");
+                    acquisition::Report::EtaInputs(report)
+                }
+                _ => {
+                    // SAFETY: this request was rejected before acquiring any live state.
+                    return unsafe { batch.run_inline(request) };
+                }
+            };
+            acquisition::Completion {
+                request,
+                report: Ok(report),
+                table_reads: crate::read_accounting::ZERO,
+                #[cfg(feature = "callback_profile")]
+                profile: Default::default(),
             }
-            if let acquisition::Job::Variants(variants) = &mut request {
-                let ticks = variants.fail("variant worker admission failed");
-                return acquisition::Completion {
-                    request,
-                    report: Ok(acquisition::Report::Variants(ticks)),
-                    table_reads: crate::read_accounting::ZERO,
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                };
-            }
-            if let acquisition::Job::Orders(orders) = &mut request {
-                let report = orders.fail("army order worker admission failed");
-                return acquisition::Completion {
-                    request,
-                    report: Ok(acquisition::Report::Orders(report)),
-                    table_reads: crate::read_accounting::ZERO,
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                };
-            }
-            // An inline part could copy megabytes of vectors on the game
-            // thread; its countries are copied afresh at the next hour.
-            if let acquisition::Job::AirRelations(relations) = &mut request {
-                relations
-                    .staging
-                    .fail("air relation worker admission failed");
-                extended::air_relations::certificates(relations.part).forget();
-                return acquisition::Completion {
-                    request,
-                    report: Ok(acquisition::Report::AirRelations(
-                        acquisition::AirRelationsReport,
-                    )),
-                    table_reads: crate::read_accounting::ZERO,
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                };
-            }
-            // Likewise for a history part: the hour's settle then withdraws
-            // every part's certificates and the next hour copies afresh.
-            if let acquisition::Job::AirHistories(histories) = &mut request {
-                extended::air_histories::refuse(&mut histories.staging);
-                return acquisition::Completion {
-                    request,
-                    report: Ok(acquisition::Report::AirHistories(
-                        acquisition::AirHistoriesReport,
-                    )),
-                    table_reads: crate::read_accounting::ZERO,
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                };
-            }
-            if let acquisition::Job::AirMissions(missions) = &mut request {
-                missions.refuse();
-                return acquisition::Completion {
-                    request,
-                    report: Ok(acquisition::Report::AirMissions(
-                        acquisition::AirMissionsReport,
-                    )),
-                    table_reads: crate::read_accounting::ZERO,
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                };
-            }
-            if let acquisition::Job::Ordinary(ordinary) = &mut request {
-                let report = ordinary.fail("ordinary worker admission failed");
-                return acquisition::Completion {
-                    request,
-                    report: Ok(acquisition::Report::Ordinary(report)),
-                    table_reads: crate::read_accounting::ZERO,
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                };
-            }
-            if let acquisition::Job::Presentation(presentation) = &mut request {
-                let report = presentation.fail("division presentation worker admission failed");
-                return acquisition::Completion {
-                    request,
-                    report: Ok(acquisition::Report::Presentation(report)),
-                    table_reads: crate::read_accounting::ZERO,
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                };
-            }
-            if let acquisition::Job::EtaInputs(eta) = &mut request {
-                let report = eta
-                    .captured
-                    .fail_owned_capture("division ETA worker admission failed");
-                return acquisition::Completion {
-                    request,
-                    report: Ok(acquisition::Report::EtaInputs(report)),
-                    table_reads: crate::read_accounting::ZERO,
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                };
-            }
-            // SAFETY: this request was rejected before acquiring any live state.
-            unsafe { batch.run_inline(request) }
         }
     }
 }

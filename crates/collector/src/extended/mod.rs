@@ -12,8 +12,8 @@ use engine::{
     walk::Outcome,
 };
 use replay::{
-    frame::{BaselineToken, TABLE_COUNT, TableInput},
-    rows::{ScriptVariablesRow, TableId},
+    frame::{TABLE_COUNT, TableInput},
+    rows::TableId,
 };
 use std::{mem::size_of, sync::Arc};
 
@@ -66,43 +66,47 @@ fn failed_capture(table: TableId, hour: i32, force_full: bool, reason: &'static 
 
 // Native conversion reuse stays within its pack's existing timing scope.
 macro_rules! spool_inputs {
-    (lexical, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($lexical)
+    (lexical, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.lexical.as_deref_mut())
     };
-    (characters, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($characters)
+    (characters, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.characters.as_deref_mut())
     };
-    (character_portraits, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($projection.as_deref_mut())
+    (character_portraits, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
-    (leader_portraits, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($projection.as_deref_mut())
+    (leader_portraits, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
-    (ship_models, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($projection.as_deref_mut())
+    (ship_models, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
-    (intel, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($baseline, $scratch, $intel)
+    (intel, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs(
+            $conversion.variables_baseline,
+            $conversion.variables_scratch,
+            $conversion.intel.as_deref_mut(),
+        )
     };
-    (governance, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    (governance, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
-    (division_presentation, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($projection.as_deref_mut())
+    (division_presentation, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
-    (production, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($projection.as_deref_mut())
+    (production, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
-    (economy, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($projection.as_deref_mut())
+    (economy, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
-    (fog, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($projection.as_deref_mut())
+    (fog, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
-    (supply_trains, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
-        $captured.table_inputs($projection.as_deref_mut())
+    (supply_trains, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
-    ($pack:ident, $captured:expr, $baseline:expr, $scratch:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+    ($pack:ident, $captured:expr, $conversion:expr) => {
         $captured.tables().map(TableInput::Sampled)
     };
 }
@@ -247,21 +251,15 @@ macro_rules! packs {
                 self.registry.grow(&mut capacity.variant_registry);
             }
             /// Spool-thread conversion only. Existing core slots survive.
-            #[allow(clippy::too_many_arguments)]
             pub(crate) fn insert_tables(
                 &self,
                 destination: &mut [TableInput; TABLE_COUNT],
-                variables_baseline: Option<(BaselineToken, &[ScriptVariablesRow])>,
-                variables_scratch: &mut intel::ScriptVariableComparison,
-                characters: Option<&mut characters::CharacterConversion<'_>>,
-                lexical: Option<&mut lexical::LexicalConversion<'_>>,
-                intel: Option<&mut intel::IntelConversion<'_>>,
-                mut projection: Option<&mut crate::projection::Projection<'_>>,
+                conversion: &mut crate::spooling::SpoolConversion<'_, '_>,
             ) -> [i64; PACK_NAMES.len()] {
                 let mut costs = [0; PACK_NAMES.len()];
                 let mut slots = costs.iter_mut();
                 $(let started = qpc();
-                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, variables_baseline, variables_scratch, characters, lexical, intel, projection)) { destination[id.index()] = view; }
+                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, conversion)) { destination[id.index()] = view; }
                 *slots.next().unwrap() = qpc() - started;)+
                 if let Some(reason) = self.ordinary_failure {
                     for &id in OrdinaryPacks::TABLES.iter().flat_map(|tables| tables.iter()) {

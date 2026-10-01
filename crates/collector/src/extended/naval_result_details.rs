@@ -1,6 +1,7 @@
 //! Retained naval results: primary snapshots and hit lists.
 //! Original-pass growth runs only in the Ordinary worker; projection is deferred.
 use crate::{
+    extended::naval_details::{air_hit, naval_hit},
     sampling::qpc,
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
@@ -461,23 +462,6 @@ fn ensure<T: Default + Clone>(rows: &mut Vec<T>, required: usize) {
 }
 fn range<T>(items: &[T], span: [usize; 2]) -> &[T] {
     &items[span[0]..span[0] + span[1]]
-}
-fn air_hit(v: &naval_combat_air_hit::Row) -> rows::NavalCombatAirHit {
-    rows::NavalCombatAirHit {
-        variant: v.variant,
-        count: v.count,
-        country: v.country,
-    }
-}
-fn naval_hit(v: &naval_combat_hit::Row) -> rows::NavalCombatHit {
-    rows::NavalCombatHit {
-        target_slot: v.target_slot,
-        target_name: v.target_name.as_bytes().to_vec(),
-        convoy: v.convoy,
-        damage: v.damage,
-        denominator: v.denominator,
-        last_hit: v.last_hit,
-    }
 }
 
 #[cfg(test)]

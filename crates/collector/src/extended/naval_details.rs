@@ -659,14 +659,14 @@ pub(super) fn commander_skill(
 fn range<T>(items: &[T], span: [usize; 2]) -> &[T] {
     &items[span[0]..span[0] + span[1]]
 }
-fn air_hit(v: &naval_combat_air_hit::Row) -> rows::NavalCombatAirHit {
+pub(super) fn air_hit(v: &naval_combat_air_hit::Row) -> rows::NavalCombatAirHit {
     rows::NavalCombatAirHit {
         variant: v.variant,
         count: v.count,
         country: v.country,
     }
 }
-fn naval_hit(v: &naval_combat_hit::Row) -> rows::NavalCombatHit {
+pub(super) fn naval_hit(v: &naval_combat_hit::Row) -> rows::NavalCombatHit {
     rows::NavalCombatHit {
         target_slot: v.target_slot,
         target_name: v.target_name.as_bytes().to_vec(),
