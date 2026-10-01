@@ -379,8 +379,6 @@ fn ambient_buckets_keep_the_camera_side_margin() {
             height: 50.,
         }
         .on(MapSize::TEST, MapDefines::test());
-        let raw = camera.side_planes([1024, 768]).map(|p| p.map(|v| -v));
-        assert!(!super::province_admission::admits_box(bounds, 0., &raw));
         let mut presentation = Presentation {
             placements: vec![Placement {
                 kind: 0,

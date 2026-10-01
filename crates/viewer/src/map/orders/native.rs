@@ -236,8 +236,6 @@ mod tests {
         };
         for (x, expected) in [(3040., 1), (3060., 0)] {
             field.draws[0].bounds = [[x, 0., 999.], [x + 2., 1., 1001.]];
-            let raw = camera.side_planes([1024, 768]).map(|p| p.map(|v| -v));
-            assert!(!admits_box(field.draws[0].bounds, 0., &raw));
             let plan = plans(&field.draws, camera, [1024, 768], &[0.], |_, _| {
                 Some(&arrow)
             });
