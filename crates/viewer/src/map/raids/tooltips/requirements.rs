@@ -65,6 +65,20 @@ fn group(
     Ok(out.join(", "))
 }
 
+/// 14157E990 constructs the anonymous group with InitializeDefaultTokenField
+/// (1424A9460), whose token 0x165 is `none` (140082CB0's native keyword table).
+/// Its description stays empty. 1409FC1E0 tests that token's spelling through
+/// HasLocalizationKeyFromView (14222F900): a hit localises only the wrapper;
+/// a miss enters 1409FEBA0 to expand its members.
+fn anonymous_group(loc: &Localisation, groups: Result<&Groups, String>, names: &[Vec<u8>]) -> Text {
+    const KEY: &str = "none";
+    if loc.get(KEY).is_some() {
+        localise(loc, KEY, &[])
+    } else {
+        group(loc, groups?, names, &mut Vec::new(), &mut Vec::new())
+    }
+}
+
 pub fn build(
     loc: &Localisation,
     // The equipment database and groups, or why they are unknown: only
@@ -81,13 +95,13 @@ pub fn build(
                 continue;
             } // 1415790B0 IsEmpty guard.
             let text = (|| {
-                let (equipment, groups) = equipment.clone()?;
                 let types: Vec<Vec<u8>> = req
                     .types
                     .iter()
                     .map(|name| name.as_bytes().to_vec())
                     .collect();
-                let name = group(loc, groups, &types, &mut Vec::new(), &mut Vec::new())?;
+                let name =
+                    anonymous_group(loc, equipment.clone().map(|(_, groups)| groups), &types)?;
                 let mut text = localise(
                     loc,
                     "raid_unit_requirements_equipment_header",
@@ -100,28 +114,30 @@ pub fn build(
                     ],
                 )?;
                 let mut groups = String::new();
-                for alternatives in &req.modules {
-                    let mut modules = Vec::new();
-                    for module in alternatives {
-                        // GetModuleByToken (1409EB610), a null result
-                        // skipped; the module's own name (+0x18) is
-                        // localised for the country (140BBA630).
-                        if let Some(found) = equipment.module(module) {
-                            let found = stored("equipment module name", found)?;
-                            modules.push(localise(
-                                loc,
-                                "raid_unit_requirements_module",
-                                &[("NAME", Arg::Text(&country_name(found)?))],
-                            )?);
+                if !req.modules.is_empty() {
+                    let (equipment, _) = equipment.clone()?;
+                    for alternatives in &req.modules {
+                        let mut modules = Vec::new();
+                        for module in alternatives {
+                            // GetModuleByToken (1409EB610) skips null; the module's
+                            // own name is localised for the country (140BBA630).
+                            if let Some(found) = equipment.module(module) {
+                                let found = stored("equipment module name", found)?;
+                                modules.push(localise(
+                                    loc,
+                                    "raid_unit_requirements_module",
+                                    &[("NAME", Arg::Text(&country_name(found)?))],
+                                )?);
+                            }
                         }
+                        let separator = format!(" {} ", localise(loc, "OR", &[])?); // 14295E708.
+                        groups.push_str(&localise(
+                            loc,
+                            "raid_unit_requirements_module_group",
+                            &[("LIST", Arg::Text(&modules.join(&separator)))],
+                        )?);
+                        ensure_newlines(&mut groups, 1);
                     }
-                    let separator = format!(" {} ", localise(loc, "OR", &[])?); // 14295E708.
-                    groups.push_str(&localise(
-                        loc,
-                        "raid_unit_requirements_module_group",
-                        &[("LIST", Arg::Text(&modules.join(&separator)))],
-                    )?);
-                    ensure_newlines(&mut groups, 1);
                 }
                 if !groups.is_empty() {
                     ensure_newlines(&mut text, 1);
@@ -163,6 +179,86 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anonymous_wrapper_tests_none_before_expanding_members() {
+        let (equipment, groups) = installed_content::equipment::fixture::load(&[(
+            "common/equipment_groups/g.txt",
+            "inner = { description = inner_name equipment_type = { b a } }
+             cycle = { equipment_type = { cycle } }",
+        )]);
+        let loc: Localisation = [
+            ("a", "A"),
+            ("b", "B"),
+            ("inner_name", "Inner"),
+            ("", "Empty key must not be tested"),
+            ("value_limit_min", "at least $MIN$"),
+            (
+                "raid_unit_requirements_equipment_header",
+                "$AMOUNT$ $EQUIPMENT$",
+            ),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect();
+        let kind = |names: &[&str]| RaidType {
+            unit_requirements: vec![installed_content::raids::UnitRequirement {
+                equipment: vec![installed_content::raids::EquipmentRequirement {
+                    types: names.iter().map(|name| (*name).into()).collect(),
+                    min: Some(70),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let run = |loc: &Localisation, names: &[&str]| {
+            build(
+                loc,
+                Ok((&equipment, &groups)),
+                &kind(names),
+                |name| Ok(name.into()),
+                |_| Ok(true),
+            )
+        };
+        // Missing `none` preserves member order, terminal deduplication and
+        // named inner localisation. A localised empty key is unrelated.
+        assert_eq!(
+            run(&loc, &["inner", "a", "b", "unlocalised"])[0]
+                .1
+                .as_deref(),
+            Ok("at least 70 Inner, unlocalised\n\n")
+        );
+        let with_none = |value: &str| -> Localisation {
+            loc.iter()
+                .chain(std::iter::once(("none", value)))
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect()
+        };
+        let localised = with_none("Anonymous wrapper");
+        // A hit suppresses expansion even when the equipment database is unavailable.
+        assert_eq!(
+            build(
+                &localised,
+                Err("equipment content unavailable".into()),
+                &kind(&["cycle"]),
+                |name| Ok(name.into()),
+                |_| Ok(true),
+            )[0]
+            .1
+            .as_deref(),
+            Ok("at least 70 Anonymous wrapper\n\n")
+        );
+        // An empty localised value is still a hit.
+        let localised = with_none("");
+        assert_eq!(
+            run(&localised, &["cycle"])[0].1.as_deref(),
+            Ok("at least 70 \n\n")
+        );
+        // 1415790B0 skips an empty requirement before asking for its name.
+        assert!(run(&localised, &[]).is_empty());
+    }
+
     #[test]
     fn battalion_lines_require_active_definition_and_nonempty_limit() {
         use installed_content::raids::{BattalionRequirement, UnitRequirement};

@@ -96,6 +96,10 @@ nonempty limits using `raid_unit_requirements_battalion(NAME, LIMIT)`.
 found by token without case) in authored order with terminal deduplication
 without case and `", "` separators when the group's key (its description, else
 its name) has no localisation; a module is shown by its own name, found by token.
+The anonymous requirement wrapper tests `none`, not an empty key:
+`14157E990` keeps the default token `0x165` from `1424A9460`, whose native
+spelling is `none` (`140082CB0`). A localised wrapper suppresses member
+expansion (`1409FC1E0`); without that key the member list expands normally.
 
 `141580CB0` describes a source as `raid_source_desc(WHAT, LOCATION)`.
 LOCATION is the state's display name or the ship name. `141581940` selects WHAT
