@@ -407,6 +407,7 @@ mod tests {
         let tactics =
             super::super::tactics::Content::from_database(installed_content::combat_tactics::parse(
                 b"a = { picture = tactic_a } b = { picture = tactic_b }",
+                &installed_content::key_names::KeyNames::default(),
             ));
         tactic(&mut out, &has, &tactics, "tactic", 2, b"b");
         assert_eq!(out.values["tactic"].sprite, None);

@@ -59,8 +59,7 @@ impl Environment {
             neighbors,
             terrain: installed_content::movement::MovementMap::read(layers, &defines).ok(),
             dlcs: layers.dlc_names()?,
-            // Settled as the tactics and raids read it.
-            triggers: installed_content::trigger_keys::TriggerNames::settled(
+            triggers: installed_content::trigger_keys::TriggerNames::new(
                 installed_content::scripted_triggers::read(layers)?,
                 installed_content::trigger_keys::CountTriggerNames::new(
                     &buildings,

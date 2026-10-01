@@ -118,7 +118,8 @@ fn read_file(input: &[u8]) -> native::Read {
     native::read(
         input,
         native::Mode::KeepMark,
-        Node::Top,
+        native::Top::File(Node::Top),
+        None,
         &mut |node, field| match node {
             Node::Top => Shape::Object(Node::Definition),
             // SModifierDefinitonReader::vf4 (140604040), keyword ids from

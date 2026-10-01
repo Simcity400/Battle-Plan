@@ -1399,6 +1399,7 @@ mod tests {
             resource: &|_| installed_content::states::Resource::Found,
             max_building_levels: 20,
             province_count: 1000,
+            names: &installed_content::key_names::KeyNames::default(),
         };
         installed_content::states::parse_states(input, &context)
             .unwrap()

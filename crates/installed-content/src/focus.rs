@@ -1,4 +1,5 @@
 //! Focus presentation definitions, using the shared Clausewitz and layer readers.
+use crate::key_names::KeyNames;
 use crate::{
     ResolvedLayers,
     fields::invalid,
@@ -70,7 +71,11 @@ enum Node {
 /// focus 1406B67D0. The databases and nested objects use CPersistent::Read;
 /// CNationalFocus::Read 1402D71D0 only adds source metadata before that loop.
 /// Each database reports and skips the other's roots.
-pub fn parse(input: &[u8], database: Database) -> io::Result<BTreeMap<String, FocusDefinition>> {
+pub fn parse(
+    input: &[u8],
+    database: Database,
+    names: &KeyNames,
+) -> io::Result<BTreeMap<String, FocusDefinition>> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -84,167 +89,176 @@ pub fn parse(input: &[u8], database: Database) -> io::Result<BTreeMap<String, Fo
         Database::National => native::Mode::SkipMark,
         Database::Continuous => native::Mode::KeepMark,
     };
-    let document = native::read_persistent(input, mode, top, &mut |node, field| {
-        match (node, field.keyword().as_deref()) {
-            (NationalFile, Some(b"focus_tree")) => Shape::Object(Tree),
-            (ContinuousFile, Some(b"continuous_focus_palette")) => Shape::Object(Palette),
-            (NationalFile, Some(b"shared_focus")) | (Tree, Some(b"focus")) => Shape::Object(Focus),
-            (NationalFile, Some(b"joint_focus")) => Shape::Object(Joint),
-            (Palette, Some(b"focus")) => Shape::Object(Continuous),
-            (NationalFile | Tree | Focus | Joint, Some(b"search_filter_prios")) => {
-                Shape::Object(Priorities)
-            }
-            (NationalFile, Some(b"style")) => Shape::Object(Style),
-            (Tree | Palette, Some(b"country")) => Shape::Object(Mtth),
-            (Tree, Some(b"shortcut")) => Shape::Object(Shortcut),
-            (Tree, Some(b"inlay_window")) => Shape::Object(Inlay),
-            (Tree, Some(b"initial_show_position")) => Shape::Object(Position),
-            // 1402C7A50 and 140A3D660 read the lexer's tokens, leaving the
-            // value slot; search_filters (1402C7640) resolves into it.
-            (Tree, Some(b"continuous_focus_position")) | (Palette, Some(b"position")) => {
-                if field.opens() {
+    let document = native::read(
+        input,
+        mode,
+        native::Top::Persistent(top),
+        Some(names),
+        &mut |node, field| {
+            match (node, field.keyword().as_deref()) {
+                (NationalFile, Some(b"focus_tree")) => Shape::Object(Tree),
+                (ContinuousFile, Some(b"continuous_focus_palette")) => Shape::Object(Palette),
+                (NationalFile, Some(b"shared_focus")) | (Tree, Some(b"focus")) => {
+                    Shape::Object(Focus)
+                }
+                (NationalFile, Some(b"joint_focus")) => Shape::Object(Joint),
+                (Palette, Some(b"focus")) => Shape::Object(Continuous),
+                (NationalFile | Tree | Focus | Joint, Some(b"search_filter_prios")) => {
+                    Shape::Object(Priorities)
+                }
+                (NationalFile, Some(b"style")) => Shape::Object(Style),
+                (Tree | Palette, Some(b"country")) => Shape::Object(Mtth),
+                (Tree, Some(b"shortcut")) => Shape::Object(Shortcut),
+                (Tree, Some(b"inlay_window")) => Shape::Object(Inlay),
+                (Tree, Some(b"initial_show_position")) => Shape::Object(Position),
+                // 1402C7A50 and 140A3D660 read the lexer's tokens, leaving the
+                // value slot; search_filters (1402C7640) resolves into it.
+                (Tree, Some(b"continuous_focus_position")) | (Palette, Some(b"position")) => {
+                    if field.opens() {
+                        Shape::RawList
+                    } else {
+                        Shape::Skip
+                    }
+                }
+                (
+                    Tree,
+                    Some(
+                        b"id"
+                        | b"default"
+                        | b"reset_on_civilwar"
+                        | b"shared_focus"
+                        | b"joint_focus"
+                        | b"alternate_icon_set",
+                    ),
+                )
+                | (Palette, Some(b"id" | b"default" | b"reset_on_civilwar")) => Shape::One,
+                (Focus | Joint, Some(b"prerequisite" | b"mutually_exclusive")) => {
+                    Shape::Object(Dependency)
+                }
+                (Focus | Joint | Position, Some(b"offset"))
+                | (Inlay, Some(b"override_position")) => Shape::Object(Offset),
+                (Focus | Joint | Continuous, Some(b"icon"))
+                | (Focus | Joint, Some(b"alternate_icon")) => Shape::ScriptedKey,
+                (Focus | Joint | Continuous, Some(b"ai_will_do")) => Shape::Object(Mtth),
+                (
+                    Focus | Joint,
+                    Some(b"cancel" | b"available" | b"bypass" | b"historical_ai" | b"allow_branch"),
+                )
+                | (Joint, Some(b"joint_trigger"))
+                | (Continuous, Some(b"available" | b"enabled" | b"enable"))
+                | (Offset | Shortcut, Some(b"trigger")) => Shape::Trigger,
+                (
+                    Focus | Joint,
+                    Some(
+                        b"completion_reward" | b"bypass_effect" | b"select_effect"
+                        | b"complete_tooltip" | b"on_uncomplete",
+                    ),
+                )
+                | (
+                    Joint,
+                    Some(b"completion_reward_joint_originator" | b"completion_reward_joint_member"),
+                )
+                | (Continuous, Some(b"select_effect" | b"cancel_effect" | b"daily_reward")) => {
+                    Shape::ByKey
+                }
+                (Continuous, Some(b"modifier")) => {
+                    Shape::Object(Modifier(modifiers::Node::Modifier))
+                }
+                (Focus | Joint, Some(b"search_filters")) => {
+                    if field.opens() {
+                        Shape::List
+                    } else {
+                        Shape::One
+                    }
+                }
+                (Focus | Joint, Some(b"will_lead_to_war_with")) => {
+                    if field.opens() {
+                        Shape::Skip
+                    } else {
+                        Shape::One
+                    }
+                }
+                (
+                    Focus | Joint,
+                    Some(
+                        b"id"
+                        | b"x"
+                        | b"y"
+                        | b"text"
+                        | b"overlay"
+                        | b"cost"
+                        | b"historical"
+                        | b"dynamic"
+                        | b"cancelable"
+                        | b"cancel_if_invalid"
+                        | b"continue_if_invalid"
+                        | b"available_if_capitulated"
+                        | b"relative_position_id"
+                        | b"enable_automatic_bypass"
+                        | b"text_icon"
+                        | b"bypass_if_unavailable",
+                    ),
+                )
+                | (
+                    Continuous,
+                    Some(
+                        b"id"
+                        | b"text"
+                        | b"idea"
+                        | b"daily_cost"
+                        | b"available_if_capitulated"
+                        | b"supports_ai_strategy",
+                    ),
+                )
+                | (Dependency, Some(b"or" | b"focus"))
+                | (Offset, Some(b"x" | b"y"))
+                | (Position, Some(b"x" | b"y" | b"focus"))
+                | (Shortcut, Some(b"name" | b"target" | b"scroll_wheel_factor"))
+                | (Inlay, Some(b"id"))
+                | (
+                    Style,
+                    Some(
+                        b"name" | b"default" | b"available" | b"unavailable" | b"completed"
+                        | b"current",
+                    ),
+                ) => Shape::One,
+                // ReadIntPoint (140A3D660) reads the value `{` and then seven
+                // tokens, `x = n y = n }`, whatever they are; only that exact
+                // form reads as a list does (checked below).
+                (Inlay, Some(b"position")) => {
+                    if !field.opens() {
+                        refused.push(format!(
+                            "focus inlay_window position at line {}: not a block",
+                            field.key.line
+                        ));
+                    }
                     Shape::RawList
-                } else {
-                    Shape::Skip
                 }
-            }
-            (
-                Tree,
-                Some(
-                    b"id"
-                    | b"default"
-                    | b"reset_on_civilwar"
-                    | b"shared_focus"
-                    | b"joint_focus"
-                    | b"alternate_icon_set",
-                ),
-            )
-            | (Palette, Some(b"id" | b"default" | b"reset_on_civilwar")) => Shape::One,
-            (Focus | Joint, Some(b"prerequisite" | b"mutually_exclusive")) => {
-                Shape::Object(Dependency)
-            }
-            (Focus | Joint | Position, Some(b"offset")) | (Inlay, Some(b"override_position")) => {
-                Shape::Object(Offset)
-            }
-            (Focus | Joint | Continuous, Some(b"icon"))
-            | (Focus | Joint, Some(b"alternate_icon")) => Shape::ScriptedKey,
-            (Focus | Joint | Continuous, Some(b"ai_will_do")) => Shape::Object(Mtth),
-            (
-                Focus | Joint,
-                Some(b"cancel" | b"available" | b"bypass" | b"historical_ai" | b"allow_branch"),
-            )
-            | (Joint, Some(b"joint_trigger"))
-            | (Continuous, Some(b"available" | b"enabled" | b"enable"))
-            | (Offset | Shortcut, Some(b"trigger")) => Shape::Trigger,
-            (
-                Focus | Joint,
-                Some(
-                    b"completion_reward" | b"bypass_effect" | b"select_effect"
-                    | b"complete_tooltip" | b"on_uncomplete",
-                ),
-            )
-            | (
-                Joint,
-                Some(b"completion_reward_joint_originator" | b"completion_reward_joint_member"),
-            )
-            | (Continuous, Some(b"select_effect" | b"cancel_effect" | b"daily_reward")) => {
-                Shape::ByKey
-            }
-            (Continuous, Some(b"modifier")) => Shape::Object(Modifier(modifiers::Node::Modifier)),
-            (Focus | Joint, Some(b"search_filters")) => {
-                if field.opens() {
-                    Shape::List
-                } else {
+                (Priorities, _) => {
+                    if field.opens() {
+                        refused.push(format!(
+                            "focus search_filter_prios {}: block value",
+                            String::from_utf8_lossy(&field.key.text)
+                        ));
+                    }
                     Shape::One
                 }
-            }
-            (Focus | Joint, Some(b"will_lead_to_war_with")) => {
-                if field.opens() {
-                    Shape::Skip
-                } else {
-                    Shape::One
-                }
-            }
-            (
-                Focus | Joint,
-                Some(
-                    b"id"
-                    | b"x"
-                    | b"y"
-                    | b"text"
-                    | b"overlay"
-                    | b"cost"
-                    | b"historical"
-                    | b"dynamic"
-                    | b"cancelable"
-                    | b"cancel_if_invalid"
-                    | b"continue_if_invalid"
-                    | b"available_if_capitulated"
-                    | b"relative_position_id"
-                    | b"enable_automatic_bypass"
-                    | b"text_icon"
-                    | b"bypass_if_unavailable",
-                ),
-            )
-            | (
-                Continuous,
-                Some(
-                    b"id"
-                    | b"text"
-                    | b"idea"
-                    | b"daily_cost"
-                    | b"available_if_capitulated"
-                    | b"supports_ai_strategy",
-                ),
-            )
-            | (Dependency, Some(b"or" | b"focus"))
-            | (Offset, Some(b"x" | b"y"))
-            | (Position, Some(b"x" | b"y" | b"focus"))
-            | (Shortcut, Some(b"name" | b"target" | b"scroll_wheel_factor"))
-            | (Inlay, Some(b"id"))
-            | (
-                Style,
-                Some(
-                    b"name" | b"default" | b"available" | b"unavailable" | b"completed"
-                    | b"current",
-                ),
-            ) => Shape::One,
-            // ReadIntPoint (140A3D660) reads the value `{` and then seven
-            // tokens, `x = n y = n }`, whatever they are; only that exact
-            // form reads as a list does (checked below).
-            (Inlay, Some(b"position")) => {
-                if !field.opens() {
+                (Style, _) => {
+                    // 141362610 spins forever on an unknown token. Refuse it.
                     refused.push(format!(
-                        "focus inlay_window position at line {}: not a block",
-                        field.key.line
-                    ));
-                }
-                Shape::RawList
-            }
-            (Priorities, _) => {
-                if field.opens() {
-                    refused.push(format!(
-                        "focus search_filter_prios {}: block value",
+                        "focus style field {}: unsupported native nonterminating dispatch",
                         String::from_utf8_lossy(&field.key.text)
                     ));
+                    Shape::Skip
                 }
-                Shape::One
+                (Mtth, _) => native::mean_time_to_happen(field),
+                (Modifier(node), _) => {
+                    modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided).map(Modifier)
+                }
+                _ => Shape::Skip,
             }
-            (Style, _) => {
-                // 141362610 spins forever on an unknown token. Refuse it.
-                refused.push(format!(
-                    "focus style field {}: unsupported native nonterminating dispatch",
-                    String::from_utf8_lossy(&field.key.text)
-                ));
-                Shape::Skip
-            }
-            (Mtth, _) => native::mean_time_to_happen(field),
-            (Modifier(node), _) => {
-                modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided).map(Modifier)
-            }
-            _ => Shape::Skip,
-        }
-    });
+        },
+    );
     if let Some(cause) = document.unsettled {
         return Err(invalid(format!("focus: {cause}")));
     }
@@ -385,13 +399,14 @@ pub fn read(
     paths.sort();
     let mut result = BTreeMap::new();
     let mut warnings = Vec::new();
+    let names = layers.key_names()?;
     for (_, path) in paths {
         let database = if path.starts_with("common/national_focus/") {
             Database::National
         } else {
             Database::Continuous
         };
-        match parse(&layers.read(&path)?, database) {
+        match parse(&layers.read(&path)?, database, &names) {
             Ok(definitions) => result.extend(definitions),
             Err(error) => {
                 warnings.push(format!("Focus definitions unavailable in {path}: {error}"))
@@ -411,6 +426,7 @@ mod tests {
             icon={@sprite=yes {ignored={}}} unknown={id=hidden} cost=0x2}}
             shared_focus={id=B icon=@sprite}"#,
             Database::National,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(defs["A"].localisation, "A");
@@ -421,7 +437,7 @@ mod tests {
 
     #[test]
     fn authored_text_shared_and_conditional_icons() {
-        let defs = parse(br#"focus_tree={focus={id=A icon=GFX_goal_a text=TITLE} focus={id=B icon={value=GFX_goal_b}}} shared_focus={id=C icon=GFX_goal_c}"#, Database::National).unwrap();
+        let defs = parse(br#"focus_tree={focus={id=A icon=GFX_goal_a text=TITLE} focus={id=B icon={value=GFX_goal_b}}} shared_focus={id=C icon=GFX_goal_c}"#, Database::National, &KeyNames::default()).unwrap();
         assert_eq!(defs["A"].localisation, "TITLE");
         assert_eq!(defs["A"].description, "TITLE_desc");
         assert_eq!(defs["A"].icon.as_deref(), Some("GFX_goal_a"));
@@ -434,6 +450,7 @@ mod tests {
         let defs = parse(
             br#"focus_tree={focus={id=A text=TITLE desc=DESCRIPTION}}"#,
             Database::National,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(defs["A"].description, "TITLE_desc");
@@ -445,7 +462,8 @@ mod tests {
         assert!(
             parse(
                 br#"focus_tree={inlay_window={id=w position={1 2}} focus={id=A}}"#,
-                Database::National
+                Database::National,
+                &KeyNames::default()
             )
             .unwrap_err()
             .to_string()
@@ -454,6 +472,7 @@ mod tests {
         let defs = parse(
             br#"focus_tree={inlay_window={id=w position={X=1 y=2}} focus={id=A position={1 2}}}"#,
             Database::National,
+            &KeyNames::default(),
         )
         .unwrap();
         assert!(defs.contains_key("A"));
@@ -462,9 +481,9 @@ mod tests {
     #[test]
     fn each_database_reads_only_its_own_roots() {
         let text = br#"focus_tree={focus={id=A}} continuous_focus_palette={focus={id=E}} shared_focus={id=B}"#;
-        let national = parse(text, Database::National).unwrap();
+        let national = parse(text, Database::National, &KeyNames::default()).unwrap();
         assert_eq!(national.keys().collect::<Vec<_>>(), ["A", "B"]);
-        let continuous = parse(text, Database::Continuous).unwrap();
+        let continuous = parse(text, Database::Continuous, &KeyNames::default()).unwrap();
         assert_eq!(continuous.keys().collect::<Vec<_>>(), ["E"]);
     }
 
@@ -473,6 +492,7 @@ mod tests {
         let defs = parse(
             br#"focus_tree={focus={id=A cost=2 cost=bad} focus={id=B cost=bad}}"#,
             Database::National,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!((defs["A"].cost, defs["B"].cost), (Some(2.0), None));
@@ -480,10 +500,11 @@ mod tests {
 
     #[test]
     fn authored_costs_and_scripted_costs() {
-        let defs = parse(br#"focus_tree={focus={id=A cost=10} focus={id=B cost=2.5} focus={id=C cost=@scripted} focus={id=D cost=-1}}"#, Database::National).unwrap();
+        let defs = parse(br#"focus_tree={focus={id=A cost=10} focus={id=B cost=2.5} focus={id=C cost=@scripted} focus={id=D cost=-1}}"#, Database::National, &KeyNames::default()).unwrap();
         let continuous = parse(
             br#"continuous_focus_palette={focus={id=E}}"#,
             Database::Continuous,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(defs["A"].cost, Some(10.0));

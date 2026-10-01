@@ -1451,6 +1451,7 @@ mod tests {
     fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
         let names = installed_content::division_names::parse(
             br#"SOV_INF_01 = { ordered = { 144 = { "%dya Strelkovaya Diviziya" } } }"#,
+            &installed_content::key_names::KeyNames::default(),
         )
         .unwrap();
         let mut row = LandCombatDivisionRow {
@@ -1498,6 +1499,7 @@ mod tests {
     fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
         let names = installed_content::division_names::parse(
             br#"INF = { ordered = { 1 = { "First" } } unordered = { loose = { "Loose" } } }"#,
+            &installed_content::key_names::KeyNames::default(),
         )
         .unwrap();
         let row = |division, group: &[u8], order, ordered: u8| LandCombatDivisionRow {

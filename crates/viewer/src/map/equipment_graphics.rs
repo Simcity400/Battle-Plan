@@ -21,6 +21,7 @@ use std::{
 use installed_content::{
     ResolvedLayers,
     fixed5::script_fixed5,
+    key_names::KeyNames,
     parser::{
         self, Item, Value,
         native::{self, Shape},
@@ -230,12 +231,13 @@ enum Node {
 
 /// One `graphic_db` file through the native reader replay: `1409F6100`
 /// loops to the end of the text; its buckets are CPersistent objects.
-fn document(bytes: &[u8], names: &Names) -> io::Result<Vec<Item>> {
+fn document(bytes: &[u8], names: &Names, key_names: &KeyNames) -> io::Result<Vec<Item>> {
     // 1409F8C30 constructs each file's lexer in mode 1 (1424A6370).
     let read = native::read(
         bytes,
         native::Mode::SkipMark,
-        Node::File,
+        native::Top::File(Node::File),
+        Some(key_names),
         &mut |node, field| match node {
             Node::File => match names.bucket(&field.key.text, field.keyword_is("default")) {
                 // ReadObjectFromParser (1424ABB40).
@@ -270,11 +272,12 @@ fn document(bytes: &[u8], names: &Names) -> io::Result<Vec<Item>> {
 impl Content {
     pub fn load(layers: &ResolvedLayers, names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
+        let key_names = layers.key_names()?;
         // 1409F8C30 lists the directory as a database loader does
         // (enumerate_directory_wrapper 1424C73B0, no recursion, byte order);
         // it is covered, so every file's bytes are verified.
         for path in layers.directory_files("gfx/interface/equipmentdesigner/graphic_db", ".txt")? {
-            document(&layers.read_uncovered(&path)?, names)
+            document(&layers.read_uncovered(&path)?, names, &key_names)
                 .and_then(|items| content.read_document(&items, names, &path))
                 .map_err(|error| invalid(format!("{path}: {error}")))?;
         }
@@ -285,7 +288,7 @@ impl Content {
     #[cfg(test)]
     pub(crate) fn from_test_document(text: &[u8], names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
-        content.read_document(&document(text, names)?, names, "test")?;
+        content.read_document(&document(text, names, &KeyNames::default())?, names, "test")?;
         Ok(content)
     }
 
@@ -737,8 +740,37 @@ pub(crate) mod tests {
 
     fn content(text: &[u8]) -> io::Result<Content> {
         let mut content = Content::default();
-        content.read_document(&document(text, &names())?, &names(), "graphic_db/a.txt")?;
+        let key_names = KeyNames {
+            countries: [b"AAA".to_vec()].into(),
+            ..KeyNames::default()
+        };
+        content.read_document(
+            &document(text, &names(), &key_names)?,
+            &names(),
+            "graphic_db/a.txt",
+        )?;
         Ok(content)
+    }
+
+    #[test]
+    fn the_graphic_db_trigger_reader_keeps_content_names() {
+        let key_names = KeyNames {
+            countries: [b"EST".to_vec()].into(),
+            ..KeyNames::default()
+        };
+        let items = document(
+            b"default = { plane = { pool = { limit = { EST = { always = yes } } } } }",
+            &names(),
+            &key_names,
+        )
+        .unwrap();
+        let mut fields = items.as_slice();
+        for key in ["default", "plane", "pool", "limit", "EST"] {
+            assert_eq!(fields[0].key.as_deref(), Some(key.as_bytes()));
+            fields = fields[0].value.items().unwrap();
+        }
+        assert_eq!(fields[0].key.as_deref(), Some(b"always".as_slice()));
+        assert_eq!(fields[0].value.scalar(), Some(b"yes".as_slice()));
     }
 
     fn context<'a>(country: Option<&'a str>, factions: &'a [String]) -> Context<'a> {

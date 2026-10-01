@@ -336,7 +336,7 @@ impl Presentation {
 
 #[test]
 fn placement_preserves_authored_height_scale_and_only_y_rotation() {
-    let types = ambient::parse(b"type={type=mod_frame scale=2 always_visible=yes use_animation=no object={position={3 -4 5} rotation={90 90 90}}}").unwrap();
+    let types = ambient::parse(b"type={type=mod_frame scale=2 always_visible=yes use_animation=no object={position={3 -4 5} rotation={90 90 90}}}", &installed_content::key_names::KeyNames::default()).unwrap();
     let value = instance(&types[0], &types[0].objects[0]);
     assert_eq!(value.position, [3., -4., 5.]);
     assert_eq!(value.scale, 2.);

@@ -40,7 +40,8 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<Resource>> {
     let read = native::read(
         input,
         native::Mode::KeepMark,
-        Node::File,
+        native::Top::File(Node::File),
+        None,
         &mut |node, field| match node {
             Node::File if field.keyword_is("resources") => Shape::Object(Node::Resources),
             Node::File => Shape::Skip,

@@ -1,0 +1,235 @@
+//! Slot-5 readers outside Assign, Comparison and direct LoadBody.
+//! Body paths use the class's one KEY_READERS entry, including inline loops.
+
+use super::{Node, Shaper};
+use crate::parser::native::{Field, Shape};
+
+impl Shaper<'_> {
+    pub(super) fn own_value(&self, token: u32, address: u64, field: &Field<'_>) -> Shape<Node> {
+        match address {
+            // LoadBody thunks and variable-trigger builders; KEY_READERS
+            // records the slot-6 reader or embedded loop each one supplies.
+            0x140434710 | 0x141394F70 | 0x14047F840 | 0x14047FC90 | 0x1404800E0 | 0x140480530
+            | 0x140480980 => Shape::Body(Node::Class(token)),
+            // Scalar first unless the value opens the class's key loop.
+            0x140434790 | 0x1404348E0 | 0x140434EC0 | 0x1413950F0 | 0x14044B1D0 | 0x14044B2D0 => {
+                Shape::ObjectIfOpen(Node::Class(token))
+            }
+            // ReadScriptInt32Array@1401F91B0: raw resolved tokens, no definitions.
+            0x140471560 => Shape::RawList,
+            // NScript::NMath::CExpression::Read@141405ED0 -> 141406A00.
+            0x14051AB70 => Shape::Expression,
+            0x1404347E0 | 0x140434C00 | 0x140434EB0 | 0x1404A1DE0 => Shape::One,
+            0x140471500 => Shape::Current,
+            // report_field_error + raw SkipBlock on a block; otherwise one value.
+            0x140434720 if field.opens() => Shape::SkipIfOpen,
+            0x140434720 => Shape::One,
+            // 140458170: < and > select Comparison; every other operator
+            // selects LoadBody, including = with an opening value.
+            0x140458170
+                if matches!(
+                    field.operator,
+                    crate::parser::Operator::Less | crate::parser::Operator::Greater
+                ) =>
+            {
+                Shape::One
+            }
+            0x140458170 => Shape::Body(Node::Class(token)),
+            // Unreached blocks: scalar paths copy a token or resolve one weather.
+            0x140458190 | 0x140478180 if !field.opens() => Shape::One,
+            _ => Self::refuse_reader(address, field.key.c_str()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        key_names::KeyNames,
+        parser::native::{self, Shape},
+    };
+
+    /// 140472210 records an error for a missing or provincial building;
+    /// 140471900 instead requires a provincial building.
+    #[test]
+    fn non_damaged_building_level_rejects_provincial_buildings() {
+        let mut names = KeyNames::default();
+        for (name, provincial) in [(b"factory".as_slice(), false), (b"port".as_slice(), true)] {
+            names.counts.buildings.insert(name.to_vec());
+            names
+                .province_buildings
+                .insert(name.to_vec(), Some(provincial));
+        }
+        let accepted = crate::triggers::read(
+            b"non_damaged_building_level = { building = factory level > 2 }",
+            &names,
+        );
+        assert!(accepted.unsettled.is_none(), "{accepted:?}");
+        assert!(accepted.misreads.is_empty(), "{accepted:?}");
+        for building in ["port", "missing"] {
+            // Scalar RecordError reads nothing. A stale invalid building
+            // with `{` consumed as its operator must skip that block.
+            let text = format!(
+                "non_damaged_building_level = {{ building = {building} building {{ @lost = 7 level > 0 }} level > 2 }} always = @lost"
+            );
+            let refused = crate::triggers::read(text.as_bytes(), &names);
+            assert!(refused.unsettled.is_none(), "{refused:?}");
+            let probe = refused.items.last().unwrap();
+            assert!(probe.keyword_is("always"), "{refused:?}");
+            assert_eq!(
+                probe.value.scalar(),
+                Some(b"@lost".as_slice()),
+                "{refused:?}"
+            );
+        }
+    }
+
+    /// 140458170's = path calls LoadBody and its key reader 140458240.
+    #[test]
+    fn completed_mio_trait_count_reads_its_assignment_body() {
+        let result = crate::triggers::read(
+            b"has_mio_number_of_completed_traits = { @kept = 2 value > 3 } always = @kept",
+            &KeyNames::default(),
+        );
+        assert!(result.unsettled.is_none(), "{result:?}");
+        assert!(result.misreads.is_empty(), "{result:?}");
+        assert_eq!(result.items.len(), 2, "{result:?}");
+        let value = &result.items[0].value.items().unwrap()[0];
+        assert!(value.keyword_is("value"));
+        assert_eq!(value.operator, crate::parser::Operator::Greater);
+        assert_eq!(result.items[1].value.scalar(), Some(b"2".as_slice()));
+    }
+
+    fn read(text: &[u8]) -> native::Read {
+        native::read(
+            text,
+            native::Mode::KeepMark,
+            native::Top::File(()),
+            Some(&KeyNames::default()),
+            &mut |_, field| {
+                if field.keyword_is("body") {
+                    Shape::Trigger
+                } else {
+                    Shape::One
+                }
+            },
+        )
+    }
+
+    #[test]
+    fn own_key_loops_skip_unknown_blocks_without_registering_definitions() {
+        // One fixture for every reached skip-dispatch family; a generic
+        // by-key reader defines @lost inside the unknown field instead.
+        for (class, key) in [
+            ("has_dynamic_modifier", "modifier"),
+            ("has_naval_invasion_against_state", "state"),
+            ("has_wargoal_against", "target"),
+            ("has_war_with_wargoal_against", "type"),
+            ("has_country_flag", "flag"),
+            ("has_state_flag", "flag"),
+            ("has_global_flag", "flag"),
+            ("has_unit_leader_flag", "flag"),
+            ("has_character_flag", "flag"),
+            ("decryption_progress", "target"),
+            ("has_collaboration", "target"),
+            ("network_national_coverage", "target"),
+            ("is_running_operation", "operation"),
+            ("is_preparing_operation", "operation"),
+            ("advisor_can_be_fired", "character"),
+            ("is_leading_army_in_province", "province"),
+            ("get_highest_scored_country_temp", "var"),
+            ("get_sorted_scored_countries_temp", "array"),
+            ("get_supply_vehicles_temp", "var"),
+            ("set_temp_variable_to_random", "min"),
+            ("power_balance_value", "value"),
+            ("power_balance_daily_change", "value"),
+            ("power_balance_weekly_change", "value"),
+            ("non_damaged_building_level", "level"),
+        ] {
+            let text = format!(
+                "body = {{ {class} = {{ {key} = x invalid = {{ @lost = 2 }} @kept = 3 {key} = @kept }} }} lost = @lost kept = @kept"
+            );
+            let result = read(text.as_bytes());
+            assert!(
+                result.unsettled.is_none(),
+                "{class}: {:?}",
+                result.unsettled
+            );
+            assert_eq!(
+                result.items[1].value.scalar(),
+                Some(&b"@lost"[..]),
+                "{class}"
+            );
+            assert_eq!(result.items[2].value.scalar(), Some(&b"3"[..]), "{class}");
+        }
+    }
+
+    #[test]
+    fn own_one_value_keys_leave_blocks_in_the_enclosing_loop() {
+        for class in [
+            "has_country_flag",
+            "core_compliance",
+            "core_resistance",
+            "has_core_occupation_modifier",
+            "num_finished_operations",
+            "modulo_temp_variable",
+        ] {
+            let result = read(format!("body = {{ {class} = {{ value = {{ @kept = 7 value = @kept }} }} }} kept = @kept").as_bytes());
+            assert!(
+                result.unsettled.is_none(),
+                "{class}: {:?}",
+                result.unsettled
+            );
+            // The brace given to `value` consumes no body. Its closing brace
+            // ends the class, and the last probe remains readable at top level.
+            let class_body = result.items[0].value.items().unwrap()[0]
+                .value
+                .items()
+                .unwrap();
+            assert_eq!(class_body[0].value.scalar(), Some(&b"{"[..]), "{class}");
+            assert!(!result.misreads.is_empty(), "{class}");
+        }
+    }
+
+    #[test]
+    fn owns_any_state_of_is_a_raw_list_even_with_a_definition() {
+        let result = read(b"body = { owns_any_state_of = { 1 @lost = 2 } } lost = @lost");
+        assert!(result.unsettled.is_none());
+        assert_eq!(result.items[1].value.scalar(), Some(&b"@lost"[..]));
+        let entries = result.items[0].value.items().unwrap()[0]
+            .value
+            .items()
+            .unwrap();
+        assert_eq!(entries.len(), 4);
+        assert!(entries.iter().all(|item| item.key.is_none()));
+    }
+
+    #[test]
+    fn custom_override_tooltip_uses_bound_localisation_and_trigger_dispatch() {
+        let result = read(b"body = { custom_override_tooltip = { tooltip = { arg = { @kept = 4 localization_key = x } } invalid = { @lost = 2 } always = yes } } kept = @kept lost = @lost");
+        assert!(result.unsettled.is_none());
+        assert_eq!(result.items[1].value.scalar(), Some(&b"4"[..]));
+        assert_eq!(result.items[2].value.scalar(), Some(&b"@lost"[..]));
+    }
+
+    #[test]
+    fn math_errors_skip_the_tail_without_registering_definitions() {
+        let result = read(b"body = { check_expr = { value = { value = 1 @kept = 4 add = @kept } invalid = 0 ignored = { @lost = 2 } @tail = 8 add = 1 } } kept = @kept lost = @lost tail = @tail");
+        assert!(result.unsettled.is_none());
+        assert_eq!(result.items[1].value.scalar(), Some(&b"4"[..]));
+        assert_eq!(result.items[2].value.scalar(), Some(&b"@lost"[..]));
+        assert_eq!(result.items[3].value.scalar(), Some(&b"@tail"[..]));
+    }
+
+    #[test]
+    fn math_fixed_argument_and_conditional_loops_share_the_reader() {
+        let result = read(b"body = { check_expr = { value = 1 clamp = { min = { value = 0 @a = 2 add = @a } max = 10 } if = { limit = 1 @b = 3 add = @b } else_if = { limit = 0 add = 4 } else = { @c = 5 add = @c } add = 6 } } a = @a b = @b c = @c");
+        assert!(result.unsettled.is_none());
+        assert!(result.misreads.is_empty(), "{:?}", result.misreads);
+        let values: Vec<_> = result.items[1..]
+            .iter()
+            .map(|item| item.value.scalar())
+            .collect();
+        assert_eq!(values, [Some(&b"2"[..]), Some(&b"3"[..]), Some(&b"5"[..])]);
+    }
+}

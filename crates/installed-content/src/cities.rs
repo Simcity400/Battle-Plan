@@ -101,10 +101,11 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
     }
     let mut errors = Vec::new();
     // build_city_population (14163F450) constructs the lexer in mode 0.
-    let document = native::read_persistent(
+    let document = native::read(
         input,
         native::Mode::KeepMark,
-        Node::File,
+        native::Top::Persistent(Node::File),
+        None,
         &mut |node, field| match (node, field.keyword().as_deref()) {
             (Node::File, Some(b"city_group")) => Shape::Object(Node::Group),
             (Node::Group, Some(b"building")) => Shape::Object(Node::Building),

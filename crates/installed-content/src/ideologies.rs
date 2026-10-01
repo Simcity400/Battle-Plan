@@ -179,7 +179,8 @@ fn read_file_in(
     let read = native::read(
         input,
         native::Mode::KeepMark,
-        Node::Top,
+        native::Top::File(Node::Top),
+        None,
         &mut |node, field| match node {
             Node::Top if field.keyword_is("ideologies") => {
                 listed.clear();

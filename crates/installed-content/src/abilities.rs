@@ -6,6 +6,7 @@
 //! (1418C5CE0) gives that sprite to each active-ability child. Recordings hold
 //! only the ability token; the sprite is resolved here from the content stack.
 
+use crate::key_names::KeyNames;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -39,6 +40,7 @@ fn apply_with_terrain(
     input: &[u8],
     sprites: &mut AbilitySprites,
     terrains: &BTreeSet<Vec<u8>>,
+    names: &KeyNames,
 ) -> io::Result<()> {
     /// Each declaration is a new CAbility (140606A40 -> 140FF44E0), its
     /// adjusters (+0x538) shared by all its `unit_modifiers` blocks.
@@ -62,7 +64,8 @@ fn apply_with_terrain(
     let document = native::read(
         input,
         native::Mode::KeepMark,
-        Node::File,
+        native::Top::File(Node::File),
+        Some(names),
         &mut |node, field| match node {
             Node::File if field.keyword_is("ability") => Shape::Object(Node::Abilities),
             Node::File => Shape::Skip,
@@ -192,8 +195,9 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
         .map(|category| category.name.to_ascii_lowercase())
         .collect();
     let mut sprites = AbilitySprites::default();
+    let names = layers.key_names()?;
     for path in paths {
-        apply_with_terrain(&layers.read(&path)?, &mut sprites, &terrains)
+        apply_with_terrain(&layers.read(&path)?, &mut sprites, &terrains, &names)
             .map_err(|error| invalid(format!("{path}: {error}")))?;
     }
     Ok(sprites)
@@ -204,7 +208,7 @@ mod tests {
     use super::*;
 
     fn apply(input: &[u8], sprites: &mut AbilitySprites) -> io::Result<()> {
-        apply_with_terrain(input, sprites, &BTreeSet::new())
+        apply_with_terrain(input, sprites, &BTreeSet::new(), &KeyNames::default())
     }
 
     #[test]
@@ -267,7 +271,7 @@ mod tests {
         let terrains = BTreeSet::from([b"none".to_vec(), b"plains".to_vec()]);
         let sprite = |text: &[u8]| {
             let mut sprites = AbilitySprites::default();
-            apply_with_terrain(text, &mut sprites, &terrains).unwrap();
+            apply_with_terrain(text, &mut sprites, &terrains, &KeyNames::default()).unwrap();
             sprites.sprite(b"a").map(str::to_owned)
         };
         // A repeated `night` (token not 0x165) reads its value token alone:

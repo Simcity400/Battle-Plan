@@ -666,7 +666,8 @@ mod tests {
         let read = native::read(
             text,
             native::Mode::KeepMark,
-            Test::Top,
+            native::Top::File(Test::Top),
+            None,
             &mut |node, field| match node {
                 Test::Top => match field.keyword().as_deref() {
                     Some(b"block") => Shape::Object(Test::Modifier(Node::Modifier)),

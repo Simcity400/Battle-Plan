@@ -153,6 +153,7 @@ fn advisor_traits_select_the_first_native_name_match() {
     let (traits, _) = installed_content::leader_traits::read(&catalogue.content.layers).unwrap();
     let characters = installed_content::characters::parse(
         b"characters = { holder = { advisor = { slot = political_advisor idea_token = advisor traits = { bRiLLiant 1trait 2trait Later Missing } } } }",
+        &installed_content::key_names::KeyNames::default(),
     )
     .unwrap();
     let ideas = installed_content::ideas::IdeaContent::default();
@@ -185,18 +186,22 @@ fn advisor_traits_select_the_first_native_name_match() {
 #[test]
 fn ideas_join_content_for_category_slot_and_traits() {
     use crate::products::idea_history::{Joined, categories, info};
+    let names = installed_content::key_names::KeyNames::default();
     let tags = installed_content::ideas::parse_tags(
         b"idea_categories = { government = { slot = economy character_slot = political_advisor character_slot = political_advisor }           country = { type = national_spirit } military_staff = { character_slot = theorist } }",
+        &names,
     );
     // An officer-corps group's entries are character advisor templates
     let file = installed_content::ideas::parse_ideas(
         b"ideas = { economy = { law = yes civilian_economy = { modifier = { consumer_goods_factor = 0.35 } } }           country = { GER_spirit = { modifier = { STABILITY_FACTOR = 0.1 hidden_modifier = { Stability_Factor = 0.2 } } } }           theorist = { GER_theorist = { traits = { military_theorist } modifier = { army_org = 1 } } } }",
         &["theorist".to_owned()],
+        &names,
     );
     let content = installed_content::ideas::IdeaContent::from_parsed(tags, file.ideas);
     // The advisor's seat and traits come from its character's advisor role.
     let mut characters = installed_content::characters::parse(
         b"characters = { GER_schacht = { advisor = { slot = political_advisor idea_token = GER_schacht_idea traits = { captain_of_industry } } }           GER_split = { instance = { allowed = { has_dlc = \"A\" } advisor = { slot = political_advisor idea_token = GER_split_idea traits = { a } } }             instance = { allowed = { NOT = { has_dlc = \"A\" } } advisor = { slot = political_advisor idea_token = GER_split_idea traits = { b } } } } }",
+        &names,
     )
     .unwrap();
     characters.merge(file.advisors);

@@ -94,7 +94,8 @@ fn read_file(input: &[u8]) -> native::Read {
     native::read(
         input,
         native::Mode::SkipMark,
-        Node::Top,
+        native::Top::File(Node::Top),
+        None,
         &mut |node, field| match node {
             Node::Top => Shape::Object(Node::Names),
             Node::Names => match field.keyword().as_deref() {

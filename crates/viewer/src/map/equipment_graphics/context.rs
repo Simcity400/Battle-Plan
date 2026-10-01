@@ -63,13 +63,19 @@ impl Content {
 /// or empty name leaves which continent a name finds undecided: refused.
 pub fn continent_names(input: &[u8]) -> io::Result<Vec<String>> {
     // 140AAED50 constructs the lexer in mode 0 (1424A63A0).
-    let read = native::read(input, native::Mode::KeepMark, (), &mut |(), field| {
-        if field.keyword_is("continents") {
-            Shape::RawList
-        } else {
-            Shape::Skip
-        }
-    });
+    let read = native::read(
+        input,
+        native::Mode::KeepMark,
+        native::Top::File(()),
+        None,
+        &mut |(), field| {
+            if field.keyword_is("continents") {
+                Shape::RawList
+            } else {
+                Shape::Skip
+            }
+        },
+    );
     if let Some(cause) = read.unsettled {
         return Err(invalid(format!("the continent file: {cause}")));
     }

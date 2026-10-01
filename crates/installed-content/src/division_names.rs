@@ -40,6 +40,7 @@ use crate::{
     ResolvedLayers,
     fields::invalid,
     fixed5::decimal_i32,
+    key_names::KeyNames,
     parser::{
         self, Item,
         native::{self, Shape},
@@ -191,7 +192,7 @@ impl Database {
     pub(crate) fn from_files(files: &[&[u8]]) -> Self {
         let mut database = Self::default();
         for file in files {
-            database.apply(file);
+            database.apply(file, &KeyNames::default());
         }
         database
     }
@@ -296,8 +297,8 @@ impl Database {
     /// file, the group being read and every name a token of the unknown
     /// rest could declare are refused: 1409B4370 takes each group's name
     /// from a key token, and keys are not variables (1424AC5E0).
-    fn apply(&mut self, bytes: &[u8]) -> (Vec<String>, Option<String>) {
-        let read = read_file(bytes);
+    fn apply(&mut self, bytes: &[u8], names: &KeyNames) -> (Vec<String>, Option<String>) {
+        let read = read_file(bytes, names);
         let mut notes: Vec<String> = read.misreads.iter().map(ToString::to_string).collect();
         // The group being read when the reading is unsettled is refused
         // below; the others are complete.
@@ -359,10 +360,11 @@ fn group_name(key: &[u8]) -> &[u8] {
 }
 
 /// Parse one complete content file, preserving repeated group/field
-/// declarations. Anything [`read`] would warn about is an error here.
-pub fn parse(bytes: &[u8]) -> io::Result<Database> {
+/// declarations, its triggers against `names`. Anything [`read`] would warn
+/// about is an error here.
+pub fn parse(bytes: &[u8], names: &KeyNames) -> io::Result<Database> {
     let mut database = Database::default();
-    let (mut notes, refusal) = database.apply(bytes);
+    let (mut notes, refusal) = database.apply(bytes, names);
     notes.extend(refusal);
     if !notes.is_empty() {
         return Err(invalid(notes.join("; ")));
@@ -388,12 +390,13 @@ enum Node {
 /// [`native`]: 1409B4370 reads keys until the end of the text only, each a
 /// group through CPersistent::Read (vtable +0x18) whatever its value.
 /// Keyword ids from register_authored_keys (140082CB0).
-fn read_file(bytes: &[u8]) -> native::Read {
+fn read_file(bytes: &[u8], names: &KeyNames) -> native::Read {
     // 1409B8510 constructs the lexer in mode 1 (CTextLexer 1424A6370).
     native::read(
         bytes,
         native::Mode::SkipMark,
-        Node::Top,
+        native::Top::File(Node::Top),
+        Some(names),
         &mut |node, field| match node {
             Node::Top => Shape::Object(Node::Group),
             Node::Group => match field.keyword().as_deref() {
@@ -415,8 +418,7 @@ fn read_file(bytes: &[u8]) -> native::Read {
                 Some(b"ordered") => Shape::Object(Node::Ordered),
                 Some(b"unordered") => Shape::Object(Node::Unordered),
                 // `can_use` 0x37AE: a CAndTrigger (vtable +0x28, CTrigger::
-                // LoadBody 1405431C0) on this reader, its fields read by key
-                // (the key-validity gap).
+                // LoadBody 1405431C0) on this reader.
                 Some(b"can_use") => Shape::Trigger,
                 // `type` 0xE1 compares the value token (army 0x289D, ship
                 // 0x28A0, codename 0x3D17, railway_gun 0x4D14); any other, a `{`
@@ -642,8 +644,9 @@ pub fn read_directories(
         .flat_map(|directory| crate::script_files::paths(layers, directory, Some(".txt")));
     let mut database = Database::default();
     let mut warnings = Vec::new();
+    let names = layers.key_names()?;
     for path in paths {
-        let (notes, refusal) = database.apply(&layers.read(&path)?);
+        let (notes, refusal) = database.apply(&layers.read(&path)?, &names);
         warnings.extend(
             notes
                 .into_iter()
@@ -661,7 +664,7 @@ mod tests {
     impl Database {
         /// [`Database::apply`] as a result: its notes, or its refusal.
         fn applied(&mut self, bytes: &[u8]) -> io::Result<Vec<String>> {
-            match self.apply(bytes) {
+            match self.apply(bytes, &KeyNames::default()) {
                 (notes, None) => Ok(notes),
                 (_, Some(refusal)) => Err(invalid(refusal)),
             }
@@ -678,7 +681,7 @@ mod tests {
             LAST = { ordered = { 1 = { "Last %d" } }
             # No final group brace in the shipped Brazilian name file.
         "#;
-        let names = parse(source).unwrap();
+        let names = parse(source, &KeyNames::default()).unwrap();
         assert_eq!(
             names.resolve("FIRST", 1, true).ok().as_deref(),
             Some("First 1")
@@ -692,7 +695,7 @@ mod tests {
             (br#"G = { ordered = { 1 = { "First""#, "First"),
             (br#"G = { unique = { "First""#, "First"),
         ] {
-            let names = parse(source).unwrap();
+            let names = parse(source, &KeyNames::default()).unwrap();
             let (order, ordered) = if source.starts_with(b"G = { unique") {
                 (0, false)
             } else {
@@ -722,6 +725,7 @@ mod tests {
                 fallback_name = "%d. Reserve"
             }
         "#,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(
@@ -758,6 +762,7 @@ mod tests {
                     unordered = { a = { "First" } } fallback_name = "Fallback %d" }
             INF = { ordered = { 1 = { "Updated %d" } } unordered = { a = { "Next" } } }
         "#,
+            &KeyNames::default(),
         )
         .unwrap();
         names
@@ -794,6 +799,7 @@ mod tests {
         let names = parse(
             br#"INF = { ordered = { 1 = { "" } 2 = {} }
                                        unordered = { a = {} b = { "" } } }"#,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(
@@ -807,7 +813,11 @@ mod tests {
 
     #[test]
     fn fallback_clamps_native_signed_ordinals_before_formatting() {
-        let names = parse(br#"INF = { fallback_name = "%d / %d" }"#).unwrap();
+        let names = parse(
+            br#"INF = { fallback_name = "%d / %d" }"#,
+            &KeyNames::default(),
+        )
+        .unwrap();
         for (order, ordered) in [(-1, true), (-2, false), (i32::MAX, false)] {
             assert_eq!(
                 names.resolve("INF", order, ordered).ok().as_deref(),
@@ -837,7 +847,7 @@ mod tests {
             br#"SHIP = { unique = { { "nested" } } }"#,
             br#"SHIP = { prefix = {} }"#,
         ] {
-            assert!(parse(input).is_err());
+            assert!(parse(input, &KeyNames::default()).is_err());
         }
     }
 
@@ -852,6 +862,7 @@ mod tests {
             ordered = { 7 = { "%s Flotilla" } }
             fallback_name = "Destroyer %s"
         }"#,
+            &KeyNames::default(),
         )
         .unwrap();
         for (order, expected) in ["HMS Gallant", "HMS Garland", "HMS Literal %s", "HMS Gipsy"]
@@ -880,6 +891,7 @@ mod tests {
             SHIP = { prefix = "HMS " unique = { "Gallant" } }
             SHIP = { unique = { "Garland" } }
         "#,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(
@@ -923,7 +935,11 @@ mod tests {
     /// recorded key in any case finds it.
     #[test]
     fn group_names_compare_without_case() {
-        let mut database = parse(b"GER_INF = { ordered = { 1 = { \"First %d\" } } }").unwrap();
+        let mut database = parse(
+            b"GER_INF = { ordered = { 1 = { \"First %d\" } } }",
+            &KeyNames::default(),
+        )
+        .unwrap();
         database
             .applied(b"ger_inf = { ordered = { 1 = { \"Erste\" } } }")
             .unwrap();
@@ -939,7 +955,8 @@ mod tests {
     /// upper-case field overrides a lower-case group's.
     #[test]
     fn field_keys_compare_without_case() {
-        let mut database = parse(b"G = { fallback_name = \"Old %d\" }").unwrap();
+        let mut database =
+            parse(b"G = { fallback_name = \"Old %d\" }", &KeyNames::default()).unwrap();
         database
             .applied(b"g = { FALLBACK_NAME = \"New %d\" ORDERED = { 2 = { \"Two\" } } }")
             .unwrap();
@@ -956,6 +973,7 @@ mod tests {
         let names = parse(
             br#"G = { UNORDERED = { u = { "U" } } Unique = { "Q" } PREFIX = "P "
                       Ordered = { 1 = { "O" } } Fallback_Name = "F %d" }"#,
+            &KeyNames::default(),
         )
         .unwrap();
         for (order, ordered, expected) in [
@@ -1003,7 +1021,7 @@ mod tests {
     #[test]
     fn ordered_indices_take_the_native_decimal_prefix() {
         let names = parse(
-            br#"G = { ordered = { "1tail" = { "First" } 02x = { "Second" } 99999999999 = { "Max" } } }"#,
+            br#"G = { ordered = { "1tail" = { "First" } 02x = { "Second" } 99999999999 = { "Max" } } }"#, &KeyNames::default(),
         )
         .unwrap();
         for (order, expected) in [(1, "First"), (2, "Second"), (i32::MAX, "Max")] {
@@ -1028,7 +1046,13 @@ mod tests {
         // read as groups of their own.
         assert_eq!(names.resolve("G", 4, true), Err(Unresolved::NoFallback));
         assert!(names.groups.contains_key(b"4".as_slice()));
-        assert!(parse(br#"G = { ordered = { tail = { "Zero" } } }"#).is_err());
+        assert!(
+            parse(
+                br#"G = { ordered = { tail = { "Zero" } } }"#,
+                &KeyNames::default()
+            )
+            .is_err()
+        );
     }
 
     /// The readers stop at the end of the file as at `}` (1424A9730,
@@ -1127,25 +1151,35 @@ mod tests {
 
     /// `can_use` is a CAndTrigger body (1405431C0), which hands LoadKey a
     /// key read without an operator with the stale value slot: `OR {`
-    /// under `can_use = {` reads its block by key; `always yes` hands
-    /// `always` the stale `{`, which its reader decides, so the rest of the
-    /// file is unknown.
+    /// under `can_use = {` reads its block as a body; `always yes` hands
+    /// `always` (CSimpleAssignTrigger, 141395A40) the stale `{`, of which it
+    /// reads nothing more. A key the names cannot tell leaves the rest of
+    /// the file unknown.
     #[test]
     fn a_can_use_key_without_an_operator_follows_the_stale_value() {
         let mut names = Database::default();
-        let (_, refusal) =
-            names.apply(br#"G = { can_use = { OR { always = yes } } unique = { "A" } }"#);
+        let (_, refusal) = names.apply(
+            br#"G = { can_use = { OR { always = yes } } unique = { "A" } }"#,
+            &KeyNames::default(),
+        );
         assert!(refusal.is_none(), "{refusal:?}");
         assert_eq!(names.resolve("G", 0, false).ok().as_deref(), Some("A"));
-        let (_, refusal) = names.apply(br#"H = { can_use = { always yes } unique = { "B" } }"#);
+        let (_, refusal) = names.apply(
+            br#"H = { can_use = { always yes } unique = { "B" } }"#,
+            &KeyNames::default(),
+        );
+        assert!(refusal.is_none(), "{refusal:?}");
+        assert_eq!(names.resolve("H", 0, false).ok().as_deref(), Some("B"));
+        let (_, refusal) = names.apply(
+            br#"I = { can_use = { maybe yes } unique = { "C" } }"#,
+            &KeyNames::unknown(),
+        );
         let refusal = refusal.unwrap();
         assert!(
-            refusal.contains(
-                "key `always` has no operator and its reader is handed the previous value `{`"
-            ),
+            refusal.contains("field `maybe`: LoadKey (1405434F0) reads it"),
             "{refusal}"
         );
-        assert_eq!(names.resolve("H", 0, false), Err(Unresolved::GroupRefused));
+        assert_eq!(names.resolve("I", 0, false), Err(Unresolved::GroupRefused));
     }
 
     /// A repeated definition reads nothing more (1424AC830): the reader
@@ -1183,7 +1217,13 @@ mod tests {
                 .starts_with("group G: field = is not a division-name field"),
             "{notes:?}"
         );
-        assert!(parse(br#"G = { @n = "A" @n = "B" fallback_name = @n }"#).is_err());
+        assert!(
+            parse(
+                br#"G = { @n = "A" @n = "B" fallback_name = @n }"#,
+                &KeyNames::default()
+            )
+            .is_err()
+        );
         for (group, expected) in [("G", "First 2"), ("H", "B 2"), ("Q", "@b")] {
             assert_eq!(
                 names.resolve(group, 2, true).ok().as_deref(),
@@ -1218,7 +1258,7 @@ mod tests {
         }
         assert_eq!(names.resolve("G", 3, false), Err(Unresolved::NoFallback));
         // The strict reader treats the reported token as an error.
-        assert!(parse(source).is_err());
+        assert!(parse(source, &KeyNames::default()).is_err());
     }
 
     /// 1409B9A20's default (1409B9FF0) rejects a field it does not read
@@ -1245,7 +1285,7 @@ mod tests {
         // Fields 1409B9A20 does read are no refusal, in any case.
         assert!(
             parse(br#"G = { NAME = "x" type = army can_use = { always = yes } division_types = { "a" }
-                      link_numbering_with = { "b" } for_countries = { GER } ship_types = { "c" } }"#)
+                      link_numbering_with = { "b" } for_countries = { GER } ship_types = { "c" } }"#, &KeyNames::default())
             .is_ok()
         );
     }
@@ -1254,16 +1294,19 @@ mod tests {
     /// feed as "Unreadable String".
     #[test]
     fn a_name_holding_a_line_feed_is_unreadable() {
-        let names = parse(b"G = { ordered = { 1 = { \"Line\nBreak\" } } }").unwrap();
+        let names = parse(
+            b"G = { ordered = { 1 = { \"Line\nBreak\" } } }",
+            &KeyNames::default(),
+        )
+        .unwrap();
         assert_eq!(
             names.resolve("G", 1, true).ok().as_deref(),
             Some("Unreadable String")
         );
     }
 
-    /// A block read by key that the port cannot settle (a trigger holding a
-    /// value without a key and a definition) leaves the rest of the file
-    /// unknown. Every group the replay read is applied; the group being read
+    /// A block the port cannot settle (under a trigger key the content's
+    /// names cannot tell) leaves the rest of the file unknown. Every group the replay read is applied; the group being read
     /// and every name a token from the unsettled block on could declare are
     /// refused, earlier layers' groups of those names included, and stay
     /// refused through later files. Other groups keep their values.
@@ -1273,23 +1316,25 @@ mod tests {
             br#"SHIP = { prefix = "HMS " unique = { "Gallant" } }
                 OTHER = { unique = { "Kept" } }
                 KEPT = { unique = { "Earlier" } }"#,
+            &KeyNames::default(),
         )
         .unwrap();
         let (notes, refusal) = names.apply(
             br#"SHIP = { unique = { "Garland" } } FIRST = { unique = { "First" } }
                 ship = {
-                    can_use = { OR = { always @v = yes } } unique = { "Lost" } }
+                    can_use = { OR = { maybe = { @v = yes } } } unique = { "Lost" } }
                 OTHER = { unique = { "Unknown" } }"#,
+            &KeyNames::unknown(),
         );
         assert!(notes.is_empty(), "{notes:?}");
         let refusal = refusal.unwrap();
         assert!(
-            refusal.starts_with("line 3: variable @v is in a block read by a trigger"),
+            refusal.starts_with("line 3: field `maybe`: LoadKey (1405434F0) reads it"),
             "{refusal}"
         );
         assert!(
             refusal.ends_with(
-                "are refused (13): =, @v, always, can_use, lost, or, other, ship, unique, unknown, yes, {, }"
+                "are refused (13): =, @v, can_use, lost, maybe, or, other, ship, unique, unknown, yes, {, }"
             ),
             "{refusal}"
         );
@@ -1536,7 +1581,11 @@ mod tests {
     /// (1424ABB50, read_string_token 1424B05E0) a name to its first NUL.
     #[test]
     fn names_and_group_keys_end_at_their_first_nul() {
-        let names = parse(b"\"G\0tail\" = { unique = { \"Ab\0cd\" } }").unwrap();
+        let names = parse(
+            b"\"G\0tail\" = { unique = { \"Ab\0cd\" } }",
+            &KeyNames::default(),
+        )
+        .unwrap();
         assert_eq!(names.resolve("g", 0, false).as_deref(), Ok("Ab"));
     }
 
@@ -1547,7 +1596,7 @@ mod tests {
     fn a_name_that_is_not_utf8_refuses_only_the_lookups_that_select_it() {
         let names = parse(
             b"G = { unique = { \"\xe9\" \"Fine\" } ordered = { 2 = { \"\xe8 %d\" } } fallback_name = \"F %d\" }\n\
-              P = { prefix = \"\xe9\" unique = { \"Any\" } fallback_name = \"Plain %d\" }",
+              P = { prefix = \"\xe9\" unique = { \"Any\" } fallback_name = \"Plain %d\" }", &KeyNames::default(),
         )
         .unwrap();
         for (group, order, ordered, expected) in [
@@ -1571,9 +1620,9 @@ mod tests {
     /// with an empty name makes that key ambiguous.
     #[test]
     fn an_empty_key_is_a_null_group_unless_one_is_declared_empty() {
-        let names = parse(br#"G = { unique = { "N" } }"#).unwrap();
+        let names = parse(br#"G = { unique = { "N" } }"#, &KeyNames::default()).unwrap();
         assert_eq!(names.resolve("", 0, false), Err(Unresolved::NoGroup));
-        let names = parse(br#""" = { unique = { "Empty" } }"#).unwrap();
+        let names = parse(br#""" = { unique = { "Empty" } }"#, &KeyNames::default()).unwrap();
         assert_eq!(names.resolve(b"", 0, false), Err(Unresolved::EmptyKey));
     }
 }

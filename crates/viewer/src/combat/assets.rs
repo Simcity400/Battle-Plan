@@ -146,7 +146,7 @@ impl Assets {
     /// Hands the tactic triggers the building, ideology and resource names
     /// LoadKey's count triggers find (1405434F0), from the databases the
     /// document already loaded, and gives back the scripted triggers and
-    /// count names so settled: the one read every trigger consumer shares.
+    /// count names: the one read every trigger consumer shares.
     pub(crate) fn set_count_trigger_names(
         &mut self,
         buildings: &installed_content::buildings::Buildings,
@@ -565,12 +565,13 @@ impl Assets {
         // decoding every historical hour. DDS compression stays intact on upload.
         // Each file as the characters reader reads it (the reader replay).
         let mut direct_portraits = BTreeSet::new();
+        let names = layers.key_names()?;
         for file in layers
             .paths()
             .filter(|p| p.starts_with("common/characters/") && p.ends_with(".txt"))
         {
             portrait_paths(
-                &installed_content::characters::read_file(&layers.read(file)?)
+                &installed_content::characters::read_file(&layers.read(file)?, &names)
                     .0
                     .items,
                 &mut direct_portraits,

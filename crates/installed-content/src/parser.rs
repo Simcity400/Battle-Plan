@@ -988,7 +988,7 @@ mod tests {
             "get_all(",
         ];
         // (file, line text) with why it compares text, not a keyword.
-        const ALLOWED: [(&str, &str); 14] = [
+        const ALLOWED: &[(&str, &str)] = &[
             // A group name: 1409B4370 finds it by the folded hash 140BBA1B0
             // and `_stricmp` (14253D9F8).
             ("division_names.rs", "key.to_ascii_lowercase()"),
@@ -1028,6 +1028,12 @@ mod tests {
             // A file path's extension, not a key.
             ("script_files.rs", "let lower = path.to_ascii_lowercase();"),
             ("characters.rs", "let lower = path.to_ascii_lowercase();"),
+            // A character token CCharacterTemplateDatabase interns
+            // (add_dynamic_token 1424A6500, folded).
+            (
+                "characters.rs",
+                "parser::c_string(item.key.as_deref().unwrap_or_default()).to_ascii_lowercase()",
+            ),
             // A recorded template's tag, a dynamic token (1424A65A0 ->
             // 1424A5EE0 folds A-Z).
             (

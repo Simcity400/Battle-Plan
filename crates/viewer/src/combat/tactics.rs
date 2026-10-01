@@ -130,69 +130,16 @@ impl Content {
     }
 
     /// The building, ideology and resource names LoadKey's count triggers
-    /// find, from the databases the document already loaded. With them the
-    /// blocks the content read cannot settle are known
-    /// ([`Self::settle_one_value_blocks`]).
+    /// find over a recorded hour, from the databases the document already
+    /// loaded.
     pub(super) fn set_count_names(&mut self, counts: CountTriggerNames) {
         Arc::make_mut(&mut self.names).counts = Some(counts);
-        self.settle_one_value_blocks();
     }
 
-    /// The scripted triggers and count names, as settled for the tactics:
-    /// the one read the other trigger consumers share.
+    /// The scripted triggers and count names: the one read the other
+    /// trigger consumers share.
     pub(crate) fn trigger_names(&self) -> Arc<TriggerNames> {
         Arc::clone(&self.names)
-    }
-
-    /// A block under a key that is, or may be, a one-value count or
-    /// scripted trigger (TriggerNames::one_value_block) leaves the content
-    /// read: the tactic holding one in its trigger or weight modifiers, and
-    /// every later one, are unproven by name, as a block the reader replay
-    /// cannot settle leaves them (installed_content::combat_tactics); any scripted
-    /// body read that holds one, a replaced one included, leaves the rest of
-    /// its file unknown (ScriptedTriggers::refuse_bodies).
-    fn settle_one_value_blocks(&mut self) {
-        let names = Arc::clone(&self.names);
-        let offender = self.registry.iter().enumerate().find_map(|(index, entry)| {
-            let definition = entry.definition.as_ref().ok()?;
-            definition
-                .items
-                .iter()
-                .filter_map(|item| {
-                    let items = item.value.items()?;
-                    if item.keyword_is("trigger") {
-                        names.one_value_block(items)
-                    } else if item.keyword_is("base") {
-                        items
-                            .iter()
-                            .filter(|entry| entry.keyword_is("modifier"))
-                            .find_map(|modifier| names.one_value_block(modifier.value.items()?))
-                    } else {
-                        None
-                    }
-                })
-                .next()
-                .map(|why| (index, why))
-        });
-        let logged = self.names.scripted.logged.len();
-        Arc::make_mut(&mut self.names).settle();
-        self.warnings.extend(
-            self.names.scripted.logged[logged..]
-                .iter()
-                .map(|reason| format!("Combat tactics: triggers: {reason}.")),
-        );
-        if let Some((index, why)) = offender {
-            let first = String::from_utf8_lossy(&self.registry[index].token).into_owned();
-            let reason = format!("tactic {first}: {why}");
-            self.warnings.push(format!("Combat tactics: {reason}."));
-            for entry in &mut self.registry[index..] {
-                let name = String::from_utf8_lossy(&entry.token);
-                entry.definition = Err(format!(
-                    "tactic {name}'s ID or fields cannot be read as the game reads them: {reason}"
-                ));
-            }
-            self.registry_unsettled.get_or_insert(reason);
-        }
     }
 
     /// The one trait-name inventory, for the trait sprites.
@@ -1972,6 +1919,7 @@ mod tests {
     use super::*;
     use dashboard::triggers::ContentFacts;
     use installed_content::fixed5::{decimal_fixed5, script_fixed5};
+    use installed_content::key_names::KeyNames;
     use replay::{
         frame::{Metrics, TableView},
         rows::{
@@ -2004,6 +1952,7 @@ mod tests {
     fn trigger(text: &str) -> Vec<Item> {
         let database = installed_content::combat_tactics::parse(
             format!("t = {{ trigger = {{ {text} }} }}").as_bytes(),
+            &names(&ScriptedTriggers::default()),
         );
         let tactic = &database.tactics[0];
         assert!(tactic.unproven.is_none(), "{:?}", tactic.unproven);
@@ -2187,9 +2136,36 @@ mod tests {
         );
     }
 
+    /// The content names the tests' tactic triggers are read against
+    /// (1405434F0): the tags and character tokens they name, and the
+    /// scripted triggers `scripted` holds.
+    fn names(scripted: &ScriptedTriggers) -> KeyNames {
+        KeyNames {
+            scripted: scripted.templates.keys().cloned().collect(),
+            countries: [&b"GER"[..], b"SOV", b"ENG"].map(<[u8]>::to_vec).into(),
+            characters: [
+                "ger_leader",
+                "ger_lost_agent",
+                "ger_miscounted",
+                "ger_operative",
+                "ger_politician",
+                "ger_returned",
+                "ger_scientist",
+            ]
+            .map(|token| token.as_bytes().to_vec())
+            .into(),
+            ..KeyNames::default()
+        }
+    }
+
     /// Content read through the real tactic parser.
     fn parsed(text: &[u8]) -> Content {
-        Content::from_database(installed_content::combat_tactics::parse(text))
+        parsed_with(text, &names(&ScriptedTriggers::default()))
+    }
+
+    /// [`parsed`] against `names`.
+    fn parsed_with(text: &[u8], names: &KeyNames) -> Content {
+        Content::from_database(installed_content::combat_tactics::parse(text, names))
     }
 
     /// read_bool_token (1424B06E0) accepts only the exact texts; another
@@ -2441,11 +2417,15 @@ mod tests {
         // The registry's availability and reasons hold for pictures too: a
         // tactic without one, one that is not UTF-8, the tactic whose reading
         // is lost (Read::unsettled) and every tactic after it.
-        let lost = parsed(
+        let mut unknown = names(&ScriptedTriggers::default());
+        unknown.counts.ideologies_gap =
+            Some("common/ideologies/a.txt is unknown from line 1".into());
+        let lost = parsed_with(
             b"none = { }\n\
               bytes = { picture = \xe9 }\n\
-              lost = { picture = here trigger = { OR = { x @v = 1 } } }\n\
+              lost = { picture = here trigger = { OR = { x = { } } } }\n\
               after = { picture = there }\n",
+            &unknown,
         );
         assert_eq!(
             lost.picture(1, b"none"),
@@ -2465,9 +2445,7 @@ mod tests {
         assert!(
             unproven
                 .starts_with("tactic lost's ID or fields cannot be read as the game reads them")
-                && unproven.contains(
-                    "key `x` has no operator and its reader is handed the previous value `{`"
-                ),
+                && unproven.contains("field `x`: LoadKey (1405434F0) reads it"),
             "{unproven}"
         );
         assert!(
@@ -3094,70 +3072,66 @@ mod tests {
         );
     }
 
-    /// A block under a key that may make a content count trigger or a
-    /// scripted trigger, which read one value token and skip no block
-    /// (141394DF0, 141395A40, 1424ACD40), leaves the content read: the
-    /// tactic holding it, in its trigger or a weight modifier, and every
-    /// later one are unproven by name, and a scripted trigger's body holding
-    /// one refuses the templates its file may have given a body.
+    /// A block under a key that makes a content count trigger or a scripted
+    /// trigger is read as their one-value readers read it (141394DF0,
+    /// 141395A40, 1424ACD40: no block skipped): its contents are the
+    /// enclosing trigger's and its `}` ends that trigger, as the content
+    /// read notes. A coded one-value trigger (`armor`, 0x2F85, found before
+    /// the equipment categories) reads its block the same way.
     #[test]
-    fn blocks_under_one_value_names_leave_the_content_read() {
+    fn blocks_under_one_value_names_are_read_as_one_value() {
         let mut buildings = installed_content::buildings::Buildings::default();
         buildings.types.insert(
             "arms_factory".into(),
             installed_content::buildings::BuildingType::default(),
         );
-        let settled = |file: &[u8], scripted: ScriptedTriggers| {
-            let mut content = parsed(file).with_inventories(
-                Traits::default(),
-                Ok(&SubUnits::default()),
-                scripted,
-            );
-            content.set_count_names(CountTriggerNames::new(
+        let names = KeyNames {
+            counts: CountTriggerNames::new(
                 &buildings,
                 &installed_content::ideologies::Ideologies::default(),
                 &[],
-            ));
-            content
+            ),
+            ..names(&ScriptedTriggers::default())
         };
-        let content = settled(
+        let content = parsed_with(
             b"first = { trigger = { arms_factory = 2 } }\n\
-              second = { base = { modifier = { OR = { ARMS_FACTORY = { x = 1 } } } } }\n\
-              third = { }\n",
-            ScriptedTriggers::default(),
+              second = { base = { modifier = { OR = { ARMS_FACTORY = { is_attacker = yes } always = no } } } }\n",
+            &names,
         );
-        assert!(content.registry[0].definition.is_ok());
-        for index in [1, 2] {
-            let reason = content.registry[index].definition.as_ref().err().unwrap();
-            assert!(
-                reason.contains(
-                    "tactic second: trigger ARMS_FACTORY = { ... } names a building count trigger"
-                ),
-                "{reason}"
-            );
-        }
-        // Equipment categories by their static spelling, unless the trigger
-        // registry holds the token (`armor`, 0x2F85): that coded trigger's
-        // class reads one value (ReadTriggerComparison 141394DF0), so its
-        // block leaves the text as the game reads it, noted by the content
-        // read, and the tactic is read as the game reads it.
-        let content = settled(
-            b"a = { trigger = { armor = { x = 1 } } }\n",
-            ScriptedTriggers::default(),
-        );
-        assert!(content.registry[0].definition.is_ok());
+        let second = content.registry[1].definition.as_ref().unwrap();
+        let modifier = field(&second.items, "base").unwrap().value.items().unwrap()[0]
+            .value
+            .items()
+            .unwrap();
+        let group = modifier[0].value.items().unwrap();
+        assert_eq!(group.len(), 2, "{group:?}");
+        assert_eq!(group[0].value.scalar(), Some(b"{".as_slice()));
+        assert!(group[1].keyword_is("is_attacker"));
+        // The `}` after `is_attacker` ended the group: `always = no` is the
+        // modifier's.
+        assert!(modifier[1].keyword_is("always"));
         assert!(
             content.warnings().iter().any(|warning| {
-                warning.contains("field `armor` is a block where its reader takes one value")
+                warning.contains("field `ARMS_FACTORY` is a block where its reader takes one value")
             }),
             "{:?}",
             content.warnings()
         );
-        let content = settled(
+        for text in [
+            &b"a = { trigger = { armor = { x = 1 } } }\n"[..],
             b"b = { trigger = { infantry = { x = 1 } } }\n",
-            ScriptedTriggers::default(),
-        );
-        assert!(content.registry[0].definition.is_err());
+        ] {
+            let content = parsed_with(text, &names);
+            assert!(content.registry[0].definition.is_ok());
+            assert!(
+                content
+                    .warnings()
+                    .iter()
+                    .any(|warning| warning.contains("is a block where its reader takes one value")),
+                "{:?}",
+                content.warnings()
+            );
+        }
     }
 
     /// A commander of skill 3 on the attacker's side, in phase 0.
@@ -3379,7 +3353,7 @@ mod tests {
     ) -> Evaluation<i64> {
         let detail = skilled();
         let aliases = BTreeMap::from([(10, 1)]);
-        let mut content = parsed(file.as_bytes()).with_inventories(
+        let mut content = parsed_with(file.as_bytes(), &names(&scripted)).with_inventories(
             Traits::default(),
             Ok(&SubUnits::default()),
             scripted,
@@ -3538,25 +3512,22 @@ mod tests {
             weigh("cycle_a = yes"),
             Err("scripted trigger cycle_a: scripted trigger cycle_b: scripted trigger cycle_a calls itself (cycle_a -> cycle_b -> cycle_a): CScriptedTrigger::vf22 (14138D030) and CTrigger::Check (140540570) guard no depth, so the game recurses without end".into())
         );
-        // A block is no scripted trigger's value: its reader takes one token
-        // and skips no block, so the game's parse leaves the text, and the
-        // content read refuses the tactic (and every later one).
-        let unproven = weigh("my_check = { x = 1 }").unwrap_err();
-        assert!(
-            unproven.starts_with("tactic t's ID or fields cannot be read as the game reads them: tactic t: trigger my_check = { ... } names a scripted trigger"),
-            "{unproven}"
-        );
+        // A block is no scripted trigger's value: its reader (14138D3D0)
+        // resets the value to no and read_bool_token (1424B06E0) keeps it
+        // for `{`, and no block is skipped, so the block's contents are the
+        // tactic trigger's own.
+        assert_eq!(weigh("my_check = { x = 1 }"), Ok(0));
     }
 
     /// The content read classifies a block's key in CTrigger::LoadKey's
     /// order (1405434F0), as the evaluation does: a coded trigger by its
     /// static keyword, then a scope of its text, before the scripted
     /// triggers. So a scripted trigger named `AND` or `root` leaves
-    /// `AND = { .. }` the coded group and `ROOT = { .. }` the scope. Every
-    /// scripted body read is checked (140AA8DC0), a replaced one included:
-    /// the other templates its file gave are refused, while the replaced
-    /// template, read again in a later file, stands. A scalar group in a
-    /// body is the empty group LoadKey keeps.
+    /// `AND = { .. }` the coded group and `ROOT = { .. }` the scope. A body
+    /// is read as the game reads it, a block under a scripted trigger's key
+    /// included (140AA8DC0 reads on from where it leaves the text), and a
+    /// template read again in a later file takes that body. A scalar group
+    /// in a body is the empty group LoadKey keeps.
     #[test]
     fn content_blocks_follow_load_keys_order_in_every_body_read() {
         let root = std::env::temp_dir().join(format!(
@@ -3620,13 +3591,10 @@ mod tests {
             weigh("custom_trigger_tooltip = { \"not_tooltip\" = yes }"),
             Ok(0)
         );
-        let refused = weigh("other = yes").unwrap_err();
-        assert!(
-            refused.starts_with(
-                "scripted trigger other: scripted trigger bad's body in common/scripted_triggers/a.txt leaves the text: trigger other = { ... } names a scripted trigger"
-            ) && refused.contains("unless its text is a scope, which LoadKey tries first"),
-            "{refused}"
-        );
+        // `bad`'s body in a.txt reads `other = {` as the scripted trigger's
+        // one value, so its `}` ends that body and the file is read on from
+        // the next `}`: `other` gets no body there, and an empty body holds.
+        assert_eq!(weigh("other = yes"), Ok(100_000));
     }
 
     /// `has_trait`, `skill` and `tag` in a character scope (CHasTraitTrigger

@@ -11,20 +11,24 @@
 //! a value read after it takes its value (1424AB540). Each field goes to its
 //! own native reader ([`Shaper`]); where the text leaves the tree's shape the
 //! reading follows the game's and is noted ([`Database::logged`]). Only a
-//! block the port cannot settle (the key-validity gap, `native::Read::
-//! unsettled`) leaves the tactic being read and every later one unproven
+//! block the port cannot settle (`native::Read::unsettled`) leaves the
+//! tactic being read and every later one unproven
 //! ([`Tactic::unproven`]). The lexer-assigned unlock IDs are campaign state
 //! and are deliberately not inferred here.
 
 use std::io;
 
+mod body_keys;
+mod own;
+
 use crate::{
     ResolvedLayers,
+    key_names::{self, KeyNames, Load},
     parser::{
         Item, Value, c_string,
         native::{self, Field, Shape},
     },
-    trigger_keys::{self, Reader},
+    trigger_keys::{self, KeyReader, Reader},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -109,8 +113,6 @@ pub(crate) enum Node {
     Top,
     /// 1406B3CB0.
     Tactic,
-    /// A tactic's `base`, a CMeanTimeToHappen (140545850).
-    Weight,
     /// A trigger body (CTrigger::LoadBody 1405431C0): a tactic's `trigger`,
     /// every block under it or under a weight modifier, a scripted
     /// trigger's body.
@@ -121,21 +123,24 @@ pub(crate) enum Node {
     /// (CScopedVariable::vf3 140539440 -> 140539B50), each one value token
     /// with no block skipped; any other key is a trigger (LoadKey).
     Modifier,
-    /// CCustomOverrideTooltipTrigger::load_key (141395B30): `tooltip`
-    /// and `not_tooltip` are bound localisations, every other key LoadKey.
-    CustomTooltip,
     /// CBoundLocalization's block reader (1423912A0): `localization_key`
     /// reads one CFormattedLocalization value (142393E90), and every other
     /// key binds an argument, recursively when its value opens a block.
     BoundLocalization,
-    /// `meta_trigger` / `meta_effect` (1403B34F0): `text` is copied raw
-    /// (141408C80) and parsed later by a reader of its own.
-    Meta,
     /// A conditional's body (`if`, `else`, `else_if`: CIfTrigger::load_key
     /// 141395B90), by its index in [`Shaper`].
     Conditional(usize),
     /// A conditional's limit (the CAndTrigger at +0x58), LoadKey's children.
     Limit(usize),
+    /// The body of a coded trigger, by its token, whose class reads its keys
+    /// through a key reader of its own ([`trigger_keys::key_reader`]).
+    Class(u32),
+    /// A ported own reader's key loop, by its native address.
+    KeyReader(u64),
+    /// CMeanTimeToHappen@140545850: a tactic's base or railway priority.
+    Mtth,
+    CollectionOperator,
+    ScalarFields,
 }
 
 /// What a conditional's limit holds as its loader fills it.
@@ -151,27 +156,26 @@ enum Limit {
 /// CIfTrigger::load_key (141395B90) keeps: a `limit` is read (LoadBody
 /// into +0x58) only while the limit holds no child (+0x6C); a later one is
 /// RecordError (1424ACF90), whose skip (1424AD270) reads and defines
-/// nothing.
-#[derive(Default)]
-pub(crate) struct Shaper {
+/// nothing. Every trigger body the port reads goes through it: the tactics,
+/// the scripted triggers, the tag aliases, the scripted localisation and
+/// each content reader's conditions ([`Shape::Trigger`]).
+pub(crate) struct Shaper<'n> {
     limits: Vec<Limit>,
-    /// Read every other field as [`native::untraced`] does: the trigger
-    /// bodies of readers the port does not evaluate.
-    untraced: bool,
+    /// The content names LoadKey reads at this point of the load; `None`
+    /// where the reader was given none, so that a key naming content is
+    /// unknown ([`key_names::load_key`]).
+    names: Option<&'n KeyNames>,
 }
 
 fn is_one_of(keyword: Option<&[u8]>, names: &[&str]) -> bool {
     keyword.is_some_and(|keyword| names.iter().any(|name| name.as_bytes() == keyword))
 }
 
-impl Shaper {
-    /// The dispatch of a trigger body the port does not evaluate: its
-    /// conditionals and their limits as CIfTrigger::load_key (141395B90)
-    /// reads them, every other field as [`native::untraced`].
-    pub(crate) fn untraced() -> Self {
+impl<'n> Shaper<'n> {
+    pub(crate) fn new(names: Option<&'n KeyNames>) -> Self {
         Self {
-            untraced: true,
-            ..Self::default()
+            limits: Vec::new(),
+            names,
         }
     }
 
@@ -181,6 +185,13 @@ impl Shaper {
         let keyword = field.keyword();
         let keyword = keyword.as_deref();
         match node {
+            Node::KeyReader(address) => self.native_key(address, field),
+            // CMeanTimeToHappen::vf4@140545850 uses this Shaper's
+            // CMTTHModifier so nested triggers retain its names and limits.
+            Node::Mtth if keyword == Some(b"modifier") => Shape::Body(Node::Modifier),
+            Node::Mtth => Shape::One,
+            Node::CollectionOperator => self.collection_operator(field),
+            Node::ScalarFields => Shape::One,
             // A text compare, not a keyword (1406B3875): a string list
             // (ReadStringList 1401426E0), which resolves references and defines
             // nothing. Every other key is a tactic, read through
@@ -190,7 +201,7 @@ impl Shaper {
             Node::Top => Shape::Object(Node::Tactic),
             Node::Tactic => match keyword {
                 // `base` 0x2C86: a CMeanTimeToHappen through ReadObjectFromParser.
-                Some(b"base") => Shape::Object(Node::Weight),
+                Some(b"base") => Shape::Object(Node::Mtth),
                 // `trigger` 0x2963: a CAndTrigger read by CTrigger::LoadBody,
                 // which reads nothing of a value that opens no block.
                 Some(b"trigger") => Shape::Body(Node::Trigger),
@@ -200,15 +211,8 @@ impl Shaper {
                 // Serializable_ReportUnexpectedToken (1424A9CE0).
                 _ => Shape::Skip,
             },
-            // 140545850: `modifier` 0x2965 a CMTTHModifier (LoadBody); any other
-            // key only logged, nothing skipped.
-            Node::Weight if keyword == Some(b"modifier") => Shape::Body(Node::Modifier),
-            Node::Weight => Shape::One,
             // 140545820 dispatches the key slot whatever 1424AC5E0 read.
             Node::Modifier if matches!(keyword, Some(b"factor" | b"add")) => Shape::One,
-            Node::CustomTooltip if matches!(keyword, Some(b"tooltip" | b"not_tooltip")) => {
-                Shape::ObjectIfOpen(Node::BoundLocalization)
-            }
             Node::BoundLocalization if keyword == Some(b"localization_key") => Shape::One,
             Node::BoundLocalization => Shape::ObjectIfOpen(Node::BoundLocalization),
             Node::Conditional(index) if keyword == Some(b"limit") => match &self.limits[index] {
@@ -219,14 +223,45 @@ impl Shaper {
                 )),
             },
             Node::Limit(index) => {
-                self.note_child(index, field);
-                self.trigger_field(false, field)
+                let load = key_names::load_key(self.names, field);
+                self.note_child(index, &load);
+                self.trigger_field(field, load)
             }
-            Node::Trigger
-            | Node::Modifier
-            | Node::Meta
-            | Node::CustomTooltip
-            | Node::Conditional(_) => self.trigger_field(node == Node::Meta, field),
+            // Each class's own keys use its native value reader; its
+            // fallback is LoadKey or ReportUnexpectedToken's error skip.
+            Node::Class(token) => {
+                let reader = trigger_keys::key_reader(token);
+                if let KeyReader::ThenLoadKey(keys) | KeyReader::Only(keys) = reader
+                    && let Some(key) = keys
+                        .iter()
+                        .find(|key| keyword == Some(key.name().as_bytes()))
+                {
+                    return match key {
+                        trigger_keys::OwnKey::Value(_) => self.body_value(token, field),
+                        trigger_keys::OwnKey::BoundLocalization(_) => {
+                            Shape::ObjectIfOpen(Node::BoundLocalization)
+                        }
+                    };
+                }
+                match reader {
+                    KeyReader::Only(_) => Shape::Skip,
+                    KeyReader::Native(address) => self.shape(Node::KeyReader(address), field),
+                    KeyReader::Refused(address) => Self::refuse_reader(
+                        address,
+                        trigger_keys::REGISTERED_TRIGGERS
+                            .iter()
+                            .find(|(id, _)| *id == token)
+                            .expect("a class token names a registered trigger")
+                            .1
+                            .as_bytes(),
+                    ),
+                    KeyReader::ThenLoadKey(_) => self.shape(Node::Trigger, field),
+                }
+            }
+            Node::Trigger | Node::Modifier | Node::Conditional(_) => {
+                let load = key_names::load_key(self.names, field);
+                self.trigger_field(field, load)
+            }
         }
     }
 
@@ -236,107 +271,73 @@ impl Shaper {
         Shape::Body(Node::Conditional(self.limits.len() - 1))
     }
 
-    /// Whether a field of a limit adds a child to it (LoadKey 1405434F0): a
-    /// coded trigger does, a scope key does; `else`/`else_if` attach to or
-    /// are dropped from its last `if` and add none; any other key adds one
-    /// only if the content names it, which is not known where it is read.
-    fn note_child(&mut self, index: usize, field: &Field<'_>) {
+    /// Whether a field of a limit adds a child to it (LoadKey 1405434F0,
+    /// [`Load::adds_child`]).
+    fn note_child(&mut self, index: usize, load: &Load) {
         if self.limits[index] == Limit::Children {
             return;
         }
-        let keyword = field.keyword();
-        if keyword
-            .as_deref()
-            .is_some_and(|keyword| matches!(keyword, b"else" | b"else_if"))
-        {
-            return;
+        match load {
+            _ if load.adds_child() == Some(true) => self.limits[index] = Limit::Children,
+            Load::Unknown(why) if self.limits[index] == Limit::Empty => {
+                self.limits[index] = Limit::Unknown(why.clone());
+            }
+            _ => {}
         }
-        let adds = keyword
-            .as_deref()
-            .is_some_and(|keyword| trigger_keys::registered_trigger(keyword).is_some())
-            || (field.opens() && names_a_scope(field));
-        if adds {
-            self.limits[index] = Limit::Children;
-        } else if self.limits[index] == Limit::Empty {
-            self.limits[index] = Limit::Unknown(format!(
-                "key {} adds a child only if it names a scope, a content count or a scripted trigger (1405434F0)",
-                String::from_utf8_lossy(&field.key.text)
-            ));
-        }
+    }
+
+    fn refuse_reader(address: u64, name: &[u8]) -> Shape<Node> {
+        Shape::Unsettled(format!(
+            "unported trigger reader {address:X} for {}",
+            String::from_utf8_lossy(name)
+        ))
     }
 
     /// One child of a trigger body (LoadBody 1405431C0 -> CTrigger::LoadKey
     /// 1405434F0). LoadBody calls LoadKey after every ReadKeyOperatorValue
     /// (1424AC5E0), whatever it read: a key read without an operator goes to
-    /// its reader with the value slot as the last read left it. A coded
-    /// trigger's key goes to its class's value reader
-    /// ([`trigger_keys::trigger_class`], vtable slot 5): one that reads one value
-    /// token (CSimpleAssignTrigger::vf5 141395A40, ReadTriggerComparison
-    /// 141394DF0) records a failed read (TryHandleOrRecordError 1424ACD40) and
-    /// skips nothing, so a block there is read as the enclosing trigger's
-    /// children and its `}` ends that trigger; one whose class reads a body
-    /// (LoadBody) reads its children as a trigger body, as `else` and `else_if`
-    /// do (tokens 0x36D3 and 0x38ED, a CIfTrigger). A block under a key
-    /// [`names_a_scope`] is the context trigger's LoadBody (14138C3A0). Any
-    /// other block, a coded trigger with a reader of its own included, is read
-    /// by key (the key-validity gap, see [`Shape::ByKey`]).
-    fn trigger_field(&mut self, meta: bool, field: &Field<'_>) -> Shape<Node> {
+    /// its reader with the value slot as the last read left it, and a skip
+    /// after RecordError tests the token 1424AC5E0 consumed in the
+    /// operator's place ([`Field::skips_block`]). What LoadKey makes of the
+    /// key ([`key_names::load_key`]) decides its reader:
+    /// - a coded trigger's class reader ([`crate::trigger_keys::trigger_class`],
+    ///   vtable slot 5): one that reads one value token
+    ///   (CSimpleAssignTrigger::vf5 141395A40, ReadTriggerComparison
+    ///   141394DF0) records a failed read (TryHandleOrRecordError 1424ACD40)
+    ///   and skips nothing, so a block there is read as the enclosing
+    ///   trigger's children and its `}` ends that trigger; one whose class
+    ///   reads a body (LoadBody) reads its children as a trigger body, as
+    ///   `if`, `else` and `else_if` do (a CIfTrigger); a class with a reader
+    ///   of its own follows its native value reader ([`own`]);
+    /// - a scope's body is the context trigger's LoadBody (14138C3A0);
+    /// - a content count or scripted trigger reads one value token and skips
+    ///   no block, as a coded one-value trigger does;
+    /// - an invalid key is RecordError (1424ACF90), whose skip passes a block
+    ///   the lexer stands on;
+    /// - where the names cannot tell, a block those readers would read apart
+    ///   leaves the rest of the text unsettled, refused by name.
+    fn trigger_field(&mut self, field: &Field<'_>, load: Load) -> Shape<Node> {
         let keyword = field.keyword();
         let keyword = keyword.as_deref();
-        if self.untraced {
-            return match keyword {
-                Some(b"if" | b"else" | b"else_if") if field.fresh && field.opens() => {
-                    self.conditional()
-                }
-                _ => native::untraced(field),
-            };
-        }
-        let reader = keyword
-            .and_then(trigger_keys::registered_trigger)
-            .and_then(trigger_keys::trigger_class)
-            .map(|(_, reader)| reader);
-        match keyword {
-            Some(b"text") if meta => Shape::Skip,
-            Some(b"meta_trigger" | b"meta_effect") if field.opens() => Shape::Object(Node::Meta),
-            _ if matches!(reader, Some(Reader::Assign | Reader::Comparison)) => Shape::One,
-            Some(b"custom_trigger_tooltip") if field.opens() => Shape::Body(Node::CustomTooltip),
-            Some(b"else" | b"else_if") if field.opens() => self.conditional(),
-            Some(b"if") if field.opens() => self.conditional(),
-            _ if field.opens() && reader == Some(Reader::Body) => Shape::Body(Node::Trigger),
-            _ if field.opens() && names_a_scope(field) => Shape::Body(Node::Trigger),
-            _ if field.opens() => Shape::ByKey,
-            _ => Shape::One,
+        match load {
+            Load::Conditional => self.conditional(),
+            Load::Coded(_, _) if keyword == Some(b"if") => self.conditional(),
+            Load::Coded(token, reader) => match reader {
+                Reader::Assign | Reader::Comparison => Shape::One,
+                Reader::Body => Shape::Body(Node::Class(token)),
+                Reader::Own(address) => self.own_value(token, address, field),
+            },
+            Load::Scope => Shape::Body(Node::Trigger),
+            Load::OneValue => Shape::One,
+            Load::Invalid => Shape::Skip,
+            Load::Unknown(why) if field.opens() || field.skips_block() => {
+                Shape::Unsettled(format!(
+                    "LoadKey (1405434F0) reads it as a scope's body, one value or an invalid key's skip, and which is not known here: {why}"
+                ))
+            }
+            Load::Unknown(_) => Shape::One,
         }
     }
-}
-
-/// Whether CTrigger::LoadKey (1405434F0) reads a block under this key as a
-/// scope: no coded trigger holds its token, and the event target parse
-/// (14146B860 -> 14146DB00, [`crate::scope`]) finds one by a step that needs
-/// no content: a state id (step 1), `var:` (2), a scope keyword or a zero
-/// number token (4), `event_target:` (5) or a keyword head (7). Steps 3 and
-/// 6 (a tag, a character, a keyword `prefix:`) need content, so a key that
-/// only they could name is left to the key-validity gap.
-fn names_a_scope(field: &Field<'_>) -> bool {
-    if field
-        .keyword()
-        .is_some_and(|keyword| crate::trigger_keys::registered_trigger(&keyword).is_some())
-    {
-        return false;
-    }
-    let quoted = field.key.kind == native::Kind::Quoted;
-    let Ok(text) = std::str::from_utf8(c_string(&field.key.text)) else {
-        return false;
-    };
-    let keyword = |text: &str| !quoted && crate::scope::Keyword::named(text.as_bytes()).is_some();
-    crate::fixed5::decimal_i32(text.as_bytes()) != 0
-        || text.starts_with("var:")
-        || crate::parser::number_token(text.as_bytes(), quoted)
-        || keyword(text)
-        || text.starts_with("event_target:")
-        || text
-            .split_once('.')
-            .is_some_and(|(head, _)| crate::scope::Keyword::named(head.as_bytes()).is_some())
 }
 
 /// 1406B3CB0 resolves a phase field as it reads it: `no` first, then an exact
@@ -360,17 +361,22 @@ fn phase_id(phases: &[Vec<u8>], value: &Value) -> i32 {
 
 /// Read the effective, hash-verified file from the recorded content layers.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
-    Ok(parse(&layers.read("common/combat_tactics.txt")?))
+    Ok(parse(
+        &layers.read("common/combat_tactics.txt")?,
+        &*layers.key_names()?,
+    ))
 }
 
-/// Parse one combat-tactics file without requiring a game installation.
-pub fn parse(bytes: &[u8]) -> Database {
+/// Parse one combat-tactics file without requiring a game installation, its
+/// triggers against `names`.
+pub fn parse(bytes: &[u8], names: &KeyNames) -> Database {
     // 1406B3690 constructs the lexer in mode 0 (CTextLexer::constructor 1424A63A0).
-    let mut shaper = Shaper::default();
+    let mut shaper = Shaper::new(Some(names));
     let read = native::read(
         bytes,
         native::Mode::KeepMark,
-        Node::Top,
+        native::Top::File(Node::Top),
+        Some(names),
         &mut |node, field| shaper.shape(node, field),
     );
     let mut database = Database {
@@ -632,6 +638,7 @@ mod tests {
                 NOT_TOOLTIP = NEGATIVE \
                 skill > @threshold \"not_tooltip\" = yes } } attacker = @amount } \
               later = { }",
+            &KeyNames::default(),
         );
         assert!(database.unsupported.is_empty(), "{database:?}");
         assert_eq!(database.tactics.len(), 2, "{database:#?}");
@@ -659,6 +666,7 @@ mod tests {
             b"t = { trigger = { custom_trigger_tooltip = { \
                 tooltip = { @threshold = 2 localization_key = { argument = KEY } \
                 skill > @threshold } } attacker = 0.5 } later = { }",
+            &KeyNames::default(),
         );
         assert!(database.unsupported.is_empty(), "{database:?}");
         assert_eq!(database.tactics.len(), 2, "{database:#?}");
@@ -683,7 +691,10 @@ mod tests {
     /// its body. Likewise a modifier's `factor` goes to 140545820.
     #[test]
     fn a_key_without_an_operator_goes_to_its_trigger_reader() {
-        let database = parse(b"t = { trigger = { Or { is_attacker = yes } } attacker = 0.1 }");
+        let database = parse(
+            b"t = { trigger = { Or { is_attacker = yes } } attacker = 0.1 }",
+            &KeyNames::default(),
+        );
         let trigger = database.tactics[0].fields[0].value.items().unwrap();
         assert_eq!(trigger.len(), 1, "{trigger:?}");
         assert_eq!(trigger[0].key.as_deref(), Some(b"Or".as_slice()));
@@ -709,6 +720,7 @@ mod tests {
               phases={ counterattack }\n\
               tactic_beta={ active=maybe }\n\
               Phases={}\n",
+            &KeyNames::default(),
         );
         assert_eq!(
             database.phases,
@@ -749,6 +761,7 @@ mod tests {
               phases = { later }\n\
               phase = opening\n\
               third = { active = no }\n",
+            &KeyNames::default(),
         );
         assert_eq!(database.phases, [b"opening".to_vec()]);
         let keys = |tactic: &Tactic| -> Vec<Vec<u8>> {
@@ -789,6 +802,7 @@ mod tests {
               PHASES = { }\n\
               a = { Phase = NO Display_Phase = no \
                     TRIGGER = { PHASE = NO Phase = no } }\n",
+            &KeyNames::default(),
         );
         assert_eq!(database.phases, [b"NO".to_vec(), b"opening".to_vec()]);
         assert_eq!(
@@ -824,6 +838,7 @@ mod tests {
               second = { attacker = @\xe9 }\n\
               loose\n\
               third = { }\n",
+            &KeyNames::default(),
         );
         assert_eq!(
             database.phases,
@@ -862,6 +877,7 @@ mod tests {
             b"@weight = 4\n\
               tactic_example = { base = { factor = @weight } @inner = 2 limit = @inner }\n\
               tactic_other = { base = { factor = @weight } }\n",
+            &KeyNames::default(),
         );
         let ids: Vec<_> = database
             .tactics
@@ -887,14 +903,20 @@ mod tests {
         assert_eq!(factor(example), b"4");
         assert_eq!(example[1].value.scalar(), Some(b"2".as_slice()));
         assert_eq!(factor(&database.tactics[1].fields), b"4");
-        let taken = parse(b"@x = 0.1 @x = 0.2 t = { attacker = @x }");
+        let taken = parse(
+            b"@x = 0.1 @x = 0.2 t = { attacker = @x }",
+            &KeyNames::default(),
+        );
         assert!(
             taken.logged[0].contains("variable `@x` is already taken"),
             "{:?}",
             taken.logged
         );
         // A picture named by a variable reads its value.
-        let pictures = parse(b"@pic = attack\ntactic_a = { picture = @pic }");
+        let pictures = parse(
+            b"@pic = attack\ntactic_a = { picture = @pic }",
+            &KeyNames::default(),
+        );
         let fields = &pictures.tactics[0].fields;
         assert_eq!(fields[0].value.scalar(), Some(b"attack".as_slice()));
     }
@@ -908,6 +930,7 @@ mod tests {
               phases = { opening @p }
               tactic_example = { phase = @p }
 ",
+            &KeyNames::default(),
         );
         assert_eq!(
             database.phases,
@@ -928,6 +951,7 @@ mod tests {
               phases = { later }\n\
               late = { phase = no display_phase = later }\n\
               none = { }\n",
+            &KeyNames::default(),
         );
         let ids: Vec<_> = database
             .tactics
@@ -955,6 +979,7 @@ mod tests {
                         base = { modifier = { phase = no } } }\n\
               phases = { later }\n\
               late = { trigger = { phase = later } }\n",
+            &KeyNames::default(),
         );
         assert_eq!(
             (database.tactics[0].phase, database.tactics[0].display_phase),
@@ -989,7 +1014,10 @@ mod tests {
 
     #[test]
     fn raw_name_bytes_and_nested_fields_survive_parsing() {
-        let database = parse(b"tactic_\xe9={ allowed={ scripted=value } active=no }");
+        let database = parse(
+            b"tactic_\xe9={ allowed={ scripted=value } active=no }",
+            &KeyNames::default(),
+        );
         assert_eq!(database.tactics[0].id, 1);
         assert_eq!(database.tactics[0].token, b"tactic_\xe9");
         let fields = &database.tactics[0].fields;
@@ -1012,6 +1040,7 @@ mod tests {
                 tactic_c = { defender_org_damage_modifier = 1.5e3 active = yes defender = 0.000001 }
                 quoted = { defender = "@bonus" "attacker" = 0.5 }
                 PHASES = { assault seize }"#,
+            &KeyNames::default(),
         );
         let effects = |id: usize| database.tactics[id - 1].effects;
         assert_eq!(effects(1), [10_000, 800_000, 25_000, 0, 0, 0]);
@@ -1036,8 +1065,10 @@ mod tests {
     /// the field as it was, so an earlier assignment stands.
     #[test]
     fn an_unscannable_movement_value_keeps_the_previous_one() {
-        let database =
-            parse(b"t = { attacker_movement_speed = 0.5 ATTACKER_MOVEMENT_SPEED = fast }");
+        let database = parse(
+            b"t = { attacker_movement_speed = 0.5 ATTACKER_MOVEMENT_SPEED = fast }",
+            &KeyNames::default(),
+        );
         assert_eq!(database.tactics[0].effects[1], 50_000);
         assert_eq!(
             database.logged,
@@ -1066,6 +1097,7 @@ mod tests {
                 unregistered = { defender = @unregistered }
                 expression = { attacker = @(1+1) }
                 after = { attacker = 0.1 }"#,
+            &KeyNames::default(),
         );
         let effect = |id: usize, slot: usize| database.tactics[id - 1].effects[slot];
         assert_eq!((effect(1, 0), effect(1, 2)), (10_000, 20_000));
@@ -1092,7 +1124,7 @@ mod tests {
             b"t = { attacker = @late trigger = { OR = { @late = 0.1 always = yes } phase = no } \
               base = { factor = 1 modifier = { @weight = 0.2 factor = 2 } } unknown = { @skipped = 1 x = 1 } } \
               u = { attacker = @late defender = @weight combat_width = @skipped \
-                    trigger = { skill > @late skill_advantage<@weight } }",
+                    trigger = { skill > @late skill_advantage<@weight } }", &KeyNames::default(),
         );
         assert!(
             database.unsupported.is_empty(),
@@ -1126,23 +1158,127 @@ mod tests {
     }
 
     /// LoadBody (1405431C0) hands `x`, read without an operator (it
-    /// consumes `@y`), the stale `{`: which reader `x` is decides what it
-    /// reads, and the port does not know it (the key-validity gap), so the
-    /// tactic being read is unproven by name and no later tactic is read.
+    /// consumes `@y`), the stale `{`: what LoadKey makes of `x` decides what
+    /// it reads. Naming nothing, it is RecordError, whose skip tests the
+    /// `@y` it consumed, so nothing more is read and `@y` is never defined;
+    /// a scope reads the tokens after it as its body. Where the names cannot
+    /// tell, the tactic being read is unproven by name and no later tactic
+    /// is read.
     #[test]
-    fn unsettled_tactic_variables_mark_the_rest_of_the_file_unproven() {
-        let database =
-            parse(b"s = { attacker = 0.1 } t = { trigger = { x @y = 1 } } u = { attacker = @y }");
+    fn a_key_without_an_operator_is_read_as_what_it_names() {
+        let text = b"s = { attacker = 0.1 } t = { trigger = { x @y = 1 } } u = { attacker = @y }";
+        let database = parse(text, &KeyNames::default());
+        assert!(
+            database.unsupported.is_empty(),
+            "{:?}",
+            database.unsupported
+        );
+        assert_eq!(database.tactics.len(), 3);
+        let scope = KeyNames {
+            characters: [b"x".to_vec()].into(),
+            ..KeyNames::default()
+        };
+        let database = parse(text, &scope);
+        assert_eq!(database.tactics.len(), 2);
+        let trigger = database.tactics[1].fields[0].value.items().unwrap();
+        assert_eq!(trigger[0].value.items().map(<[Item]>::len), Some(1));
+        let database = parse(text, &KeyNames::unknown());
         assert_eq!(database.tactics.len(), 2);
         assert_eq!(database.tactics[0].unproven, None);
         let reason = database.tactics[1].unproven.clone().unwrap();
         assert!(
-            reason.contains(
-                "key `x` has no operator and its reader is handed the previous value `{`"
-            ),
+            reason.contains("field `x`: LoadKey (1405434F0) reads it"),
             "{reason}"
         );
         assert_eq!(database.unsupported, [reason]);
+    }
+
+    /// 1405431C0 calls slot 6 after 1424AC5E0 even without an operator.
+    /// Bodies use the stale value; 1424AD270 skips on the current token.
+    /// Exercise both tactics' dispatch and content readers' Shape::Trigger.
+    #[test]
+    fn missing_operators_dispatch_scopes_classes_and_invalid_keys_in_both_readers() {
+        let names = KeyNames {
+            countries: [b"ABC".to_vec()].into(),
+            ..KeyNames::default()
+        };
+        for (key, body, skipped) in [
+            ("ABC", true, false),
+            ("OR", true, false),
+            ("always", false, false),
+            ("invalid_test_key", false, true),
+        ] {
+            let text = format!(
+                "t = {{ trigger = {{ {key} {{ always = yes @seen = 7 }} tag = @seen }} final = @seen"
+            );
+            let mut shaper = Shaper::new(Some(&names));
+            let tactics = native::read(
+                text.as_bytes(),
+                native::Mode::KeepMark,
+                native::Top::File(Node::Top),
+                Some(&names),
+                &mut |node, field| shaper.shape(node, field),
+            );
+            let content = native::read(
+                text.as_bytes(),
+                native::Mode::KeepMark,
+                native::Top::File(0_u8),
+                Some(&names),
+                &mut |node, field| match (node, field.keyword().as_deref()) {
+                    (0, Some(b"t")) => Shape::Object(1),
+                    (1, Some(b"trigger")) => Shape::Trigger,
+                    _ => Shape::One,
+                },
+            );
+            for read in [&tactics, &content] {
+                assert!(read.unsettled.is_none(), "{key}: {:?}", read.unsettled);
+                let t = read.items[0].value.items().unwrap();
+                let children = t[0].value.items().unwrap();
+                assert_eq!(children[0].key.as_deref(), Some(key.as_bytes()));
+                assert_eq!(children[0].value.items().is_some(), body || skipped);
+                if body {
+                    assert_eq!(
+                        children[0].value.items().unwrap()[0].key.as_deref(),
+                        Some(b"always".as_slice())
+                    );
+                    assert_eq!(children.len(), 2);
+                    assert_eq!(children[1].value.scalar(), Some(b"7".as_slice()));
+                } else if skipped {
+                    assert!(children[0].value.items().unwrap().is_empty());
+                    assert_eq!(children.len(), 2);
+                    assert_eq!(children[1].value.scalar(), Some(b"@seen".as_slice()));
+                } else {
+                    assert_eq!(children[0].value.scalar(), Some(b"{".as_slice()));
+                    assert_eq!(children[1].key.as_deref(), Some(b"always".as_slice()));
+                }
+                assert!(
+                    read.misreads
+                        .iter()
+                        .any(|note| note.what.contains("has no operator"))
+                );
+            }
+        }
+    }
+
+    /// Embedded collection filters use the same CReader and LoadKey
+    /// (1405434F0), including its content names, as the enclosing body.
+    #[test]
+    fn collection_filters_keep_names_in_tactics_and_scripted_triggers() {
+        let condition = "collection_size = { input = { input = collection:territories operators = { limit = { CONTROLLER = { always = yes } } } name = filtered } value = 0 }";
+        let names = KeyNames::default();
+        let tactics = parse(
+            format!("t = {{ trigger = {{ {condition} }} }}").as_bytes(),
+            &names,
+        );
+        assert!(tactics.unsupported.is_empty(), "{tactics:?}");
+        assert!(tactics.logged.is_empty(), "{tactics:?}");
+        let text = format!("check = {{ {condition} }}");
+        let triggers = crate::scripted_triggers::ScriptedTriggers::parse(
+            &[("collection.txt", text.as_bytes())],
+            &names,
+        );
+        assert!(triggers.logged.is_empty(), "{triggers:?}");
+        assert!(triggers.templates[b"check".as_slice()].body.is_ok());
     }
 
     /// Each nested reader consumes as its native reader does: the weight's
@@ -1161,7 +1297,7 @@ mod tests {
             b"s = { } a = { trigger = { IS_ATTACKER = { skill > 2 } } } b = { }",
             b"s = { } a = { base = { modifier = { OR = { skill > { 1 } } } } } b = { }",
         ] {
-            let database = parse(text);
+            let database = parse(text, &KeyNames::default());
             let shown = String::from_utf8_lossy(text);
             assert!(
                 database
@@ -1178,7 +1314,10 @@ mod tests {
             assert_eq!(database.tactics[0].token, b"s", "{shown}");
         }
         // Under IS_ATTACKER the block's `skill > 2` is the trigger's own.
-        let database = parse(b"a = { trigger = { IS_ATTACKER = { skill > 2 } } attacker = 0.1 }");
+        let database = parse(
+            b"a = { trigger = { IS_ATTACKER = { skill > 2 } } attacker = 0.1 }",
+            &KeyNames::default(),
+        );
         let trigger = database.tactics[0].fields[0].value.items().unwrap();
         assert_eq!(
             trigger
@@ -1198,7 +1337,7 @@ mod tests {
     fn a_modifier_factor_block_ends_the_modifier() {
         let database = parse(
             b"a = { base = { modifier = { FACTOR = { is_attacker = yes } skill > 2 } attacker = 0.1 }\n\
-              b = { base = { modifier = { add = { has_reserves = yes } } }\n",
+              b = { base = { modifier = { add = { has_reserves = yes } } }\n", &KeyNames::default(),
         );
         assert!(
             database
@@ -1240,6 +1379,7 @@ mod tests {
             b"a = { trigger = { always = yes } Trigger = yes attacker = 0.1 \
                     base = { modifier = yes factor = 2 note = 1 } } \
               b = { attacker = 0.2 \"trigger\" = { @hidden = 0.3 } defender = @hidden }",
+            &KeyNames::default(),
         );
         assert!(
             database.unsupported.is_empty(),
@@ -1284,6 +1424,7 @@ mod tests {
             b"phases = { 99 opening }\n\
               t = { trigger = { @x = yes is_attacker = @x OR = { @y = 1 phase>99 } } \
                     base = { modifier = { @z = 2 factor = @z PHASE < opening } } }",
+            &KeyNames::default(),
         );
         assert!(
             database.unsupported.is_empty(),
@@ -1315,23 +1456,24 @@ mod tests {
     }
 
     /// `meta_trigger`'s `text` is copied raw (141408C80): nothing in it
-    /// defines; a block holding values without keys is read as a list.
+    /// defines. A key that names nothing is "Invalid trigger" (1405434F0):
+    /// RecordError skips its block (1424ACF90 -> 1424AD270), nothing in it
+    /// read or defined.
     #[test]
-    fn meta_text_lists_and_keys_without_operators_follow_the_trigger_reader() {
+    fn meta_text_is_raw_and_an_invalid_key_skips_its_block() {
         let database = parse(
             b"t = { trigger = { meta_trigger = { text = { @hidden = 1 } x = y } \
-                    any_unit = { infantry } } attacker = @hidden }",
+                    any_unit = { infantry @skipped = 1 } } attacker = @hidden defender = @skipped }",
+            &KeyNames::default(),
         );
         let trigger = database.tactics[0].fields[0].value.items().unwrap();
         assert_eq!(
             trigger[0].value.items().unwrap()[0].value,
             Value::Block(Vec::new())
         );
-        assert_eq!(
-            trigger[1].value.items().unwrap()[0].value.scalar(),
-            Some(b"infantry".as_slice())
-        );
+        assert_eq!(trigger[1].value, Value::Block(Vec::new()));
         assert_eq!(database.tactics[0].effects[2], 0);
+        assert_eq!(database.tactics[0].effects[4], 0);
     }
 
     /// A group given a scalar is the empty group LoadKey keeps (1405434F0,
@@ -1341,7 +1483,7 @@ mod tests {
     fn scalar_groups_are_the_empty_groups_the_game_keeps() {
         let database = parse(
             b"t = { trigger = { AND = yes OR = { or = no } Not = yes CUSTOM_TRIGGER_TOOLTIP = x \"and\" = yes } \
-                    base = { modifier = { or = no } } }",
+                    base = { modifier = { or = no } } }", &KeyNames::default(),
         );
         let trigger = database.tactics[0].fields[0].value.items().unwrap();
         assert_eq!(trigger[0].value, Value::Block(Vec::new()));
@@ -1375,7 +1517,10 @@ mod tests {
     /// feed as `Unreadable String` (reported, 1424ACEE0).
     #[test]
     fn phase_names_are_stored_as_read_string_into_stores_them() {
-        let database = parse(b"phases = { open\x00ing \"line\nfeed\" }");
+        let database = parse(
+            b"phases = { open\x00ing \"line\nfeed\" }",
+            &KeyNames::default(),
+        );
         assert_eq!(
             database.phases,
             [b"open".to_vec(), crate::parser::UNREADABLE_STRING.to_vec()]

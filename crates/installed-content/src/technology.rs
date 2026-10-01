@@ -1,4 +1,5 @@
 //! Equipment localisation links projected from the native technology reader.
+use crate::key_names::KeyNames;
 use crate::{
     ResolvedLayers,
     fields::invalid,
@@ -27,13 +28,18 @@ enum Node {
     Modifier(modifiers::Node),
 }
 
-pub fn parse_equipment(input: &[u8]) -> io::Result<BTreeMap<String, Option<String>>> {
-    parse_with_registry(input, &units::Registry::default())
+/// Its triggers are read against `names`.
+pub fn parse_equipment(
+    input: &[u8],
+    names: &KeyNames,
+) -> io::Result<BTreeMap<String, Option<String>>> {
+    parse_with_registry(input, &units::Registry::default(), names)
 }
 
 fn parse_with_registry(
     input: &[u8],
     registry: &units::Registry,
+    names: &KeyNames,
 ) -> io::Result<BTreeMap<String, Option<String>>> {
     use Node::*;
     let mut undecided = Vec::new();
@@ -43,116 +49,126 @@ fn parse_with_registry(
     // 140AC3960 / 140AC3C70. All dynamic content names come from layers.
     // CTechnologyDatabase::LoadDirectory (140AC1BA0) constructs each file's
     // lexer in mode 0 (1424A6370).
-    let read = native::read(input, native::Mode::KeepMark, File, &mut |node, field| {
-        match (node, field.keyword().as_deref()) {
-            (File, Some(b"technologies")) => Shape::Object(Technologies),
-            (File, Some(b"technology_categories")) => Shape::RawList,
-            (File, Some(b"technology_folders")) => {
-                refused.push("technology_folders: unsupported folder database reader".into());
-                Shape::Skip
-            }
-            (File, _) => Shape::Skip,
-            (Technologies, _) => Shape::Object(Technology),
-            (
-                Technology,
-                Some(b"allow" | b"unlock" | b"allow_branch" | b"on_research_complete_limit"),
-            ) => Shape::Trigger,
-            (Technology, Some(b"ai_will_do")) => Shape::Object(Mtth),
-            (Technology, Some(b"modifier")) => Shape::Object(Modifier(modifiers::Node::Modifier)),
-            (Technology, Some(b"path")) => Shape::Object(Path),
-            (Technology, Some(b"folder")) => Shape::Object(Folder),
-            (Technology, Some(b"dependencies" | b"ai_research_weights")) => Shape::Object(Scalars),
-            (Technology, Some(b"enable_building")) => Shape::Object(Building),
-            (
-                Technology,
-                Some(
-                    b"categories"
-                    | b"xor"
-                    | b"sub_technologies"
-                    | b"enable_equipment_modules"
-                    | b"special_project_specialization",
-                ),
-            ) => Shape::RawList,
-            (Technology, Some(b"enable_equipments")) => Shape::TechnologyEquipment,
-            (Technology, Some(b"enable_subunits")) if field.opens() => {
-                leading_limit = true;
-                Shape::Statements(Uniform)
-            }
-            (Technology, Some(b"enable_subunits")) => Shape::One,
-            // 140AB8A50 / 140A83900 accept limit until the first anonymous
-            // statement (140A835F0); other assignments use only the value.
-            (Uniform, Some(b"limit")) if leading_limit => Shape::Trigger,
-            (Uniform, _) => {
-                if field.key.text.is_empty() {
-                    leading_limit = false;
-                }
-                if registry
-                    .units
-                    .contains(&crate::parser::c_string(&field.value.text).to_ascii_lowercase())
-                {
-                    Shape::One
-                } else {
+    let read = native::read(
+        input,
+        native::Mode::KeepMark,
+        native::Top::File(File),
+        Some(names),
+        &mut |node, field| {
+            match (node, field.keyword().as_deref()) {
+                (File, Some(b"technologies")) => Shape::Object(Technologies),
+                (File, Some(b"technology_categories")) => Shape::RawList,
+                (File, Some(b"technology_folders")) => {
+                    refused.push("technology_folders: unsupported folder database reader".into());
                     Shape::Skip
                 }
+                (File, _) => Shape::Skip,
+                (Technologies, _) => Shape::Object(Technology),
+                (
+                    Technology,
+                    Some(b"allow" | b"unlock" | b"allow_branch" | b"on_research_complete_limit"),
+                ) => Shape::Trigger,
+                (Technology, Some(b"ai_will_do")) => Shape::Object(Mtth),
+                (Technology, Some(b"modifier")) => {
+                    Shape::Object(Modifier(modifiers::Node::Modifier))
+                }
+                (Technology, Some(b"path")) => Shape::Object(Path),
+                (Technology, Some(b"folder")) => Shape::Object(Folder),
+                (Technology, Some(b"dependencies" | b"ai_research_weights")) => {
+                    Shape::Object(Scalars)
+                }
+                (Technology, Some(b"enable_building")) => Shape::Object(Building),
+                (
+                    Technology,
+                    Some(
+                        b"categories"
+                        | b"xor"
+                        | b"sub_technologies"
+                        | b"enable_equipment_modules"
+                        | b"special_project_specialization",
+                    ),
+                ) => Shape::RawList,
+                (Technology, Some(b"enable_equipments")) => Shape::TechnologyEquipment,
+                (Technology, Some(b"enable_subunits")) if field.opens() => {
+                    leading_limit = true;
+                    Shape::Statements(Uniform)
+                }
+                (Technology, Some(b"enable_subunits")) => Shape::One,
+                // 140AB8A50 / 140A83900 accept limit until the first anonymous
+                // statement (140A835F0); other assignments use only the value.
+                (Uniform, Some(b"limit")) if leading_limit => Shape::Trigger,
+                (Uniform, _) => {
+                    if field.key.text.is_empty() {
+                        leading_limit = false;
+                    }
+                    if registry
+                        .units
+                        .contains(&crate::parser::c_string(&field.value.text).to_ascii_lowercase())
+                    {
+                        Shape::One
+                    } else {
+                        Shape::Skip
+                    }
+                }
+                // 140AC3C70 peeks for a leading limit (on_research_complete_limit,
+                // +0x470), then CEffect::ReadScript (140534280) reads the body only
+                // when the value slot is `{`.
+                (Technology, Some(b"on_research_complete")) => Shape::LimitedBody(Effect),
+                (Effect, _) => native::untraced(field),
+                (Technology, Some(b"parent" | b"enable_tactic")) => Shape::Current,
+                (
+                    Technology,
+                    Some(
+                        b"is_special_project_tech"
+                        | b"desc"
+                        | b"research_cost"
+                        | b"hidden"
+                        | b"start_year"
+                        | b"max_level"
+                        | b"xp_research_bonus"
+                        | b"doctrine"
+                        | b"show_equipment_icon"
+                        | b"show_effect_as_desc"
+                        | b"force_use_small_tech_layout"
+                        | b"xp_research_cost"
+                        | b"xp_research_type"
+                        | b"doctrine_name"
+                        | b"sub_tech_index"
+                        | b"xp_unlock_cost"
+                        | b"xp_boost_cost",
+                    ),
+                ) => Shape::One,
+                // 140636690 checks subunits, then categories, before CModifier.
+                (Technology, Some(key))
+                    if registry.units.contains(key) || registry.categories.contains(key) =>
+                {
+                    Shape::Object(Unit(units::Node::Stats))
+                }
+                (Technology, _) => modifiers::shape(
+                    modifiers::Node::Modifier,
+                    field,
+                    modifiers::UNKNOWN,
+                    &mut undecided,
+                )
+                .map(Modifier),
+                (Path, Some(b"leads_to_tech" | b"research_cost_coeff" | b"ignore_for_layout")) => {
+                    Shape::One
+                } // 140AC3B00
+                (Folder, Some(b"name")) => Shape::One, // 140AC39C0
+                // 1402C7A50: the lexer's tokens, the value slot unchanged.
+                (Folder, Some(b"position")) if field.opens() => Shape::RawList,
+                (Folder | Path, _) => Shape::Skip,
+                (Scalars | Building, _) => Shape::One, // 1413B04D0 and inline loops
+                (Mtth, _) => native::mean_time_to_happen(field),
+                (Modifier(node), _) => {
+                    modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided).map(Modifier)
+                }
+                (Unit(node), _) => registry
+                    .shape(node, field, &mut undecided, &mut refused)
+                    .map(Unit),
             }
-            // 140AC3C70 peeks for a leading limit (on_research_complete_limit,
-            // +0x470), then CEffect::ReadScript (140534280) reads the body only
-            // when the value slot is `{`.
-            (Technology, Some(b"on_research_complete")) => Shape::LimitedBody(Effect),
-            (Effect, _) => native::untraced(field),
-            (Technology, Some(b"parent" | b"enable_tactic")) => Shape::Current,
-            (
-                Technology,
-                Some(
-                    b"is_special_project_tech"
-                    | b"desc"
-                    | b"research_cost"
-                    | b"hidden"
-                    | b"start_year"
-                    | b"max_level"
-                    | b"xp_research_bonus"
-                    | b"doctrine"
-                    | b"show_equipment_icon"
-                    | b"show_effect_as_desc"
-                    | b"force_use_small_tech_layout"
-                    | b"xp_research_cost"
-                    | b"xp_research_type"
-                    | b"doctrine_name"
-                    | b"sub_tech_index"
-                    | b"xp_unlock_cost"
-                    | b"xp_boost_cost",
-                ),
-            ) => Shape::One,
-            // 140636690 checks subunits, then categories, before CModifier.
-            (Technology, Some(key))
-                if registry.units.contains(key) || registry.categories.contains(key) =>
-            {
-                Shape::Object(Unit(units::Node::Stats))
-            }
-            (Technology, _) => modifiers::shape(
-                modifiers::Node::Modifier,
-                field,
-                modifiers::UNKNOWN,
-                &mut undecided,
-            )
-            .map(Modifier),
-            (Path, Some(b"leads_to_tech" | b"research_cost_coeff" | b"ignore_for_layout")) => {
-                Shape::One
-            } // 140AC3B00
-            (Folder, Some(b"name")) => Shape::One, // 140AC39C0
-            // 1402C7A50: the lexer's tokens, the value slot unchanged.
-            (Folder, Some(b"position")) if field.opens() => Shape::RawList,
-            (Folder | Path, _) => Shape::Skip,
-            (Scalars | Building, _) => Shape::One, // 1413B04D0 and inline loops
-            (Mtth, _) => native::mean_time_to_happen(field),
-            (Modifier(node), _) => {
-                modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided).map(Modifier)
-            }
-            (Unit(node), _) => registry
-                .shape(node, field, &mut undecided, &mut refused)
-                .map(Unit),
-        }
-    });
+        },
+    );
     if let Some(cause) = read.unsettled {
         return Err(invalid(format!("technology: {cause}")));
     }
@@ -240,11 +256,12 @@ pub fn read_equipment(
     layers: &ResolvedLayers,
 ) -> io::Result<(BTreeMap<String, String>, Vec<String>)> {
     let registry = units::Registry::read(layers)?;
+    let names = layers.key_names()?;
     let mut result = BTreeMap::new();
     let mut warnings = Vec::new();
     // 140AC1BA0 enumerates this directory without recursion.
     for path in layers.directory_files("common/technologies", ".txt")? {
-        match parse_with_registry(&layers.read(&path)?, &registry) {
+        match parse_with_registry(&layers.read(&path)?, &registry, &names) {
             Ok(definitions) => result.extend(definitions),
             Err(error) => warnings.push(format!(
                 "Technology equipment links unavailable in {path}: {error}"
@@ -271,7 +288,7 @@ mod tests {
         // is `{`. The one technology's unlock, by case:
         let link = |body: &str| {
             let text = format!("technologies={{t={{{body}}}}}");
-            parse_equipment(text.as_bytes())
+            parse_equipment(text.as_bytes(), &KeyNames::default())
                 .unwrap()
                 .remove("t")
                 .flatten()
@@ -311,25 +328,30 @@ mod tests {
             "enable_equipments={limit=no one}",
         ] {
             let text = format!("technologies={{t={{{body}}}}}");
-            assert!(parse_equipment(text.as_bytes()).is_err(), "{body}");
+            assert!(
+                parse_equipment(text.as_bytes(), &KeyNames::default()).is_err(),
+                "{body}"
+            );
         }
     }
 
     #[test]
     fn native_keywords_references_and_list_appends() {
-        let links = parse_equipment(br#"@e=one TECHNOLOGIES={a={"enable_equipments"=wrong enable_equipments={@e} enable_equipments={ONE}} b={enable_equipments={one} enable_equipments={two}}}"#).unwrap();
+        let links = parse_equipment(br#"@e=one TECHNOLOGIES={a={"enable_equipments"=wrong enable_equipments={@e} enable_equipments={ONE}} b={enable_equipments={one} enable_equipments={two}}}"#, &KeyNames::default()).unwrap();
         assert_eq!(links["a"].as_deref(), Some("one"));
         assert_eq!(links["b"], None);
     }
 
     #[test]
     fn conditional_unlock_preserves_following_fields_and_names_unsafe_tails() {
-        let links = parse_equipment(br#"technologies={a={enable_equipments={limit={always=yes} one} research_cost=1} b={enable_equipments={two}}}"#).unwrap();
+        let links = parse_equipment(br#"technologies={a={enable_equipments={limit={always=yes} one} research_cost=1} b={enable_equipments={two}}}"#, &KeyNames::default()).unwrap();
         assert_eq!(links["a"], None);
         assert_eq!(links["b"].as_deref(), Some("two"));
-        let error =
-            parse_equipment(b"technologies={a={enable_equipments={limit={always=no} one two}}}")
-                .unwrap_err();
+        let error = parse_equipment(
+            b"technologies={a={enable_equipments={limit={always=no} one two}}}",
+            &KeyNames::default(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("enable_equipments.limit"));
     }
 
@@ -340,13 +362,13 @@ mod tests {
         registry.terrains.insert(b"custom_terrain".to_vec());
         let bytes = b"technologies={a={custom_unit={custom_terrain={attack=1}} enable_subunits={limit={always=yes} custom_unit} enable_equipments={one}}}";
         assert!(
-            parse_equipment(bytes)
+            parse_equipment(bytes, &KeyNames::default())
                 .unwrap_err()
                 .to_string()
                 .contains("custom_unit")
         );
         assert_eq!(
-            parse_with_registry(bytes, &registry).unwrap()["a"].as_deref(),
+            parse_with_registry(bytes, &registry, &KeyNames::default()).unwrap()["a"].as_deref(),
             Some("one")
         );
     }
@@ -361,6 +383,7 @@ mod tests {
             multiple = { enable_equipments = { a b } }
             modifier_only = { research_cost = 2 }
         }"#,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(links["weapons"].as_deref(), Some("infantry_equipment_3"));
@@ -368,9 +391,11 @@ mod tests {
         for token in ["multiple", "modifier_only"] {
             assert_eq!(links[token], None);
         }
-        let overrides =
-            parse_equipment(br#"technologies = { a = { enable_equipments = { one } } a = {} }"#)
-                .unwrap();
+        let overrides = parse_equipment(
+            br#"technologies = { a = { enable_equipments = { one } } a = {} }"#,
+            &KeyNames::default(),
+        )
+        .unwrap();
         assert_eq!(overrides["a"], None);
     }
 }

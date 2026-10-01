@@ -770,12 +770,17 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     // The viewer's counter portraits (army, large), file by file.
     let values = log.values.clone();
     if let Some(stops) = log.read("characters.portraits", || {
+        let names = layers.key_names()?;
         installed_content::characters::paths(layers)
             .into_iter()
             .map(|path| {
                 let (_, stop) = {
-                    let read =
-                        installed_content::characters::portraits(&layers.read(&path)?, "army", "large")?;
+                    let read = installed_content::characters::portraits(
+                        &layers.read(&path)?,
+                        &names,
+                        "army",
+                        "large",
+                    )?;
                     if let Some(writer) = &values {
                         writer.write("characters.portraits", &(&path, &read));
                     }
@@ -1242,8 +1247,8 @@ mod tests {
             name: "odd".into(),
             ..Default::default()
         };
-        raid.tooltip.refused = Some("tooltip \"x\" \\ é".into());
-        assert_eq!(debug_refusals(&raid), ["tooltip \"x\" \\ é"]);
+        raid.tooltip.refused = Some("tooltip \"x\" \\ Ã©".into());
+        assert_eq!(debug_refusals(&raid), ["tooltip \"x\" \\ Ã©"]);
         assert!(debug_refusals(&RaidType::default()).is_empty());
         #[derive(Debug)]
         #[allow(dead_code)]

@@ -173,7 +173,13 @@ pub fn parse(files: &[(&str, &[u8])]) -> Constants {
             break;
         }
         // 14013F7D0's reader is constructed in mode 0.
-        let read = native::read(input, native::Mode::KeepMark, (), &mut |(), _| Shape::ByKey);
+        let read = native::read(
+            input,
+            native::Mode::KeepMark,
+            native::Top::File(()),
+            None,
+            &mut |(), _| Shape::ByKey,
+        );
         for item in &read.items {
             let Some(key) = item.key.as_deref() else {
                 continue;

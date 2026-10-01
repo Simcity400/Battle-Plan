@@ -1058,7 +1058,10 @@ pub(crate) mod tests {
     /// name; while an alias file stops short, any unknown three-byte name is.
     #[test]
     fn a_tag_alias_scope_is_refused_by_name() {
-        let aliases = installed_content::tag_aliases::parse(&[("a.txt", b"SPA = { }")]);
+        let aliases = installed_content::tag_aliases::parse(
+            &[("a.txt", b"SPA = { }")],
+            &installed_content::key_names::KeyNames::default(),
+        );
         let scopes = RecordedScopes::read(&frame(), Arc::new(aliases));
         let sov = Context::country(1);
         assert_eq!(

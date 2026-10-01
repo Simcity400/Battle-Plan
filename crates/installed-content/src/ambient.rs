@@ -10,6 +10,7 @@
 //! Type defaults and source-order placement routing follow 141633FE0 and
 //! 141634490. Entity admission and presentation lifetime belong to the viewer.
 
+use crate::key_names::KeyNames;
 use std::io;
 
 use crate::{
@@ -77,7 +78,7 @@ impl Default for AmbientObjectType {
 
 /// Replays CGraphicalMap's ambient reader (140B479B0), type (141634490)
 /// and object (141634350); all three use CPersistent::Read.
-pub fn parse(input: &[u8]) -> io::Result<Vec<AmbientObjectType>> {
+pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<AmbientObjectType>> {
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -91,10 +92,11 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<AmbientObjectType>> {
             "ambient objects: a leading byte-order mark (the loader's lexer mode is not traced)",
         ));
     }
-    let document = native::read_persistent(
+    let document = native::read(
         input,
         native::Mode::KeepMark,
-        Node::File,
+        native::Top::Persistent(Node::File),
+        Some(names),
         &mut |node, field| match (node, field.keyword().as_deref()) {
             (Node::File, Some(b"type")) => Shape::Object(Node::Type),
             (Node::Type, Some(b"object")) => Shape::Object(Node::Object),
@@ -209,7 +211,8 @@ fn triple(value: &Value) -> io::Result<[f32; 3]> {
 /// Reads the map's ambient objects from the resolved layers.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Vec<AmbientObjectType>> {
     let path = crate::terrain::read_default_map(layers)?.file("ambient_object")?;
-    parse(&layers.read(&path)?).map_err(|error| invalid(format!("{path}: {error}")))
+    parse(&layers.read(&path)?, &*layers.key_names()?)
+        .map_err(|error| invalid(format!("{path}: {error}")))
 }
 
 #[cfg(test)]
@@ -252,7 +255,7 @@ type={
 
     #[test]
     fn the_frame_blocks_read_with_their_scale_and_position() {
-        let types = parse(FRAME).unwrap();
+        let types = parse(FRAME, &KeyNames::default()).unwrap();
         assert_eq!(types.len(), 2);
         assert_eq!(types[0].entity, "frame_border_entity");
         assert_eq!(types[0].scale, 100.0);
@@ -267,7 +270,11 @@ type={
 
     #[test]
     fn a_block_without_scale_or_flags_takes_the_defaults() {
-        let types = parse(b"type={ type=\"a\" object={ position={ 1 2 3 } } }").unwrap();
+        let types = parse(
+            b"type={ type=\"a\" object={ position={ 1 2 3 } } }",
+            &KeyNames::default(),
+        )
+        .unwrap();
         assert_eq!(types[0].scale, 1.0);
         assert!(!types[0].always_visible && types[0].use_animation);
         assert_eq!(types[0].duration, 0.);
@@ -280,6 +287,7 @@ type={
     fn several_objects_of_one_type_are_all_kept() {
         let types = parse(
             b"type={ type=\"a\" object={ position={ 1 2 3 } } object={ position={ 4 5 6 } } }",
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(types[0].objects.len(), 2);
@@ -291,6 +299,7 @@ type={
         let types = parse(
             br#"@x=1 TYPE={type=a object={position={@x 2}} object={position={x=1 2 3}}
             object={position={1 2 3 {ignored={}} 9} name=kept} object={}}"#,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(types[0].objects[0].position, [1.0, 2.0, 0.0]);
@@ -306,11 +315,12 @@ type={
                 position={1 2 3 @open ignored=1}
                 name=wrong
             } name=right}}"#,
+            &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(types[0].objects[0].name, "right");
         assert!(
-            parse(b"type={object={}}")
+            parse(b"type={object={}}", &KeyNames::default())
                 .unwrap_err()
                 .to_string()
                 .contains("entity")
@@ -326,6 +336,7 @@ type={
             always_visible=no scale=2 use_animation=no time_duration=3 max_visible=0x10
             dlc_allowed={has_dlc="synthetic"}
         }"#,
+            &KeyNames::default(),
         )
         .unwrap();
         let kind = &types[0];
@@ -342,14 +353,15 @@ type={
 
     #[test]
     fn vectors_keep_fixed5_truncation_and_float_conversion_order() {
-        let types = parse(b"type={type=a object={position={1.234567 -0.123456 3000.12345} rotation={0 30.000009 0}}}").unwrap();
+        let types = parse(b"type={type=a object={position={1.234567 -0.123456 3000.12345} rotation={0 30.000009 0}}}", &KeyNames::default()).unwrap();
         let object = &types[0].objects[0];
         let raw: [i64; 3] = [123456, -12345, 300012345];
         assert_eq!(object.position, raw.map(|value| value as f32 / 100_000.));
         assert_eq!(object.rotation, [0., 30., 0.]);
         // `@limit` is resolved or stays its text, which `%i` does not scan.
         assert_eq!(
-            parse(b"type={type=a max_visible=@limit}").unwrap()[0].max_visible,
+            parse(b"type={type=a max_visible=@limit}", &KeyNames::default()).unwrap()[0]
+                .max_visible,
             -1
         );
     }
@@ -357,7 +369,7 @@ type={
     #[test]
     fn anything_that_is_not_a_type_block_is_ignored() {
         assert!(
-            parse(b"# a comment\nother={ type=\"a\" }")
+            parse(b"# a comment\nother={ type=\"a\" }", &KeyNames::default())
                 .unwrap()
                 .is_empty()
         );

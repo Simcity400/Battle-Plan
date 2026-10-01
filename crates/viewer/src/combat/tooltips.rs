@@ -829,7 +829,10 @@ mod tests {
     /// The tactic registry read through the real parse
     /// (installed_content::combat_tactics), as the land hovers use it.
     fn tactics(text: &[u8]) -> Tactics {
-        Tactics::from_database(installed_content::combat_tactics::parse(text))
+        Tactics::from_database(installed_content::combat_tactics::parse(
+            text,
+            &installed_content::key_names::KeyNames::default(),
+        ))
     }
 
     fn loc(entries: &[(&str, &str)]) -> Localisation {
@@ -845,15 +848,20 @@ mod tests {
     /// unproven entry names the tactic and why.
     #[test]
     fn recorded_tactics_find_their_registry_effects() {
-        let registry = tactics(
+        // Whether `x` names an ideology group is unknown while an ideology
+        // file stops short.
+        let mut names = installed_content::key_names::KeyNames::default();
+        names.counts.ideologies_gap = Some("common/ideologies/a.txt is unknown from line 1".into());
+        let registry = Tactics::from_database(installed_content::combat_tactics::parse(
             br#"@bonus = 0.25
                 PHASES = { }
                 tactic_a = { ATTACKER = @bonus Combat_Width = 0.1 attacker_movement_speed = 010 }
                 tactic_b = { defender = @missing }
                 tactic_a = { attacker = 0.5 }
                 tactic_c = { defender_org_damage_modifier = 1.5e3 active = yes }
-                tactic_d = { trigger = { x @y = 1 } }"#,
-        );
+                tactic_d = { trigger = { x = { } } }"#,
+            &names,
+        ));
         use super::super::tactics::Effects;
         assert_eq!(
             registry.effects(2, b"tactic_a"),
@@ -884,7 +892,7 @@ mod tests {
         // and no later one is known.
         let unsettled = registry.effects(6, b"tactic_d").unwrap_err();
         assert!(
-            unsettled.starts_with("tactic tactic_d's ID or fields cannot be read as the game reads them: combat_tactics.txt line 7: key `x` has no operator and its reader is handed the previous value `{`"),
+            unsettled.starts_with("tactic tactic_d's ID or fields cannot be read as the game reads them: combat_tactics.txt line 7: field `x`: LoadKey (1405434F0) reads it"),
             "{unsettled}"
         );
         let past = registry.effects(10, b"tactic_a").unwrap_err();

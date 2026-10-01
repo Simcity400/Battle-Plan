@@ -144,7 +144,8 @@ impl Registry {
         let read = native::read(
             bytes,
             native::Mode::KeepMark,
-            Node::File,
+            native::Top::File(Node::File),
+            None,
             &mut |node, field| self.shape(node, field, &mut undecided, &mut refused),
         );
         if let Some(cause) = read.unsettled {

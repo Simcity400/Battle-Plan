@@ -57,117 +57,123 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
     use WeatherNode::*;
     let mut refused = Vec::new();
     // 140F08970 constructs the lexer in mode 0 (1424A63A0).
-    let document = native::read(bytes, native::Mode::KeepMark, File, &mut |node, field| {
-        let key = field.keyword();
-        match (node, key.as_deref()) {
-            (File, Some(b"weather_effects")) => Shape::Object(Effects),
-            (File, Some(b"terrain_modifiers")) => Shape::Object(TerrainKinds),
-            (File, Some(b"settings")) => Shape::Object(Settings),
-            // 1419FBD90 maps an unrecognized kind to slot zero.
-            (TerrainKinds, _) => Shape::Object(TerrainList),
-            (TerrainList, Some(b"terrain")) => Shape::Object(Terrain),
-            (Terrain, _) => Shape::One, // 1419FBB70: no unknown-field skip.
-            (Settings, Some(b"temperature")) => Shape::Object(Temperature),
-            (Settings, Some(b"mud")) => Shape::Object(Mud),
-            (Settings, Some(b"snowing")) => Shape::Object(Snow),
-            (Settings, Some(b"chance_increase")) => Shape::Object(Chance),
-            (Settings, Some(b"duration")) => Shape::Object(Duration),
-            (Settings, Some(b"performance")) => Shape::Object(Performance),
-            (Settings, Some(b"arctic_water")) => Shape::Object(Arctic),
-            (Settings, Some(b"visual_mud_effects")) => Shape::List,
-            (
-                Temperature,
-                Some(
-                    b"temperature_variation"
-                    | b"max_temperature_change"
-                    | b"temperature_neighbor_smoothing"
-                    | b"temperature_change_neighbor_smoothing",
-                ),
-            )
-            | (
-                Mud,
-                Some(
-                    b"water_gain_on_rain_light"
-                    | b"water_gain_on_rain_heavy"
-                    | b"water_gain_max"
-                    | b"water_gain_min"
-                    | b"water_gain_to_cm"
-                    | b"min_temperature",
-                ),
-            )
-            | (
-                Snow,
-                Some(
-                    b"snow_gain_on_snowing"
-                    | b"snow_gain_on_blizzard"
-                    | b"snow_gain_max"
-                    | b"snow_gain_to_cm"
-                    | b"snow_visual_min",
-                ),
-            )
-            | (
-                Performance,
-                Some(
-                    b"provinces_per_update"
-                    | b"regions_per_update"
-                    | b"init_run_passes"
-                    | b"texture_refresh_freq",
-                ),
-            ) => Shape::One,
-            // 140F0AD80 -> 140604600: raw fixed5 list; exactly two values
-            // required or the outer loader aborts. Validated below.
-            (
-                Temperature,
-                Some(
-                    b"weather_extreme_cold"
-                    | b"weather_very_cold"
-                    | b"weather_very_hot"
-                    | b"weather_extreme_hot",
-                ),
-            )
-            | (Mud, Some(b"water_dryout_temperature" | b"water_dryout_multiplier"))
-            | (
-                Snow,
-                Some(
-                    b"snow_melt_temperature"
-                    | b"snow_melt_multiplier"
-                    | b"temperature"
-                    | b"weather_ground_snow_medium"
-                    | b"weather_ground_snow_high",
-                ),
-            )
-            | (Chance, Some(b"mud"))
-            | (
-                Duration,
-                Some(
-                    b"no_phenomenon" | b"rain_light" | b"rain_heavy" | b"snow" | b"blizzard"
-                    | b"sandstorm",
-                ),
-            )
-            | (Arctic, Some(b"arctic_water_temperature" | b"arctic_water_end_temperature")) => {
-                // 140F0AD80 -> 140604600: the lexer's tokens, value slot
-                // (+0xC0) unchanged.
-                Shape::RawList
+    let document = native::read(
+        bytes,
+        native::Mode::KeepMark,
+        native::Top::File(File),
+        None,
+        &mut |node, field| {
+            let key = field.keyword();
+            match (node, key.as_deref()) {
+                (File, Some(b"weather_effects")) => Shape::Object(Effects),
+                (File, Some(b"terrain_modifiers")) => Shape::Object(TerrainKinds),
+                (File, Some(b"settings")) => Shape::Object(Settings),
+                // 1419FBD90 maps an unrecognized kind to slot zero.
+                (TerrainKinds, _) => Shape::Object(TerrainList),
+                (TerrainList, Some(b"terrain")) => Shape::Object(Terrain),
+                (Terrain, _) => Shape::One, // 1419FBB70: no unknown-field skip.
+                (Settings, Some(b"temperature")) => Shape::Object(Temperature),
+                (Settings, Some(b"mud")) => Shape::Object(Mud),
+                (Settings, Some(b"snowing")) => Shape::Object(Snow),
+                (Settings, Some(b"chance_increase")) => Shape::Object(Chance),
+                (Settings, Some(b"duration")) => Shape::Object(Duration),
+                (Settings, Some(b"performance")) => Shape::Object(Performance),
+                (Settings, Some(b"arctic_water")) => Shape::Object(Arctic),
+                (Settings, Some(b"visual_mud_effects")) => Shape::List,
+                (
+                    Temperature,
+                    Some(
+                        b"temperature_variation"
+                        | b"max_temperature_change"
+                        | b"temperature_neighbor_smoothing"
+                        | b"temperature_change_neighbor_smoothing",
+                    ),
+                )
+                | (
+                    Mud,
+                    Some(
+                        b"water_gain_on_rain_light"
+                        | b"water_gain_on_rain_heavy"
+                        | b"water_gain_max"
+                        | b"water_gain_min"
+                        | b"water_gain_to_cm"
+                        | b"min_temperature",
+                    ),
+                )
+                | (
+                    Snow,
+                    Some(
+                        b"snow_gain_on_snowing"
+                        | b"snow_gain_on_blizzard"
+                        | b"snow_gain_max"
+                        | b"snow_gain_to_cm"
+                        | b"snow_visual_min",
+                    ),
+                )
+                | (
+                    Performance,
+                    Some(
+                        b"provinces_per_update"
+                        | b"regions_per_update"
+                        | b"init_run_passes"
+                        | b"texture_refresh_freq",
+                    ),
+                ) => Shape::One,
+                // 140F0AD80 -> 140604600: raw fixed5 list; exactly two values
+                // required or the outer loader aborts. Validated below.
+                (
+                    Temperature,
+                    Some(
+                        b"weather_extreme_cold"
+                        | b"weather_very_cold"
+                        | b"weather_very_hot"
+                        | b"weather_extreme_hot",
+                    ),
+                )
+                | (Mud, Some(b"water_dryout_temperature" | b"water_dryout_multiplier"))
+                | (
+                    Snow,
+                    Some(
+                        b"snow_melt_temperature"
+                        | b"snow_melt_multiplier"
+                        | b"temperature"
+                        | b"weather_ground_snow_medium"
+                        | b"weather_ground_snow_high",
+                    ),
+                )
+                | (Chance, Some(b"mud"))
+                | (
+                    Duration,
+                    Some(
+                        b"no_phenomenon" | b"rain_light" | b"rain_heavy" | b"snow" | b"blizzard"
+                        | b"sandstorm",
+                    ),
+                )
+                | (Arctic, Some(b"arctic_water_temperature" | b"arctic_water_end_temperature")) => {
+                    // 140F0AD80 -> 140604600: the lexer's tokens, value slot
+                    // (+0xC0) unchanged.
+                    Shape::RawList
+                }
+                // SWeatherEffectsReader 140F0B0D0, SWeatherEffectListReader
+                // 140F0B050, SWeatherEffectEntityReader 140F0AEC0.
+                (
+                    Effects,
+                    Some(b"rain_light" | b"rain_heavy" | b"snow" | b"blizzard" | b"sandstorm"),
+                ) => Shape::Object(List),
+                (List, Some(b"weather_effect")) => Shape::Object(Pair),
+                (Pair, Some(b"entity" | b"fading_entity" | b"small")) => Shape::One,
+                (Effects | List | Pair, _) => Shape::Skip,
+                _ => {
+                    refused.push(format!(
+                        "weather loader field {} at line {}",
+                        String::from_utf8_lossy(&field.key.text),
+                        field.key.line
+                    ));
+                    Shape::Skip
+                }
             }
-            // SWeatherEffectsReader 140F0B0D0, SWeatherEffectListReader
-            // 140F0B050, SWeatherEffectEntityReader 140F0AEC0.
-            (
-                Effects,
-                Some(b"rain_light" | b"rain_heavy" | b"snow" | b"blizzard" | b"sandstorm"),
-            ) => Shape::Object(List),
-            (List, Some(b"weather_effect")) => Shape::Object(Pair),
-            (Pair, Some(b"entity" | b"fading_entity" | b"small")) => Shape::One,
-            (Effects | List | Pair, _) => Shape::Skip,
-            _ => {
-                refused.push(format!(
-                    "weather loader field {} at line {}",
-                    String::from_utf8_lossy(&field.key.text),
-                    field.key.line
-                ));
-                Shape::Skip
-            }
-        }
-    });
+        },
+    );
     if let Some(cause) = refused.first() {
         return Err(invalid(format!("unsupported {cause}")));
     }

@@ -1,6 +1,7 @@
 //! Native database dispatch; projection lives in the parent module.
 use crate::{
     fields::invalid,
+    key_names::KeyNames,
     parser::{
         Document,
         native::{self, Shape},
@@ -104,10 +105,12 @@ impl Node {
 }
 
 /// One file's dispatch. `equipment` is the registry 14157E530 looks a key
-/// up in; each place the game reports, and each misread, goes to `notes`.
+/// up in; the triggers are read against `names`; each place the game
+/// reports, and each misread, goes to `notes`.
 pub(super) fn document(
     bytes: &[u8],
     equipment: super::Equipment<'_>,
+    names: &KeyNames,
     notes: &mut Vec<String>,
 ) -> io::Result<Document> {
     use Node::*;
@@ -120,7 +123,8 @@ pub(super) fn document(
     let read = native::read(
         bytes,
         native::Mode::KeepMark,
-        File,
+        native::Top::File(File),
+        Some(names),
         &mut |node, field| match (node, field.keyword().as_deref()) {
             // 140A88270 and 140A88840 need an opening brace; otherwise they
             // report the token and return, entering nothing.

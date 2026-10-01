@@ -223,7 +223,13 @@ mod tests {
 
     fn tooltip(body: &[u8]) -> Definition {
         let text = [&b"types = { t = { "[..], body, b" } }"].concat();
-        let doc = super::super::reader::document(&text, &|_| Some(false), &mut Vec::new()).unwrap();
+        let doc = super::super::reader::document(
+            &text,
+            &|_| Some(false),
+            &crate::key_names::KeyNames::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
         let raid = doc.items[0].value.items().unwrap()[0]
             .value
             .items()

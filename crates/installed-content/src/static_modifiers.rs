@@ -130,7 +130,8 @@ fn read_file(bytes: &[u8]) -> File {
     let read = native::read(
         bytes,
         native::Mode::KeepMark,
-        Node::Top,
+        native::Top::File(Node::Top),
+        None,
         &mut |node, field| {
             let shape = match node {
                 // Every key is a CStaticModifier read by CPersistent::Read,

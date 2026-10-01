@@ -1,5 +1,6 @@
 //! Province geometry and the subject colour rule from verified game content.
 
+use crate::key_names::KeyNames;
 use std::{
     collections::{BTreeMap, HashMap},
     io,
@@ -305,7 +306,11 @@ pub fn parse_color(value: &Value) -> io::Result<[u8; 3]> {
     }
 }
 
-fn apply_autonomy_colors(colors: &mut CountryColors, input: &[u8]) -> io::Result<()> {
+fn apply_autonomy_colors(
+    colors: &mut CountryColors,
+    input: &[u8],
+    names: &KeyNames,
+) -> io::Result<()> {
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -319,10 +324,11 @@ fn apply_autonomy_colors(colors: &mut CountryColors, input: &[u8]) -> io::Result
     // vtable 1427CD350 +0x18 is CPersistent::Read, including at file level.
     // CAutonomousState::ReadMember 14066C200 dispatches all fields below.
     // 14066B1B0 constructs each file's lexer in mode 0 (1424A6370).
-    let read = native::read_persistent(
+    let read = native::read(
         input,
         native::Mode::KeepMark,
-        Node::File,
+        native::Top::Persistent(Node::File),
+        Some(names),
         &mut |node, field| match node {
             Node::File
                 if field.keyword_is("autonomy_state") || field.keyword_is("autonomous_state") =>
@@ -407,11 +413,12 @@ fn apply_autonomy_colors(colors: &mut CountryColors, input: &[u8]) -> io::Result
 
 pub fn read_country_colors(layers: &ResolvedLayers) -> io::Result<CountryColors> {
     let mut colors = CountryColors::default();
+    let names = layers.key_names()?;
     for path in layers
         .paths()
         .filter(|path| path.starts_with("common/autonomous_states/") && path.ends_with(".txt"))
     {
-        apply_autonomy_colors(&mut colors, &layers.read(path)?)?;
+        apply_autonomy_colors(&mut colors, &layers.read(path)?, &names)?;
     }
     Ok(colors)
 }
@@ -631,13 +638,14 @@ mod tests {
     #[test]
     fn the_autonomy_colour_switch_defaults_to_off() {
         let mut colors = CountryColors::default();
-        apply_autonomy_colors(&mut colors, b"autonomy_state={id=puppet} autonomy_state={id=union use_overlord_color=yes} autonomy_state={id=free use_overlord_color=no}").unwrap();
+        apply_autonomy_colors(&mut colors, b"autonomy_state={id=puppet} autonomy_state={id=union use_overlord_color=yes} autonomy_state={id=free use_overlord_color=no}", &KeyNames::default()).unwrap();
         assert!(!colors.use_overlord_color[b"puppet".as_slice()]);
         assert!(colors.use_overlord_color[b"union".as_slice()]);
         assert!(!colors.use_overlord_color[b"free".as_slice()]);
         apply_autonomy_colors(
             &mut colors,
             b"autonomy_state={id=x use_overlord_color=yes use_overlord_color=maybe}",
+            &KeyNames::default(),
         )
         .unwrap();
         assert!(colors.use_overlord_color[b"x".as_slice()]);
@@ -651,7 +659,7 @@ mod tests {
             "autonomy_state"={id=ignored}
             autonomous_state={ID=union unknown={@flag=no} USE_OVERLORD_COLOR=@flag "use_overlord_color"=no}
             } autonomy_state={id=after}
-        "#).unwrap();
+        "#, &KeyNames::default()).unwrap();
         assert_eq!(
             colors.use_overlord_color,
             BTreeMap::from([(b"union".to_vec(), true)])
@@ -659,6 +667,7 @@ mod tests {
         let error = apply_autonomy_colors(
             &mut colors,
             b"autonomy_state={id=x modifier={unresolved={x=1}}}",
+            &KeyNames::default(),
         )
         .unwrap_err();
         assert!(error.to_string().contains("unresolved"));
