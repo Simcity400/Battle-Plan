@@ -2,6 +2,7 @@
 use eframe::wgpu;
 use installed_content::{
     ResolvedLayers,
+    image::native::Decode,
     pdxshader::{DepthStencilState, RasterizerState, program::Stage},
 };
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
@@ -71,14 +72,19 @@ fn refuse(reason: impl Into<String>) -> io::Error {
     ))
 }
 
-pub fn load(layers: &ResolvedLayers, map: [u32; 2], name: &str) -> io::Result<Arc<Effect>> {
+pub fn load(
+    layers: &ResolvedLayers,
+    map: [u32; 2],
+    decode: Decode,
+    name: &str,
+) -> io::Result<Arc<Effect>> {
     let fail = |reason| io::Error::other(format!("Map shader {name}: 1 refused pass: {reason}"));
     let path = super::shader_sources::passes(layers)?
         .into_iter()
         .find(|(pass, _)| pass == name)
         .ok_or_else(|| fail(format!("maparrows.txt has no {name} effect")))?
         .1;
-    let (mut library, defines) = super::shader_sources::library(layers, map);
+    let (mut library, defines) = super::shader_sources::library(layers, map, decode);
     library.load(path.as_bytes(), &defines).map_err(fail)
 }
 

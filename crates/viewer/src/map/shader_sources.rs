@@ -4,14 +4,14 @@
 
 use std::{cell::RefCell, collections::BTreeMap, collections::BTreeSet, io, sync::Arc};
 
-use installed_content::{ResolvedLayers, pdxshader};
+use installed_content::{ResolvedLayers, image::native::Decode, pdxshader};
 
-/// The renderer's global defines for the map passes (`derive_map_shader_constants@140A4DDE0`).
-/// The map passes are ported for `force_pow2_textures = no` only (their textures unpadded:
-/// `textures::SNOW_MUD_BLOCK`, `FOW_BLOCK`), so they take that branch of the power-of-two
-/// scales; the GUI takes the client's own setting (`GuiResources::new`).
-pub fn globals(map: [u32; 2]) -> Vec<String> {
-    shader_pipeline::library::globals(map, installed_content::image::native::Decode::default())
+/// The renderer's global defines for the map passes (`derive_map_shader_constants@140A4DDE0`),
+/// under the client's own `force_pow2_textures` (`decode`, as `get_force_power_of_two@1423F07B0`
+/// answers both it and `DecodeTextureImage@1423F9A50`): with it set, the passes' file textures
+/// are padded ([`super::textures::load_file`]) and their generated ones are not, as in the game.
+pub fn globals(map: [u32; 2], decode: Decode) -> Vec<String> {
+    shader_pipeline::library::globals(map, decode)
 }
 
 /// 140A4DDE0 populates the renderer's global defines; 1423F4EC0 prepends them
@@ -19,8 +19,9 @@ pub fn globals(map: [u32; 2]) -> Vec<String> {
 pub fn library(
     layers: &ResolvedLayers,
     map: [u32; 2],
+    decode: Decode,
 ) -> (shader_pipeline::library::Library, Vec<String>) {
-    let defines = globals(map);
+    let defines = globals(map, decode);
     (
         shader_pipeline::library::Library::new(Arc::new(layers.clone())),
         defines,
@@ -250,6 +251,55 @@ pub fn check(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> io::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The map passes compile under the client's own `force_pow2_textures` branch of
+    /// `140A4DDE0`, as the GUI does.
+    #[test]
+    fn the_map_globals_follow_the_clients_force_pow2_textures() {
+        let on = Decode {
+            force_pow2_textures: true,
+        };
+        let has = |defines: &[String], define: &str| defines.iter().any(|d| d == define);
+        let off = globals([5632, 2048], Decode::default());
+        assert!(has(&off, "MAP_POW2_X 1.000") && has(&off, "FOW_POW2_X 1.000"));
+        let (_, defines) = library(&ResolvedLayers::default(), [5632, 2048], on);
+        assert!(has(&defines, "MAP_POW2_X 0.688") && has(&defines, "FOW_POW2_X 0.917"));
+        assert_eq!(defines, shader_pipeline::library::globals([5632, 2048], on));
+    }
+
+    /// The game point samples its RGBA32F point-light table (`CPdxMap::vf2@141268590` creates it
+    /// as format 0x19, `R32G32B32A32_FLOAT`): every installed map pass that declares
+    /// `LightDataMap` declares it point, and meshes and particles take the physical PS9 sampler
+    /// `140B40890` creates point (`mesh_shader::map_samplers`). So the map binds it without
+    /// `FLOAT32_FILTERABLE`.
+    #[test]
+    #[ignore = "reads the installed game's shaders; set BATTLE_PLAN_GAME_DIR"]
+    fn installed_map_passes_point_sample_the_light_table() {
+        use installed_content::pdxshader::program::{self, Filter, Stage};
+        let root = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
+        let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
+        let point = |sampler: &program::Sampler| {
+            [sampler.mag, sampler.min, sampler.mip]
+                .iter()
+                .all(|filter| *filter == Filter::Point)
+        };
+        let mut declared = 0;
+        for (pass, file) in passes(&layers).unwrap() {
+            let source = program::read(&layers, file.as_bytes()).unwrap();
+            for technique in &source.techniques {
+                let state = shader_pipeline::gpu::State::authored(&source, technique).unwrap();
+                for sampler in state.samplers.values() {
+                    if sampler.name == "LightDataMap" {
+                        declared += 1;
+                        assert!(point(sampler), "{pass} {}: {sampler:?}", technique.name);
+                    }
+                }
+            }
+        }
+        assert!(declared > 0);
+        let physical = super::super::mesh_shader::map_samplers();
+        assert!(point(&physical[&shader_pipeline::binding(9, Stage::Pixel)]));
+    }
 
     fn audit_with(
         passes: &[(&str, &str)],

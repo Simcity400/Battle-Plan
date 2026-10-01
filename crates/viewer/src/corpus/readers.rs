@@ -218,7 +218,7 @@ fn gui_refusal(log: &mut Log, reader: &str, file: &str, refusal: &Refusal) {
 }
 
 /// Every reader over `content`; `decode` is the reading client's texture
-/// decode state, which the font pages load under.
+/// decode state, which the font pages and map texture files load under.
 pub fn run(
     content: installed_content::GatheredContent,
     decode: installed_content::image::native::Decode,
@@ -236,10 +236,17 @@ pub fn run(
     let layers: &ResolvedLayers = &resolved.layers;
     let defines = log.read("defines", || installed_content::defines::read(layers));
     let sprites = interface(&mut log, layers, &language, decode);
-    let map = map(&mut log, layers, defines.as_ref());
+    let map = map(&mut log, layers, defines.as_ref(), decode);
     politics(&mut log, layers, defines.as_ref());
-    units(&mut log, layers, defines.as_ref(), &map);
-    viewer_map_assets(&mut log, layers, defines.as_ref(), &map, sprites.as_ref());
+    units(&mut log, layers, defines.as_ref(), &map, decode);
+    viewer_map_assets(
+        &mut log,
+        layers,
+        defines.as_ref(),
+        &map,
+        sprites.as_ref(),
+        decode,
+    );
     triggers(&mut log, layers, defines.as_ref());
     let counts = match (&map.buildings, &map.ideologies, &map.resources) {
         (Some(buildings), Some((ideologies, _)), Some((resources, _))) => {
@@ -425,6 +432,7 @@ fn interface(
                         )?;
                         crate::map::weather_effects::read_emitters(
                             layers,
+                            decode,
                             root,
                             &mut Vec::new(),
                             &mut Default::default(),
@@ -468,7 +476,12 @@ struct Map {
 
 /// The map and what the viewer's document and the trigger environment read
 /// with it.
-fn map(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) -> Map {
+fn map(
+    log: &mut Log,
+    layers: &ResolvedLayers,
+    defines: Option<&Defines>,
+    decode: installed_content::image::native::Decode,
+) -> Map {
     let map = log.read("map", || installed_content::map::load(layers));
     log.read("map.country_colors", || {
         installed_content::map::read_country_colors(layers)
@@ -478,7 +491,7 @@ fn map(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) -> Map
         Some((definitions, default_map)) => {
             log.notes("terrain", Kind::Misread, &definitions.skipped);
             log.read("terrain.map_images", || {
-                installed_content::terrain::read_map_images(layers, default_map)
+                installed_content::terrain::read_map_images(layers, default_map, decode)
             });
         }
         None => log.not_run(&["terrain.map_images"], "terrain"),
@@ -746,7 +759,13 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
 
 /// Equipment, division names, unit leaders and sub-units, and the train
 /// database.
-fn units(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>, map: &Map) {
+fn units(
+    log: &mut Log,
+    layers: &ResolvedLayers,
+    defines: Option<&Defines>,
+    map: &Map,
+    decode: installed_content::image::native::Decode,
+) {
     if let Some(equipment) = log.read("equipment", || installed_content::equipment::Database::load(layers))
     {
         log.notes("equipment", Kind::Misread, &equipment.misreads);
@@ -824,6 +843,7 @@ fn units(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>, map:
             let assets = log.read("viewer.unit_models", || {
                 crate::map::unit_models::UnitModelAssets::try_load(
                     layers,
+                    decode,
                     defines,
                     data,
                     default_map,
@@ -1004,6 +1024,7 @@ fn viewer_map_assets(
     defines: Option<&Defines>,
     map: &Map,
     sprites: Option<&installed_content::gfx::SpriteSet>,
+    decode: installed_content::image::native::Decode,
 ) {
     let Some(defines) = defines else {
         log.not_run(
@@ -1021,17 +1042,17 @@ fn viewer_map_assets(
     };
     let mut warnings = Vec::new();
     log.read("viewer.trains", || {
-        crate::map::trains::TrainAssets::load(layers, defines, &mut warnings)
+        crate::map::trains::TrainAssets::load(layers, decode, defines, &mut warnings)
     });
     log.notes("viewer.trains", Kind::Warning, &warnings);
     let mut warnings = Vec::new();
     log.read("viewer.bridges", || {
-        crate::map::railways::Bridges::load(layers, defines, &mut warnings)
+        crate::map::railways::Bridges::load(layers, decode, defines, &mut warnings)
     });
     log.notes("viewer.bridges", Kind::Warning, &warnings);
     let mut warnings = Vec::new();
     if let Some(orders) = log.read("viewer.orders", || {
-        crate::map::orders::OrderAssets::load(layers, defines, &mut warnings)
+        crate::map::orders::OrderAssets::load(layers, decode, defines, &mut warnings)
     }) && let Err(why) = &orders.raid_defines
     {
         log.note("viewer.orders", Kind::Refused, why.clone());
@@ -1050,6 +1071,7 @@ fn viewer_map_assets(
             if let Some(aircraft) = log.read("viewer.aircraft", || {
                 crate::map::aircraft::AircraftAssets::load(
                     layers,
+                    decode,
                     data,
                     defines,
                     regions,
@@ -1071,7 +1093,13 @@ fn viewer_map_assets(
     }
     let mut warnings = Vec::new();
     log.read("viewer.map_buildings", || {
-        crate::map::map_buildings::MapBuildingAssets::load(layers, data, defines, &mut warnings)
+        crate::map::map_buildings::MapBuildingAssets::load(
+            layers,
+            decode,
+            data,
+            defines,
+            &mut warnings,
+        )
     });
     log.notes("viewer.map_buildings", Kind::Warning, &warnings);
     let Some(sprites) = sprites else {

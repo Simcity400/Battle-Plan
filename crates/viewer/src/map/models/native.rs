@@ -570,10 +570,10 @@ impl ModelPass {
                 .ok_or_else(|| invalid("mesh content stack unavailable"))?;
             *native = Some(Renderer {
                 library: Library::new(layers.clone()).with_globals(
-                    super::super::shader_sources::globals([
-                        frame.camera.map.width,
-                        frame.camera.map.height,
-                    ]),
+                    super::super::shader_sources::globals(
+                        [frame.camera.map.width, frame.camera.map.height],
+                        self.decode,
+                    ),
                 ),
                 cache: Default::default(),
                 parts: BTreeMap::new(),

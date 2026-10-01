@@ -22,7 +22,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = tree_caster::load(layers, map)?;
+    let effect = tree_caster::load(layers, map, crate::DECODE)?;
     let common = include_str!("world_port.wgsl");
     let kernel = include_str!("tree_receiver_port.wgsl")
         .replace("@location(8) shadow_projection: vec4<f32>,", "@location(8) shadow_projection: vec4<f32>,\n    @location(9) screen: vec4<f32>,")

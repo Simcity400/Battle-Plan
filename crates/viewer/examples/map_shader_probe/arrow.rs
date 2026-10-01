@@ -22,7 +22,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = compiled::load(layers, map, "map arrows")?;
+    let effect = compiled::load(layers, map, crate::DECODE, "map arrows")?;
     let mut frame = [0_f32; 104];
     for base in [0, 16] {
         for i in [0, 5, 10, 15] {

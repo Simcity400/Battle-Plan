@@ -88,7 +88,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = compiled::load(layers, map)?;
+    let effect = compiled::load(layers, map, crate::DECODE)?;
     let native = compiled::Blur::new(device, &effect)?;
     let port = include_str!("shadow_port.wgsl");
     let begin = port.find("@vertex").expect("oracle vertex");

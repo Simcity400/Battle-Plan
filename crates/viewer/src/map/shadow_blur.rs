@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, io, sync::Arc};
 
 use super::shader_sources;
 use eframe::wgpu::{self, util::DeviceExt};
-use installed_content::{ResolvedLayers, pdxshader::program::Stage};
+use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
 
 // 1422C64C0 -> 1423FFAB0: the receiver owns D24_UNORM_S8_UINT.
@@ -18,9 +18,13 @@ fn refuse(reason: impl Into<String>) -> io::Error {
     ))
 }
 
-pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
+pub(super) fn load(
+    layers: &ResolvedLayers,
+    map: [u32; 2],
+    decode: Decode,
+) -> io::Result<Arc<Effect>> {
     // 1422C4730 supplies an empty caller-define array for both techniques.
-    let (mut library, defines) = shader_sources::library(layers, map);
+    let (mut library, defines) = shader_sources::library(layers, map, decode);
     library
         .load(b"gfx/FX/shadowblur.shader", &defines)
         .map_err(refuse)

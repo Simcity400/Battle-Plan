@@ -284,8 +284,10 @@ pub fn device_requirements(features: wgpu::Features) -> Vec<String> {
     if !features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
         missing.push(
             "the adapter lacks FLOAT32_FILTERABLE: 16-bit (B5G6R5/B5G5R5A1) GUI textures, which \
-             the game samples as UNORM, need f32 filtering to draw exactly and are not drawn on \
-             this device (a viewer hardware requirement, not missing replay data)"
+             the game samples as UNORM, need f32 filtering to draw exactly, the map's shadow \
+             receivers filter its R32Float shadow buffer, and compiled effects whose samplers \
+             filter another float32 texture need it too; none of them is drawn on this device \
+             (a viewer hardware requirement, not missing replay data)"
                 .to_owned(),
         );
     }
@@ -346,7 +348,9 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     crate::map::atlas_pages::record_device_limit(limits.max_texture_dimension_2d);
     // FLOAT32_FILTERABLE when the adapter offers it: a 16-bit GUI texture goes up as exact
     // `f32` channels, which the filtering samplers take only with it (`map::textures`); without
-    // it such a texture is not drawn, never quantized. Clamp-to-border and dual-source blending
+    // it such a texture is not drawn, never quantized. The map's shadow receivers filter the
+    // R32Float shadow buffer (`map::shadow`); the RGBA32F point-light table needs no filtering,
+    // as the game point samples it (`map::pointlights`). Clamp-to-border and dual-source blending
     // when offered: compiled effects that author them are refused without them. Each missing
     // one is a viewer hardware requirement, named here once at start-up and in the diagnostics
     // ([`device_requirements`]).
@@ -360,7 +364,6 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
         | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
         | wgpu::Features::DUAL_SOURCE_BLENDING
-        // Compiled map shaders sample the native RGBA32F point-light texture.
         | wgpu::Features::FLOAT32_FILTERABLE;
     // Profiling only: per-pass GPU timestamps (`map::gpu_passes`).
     if crate::map::gpu_passes::requested() {
@@ -971,7 +974,9 @@ mod tests {
         for part in [
             "FLOAT32_FILTERABLE",
             "B5G6R5/B5G5R5A1",
-            "not drawn",
+            "shadow receivers",
+            "float32 texture",
+            "none of them is drawn",
             "hardware requirement",
         ] {
             assert!(named[0].contains(part), "{part}: {}", named[0]);

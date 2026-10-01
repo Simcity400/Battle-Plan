@@ -21,7 +21,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let (mut library, defines) = shader_sources::library(layers, map);
+    let (mut library, defines) = shader_sources::library(layers, map, crate::DECODE);
     let size = [64, 32];
     let mut rows = Vec::new();
     for uv1 in [false, true] {

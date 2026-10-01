@@ -1,5 +1,5 @@
 //! Native material admission, before a tree selects record zero of its LOD.
-use installed_content::{ResolvedLayers, mesh};
+use installed_content::{ResolvedLayers, image::native::Decode, mesh};
 use shader_pipeline::library::Library;
 use std::{io, sync::Arc};
 
@@ -8,10 +8,10 @@ pub struct Materials {
 }
 
 impl Materials {
-    pub fn new(layers: &ResolvedLayers, map: [u32; 2]) -> Self {
+    pub fn new(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> Self {
         Self {
             library: Library::new(Arc::new(layers.clone()))
-                .with_globals(super::shader_sources::globals(map)),
+                .with_globals(super::shader_sources::globals(map, decode)),
         }
     }
 

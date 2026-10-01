@@ -23,7 +23,7 @@ struct Input {
     hour: i32,
     language: String,
     camera_tilt: f32,
-    /// The client's `settings.txt` `force_pow2_textures`, which the font pages decode under.
+    /// The client's `settings.txt` `force_pow2_textures`, which the map's texture files load under.
     #[serde(default)]
     force_pow2_textures: bool,
     #[serde(default = "default_steps")]
@@ -86,6 +86,9 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         height: province_image.height,
     };
     let defines = installed_content::defines::read(layers)?;
+    let decode = installed_content::image::native::Decode {
+        force_pow2_textures: input.force_pow2_textures,
+    };
     let assets = textures::MapAssets::load(
         layers,
         &defines,
@@ -94,6 +97,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         &default_map,
         warnings,
         0,
+        decode,
     )?;
     eprintln!("Content scene: interface assets");
     let map_data = installed_content::map::load(layers)?;
@@ -106,9 +110,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         &input.language,
         [map_data.width, map_data.height],
         [1280, 720],
-        installed_content::image::native::Decode {
-            force_pow2_textures: input.force_pow2_textures,
-        },
+        decode,
     )?;
     let camera_defines = camera::MapDefines::load(&defines, input.camera_tilt)?;
     let heights = HeightField {
@@ -125,11 +127,16 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         &heights,
     )?;
     eprintln!("Content scene: tree assets");
-    let tree_assets =
-        trees::TreeAssets::load(layers, &tree_field.palettes, &assets.rivers, warnings)?;
+    let tree_assets = trees::TreeAssets::load(
+        layers,
+        decode,
+        &tree_field.palettes,
+        &assets.rivers,
+        warnings,
+    )?;
     eprintln!("Content scene: ambient assets");
-    let frame_assets = mapframe::FrameAssets::load(layers, warnings)?;
-    let river_assets = rivers::RiverAssets::load(layers, [map.width, map.height], 0)?;
+    let frame_assets = mapframe::FrameAssets::load(layers, decode, warnings)?;
+    let river_assets = rivers::RiverAssets::load(layers, [map.width, map.height], 0, decode)?;
     let (river_mesh, _) = rivers::build(
         &rivers::RiverImage {
             width: map.width,
@@ -139,7 +146,8 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         &heights,
     )?;
     eprintln!("Content scene: particle assets");
-    let weather = super::weather_effects::Assets::load(layers, &defines, [map.width, map.height])?;
+    let weather =
+        super::weather_effects::Assets::load(layers, &defines, [map.width, map.height], decode)?;
     if !weather.unresolved.is_empty() {
         warnings.push(format!(
             "{} unresolved particle declarations: {}",

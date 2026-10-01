@@ -14,6 +14,12 @@ use serde_json::json;
 #[path = "../src/map/shader_sources.rs"]
 mod shader_sources;
 
+/// The client setting the retained offline oracles were rendered under: `force_pow2_textures =
+/// no`, whose branch of 140A4DDE0 makes the four power-of-two ratios 1.
+const DECODE: installed_content::image::native::Decode = installed_content::image::native::Decode {
+    force_pow2_textures: false,
+};
+
 #[allow(dead_code)]
 #[path = "../src/map/shader_scene.rs"]
 mod shader_scene;
@@ -119,10 +125,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let map = terrain::read_default_map(&layers)?;
     let provinces = installed_content::image::bmp::decode_rgb(&layers.read(&map.file("provinces")?)?)?;
-    // 140A4DDE0 derives the dimensions from the province raster. The DX11 NPOT
-    // branch supplies 1 for the four ratios; no vanilla map dimensions are embedded.
+    // 140A4DDE0 derives the dimensions from the province raster; no vanilla map dimensions
+    // are embedded.
     let map_size = [provinces.width, provinces.height];
-    let defines = shader_sources::globals(map_size);
+    let defines = shader_sources::globals(map_size, DECODE);
     drop(provinces);
     let cache = shader_pipeline::cache::Cache::default();
     let gpu = bindings::Probe::new().map_err(io::Error::other)?;

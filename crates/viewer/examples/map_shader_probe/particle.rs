@@ -24,7 +24,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = compiled::load(layers, map)?;
+    let effect = compiled::load(layers, map, crate::DECODE)?;
     let atlas = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("particle analytic atlas"),
         size: extent([64, 64]),

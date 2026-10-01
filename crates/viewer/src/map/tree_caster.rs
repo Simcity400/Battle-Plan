@@ -2,6 +2,7 @@
 use eframe::wgpu;
 use installed_content::{
     ResolvedLayers,
+    image::native::Decode,
     pdxshader::{DepthStencilState, RasterizerState, program::Stage},
 };
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
@@ -14,8 +15,8 @@ fn refuse(reason: impl Into<String>) -> io::Error {
     ))
 }
 
-pub fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
-    let (mut library, defines) = super::shader_sources::library(layers, map);
+pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Arc<Effect>> {
+    let (mut library, defines) = super::shader_sources::library(layers, map, decode);
     library
         .load(b"gfx/FX/tree.shader", &defines)
         .map_err(refuse)

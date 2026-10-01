@@ -4,6 +4,7 @@ use super::{
     entity_animation,
     models::{ModelField, ModelInstance, ModelLibrary},
 };
+use installed_content::image::native::Decode;
 use installed_content::{ResolvedLayers, ambient, image::IndexedImage};
 use std::{collections::BTreeSet, io};
 
@@ -46,7 +47,11 @@ pub struct Presentation {
 }
 
 impl FrameAssets {
-    pub fn load(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> io::Result<Self> {
+    pub fn load(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        warnings: &mut Vec<String>,
+    ) -> io::Result<Self> {
         let types = ambient::read(layers)?;
         let dlcs = layers.dlc_names()?;
         let roster = layers.descriptor_roster()?;
@@ -135,7 +140,8 @@ impl FrameAssets {
                 }
             }
         }
-        let mut library = ModelLibrary::load(layers, &roster.descriptors, &mesh_names, warnings)?;
+        let mut library =
+            ModelLibrary::load(layers, decode, &roster.descriptors, &mesh_names, warnings)?;
         for name in event_names {
             library.add_event_entity(layers, &roster.descriptors, &name)?;
         }

@@ -23,7 +23,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = compiled::load(layers, map)?;
+    let effect = compiled::load(layers, map, crate::DECODE)?;
     let atlas = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("name analytic atlas"),
         size: extent([1, 1]),
@@ -272,7 +272,7 @@ fn mesh_writers(
     frame: &[f32; 104],
 ) -> io::Result<Vec<MeshWriter>> {
     let device = arena.device();
-    let (mut library, defines) = shader_sources::library(layers, map);
+    let (mut library, defines) = shader_sources::library(layers, map, crate::DECODE);
     let effect = library
         .load(b"gfx/FX/pdxmesh.lua", &defines)
         .map_err(io::Error::other)?;

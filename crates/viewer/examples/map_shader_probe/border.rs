@@ -18,7 +18,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = compiled::load(layers, map)?;
+    let effect = compiled::load(layers, map, crate::DECODE)?;
     let format = wgpu::TextureFormat::Rgba16Float;
     let depth_format = wgpu::TextureFormat::Depth24PlusStencil8;
     let native = compiled::Border::new(device, &effect, 1, format, depth_format)?;

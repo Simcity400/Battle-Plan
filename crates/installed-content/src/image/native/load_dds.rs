@@ -18,6 +18,12 @@
 //! chain of levels halves both sides from there, stops after a level with a side of 1, at the
 //! header's mip count (at least one level), or at the first level the file does not hold ("Expected
 //! more data in the texture mipmaps than was actually present"), keeping the levels before it.
+//! A cube map (`DDSCAPS2_CUBEMAP`) takes the six-face branch: every face, in DDS order, holds
+//! that chain in turn, and the loader reads them without checking the file's length.
+//!
+//! The owner permits decoding DX10 BC7 where the game cannot load it, but BC7 needs its authored
+//! extent and mip chain, not this native BC1-3 chain. Until that reader is integrated, BC7 is
+//! refused by name rather than uploaded with incorrect dimensions or mip payloads.
 
 use super::{Failure, Zero, oversized};
 use crate::image::dds::{MipLevel, Texture, TextureFormat};
@@ -113,6 +119,16 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
     } else {
         HEADER
     };
+    // The BC7 owner exception needs the authored chain: native block rounding misreads, for
+    // example, TFR's 550x469 drone_normal.dds after mip 2 and truncates the chain. Its decoder
+    // remains separate work, so do not silently apply BC1-3 layout to BC7.
+    if start == HEADER + 20 && bytes.len() >= start && matches!(word(128), 98 | 99) {
+        return Err(Failure::Undecodable(
+            "a DX10 BC7 DDS: the viewer does not yet read its authored extent and mip chain; \
+             BC7 textures are not drawn"
+                .to_owned(),
+        ));
+    }
     let form = if fourcc == code(b"DXT1") {
         Form::Blocks(TextureFormat::Bc1, 8)
     } else if fourcc == code(b"DXT2") || fourcc == code(b"DXT4") {
@@ -148,13 +164,7 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
              format_bits_per_pixel@1423F9E10's 0 bits: the texture does not hold the file's texels"
         )));
     };
-    if word(112) & CUBE_MAP != 0 {
-        return Err(Failure::Undefined(
-            "a cube-map DDS: load_dds@142410030 reads six faces without checking the file's \
-             length, into a cube texture a GUI sprite samples through a two-dimensional binding"
-                .to_owned(),
-        ));
-    }
+    let cube = word(112) & CUBE_MAP != 0;
     let (block, unit) = match &form {
         Form::Blocks(_, size) => (true, *size),
         Form::Pixels(pixels) => (false, pixels.bytes()),
@@ -165,27 +175,82 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
         (width, height)
     };
     oversized(width, height)?;
+    let level_bytes = |w: u32, h: u32| {
+        let (w, h) = (w as usize, h as usize);
+        if block {
+            w.div_ceil(4) * h.div_ceil(4) * unit
+        } else {
+            w * h * unit
+        }
+    };
+    let convert = |source: &[u8]| match &form {
+        Form::Blocks(..) => source.to_vec(),
+        Form::Pixels(pixels) => pixels.convert(source),
+    };
+    let (format, zero) = match &form {
+        Form::Blocks(format, _) => (*format, Zero::Transparent),
+        Form::Pixels(pixels) => (pixels.format(), pixels.zero()),
+    };
+    if cube {
+        // The six-face branch (`param_1[4] = 1`): each face in DDS order holds its whole chain,
+        // halved from the (block-rounded) extent, ending after a level with a side of 1 or at the
+        // header's count, one level at least. It records where each level lies in the file
+        // without checking the file's length.
+        let mut offset = start;
+        let mut faces = Vec::with_capacity(6);
+        for face in 0..6 {
+            let (mut level_width, mut level_height) = (width, height);
+            let mut levels = Vec::new();
+            loop {
+                let size = level_bytes(level_width, level_height);
+                let source = bytes.get(offset..offset + size).ok_or_else(|| {
+                    Failure::Undefined(format!(
+                        "a cube-map DDS whose face {face} level {} runs past the file: \
+                         load_dds@142410030 reads the six faces without checking the file's \
+                         length, so create_texture@1423FB4F0 uploads memory past it",
+                        levels.len()
+                    ))
+                })?;
+                levels.push(MipLevel {
+                    width: level_width,
+                    height: level_height,
+                    data: convert(source),
+                });
+                offset += size;
+                if level_width == 1
+                    || level_height == 1
+                    || levels.len() as u64 >= u64::from(mip_count)
+                {
+                    break;
+                }
+                level_width >>= 1;
+                level_height >>= 1;
+            }
+            faces.push(levels);
+        }
+        return Ok(Some((
+            Texture {
+                format,
+                width,
+                height,
+                faces: 6,
+                mips: faces,
+            },
+            zero,
+        )));
+    }
     let (mut level_width, mut level_height) = (width, height);
     let mut offset = start;
     let mut levels = Vec::new();
     loop {
-        let (w, h) = (level_width as usize, level_height as usize);
-        let size = if block {
-            w.div_ceil(4) * h.div_ceil(4) * unit
-        } else {
-            w * h * unit
-        };
+        let size = level_bytes(level_width, level_height);
         let Some(source) = bytes.get(offset..offset + size) else {
             break;
-        };
-        let data = match &form {
-            Form::Blocks(..) => source.to_vec(),
-            Form::Pixels(pixels) => pixels.convert(source),
         };
         levels.push(MipLevel {
             width: level_width,
             height: level_height,
-            data,
+            data: convert(source),
         });
         offset += size;
         if level_width == 1 || level_height == 1 || levels.len() as u64 >= u64::from(mip_count) {
@@ -207,10 +272,6 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
                 .to_owned(),
         ));
     }
-    let (format, zero) = match form {
-        Form::Blocks(format, _) => (format, Zero::Transparent),
-        Form::Pixels(pixels) => (pixels.format(), pixels.zero()),
-    };
     Ok(Some((
         Texture {
             format,
@@ -270,6 +331,68 @@ mod tests {
         assert_eq!(sides, [(8, 4), (4, 2), (2, 1)]);
         // `DXT2` fails the load; the chain goes on.
         assert_eq!(load(&header(4, 4, 1, 4, b"DXT2", 0, [0; 4])).unwrap(), None);
+    }
+
+    /// A cube map takes the six-face branch: each face, in order, holds its whole chain, halved
+    /// from the block-rounded extent; a file too short for the six is not what the game reads
+    /// past its end.
+    #[test]
+    fn a_cube_map_holds_six_chains_in_face_order() {
+        // 6x5 DXT1 rounds to 8x8; two levels of 8x8 (4 blocks) and 4x4 (1 block) per face.
+        let mut file = header(6, 5, 2, 4, b"DXT1", 0, [0; 4]);
+        file[112..116].copy_from_slice(&0xFE00_u32.to_le_bytes());
+        for face in 0..6_u8 {
+            file.extend(std::iter::repeat_n(face * 2, 4 * 8));
+            file.extend(std::iter::repeat_n(face * 2 + 1, 8));
+        }
+        let texture = load(&file).unwrap().unwrap().0;
+        assert_eq!((texture.faces, texture.width, texture.height), (6, 8, 8));
+        for (face, levels) in texture.mips.iter().enumerate() {
+            let sides: Vec<_> = levels.iter().map(|l| (l.width, l.height)).collect();
+            assert_eq!(sides, [(8, 8), (4, 4)]);
+            assert!(levels[0].data.iter().all(|&b| b == face as u8 * 2));
+            assert!(levels[1].data.iter().all(|&b| b == face as u8 * 2 + 1));
+        }
+        file.pop();
+        assert!(matches!(load(&file), Err(Failure::Undefined(why)) if why.contains("face 5")));
+    }
+
+    /// BC7's logical chains cannot use native BC1-3 rounding; keep the known content limit
+    /// named until the BC7 reader is integrated. Other DX10 formats retain native BGRA reading.
+    #[test]
+    fn dx10_bc7_is_refused_instead_of_using_native_block_rounding() {
+        let dx10 = |width, height, mips, dxgi: u32| {
+            let mut file = header(width, height, mips, 4, b"DX10", 0, [0; 4]);
+            file.extend(dxgi.to_le_bytes());
+            file.extend([3, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+            let (mut w, mut h) = (width, height);
+            for _ in 0..mips {
+                file.extend(std::iter::repeat_n(
+                    0,
+                    (w.div_ceil(4) * h.div_ceil(4) * 16) as usize,
+                ));
+                w = (w / 2).max(1);
+                h = (h / 2).max(1);
+            }
+            file
+        };
+        for dxgi in [98, 99] {
+            for (width, height, mips) in [(5, 4, 2), (550, 469, 10), (512, 512, 10)] {
+                let why = load(&dx10(width, height, mips, dxgi)).err().unwrap();
+                assert!(
+                    matches!(why, Failure::Undecodable(ref reason)
+                        if reason.contains("BC7") && reason.contains("authored extent and mip chain")),
+                    "{why:?}"
+                );
+            }
+        }
+        let mut other = header(1, 1, 1, 4, b"DX10", 0, [0; 4]);
+        other.extend(87_u32.to_le_bytes());
+        other.extend([0; 16]);
+        other.extend([1, 2, 3, 4]);
+        let texture = load(&other).unwrap().unwrap().0;
+        assert_eq!(texture.format, TextureFormat::Rgba8);
+        assert_eq!(texture.base().data, [3, 2, 1, 4]);
     }
 
     /// A 32-bit surface is `B8G8R8A8` whatever its masks and alpha flag say; a missing level

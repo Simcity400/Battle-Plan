@@ -17,7 +17,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = compiled::load(layers, map)?;
+    let effect = compiled::load(layers, map, crate::DECODE)?;
     let native = compiled::Blends::new(device, &effect)?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("LUT port oracle"),

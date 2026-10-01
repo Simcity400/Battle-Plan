@@ -20,7 +20,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = tree_caster::load(layers, map)?;
+    let effect = tree_caster::load(layers, map, crate::DECODE)?;
     let receiver = compiled::Receiver::new(device, &effect, FORMAT, DEPTH)?;
     let common = include_str!("world_port.wgsl")
         .replace(

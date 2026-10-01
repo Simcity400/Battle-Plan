@@ -68,7 +68,7 @@ pub(super) fn run(layers: &ResolvedLayers, map: [u32; 2], output: &Path) -> io::
     }))
     .map_err(fail)?;
     let arena = shader_pipeline::gpu::Arena::new(&device);
-    let assets = compiled_reduce::load(layers, map)?;
+    let assets = compiled_reduce::load(layers, map, crate::DECODE)?;
     let compiled = compiled_reduce::Reductions::new(&device, &assets)?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("retired luminance reduction oracle"),
@@ -294,7 +294,7 @@ fn seed_cases(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = compiled_seed::load(layers, map)?;
+    let effect = compiled_seed::load(layers, map, crate::DECODE)?;
     let compiled = compiled_seed::Seed::new(device, &effect)?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("seed port oracle"),
@@ -481,7 +481,7 @@ fn gather_cases(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let assets = compiled_gather::load(layers, map)?;
+    let assets = compiled_gather::load(layers, map, crate::DECODE)?;
     let compiled = compiled_gather::Gather::new(device, &assets)?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("gather port oracle"),

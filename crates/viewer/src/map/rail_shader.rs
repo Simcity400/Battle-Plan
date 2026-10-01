@@ -2,7 +2,7 @@
 use std::{collections::BTreeMap, io, ops::Range, sync::Arc};
 
 use eframe::wgpu;
-use installed_content::{ResolvedLayers, pdxshader::program::Stage};
+use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 
 fn refuse(reason: impl Into<String>) -> io::Error {
@@ -12,8 +12,8 @@ fn refuse(reason: impl Into<String>) -> io::Error {
     ))
 }
 
-pub fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
-    let (mut library, defines) = super::shader_sources::library(layers, map);
+pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Arc<Effect>> {
+    let (mut library, defines) = super::shader_sources::library(layers, map, decode);
     library
         .load(b"gfx/models/supply/railroad.shader", &defines)
         .map_err(refuse)

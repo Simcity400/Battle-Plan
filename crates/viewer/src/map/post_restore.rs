@@ -2,7 +2,7 @@
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
-use installed_content::{ResolvedLayers, pdxshader::program::Stage};
+use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
 
 use super::fullscreen::{self, Fullscreen};
@@ -14,8 +14,12 @@ fn refuse(reason: impl Into<String>) -> io::Error {
     ))
 }
 
-pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
-    let (mut library, mut defines) = fullscreen::library(layers, map);
+pub(super) fn load(
+    layers: &ResolvedLayers,
+    map: [u32; 2],
+    decode: Decode,
+) -> io::Result<Arc<Effect>> {
+    let (mut library, mut defines) = fullscreen::library(layers, map, decode);
     // 140FF1410 caller variants; the viewer's HDR scene has a resolved LUT.
     defines.extend(["HDR".into(), "COLOR_LUT".into()]);
     library

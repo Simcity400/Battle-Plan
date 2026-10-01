@@ -147,12 +147,19 @@ Effect Test { VertexShader = V PixelShader = P }
         &state,
     )
     .unwrap();
-    assert!(
-        filtered
-            .bindings(&arena, &BTreeMap::<u32, Vec<u8>>::new(), &textures)
-            .is_err(),
-        "float32 linear filtering still needs its real device capability"
-    );
+    // Float32 linear filtering still needs its real device capability, refused by name.
+    let refusal = filtered
+        .bindings(&arena, &BTreeMap::<u32, Vec<u8>>::new(), &textures)
+        .err()
+        .expect("a filtered float32 texture without FLOAT32_FILTERABLE");
+    for part in [
+        "pixel texture slot 0",
+        "Rgba32Float",
+        "FLOAT32_FILTERABLE",
+        "hardware",
+    ] {
+        assert!(refusal.contains(part), "{part}: {refusal}");
+    }
     println!(
         "PASS point float32: 256 exact pixels without FLOAT32_FILTERABLE; cross-register sampler pairs; linear float32 refusal preserved"
     );

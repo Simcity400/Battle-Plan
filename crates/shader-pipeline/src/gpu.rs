@@ -24,6 +24,8 @@ pub struct Pipeline {
     /// Ascending binding order, the order of the constant group's dynamic offsets.
     buffers: Vec<Buffer>,
     textures: Vec<(u32, super::TextureKind)>,
+    /// The texture bindings a paired sampler filters, which a view must be filterable for.
+    filtered: Vec<u32>,
     inputs: Vec<super::VertexInput>,
     groups: Mutex<Groups>,
 }
@@ -619,6 +621,11 @@ impl Pipeline {
             layouts: [constants, textures_layout],
             samplers,
             buffers,
+            filtered: textures
+                .iter()
+                .map(|(binding, _)| *binding)
+                .filter(filterable)
+                .collect(),
             textures,
             inputs: compiled.vertex.inputs.clone(),
             groups: Mutex::default(),
@@ -763,6 +770,29 @@ impl Pipeline {
                 group.clone()
             }
             None => {
+                // A float format filters only on a device with FLOAT32_FILTERABLE: a program that
+                // filters one is refused by name there (a viewer hardware requirement), as the
+                // native device filters it.
+                for ((binding, _), view) in self.textures.iter().zip(views.iter().flatten()) {
+                    let format = view.texture().format();
+                    if self.filtered.contains(binding)
+                        && format.sample_type(None, Some(device.features()))
+                            == Some(wgpu::TextureSampleType::Float { filterable: false })
+                    {
+                        return Err(format!(
+                            "native {} texture slot {} is filtered by its paired sampler, and a \
+                             {format:?} texture filters only on a device with \
+                             FLOAT32_FILTERABLE, which this one lacks: a viewer hardware \
+                             requirement, not drawn",
+                            if binding.is_multiple_of(2) {
+                                "vertex"
+                            } else {
+                                "pixel"
+                            },
+                            binding / 2
+                        ));
+                    }
+                }
                 let group = scoped(device, || {
                     device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("native textures"),

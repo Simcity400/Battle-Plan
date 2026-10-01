@@ -2,7 +2,7 @@
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
-use installed_content::{ResolvedLayers, pdxshader::program::Stage};
+use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
 
 use super::{
@@ -23,8 +23,8 @@ pub(super) struct Assets {
     alpha: Arc<Effect>,
 }
 
-pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Assets> {
-    let (mut library, mut defines) = fullscreen::library(layers, map);
+pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Assets> {
+    let (mut library, mut defines) = fullscreen::library(layers, map, decode);
     // 140FF1410 registers both reductions; their blend is retained from seed.
     let seed = library
         .load(b"gfx/FX/downsample.shader", &defines)

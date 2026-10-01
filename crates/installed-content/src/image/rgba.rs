@@ -20,6 +20,9 @@ pub fn dds_base(texture: &Texture) -> io::Result<Rgba8Image> {
         image.pixels.clone_from(&mip.data);
         return Ok(image);
     }
+    if texture.format == TextureFormat::Bc7 {
+        return Err(invalid("BC7 UI artwork has no CPU expansion"));
+    }
     let size = texture
         .format
         .block_bytes()

@@ -17,7 +17,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = compiled_restore::load(layers, map)?;
+    let effect = compiled_restore::load(layers, map, crate::DECODE)?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let compiled = compiled_restore::Restore::new(device, &effect, format, 1)?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {

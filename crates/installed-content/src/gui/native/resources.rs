@@ -271,14 +271,28 @@ pub fn texture(
     Ok(Err(NoTexture::Missing(tried)))
 }
 
-/// [`texture`] through the content stack by each candidate's bytes (uncovered textures
-/// unverified, as `ResolvedLayers::read_uncovered` states).
+/// [`texture`] for a GUI sprite or font, through the content stack by each candidate's bytes
+/// (uncovered textures unverified, as `ResolvedLayers::read_uncovered` states). A cube map is
+/// refused: `create_texture@1423FB4F0` makes it a cube texture, which a GUI draw samples through
+/// a two-dimensional binding.
 pub fn stack_texture(
     layers: &ResolvedLayers,
     name: &[u8],
     decode: native::Decode,
 ) -> io::Result<Result<Texture, NoTexture>> {
-    texture(name, &|path| layers.read_uncovered_path(path), decode)
+    Ok(
+        texture(name, &|path| layers.read_uncovered_path(path), decode)?.and_then(|texture| {
+            if texture.image.faces == 1 {
+                return Ok(texture);
+            }
+            Err(NoTexture::Undefined {
+                path: texture.path,
+                reason: "a cube-map DDS: create_texture@1423FB4F0 makes it a cube texture, which \
+                         a GUI draw samples through a two-dimensional binding"
+                    .to_owned(),
+            })
+        }),
+    )
 }
 
 /// `frame_dimensions@14222B4B0`: one frame's queried integer extent,

@@ -27,7 +27,7 @@ pub(super) fn run(
     output: &Path,
 ) -> io::Result<Value> {
     let arena = shader_pipeline::gpu::Arena::new(device);
-    let effect = compiled::load(layers, map)?;
+    let effect = compiled::load(layers, map, crate::DECODE)?;
     // Six distinct exact sRGB endpoints: +X,-X,+Y,-Y,+Z,-Z.
     let colors = [
         [1_u8, 0, 0],

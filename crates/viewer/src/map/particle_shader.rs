@@ -1,7 +1,7 @@
 //! Particle submission14227F420 and declaration142281B00.
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use installed_content::{ResolvedLayers, pdxshader::program::Stage};
+use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
 use shader_pipeline::{ScalarKind, VertexInput, binding, gpu, library::Effect};
 use std::{collections::BTreeMap, io, sync::Arc};
 #[path = "particle_shader/trail.rs"]
@@ -82,8 +82,8 @@ fn fail(reason: impl ToString) -> io::Error {
     ))
 }
 
-pub fn load(layers: &ResolvedLayers, map: [u32; 2]) -> io::Result<Arc<Effect>> {
-    let (mut library, defines) = super::shader_sources::library(layers, map);
+pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Arc<Effect>> {
+    let (mut library, defines) = super::shader_sources::library(layers, map, decode);
     library.load(b"gfx/FX/particle.lua", &defines).map_err(fail)
 }
 

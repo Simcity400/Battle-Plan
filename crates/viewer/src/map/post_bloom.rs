@@ -4,7 +4,7 @@ use super::{
     fullscreen::{self, Fullscreen},
 };
 use eframe::wgpu;
-use installed_content::{ResolvedLayers, pdxshader::program::Stage};
+use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
 use std::{io, sync::Arc};
 
@@ -15,8 +15,12 @@ fn refuse(reason: impl Into<String>) -> io::Error {
     ))
 }
 
-pub(super) fn load(layers: &ResolvedLayers, map: MapSize) -> io::Result<Arc<Effect>> {
-    let (mut library, defines) = fullscreen::library(layers, [map.width, map.height]);
+pub(super) fn load(
+    layers: &ResolvedLayers,
+    map: MapSize,
+    decode: Decode,
+) -> io::Result<Arc<Effect>> {
+    let (mut library, defines) = fullscreen::library(layers, [map.width, map.height], decode);
     // 140FF1410 registers this effect and the `bloom` technique.
     library
         .load(b"gfx/FX/bloom.shader", &defines)
