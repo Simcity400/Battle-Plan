@@ -1,4 +1,5 @@
 import type { CountryStabilityReply, ReadRun } from '../generated/dashboard';
+import { runAt } from '../charts/series.ts';
 import { orderedRuns } from '../widgets/country-measure/measureData.ts';
 
 const isCarried = (value: unknown): value is ReadRun => typeof value === 'object' && value != null
@@ -25,14 +26,5 @@ export function validateStabilityReply(data: unknown): CountryStabilityReply {
 /** The hour of the read behind a shown hour's values: an earlier read when the
  * hour is carried, otherwise the hour itself. */
 export function readHourAt(carried: readonly ReadRun[], hour: number): number {
-  let low = 0;
-  let high = carried.length - 1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    const run = carried[middle];
-    if (hour < run.firstHour) high = middle - 1;
-    else if (hour > run.lastHour) low = middle + 1;
-    else return run.readHour;
-  }
-  return hour;
+  return runAt(carried, hour)?.readHour ?? hour;
 }

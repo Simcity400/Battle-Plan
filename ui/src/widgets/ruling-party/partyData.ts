@@ -1,4 +1,5 @@
 import type { EventBadge } from '../../charts/badges';
+import { runAt } from '../../charts/series.ts';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import type { FixedRun, HourSpan, LeaderRun, PartyHistoryReply, PartySeries } from '../../generated/dashboard';
 
@@ -49,16 +50,7 @@ export function rulingFirst(list: readonly Band[], ruling: string | null): Band[
 
 /** The exact recorded popularity at an hour, or null when it was not recorded. */
 export function rawAt(series: PartySeries, hour: number): string | null {
-  let low = 0;
-  let high = series.runs.length - 1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    const run = series.runs[middle];
-    if (hour < run.firstHour) high = middle - 1;
-    else if (hour > run.lastHour) low = middle + 1;
-    else return run.valueRaw;
-  }
-  return null;
+  return runAt(series.runs, hour)?.valueRaw ?? null;
 }
 
 export const formatPopularity = (raw: string, decimals: number) => `${formatFixed(raw, decimals, 1)}%`;
@@ -91,7 +83,7 @@ export function buildStack(list: readonly Band[], decimals: number): StackModel 
     let fresh = false;
     const tops: number[] = [];
     for (const band of list) {
-      const run = runAt(band.series, hour);
+      const run = runAt(band.series.runs, hour);
       if (!run) { known = false; break; }
       if (run.firstHour === hour && run.startsSegment) fresh = true;
       total += fixedNumber(run.valueRaw, decimals);
@@ -101,19 +93,6 @@ export function buildStack(list: readonly Band[], decimals: number): StackModel 
     model.breakBefore.push(fresh);
   }
   return model;
-}
-
-function runAt(series: PartySeries, hour: number): FixedRun | null {
-  let low = 0;
-  let high = series.runs.length - 1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    const run = series.runs[middle];
-    if (hour < run.firstHour) high = middle - 1;
-    else if (hour > run.lastHour) low = middle + 1;
-    else return run;
-  }
-  return null;
 }
 
 /** The segments to draw between `from` and `to`: samples closer than `minHours`

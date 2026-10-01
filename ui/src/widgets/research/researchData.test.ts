@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { researchAt, researchColumns, researchDuration, researchEffects, researchFixed, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
+import { researchAt, researchColumns, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
 import { loadProduct } from '../../dashboard/products.ts';
 import type { ResearchEntry, ResearchHistory, ResearchReply } from '../../generated/dashboard';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
@@ -53,12 +53,6 @@ test('rewind hides new slots, future assignments and future completion or switch
   for (const hour of [99, 300, 401]) assert.equal(researchAt(history, hour), null);
 });
 
-test('duration is observed time in the slot; partial starts and interrupted history remain explicit', () => {
-  assert.equal(researchDuration(entry('A', 100, 148)), '≈ 2 days');
-  assert.match(researchDuration({ ...entry('A', 100, 148), startedAfterHour: null }), /^≥ /);
-  assert.match(researchDuration({ ...entry('A', 100, 148), outcome: 'unknown' }), /^≥ /);
-});
-
 test('compressed countdowns are evaluated at playback hour and delayed completion stays hidden', () => {
   const slot = { ...history.slots[0], entries: [{ ...entry('A', 100, 148), outcomeObservedHour: 150 }], states: [{
     firstHour: 100, lastHour: 147, token: 'A', entryFirstObservedHour: 100,
@@ -88,15 +82,11 @@ test('live slot states distinguish idle and missing data without leaking future 
   assert.equal(researchStateAt(at, 229), null);
   assert.equal(researchStateAt(at, 238), null);
   assert.equal(at.states.at(-1)?.lastHour, 237);
-  assert.deepEqual(researchEffects(at, at.entries[0]).map(s => s.speedMultiplierRaw), ['150000']);
-  assert.deepEqual(researchEffects(slot, slot.entries[0]).map(s => s.speedMultiplierRaw), ['150000', '200000']);
   const data = { ...reply, history: { ...history, slots: [slot] } };
   assert.equal(validateResearchReply(data), data);
   const malformed = structuredClone(data);
   malformed.history.slots[0].states[1].speedMultiplierRaw = '9223372036854775808';
   assert.throws(() => validateResearchReply(malformed));
-  assert.equal(researchFixed('-123456'), '-1.23456');
-  assert.equal(researchFixed('9223372036854775807'), '92233720368547.75807');
 });
 
 test('research responses reject stale identities, overlapping assignments and unsafe artwork', () => {
@@ -149,9 +139,7 @@ test('modifier changes survive history compression and rewind hides later values
   const data = { ...reply, history: { coverage: [{ firstHour: 100, lastHour: 299 }], slots: [slot] } };
   assert.equal(validateResearchReply(data), data);
   const before = researchAt(data.history, 150)![0];
-  assert.equal(researchEffects(before, before.entries[0]).length, 1);
   assert.equal(researchStateAt(before, 150)?.details?.modifiers?.totalBonusRaw, '0');
-  assert.equal(researchEffects(slot, slot.entries[0]).length, 2);
   assert.equal(researchStateAt(slot, 200)?.details?.modifiers?.totalBonusRaw, '25000');
   const bad = structuredClone(data); bad.history.slots[0].states[0].details.modifiers.components[0].raw = 'NaN';
   assert.throws(() => validateResearchReply(bad));

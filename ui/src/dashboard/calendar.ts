@@ -56,11 +56,6 @@ export function formatDateTime(hour: number): string {
     : isEngineHour(hour) ? `Hour ${hour.toLocaleString('en-US')}` : 'Unavailable date';
 }
 
-export function formatChartDate(hour: number): string {
-  const date = gameDate(hour);
-  return date ? `${formatDate(date)}\n${formatTime(date.hour)}` : formatDateTime(hour);
-}
-
 export function monthIndex(date: GameDate): number {
   return date.year * 12 + date.month - 1;
 }

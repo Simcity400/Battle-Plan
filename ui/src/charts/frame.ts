@@ -129,9 +129,3 @@ export function keyedHour(key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End', curr
   if (key === 'End' || current == null) return clamp(last);
   return clamp(current + (key === 'ArrowRight' ? KEY_STEP : -KEY_STEP));
 }
-
-/** A bar's rectangle: thin (at most `maxThickness`), square at the baseline. */
-export function barRect(center: number, thickness: number, from: number, to: number, maxThickness = 20): { x: number; y: number; width: number; height: number } {
-  const size = Math.min(maxThickness, Math.max(1, thickness));
-  return { x: center - size / 2, y: Math.min(from, to), width: size, height: Math.abs(to - from) };
-}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { approach, approachAcrossGap, easeTau } from './easing.ts';
+import { approach, easeTau } from './easing.ts';
 import { fitLabelWidth, layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
@@ -49,9 +49,6 @@ test('easing snaps with reduced motion, shortens at speed and never crosses a ga
   assert.equal(easeTau('smooth', 1, true), 0);
   assert.ok(easeTau('smooth', 720, false) < easeTau('smooth', 24, false));
   assert.ok(easeTau('cinematic', 24, false) > easeTau('snappy', 24, false));
-  assert.equal(approachAcrossGap(5, 9, 16, 180, true), 9);
-  assert.equal(approachAcrossGap(null, 9, 16, 180, false), 9);
-  assert.equal(approachAcrossGap(5, null, 16, 180, false), null);
 });
 
 const CONTEXT: ViewContext = { x: [0, 1000], extent: [0, 1000], y: [0, 100], minSpan: 14 * 24 };

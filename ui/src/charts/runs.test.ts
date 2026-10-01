@@ -15,6 +15,16 @@ test('any run type is found by hour', () => {
   assert.equal(runAt(runs, 131), null);
 });
 
+test('run lookup keeps inclusive ends, gaps, and fractional and negative hours', () => {
+  const runs = [product(-5, -2), product(0, 2), product(5, 5)];
+  const cases: [number, number | null][] = [
+    [-6, null], [-5, 0], [-3.5, 0], [-2, 0], [-1.5, null], [-1, null],
+    [0, 1], [1.5, 1], [2, 1], [2.5, null], [3, null], [5, 2], [5.5, null],
+  ];
+  for (const [hour, index] of cases) assert.equal(runAt(runs, hour), index == null ? null : runs[index], `hour ${hour}`);
+  assert.equal(runAt([], 0), null);
+});
+
 test('a value glides only within one unbroken stretch of runs', () => {
   const runs = [product(100, 110), product(111, 120, false), product(121, 130), product(140, 150)];
   assert.equal(sameStretch(runs, 105, 118), true);

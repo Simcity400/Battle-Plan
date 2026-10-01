@@ -169,20 +169,6 @@ export function drawStack(ctx: CanvasRenderingContext2D, frame: PlotFrame, token
   });
 }
 
-/** Grey shading over hours the recording is missing. */
-export function drawGaps(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, gaps: readonly { firstHour: number; lastHour: number }[]): void {
-  ctx.save();
-  ctx.fillStyle = tokens.grid;
-  ctx.globalAlpha = 0.35;
-  for (const gap of gaps) {
-    if (gap.lastHour < frame.x[0] || gap.firstHour > frame.x[1]) continue;
-    const from = frame.toX(Math.max(gap.firstHour, frame.x[0]));
-    const to = frame.toX(Math.min(gap.lastHour + 1, frame.x[1]));
-    ctx.fillRect(from, frame.plotTop, Math.max(1, to - from), frame.plotHeight);
-  }
-  ctx.restore();
-}
-
 /** Short event ticks along the bottom of the plot. */
 export function drawEventTicks(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], color = tokens.muted): void {
   ctx.save();

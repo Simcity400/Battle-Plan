@@ -49,8 +49,15 @@ export class FrameScheduler {
 
   get running(): boolean { return this.handle != null; }
 
+  private hasRunnableTask(): boolean {
+    for (const state of this.tasks.values()) {
+      if (state.awake && state.visible) return true;
+    }
+    return false;
+  }
+
   private schedule(): void {
-    if (this.handle != null || ![...this.tasks.values()].some(state => state.awake && state.visible)) return;
+    if (this.handle != null || !this.hasRunnableTask()) return;
     this.handle = this.host.request(now => this.tick(now));
   }
 
@@ -65,7 +72,7 @@ export class FrameScheduler {
       try { again = task.frame({ now, dt }); } catch (error) { console.error(error); }
       state.awake = again || state.woken;
     }
-    if ([...this.tasks.values()].some(state => state.awake && state.visible)) this.schedule();
+    if (this.hasRunnableTask()) this.schedule();
     else this.last = null;
   }
 }

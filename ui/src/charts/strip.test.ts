@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chartBottom, hitZone, keyedHour, plotFrame } from './frame.ts';
 import { keyedStop, keyStopList, keyStopMemo } from './hover.ts';
+import { assertLinear } from './linearTime.ts';
 import { barStrip, stripBarAt, stripColumns, stripKeyTargets, stripMiddle, stripRects } from './strip.ts';
 
 const FRAME = plotFrame(400, 260, { left: 40, right: 10, top: 10, bottom: 100 }, [1000, 2000], [0, 100], false, 60);
@@ -186,25 +187,6 @@ test('two keyboard stops at one hour are both reachable, the chart\'s own first'
   assert.deepEqual(keyStopList([1313, 1337], [], 1320, 1341)!.map(stop => stop.at), [1320, 1337]);
 });
 
-/** Whether building takes about linear time (up to a log): the best of nine runs at
- * `n` and at 4n, after warming up, so a slow machine does not fail it but a
- * quadratic cost (16 times as long) does. */
-function assertLinear(make: (count: number) => () => unknown) {
-  const best = (run: () => unknown) => {
-    for (let round = 0; round < 3; round++) run();
-    let fastest = Infinity;
-    for (let round = 0; round < 9; round++) {
-      const started = performance.now();
-      run();
-      fastest = Math.min(fastest, performance.now() - started);
-    }
-    return fastest;
-  };
-  const small = best(make(5_000));
-  const large = best(make(20_000));
-  assert.ok(large < small * 8, `5,000 stops ${small.toFixed(2)} ms, 20,000 stops ${large.toFixed(2)} ms`);
-}
-
 test('keyboard stops for decades of daily reads are built in about linear time, once per change', () => {
   // A read and a bar a day, all in view: every bar's read is also a chart stop.
   const campaign = (days: number) => {
@@ -212,7 +194,7 @@ test('keyboard stops for decades of daily reads are built in about linear time, 
     const bars = reads.map(read => ({ firstHour: read - 24, lastHour: read, up: 1, down: 1 }));
     return { reads, bars, view: [reads[0] - 24, reads.at(-1)!] as const };
   };
-  assertLinear(days => {
+  assertLinear('stops', days => {
     const { reads, bars, view } = campaign(days);
     return () => keyStopList(reads, stripKeyTargets(bars, view, null), view[0], view[1]);
   });

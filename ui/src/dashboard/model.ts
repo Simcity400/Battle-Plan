@@ -61,7 +61,6 @@ export interface BoundTrack extends TrackSpec {
   axisOffset: number;
   selectedTag: string | null;
 }
-export interface Inspection { trackId: string; sourceId: string; revision: string; branchId: string; countryId: string; hour: number }
 
 export function createWidget(kind: WidgetKind, trackId: string, id: string = newId()): WidgetSpec {
   const definition = widgetDefinition(kind);

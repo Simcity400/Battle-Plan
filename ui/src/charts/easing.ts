@@ -17,10 +17,3 @@ export function easeTau(feel: MotionFeel, hoursPerSecond: number, reduced: boole
   const speedup = 1 + Math.log10(Math.max(1, hoursPerSecond / 24));
   return BASE_MS[feel] / speedup;
 }
-
-/** Never glide across a gap: a value that returns after missing hours appears at
- * once, so the gap is shown rather than bridged. */
-export function approachAcrossGap(current: number | null, target: number | null, dtMs: number, tauMs: number, crossedGap: boolean): number | null {
-  if (target == null || current == null || crossedGap) return target;
-  return approach(current, target, dtMs, tauMs);
-}

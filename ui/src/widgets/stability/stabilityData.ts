@@ -1,4 +1,5 @@
 import type { Run } from '../../charts/series';
+import { runAt } from '../../charts/series.ts';
 import type { TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import type { BreakdownLine, FixedRun, FormulaBreakdown, ModifierBreakdown, StabilityBreakdown } from '../../generated/dashboard';
@@ -25,16 +26,7 @@ export function formatPercent(raw: string, decimals: number, signed = false): st
 
 /** The recorded value at an hour, or null when it was not recorded. */
 export function rawAt(runs: readonly FixedRun[], hour: number): string | null {
-  let low = 0;
-  let high = runs.length - 1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    const run = runs[middle];
-    if (hour < run.firstHour) high = middle - 1;
-    else if (hour > run.lastHour) low = middle + 1;
-    else return run.valueRaw;
-  }
-  return null;
+  return runAt(runs, hour)?.valueRaw ?? null;
 }
 
 /** The formula terms each measure lists, with the modifier whose tree lines

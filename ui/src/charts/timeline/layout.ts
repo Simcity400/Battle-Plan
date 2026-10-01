@@ -434,16 +434,3 @@ export function laneStops(spans: readonly TimelineSpan[], from: number, to: numb
   }
   return stops;
 }
-
-/** Every span's hours together, for fitting the time axis. */
-export function spansExtent(lanes: readonly TimelineLane[]): [number, number] | null {
-  let first = Infinity;
-  let last = -Infinity;
-  for (const lane of lanes) {
-    for (const span of lane.spans) {
-      first = Math.min(first, span.firstHour);
-      last = Math.max(last, span.lastHour + 1);
-    }
-  }
-  return first <= last ? [first, last] : null;
-}

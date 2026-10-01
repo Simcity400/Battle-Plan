@@ -1,28 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { assertLinear } from '../linearTime.ts';
 import { bandHalf, bandHitAt, bandOutlines, laneBandLayouts, laneBands, laneStops } from './layout.ts';
 
 const toX = (hour: number) => hour;
 const same = (value: number) => value;
-
-/** Asserts a layout is linear in its size: the best of several timed runs at 4n steps
- * takes under eight times as long as at n (linear work takes about four times, a quadratic
- * pass sixteen). A ratio of best times holds on a busy machine, where a fixed time does not. */
-function assertLinear(make: (steps: number) => () => unknown) {
-  const best = (run: () => unknown) => {
-    for (let round = 0; round < 3; round++) run();
-    let fastest = Infinity;
-    for (let round = 0; round < 9; round++) {
-      const started = performance.now();
-      run();
-      fastest = Math.min(fastest, performance.now() - started);
-    }
-    return fastest;
-  };
-  const small = best(make(5_000));
-  const large = best(make(20_000));
-  assert.ok(large < small * 8, `5,000 steps ${small.toFixed(2)} ms, 20,000 steps ${large.toFixed(2)} ms`);
-}
 
 test('a band has one flat stretch per step, cut to the hours shown', () => {
   const steps = [{ firstHour: 0, lastHour: 9, value: 2 }, { firstHour: 10, lastHour: 29, value: 5 }];
@@ -258,12 +240,11 @@ test('a fragmented band is laid out in time linear in its steps', () => {
   const bands = laneBands([big.span], null, big.toX, same, 120, 620);
   assert.ok(bands.columns.size > 0 && bands.columns.size <= 500);
   assert.ok(bandOutlines(big.band, 0, big.to, big.toX, same, 120, 620).length > 0);
-  // Linear, not quadratic: four times the steps take about four times as long, never the
-  // sixteen a quadratic pass would. A ratio, not a time, so a busy machine cannot fail it.
+  // Linear, not quadratic.
   for (const layout of [
     (f: ReturnType<typeof fragmented>) => laneBands([f.span], null, f.toX, same, 120, 620),
     (f: ReturnType<typeof fragmented>) => bandOutlines(f.band, 0, f.to, f.toX, same, 120, 620),
-  ]) assertLinear(steps => { const f = fragmented(steps); return () => layout(f); });
+  ]) assertLinear('steps', steps => { const f = fragmented(steps); return () => layout(f); });
 });
 
 test('lane layouts are rebuilt from the lanes shown and reused while nothing changes', () => {
@@ -321,5 +302,5 @@ test('keyboard stops are found in one pass over a long band', () => {
   assert.equal(stops.length, 20_000);
   assert.deepEqual(stops.slice(0, 2).map(stop => [stop.id, stop.hour]), [['long@0', 0.5], ['long@2', 2]]);
   assert.equal(stops.at(-1)!.id, 'long@39998');
-  assertLinear(steps => { const l = long(steps); return () => laneStops([l.span], 0.5, l.to, null); });
+  assertLinear('steps', steps => { const l = long(steps); return () => laneStops([l.span], 0.5, l.to, null); });
 });

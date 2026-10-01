@@ -1,5 +1,6 @@
 import type { BalanceDrop, FixedRun, MeasureReply, MeasureSeries } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
+import { runAt } from '../../charts/series.ts';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 
 /** Most countries one balance widget draws. */
@@ -37,16 +38,7 @@ export function toRuns(series: Pick<MeasureSeries, 'runs'>, decimals: number): R
 
 /** The exact recorded balance at an hour, or null when it was not recorded. */
 export function rawAt(series: Pick<MeasureSeries, 'runs'>, hour: number): string | null {
-  let low = 0;
-  let high = series.runs.length - 1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    const run = series.runs[middle];
-    if (hour < run.firstHour) high = middle - 1;
-    else if (hour > run.lastHour) low = middle + 1;
-    else return run.valueRaw;
-  }
-  return null;
+  return runAt(series.runs, hour)?.valueRaw ?? null;
 }
 
 export const formatBalance = (raw: string, decimals: number) => formatFixed(raw, decimals, 2);

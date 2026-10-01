@@ -60,13 +60,6 @@ export function membershipChanges(runs: readonly MembershipRun[], firstHour: num
   return changes.sort((a, b) => a.hour - b.hour || a.tag.localeCompare(b.tag) || a.change.localeCompare(b.change));
 }
 
-/** The `count` countries with the highest values, highest first; a country with
- * no value this hour is left out rather than ranked as zero. */
-export function topCountries(values: ReadonlyMap<string, number | null>, count: number): string[] {
-  return [...values].filter((entry): entry is [string, number] => entry[1] != null && Number.isFinite(entry[1]))
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, count).map(([tag]) => tag);
-}
-
 /** A group's name for headers and pickers. Faction names are the game's own. */
 export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undefined, countryName: (tag: string) => string): string {
   switch (group.type) {

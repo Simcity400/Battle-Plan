@@ -6,7 +6,7 @@ export const PRODUCT = 'research';
 export function researchRequest(sourceId: string, revision: string, params: CountryParams): ProductRequest<CountryParams> {
   return { sourceId, revision, product: PRODUCT, params };
 }
-import type { ResearchEntry, ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 
 export interface ResearchColumn { slot: ResearchSlotHistory; offset: number }
 
@@ -47,15 +47,6 @@ export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObserved
   return done >= base ? 1 : Number(done * 10_000n / base) / 10_000;
 }
 
-export function researchEffects(slot: ResearchSlotHistory, entry: ResearchEntry): ResearchSlotState[] {
-  return (slot.states ?? []).filter(s => s.entryFirstObservedHour === entry.firstObservedHour && s.token === entry.token
-    && s.firstHour <= entry.lastObservedHour && s.lastHour >= entry.firstObservedHour)
-    .filter((s, i, all) => i === 0 || s.speedMultiplierRaw !== all[i - 1].speedMultiplierRaw
-      || s.appliedDaysRaw !== all[i - 1].appliedDaysRaw || s.aheadReductionYearsRaw !== all[i - 1].aheadReductionYearsRaw
-      || JSON.stringify(s.details?.modifiers) !== JSON.stringify(all[i - 1].details?.modifiers)
-      || JSON.stringify(s.details?.bonuses) !== JSON.stringify(all[i - 1].details?.bonuses));
-}
-
 /** EC1810/ABE4C0 integer formula, evaluated at the selected hour. */
 export function researchRateAt(state: ResearchSlotState, hour: number): { rateRaw: string; penaltyRaw: string; floored: boolean } | null {
   const modifiers = state.details?.modifiers;
@@ -68,13 +59,6 @@ export function researchRateAt(state: ResearchSlotState, hour: number): { rateRa
   const rate = (100000n + BigInt(modifiers.totalBonusRaw)) * 100000n / (100000n + penalty);
   const minimum = BigInt(modifiers.minimumSpeedRaw);
   return { rateRaw: (rate > minimum ? rate : minimum).toString(), penaltyRaw: penalty.toString(), floored: rate < minimum };
-}
-
-/** Format fixed5 operands without losing integer precision. */
-export function researchFixed(raw: string): string {
-  const value = BigInt(raw), magnitude = value < 0n ? -value : value;
-  const fraction = (magnitude % 100000n).toString().padStart(5, '0').replace(/0+$/, '');
-  return `${value < 0n ? '-' : ''}${magnitude / 100000n}${fraction ? `.${fraction}` : ''}`;
 }
 
 /** Only a slot's initial offset uses time. Every subsequent item occupies the
@@ -92,15 +76,6 @@ export function researchColumns(slots: ResearchSlotHistory[]): ResearchColumn[] 
     columns.push({ slot, offset });
   }
   return columns.sort((a, b) => a.slot.index - b.slot.index);
-}
-
-export function researchDuration(entry: ResearchEntry): string {
-  const end = entry.endedByHour !== null && entry.outcome !== 'unknown' ? entry.endedByHour : entry.lastObservedHour;
-  const days = Math.max(0, end - entry.firstObservedHour) / 24;
-  const value = days.toLocaleString('en', { maximumFractionDigits: 1 });
-  return entry.startedAfterHour === null || entry.outcome === 'unknown'
-    ? `≥ ${value} days`
-    : `≈ ${value} ${days === 1 ? 'day' : 'days'}`;
 }
 
 /** Shape checks on the product payload; identity is checked by the transport. */

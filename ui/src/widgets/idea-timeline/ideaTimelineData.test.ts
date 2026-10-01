@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CategoryInfo, IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
-import { AXIS_HEIGHT, ROW_HEIGHT, barHours, inSpans, laneAt, leftColumn, spanAt, spansExtent } from '../../charts/timeline/layout.ts';
+import { AXIS_HEIGHT, ROW_HEIGHT, barHours, inSpans, laneAt, leftColumn, spanAt } from '../../charts/timeline/layout.ts';
 import { validOption } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
 import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
@@ -82,7 +82,6 @@ test('timeline layout: lanes by row, spans cover their last observed day, bars s
   assert.deepEqual(barHours(spans[0], null), [10, 21]);
   assert.deepEqual(barHours(spans[0], 15), [10, 15]);
   assert.equal(barHours(spans[0], 5), null);
-  assert.deepEqual(spansExtent([{ id: 'l', label: 'L', spans }]), [10, 21]);
 });
 
 test('content choices keep any short token, and malformed replies are refused', () => {

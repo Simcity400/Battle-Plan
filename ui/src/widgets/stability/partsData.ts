@@ -1,4 +1,4 @@
-import { divergingStack } from '../../charts/series.ts';
+import { divergingStack, runAt } from '../../charts/series.ts';
 import type { Band } from '../../charts/series';
 import type { HourSpan, MeasureParts, StabilityPart, StabilityPartsReply } from '../../generated/dashboard';
 import { orderedRuns } from '../country-measure/measureData.ts';
@@ -52,16 +52,7 @@ export function partName(part: StabilityPart, measure: Measure): { name: string;
 
 /** Whether the parts are known at an hour. */
 export function knownAt(parts: MeasureParts, hour: number): boolean {
-  let low = 0;
-  let high = parts.observed.length - 1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    const span = parts.observed[middle];
-    if (hour < span.firstHour) high = middle - 1;
-    else if (hour > span.lastHour) low = middle + 1;
-    else return true;
-  }
-  return false;
+  return runAt(parts.observed, hour) != null;
 }
 
 /** Each part's value at an hour (a part without a run there is zero), or null

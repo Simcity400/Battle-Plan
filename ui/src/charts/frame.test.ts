@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { axisFraction, barRect, hitZone, plotFrame, pointerHour, wheelSteps } from './frame.ts';
+import { axisFraction, hitZone, plotFrame, pointerHour, wheelSteps } from './frame.ts';
 import { hideTooltip, showTooltip, tooltipStore } from './tooltip.ts';
 import { parseAppearance, DEFAULT_APPEARANCE } from '../shell/appearance/settings.ts';
 
@@ -28,11 +28,6 @@ test('hit zones tell the two axes from the plot', () => {
   assert.equal(hitZone({ x: 20, y: 185 }, FRAME), null);
   assert.equal(axisFraction({ x: 215, y: 0 }, FRAME, 'x'), 0.5);
   assert.equal(axisFraction({ x: 0, y: 90 }, FRAME, 'y'), 0.5);
-});
-
-test('bars are thin and square at the baseline', () => {
-  assert.deepEqual(barRect(100, 40, 170, 50), { x: 90, y: 50, width: 20, height: 120 });
-  assert.deepEqual(barRect(100, 6, 50, 170), { x: 97, y: 50, width: 6, height: 120 });
 });
 
 test('the tooltip store publishes changes only and each owner hides only its own', () => {
