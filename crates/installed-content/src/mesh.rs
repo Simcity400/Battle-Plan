@@ -1568,13 +1568,14 @@ impl Attachment {
 
 /// One `entity` block of a `gfx/entities/*.asset` file (section 1.5).
 ///
-/// The `event` and particle machinery is still dropped; nothing here fires an
-/// event or advances a clock.
+/// Definitions retain states and events; consumers own their playback clocks.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityDefinition {
     pub name: String,
     /// `pdxmesh`, the key of a [`MeshDefinition`].
     pub mesh: Option<String>,
+    /// Failed authored binding when no native mesh survives (`142272140`).
+    pub unbound_mesh: Option<String>,
     /// `clone`, the entity this one inherits from before its own overrides.
     pub clone: Option<String>,
     pub scale: Option<f32>,
@@ -1697,6 +1698,8 @@ pub struct EntityEvent {
     pub node: String,
     pub light: Option<String>,
     pub particle: Option<String>,
+    /// Played by `1422701A3`; retained for consumers without audio.
+    pub sound: Option<String>,
     pub keep_particle: bool,
     pub trigger_once: bool,
 }
@@ -1744,6 +1747,8 @@ pub struct Descriptors {
 pub struct InheritedEntity<'a> {
     /// `pdxmesh`, from the nearest link that declares one.
     pub mesh: Option<&'a str>,
+    /// Diagnostic name when the native binding stayed absent.
+    pub unbound_mesh: Option<&'a str>,
     /// `scale`, from the nearest link that declares one.
     pub scale: Option<f32>,
     /// `default_state`, from the nearest link that declares one.
@@ -1786,6 +1791,7 @@ impl Descriptors {
         for _ in 0..=self.entities.len() {
             chain.push(current);
             out.mesh = out.mesh.or(current.mesh.as_deref());
+            out.unbound_mesh = out.unbound_mesh.or(current.unbound_mesh.as_deref());
             out.scale = out.scale.or(current.scale);
             out.game_data = out.game_data.or(current.game_data.as_ref());
             out.default_state = out.default_state.or(current.default_state.as_deref());
@@ -2267,20 +2273,21 @@ impl Entities {
         // otherwise logs and leaves the bindings as they are: the parent's
         // copy (14226C110, 14226D5E0) or the definition being redefined,
         // whose bindings create_or_reuse (14227D8C0) does not clear.
-        let kept = match &parent {
-            Some((parent, _)) => parent.mesh.clone(),
-            None => registered.and_then(|(held, _)| held.mesh.clone()),
-        };
+        let held = parent.as_ref().or(registered).map(|(held, _)| held);
+        let kept = held.and_then(|held| held.mesh.clone());
+        let mut unbound = held.and_then(|held| held.unbound_mesh.clone());
         definition.mesh = match mesh.filter(|mesh| !mesh.is_empty()) {
             Some(mesh) if roster.descriptors.meshes.contains_key(&mesh) => Some(mesh),
             Some(mesh) => {
                 roster.logged.push(format!(
                     "{name} in {path}: no pdxmesh {mesh} is registered, so the engine keeps its mesh binding"
                 ));
+                unbound = Some(mesh);
                 kept
             }
             None => kept,
         };
+        definition.unbound_mesh = definition.mesh.is_none().then_some(unbound).flatten();
         let entry = match parent {
             Some((parent, version)) => (overlay(parent, definition), version),
             None => (definition, stored.unwrap_or(version)),
@@ -2317,6 +2324,7 @@ fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinitio
     EntityDefinition {
         name: child.name,
         mesh: child.mesh.or(parent.mesh),
+        unbound_mesh: child.unbound_mesh,
         clone: None,
         scale: child.scale.or(parent.scale),
         attachments,
@@ -2568,6 +2576,12 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                         node: text(event, b"node").map(unquote).unwrap_or_default(),
                         light: text(event, b"light").map(unquote),
                         particle: text(event, b"particle").map(unquote),
+                        sound: event
+                            .iter()
+                            .filter(|item| item.keyword_is("sound"))
+                            .filter_map(|item| item.value.items())
+                            .filter_map(|fields| last_text(fields, "soundeffect"))
+                            .next_back(),
                         // 14233BB30: +0x714/715.
                         keep_particle: parser::read_bool_field(event, "keep_particle", false),
                         trigger_once: parser::read_bool_field(event, "trigger_once", false),
@@ -2580,6 +2594,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         name,
         game_data: entity_game_data(items),
         mesh: text(items, b"pdxmesh").map(unquote),
+        unbound_mesh: None,
         clone: text(items, b"clone").map(unquote),
         scale: text(items, b"scale").and_then(|value| value.trim().parse().ok()),
         attachments,
@@ -3043,8 +3058,57 @@ mod tests {
         );
         assert_eq!(entities["child"].mesh.as_deref(), Some("m"));
         assert_eq!(entities["plain"].mesh.as_deref(), Some("n"));
+        assert!(
+            entities
+                .values()
+                .all(|entity| entity.unbound_mesh.is_none())
+        );
         assert_eq!(roster.logged.len(), 2, "{:?}", roster.logged);
         assert!(roster.logged[0].starts_with("child in gfx/entities/a.asset: no pdxmesh missing"));
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn unbound_mesh_diagnostics_follow_registration() {
+        let roster = roster_of(
+            "unbound",
+            &[
+                (
+                    "gfx/models/a.gfx",
+                    b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+                ),
+                (
+                    "gfx/entities/a.asset",
+                    br#"
+                    entity = { name = empty pdxmesh = absent version = 1 }
+                    entity = { name = child clone = empty }
+                    entity = { name = empty pdxmesh = m version = 0 }
+                    entity = { name = repaired pdxmesh = absent }
+                    entity = { name = repaired pdxmesh = m }
+                    entity = { name = bare }
+                    entity = { name = cleared pdxmesh = absent }
+                    entity = { name = cleared clone = bare }
+                "#,
+                ),
+            ],
+            &[],
+        );
+        for name in ["empty", "child"] {
+            assert_eq!(
+                roster.descriptors.entities[name].unbound_mesh.as_deref(),
+                Some("absent")
+            );
+        }
+        for name in ["bare", "cleared", "repaired"] {
+            assert!(roster.descriptors.entities[name].unbound_mesh.is_none());
+        }
+        for name in ["empty", "child", "bare", "cleared"] {
+            assert!(roster.descriptors.entities[name].mesh.is_none());
+        }
+        assert_eq!(
+            roster.descriptors.entities["repaired"].mesh.as_deref(),
+            Some("m")
+        );
     }
 
     /// The last `.gfx` object of a name is the one the engine finds, and only

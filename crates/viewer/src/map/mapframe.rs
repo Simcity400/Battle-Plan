@@ -7,7 +7,7 @@ use super::{
 };
 use installed_content::image::native::Decode;
 use installed_content::{ResolvedLayers, ambient, image::IndexedImage};
-use std::{collections::BTreeSet, io};
+use std::io;
 
 pub struct FrameAssets {
     pub library: ModelLibrary,
@@ -83,8 +83,7 @@ impl FrameAssets {
         };
         let mut refused = Vec::new();
         let mut candidates = Vec::new();
-        let mut mesh_names = Vec::new();
-        let mut event_names = BTreeSet::new();
+        let mut names = Vec::new();
         for (kind_index, kind) in types.iter().enumerate() {
             let condition = kind
                 .dlc
@@ -106,12 +105,6 @@ impl FrameAssets {
                 Some(error)
             } else if !mesh && inherited.is_none() {
                 Some("no entity or mesh declaration")
-            } else if !mesh
-                && inherited
-                    .as_ref()
-                    .is_some_and(|e| !e.attachments.is_empty())
-            {
-                Some("meshless root with attachments has no native attachment transform")
             } else {
                 None
             };
@@ -137,18 +130,10 @@ impl FrameAssets {
                 instance.animation_seed =
                     u32::try_from(candidates.len()).map_err(io::Error::other)? ^ 0x414d_4249;
                 candidates.push((kind_index, kind.entity.clone(), instance, bucket));
-                if mesh {
-                    mesh_names.push(kind.entity.clone());
-                } else {
-                    event_names.insert(kind.entity.clone());
-                }
+                names.push(kind.entity.clone());
             }
         }
-        let mut library =
-            ModelLibrary::load(layers, decode, &roster.descriptors, &mesh_names, warnings)?;
-        for name in event_names {
-            library.add_event_entity(layers, &roster.descriptors, &name)?;
-        }
+        let library = ModelLibrary::load(layers, decode, &roster.descriptors, &names, warnings)?;
         for (kind, name, instance, bucket) in candidates {
             if let Some(slot) = library.slot(&name) {
                 presentation.placements.push(Placement {
@@ -469,10 +454,14 @@ fn ambient_admission_expiry_and_recreation_preserve_native_order() {
 #[test]
 fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
     let descriptors = installed_content::mesh::parse_descriptors(br#"entity={name=emitter scale=0.3 state={name=idle event={time=0 particle=mist keep_particle=yes}}}"#, "gfx/synthetic.asset").unwrap();
-    let mut library = ModelLibrary::default();
-    library
-        .add_event_entity(&ResolvedLayers::default(), &descriptors, "emitter")
-        .unwrap();
+    let library = ModelLibrary::load(
+        &ResolvedLayers::default(),
+        Decode::default(),
+        &descriptors,
+        &["emitter".into()],
+        &mut Vec::new(),
+    )
+    .unwrap();
     let slot = library.slot("emitter").unwrap();
     assert!(library.meshes[slot].lods.is_empty());
     let placed = ModelInstance {
