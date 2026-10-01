@@ -375,7 +375,16 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
             {
                 let mut notes = Vec::new();
                 let breakdown = country_stability::breakdown_of(
-                    decoded, hour, row, slot, read, reads, tag, &mut notes,
+                    country_stability::BreakdownInput {
+                        decoded,
+                        hour,
+                        row,
+                        slot,
+                        read_hour: read,
+                        reads,
+                        tag,
+                    },
+                    &mut notes,
                 );
                 let at_read = recent_names.iter().find(|(at, _, _)| *at == read);
                 let characters = at_read.and_then(|(_, view, _)| match &**view {

@@ -362,7 +362,7 @@ fn a_stability_breakdown_needs_the_same_country_identity_as_its_history() {
         LoadContext, Product,
         country_stability::{CountryStability, CountryStabilityParams},
     };
-    let mut unlinked = stability_frame(101, stability_inputs(), 101, vec![]);
+    let mut unlinked = stability_frame(102, stability_inputs(), 102, vec![]);
     *unlinked.tables[TableId::CountryLinks.index()] =
         TableView::Complete(TableRows::CountryLinks(vec![]));
     let replay = Arc::new(
@@ -372,6 +372,7 @@ fn a_stability_breakdown_needs_the_same_country_identity_as_its_history() {
                 1,
                 vec![
                     stability_frame(100, stability_inputs(), 100, vec![]),
+                    stability_frame(101, stability_inputs(), 100, vec![]),
                     unlinked,
                 ],
             )],
@@ -404,7 +405,14 @@ fn a_stability_breakdown_needs_the_same_country_identity_as_its_history() {
         .unwrap()
     };
     let load = |hour| load_with(hour, false);
-    assert!(load(100).series[0].breakdown.is_some());
+    let mut sampled = load(100);
+    assert!(sampled.series[0].breakdown.is_some());
+    // A carried read has the same reply except for its displayed hour.
+    sampled.series[0].breakdown.as_mut().unwrap().hour = 101;
+    assert_eq!(
+        serde_json::to_vec(&load(101)).unwrap(),
+        serde_json::to_vec(&sampled).unwrap()
+    );
     // A breakdown alone leaves the histories out.
     let alone = load_with(100, true);
     assert!(alone.series[0].breakdown.is_some());
@@ -412,5 +420,5 @@ fn a_stability_breakdown_needs_the_same_country_identity_as_its_history() {
     assert!(alone.warnings.is_empty(), "{:?}", alone.warnings);
     // CountryLinks no longer maps GER: the history leaves the hour out, and
     // so does the breakdown.
-    assert!(load(101).series[0].breakdown.is_none());
+    assert!(load(102).series[0].breakdown.is_none());
 }

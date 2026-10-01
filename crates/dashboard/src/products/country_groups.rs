@@ -372,8 +372,8 @@ fn mark_all(unobserved: &mut UnobservedHours, first_hour: i32, last_hour: i32) {
     }
 }
 
-/// Adds `hour` to the unobserved spans, merging it with the span it follows.
-fn mark_unobserved(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
+/// Adds unobserved hours, merging overlapping or adjacent spans.
+pub(super) fn mark_unobserved(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
     match spans.last_mut() {
         Some(span) if span.last_hour.checked_add(1) >= Some(first_hour) => {
             span.last_hour = span.last_hour.max(last_hour);

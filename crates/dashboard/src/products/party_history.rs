@@ -32,7 +32,7 @@ use crate::{
     Source,
     catalogue::View,
     metadata::{link_slot, tagged_country, validate_campaign},
-    products::country_groups::HourSpan,
+    products::country_groups::{HourSpan, mark_unobserved},
 };
 use replay::{container::Replay, frame::FrameDecoder, rows::tables};
 use serde::{Deserialize, Serialize};
@@ -247,18 +247,6 @@ pub struct ScannedParties {
     pub unobserved: Vec<HourSpan>,
 }
 
-fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
-    match spans.last_mut() {
-        Some(span) if span.last_hour.checked_add(1) >= Some(first_hour) => {
-            span.last_hour = span.last_hour.max(last_hour)
-        }
-        _ => spans.push(HourSpan {
-            first_hour,
-            last_hour,
-        }),
-    }
-}
-
 /// The portrait entry the leader views ask character `id`'s recorded holder for:
 /// civilian, large, else the first large entry, used only when set.
 fn leader_portrait(
@@ -337,12 +325,12 @@ pub fn scan(
                 decoded.complete::<tables::Countries>(),
                 decoded.complete::<tables::CountryLinks>(),
             ) else {
-                mark(&mut result.unobserved, hour, hour);
+                mark_unobserved(&mut result.unobserved, hour, hour);
                 continue;
             };
             let parties = decoded.complete::<tables::PoliticalParties>().ok();
             if parties.is_none() {
-                mark(&mut result.unobserved, hour, hour);
+                mark_unobserved(&mut result.unobserved, hour, hour);
             }
             let Some((country, slot)) = tagged_country(countries, links, tag).found() else {
                 continue;
@@ -356,7 +344,7 @@ pub fn scan(
             if let Some((_, at)) = last
                 && at.checked_add(1).is_some_and(|next| next < hour)
             {
-                mark(&mut result.unobserved, at + 1, hour - 1);
+                mark_unobserved(&mut result.unobserved, at + 1, hour - 1);
             }
             last = Some((identity, hour));
             let owner = |raw: u32| link_slot(links, raw) == Some(slot);
