@@ -7,6 +7,11 @@
 //! section 4.1). Inside a blob, `distance` is the pixel's distance to the edge
 //! of the blob in map pixels, and each `building` block claims one distance
 //! ring with a set of entity names to pick from at random.
+//!
+//! When the reader recorded any error (`CReader+0x20`, set by `RecordError`
+//! 1424ACF90 and `TryHandleOrRecordError` 1424ACD40) `build_city_population`
+//! (14163F450) logs "Errors while reading cities.txt" and builds no sprawl, so
+//! such a file is refused by name.
 
 use std::io;
 
@@ -34,24 +39,18 @@ pub struct CityGroup {
     pub color_index: u8,
     /// Signed displacement strength toward the ring-weighted neighbouring houses.
     pub density: f64,
-    /// The `building` blocks, sorted by ascending `distance`.
+    /// The `building` blocks in declaration order (14163E950 appends).
     pub buildings: Vec<CityBuilding>,
 }
 
 impl CityGroup {
-    /// The ring a pixel at this distance from the blob edge belongs to.
-    ///
-    /// The file's own comment says the blocks are "sorted by distance
-    /// (growing)", so a pixel takes the last block whose `distance` it reaches;
-    /// beyond the last one it stays in the last block, which is what puts the
+    /// The ring a pixel at this distance from the blob edge belongs to:
+    /// takes the first whose `distance` the pixel reaches, meshes or none.
     pub fn building_for(&self, distance: u32) -> Option<&CityBuilding> {
-        let mut chosen = None;
-        for building in &self.buildings {
-            if building.distance <= distance {
-                chosen = Some(building);
-            }
-        }
-        chosen
+        self.buildings
+            .iter()
+            .rev()
+            .find(|building| building.distance <= distance)
     }
 }
 
@@ -75,8 +74,24 @@ impl Cities {
     }
 }
 
+/// `%i` of a field (ReadScriptSignedInt32 1424AB970); a scan that reads no
+/// digit where there is text is reported (1424ACEE0), a recorded error.
+fn integer(field: &crate::parser::Item, errors: &mut Vec<String>) -> Scanned<i32> {
+    let text = field.value.scalar().unwrap_or_default();
+    let scanned = crt::scan_i32(text);
+    if scanned == Scanned::NoMatch {
+        errors.push(format!(
+            "{} = {} does not scan as an integer",
+            String::from_utf8_lossy(field.key.as_deref().unwrap_or_default()),
+            String::from_utf8_lossy(text)
+        ));
+    }
+    scanned
+}
+
 /// Replays CCitySettings (141640CF0), SGroup (1416411B0), and
 /// SDistanceMesh (141640F50). Their vtables inherit CPersistent::Read.
+/// Both pixel steps start at 1 (14163F450).
 pub fn parse(input: &[u8]) -> io::Result<Cities> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -84,6 +99,7 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
         Group,
         Building,
     }
+    let mut errors = Vec::new();
     // build_city_population (14163F450) constructs the lexer in mode 0.
     let document = native::read_persistent(
         input,
@@ -96,10 +112,27 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
             (Node::File, Some(b"types_source" | b"pixel_step_x" | b"pixel_step_y"))
             | (Node::Group, Some(b"color_index" | b"density"))
             | (Node::Building, Some(b"distance")) => Shape::One,
-            _ => Shape::Skip,
+            // ReportUnexpectedToken (1424AD100 -> RecordError 1424ACF90).
+            _ => {
+                errors.push(format!(
+                    "line {}: key {} is reported",
+                    field.key.line,
+                    String::from_utf8_lossy(&field.key.text)
+                ));
+                Shape::Skip
+            }
         },
     );
-    let mut cities = Cities::default();
+    if let Some(unsettled) = document.unsettled.as_ref().or(document.misreads.first()) {
+        return Err(invalid(format!(
+            "the port cannot tell whether the game records an error here: {unsettled}"
+        )));
+    }
+    let mut cities = Cities {
+        pixel_step_x: 1,
+        pixel_step_y: 1,
+        ..Cities::default()
+    };
     for field in &document.items {
         match field.keyword().map(|key| key.folded()).as_deref() {
             Some(b"types_source") => {
@@ -115,9 +148,7 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
                 } else {
                     &mut cities.pixel_step_y
                 };
-                if let Scanned::Stored(value) =
-                    crt::scan_i32(field.value.scalar().unwrap_or_default())
-                {
+                if let Scanned::Stored(value) = integer(field, &mut errors) {
                     *dst = u32::try_from(value).map_err(|_| {
                         invalid(format!(
                             "cities {}: negative step {value}",
@@ -133,19 +164,27 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
                     match field.keyword().map(|key| key.folded()).as_deref() {
                         Some(b"color_index") => {
                             // The local int is uninitialized on a failed scan. Do not guess it.
-                            let Scanned::Stored(value) =
-                                crt::scan_i32(field.value.scalar().unwrap_or_default())
-                            else {
-                                return Err(invalid(
-                                    "city_group color_index: unsupported failed integer scan",
-                                ));
-                            };
-                            group.color_index = value as u8;
+                            match integer(field, &mut errors) {
+                                Scanned::Stored(value) => group.color_index = value as u8,
+                                Scanned::NoMatch => {}
+                                Scanned::End => {
+                                    return Err(invalid(
+                                        "city_group color_index: unsupported failed integer scan",
+                                    ));
+                                }
+                            }
                         }
                         Some(b"density") => {
-                            if let Some(value) =
-                                crt::scan_f32(field.value.scalar().unwrap_or_default())
-                            {
+                            let text = field.value.scalar().unwrap_or_default();
+                            let scanned = crt::scan_f32(text);
+                            if scanned.is_none() && !text.trim_ascii().is_empty() {
+                                // CReader::ReadFloat 1424AB9D0 reports it (1424ACEE0).
+                                errors.push(format!(
+                                    "density = {} does not scan as a float",
+                                    String::from_utf8_lossy(text)
+                                ));
+                            }
+                            if let Some(value) = scanned {
                                 if !value.is_finite() {
                                     return Err(invalid("city_group density: nonfinite value"));
                                 }
@@ -156,9 +195,7 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
                             let mut building = CityBuilding::default();
                             for field in block(&field.value, "city_group building")? {
                                 if field.keyword_is("distance") {
-                                    if let Scanned::Stored(value) =
-                                        crt::scan_i32(field.value.scalar().unwrap_or_default())
-                                    {
+                                    if let Scanned::Stored(value) = integer(field, &mut errors) {
                                         building.distance = u32::try_from(value).map_err(|_| invalid(format!("city_group building distance: negative value {value}")))?;
                                     }
                                 } else if field.keyword_is("mesh") {
@@ -181,17 +218,21 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
                         _ => {}
                     }
                 }
-                group.buildings.sort_by_key(|building| building.distance);
                 cities.groups.push(group);
             }
             _ => {}
         }
     }
+    if let Some(error) = errors.first() {
+        return Err(invalid(format!(
+            "{error}: the game records an error and builds no city sprawl (\"Errors while reading cities.txt\", 14163F450)"
+        )));
+    }
     if cities.types_source.is_empty() {
         return Err(invalid("cities types_source is absent or empty"));
     }
     if cities.pixel_step_x == 0 || cities.pixel_step_y == 0 {
-        return Err(invalid("map/cities.txt has a zero or absent pixel step"));
+        return Err(invalid("map/cities.txt has a zero pixel step"));
     }
     Ok(cities)
 }
@@ -229,12 +270,13 @@ city_group = {
     #[test]
     fn native_tokens_defaults_and_repeated_meshes() {
         let cities = parse(
-            br#"@step=02 TYPES_SOURCE=x pixel_step_x=@step pixel_step_y=2
-            unknown={city_group={color_index=9}}
-            city_group={color_index=0x10F "density"=9 building={distance=03 mesh={a} mesh={b}}}
+            br#"@step=02 TYPES_SOURCE=x pixel_step_x=@step
+            city_group={color_index=0x10F building={distance=03 mesh={a} mesh={b}}}
             } city_group={color_index=7}"#,
         )
         .unwrap();
+        // The first `}` ends CPersistent::Read; an absent step keeps its 1.
+        assert_eq!((cities.pixel_step_x, cities.pixel_step_y), (2, 1));
         assert_eq!(cities.groups.len(), 1);
         assert_eq!(cities.groups[0].color_index, 15);
         assert_eq!(cities.groups[0].density, 0.0);
@@ -242,15 +284,40 @@ city_group = {
         assert_eq!(cities.groups[0].buildings[0].distance, 3);
     }
 
+    /// Old World Blues' `distance = 0.5`: `%i` stores the `0` and stops at
+    /// the `.`, which is no error.
     #[test]
-    fn reads_groups_sorted_by_distance() {
+    fn a_fractional_distance_stores_its_integer_part() {
+        let cities =
+            parse(b"types_source = x city_group = { building = { distance = 0.5 } }").unwrap();
+        assert_eq!(cities.groups[0].buildings[0].distance, 0);
+    }
+
+    /// A reported key (an unknown one, a quoted one, which is no keyword)
+    /// and a number that does not scan are recorded errors, after which the
+    /// game builds no sprawl.
+    #[test]
+    fn a_recorded_error_discards_the_file() {
+        for input in [
+            b"types_source = x unknown = { city_group = { } }".as_slice(),
+            b"types_source = x city_group = { \"density\" = 9 }",
+            b"types_source = x city_group = { building = { distance = far } }",
+            b"types_source = x city_group = { density = high }",
+        ] {
+            let error = parse(input).unwrap_err().to_string();
+            assert!(error.contains("builds no city sprawl"), "{error}");
+        }
+    }
+
+    #[test]
+    fn groups_keep_their_rings_in_declaration_order() {
         let cities = parse(SAMPLE).unwrap();
         assert_eq!(cities.types_source, "map/cities.bmp");
         assert_eq!((cities.pixel_step_x, cities.pixel_step_y), (2, 2));
         let group = cities.group_for(15).unwrap();
         assert_eq!(group.density, f64::from(0.9_f32));
-        assert_eq!(group.buildings[0].distance, 1);
-        assert_eq!(group.buildings[1].meshes, ["b", "c"]);
+        assert_eq!(group.buildings[0].distance, 2);
+        assert_eq!(group.buildings[0].meshes, ["b", "c"]);
         assert!(cities.group_for(3).is_none());
     }
 
@@ -260,14 +327,22 @@ city_group = {
         assert!(cities.group_for(0).unwrap().building_for(4).is_none());
     }
 
+    /// 14163F450 scans the rings from the last declared: with SAMPLE's
+    /// descending rings the last, distance 1, answers every distance from 1.
     #[test]
-    fn the_ring_is_the_last_block_the_distance_reaches() {
+    fn the_ring_is_the_last_declared_one_the_distance_reaches() {
         let cities = parse(SAMPLE).unwrap();
         let group = cities.group_for(15).unwrap();
         assert!(group.building_for(0).is_none());
-        assert_eq!(group.building_for(1).unwrap().distance, 1);
-        assert_eq!(group.building_for(2).unwrap().distance, 2);
-        assert_eq!(group.building_for(9).unwrap().distance, 2);
+        assert_eq!(group.building_for(1).unwrap().meshes, ["a"]);
+        assert_eq!(group.building_for(9).unwrap().meshes, ["a"]);
+        let ascending = parse(
+            b"types_source = x city_group = { building = { distance = 1 mesh = { a } } building = { distance = 2 mesh = { b } } }",
+        )
+        .unwrap();
+        let group = &ascending.groups[0];
+        assert_eq!(group.building_for(1).unwrap().meshes, ["a"]);
+        assert_eq!(group.building_for(9).unwrap().meshes, ["b"]);
     }
 
     #[test]

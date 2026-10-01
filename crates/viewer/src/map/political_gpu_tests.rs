@@ -926,7 +926,7 @@ fn political_gpu_recording() {
     let content = installed_content::resolve(&replay.identity, &options).unwrap();
     let map = installed_content::map::load(&content.layers).unwrap();
     let field = FieldDefines::load(&installed_content::defines::read(&content.layers).unwrap()).unwrap();
-    let strategic = installed_content::regions::read(&content.layers).unwrap();
+    let strategic = installed_content::regions::read(&content.layers).unwrap().regions;
     let bitmap = ProvinceMap {
         width: map.width,
         height: map.height,
