@@ -21,9 +21,8 @@
 //! A cube map (`DDSCAPS2_CUBEMAP`) takes the six-face branch: every face, in DDS order, holds
 //! that chain in turn, and the loader reads them without checking the file's length.
 //!
-//! The owner permits decoding DX10 BC7 where the game cannot load it, but BC7 needs its authored
-//! extent and mip chain, not this native BC1-3 chain. Until that reader is integrated, BC7 is
-//! refused by name rather than uploaded with incorrect dimensions or mip payloads.
+//! DX10 BC7 alone takes the owner's exception below: its logical DDS extent and complete
+//! authored mip chain, never the native block-rounded chain.
 
 use super::{Failure, Zero, oversized};
 use crate::image::dds::{MipLevel, Texture, TextureFormat};
@@ -31,6 +30,10 @@ use crate::image::dds::{MipLevel, Texture, TextureFormat};
 const HEADER: usize = 128;
 /// `DDSCAPS2_CUBEMAP`, which sends `load_dds` to its six-face branch.
 const CUBE_MAP: u32 = 0x200;
+/// `DDSCAPS2_VOLUME`, which the BC7 branch refuses.
+const VOLUME: u32 = 0x20_0000;
+/// The DX10 header's `DDS_RESOURCE_MISC_TEXTURECUBE`, which the BC7 branch refuses.
+const DX10_CUBE: u32 = 4;
 
 fn code(name: &[u8; 4]) -> u32 {
     u32::from_le_bytes(*name)
@@ -119,15 +122,12 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
     } else {
         HEADER
     };
-    // The BC7 owner exception needs the authored chain: native block rounding misreads, for
-    // example, TFR's 550x469 drone_normal.dds after mip 2 and truncates the chain. Its decoder
-    // remains separate work, so do not silently apply BC1-3 layout to BC7.
-    if start == HEADER + 20 && bytes.len() >= start && matches!(word(128), 98 | 99) {
-        return Err(Failure::Undecodable(
-            "a DX10 BC7 DDS: the viewer does not yet read its authored extent and mip chain; \
-             BC7 textures are not drawn"
-                .to_owned(),
-        ));
+    // OWNER EXCEPTION (2026-10-01, BC7 only): load_dds@142410030 never reads dxgiFormat,
+    // reads BC7 as BGRA and keeps no levels; create_texture@1423FB4F0 fails. Decode BC7
+    // properly instead, with DDS logical mips and the header's colour space. Other DX10
+    // files and the native BC1-3 chain below are unchanged.
+    if start == HEADER + 20 && bytes.len() >= HEADER + 4 && matches!(word(128), 98 | 99) {
+        return bc7(bytes, word, word(128) == 99);
     }
     let form = if fourcc == code(b"DXT1") {
         Form::Blocks(TextureFormat::Bc1, 8)
@@ -284,6 +284,83 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
     )))
 }
 
+/// The BC7-only DX10 branch: DDS logical sizes and complete authored mip chains.
+fn bc7(
+    bytes: &[u8],
+    word: impl Fn(usize) -> u32,
+    srgb: bool,
+) -> Result<Option<(Texture, Zero)>, Failure> {
+    let refuse = |why: String| Failure::Undecodable(format!("a DX10 BC7 DDS: {why}"));
+    if bytes.len() < HEADER + 20 {
+        return Err(refuse("truncated DX10 header".to_owned()));
+    }
+    let (width, height) = (word(16), word(12));
+    if width == 0 || height == 0 {
+        return Err(refuse(format!("zero extent {width}x{height}")));
+    }
+    oversized(width, height)?;
+    if word(132) != 3 || word(24) > 1 || word(112) & VOLUME != 0 {
+        return Err(refuse(format!(
+            "unsupported resource dimension {} or volume depth {}",
+            word(132),
+            word(24)
+        )));
+    }
+    if word(112) & CUBE_MAP != 0 || word(136) & DX10_CUBE != 0 {
+        return Err(refuse(
+            "cube maps are not supported by the BC7 reader".to_owned(),
+        ));
+    }
+    if word(140) != 1 {
+        return Err(refuse(format!(
+            "unsupported texture array size {}",
+            word(140)
+        )));
+    }
+    // DDSD_MIPMAPCOUNT: without it the mipMapCount word does not declare a chain.
+    let count = if word(8) & 0x2_0000 != 0 {
+        word(28).max(1)
+    } else {
+        1
+    };
+    let maximum = width.max(height).ilog2() + 1;
+    if count > maximum {
+        return Err(refuse(format!(
+            "declares {count} mip levels but {width}x{height} permits only {maximum}"
+        )));
+    }
+    let mut levels = Vec::new();
+    let mut offset = HEADER + 20;
+    for level in 0..count {
+        let (width, height) = ((width >> level).max(1), (height >> level).max(1));
+        let size = width.div_ceil(4) as usize * height.div_ceil(4) as usize * 16;
+        let end = offset + size;
+        let data = bytes.get(offset..end).ok_or_else(|| {
+            refuse(format!(
+                "truncated declared mip chain at level {level} ({width}x{height}): \
+                 needs bytes {offset}..{end}, file holds {} bytes",
+                bytes.len()
+            ))
+        })?;
+        levels.push(MipLevel {
+            width,
+            height,
+            data: data.to_vec(),
+        });
+        offset = end;
+    }
+    Ok(Some((
+        Texture {
+            format: TextureFormat::Bc7 { srgb },
+            width,
+            height,
+            faces: 1,
+            mips: vec![levels],
+        },
+        Zero::Transparent,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,42 +434,189 @@ mod tests {
         assert!(matches!(load(&file), Err(Failure::Undefined(why)) if why.contains("face 5")));
     }
 
-    /// BC7's logical chains cannot use native BC1-3 rounding; keep the known content limit
-    /// named until the BC7 reader is integrated. Other DX10 formats retain native BGRA reading.
+    fn dx10(width: u32, height: u32, mips: u32, dxgi: u32) -> Vec<u8> {
+        let mut file = header(width, height, mips, 4, b"DX10", 0, [0; 4]);
+        file[8..12].copy_from_slice(&0x2_0000_u32.to_le_bytes());
+        for word in [dxgi, 3, 0, 1, 0] {
+            file.extend(word.to_le_bytes());
+        }
+        file
+    }
+
     #[test]
-    fn dx10_bc7_is_refused_instead_of_using_native_block_rounding() {
-        let dx10 = |width, height, mips, dxgi: u32| {
-            let mut file = header(width, height, mips, 4, b"DX10", 0, [0; 4]);
-            file.extend(dxgi.to_le_bytes());
-            file.extend([3, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
-            let (mut w, mut h) = (width, height);
-            for _ in 0..mips {
-                file.extend(std::iter::repeat_n(
-                    0,
-                    (w.div_ceil(4) * h.div_ceil(4) * 16) as usize,
-                ));
-                w = (w / 2).max(1);
-                h = (h / 2).max(1);
+    fn bc7_keeps_logical_mips_and_exact_payload_offsets() {
+        for (dxgi, srgb) in [(98, false), (99, true)] {
+            let mut file = dx10(10, 6, 4, dxgi);
+            let expected = [
+                (10, 6, 96, 148),
+                (5, 3, 32, 244),
+                (2, 1, 16, 276),
+                (1, 1, 16, 292),
+            ];
+            for (level, &(_, _, size, offset)) in expected.iter().enumerate() {
+                assert_eq!(file.len(), offset);
+                file.extend(std::iter::repeat_n(level as u8 + 1, size));
             }
-            file
-        };
-        for dxgi in [98, 99] {
-            for (width, height, mips) in [(5, 4, 2), (550, 469, 10), (512, 512, 10)] {
-                let why = load(&dx10(width, height, mips, dxgi)).err().unwrap();
-                assert!(
-                    matches!(why, Failure::Undecodable(ref reason)
-                        if reason.contains("BC7") && reason.contains("authored extent and mip chain")),
-                    "{why:?}"
+            let (texture, zero) = load(&file).unwrap().unwrap();
+            assert_eq!((texture.width, texture.height, texture.faces), (10, 6, 1));
+            assert_eq!(texture.format, TextureFormat::Bc7 { srgb });
+            assert_eq!(zero, Zero::Transparent);
+            assert_eq!(texture.mip_count(), 4);
+            for (mip, &(width, height, size, offset)) in texture.mips[0].iter().zip(&expected) {
+                assert_eq!(
+                    (mip.width, mip.height, mip.data.len()),
+                    (width, height, size)
                 );
+                assert_eq!(mip.data, file[offset..offset + size]);
             }
         }
-        let mut other = header(1, 1, 1, 4, b"DX10", 0, [0; 4]);
-        other.extend(87_u32.to_le_bytes());
-        other.extend([0; 16]);
-        other.extend([1, 2, 3, 4]);
-        let texture = load(&other).unwrap().unwrap().0;
-        assert_eq!(texture.format, TextureFormat::Rgba8);
-        assert_eq!(texture.base().data, [3, 2, 1, 4]);
+    }
+
+    /// The native padding step copies BC7's logical block rows, including sub-block mips,
+    /// without reinterpreting them as the native BC1-3 chain.
+    #[test]
+    fn bc7_force_pow2_copies_logical_block_rows_at_the_padded_pitch() {
+        use super::super::{Decode, decode_texture_image};
+
+        for (dxgi, srgb) in [(98, false), (99, true)] {
+            let mut file = dx10(10, 6, 4, dxgi);
+            let data: Vec<Vec<u8>> = [96, 32, 16, 16]
+                .into_iter()
+                .enumerate()
+                .map(|(level, size)| {
+                    (0..size)
+                        .map(|byte| (level * 32 + byte + 1) as u8)
+                        .collect()
+                })
+                .collect();
+            for bytes in &data {
+                file.extend(bytes);
+            }
+            let padded = decode_texture_image(
+                b"gfx/padded-bc7.dds",
+                &file,
+                Decode {
+                    force_pow2_textures: true,
+                },
+            )
+            .unwrap();
+            assert_eq!((padded.width, padded.height, padded.faces), (16, 8, 1));
+            assert_eq!(padded.format, TextureFormat::Bc7 { srgb });
+            assert_eq!(padded.mip_count(), 4);
+            // Logical and padded extents.
+            let expected = [
+                ((10, 6), (16, 8)),
+                ((5, 3), (8, 4)),
+                ((2, 1), (4, 2)),
+                ((1, 1), (2, 1)),
+            ];
+            let unpadded =
+                decode_texture_image(b"gfx/padded-bc7.dds", &file, Decode::default()).unwrap();
+            for (index, &(logical_extent, padded_extent)) in expected.iter().enumerate() {
+                let original = &unpadded.mips[0][index];
+                assert_eq!((original.width, original.height), logical_extent);
+                assert_eq!(original.data, data[index]);
+                let mip = &padded.mips[0][index];
+                assert_eq!((mip.width, mip.height), padded_extent);
+                let source_pitch = original.width.div_ceil(4) as usize * 16;
+                let padded_pitch = mip.width.div_ceil(4) as usize * 16;
+                let rows = mip.height.div_ceil(4) as usize;
+                assert_eq!(mip.data.len(), padded_pitch * rows);
+                for (row, bytes) in mip.data.chunks_exact(padded_pitch).enumerate() {
+                    assert_eq!(
+                        bytes[..source_pitch],
+                        data[index][row * source_pitch..(row + 1) * source_pitch],
+                        "level {index}, row {row}"
+                    );
+                    assert!(bytes[source_pitch..].iter().all(|&byte| byte == 0));
+                }
+            }
+        }
+    }
+
+    /// DDS clamps the logical short side to one; the native padding step does not clamp its
+    /// shifted side, so it refuses before an empty padded buffer could reach the device.
+    #[test]
+    fn bc7_force_pow2_refuses_a_zero_padded_mip_side_by_file_name() {
+        use super::super::{Decode, decode_texture_image};
+        use crate::gui::native::resources::{NoTexture, texture};
+
+        for dxgi in [98, 99] {
+            let mut file = dx10(10, 2, 4, dxgi);
+            for (level, size) in [48, 32, 16, 16].into_iter().enumerate() {
+                file.extend(std::iter::repeat_n(level as u8 + 1, size));
+            }
+            let name = b"gfx/thin-bc7.dds";
+            let unpadded = decode_texture_image(name, &file, Decode::default()).unwrap();
+            let sides: Vec<_> = unpadded.mips[0]
+                .iter()
+                .map(|m| (m.width, m.height))
+                .collect();
+            assert_eq!(sides, [(10, 2), (5, 1), (2, 1), (1, 1)]);
+            let padded = texture(
+                name,
+                &|path| {
+                    assert_eq!(path, name);
+                    Ok(file.clone())
+                },
+                Decode {
+                    force_pow2_textures: true,
+                },
+            )
+            .unwrap();
+            assert!(matches!(padded, Err(NoTexture::Undefined { path, reason })
+                if path == "gfx/thin-bc7.dds"
+                    && reason.contains("pads a 10x2 image to 16x2")
+                    && reason.contains("level 2 is 4x0")
+                    && reason.contains("pad_power_of_two@1423F8FA0")
+                    && reason.contains("create_texture@1423FB4F0")));
+        }
+    }
+
+    #[test]
+    fn bc7_uses_the_mip_count_only_when_the_header_declares_it() {
+        for (flags, count, levels) in [(0, 4, 1), (0x2_0000, 0, 1), (0x2_0000, 2, 2)] {
+            let mut file = dx10(10, 6, count, 98);
+            file[8..12].copy_from_slice(&u32::to_le_bytes(flags));
+            file.extend([1; 96]);
+            file.extend([2; 32]);
+            let texture = load(&file).unwrap().unwrap().0;
+            assert_eq!(texture.mip_count(), levels);
+        }
+    }
+
+    #[test]
+    fn bc7_refuses_every_truncated_declared_level_by_name() {
+        let mut file = dx10(10, 6, 4, 98);
+        file.extend([0; 160]);
+        for (length, level) in [(243, 0), (275, 1), (291, 2), (307, 3)] {
+            let error = load(&file[..length]).unwrap_err();
+            assert!(
+                matches!(error, Failure::Undecodable(ref why)
+                    if why.contains("DX10 BC7 DDS")
+                        && why.contains("truncated declared mip chain")
+                        && why.contains(&format!("level {level}"))),
+                "{error:?}"
+            );
+        }
+        assert!(matches!(load(&file[..132]), Err(Failure::Undecodable(why))
+            if why.contains("BC7") && why.contains("truncated DX10 header")));
+    }
+
+    #[test]
+    fn bc7_refuses_unreached_cube_array_and_volume_forms_by_name() {
+        let file = dx10(10, 6, 4, 98);
+        for (offset, value, reason) in [
+            (112, CUBE_MAP, "cube maps"),
+            (136, 4, "cube maps"),
+            (140, 2, "array size 2"),
+            (132, 4, "resource dimension 4"),
+        ] {
+            let mut invalid = file.clone();
+            invalid[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            assert!(matches!(load(&invalid), Err(Failure::Undecodable(why))
+                if why.contains("BC7") && why.contains(reason)));
+        }
     }
 
     /// A 32-bit surface is `B8G8R8A8` whatever its masks and alpha flag say; a missing level

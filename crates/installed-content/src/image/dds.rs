@@ -39,9 +39,8 @@ pub enum TextureFormat {
     Bc2,
     /// DXT5 blocks, 16 bytes per 4x4 block, kept as authored.
     Bc3,
-    /// BC7 blocks, 16 bytes per 4x4 block, for the owner's permitted BC7 decoding. The viewer
-    /// supports their GPU upload; file readers still refuse BC7 until its authored chain is read.
-    Bc7,
+    /// DX10 BC7 blocks, 16 bytes per 4x4 block, with the header's colour space.
+    Bc7 { srgb: bool },
     /// Straight 8-bit R, G, B, A, row-major from the top-left corner.
     Rgba8,
     /// `DXGI_FORMAT_B5G6R5_UNORM`, as the game's DDS loader keeps a 5-6-5 surface (its format 7,
@@ -59,7 +58,7 @@ impl TextureFormat {
     pub fn block_bytes(self) -> Option<usize> {
         match self {
             Self::Bc1 => Some(8),
-            Self::Bc2 | Self::Bc3 | Self::Bc7 => Some(16),
+            Self::Bc2 | Self::Bc3 | Self::Bc7 { .. } => Some(16),
             Self::Rgba8 | Self::B5G6R5 | Self::B5G5R5A1 => None,
         }
     }
@@ -69,7 +68,7 @@ impl TextureFormat {
     pub fn unit(self) -> (u32, usize) {
         match self {
             Self::Bc1 => (4, 8),
-            Self::Bc2 | Self::Bc3 | Self::Bc7 => (4, 16),
+            Self::Bc2 | Self::Bc3 | Self::Bc7 { .. } => (4, 16),
             Self::Rgba8 => (1, 4),
             Self::B5G6R5 | Self::B5G5R5A1 => (1, 2),
         }
@@ -94,7 +93,7 @@ impl TextureFormat {
         match self {
             Self::B5G6R5 => Some([field(11, 31), field(5, 63), field(0, 31), 1.0]),
             Self::B5G5R5A1 => Some([field(10, 31), field(5, 31), field(0, 31), field(15, 1)]),
-            Self::Bc1 | Self::Bc2 | Self::Bc3 | Self::Bc7 | Self::Rgba8 => None,
+            Self::Bc1 | Self::Bc2 | Self::Bc3 | Self::Bc7 { .. } | Self::Rgba8 => None,
         }
     }
 }
