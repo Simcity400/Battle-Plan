@@ -90,7 +90,6 @@ pub struct MapIcons {
     /// Decoded pages and strips; the batch refers to these by index.
     pub images: Vec<dds::Texture>,
     pub fonts: text::Fonts,
-    pub victory_points: SpriteSheet,
     // counters: the unit-counter, base and combat sheets, and the flag atlas.
     pub counters: CounterAssets,
     /// The raid map icon's layout, sprites and raid content.
@@ -118,8 +117,6 @@ impl MapIcons {
         decode: Decode,
     ) -> io::Result<Self> {
         let mut images = Vec::new();
-        // The label sprite and font are the ones `mapicons.gui` names.
-        let labels = super::labels::LabelLayout::read(layers)?;
         // The natively drawn map-icon windows read nothing the legacy readers give. This read
         // decides only which sprites, fonts and textures the windows' resources load, a set no
         // GUI viewport changes (`max_resolution` changes a `windowType`'s size, never which
@@ -142,20 +139,13 @@ impl MapIcons {
             &interface,
             language,
             &text::DeclaredFonts {
-                label: &labels.font,
                 counter: layouts.land.count.font.as_deref(),
-                ping: layouts
-                    .faction_ping
-                    .as_ref()
-                    .ok()
-                    .and_then(|ping| ping.count.font.as_deref()),
                 arrow: arrow_font.as_deref(),
             },
             &mut images,
             &mut font_warnings,
         )?;
         let sprites = &interface.sprites;
-        let victory_points = load_sheet(layers, sprites, &labels.sprite, &mut images)?;
         // Flag and portrait reads happen after this load returns, so the lazy
         // stores keep their own handle on the layers.
         let shared = Arc::new(layers.clone());
@@ -205,8 +195,11 @@ impl MapIcons {
             &mut images,
             &lazy,
         )?;
-        let mut raids = super::raids::RaidAssets::load(layers, defines, map, sprites, &mut images)?;
+        let mut raids = super::raids::RaidAssets::load(layers, defines, map, &interface.registry)?;
         raids.triggers = combat.tactics.trigger_names();
+        counters
+            .gui
+            .load(layers, &raids.gui_assets(), &mut images)?;
         if images.len() >= DYNAMIC_BASE {
             return Err(invalid("more static icon pages than texture ids"));
         }
@@ -214,7 +207,6 @@ impl MapIcons {
             combat,
             images,
             fonts,
-            victory_points,
             counters,
             raids,
             lazy,
@@ -450,21 +442,6 @@ impl Batch {
         self.quads.push(Quad {
             layer: self.layer,
             ..quad
-        });
-    }
-
-    /// Adds one sprite frame with its top-left corner at `at`.
-    pub fn sprite(&mut self, sheet: &SpriteSheet, frame: u32, at: [f32; 2], color: [f32; 4]) {
-        let size = sheet.frame_size();
-        self.quads.push(Quad {
-            texture: sheet.texture,
-            rect: [at[0], at[1], size[0], size[1]],
-            uv: sheet.frame_uv(frame),
-            color,
-            rotation: 0.0,
-            layer: self.layer,
-            shade: 0.0,
-            exact: None,
         });
     }
 
@@ -2429,25 +2406,6 @@ mod tests {
             [base + 2]
         );
         assert_eq!(plan_sync(&HashMap::new(), &failed, &[]).drop, [base + 2]);
-    }
-
-    #[test]
-    fn a_batch_keeps_the_push_order_and_names_its_texture() {
-        let mut batch = Batch::default();
-        assert!(batch.is_empty());
-        batch.sprite(&strip(20, 580), 2, [10.0, 20.0], [1.0, 1.0, 1.0, 1.0]);
-        assert_eq!(batch.quads[0].rect, [10.0, 20.0, 29.0, 27.0]);
-        assert_eq!(batch.quads[0].texture, 0);
-        batch.text(
-            &[text::TextGlyph {
-                page: 3,
-                rect: [1.0, 2.0, 3.0, 4.0],
-                uv: [0.0, 0.0, 1.0, 1.0],
-            }],
-            [0.5, 0.5, 0.5, 1.0],
-        );
-        assert_eq!(batch.quads[1].texture, 3);
-        assert_eq!(batch.quads[1].color, [0.5, 0.5, 0.5, 1.0]);
     }
 
     /// Every device pixel of a quad: its bilinear footprint in texels along x,

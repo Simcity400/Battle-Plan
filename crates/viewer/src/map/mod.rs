@@ -43,6 +43,7 @@ pub mod models;
 pub mod railways;
 pub mod trains;
 // names
+pub mod icon_windows;
 pub mod labels;
 pub mod layers;
 pub mod lazy_icons;

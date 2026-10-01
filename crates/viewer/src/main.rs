@@ -1535,9 +1535,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // counters: faction-theatre pins
         let pings = &counter_report.faction_ping_limits;
         println!(
-            "Faction-theatre pins: {} drawn ({} without a resolved emblem); {} theatres refused for a shared first region, {} without a region position, {} unresolved hidden-for links{}",
+            "Faction-theatre pins: {} drawn; {} theatres refused for a shared first region, {} without a region position, {} unresolved hidden-for links{}",
             counter_report.faction_pings,
-            counter_report.unresolved_ping_emblems,
             pings.ambiguous,
             pings.unplaced,
             pings.unresolved_hidden,

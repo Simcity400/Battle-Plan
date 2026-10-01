@@ -479,3 +479,46 @@ fn a_repeated_resource_token_is_its_own_resource_and_never_blanks_the_others() {
         [1, 1, 2, 3]
     );
 }
+
+#[test]
+fn unknown_decode_settings_keep_resource_names_and_refuse_icons_by_token() {
+    let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "interface/test.gui",
+            "guiTypes = { containerWindowType = { name = resources_info_entry buttonType = { name = resources_icon spriteType = icon } } }",
+        ),
+        (
+            "interface/test.gfx",
+            "spriteTypes = { spriteType = { name = icon texturefile = gfx/icon.dds } }",
+        ),
+        (
+            "common/resources/test.txt",
+            "resources = { ore = { icon_frame = 1 } }",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            "\u{feff}l_english:\n PRODUCTION_MATERIALS_ORE:0 \"Ore\"\n",
+        ),
+    ]);
+    catalogue.guis = installed_content::gui::native::read_layers(&catalogue.content.layers).unwrap();
+    catalogue.gui_decode = Err("settings.txt is unavailable".into());
+    let mut cached = Default::default();
+    let mut warnings = Vec::new();
+    super::resource_content(
+        &catalogue,
+        &[("ore".into(), 1)],
+        &mut cached,
+        &mut warnings,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let declared = &cached[&("ore".into(), 1)];
+    assert_eq!(declared.name.as_deref(), Some("Ore"));
+    assert!(declared.icon.is_none());
+    assert!(
+        warnings
+            .iter()
+            .any(|why| why.contains("ore: icon unavailable: settings.txt")),
+        "{warnings:?}"
+    );
+}

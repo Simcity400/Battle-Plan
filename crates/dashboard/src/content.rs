@@ -34,8 +34,15 @@ pub fn localisation_key(content: &ContentOptions) -> io::Result<LocalisationKey>
 /// The recording's localisation in the user's game language, read once per source
 /// and key and shared by every product that names anything.
 pub fn localisation(source: &Source, content: &ContentOptions) -> io::Result<Arc<Localisation>> {
+    localisation_with_key(source, content, localisation_key(content)?)
+}
+
+pub(crate) fn localisation_with_key(
+    source: &Source,
+    content: &ContentOptions,
+    key: LocalisationKey,
+) -> io::Result<Arc<Localisation>> {
     type Cached = Option<(LocalisationKey, Arc<Localisation>)>;
-    let key = localisation_key(content)?;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     if let Some((cached, localisation)) = state.as_ref()

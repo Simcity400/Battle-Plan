@@ -18,6 +18,58 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+/// A code-bound sprite control, using the template registry and the window's
+/// kind-local lookup (FindGuiType@142247660, FindButton@1422A4A20,
+/// FindGuiElementInParallelNameArrays@14229E5C0). Refusing this control does
+/// not refuse unrelated elements in the same file.
+pub(crate) fn gui_sprite_name(
+    root: &installed_content::gui::native::Element,
+    kind: installed_content::gui::native::Kind,
+    name: &str,
+) -> io::Result<String> {
+    let child = root
+        .find(kind, name)
+        .ok_or_else(|| invalid(format!("{} has no sprite control {name}", root.path)))?;
+    let refusals: Vec<_> = root
+        .refusals()
+        .iter()
+        .chain(child.refusals())
+        .map(ToString::to_string)
+        .collect();
+    if !refusals.is_empty() {
+        return Err(invalid(format!(
+            "{} is refused: {}",
+            child.path,
+            refusals.join("; ")
+        )));
+    }
+    let bytes = child
+        .button()
+        .map(|button| &button.sprite)
+        .or_else(|| child.icon().map(|icon| &icon.sprite))
+        .ok_or_else(|| invalid(format!("{} is not a sprite control", child.path)))?;
+    std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
+        invalid(format!(
+            "{} names a sprite the dashboard cannot represent as UTF-8",
+            child.path
+        ))
+    })
+}
+
+/// `CreateGuiObjectBySpriteName@142222AD0` retries the executable's fallback
+/// only when the requested name is absent. A declared but refused sprite stays refused.
+pub(crate) fn created_gui_sprite<'a>(
+    sprites: &'a SpriteSet,
+    name: &str,
+) -> io::Result<&'a installed_content::gfx::SpriteType> {
+    if let Some(sprite) = sprites.find(name).map_err(invalid)? {
+        return Ok(sprite);
+    }
+    let fallback = std::str::from_utf8(installed_content::gui::native::resources::FALLBACK_SPRITE)
+        .expect("the executable's fallback sprite literal is ASCII");
+    sprites.lookup(fallback).map_err(invalid)
+}
+
 /// How the game's view of a name treats `[...]` scripted text, settled per
 /// view by tracing it to CTextBase::ProcessString (1412B9CA0), the only
 /// evaluator: a text box itself (`CInstantTextBox::text_setter` 1422B59E0)
@@ -158,6 +210,10 @@ pub struct Catalogue {
     /// Shared with country naming (`content::localisation`): parsed once per source.
     pub localisation: Arc<Localisation>,
     pub sprites: SpriteSet,
+    /// Shared native template registry, read once with this content catalogue.
+    pub guis: installed_content::gui::native::Guis,
+    /// The current client's texture decode settings, used by native GUI artwork.
+    pub gui_decode: Result<installed_content::image::native::Decode, String>,
     /// Notes from verifying the recording, such as unverified content allowed by the user.
     pub verification: Vec<String>,
     /// Standing notes about the recorded content, such as native reader logs.
@@ -183,8 +239,30 @@ impl Catalogue {
         let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
         let mut warnings = Vec::new();
         let content = source.content(&options.options)?;
-        let localisation = content::localisation(source, options)?;
+        let settings = installed_content::settings::read_keys(&options.options.user_dir);
+        let language = match &settings {
+            Ok(settings) => settings.language()?,
+            Err(why) => {
+                warnings.push(format!(
+                    "Localisation uses the recorded language {recorded_language}: settings.txt is unavailable: {why}"
+                ));
+                recorded_language.clone()
+            }
+        };
+        let localisation = content::localisation_with_key(
+            source,
+            options,
+            (
+                content::content_key(Some(options)).expect("content options given"),
+                options.options.cache_dir.clone(),
+                language,
+            ),
+        )?;
         let sprites = installed_content::gfx::read(&content.layers)?;
+        let guis = installed_content::gui::native::read_layers(&content.layers)?;
+        let gui_decode = settings
+            .map(|settings| settings.texture_decode())
+            .map_err(|why| format!("settings.txt is unavailable: {why}"));
         for (label, count) in [
             ("logged localisation diagnostics", localisation.logged.len()),
             ("refused localisation forms", localisation.refused.len()),
@@ -207,6 +285,8 @@ impl Catalogue {
             content,
             localisation,
             sprites,
+            guis,
+            gui_decode,
             verification,
             warnings,
             recorded_language,
@@ -287,11 +367,14 @@ impl Catalogue {
 }
 
 /// The shared catalogue for these folders, loaded on first use and replaced when
-/// the folders, the cache folder, the game language or the unverified-content
+/// the folders, the cache folder or the unverified-content
 /// choice change.
 pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
-    type Cached = Option<(content::LocalisationKey, Arc<Catalogue>)>;
-    let key = content::localisation_key(options)?;
+    type Cached = Option<((content::ContentKey, std::path::PathBuf), Arc<Catalogue>)>;
+    let key = (
+        content::content_key(Some(options)).expect("content options given"),
+        options.options.cache_dir.clone(),
+    );
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     if let Some((cached, catalogue)) = state.as_ref()
@@ -369,8 +452,44 @@ pub fn texture_frame_png(
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    let image = read_texture(layers, path)?;
-    if frames == 0 || image.width % frames != 0 || frame >= frames {
+    image_frame_png(&read_texture(layers, path)?, frames, frame, max_edge)
+}
+
+/// Native GUI texture loading, including the resolver and client decode state.
+pub(crate) fn gui_texture(
+    layers: &ResolvedLayers,
+    name: &[u8],
+    decode: installed_content::image::native::Decode,
+) -> io::Result<Rgba8Image> {
+    let texture =
+        installed_content::gui::native::resources::stack_texture(layers, name, decode)?.map_err(|why| {
+            invalid(format!(
+                "GUI texture {} is unavailable: {why}",
+                String::from_utf8_lossy(name)
+            ))
+        })?;
+    installed_content::image::rgba::dds_base(&texture.image)
+}
+
+/// A GUI sprite frame returned as dashboard artwork.
+pub(crate) fn gui_texture_frame_png(
+    layers: &ResolvedLayers,
+    name: &[u8],
+    decode: installed_content::image::native::Decode,
+    frames: u32,
+    frame: u32,
+    max_edge: u32,
+) -> io::Result<String> {
+    image_frame_png(&gui_texture(layers, name, decode)?, frames, frame, max_edge)
+}
+
+fn image_frame_png(
+    image: &Rgba8Image,
+    frames: u32,
+    frame: u32,
+    max_edge: u32,
+) -> io::Result<String> {
+    if frames == 0 || !image.width.is_multiple_of(frames) || frame >= frames {
         return Err(invalid("Invalid sprite frames"));
     }
     let frame_width = image.width / frames;
@@ -413,6 +532,74 @@ pub fn png_data_url(image: &Rgba8Image) -> io::Result<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn gui_sprite_binding_uses_native_inheritance_and_kind_local_names() {
+        use installed_content::gui::native::{self, Kind};
+        let gui = native::read(
+            br#"guiTypes = { containerWindowType = {
+            name = topbar
+            buttonType = { name = base spriteType = "GFX_inherited" }
+            containerWindowType = { name = nested
+                buttonType = { name = player_flag spriteType = "GFX_wrong_window" }
+            }
+            buttonType = { name = player_flag parent = base }
+        } }"#,
+        );
+        let root = gui.template(b"topbar").unwrap();
+        assert_eq!(
+            gui_sprite_name(root, Kind::Button, "PLAYER_FLAG").unwrap(),
+            "GFX_inherited"
+        );
+        assert!(gui_sprite_name(root, Kind::Icon, "player_flag").is_err());
+    }
+
+    #[test]
+    fn a_missing_gui_sprite_uses_the_native_fallback_but_a_refused_one_does_not() {
+        let facts = installed_content::gui::native::sprites::read_sprites(
+            br#"spriteTypes = {
+            spriteType = { name = GFX_default_fallback_texture texturefile = fallback.dds }
+            spriteType = { name = refused noOfFrames = -1 }
+        }"#,
+        );
+        let sprites = SpriteSet::new(&[("interface/test.gfx".to_owned(), facts)]);
+        assert_eq!(
+            created_gui_sprite(&sprites, "absent").unwrap().name,
+            "GFX_default_fallback_texture"
+        );
+        assert!(
+            created_gui_sprite(&sprites, "refused")
+                .unwrap_err()
+                .to_string()
+                .contains("noOfFrames")
+        );
+    }
+
+    #[test]
+    fn gui_artwork_uses_the_texture_resolver_and_client_power_of_two_setting() {
+        let (_, folder) = folder_catalogue(&[("gfx/interface/present.txt", "")]);
+        let mut tga = vec![0; 18];
+        tga[2] = 2;
+        tga[12] = 3;
+        tga[14] = 1;
+        tga[16] = 32;
+        tga[17] = 0x28;
+        tga.extend_from_slice(&[0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255]);
+        std::fs::write(folder.0.join("gfx/interface/icon.tga"), tga).unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+        // The resolver tries icon.dds, icon.tga, then the supplied name.
+        let image = gui_texture(
+            &layers,
+            b"gfx/interface/icon.png",
+            installed_content::image::native::Decode {
+                force_pow2_textures: true,
+            },
+        )
+        .unwrap();
+        assert_eq!((image.width, image.height), (4, 1));
+        // pad_power_of_two@1423F8FA0 pads the FreeImage RGB format with opaque black.
+        assert_eq!(&image.pixels[12..16], &[0, 0, 0, 255]);
+    }
 
     fn fixture() -> Localisation {
         loaded(
@@ -489,6 +676,8 @@ pub(crate) mod tests {
             }),
             localisation: Arc::new(localisation),
             sprites,
+            guis: installed_content::gui::native::Guis { files: Vec::new() },
+            gui_decode: Ok(Default::default()),
             verification: Vec::new(),
             warnings: Vec::new(),
             recorded_language: "english".into(),
@@ -596,5 +785,108 @@ pub(crate) mod tests {
         let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
         let reader = decoder.read_info().unwrap();
         assert_eq!((reader.info().width, reader.info().height), (3, 2));
+    }
+    #[test]
+    fn missing_or_unreadable_settings_only_refuse_catalogue_artwork() {
+        use crate::{
+            products::ContentOptions,
+            test_fixtures::{CAMPAIGN, records, source},
+        };
+        use replay::{container::Replay, spool::Record};
+        use std::sync::atomic::AtomicBool;
+        let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
+            ("hoi4.exe", "test"),
+            (
+                "user/settings.txt",
+                "language=l_english force_pow2_textures=no",
+            ),
+            (
+                "user/dlc_load.json",
+                r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+            ),
+            (
+                "localisation/a_l_english.yml",
+                "\u{feff}l_english:\n NAME:0 \"Recorded name\"\n",
+            ),
+        ]);
+        let options = ContentOptions {
+            options: installed_content::ResolveOptions {
+                game_dir: folder.0.clone(),
+                user_dir: folder.0.join("user"),
+                cache_dir: folder.0.join("cache"),
+            },
+            allow_unverified: true,
+        };
+        std::fs::create_dir(folder.0.join("dlc")).unwrap();
+        let gathered = installed_content::gather(&installed_content::GatherOptions {
+            game_dir: options.options.game_dir.clone(),
+            user_dir: options.options.user_dir.clone(),
+            cache_dir: options.options.cache_dir.clone(),
+            dlc_order: Some(Vec::new()),
+        })
+        .unwrap();
+        let identity = gathered
+            .identity(
+                "test".into(),
+                [
+                    0x9f, 0x86, 0xd0, 0x81, 0x88, 0x4c, 0x7d, 0x65, 0x9a, 0x2f, 0xea, 0xa0, 0xc5,
+                    0x5a, 0xd0, 0x15, 0xa3, 0xbf, 0x4f, 0x1b, 0x2b, 0x0b, 0x82, 0x2c, 0xd1, 0x5d,
+                    0x6c, 0x15, 0xb0, 0xf0, 0x0a, 0x08,
+                ],
+                4,
+                "test".into(),
+                [1; 32],
+            )
+            .unwrap();
+        let settings = options.options.user_dir.join("settings.txt");
+        std::fs::remove_file(&settings).unwrap();
+        for unreadable in [false, true] {
+            if unreadable {
+                std::fs::create_dir(&settings).unwrap();
+            }
+            let mut input = records(1, vec![source(1, 100, Some(1))]);
+            let Record::SessionStart(session) = &mut input[0] else {
+                unreachable!()
+            };
+            session.identity = identity.clone();
+            let source = crate::Source::from_replay(
+                crate::SourceKey {
+                    source_id: "settings-isolation".into(),
+                    revision: unreadable.to_string(),
+                },
+                "memory.battleplan".into(),
+                Arc::new(Replay::from_records(CAMPAIGN.into(), &[input]).unwrap()),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
+            assert_eq!(
+                catalogue
+                    .localised("NAME", crate::catalogue::View::Plain)
+                    .unwrap(),
+                "Recorded name"
+            );
+            assert!(
+                catalogue
+                    .gui_decode
+                    .as_ref()
+                    .unwrap_err()
+                    .contains("settings.txt")
+            );
+            assert!(
+                catalogue
+                    .warnings
+                    .iter()
+                    .any(|why| why.contains("recorded language"))
+            );
+            if unreadable {
+                std::fs::remove_dir(&settings).unwrap();
+            }
+            std::fs::write(&settings, "language=l_english force_pow2_textures=yes").unwrap();
+            let cached = crate::catalogue::catalogue(&source, &options).unwrap();
+            assert!(Arc::ptr_eq(&catalogue, &cached));
+            assert!(cached.gui_decode.is_err());
+            std::fs::remove_file(&settings).unwrap();
+        }
     }
 }

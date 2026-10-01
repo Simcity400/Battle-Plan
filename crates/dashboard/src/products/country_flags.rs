@@ -53,9 +53,10 @@ impl CountryFlagSize {
     }
 }
 
-/// The engine finds the top bar's flag by these fixed names; the sprite the
-/// button draws is content, read from the file.
+/// CTopBar::CTopBar@14187C8D0, literal@142934CD8.
+const TOPBAR: &[u8] = b"topbar";
 const TOPBAR_GUI: &str = "interface/topbar.gui";
+/// CTopBar::setup@14188BA30, literal@1429FA990.
 const PLAYER_FLAG: &str = "player_flag";
 /// Decoded hours kept per source, so a picker and a header following playback
 /// do not evict each other.
@@ -172,17 +173,28 @@ impl Product for CountryFlags {
             }
         }
         let shield = if params.size == CountryFlagSize::Shield {
+            let catalogue = crate::catalogue::catalogue(source, content)?;
+            let decode = *catalogue.gui_decode.as_ref().map_err(|why| {
+                invalid(format!(
+                    "{TOPBAR_GUI}: player_flag shield artwork unavailable: {why}"
+                ))
+            })?;
             let current = state
                 .shield
                 .as_ref()
-                .filter(|(owner, _)| Arc::ptr_eq(owner, &state.contexts[0].content))
-                .map(|(_, style)| Arc::clone(style));
+                .filter(|(owner, setting, _)| {
+                    Arc::ptr_eq(owner, &state.contexts[0].content) && *setting == decode
+                })
+                .map(|(_, _, style)| Arc::clone(style));
             Some(match current {
                 Some(style) => style,
                 None => {
-                    let style = Arc::new(ShieldStyle::load(&state.contexts[0].content)?);
-                    state.shield =
-                        Some((Arc::clone(&state.contexts[0].content), Arc::clone(&style)));
+                    let style = Arc::new(ShieldStyle::load(&catalogue)?);
+                    state.shield = Some((
+                        Arc::clone(&state.contexts[0].content),
+                        decode,
+                        Arc::clone(&style),
+                    ));
                     style
                 }
             })
@@ -198,7 +210,11 @@ struct FlagState {
     /// Most recently used first.
     contexts: Vec<FlagContext>,
     /// The shield read from the content it belongs to; new content rereads it.
-    shield: Option<(Arc<ResolvedContent>, Arc<ShieldStyle>)>,
+    shield: Option<(
+        Arc<ResolvedContent>,
+        installed_content::image::native::Decode,
+        Arc<ShieldStyle>,
+    )>,
 }
 
 /// The top bar's `player_flag` sprite as the recorded content declares it (a
@@ -210,50 +226,45 @@ struct ShieldStyle {
 }
 
 impl ShieldStyle {
-    fn load(content: &ResolvedContent) -> io::Result<Self> {
-        let topbar = installed_content::gui::read(&content.layers, TOPBAR_GUI)?;
-        let name = installed_content::gui::find(&topbar, "buttonType", PLAYER_FLAG)
-            .and_then(installed_content::gui::sprite)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "{TOPBAR_GUI} declares no {PLAYER_FLAG} button with a sprite"
-                ))
-            })?;
-        let sprites = installed_content::gfx::read(&content.layers)?;
-        let sprite = sprites.lookup(name).map_err(invalid)?;
+    fn load(catalogue: &crate::catalogue::Catalogue) -> io::Result<Self> {
+        // CTopBar::CTopBar@14187C8D0 binds the player flag through FindButton@1422A4A20.
+        let content = &catalogue.content;
+        let decode = *catalogue.gui_decode.as_ref().map_err(|why| {
+            invalid(format!(
+                "{TOPBAR_GUI}: player_flag shield artwork unavailable: {why}"
+            ))
+        })?;
+        let topbar = catalogue
+            .guis
+            .template(TOPBAR)
+            .ok_or_else(|| invalid(format!("{TOPBAR_GUI}: the GUI registry has no topbar")))?;
+        let name = crate::catalogue::gui_sprite_name(
+            topbar,
+            installed_content::gui::native::Kind::Button,
+            PLAYER_FLAG,
+        )?;
+        let sprite = crate::catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
         let installed_content::gui::native::sprites::SpriteKind::MaskedShield { shield, .. } =
             &sprite.facts.kind
         else {
             return Err(invalid(format!("{name} is not a maskedShieldType")));
         };
-        let texture = |bytes: &[u8]| {
-            std::str::from_utf8(bytes)
-                .ok()
-                .filter(|text| !text.is_empty())
-                .map(asset_path)
-        };
-        let mask = texture(&shield.texture2)
-            .ok_or_else(|| invalid(format!("{name} declares no mask texture")))?;
+        if shield.texture2.is_empty() {
+            return Err(invalid(format!("{name} declares no mask texture")));
+        }
         Ok(Self {
-            mask: interface_texture(&content.layers, &mask)?,
-            overlay: texture(&shield.texture1)
-                .map(|path| interface_texture(&content.layers, &path))
-                .transpose()?,
+            mask: crate::catalogue::gui_texture(&content.layers, &shield.texture2, decode)?,
+            overlay: if shield.texture1.is_empty() {
+                None
+            } else {
+                Some(crate::catalogue::gui_texture(
+                    &content.layers,
+                    &shield.texture1,
+                    decode,
+                )?)
+            },
         })
     }
-}
-
-/// Collapses doubled separators and backslashes in an authored texture path.
-fn asset_path(raw: &str) -> String {
-    raw.split(['/', '\\'])
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn interface_texture(layers: &installed_content::ResolvedLayers, path: &str) -> io::Result<Rgba8Image> {
-    // Interface textures are small; a larger file or image is not the one the engine draws.
-    crate::catalogue::read_texture_within(layers, path, 4 * 1024 * 1024, 1024)
 }
 
 /// The extent `width` x `height` scaled so its longer side is at most `edge`.
@@ -535,6 +546,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unknown_decode_settings_refuse_the_shield_by_name() {
+        let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[]);
+        catalogue.gui_decode = Err("settings.txt is unavailable".into());
+        let why = ShieldStyle::load(&catalogue).err().unwrap().to_string();
+        assert!(why.contains("player_flag shield artwork"), "{why}");
+        assert!(why.contains("settings.txt"), "{why}");
+    }
+
+    #[test]
+    fn sizes_search_the_game_flag_sets_in_order() {
+        assert_eq!(
+            CountryFlagSize::Medium.sets(),
+            [FlagSet::Medium, FlagSet::Normal]
+        );
+        assert_eq!(CountryFlagSize::Shield.sets(), [FlagSet::Normal]);
+        assert_eq!(bounded(82, 52, 128), (82, 52));
+    }
+
+    #[test]
     fn shield_keeps_flag_colour_takes_mask_alpha_and_blends_the_overlay() {
         let image = |width, height, pixels: Vec<u8>| Rgba8Image {
             width,
@@ -565,20 +595,6 @@ mod tests {
             ),
             (128, 64)
         );
-    }
-
-    #[test]
-    fn sizes_search_the_game_flag_sets_in_order() {
-        assert_eq!(
-            CountryFlagSize::Medium.sets(),
-            [FlagSet::Medium, FlagSet::Normal]
-        );
-        assert_eq!(CountryFlagSize::Shield.sets(), [FlagSet::Normal]);
-        assert_eq!(
-            asset_path("gfx//interface\\flag_overlay.dds"),
-            "gfx/interface/flag_overlay.dds"
-        );
-        assert_eq!(bounded(82, 52, 128), (82, 52));
     }
 
     #[test]

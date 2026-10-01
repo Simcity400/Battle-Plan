@@ -235,7 +235,7 @@ pub fn run(
     let mut log = Log::default();
     let layers: &ResolvedLayers = &resolved.layers;
     let defines = log.read("defines", || installed_content::defines::read(layers));
-    let sprites = interface(&mut log, layers, &language, decode);
+    let interface = interface(&mut log, layers, &language, decode);
     let map = map(&mut log, layers, defines.as_ref(), decode);
     politics(&mut log, layers, defines.as_ref());
     units(&mut log, layers, defines.as_ref(), &map, decode);
@@ -244,8 +244,8 @@ pub fn run(
         layers,
         defines.as_ref(),
         &map,
-        sprites.as_ref(),
         decode,
+        interface.as_ref().map(|interface| &interface.registry),
     );
     triggers(&mut log, layers, defines.as_ref());
     let counts = match (&map.buildings, &map.ideologies, &map.resources) {
@@ -285,16 +285,13 @@ pub fn run(
     (log.runs, log.diagnostics)
 }
 
-/// Localisation, interface sprites, fonts, the model and particle
-/// descriptors.
-/// Localisation, interface sprites and fonts, the GUI files, the model and
-/// particle descriptors; the interface sprites as the viewer holds them.
+/// Localisation, interface resources, GUI files, model and particle descriptors.
 fn interface(
     log: &mut Log,
     layers: &ResolvedLayers,
     language: &str,
     decode: installed_content::image::native::Decode,
-) -> Option<installed_content::gfx::SpriteSet> {
+) -> Option<crate::map::sprites::Interface> {
     if let Some(localisation) = log.read("localisation", || {
         installed_content::localisation::read(layers, language)
     }) {
@@ -387,8 +384,7 @@ fn interface(
             }
         }
     }
-    // The tree reader the combat windows, counters, labels and raids read
-    // their `.gui` files with.
+    // The tree reader retained for combat windows and the remaining map icons.
     if let Some(failed) = log.read("gui.tree", || {
         Ok(layers
             .descriptor_paths("interface", &[".gui"])?
@@ -457,7 +453,7 @@ fn interface(
     }
     log.read("abilities", || installed_content::abilities::read(layers));
     log.read("ambient", || installed_content::ambient::read(layers));
-    interface.map(|interface| interface.sprites)
+    interface
 }
 
 /// What the map readers give the later ones.
@@ -1014,8 +1010,8 @@ fn viewer_map_assets(
     layers: &ResolvedLayers,
     defines: Option<&Defines>,
     map: &Map,
-    sprites: Option<&installed_content::gfx::SpriteSet>,
     decode: installed_content::image::native::Decode,
+    registry: Option<&installed_content::gui::native::resources::Registry>,
 ) {
     let Some(defines) = defines else {
         log.not_run(
@@ -1093,12 +1089,12 @@ fn viewer_map_assets(
         )
     });
     log.notes("viewer.map_buildings", Kind::Warning, &warnings);
-    let Some(sprites) = sprites else {
+    let Some(registry) = registry else {
         log.not_run(&["viewer.raids"], "gui.resources");
         return;
     };
     if let Some(raids) = log.read("viewer.raids", || {
-        crate::map::raids::RaidAssets::load(layers, defines, data, sprites, &mut Vec::new())
+        crate::map::raids::RaidAssets::load(layers, defines, data, registry)
     }) {
         log.notes("viewer.raids", Kind::Warning, &raids.warnings);
         log.notes("viewer.raids", Kind::Refused, &raids.refusals());
@@ -1109,6 +1105,47 @@ fn viewer_map_assets(
 mod tests {
     use super::*;
     use installed_content::raids::RaidType;
+
+    #[test]
+    fn raids_are_not_run_without_the_interface_registry() {
+        let layers = ResolvedLayers::from_folders(&[]).unwrap();
+        let defines = installed_content::defines::read(&layers).unwrap();
+        let map = Map {
+            terrain: None,
+            buildings: None,
+            ideologies: None,
+            resources: None,
+            regions: None,
+            data: Some(installed_content::map::MapData {
+                width: 1,
+                height: 1,
+                province_ids: vec![0],
+                definitions: Default::default(),
+                country_colors: Default::default(),
+            }),
+        };
+        let mut log = Log::default();
+        viewer_map_assets(
+            &mut log,
+            &layers,
+            Some(&defines),
+            &map,
+            Default::default(),
+            None,
+        );
+        let raids = log
+            .runs
+            .iter()
+            .find(|run| run.reader == "viewer.raids")
+            .unwrap();
+        assert_eq!(raids.not_run.as_deref(), Some("needs gui.resources"));
+        assert!(!raids.completed);
+        assert!(
+            log.diagnostics
+                .iter()
+                .all(|note| note.reader != "viewer.raids")
+        );
+    }
 
     /// A value read without error still holds its refusals: a raid's
     /// refused tooltip, and every marked variant and field, nested or not,

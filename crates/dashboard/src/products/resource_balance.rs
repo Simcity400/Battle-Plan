@@ -85,8 +85,8 @@ const MAX_RUNS: usize = 400_000;
 const CACHED_COUNTRIES: usize = 8;
 /// Longest side of a returned resource icon.
 const ICON_EDGE: u32 = 48;
-/// The trade view's resource row and its icon button, the element the game gives
-/// each resource's `icon_frame` (`interface/countrytradeview.gui`).
+/// CTradeResourceInfoItem::CTradeResourceInfoItem@141CA4B50: template literal
+/// 142A4A878, button literal 1429C0690, FindButton vtable +0x68.
 const TRADE_VIEW_GUI: &str = "interface/countrytradeview.gui";
 const RESOURCE_ROW: &str = "resources_info_entry";
 const RESOURCE_ICON: &str = "resources_icon";
@@ -495,16 +495,14 @@ struct Icons {
 
 fn icons(catalogue: &Catalogue) -> io::Result<(Icons, Vec<String>)> {
     let layers = &catalogue.content.layers;
-    let gui = installed_content::gui::read(layers, TRADE_VIEW_GUI)?;
-    let name = installed_content::gui::find(&gui, "containerWindowType", RESOURCE_ROW)
-        .and_then(|row| installed_content::gui::find_child(row, &["buttonType", "iconType"], RESOURCE_ICON))
-        .and_then(installed_content::gui::sprite)
-        .ok_or_else(|| {
-            crate::invalid(format!(
-                "{TRADE_VIEW_GUI} declares no {RESOURCE_ICON} with a sprite in {RESOURCE_ROW}"
-            ))
-        })?;
-    let sprite = catalogue.sprites.lookup(name).map_err(crate::invalid)?;
+    let row = catalogue.guis.template(RESOURCE_ROW).ok_or_else(|| {
+        crate::invalid(format!(
+            "{TRADE_VIEW_GUI}: the GUI registry has no {RESOURCE_ROW}"
+        ))
+    })?;
+    let name =
+        catalogue::gui_sprite_name(row, installed_content::gui::native::Kind::Button, RESOURCE_ICON)?;
+    let sprite = catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
     let texture = sprite
         .texture
         .clone()
@@ -612,13 +610,20 @@ fn resource_content(
                 .flatten();
             (icons, frame)
         }) {
-            Some((icons, Some(frame))) => match catalogue::texture_frame_png(
-                &catalogue.content.layers,
-                &icons.texture,
-                icons.frames,
-                frame - 1,
-                ICON_EDGE,
-            ) {
+            Some((icons, Some(frame))) => match catalogue
+                .gui_decode
+                .as_ref()
+                .map_err(crate::invalid)
+                .and_then(|decode| {
+                    catalogue::gui_texture_frame_png(
+                        &catalogue.content.layers,
+                        icons.texture.as_bytes(),
+                        *decode,
+                        icons.frames,
+                        frame - 1,
+                        ICON_EDGE,
+                    )
+                }) {
                 Ok(icon) => Some(icon),
                 Err(error) => {
                     warnings.push(format!("{token}: icon unavailable: {error}"));
