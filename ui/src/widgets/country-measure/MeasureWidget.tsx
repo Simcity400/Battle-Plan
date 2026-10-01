@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { SourceFlag } from '../../components/CountryFlag';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -8,7 +8,7 @@ import type { EventBadge } from '../../charts/badges';
 import { dayLabel, drawEventTicks, drawLine, placeEndLabels } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
-import { categoricalPalette, nudgeApart, SECONDARY_DASH } from '../../charts/palette';
+import { SECONDARY_DASH } from '../../charts/palette';
 import { extentOf, lineEndHour } from '../../charts/series';
 import { formatFixed } from '../../charts/valueAxis';
 import type { Run } from '../../charts/series';
@@ -19,6 +19,8 @@ import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { countryLineColours } from '../../dashboard/countryLineColours';
+import { useCountryLineStyles } from '../../dashboard/useCountryLineStyles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { clipRuns, isMember, membershipChanges, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -29,15 +31,12 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { readHourAt, validateStabilityReply } from '../../dashboard/stabilityReply';
 import { formatDateTime } from '../../dashboard/calendar';
 import type { OptionField } from '../../dashboard/options';
-import type { CountryStabilityReply, CountryStyle, CountryStyleReply, Measure, MeasureReply } from '../../generated/dashboard';
-import { parseColor, toHex } from '../../shell/appearance/color';
+import type { CountryStabilityReply, Measure, MeasureReply } from '../../generated/dashboard';
 import { formatBalance, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, toRuns, validateMeasureReply } from './measureData';
 import { MEASURE_OPTIONS } from './options';
 import './measure.css';
 
 const NO_WARNINGS: string[] = [];
-/** Country names and colours are read at most once per this many hours of playback. */
-const STYLE_STEP = 30 * 24;
 /** Hovering within this many pixels of a spend tick snaps to it. */
 const SNAP_PX = 6;
 /** Beyond this many countries the tooltip lists balances only, so it fits the window. */
@@ -87,17 +86,8 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
   // Names and colours as they were at the moment shown: the playhead, the end of a
   // date range, or the branch end.
   const styleAt = playhead ?? (widget.time.mode === 'range' && window ? window.lastHour : lastHour);
-  const styleHour = track ? Math.min(lastHour, track.branch.firstHour + Math.floor((styleAt - track.branch.firstHour) / STYLE_STEP) * STYLE_STEP) : 0;
-  const styleRequest = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-styles',
-    params: { branchId: track.branch.id, hour: styleHour, tags: resolved.tags } } : null;
-  const styles = useProduct<CountryStyleReply>(runtime.client, styleRequest, active);
-  // Keep each country's last known name and colour while the next hour's reply loads,
-  // so lines never flash to fallback colours during playback.
-  const [known, setKnown] = useState<ReadonlyMap<string, CountryStyle>>(new Map());
-  useEffect(() => setKnown(new Map()), [track?.source.id, track?.source.revision, track?.branch.id]);
-  useEffect(() => {
-    if (styles.data) setKnown(previous => new Map([...previous, ...styles.data!.styles.map(style => [style.tag, style] as const)]));
-  }, [styles.data]);
+  const styles = useCountryLineStyles(runtime.client, track, resolved.tags, styleAt, active);
+  const known = styles.known;
 
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []), ...(groups.data?.warnings ?? []),
@@ -110,10 +100,9 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
 
   const series = useMemo(() => {
     if (!data) return [];
-    const palette = categoricalPalette(tokens.surface);
-    const raw = data.series.map((item, index) => {
+    const colours = countryLineColours(data.series.map(item => item.tag), known, tokens.surface, tokens.countryColours === 'fixed');
+    return data.series.map(item => {
       const style = known.get(item.tag);
-      const recorded = style?.color ? { r: style.color[0], g: style.color[1], b: style.color[2] } : parseColor(palette[index % palette.length])!;
       const membership = resolved.membership?.get(item.tag);
       const runs = toRuns(item, data.decimals);
       // A country counted at each hour shows nothing (line, value, spend) outside its membership.
@@ -126,11 +115,9 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
       // The read a shown maximum comes from: an older one is carried, so its time is shown.
       const ceilingReadAt = (hour: number) => maximum ? readHourAt(maximum.carried, hour) : null;
       return { tag: item.tag, name: style?.name ?? track?.source.metadata.countries.find(country => country.tag === item.tag)?.name ?? item.tag,
-        color: recorded, drops, valueAt, runs: membership ? clipRuns(runs, membership) : runs, membership,
+        hex: colours.get(item.tag)!, drops, valueAt, runs: membership ? clipRuns(runs, membership) : runs, membership,
         ceilingRuns: membership ? clipRuns(ceilingRuns, membership) : ceilingRuns, ceilingAt, ceilingReadAt };
     });
-    const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw.map(item => item.color), parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw.map(item => item.color);
-    return raw.map((item, index) => ({ ...item, hex: toHex(adjusted[index]) }));
   }, [data, known, resolved.membership, tokens, track, showCeiling, ceiling.data]);
 
   // Joins and leaves of a group counted at each hour, as badges in the country's colour.

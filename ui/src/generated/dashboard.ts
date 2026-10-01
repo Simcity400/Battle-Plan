@@ -435,6 +435,16 @@ dayHours: number,
  * In hour order.
  */
 reads: Array<FuelRead>, warnings: Array<string>, };
+export type ExperienceParams = { branchId: string, tags: Array<string>, };
+export type ExperienceChange = { armyRaw: string, navyRaw: string, airRaw: string, };
+export type ChangeUnknown = "noMatchingRead";
+export type ExperienceRead = { firstHour: number, lastHour: number, startsSegment: boolean, armyRaw: string, navyRaw: string, airRaw: string, change: ExperienceChange | null, changeUnknown: ChangeUnknown | null, };
+export type ExperienceSeries = { tag: string, reads: Array<ExperienceRead>, };
+export type ExperienceReply = { branchId: string,
+/**
+ * Units per experience point, for banked values and changes alike.
+ */
+scale: number, dayHours: number, series: Array<ExperienceSeries>, warnings: Array<string>, };
 export type IdeaSpan = { token: string, firstHour: number, lastHour: number, slot: string | null, character: IdeaCharacter | null, };
 export type IdeaCharacter = {
 /**

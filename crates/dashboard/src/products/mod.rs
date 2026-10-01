@@ -6,6 +6,7 @@
 //! its key.
 
 pub mod artwork;
+pub mod country_experience;
 pub mod country_flags;
 pub mod country_fuel;
 pub mod country_groups;
@@ -91,6 +92,23 @@ impl CountryParams {
     pub fn branch(&self) -> u64 {
         self.branch_id.parse().expect("validated branch id")
     }
+}
+
+/// Most countries one line-chart request may name.
+pub const MAX_COUNTRIES: usize = 16;
+
+/// Selection checks shared by products drawing several countries.
+pub fn validate_countries(branch_id: &str, tags: &[String]) -> Result<(), &'static str> {
+    if tags.is_empty() || tags.len() > MAX_COUNTRIES {
+        return Err("Invalid country selection");
+    }
+    for tag in tags {
+        validate_tag(tag)?;
+    }
+    if branch_id.parse::<u64>().is_err() {
+        return Err("Invalid branch");
+    }
+    Ok(())
 }
 
 /// The one check for a requested country tag, shared by products and the map.
@@ -191,6 +209,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<stability_parts::StabilityParts>(),
     register::<country_measure::CountryMeasure>(),
     register::<country_fuel::CountryFuel>(),
+    register::<country_experience::CountryExperience>(),
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
     register::<resource_balance::ResourceBalance>(),
@@ -475,6 +494,7 @@ mod tests {
             "FixedRun",
             "MeasureReply",
             "FuelReply",
+            "ExperienceReply",
             "IdeaHistoryReply",
             "PartyHistoryReply",
             "ResourceBalanceReply",

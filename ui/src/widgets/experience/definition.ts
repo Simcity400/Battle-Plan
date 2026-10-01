@@ -1,0 +1,23 @@
+import type { WidgetMeta } from '../../dashboard/definitions';
+import { END_LABELS_OPTION, LINE_AXIS_OPTIONS, LINE_TIME_OPTIONS } from '../../dashboard/lineChartOptions.ts';
+import type { OptionField } from '../../dashboard/options';
+
+export const OPTIONS: readonly OptionField[] = [
+  ...LINE_TIME_OPTIONS,
+  { key: 'measure', section: 'options', label: 'Measure', kind: 'choice', default: 'banked',
+    choices: [{ value: 'banked', label: 'Banked' }, { value: 'change', label: 'Change per day' }] },
+  { key: 'army', section: 'options', label: 'Army', kind: 'toggle', default: true },
+  { key: 'navy', section: 'options', label: 'Navy', kind: 'toggle', default: true },
+  { key: 'air', section: 'options', label: 'Air', kind: 'toggle', default: true },
+  END_LABELS_OPTION,
+  ...LINE_AXIS_OPTIONS,
+];
+
+export const definition = {
+  kind: 'experience', version: 1, title: 'Experience', icon: 'sparkle',
+  description: 'Army, navy and air experience over time, banked or as the net change per day.',
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 },
+  countries: { max: 16 },
+  options: OPTIONS,
+} as const satisfies WidgetMeta;

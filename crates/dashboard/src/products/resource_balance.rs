@@ -55,7 +55,7 @@ use super::{CountryParams, LoadContext, Product};
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{link_slot, tagged_country, validate_campaign},
+    metadata::{IdentityTrack, link_slot, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
 };
 use installed_content::localisation::Localisation;
@@ -278,7 +278,7 @@ pub fn scan(
     // The identity and hour last seen, and whether the pools and the deals were
     // recorded for it at that hour. The two tables are captured apart, so each
     // has its own.
-    let mut last: Option<((u32, u32), i32)> = None;
+    let mut track = IdentityTrack::default();
     let mut pools_open = false;
     let mut deals_open = false;
     let mut open_trades: BTreeMap<u64, usize> = BTreeMap::new();
@@ -311,10 +311,7 @@ pub fn scan(
                         .found()
                         .map(|(country, slot)| ((slot, country.id), links))
                 });
-            let continues = identity.is_some_and(|(identity, _)| {
-                last.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour))
-            });
-            last = identity.map(|(identity, _)| (identity, hour));
+            let continues = track.step(identity.map(|(identity, _)| identity), hour);
             // Each table's values go on only from its previous hour of the same
             // identity; where one is missing, the other keeps going.
             let pools_continue = continues && pools_open;

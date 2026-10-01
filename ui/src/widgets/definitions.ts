@@ -2,6 +2,7 @@
 import { registerWidgets } from '../dashboard/definitions.ts';
 import { definition as commandPower } from './command-power/definition.ts';
 import { definition as fuel } from './fuel/definition.ts';
+import { definition as experience } from './experience/definition.ts';
 import { definition as ideaTimeline } from './idea-timeline/definition.ts';
 import { definition as map } from './map/definition.ts';
 import { definition as nationalFocus } from './national-focus/definition.ts';
@@ -14,6 +15,6 @@ import { definition as rulingParty } from './ruling-party/definition.ts';
 import { definition as spiritHistory } from './spirit-history/definition.ts';
 import { definition as stability } from './stability/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, fuel, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, fuel, experience, placeholder] as const;
 
 registerWidgets(widgetMetas);

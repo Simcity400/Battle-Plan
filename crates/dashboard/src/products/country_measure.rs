@@ -9,7 +9,8 @@
 //! hours of the same country. They are net changes, because daily income is not
 //! recorded.
 
-use super::{LoadContext, Product, validate_tag};
+pub use super::MAX_COUNTRIES;
+use super::{LoadContext, Product, validate_countries};
 use crate::{
     Source,
     metadata::{mapped_slot, validate_campaign},
@@ -32,8 +33,6 @@ pub struct CountryMeasure;
 /// Decimal places of the recorded fixed-point balances (10.00001 is stored as
 /// 1_000_001; see the recorder's fresh-save oracle).
 pub const MEASURE_DECIMALS: u8 = 5;
-/// Most countries one request may name.
-pub const MAX_COUNTRIES: usize = 16;
 /// Runs kept per country before the scan refuses, far above a long campaign's
 /// daily changes.
 const MAX_RUNS: usize = 400_000;
@@ -131,16 +130,7 @@ impl Product for CountryMeasure {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        if params.tags.is_empty() || params.tags.len() > MAX_COUNTRIES {
-            return Err("Invalid country selection");
-        }
-        for tag in &params.tags {
-            validate_tag(tag)?;
-        }
-        if params.branch_id.parse::<u64>().is_err() {
-            return Err("Invalid branch");
-        }
-        Ok(())
+        validate_countries(&params.branch_id, &params.tags)
     }
 
     fn load(

@@ -130,6 +130,25 @@ pub fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
         .map(|index| links[index].canonical_slot)
 }
 
+/// A tag's country hour by hour, as (canonical slot, country id): whether this
+/// hour goes on from the previous one, the same country one hour later. A gap,
+/// an hour without the country or another holder of the tag breaks it.
+#[derive(Debug, Default)]
+pub struct IdentityTrack {
+    last: Option<((u32, u32), i32)>,
+}
+
+impl IdentityTrack {
+    pub fn step(&mut self, identity: Option<(u32, u32)>, hour: i32) -> bool {
+        let continues = identity.is_some_and(|identity| {
+            self.last
+                .is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour))
+        });
+        self.last = identity.map(|identity| (identity, hour));
+        continues
+    }
+}
+
 /// What complete Countries and CountryLinks tables say of a tag this hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaggedCountry<'a> {

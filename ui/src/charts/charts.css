@@ -55,6 +55,8 @@
 .chart-line-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; padding: 0 var(--space-3); font-size: var(--type-sm); color: var(--muted); }
 .chart-line-key > i { width: 16px; flex: none; border-top: 2px solid currentColor; }
 .chart-line-key > i.is-dashed { border-top-style: dashed; }
+.chart-line-key > span { display: inline-flex; align-items: center; gap: var(--space-1); }
+.chart-line-swatch { flex: none; }
 
 /* Table rows that slide to their new place, flash in and fade out (useRowMotion). A
    widget places each row with a translateY and sets --row-glide from the app's motion. */
