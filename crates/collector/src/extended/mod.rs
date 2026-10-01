@@ -311,6 +311,7 @@ packs!(
     active_abilities,
     country_counters,
     group_counters,
+    saved_event_targets,
     leader_paths,
     country_appearance,
     ship_models,
@@ -1110,6 +1111,10 @@ impl Captured {
         std::mem::swap(&mut self.active_abilities, &mut packs.active_abilities);
         std::mem::swap(&mut self.country_counters, &mut packs.country_counters);
         std::mem::swap(&mut self.group_counters, &mut packs.group_counters);
+        std::mem::swap(
+            &mut self.saved_event_targets,
+            &mut packs.saved_event_targets,
+        );
     }
 
     /// Loan the slow packs, with the raid families' fingerprint stores, to
@@ -2546,6 +2551,7 @@ pub(crate) struct OrdinaryPacks {
     pub(crate) active_abilities: active_abilities::Captured,
     pub(crate) country_counters: country_counters::Captured,
     pub(crate) group_counters: group_counters::Captured,
+    pub(crate) saved_event_targets: saved_event_targets::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
     failure: Option<&'static str>,
 }
@@ -2564,6 +2570,7 @@ impl OrdinaryPacks {
         &active_abilities::TABLES,
         &country_counters::TABLES,
         &group_counters::TABLES,
+        &saved_event_targets::TABLES,
     ];
 
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -2580,6 +2587,7 @@ impl OrdinaryPacks {
             + self.active_abilities.allocated_bytes()
             + self.country_counters.allocated_bytes()
             + self.group_counters.allocated_bytes()
+            + self.saved_event_targets.allocated_bytes()
     }
 
     pub(crate) fn fail(&mut self, reason: &'static str) {
@@ -2595,6 +2603,7 @@ impl OrdinaryPacks {
         self.active_abilities.reset();
         self.country_counters.reset();
         self.group_counters.reset();
+        self.saved_event_targets.reset();
         self.ticks = [0; TABLE_COUNT];
         self.failure = Some(reason);
     }
@@ -2614,6 +2623,7 @@ impl OrdinaryPacks {
             active_abilities: active_abilities::Captured::vacant(),
             country_counters: country_counters::Captured::vacant(),
             group_counters: group_counters::Captured::vacant(),
+            saved_event_targets: saved_event_targets::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
             failure: None,
         })
@@ -2638,7 +2648,8 @@ impl OrdinaryPacks {
             railway_guns,
             active_abilities,
             country_counters,
-            group_counters
+            group_counters,
+            saved_event_targets
         );
         self.ticks = ticks;
     }

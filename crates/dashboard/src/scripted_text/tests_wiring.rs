@@ -28,6 +28,58 @@ fn rendered(
 }
 
 #[test]
+fn saved_globals_promote_text_and_missing_names_leave_its_context_unchanged() {
+    let (catalogue, _folder) = tests::catalogue("", " NAME:0 \"Saved character\"\n");
+    let mut f = frame();
+    set::<tables::Characters>(
+        &mut f,
+        vec![CharacterRow {
+            id: 7,
+            name: b"Saved character".to_vec(),
+            ..Default::default()
+        }],
+    );
+    set::<tables::GlobalSavedEventTargets>(
+        &mut f,
+        vec![
+            GlobalSavedEventTargetRow {
+                ordinal: 0,
+                name: b"chosen".to_vec(),
+                country: 100,
+                ..Default::default()
+            },
+            GlobalSavedEventTargetRow {
+                ordinal: 1,
+                name: b"place".to_vec(),
+                state: 64,
+                ..Default::default()
+            },
+            GlobalSavedEventTargetRow {
+                ordinal: 2,
+                name: b"person".to_vec(),
+                character: 7,
+                live: 1,
+                ..Default::default()
+            },
+        ],
+    );
+    let content = catalogue.scripted_content().unwrap();
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    assert_eq!(
+        text.expand("[chosen.GetTag]/[place.GetID]/[person.GetName]")
+            .as_deref(),
+        Ok("GER/64/Saved character")
+    );
+    assert_eq!(
+        text.expand("[missing.GetID]/[Chosen.GetID]").as_deref(),
+        Ok("/")
+    );
+    set::<tables::GlobalSavedEventTargets>(&mut f, Vec::new());
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    assert_eq!(text.expand("[chosen.GetTag]").as_deref(), Ok(""));
+}
+
+#[test]
 fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
     let (catalogue, _folder) = tests::catalogue(
         r#"

@@ -117,6 +117,8 @@ pub struct RecordedScopes {
     original_tags: OriginalTagLists,
     /// The content's tag alias database (143316AA8).
     aliases: Arc<TagAliases>,
+    saved_targets: Vec<replay::rows::GlobalSavedEventTargetRow>,
+    saved_targets_complete: bool,
     /// Why a table's rows may lack an entry, by table name.
     gaps: BTreeMap<&'static str, String>,
 }
@@ -134,6 +136,14 @@ fn table<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], String) {
         ),
         TableView::Unavailable { reason } => (&[], format!("the table is unavailable: {reason}")),
     }
+}
+
+/// CSavedEventTarget::vf9@14052BE50, using captured object liveness.
+pub(crate) fn valid_saved_target(r: &replay::rows::GlobalSavedEventTargetRow) -> bool {
+    !r.name.is_empty()
+        && (r.state != 0
+            || r.country > 0
+            || r.live & !replay::rows::GlobalSavedEventTargetRow::UNSAVED_NAME != 0)
 }
 
 impl RecordedScopes {
@@ -223,7 +233,15 @@ impl RecordedScopes {
                     .push((row.id, links.get(&row.country).copied()));
             }
         }
+        let (saved_targets, gap) = table::<tables::GlobalSavedEventTargets>(frame);
+        gaps.insert("GlobalSavedEventTargets", gap);
+        let saved_targets_complete = matches!(
+            &*frame.tables[tables::GlobalSavedEventTargets::ID.index()],
+            TableView::Complete(_)
+        );
         Self {
+            saved_targets: saved_targets.to_vec(),
+            saved_targets_complete,
             links,
             tags,
             countries_complete,
@@ -238,6 +256,48 @@ impl RecordedScopes {
             aliases,
             gaps,
         }
+    }
+
+    /// FindGlobalSavedEventTarget@1401DB7B0 returns the first name match,
+    /// even when that record is invalid (14052BE50); no later duplicate wins.
+    pub(crate) fn saved_target(
+        &self,
+        name: &[u8],
+    ) -> Result<Option<&replay::rows::GlobalSavedEventTargetRow>, String> {
+        if !self.saved_targets_complete {
+            return Err(format!(
+                "saved event target {}: GlobalSavedEventTargets {}",
+                String::from_utf8_lossy(name),
+                self.gaps
+                    .get("GlobalSavedEventTargets")
+                    .map(String::as_str)
+                    .unwrap_or("is not recorded")
+            ));
+        }
+        Ok(self.saved_targets.iter().find(|r| r.name == name))
+    }
+
+    pub(crate) fn saved_selection(
+        &self,
+        name: &[u8],
+        reader: crate::triggers::saved_event_targets::Reader,
+    ) -> Result<crate::triggers::saved_event_targets::Selected, String> {
+        use crate::triggers::saved_event_targets::{Selected, select};
+        Ok(self
+            .saved_target(name)?
+            .map_or(Selected::Missing, |r| select(r, reader)))
+    }
+
+    pub(crate) fn saved_country(&self, raw: i32, name: &[u8]) -> Result<Option<u32>, String> {
+        if raw <= 0 {
+            return Ok(None);
+        }
+        self.slot(raw as u32).map(Some).ok_or_else(|| {
+            format!(
+                "saved event target {}: country reference {raw} is not in CountryLinks",
+                String::from_utf8_lossy(name)
+            )
+        })
     }
 
     /// The country a tag scope names, as ResolveScriptCountryTag
@@ -468,8 +528,17 @@ impl RecordedScopes {
                 "var:{name}: runtime script variables are not recorded"
             ))),
             Scope::EventTarget { name, .. } => Err(Missing(format!(
-                "event_target:{name}: event targets are saved at run time and not recorded"
+                "event_target:{name}: saved targets resolve in the trigger evaluator (14146BB30)"
             ))),
+            // Generic prefix accepted by the parser, with no matching resolver
+            // case: only CScopedVariable handles global_event_target: (14146BB30).
+            Scope::Prefixed { prefix, value }
+                if prefix.eq_ignore_ascii_case("global_event_target") =>
+            {
+                Err(Nothing(format!(
+                    "{prefix}:{value}: invalid context scope (14146BB30)"
+                )))
+            }
             Scope::Prefixed { prefix, value } => Err(Missing(format!(
                 "{prefix}:{value}: {prefix} scopes are not recorded"
             ))),
@@ -611,7 +680,8 @@ impl Names for RecordedScopes {
     /// 0x2996); any other keyword prefix parses as well but resolves to the
     /// same refusal.
     fn is_keyword(&self, text: &str) -> bool {
-        ["mio", "sp", "scope"]
+        // global_event_target is native lexer token 0x3D94 (14146DB00).
+        ["mio", "sp", "scope", "global_event_target"]
             .iter()
             .any(|prefix| text.eq_ignore_ascii_case(prefix))
     }
@@ -947,7 +1017,7 @@ pub(crate) mod tests {
             ("var:x", "var:x: runtime script variables are not recorded"),
             (
                 "event_target:hq",
-                "event_target:hq: event targets are saved at run time and not recorded",
+                "event_target:hq: saved targets resolve in the trigger evaluator",
             ),
             ("mio:GER_tank", "mio:GER_tank: mio scopes are not recorded"),
             (

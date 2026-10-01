@@ -488,6 +488,9 @@ fn run(module: HMODULE) -> Result<(), String> {
     if let Some(demand) = crate::country_scale::observe_raid_arenas(&memory, base) {
         sizing.extended.raise_for_raid_arenas(demand);
     }
+    if let Some(demand) = crate::country_scale::observe_saved_targets(&memory, base) {
+        sizing.extended.saved_event_targets.raise(demand);
+    }
     if let Some(demand) = crate::country_scale::observe_characters(&memory, base) {
         sizing.extended.raise_for_characters(demand);
     }
@@ -1072,6 +1075,8 @@ struct RegistryWatch {
     raids: crate::country_scale::RaidArenas,
     last_characters: Option<Instant>,
     characters: crate::country_scale::CharacterDemand,
+    last_saved_targets: Option<Instant>,
+    saved_targets: engine::saved_event_targets::Demand,
     last_politics: Option<Instant>,
     politics: crate::country_scale::PoliticsDemand,
 }
@@ -1173,6 +1178,29 @@ impl RegistryWatch {
                 seen.variables = variables;
                 *seen
             })
+    }
+
+    /// Largest live saved-target row/name demand, at most once per second.
+    /// Load and script growth are presized off-thread before a full capture.
+    fn poll_saved_targets(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Option<engine::saved_event_targets::Demand> {
+        if self
+            .last_saved_targets
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return None;
+        }
+        self.last_saved_targets = Some(Instant::now());
+        let demand = crate::country_scale::observe_saved_targets(memory, base)?;
+        let raised = self.saved_targets.max(demand);
+        if raised == self.saved_targets {
+            return None;
+        }
+        self.saved_targets = raised;
+        Some(raised)
     }
 
     /// Larger political table demand than any seen, at most every
@@ -1497,6 +1525,18 @@ fn spool_loop(
         if let Some(demand) = registry.poll_characters(&live, shared.base) {
             let before = extended_capacities;
             extended_capacities.raise_for_characters(demand);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+        }
+        if let Some(demand) = registry.poll_saved_targets(&live, shared.base) {
+            let before = extended_capacities;
+            extended_capacities.saved_event_targets.raise(demand);
             if extended_capacities != before {
                 grow_idle_frames(
                     shared,

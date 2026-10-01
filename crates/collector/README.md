@@ -195,3 +195,5 @@ from the sliced family census. Playback names the missing link; the ledger and o
 country and commander inputs remain available.
 
 CountryFactoryCounts is read hourly in the country-counter pack, independently of its other tables. Its three stored i32 counts drive scripted text seeds through the unified trigger evaluator. Row storage scales from the live country registry and grows off the callback; native reads and time are charged to this table. Live recorder cost is unverified.
+
+The saved-global target pack sizes both its row buffer and name arena from the live registry header and stored string lengths before capture, and raises demand off-thread after growth. Its hourly worker reads no event-chain targets and performs no allocations or game calls. Capacity shortages withhold completeness and retain exact demand; the synthetic collector test covers 5,000 saved country targets.

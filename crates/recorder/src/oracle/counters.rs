@@ -1,6 +1,6 @@
 //! Saved portrait identities and province membership witnesses.
 use super::*;
-fn eq<T: PartialEq + std::fmt::Debug>(r: &mut Report, label: &str, a: T, b: T) {
+pub(super) fn eq<T: PartialEq + std::fmt::Debug>(r: &mut Report, label: &str, a: T, b: T) {
     r.scalar_checks += 1;
     if a != b {
         r.difference(label, a, b);

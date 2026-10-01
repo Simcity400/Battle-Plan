@@ -67,6 +67,22 @@ pub fn observe(memory: &impl Memory, base: usize) -> Option<usize> {
     (slots <= ENGINE_SLOT_CEILING).then_some(slots)
 }
 
+/// Live saved-global row/name demand from the same bounded capture walk.
+/// Off-thread only; the empty output sizes strings without probing objects.
+pub fn observe_saved_targets(
+    memory: &impl engine::Memory,
+    base: usize,
+) -> Option<engine::saved_event_targets::Demand> {
+    let state = engine::read::<u64>(
+        memory,
+        base.checked_add(engine::cgame_state::SINGLETON_RVA)?,
+    )? as usize;
+    if state == 0 {
+        return None;
+    }
+    engine::saved_event_targets::demand(memory, base, state)
+}
+
 /// Live dense CountryIntel record total, or `None` when no consistent
 /// census is readable. Header words only; nothing observed is recorded.
 pub fn observe_country_intel(memory: &impl Memory, base: usize) -> Option<usize> {

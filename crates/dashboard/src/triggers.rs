@@ -27,6 +27,7 @@ mod coded;
 mod eval;
 mod load;
 mod operands;
+pub(crate) mod saved_event_targets;
 pub mod scripted_localisation;
 #[cfg(test)]
 mod tests;
@@ -196,7 +197,9 @@ impl Scopes {
         }
     }
 
-    /// A bare scope with itself as ROOT and nothing else.
+    /// A fresh caller scope with itself as ROOT and no FROM/PREV.
+    /// Fresh scopes (140528800); description completion clears temporary
+    /// globals (1401D20F0). Event-chain consumers need their own target arrays.
     pub fn of(scope: Scope) -> Self {
         Self {
             root: scope,
@@ -288,7 +291,7 @@ impl Scopes {
 enum Carried {
     /// THIS: a copy of the calling scope, as it carries.
     Kept,
-    /// ROOT, FROM, PREV or a saved event target: a copy of that scope's
+    /// ROOT, FROM or PREV: a copy of that scope's
     /// members, which the caller cannot describe.
     Retained,
     /// A setter with clearing.
@@ -309,7 +312,7 @@ fn carried(target: &installed_content::scope::Scope) -> Carried {
             other => other,
         },
         Parsed::EventTarget { then, .. } => match then.as_deref().map(carried) {
-            None | Some(Carried::Kept) => Carried::Retained,
+            None | Some(Carried::Kept) => Carried::Cleared,
             Some(other) => other,
         },
         _ => Carried::Cleared,

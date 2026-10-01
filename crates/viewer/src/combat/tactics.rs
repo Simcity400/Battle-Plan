@@ -4122,7 +4122,7 @@ mod tests {
         for selector in ["owner", "CONTROLLER", "occupied", "capital", "random"] {
             assert_eq!(weigh(&format!("tag = {selector}")), Ok(0), "{selector}");
         }
-        refused("tag = event_target:foe", "an event target (14053E330)");
+        refused("tag = event_target:foe", "saved event target foe");
         // A quoted ROOT is no selector: as a variable it names ROOT's scope.
         assert_eq!(weigh("tag = \"ROOT\""), Ok(100_000));
         assert_eq!(weigh("tag = x"), Ok(100_000));

@@ -61,27 +61,27 @@ impl Selector {
 /// What ParseScopeSelector (14053E330) finds in a value token, before a
 /// trigger's own reading of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Selected {
+pub enum Selected<'a> {
     /// A selector keyword, by the token's keyword ID: never a quoted token
     /// (0xF) or a number (0xC) (1424A7A90, [`Item::value_keyword`]).
     Keyword(Selector),
     /// `event_target:` compared with the text's start (strncmp 14253B770,
     /// which stops at a NUL), whatever the token kind.
-    EventTarget,
+    EventTarget(&'a [u8]),
 }
 
-impl Selected {
+impl Selected<'_> {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Keyword(_) => "a scope selector keyword (14053E330)",
-            Self::EventTarget => "an event target (14053E330)",
+            Self::EventTarget(_) => "an event target (14053E330)",
         }
     }
 }
 
 /// The one reading of a value token as a scope selector (14053E330), which
 /// the bool triggers (14138D3D0) and the country operand (141394CA0) share.
-pub fn scope_selector(item: &Item) -> Option<Selected> {
+pub fn scope_selector(item: &Item) -> Option<Selected<'_>> {
     if let Some(keyword) = item.value_keyword()
         && let Some(selector) = Selector::named(keyword.as_bytes())
     {
@@ -89,8 +89,8 @@ pub fn scope_selector(item: &Item) -> Option<Selected> {
     }
     item.value
         .scalar()?
-        .starts_with(b"event_target:")
-        .then_some(Selected::EventTarget)
+        .strip_prefix(b"event_target:")
+        .map(Selected::EventTarget)
 }
 
 /// A CBoolTrigger operand (14138D3D0, the reader CScriptedTrigger shares):

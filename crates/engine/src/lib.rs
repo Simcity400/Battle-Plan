@@ -743,6 +743,7 @@ pub mod sampler_state_description_layout;
 pub mod sampler_state_wrapper_layout;
 pub mod sanimation_map_data;
 pub mod save_allocation_counters;
+pub mod saved_event_targets;
 pub mod scientist_roster;
 pub mod scientist_roster_entry;
 pub mod scientist_skill_entry;
