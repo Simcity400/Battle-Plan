@@ -182,6 +182,19 @@ pub struct UnknownLinks {
 }
 
 impl Scopes {
+    /// Default CEventScope (140528800): no carried objects, with ROOT,
+    /// FROM and PREV pointing to that same empty scope. Pool limits use it
+    /// on every lookup (1409F1540). NULL_STATE already represents a scope
+    /// carrying no objects; it is not a recorded state.
+    pub fn empty() -> Self {
+        let empty = Scope::State(NULL_STATE);
+        Self {
+            prev: Some(empty),
+            from: Some(empty),
+            ..Self::of(empty)
+        }
+    }
+
     /// A bare scope with itself as ROOT and nothing else.
     pub fn of(scope: Scope) -> Self {
         Self {

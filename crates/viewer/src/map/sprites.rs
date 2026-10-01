@@ -205,7 +205,8 @@ impl MapIcons {
             &mut images,
             &lazy,
         )?;
-        let raids = super::raids::RaidAssets::load(layers, defines, map, sprites, &mut images)?;
+        let mut raids = super::raids::RaidAssets::load(layers, defines, map, sprites, &mut images)?;
+        raids.triggers = combat.tactics.trigger_names();
         if images.len() >= DYNAMIC_BASE {
             return Err(invalid("more static icon pages than texture ids"));
         }

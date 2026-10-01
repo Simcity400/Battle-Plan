@@ -22,7 +22,7 @@ use installed_content::{
     ResolvedLayers,
     fixed5::script_fixed5,
     parser::{
-        self, Item, Operator, Value,
+        self, Item, Value,
         native::{self, Shape},
     },
     save::Decimal,
@@ -89,108 +89,49 @@ enum Bucket {
     Continent(String),
 }
 
-/// A pool `limit`. The pools use an empty CEventScope (`1409F1540`), so only
-/// scope-free predicates can be decided; the rest stay [`Limit::Unsupported`]
-/// and fail the lookup that meets them instead of dropping the pool.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Limit {
-    Dlc(String),
-    All(Vec<Limit>),
-    Any(Vec<Limit>),
-    Not(Vec<Limit>),
-    Unsupported(String),
+/// Per-hour memo view; native selects anew on every lookup (1409F1540).
+pub struct Limits<'a> {
+    evaluate: &'a dyn Fn(&[Item], dashboard::triggers::Scopes) -> dashboard::triggers::Eval,
+    values: &'a LimitValues,
 }
 
-impl Limit {
-    fn parse(items: &[Item]) -> io::Result<Vec<Self>> {
-        items
-            .iter()
-            .map(|item| {
-                let name = key(item)?;
-                if item.operator != Operator::Equals {
-                    return Ok(Self::Unsupported(format!(
-                        "{name} {}",
-                        String::from_utf8_lossy(item.operator.text())
-                    )));
-                }
-                // Only the scope-free equality forms are modelled, and a
-                // built-in only on its keyword token: LoadKey (1405434F0)
-                // gives a quoted key (token 0xF) no built-in, and whether a
-                // scripted trigger of that name exists is not resolved here.
-                let keyword = item.keyword().map(parser::Keyword::folded);
-                Ok(match (keyword.as_deref(), &item.value) {
-                    (Some(b"has_dlc"), value) => match value.scalar_str() {
-                        Some(dlc) if !dlc.starts_with('@') => Self::Dlc(dlc.to_owned()),
-                        _ => Self::Unsupported(format!("has_dlc {value:?}")),
-                    },
-                    (Some(b"and"), Value::Block(inner)) => Self::All(Self::parse(inner)?),
-                    (Some(b"or"), Value::Block(inner)) => Self::Any(Self::parse(inner)?),
-                    (Some(b"not"), Value::Block(inner)) => Self::Not(Self::parse(inner)?),
-                    (None, _) if item.key_quoted => {
-                        Self::Unsupported(format!("quoted {name:?} (no built-in token)"))
-                    }
-                    _ => Self::Unsupported(name.to_owned()),
-                })
+/// A memo owned by the hour, never by a unit, country or content load.
+#[derive(Default)]
+pub struct LimitValues(std::cell::RefCell<BTreeMap<usize, dashboard::triggers::Eval>>);
+
+impl<'a> Limits<'a> {
+    pub fn new(
+        values: &'a LimitValues,
+        evaluate: &'a dyn Fn(&[Item], dashboard::triggers::Scopes) -> dashboard::triggers::Eval,
+    ) -> Self {
+        Self { evaluate, values }
+    }
+
+    fn holds(&self, pool: &Pool) -> Result<bool, String> {
+        self.values
+            .0
+            .borrow_mut()
+            .entry(pool.id)
+            .or_insert_with(|| {
+                // CTrigger::Check starts a fresh temp context even for
+                // the empty scope (140540570 -> 1405354A0 -> 140544190).
+                (self.evaluate)(&pool.limit, dashboard::triggers::Scopes::empty())
             })
-            .collect()
+            .clone()
+            .decided()
     }
-
-    /// `Err` names the first predicate that cannot be decided.
-    fn holds(&self, has_dlc: &impl Fn(&str) -> Option<bool>) -> Result<bool, String> {
-        match self {
-            Self::Dlc(name) => {
-                has_dlc(name).ok_or_else(|| format!("DLC availability is unknown for {name}"))
-            }
-            Self::All(inner) => all(inner, has_dlc),
-            Self::Any(inner) => {
-                for limit in inner {
-                    if limit.holds(has_dlc)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            }
-            // NOT is NOR over its children.
-            Self::Not(inner) => {
-                for limit in inner {
-                    if limit.holds(has_dlc)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            Self::Unsupported(name) => Err(format!("unsupported empty-scope predicate {name}")),
-        }
-    }
-}
-
-fn all(limits: &[Limit], has_dlc: &impl Fn(&str) -> Option<bool>) -> Result<bool, String> {
-    for limit in limits {
-        if !limit.holds(has_dlc)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// Shared scope-free DLC predicates. Ambient admission140B47AF0 also builds an
-/// empty event scope; unresolved predicates remain named errors.
-pub(super) fn empty_scope_condition(
-    items: &[Item],
-    has_dlc: impl Fn(&str) -> Option<bool>,
-) -> io::Result<bool> {
-    all(&Limit::parse(items)?, &has_dlc).map_err(io::Error::other)
 }
 
 #[derive(Clone, Debug)]
 struct Pool {
+    id: usize,
     weight: i64,
     models_weight: i64,
     models: Vec<String>,
     subunits: BTreeSet<String>,
     ideologies: BTreeSet<String>,
     cultures: BTreeSet<String>,
-    limit: Vec<Limit>,
+    limit: Vec<Item>,
     /// The `graphic_db` file that declares the pool.
     file: String,
 }
@@ -198,6 +139,7 @@ struct Pool {
 impl Default for Pool {
     fn default() -> Self {
         Self {
+            id: 0,
             weight: 100_000,
             models_weight: 0,
             models: Vec::new(),
@@ -233,6 +175,7 @@ impl Pool {
 #[derive(Clone, Debug, Default)]
 pub struct Content {
     buckets: BTreeMap<Bucket, BTreeMap<String, Vec<Pool>>>,
+    pool_count: usize,
 }
 
 /// The names a bucket key can be.
@@ -354,16 +297,13 @@ impl Content {
             ) else {
                 continue;
             };
-            let definitions = self.buckets.entry(bucket).or_default();
             for equipment in root.value.items().unwrap_or_default() {
                 let Some(items) = equipment.value.items() else {
                     continue;
                 };
                 // CHashedString uses ASCII-folded FNV and _stricmp
                 // (140BBA1B0 / 14253D9F8); entity identifiers below stay exact.
-                let pools = definitions
-                    .entry(key(equipment)?.to_ascii_lowercase())
-                    .or_default();
+                let equipment_key = key(equipment)?.to_ascii_lowercase();
                 for item in items.iter().filter(|item| item.keyword_is("pool")) {
                     let Some(fields) = item.value.items() else {
                         continue;
@@ -398,52 +338,30 @@ impl Content {
                                 pool.cultures.extend(folded_strings(&field.value)?)
                             }
                             Some(b"limit") => {
-                                pool.limit.extend(Limit::parse(block(&field.value)?)?)
+                                // CTrigger::LoadBody (1405431C0): a scalar
+                                // adds no children, as the shared reader says.
+                                pool.limit.extend(
+                                    installed_content::triggers::body(&field.value).unwrap_or_default(),
+                                );
                             }
                             _ => {}
                         }
                     }
                     // Icon-only pools contribute no model entries in native.
                     if !pool.models.is_empty() {
-                        pools.push(pool);
+                        pool.id = self.pool_count;
+                        self.pool_count += 1;
+                        self.buckets
+                            .entry(bucket.clone())
+                            .or_default()
+                            .entry(equipment_key.clone())
+                            .or_default()
+                            .push(pool);
                     }
                 }
             }
         }
         Ok(())
-    }
-
-    /// Every pool limit predicate the lookup refuses, with the file and
-    /// the bucket and equipment key its pool is under: a lookup that meets
-    /// the pool fails.
-    pub fn refusals(&self) -> Vec<(&str, String)> {
-        fn walk<'a>(limits: &'a [Limit], out: &mut Vec<&'a str>) {
-            for limit in limits {
-                match limit {
-                    Limit::Unsupported(name) => out.push(name),
-                    Limit::All(inner) | Limit::Any(inner) | Limit::Not(inner) => walk(inner, out),
-                    Limit::Dlc(_) => {}
-                }
-            }
-        }
-        let mut refusals = Vec::new();
-        for (bucket, definitions) in &self.buckets {
-            for (equipment, pools) in definitions {
-                for pool in pools {
-                    let mut names = Vec::new();
-                    walk(&pool.limit, &mut names);
-                    for name in names {
-                        refusals.push((
-                            pool.file.as_str(),
-                            format!(
-                                "{bucket:?} pool for {equipment}: unsupported empty-scope predicate {name}"
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-        refusals
     }
 
     /// Return the native graphic candidates, ready for legacy insertion.
@@ -452,7 +370,7 @@ impl Content {
     pub fn lookup(
         &self,
         context: &Context<'_>,
-        has_dlc: impl Fn(&str) -> Option<bool>,
+        limits: &Limits<'_>,
         entity_exists: impl Fn(&str) -> bool,
     ) -> Result<Vec<Candidate>, String> {
         let mut buckets = Vec::new();
@@ -482,8 +400,11 @@ impl Content {
                         continue;
                     };
                     for pool in pools.iter().rev().filter(|pool| pool.matches(context)) {
-                        if all(&pool.limit, &has_dlc).map_err(|reason| {
-                            format!("equipment graphics pool for {name}: {reason}")
+                        if limits.holds(pool).map_err(|reason| {
+                            format!(
+                                "equipment graphics pool for {name} in {}: {reason}",
+                                pool.file
+                            )
                         })? {
                             matches.push(pool);
                         }
@@ -568,8 +489,244 @@ fn folded_strings(value: &Value) -> io::Result<Vec<String>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) fn with_world<T>(
+        frame: &replay::frame::DecodedFrame,
+        dlcs: &[&str],
+        run: impl FnOnce(Limits<'_>) -> T,
+    ) -> T {
+        let dlcs = dlcs.iter().map(|s| (*s).to_owned()).collect();
+        let aliases = std::sync::Arc::default();
+        let names = installed_content::trigger_keys::TriggerNames {
+            counts: Some(Default::default()),
+            ..Default::default()
+        };
+        let world = dashboard::triggers::World::read(
+            frame,
+            dashboard::triggers::ContentFacts::content_only(&dlcs, &names, &aliases),
+        );
+        let evaluate = |items: &[Item], scopes| world.evaluate(items, scopes);
+        run(Limits::new(&LimitValues::default(), &evaluate))
+    }
+
+    pub(crate) fn empty_frame() -> replay::frame::DecodedFrame {
+        use replay::{
+            frame::{DecodedFrame, TableView},
+            rows::{TableId, TableRows},
+        };
+        DecodedFrame {
+            branch: 1,
+            hour: 1,
+            metrics: Default::default(),
+            tables: std::array::from_fn(|i| {
+                TableView::Complete(TableRows::empty(TableId::ALL[i])).into()
+            }),
+        }
+    }
+
+    fn country_frame(count: u32, cosmetic: &str) -> replay::frame::DecodedFrame {
+        use replay::{
+            frame::TableView,
+            rows::{
+                CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
+                PoliticalPartyRow, TableId, TableRows,
+            },
+        };
+        let mut frame = empty_frame();
+        let tag = |i: u32| {
+            vec![
+                b'A' + (i / 676) as u8,
+                b'A' + (i / 26 % 26) as u8,
+                b'A' + (i % 26) as u8,
+            ]
+        };
+        for (id, rows) in [
+            (
+                TableId::Countries,
+                TableRows::Countries(
+                    (0..count)
+                        .map(|i| CountryRow {
+                            id: i + 1,
+                            canonical_slot: i,
+                            tag: tag(i),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                TableId::CountryLinks,
+                TableRows::CountryLinks(
+                    (0..count)
+                        .map(|i| CountryLinkRow {
+                            id: i + 1,
+                            canonical_slot: i,
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                TableId::CountryCounterInputs,
+                TableRows::CountryCounterInputs(
+                    (0..count)
+                        .map(|i| CountryCounterInputRow {
+                            country: i + 1,
+                            owned_state_count: 1,
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                TableId::CountryAppearance,
+                TableRows::CountryAppearance(
+                    (0..count)
+                        .map(|i| CountryAppearanceRow {
+                            country: i + 1,
+                            name_tag: tag(i),
+                            cosmetic_tag: cosmetic.as_bytes().to_vec(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                TableId::PoliticalParties,
+                TableRows::PoliticalParties(
+                    (0..count)
+                        .map(|i| PoliticalPartyRow {
+                            country: i + 1,
+                            token: b"government".to_vec(),
+                            is_ruling: 1,
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+            ),
+        ] {
+            *frame.tables[id.index()] = TableView::Complete(rows);
+        }
+        frame
+    }
+
+    #[test]
+    fn pool_choice_reads_this_hours_world_and_keeps_unknown_named() {
+        let pools = content(br#"default = { tank = {
+            pool = { weight = 1 models = { fallback } }
+            pool = { weight = 2 limit = { AAA = { has_cosmetic_tag = costume has_government = government } } models = { changed } }
+        }}"#).unwrap();
+        for (cosmetic, expected) in [("costume", "changed"), ("other", "fallback")] {
+            with_world(&country_frame(5_000, cosmetic), &[], |limits| {
+                for _ in 0..100 {
+                    assert_eq!(
+                        pools
+                            .lookup(&context(None, &[]), &limits, |_| true)
+                            .unwrap()[0]
+                            .entity,
+                        expected
+                    );
+                }
+                // One result per pool, independent of unit count.
+                assert_eq!(limits.values.0.borrow().len(), 2);
+            });
+        }
+        let mut missing = country_frame(1, "costume");
+        *missing.tables[replay::rows::TableId::CountryAppearance.index()] =
+            replay::frame::TableView::Unavailable {
+                reason: "not sampled".into(),
+            };
+        with_world(&missing, &[], |limits| {
+            let why = pools
+                .lookup(&context(None, &[]), &limits, |_| true)
+                .unwrap_err();
+            assert!(why.contains("CountryAppearance"), "{why}");
+            assert!(why.contains("graphic_db/a.txt"), "{why}");
+        });
+    }
+
+    #[test]
+    fn pool_check_starts_a_fresh_variable_context() {
+        let pools = content(
+            br#"default = { tank = {
+            pool = { limit = { check_variable = { global.pool_ready = 1 } } models = { ready } }
+        }}"#,
+        )
+        .unwrap();
+        let mut frame = empty_frame();
+        use replay::{
+            frame::TableView,
+            rows::{ScriptVariableEntry, ScriptVariablesRow, TableRows, tables},
+        };
+        *frame.tables[replay::rows::TableId::ScriptVariables.index()] =
+            TableView::Complete(TableRows::from_rows::<tables::ScriptVariables>(vec![
+                ScriptVariablesRow {
+                    scope_kind: 0,
+                    scope_id: 0,
+                    entries: vec![ScriptVariableEntry {
+                        name: b"pool_ready".to_vec(),
+                        value_raw: 100_000,
+                    }],
+                },
+            ]));
+        with_world(&frame, &[], |limits| {
+            // Check clears prior temps (140540570 -> 140544190), so this
+            // operand reaches the recorded global variable store.
+            assert_eq!(
+                pools
+                    .lookup(&context(None, &[]), &limits, |_| true)
+                    .unwrap()[0]
+                    .entity,
+                "ready"
+            );
+        });
+        *frame.tables[replay::rows::TableId::ScriptVariables.index()] =
+            replay::frame::TableView::Unavailable {
+                reason: "not sampled".into(),
+            };
+        with_world(&frame, &[], |limits| {
+            let why = pools
+                .lookup(&context(None, &[]), &limits, |_| true)
+                .unwrap_err();
+            assert!(why.contains("ScriptVariables"), "{why}");
+        });
+    }
+
+    #[test]
+    #[ignore = "release timing; run without concurrent builds"]
+    fn pool_limits_builder_budget() {
+        let mut text = String::from("default = { tank = {");
+        for i in 0..510 {
+            text.push_str(&format!("pool = {{ limit = {{ AAA = {{ has_cosmetic_tag = costume has_government = government }} }} models = {{ m{i} }} }}"));
+        }
+        text.push_str("} }");
+        let content = content(text.as_bytes()).unwrap();
+        let pools: Vec<_> = content
+            .buckets
+            .values()
+            .flat_map(|bucket| bucket.values())
+            .flatten()
+            .collect();
+        for countries in [1_500, 5_000] {
+            let frame = country_frame(countries, "costume");
+            let start = std::time::Instant::now();
+            let hours = 128;
+            for _ in 0..hours {
+                with_world(&frame, &[], |limits| {
+                    for pool in &pools {
+                        assert!(std::hint::black_box(limits.holds(pool).unwrap()));
+                    }
+                    assert_eq!(limits.values.0.borrow().len(), pools.len());
+                });
+            }
+            println!(
+                "POOL_LIMITS countries={countries} pools={} hours={hours} ms_per_hour={:.3}",
+                pools.len(),
+                start.elapsed().as_secs_f64() * 1000.0 / f64::from(hours)
+            );
+        }
+    }
 
     fn names() -> Names {
         Names {
@@ -610,9 +767,10 @@ mod tests {
         "#,
         )
         .unwrap();
-        let found = pools
-            .lookup(&context(Some("GER"), &factions), |_| Some(true), |_| true)
-            .unwrap();
+        let found = with_world(&empty_frame(), &[], |limits| {
+            pools.lookup(&context(Some("GER"), &factions), &limits, |_| true)
+        })
+        .unwrap();
         let entities: Vec<_> = found.iter().map(|c| c.entity.as_str()).collect();
         // Weight order; reversed model lists; equal weights keep visit order.
         assert_eq!(
@@ -620,9 +778,10 @@ mod tests {
             ["ger", "allied", "base_b", "base_a", "continental"]
         );
         // No country context visits only the default bucket.
-        let found = pools
-            .lookup(&context(None, &[]), |_| Some(true), |_| true)
-            .unwrap();
+        let found = with_world(&empty_frame(), &[], |limits| {
+            pools.lookup(&context(None, &[]), &limits, |_| true)
+        })
+        .unwrap();
         assert_eq!(found.len(), 2);
         // 1409F6100 upper-cases a three-letter key before the country lookup,
         // and reports and skips a key that names no bucket.
@@ -637,9 +796,10 @@ mod tests {
         "#,
         )
         .unwrap();
-        let found = pools
-            .lookup(&context(Some("GER"), &factions), |_| Some(true), |_| true)
-            .unwrap();
+        let found = with_world(&empty_frame(), &[], |limits| {
+            pools.lookup(&context(Some("GER"), &factions), &limits, |_| true)
+        })
+        .unwrap();
         let entities: Vec<_> = found.iter().map(|c| c.entity.as_str()).collect();
         assert_eq!(entities, ["lower"]);
     }
@@ -658,53 +818,22 @@ mod tests {
         "#,
         )
         .unwrap();
-        let found = pools
-            .lookup(
-                &context(None, &[]),
-                |name| Some(name == "No Step Back"),
-                |_| true,
-            )
-            .unwrap();
+        let found = with_world(&empty_frame(), &["No Step Back"], |limits| {
+            pools.lookup(&context(None, &[]), &limits, |_| true)
+        })
+        .unwrap();
         let entities: BTreeSet<_> = found.iter().map(|c| c.entity.as_str()).collect();
         assert_eq!(entities, BTreeSet::from(["right", "dlc", "either"]));
-        let unknown = pools.lookup(&context(None, &[]), |_| None, |_| true);
-        assert!(unknown.unwrap_err().contains("DLC availability is unknown"));
+        // Scope-masked predicates are false before they read any input.
         let scoped =
             content(b"default = { tank = { pool = { limit = { tag = GER } models = { x } } } }")
                 .unwrap();
-        // A quoted `"has_dlc"` is no built-in (LoadKey 1405434F0): undecided.
-        let quoted = content(
-            br#"default = { tank = { pool = { limit = { "has_dlc" = x } models = { q } } } }"#,
-        )
-        .unwrap();
         assert!(
-            quoted
-                .lookup(&context(None, &[]), |_| Some(true), |_| true)
-                .unwrap_err()
-                .contains("quoted")
-        );
-        assert!(
-            scoped
-                .lookup(&context(None, &[]), |_| Some(true), |_| true)
-                .is_err()
-        );
-        // Each refused predicate, nested ones included, is named with its file.
-        let nested = content(
-            b"default = { tank = { pool = { limit = { OR = { tag = GER has_dlc = a } } models = { x } } } }",
-        )
-        .unwrap();
-        assert_eq!(
-            nested.refusals(),
-            [(
-                "graphic_db/a.txt",
-                "Default pool for tank: unsupported empty-scope predicate tag".to_owned()
-            )]
-        );
-        assert!(
-            content(b"default = { tank = { pool = { models = { x } } } }")
-                .unwrap()
-                .refusals()
-                .is_empty()
+            with_world(&empty_frame(), &[], |limits| {
+                scoped.lookup(&context(None, &[]), &limits, |_| true)
+            })
+            .unwrap()
+            .is_empty()
         );
     }
 
@@ -749,9 +878,10 @@ mod tests {
         "#,
         )
         .unwrap();
-        let found = pools
-            .lookup(&context(None, &[]), |_| Some(true), |_| true)
-            .unwrap();
+        let found = with_world(&empty_frame(), &[], |limits| {
+            pools.lookup(&context(None, &[]), &limits, |_| true)
+        })
+        .unwrap();
         let found: Vec<_> = found
             .iter()
             .map(|c| (c.entity.as_str(), c.weight))

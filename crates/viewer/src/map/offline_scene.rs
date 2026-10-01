@@ -135,7 +135,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         warnings,
     )?;
     eprintln!("Content scene: ambient assets");
-    let frame_assets = mapframe::FrameAssets::load(layers, decode, warnings)?;
+    let frame_assets = mapframe::FrameAssets::load(layers, decode, icons.raids.facts(), warnings)?;
     let river_assets = rivers::RiverAssets::load(layers, [map.width, map.height], 0, decode)?;
     let (river_mesh, _) = rivers::build(
         &rivers::RiverImage {

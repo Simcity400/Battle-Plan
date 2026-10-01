@@ -51,10 +51,12 @@ impl FrameAssets {
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
+        facts: dashboard::triggers::ContentFacts<'_>,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let types = ambient::read(layers)?;
-        let dlcs = layers.dlc_names()?;
+        let world =
+            dashboard::triggers::World::unrecorded(facts.dlcs, facts.triggers, facts.tag_aliases);
         let roster = layers.descriptor_roster()?;
         warnings.extend(
             roster
@@ -88,9 +90,10 @@ impl FrameAssets {
                 .dlc
                 .as_ref()
                 .map(|items| {
-                    super::equipment_graphics::empty_scope_condition(items, |name| {
-                        Some(dlcs.contains(name))
-                    })
+                    world
+                        .evaluate(items, dashboard::triggers::Scopes::empty())
+                        .decided()
+                        .map_err(io::Error::other)
                 })
                 .transpose();
             if matches!(condition, Ok(Some(false))) {

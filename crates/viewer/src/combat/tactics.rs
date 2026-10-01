@@ -90,7 +90,7 @@ struct Candidate {
 /// The matching tactic file supplies registry order, identity and definitions.
 /// The recorded lexical dictionary supplies the native dynamic unlock token.
 #[derive(Default)]
-pub(super) struct Content {
+pub(crate) struct Content {
     phases: Vec<Vec<u8>>,
     registry: Vec<RegistryEntry>,
     /// The one trait-name inventory (append_trait 140AD7890,
@@ -138,7 +138,7 @@ impl Content {
 
     /// The scripted triggers and count names, as settled for the tactics:
     /// the one read the other trigger consumers share.
-    pub(super) fn trigger_names(&self) -> Arc<TriggerNames> {
+    pub(crate) fn trigger_names(&self) -> Arc<TriggerNames> {
         Arc::clone(&self.names)
     }
 

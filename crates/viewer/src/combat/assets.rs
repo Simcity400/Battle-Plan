@@ -89,7 +89,7 @@ pub struct Assets {
     pub(super) commander_tooltips: super::commander_tooltips::Content,
     /// The content's tactic registry: triggers, weights, effects and
     /// pictures.
-    pub(super) tactics: super::tactics::Content,
+    pub(crate) tactics: super::tactics::Content,
     /// Tooltip delays and screen offsets, or why the content lacks them.
     pub(super) tooltip_defines: Result<super::tooltip_painter::TooltipDefines, String>,
     pub warnings: Vec<String>,

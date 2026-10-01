@@ -51,7 +51,7 @@ pub struct Inputs<'a, 'b> {
     /// Spells the definitions' equipment type tokens.
     pub tokens: &'a crate::table_access::TokenNames<'b>,
     pub viewing_country_ref: u32,
-    pub dlc_names: &'a BTreeSet<String>,
+    pub limits: &'a equipment_graphics::Limits<'a>,
     pub registered: &'a std::collections::HashSet<String>,
 }
 
@@ -473,7 +473,7 @@ fn pair_candidates<'a>(
             faction_tags: geography.map_or(&[], |country| country.faction_tags.as_slice()),
             capital_continent: geography.and_then(|country| country.capital_continent.as_deref()),
         },
-        |name| Some(inputs.dlc_names.contains(name)),
+        inputs.limits,
         |name| inputs.registered.contains(name),
     )?;
     let graphical_names: BTreeSet<_> = graphical.iter().map(|row| row.entity.clone()).collect();
