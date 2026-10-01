@@ -40,11 +40,12 @@ pub(crate) fn number(value: &Value, what: &str) -> io::Result<f64> {
 
 /// A `yes` or `no` flag; anything else is an error rather than a default.
 pub(crate) fn boolean(value: &Value, what: &str) -> io::Result<bool> {
-    match text(value, what)? {
-        "yes" => Ok(true),
-        "no" => Ok(false),
-        other => Err(invalid(format!("{what} is not yes or no: {other:?}"))),
-    }
+    // Adjacency permissions (141536E70) use read_bool_field; CSize's
+    // preserve_aspect_ratio (1422EF100 -> 1422F0760) uses read_bool_token.
+    // Keep this adapter's named refusal when its consumer cannot follow a read.
+    let scalar = text(value, what)?;
+    crate::parser::read_bool(scalar.as_bytes())
+        .ok_or_else(|| invalid(format!("{what} is not yes or no: {scalar:?}")))
 }
 
 /// The items of a block value.

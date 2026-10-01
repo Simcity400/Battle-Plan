@@ -146,11 +146,13 @@ fn parse_type(items: &[Item]) -> io::Result<AmbientObjectType> {
             } else {
                 &mut out.always_visible
             };
-            match field.value.c_str().unwrap_or_default() {
-                "yes" => *dst = true,
-                "no" => *dst = false,
-                _ => {}
-            }
+            // CAmbientObjectType::vf4@141634490: 0x16E into +0x48,
+            // 0x2D50 into +0x7C, both read_bool_field.
+            *dst = field
+                .value
+                .scalar()
+                .and_then(crate::parser::read_bool)
+                .unwrap_or(*dst);
         } else if field.keyword_is("time_duration") {
             // 1424AB9D0: a failed conversion keeps the value.
             out.duration =

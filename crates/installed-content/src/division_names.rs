@@ -355,7 +355,7 @@ fn group_key(item: &Item) -> &[u8] {
 /// A key token's text as a group name: 1409B4370 takes it to its first NUL
 /// (the `strlen` before 14011D460), quoted or not.
 fn group_name(key: &[u8]) -> &[u8] {
-    &key[..key.iter().position(|b| *b == 0).unwrap_or(key.len())]
+    crate::parser::c_string(key)
 }
 
 /// Parse one complete content file, preserving repeated group/field

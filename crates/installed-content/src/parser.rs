@@ -144,6 +144,25 @@ pub fn c_string(bytes: &[u8]) -> &[u8] {
     &bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())]
 }
 
+/// read_bool_token@1424B06E0: exact C-string yes/no; failure stores nothing.
+pub fn read_bool(text: &[u8]) -> Option<bool> {
+    match c_string(text) {
+        b"yes" => Some(true),
+        b"no" => Some(false),
+        _ => None,
+    }
+}
+
+/// read_bool_field@1424ABCA0 -> 1424B06E0: ordered assignments; failure keeps the value.
+pub fn read_bool_field(items: &[Item], key: &str, default: bool) -> bool {
+    items
+        .iter()
+        .filter(|item| item.keyword_is(key))
+        .fold(default, |state, item| {
+            item.value.scalar().and_then(read_bool).unwrap_or(state)
+        })
+}
+
 /// What CReader::ReadStringInto (1424ABB50) stores for a string holding a
 /// line feed.
 pub const UNREADABLE_STRING: &[u8] = b"Unreadable String";
@@ -352,10 +371,7 @@ pub(crate) fn looked_up(key: &[u8], quoted: bool) -> bool {
 /// CReader::CReader (1424A9D30) leaves and the empty value 1424AC5E0 stores
 /// before a `}` (1424B0110) both have the id 0.
 pub fn number_token(text: &[u8], quoted: bool) -> bool {
-    let string = &text[..text
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(text.len())];
+    let string = c_string(text);
     !quoted
         && match text.first() {
             Some(b'0'..=b'9' | b'-') => true,
@@ -776,6 +792,32 @@ fn invalid(offset: usize, message: &str) -> io::Error {
 mod tests {
     use super::*;
 
+    #[test]
+    fn boolean_tokens_compare_exact_c_strings_whatever_the_kind() {
+        for (text, expected) in [
+            (b"yes".as_slice(), Some(true)),
+            (b"no".as_slice(), Some(false)),
+            (b"yes\0suffix".as_slice(), Some(true)),
+            (b"no\0suffix".as_slice(), Some(false)),
+            (b"YES".as_slice(), None),
+            (b"No".as_slice(), None),
+            (b"yes!".as_slice(), None),
+            (b"".as_slice(), None),
+        ] {
+            assert_eq!(read_bool(text), expected);
+        }
+        let items = parse(b"a = yes b = \"yes\" c = no d = \"no\"")
+            .unwrap()
+            .items;
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| read_bool(item.value.scalar().unwrap()))
+                .collect::<Vec<_>>(),
+            [Some(true), Some(true), Some(false), Some(false)]
+        );
+    }
+
     /// The word scan reads what the parser's lexer reads, past any error.
     #[test]
     fn scalars_follow_the_lexer_past_errors() {
@@ -946,7 +988,7 @@ mod tests {
             "get_all(",
         ];
         // (file, line text) with why it compares text, not a keyword.
-        const ALLOWED: [(&str, &str); 13] = [
+        const ALLOWED: [(&str, &str); 14] = [
             // A group name: 1409B4370 finds it by the folded hash 140BBA1B0
             // and `_stricmp` (14253D9F8).
             ("division_names.rs", "key.to_ascii_lowercase()"),
@@ -995,6 +1037,11 @@ mod tests {
             // The modifier a key names (1406042A0): the lexer folds a bare
             // key (1424A7A90), FindTokenNoCase a quoted one (1424A7060).
             ("modifiers.rs", "name: key.to_ascii_lowercase(),"),
+            // Stored dynamic token (140A38190 -> 1424A6500).
+            (
+                "ideologies.rs",
+                "let key = crate::parser::c_string(&field.key.text).to_ascii_lowercase();",
+            ),
             // An ideology group's number by its token, a dynamic token
             // (140A38190 -> 1424A6500 -> 1424A65A0 folds A-Z).
             ("ideologies.rs", ".get(&token.to_ascii_lowercase())"),

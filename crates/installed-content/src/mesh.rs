@@ -280,8 +280,7 @@ pub fn parse(bytes: &[u8]) -> io::Result<Node> {
                         for _ in 0..count {
                             let length = reader.count(1)?;
                             let bytes = reader.take(length)?;
-                            let end = bytes.iter().position(|&byte| byte == 0).unwrap_or(length);
-                            values.push(latin1(&bytes[..end]));
+                            values.push(latin1(crate::parser::c_string(bytes)));
                         }
                         Value::Strings(values)
                     }
@@ -2539,7 +2538,8 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
             Some(EntityState {
                 name: unquote(text(block, b"name")?),
                 animation: text(block, b"animation").map(unquote).unwrap_or_default(),
-                looping: text(block, b"looping") != Some("no"),
+                // 14233CC10: +0x21C, true by default (142281510).
+                looping: parser::read_bool_field(block, "looping", true),
                 next_state: text(block, b"next_state").map(unquote),
                 chance: number(block, b"chance", 1.0),
                 blend: number(block, b"animation_blend_time", 0.0),
@@ -2567,8 +2567,9 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                         node: text(event, b"node").map(unquote).unwrap_or_default(),
                         light: text(event, b"light").map(unquote),
                         particle: text(event, b"particle").map(unquote),
-                        keep_particle: text(event, b"keep_particle") == Some("yes"),
-                        trigger_once: text(event, b"trigger_once") == Some("yes"),
+                        // 14233BB30: +0x714/715.
+                        keep_particle: parser::read_bool_field(event, "keep_particle", false),
+                        trigger_once: parser::read_bool_field(event, "trigger_once", false),
                     })
                     .collect(),
             })
@@ -2582,7 +2583,11 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         scale: text(items, b"scale").and_then(|value| value.trim().parse().ok()),
         attachments,
         default_state: text(items, b"default_state").map(unquote),
-        get_state_from_parent: text(items, b"get_state_from_parent").map(|v| v == "yes"),
+        // 14233BF40: +0x414; +0x415 marks authorship even on failure.
+        get_state_from_parent: items
+            .iter()
+            .any(|item| item.keyword_is("get_state_from_parent"))
+            .then(|| parser::read_bool_field(items, "get_state_from_parent", false)),
         locators: items
             .iter()
             .filter(|i| i.key.as_deref() == Some(b"locator"))
@@ -2639,6 +2644,31 @@ fn unquote(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_boolean_reads_keep_defaults_and_previous_assignments() {
+        let descriptors = parse_descriptors(
+            br#"entity = { name = e
+                get_state_from_parent = yes get_state_from_parent = YES
+                state = { name = idle looping = no looping = YES
+                    event = { keep_particle = no keep_particle = "yes" trigger_once = yes trigger_once = NO }
+                }
+            }
+            entity = { name = defaults get_state_from_parent = YES state = { name = idle looping = YES } }
+            "#,
+            "gfx/entities/bools.asset",
+        )
+        .unwrap();
+        let entity = descriptors.inherit("e").unwrap();
+        assert_eq!(entity.get_state_from_parent, Some(true));
+        let state = entity.states["idle"][0];
+        assert!(!state.looping);
+        assert!(state.events[0].keep_particle);
+        assert!(state.events[0].trigger_once);
+        let defaults = descriptors.inherit("defaults").unwrap();
+        assert_eq!(defaults.get_state_from_parent, Some(false));
+        assert!(defaults.states["idle"][0].looping);
+    }
 
     #[test]
     fn entity_shader_data_retains_allocation_defaults_and_authored_fields() {

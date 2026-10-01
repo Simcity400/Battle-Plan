@@ -60,26 +60,22 @@ pub struct RenderDescriptor {
 
 impl RenderDescriptor {
     pub fn read(fields: &[parser::Item]) -> io::Result<Self> {
-        let boolean = |key: &[u8], default| match last(fields, key) {
-            None => Ok(default),
-            Some(value) => match text(value, "particle flag")? {
-                "yes" => Ok(true),
-                "no" => Ok(false),
-                value => Err(invalid(format!(
-                    "particle flag {}={value}",
-                    String::from_utf8_lossy(key)
-                ))),
-            },
-        };
         //1423D7990 clears both strings and initializes x/y to1.14231E470
         //writes signed x/y and truncates file/shader to255/63 bytes.
         let mut out = Self {
             texture: String::new(),
             shader: String::new(),
             tiles: [1; 2],
-            trail: boolean(b"trail", false)?,
-            billboard: boolean(b"billboard", true)?,
-            local_space: boolean(b"local_space", false)?,
+            // 14231E620: +0x74B and +0x74A.
+            trail: parser::read_bool_field(fields, "trail", false),
+            local_space: parser::read_bool_field(fields, "local_space", false),
+            // 14231E620, key 0x25F: 1424AFED0 stores false for every value except C-string yes.
+            billboard: fields
+                .iter()
+                .filter(|item| item.keyword_is("billboard"))
+                .fold(true, |_, item| {
+                    item.value.scalar().map(parser::c_string) == Some(b"yes")
+                }),
         };
         if let Some(texture) = last(fields, b"texture") {
             for item in block(texture, "particle texture")? {
@@ -279,11 +275,9 @@ fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
     for value in all(fields, b"subsystem") {
         let fields = block(value, "particle subsystem")?;
         //14232ECC0 clears hidden subsystem capacity before runtime construction.
-        let count = if last(fields, b"hide")
-            .map(|v| text(v, "particle hide"))
-            .transpose()?
-            == Some("yes")
-        {
+        // 14231E620: hide at +0x74E.
+        let hidden = parser::read_bool_field(fields, "hide", false);
+        let count = if hidden {
             0
         } else {
             //SSubsystemReader constructor14231BB90 leaves +6E8 uninitialized.
@@ -311,6 +305,48 @@ fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_flags_keep_previous_values_on_failed_reads() {
+        for (source, expected) in [
+            ("trail = YES local_space = NO", false),
+            (
+                "trail = yes trail = YES local_space = yes local_space = NO",
+                true,
+            ),
+            (
+                "trail = yes trail = no local_space = yes local_space = no",
+                false,
+            ),
+        ] {
+            let document = parser::parse(source.as_bytes()).unwrap();
+            let descriptor = RenderDescriptor::read(&document.items).unwrap();
+            assert_eq!(
+                (descriptor.trail, descriptor.local_space),
+                (expected, expected)
+            );
+        }
+    }
+
+    #[test]
+    fn billboard_assignments_are_yes_only_c_strings() {
+        for (source, expected) in [
+            (b"billboard = no".as_slice(), false),
+            (b"billboard = NO", false),
+            (b"billboard = \"yes\"", true),
+            (b"billboard = yes billboard = NO", false),
+            (b"billboard = no billboard = yes", true),
+        ] {
+            let document = parser::parse(source).unwrap();
+            assert_eq!(
+                RenderDescriptor::read(&document.items).unwrap().billboard,
+                expected
+            );
+        }
+        let mut document = parser::parse(b"billboard = no").unwrap();
+        document.items[0].value = parser::Value::Scalar(b"yes\0x".to_vec());
+        assert!(RenderDescriptor::read(&document.items).unwrap().billboard);
+    }
 
     #[test]
     fn native_capacity_replicates_children_and_takes_maximum_system() {

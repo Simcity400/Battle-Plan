@@ -1,7 +1,7 @@
 //! The combat windows' authored hierarchy. Positions remain in game UI pixels.
 use installed_content::{
     gui,
-    parser::{Item, Value},
+    parser::{Item, Value, read_bool},
 };
 use std::io;
 
@@ -25,21 +25,19 @@ pub fn value<'a>(items: &'a [Item], key: &str) -> Option<&'a Value> {
 pub fn string<'a>(items: &'a [Item], key: &str) -> Option<&'a str> {
     value(items, key).and_then(Value::scalar_str)
 }
-/// A boolean field as read_bool_field (1424ABCA0 -> read_bool_token
-/// 1424B06E0) reads it for CGuiType/CWindowType::parse_field and the sprite
-/// types, each assignment in order: exactly `yes` or `no`, compared on the
-/// token text. Any other value (`YES` included) fails without writing and
-/// 1424ABCA0 only reports it, so the field keeps what an earlier assignment
-/// set, or its default (`None` here). A block value is `Err`: nothing skips
-/// it, so the game reads its contents as the widget's own fields.
+/// A GUI boolean field as read_bool_field (1424ABCA0 -> 1424B06E0) reads it,
+/// each assignment in order: a failed read keeps the earlier value, or `None`.
+/// A block value is `Err`: the game reads its contents as the widget's own fields.
 pub fn boolean(items: &[Item], key: &str) -> Result<Option<bool>, String> {
     let mut read = None;
     // parse_field dispatches by token id: a quoted key is no keyword.
     for item in items.iter().filter(|item| item.keyword_is(key)) {
         match &item.value {
-            Value::Scalar(text) if text == b"yes" => read = Some(true),
-            Value::Scalar(text) if text == b"no" => read = Some(false),
-            Value::Scalar(_) => {}
+            Value::Scalar(text) => {
+                if let Some(value) = read_bool(text) {
+                    read = Some(value);
+                }
+            }
             Value::Block(_) | Value::Tagged { .. } => {
                 return Err(format!(
                     "{key} is a block where read_bool_field (1424ABCA0) takes one value, so the game reads its contents as the widget's own fields"
@@ -165,10 +163,8 @@ pub fn contains(rect: [f32; 4], point: [f32; 2]) -> bool {
 mod tests {
     use super::*;
 
-    /// 1424B06E0 compares the text exactly: `YES` and `No` are neither, so
-    /// the field keeps what an earlier assignment set, or its default; the
-    /// keys still fold (parse_field dispatches them by token id); a block
-    /// value is refused by name.
+    /// 1424B06E0 compares the text exactly: `YES` and `No` keep the earlier
+    /// value; keys still fold; a block value is refused by name.
     #[test]
     fn boolean_values_are_exact_yes_or_no_read_in_order() {
         let document = installed_content::parser::parse(
@@ -187,6 +183,18 @@ mod tests {
                 .unwrap_err()
                 .starts_with("orientation is a block")
         );
+    }
+
+    #[test]
+    fn boolean_values_stop_at_the_first_nul() {
+        let mut document = installed_content::parser::parse(b"centerPosition = no").unwrap();
+        for (text, expected) in [(b"yes\0suffix".as_slice(), true), (b"no\0suffix", false)] {
+            document.items[0].value = Value::Scalar(text.to_vec());
+            assert_eq!(
+                boolean(&document.items, "centerPosition"),
+                Ok(Some(expected))
+            );
+        }
     }
 
     #[test]

@@ -160,12 +160,13 @@ fn equal<T: PartialEq + std::fmt::Debug>(
 
 // ADF40/AF5A0 text writing consumes c_str; retain raw suffixes in recording.
 fn text_projection<'a>(r: &mut Report, label: &str, value: &'a [u8]) -> &'a [u8] {
-    if let Some(end) = value.iter().position(|b| *b == 0) {
+    let prefix = installed_content::parser::c_string(value);
+    if prefix.len() < value.len() {
         r.limitation(
             "text serialization stops at the first NUL; captured suffix bytes are not comparable",
             label,
         );
-        &value[..end]
+        prefix
     } else {
         value
     }

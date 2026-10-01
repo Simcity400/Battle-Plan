@@ -101,7 +101,8 @@ impl Lights {
                     Curve {
                         start: number(a, "start", 0.0),
                         duration: number(a, "duration", 1.0),
-                        repeat: text(a, "repeat") == "yes",
+                        // 142317980: repeat at +0x50.
+                        repeat: installed_content::parser::read_bool_field(a, "repeat", false),
                         op: text(a, "op").to_owned(),
                         knots: values.chunks_exact(2).map(|v| [v[0], v[1]]).collect(),
                     },

@@ -79,7 +79,7 @@ fn record(source: &dyn FlagSource, small: bool, index: i32) -> Result<FlagRecord
 pub fn text_flag(source: &dyn FlagSource, tag: &str) -> Result<Option<Texture>, String> {
     let tag = tag.as_bytes();
     // `DrawInlineFlag` measures the tag as a C string: a NUL ends it.
-    let tag = &tag[..tag.iter().position(|byte| *byte == 0).unwrap_or(tag.len())];
+    let tag = installed_content::parser::c_string(tag);
     if tag.len() <= 2 {
         return Ok(None);
     }

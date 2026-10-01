@@ -201,12 +201,7 @@ fn characters(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<(
             projected.push(save::characters::Portrait {
                 category: role.to_vec(),
                 size: size.to_vec(),
-                identity: entry
-                    .identity
-                    .split(|&b| b == 0)
-                    .next()
-                    .unwrap_or_default()
-                    .to_vec(),
+                identity: installed_content::parser::c_string(&entry.identity).to_vec(),
             });
         }
         eq(
@@ -284,7 +279,7 @@ fn leaders(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
             eq(
                 r,
                 &format!("LeaderPortraits {id} string{index}"),
-                actual.split(|&b| b == 0).next().unwrap_or_default(),
+                installed_content::parser::c_string(actual),
                 saved[index].as_slice(),
             );
         }

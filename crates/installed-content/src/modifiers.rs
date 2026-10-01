@@ -608,11 +608,11 @@ pub fn equipment_bonuses(items: &[Item], unheld: &mut Unheld) -> Vec<EquipmentBo
                     // read_bool_field (1424ABCA0 -> read_bool_token
                     // 1424B06E0): exactly `yes` or `no`; a failure leaves it
                     // as it was.
-                    instant = match field.value.scalar() {
-                        Some(b"yes") => true,
-                        Some(b"no") => false,
-                        _ => instant,
-                    };
+                    instant = field
+                        .value
+                        .scalar()
+                        .and_then(crate::parser::read_bool)
+                        .unwrap_or(instant);
                     continue;
                 }
                 let Some(stat) = value(field, unheld) else {

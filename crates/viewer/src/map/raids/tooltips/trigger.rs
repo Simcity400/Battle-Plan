@@ -75,10 +75,13 @@ impl Context<'_, '_> {
                 ) =>
                 {
                     // 14138E230: inversion == expected, then template slot 12.
-                    let expected = match trigger.value.scalar_str() {
-                        Some("yes") => true,
-                        Some("no") => false,
-                        _ => {
+                    let expected = match trigger
+                        .value
+                        .scalar()
+                        .and_then(installed_content::parser::read_bool)
+                    {
+                        Some(expected) => expected,
+                        None => {
                             out.push((line, Err(format!("scripted trigger {key} is not yes/no"))));
                             continue;
                         }
@@ -151,11 +154,11 @@ impl Context<'_, '_> {
         let key = key_text(trigger);
         match key.as_str() {
             "always" | "has_war" => {
-                let expected = match scalar {
-                    Some("yes") => true,
-                    Some("no") => false,
-                    _ => return Err("boolean trigger has unsupported value".into()),
-                };
+                let expected = trigger
+                    .value
+                    .scalar()
+                    .and_then(installed_content::parser::read_bool)
+                    .ok_or("boolean trigger has unsupported value")?;
                 // 1403F0820/140419F50 select by inversion==authored bool.
                 let key = match (key.as_str(), invert == expected) {
                     ("always", true) => "TRIGGER_ALWAYS_FALSE",

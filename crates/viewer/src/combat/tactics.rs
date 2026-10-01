@@ -445,9 +445,8 @@ fn field_boolean(
 ) -> bool {
     let mut state = default;
     for item in items.iter().filter(|item| item.keyword_is(key)) {
-        match item.value.scalar().map(c_string) {
-            Some(b"yes") => state = true,
-            Some(b"no") => state = false,
+        match item.value.scalar().and_then(installed_content::parser::read_bool) {
+            Some(value) => state = value,
             _ => warnings.push(format!(
                 "Combat tactics: tactic {tactic}'s {key} = {} is not exactly yes or no; the game logs an error and keeps {} (1424B06E0).",
                 shown(&item.value),

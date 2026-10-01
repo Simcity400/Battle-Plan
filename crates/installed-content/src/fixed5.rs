@@ -10,7 +10,7 @@ use crate::crt::{Scanned, scan_i32, scan_i64};
 /// only when the first scan returns 0; a scan that returns EOF leaves its
 /// zero.
 pub fn script_fixed5(bytes: &[u8]) -> Option<i64> {
-    let bytes = &bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())];
+    let bytes = crate::parser::c_string(bytes);
     let whole = match scan_i64(bytes) {
         Scanned::Stored(value) => value,
         Scanned::End => 0,
@@ -57,7 +57,7 @@ pub fn script_fixed5(bytes: &[u8]) -> Option<i64> {
 ///
 /// The token text ends at its first NUL, as the C string does.
 pub fn decimal_fixed5(bytes: &[u8]) -> i64 {
-    let bytes = &bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())];
+    let bytes = crate::parser::c_string(bytes);
     let whole = atoll(bytes);
     let start = bytes
         .iter()
@@ -91,7 +91,7 @@ pub fn decimal_fixed5(bytes: &[u8]) -> i64 {
 /// space, a sign, decimal digits, clamped to the `i32` range; no digits give
 /// 0. The text ends at its first NUL.
 pub fn decimal_i32(bytes: &[u8]) -> i32 {
-    let bytes = &bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())];
+    let bytes = crate::parser::c_string(bytes);
     atoll(bytes).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 

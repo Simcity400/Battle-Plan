@@ -390,11 +390,11 @@ fn apply_autonomy_colors(colors: &mut CountryColors, input: &[u8]) -> io::Result
             } else if field.keyword_is("use_overlord_color") {
                 // 1424B06E0 compares C strings, independent of token kind;
                 // anything other than exact yes/no leaves the stored byte.
-                match field.value.scalar().map(crate::parser::c_string) {
-                    Some(b"yes") => inherit = true,
-                    Some(b"no") => inherit = false,
-                    _ => {}
-                }
+                inherit = field
+                    .value
+                    .scalar()
+                    .and_then(crate::parser::read_bool)
+                    .unwrap_or(inherit);
             }
         }
         let id = id.ok_or_else(|| invalid("autonomy_state has no id"))?;

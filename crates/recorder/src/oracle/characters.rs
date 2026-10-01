@@ -1,6 +1,7 @@
 //! Character and persistent-ability comparisons against native text serialization.
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
+use installed_content::parser::c_string;
 use installed_content::save::characters as saved;
 use replay::{
     frame::DecodedFrame,
@@ -63,13 +64,6 @@ fn trait_token_value(
     } else {
         token_value(report, label, tokens, id, expected);
     }
-}
-
-fn c_string(value: &[u8]) -> &[u8] {
-    &value[..value
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(value.len())]
 }
 
 fn text_value(report: &mut Report, label: &str, actual: &[u8], expected: &[u8]) {

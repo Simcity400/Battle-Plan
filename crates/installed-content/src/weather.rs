@@ -220,12 +220,13 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
                         pair[usize::from(field.keyword_is("fading_entity"))] =
                             (!name.is_empty()).then(|| name.to_owned());
                     } else if field.keyword_is("small") {
-                        // read_bool_field 1424ABCA0, byte unchanged on failed scan.
-                        match field.value.c_str().unwrap_or_default() {
-                            "yes" => small = true,
-                            "no" => small = false,
-                            _ => {}
-                        }
+                        // SWeatherEffectEntityReader::vf4@140F0AEC0:
+                        // read_bool_field, byte unchanged on failed scan.
+                        small = field
+                            .value
+                            .scalar()
+                            .and_then(crate::parser::read_bool)
+                            .unwrap_or(small);
                     }
                 }
                 if pair.iter().any(Option::is_some) {

@@ -39,10 +39,7 @@ fn flag(value: u8) -> io::Result<bool> {
 }
 
 fn serialized_text<'a>(report: &mut Report, field: &str, bytes: &'a [u8]) -> &'a [u8] {
-    let end = bytes
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(bytes.len());
+    let end = installed_content::parser::c_string(bytes).len();
     if end < bytes.len() {
         report.limitation("native text serialization ends at the first NUL; captured trailing bytes are not save-comparable", field);
     }

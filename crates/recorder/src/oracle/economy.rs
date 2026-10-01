@@ -25,10 +25,7 @@ fn compare_text(report: &mut Report, label: &str, actual: &[u8], saved: &[u8]) {
     // Both CAF770's resource name and 1200E10's foreign source use
     // 1424ADF40 -> 1424AF5A0: an MSVC c_str, quoted even when empty,
     // scanned only through the first NUL in text mode.
-    let end = actual
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(actual.len());
+    let end = installed_content::parser::c_string(actual).len();
     equal(report, label, &actual[..end], saved);
     if end < actual.len() {
         report.limitation(

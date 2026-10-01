@@ -2,6 +2,7 @@
 //! HiredAdvisors against each country's saved `appointed_advisors`.
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
+use installed_content::parser::c_string;
 use installed_content::save::characters as saved;
 use replay::{
     frame::DecodedFrame,
@@ -69,15 +70,6 @@ fn definitions(
         format!("ModifierDefinitions: {} decoded rows, zero save comparisons", rows.len()),
     );
     Ok(())
-}
-
-/// `c_str` projection of a written string: `CWriter::WriteStringValue` stops
-/// at the first NUL.
-fn c_string(value: &[u8]) -> &[u8] {
-    &value[..value
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(value.len())]
 }
 
 fn character_handle(id: u32) -> u64 {

@@ -2,7 +2,7 @@
 
 use installed_content::{
     fixed5::{IntOperand, decimal_fixed5, decimal_i32, int_operand, script_fixed5},
-    parser::{Item, Operator, Value, c_string},
+    parser::{Item, Operator, Value, read_bool},
 };
 
 use super::{Scopes, eval::Evaluator};
@@ -97,8 +97,8 @@ pub fn scope_selector(item: &Item) -> Option<Selected> {
 /// +0x58 is cleared, then the value token is read as a scope selector
 /// ([`scope_selector`]); only if it is none, by read_bool_token
 /// (1424B06E0), which compares `yes` and `no` with their terminating NUL,
-/// so the text to its first NUL. Any other value, a quoted or empty one, a
-/// block's `{` and another spelling of yes or no included, fails that read,
+/// so the text to its first NUL, quoted or bare. Any other value, an empty
+/// one, a block's `{` or another spelling of yes or no, fails that read,
 /// so +0x58 stays false and the trigger tests `no`
 /// (CSimpleAssignTrigger::vf5 141395A40 only logs it). A selector is
 /// refused: what the trigger then tests is not reproduced.
@@ -111,7 +111,7 @@ pub fn trigger_boolean(item: &Item) -> Result<bool, String> {
         ));
     }
     // read_bool_token (1424B06E0) compares bytes; a failed read leaves `no`.
-    Ok(item.value.scalar().map(c_string) == Some(b"yes"))
+    Ok(item.value.scalar().and_then(read_bool).unwrap_or(false))
 }
 
 /// CIntTrigger::Evaluate (14138CC70) preserves equality; CValueTrigger's
