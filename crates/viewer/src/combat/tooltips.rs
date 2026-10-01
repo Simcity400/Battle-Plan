@@ -22,7 +22,7 @@ use std::{collections::BTreeMap, io};
 
 use super::tactics::{Content as Tactics, Effects};
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct Content {
     skills: Skills,
     warnings: Vec<String>,

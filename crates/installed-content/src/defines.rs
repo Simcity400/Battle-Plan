@@ -41,6 +41,49 @@ pub struct Defines {
     lua: Lua,
 }
 
+// Dump the Lua values, never Lua handles (whose Debug contains addresses).
+impl std::fmt::Debug for Defines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn value(item: Value, active: &mut Vec<usize>) -> io::Result<String> {
+            Ok(match item {
+                Value::Nil => "nil".into(),
+                Value::Boolean(v) => format!("{v:?}"),
+                Value::Integer(v) => format!("{v:?}"),
+                Value::Number(v) => format!("{v:?}"),
+                Value::String(v) => format!("string:{:?}", v.as_bytes()),
+                Value::Table(table) => {
+                    let id = table.to_pointer() as usize;
+                    if active.contains(&id) {
+                        return Err(invalid("cyclic NDefines table"));
+                    }
+                    active.push(id);
+                    let mut entries = Vec::new();
+                    for pair in table.pairs::<Value, Value>() {
+                        let (key, item) = pair.map_err(lua_error)?;
+                        entries.push((value(key, active)?, value(item, active)?));
+                    }
+                    active.pop();
+                    entries.sort();
+                    format!("table:{entries:?}")
+                }
+                other => {
+                    return Err(invalid(format!(
+                        "unsupported NDefines {}",
+                        other.type_name()
+                    )));
+                }
+            })
+        }
+        let values = self
+            .lua
+            .globals()
+            .raw_get::<Value>("NDefines")
+            .map_err(lua_error)
+            .and_then(|v| value(v, &mut Vec::new()));
+        f.debug_tuple("Defines").field(&values).finish()
+    }
+}
+
 /// Runs every define script of the stack in load order.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
     let defines = Defines::new()?;
@@ -292,6 +335,26 @@ pub fn fixed5(value: f64) -> io::Result<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lua_value_dump_sorts_nested_tables_without_addresses() {
+        let a = super::Defines::new().unwrap();
+        let b = super::Defines::new().unwrap();
+        a.load(
+            "test",
+            b"NDefines = { S = { z = 1.25, a = { [2] = -0.0, [1] = 'x' } } }",
+        )
+        .unwrap();
+        b.load(
+            "test",
+            b"NDefines = { S = { a = { [1] = 'x', [2] = -0.0 }, z = 1.25 } }",
+        )
+        .unwrap();
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        a.load("test", b"NDefines.S.empty = ''").unwrap();
+        b.load("test", b"NDefines.S.empty = {}").unwrap();
+        assert_ne!(format!("{a:?}"), format!("{b:?}"));
+    }
+
     use super::*;
 
     fn defines(sources: &[&str]) -> io::Result<Defines> {

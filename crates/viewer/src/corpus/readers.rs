@@ -5,7 +5,13 @@
 //! preparation on top (the combat content, the scripted text content, the
 //! state neighbours and resource bonuses the trigger environment reads).
 
-use std::{collections::BTreeMap, fmt::Display, io, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeMap,
+    fmt::{Debug, Display},
+    io,
+    sync::Arc,
+    time::Instant,
+};
 
 use installed_content::{
     ResolvedLayers,
@@ -21,12 +27,13 @@ use super::report::{Diagnostic, Kind, ReaderRun};
 struct Log {
     runs: Vec<ReaderRun>,
     diagnostics: Vec<Diagnostic>,
+    values: Option<super::values::Writer>,
 }
 
 impl Log {
     /// Runs one reader and records its time; a refused read is a
     /// [`Kind::ReaderError`] and gives `None`.
-    fn read<T>(&mut self, reader: &str, read: impl FnOnce() -> io::Result<T>) -> Option<T> {
+    fn read<T: Debug>(&mut self, reader: &str, read: impl FnOnce() -> io::Result<T>) -> Option<T> {
         let started = Instant::now();
         let result = read();
         self.runs.push(ReaderRun {
@@ -35,6 +42,9 @@ impl Log {
             completed: result.is_ok(),
             not_run: None,
         });
+        if self.values.is_some() {
+            self.value(reader, &result.as_ref().map_err(|error| error.to_string()));
+        }
         result
             .inspect_err(|error| {
                 self.diagnostics.push(Diagnostic::new(
@@ -44,6 +54,12 @@ impl Log {
                 ))
             })
             .ok()
+    }
+
+    fn value(&self, reader: &str, value: &impl Debug) {
+        if let Some(writer) = &self.values {
+            writer.write(reader, value);
+        }
     }
 
     /// Records `readers` as not run: `needs` refused the stack.
@@ -222,6 +238,7 @@ fn gui_refusal(log: &mut Log, reader: &str, file: &str, refusal: &Refusal) {
 pub fn run(
     content: installed_content::GatheredContent,
     decode: installed_content::image::native::Decode,
+    values: Option<super::values::Writer>,
 ) -> (Vec<ReaderRun>, Vec<Diagnostic>) {
     let language = content
         .language
@@ -232,7 +249,10 @@ pub fn run(
         layers: content.layers,
         stats: content.stats,
     });
-    let mut log = Log::default();
+    let mut log = Log {
+        values,
+        ..Log::default()
+    };
     let layers: &ResolvedLayers = &resolved.layers;
     let defines = log.read("defines", || installed_content::defines::read(layers));
     let interface = interface(&mut log, layers, &language, decode);
@@ -252,6 +272,7 @@ pub fn run(
         (Some(buildings), Some((ideologies, _)), Some((resources, _))) => {
             let names =
                 installed_content::trigger_keys::CountTriggerNames::new(buildings, ideologies, resources);
+            log.value("trigger_keys", &names);
             if let Some(gap) = &names.ideologies_gap {
                 log.note("trigger_keys", Kind::Refused, gap.clone());
             }
@@ -267,6 +288,7 @@ pub fn run(
                 crate::combat::CombatContent::read(layers, defines)
             }) {
                 combat.set_count_trigger_names(buildings, ideologies, resources);
+                log.value("viewer.combat", &combat);
                 let warnings: Vec<String> = combat.warnings().collect();
                 log.notes("viewer.combat", Kind::Warning, &warnings);
                 let refusals: Vec<String> = combat.refusals().map(str::to_owned).collect();
@@ -280,6 +302,14 @@ pub fn run(
     }
     log.read("dashboard.scripted_content", || {
         dashboard::scripted_text::ScriptedContent::read(Arc::clone(&resolved), language.clone())
+            .map(|content| {
+                (
+                    content.names,
+                    content.recursion,
+                    content.tag_aliases,
+                    content.recorded_language,
+                )
+            })
             .map_err(io::Error::other)
     });
     (log.runs, log.diagnostics)
@@ -326,6 +356,7 @@ fn interface(
         });
     match &interface {
         Some(interface) => {
+            log.value("gfx", &interface.sprites);
             for (file, sprites) in &interface.registry.files {
                 let fonts = sprites.fonts.iter().filter_map(|event| match event {
                     installed_content::gui::native::fonts::FontEvent::Font(facts) => Some(facts),
@@ -349,16 +380,29 @@ fn interface(
                 .map(|font| String::from_utf8_lossy(&font.facts.name).into_owned())
                 .collect();
             let mut loaded = Vec::new();
+            let values = log.values.clone();
             log.read("viewer.fonts", || {
                 for name in &names {
-                    loaded.push((
-                        name.clone(),
-                        crate::map::text::load(layers, interface, name, language, &mut Vec::new()),
-                    ));
+                    let mut images = Vec::new();
+                    let font =
+                        crate::map::text::load(layers, interface, name, language, &mut images);
+                    if let Some(writer) = &values {
+                        writer.write("viewer.fonts", &(name, &images));
+                    }
+                    loaded.push((name.clone(), font));
                 }
                 Ok(())
             });
             for (name, font) in loaded {
+                if let Some(writer) = &log.values {
+                    writer.write(
+                        "viewer.fonts",
+                        &(
+                            name.clone(),
+                            font.as_ref().map_err(|error| error.to_string()),
+                        ),
+                    );
+                }
                 match font {
                     Ok(font) => log.notes("viewer.fonts", Kind::Logged, &font.logged),
                     Err(why) => log.about(
@@ -385,12 +429,20 @@ fn interface(
         }
     }
     // The tree reader retained for combat windows and the remaining map icons.
+    let values = log.values.clone();
     if let Some(failed) = log.read("gui.tree", || {
         Ok(layers
             .descriptor_paths("interface", &[".gui"])?
             .into_iter()
             .filter_map(|path| {
-                let error = installed_content::gui::read(layers, &path).err()?;
+                let read = installed_content::gui::read(layers, &path);
+                if let Some(writer) = &values {
+                    writer.write(
+                        "gui.tree",
+                        &(&path, read.as_ref().map_err(|error| error.to_string())),
+                    );
+                }
+                let error = read.err()?;
                 Some((path, error.to_string()))
             })
             .collect::<Vec<_>>())
@@ -414,26 +466,46 @@ fn interface(
             // Every pdxparticle object's emitters as the viewer's particle
             // assets read them: each subsystem through RenderDescriptor::read.
             let mut refused = Vec::new();
+            let values = log.values.clone();
             log.read("particles.emitters", || {
                 for object in catalog.objects() {
                     let read = catalog.resolve(object).and_then(|particle| {
+                        if let Some(writer) = &values {
+                            writer.write("particles.emitters", &(object, &particle));
+                        }
                         let document =
                             installed_content::parser::parse(&layers.read_uncovered(&particle.path)?)?;
+                        if let Some(writer) = &values {
+                            writer.write("particles.emitters", &(object, &document));
+                        }
                         let root = crate::map::weather_effects::particle_root(
                             &document,
                             &particle.path,
                             &particle.name,
                             crate::map::weather_effects::Pick::First,
                         )?;
-                        crate::map::weather_effects::read_emitters(
+                        let mut textures = Vec::new();
+                        let mut pages = BTreeMap::new();
+                        let read = crate::map::weather_effects::read_emitters(
                             layers,
                             decode,
                             root,
-                            &mut Vec::new(),
-                            &mut Default::default(),
-                        )
-                        .map_err(|error| io::Error::other(format!("{}: {error}", particle.path)))
+                            &mut textures,
+                            &mut pages,
+                        );
+                        if let Some(writer) = &values {
+                            writer.write("particles.emitters", &(object, &textures, &pages));
+                        }
+                        read.map_err(|error| {
+                            io::Error::other(format!("{}: {error}", particle.path))
+                        })
                     });
+                    if let Some(writer) = &values {
+                        writer.write(
+                            "particles.emitters",
+                            &(object, read.as_ref().map_err(|error| error.to_string())),
+                        );
+                    }
                     if let Err(error) = read {
                         refused.push((object.to_owned(), error.to_string()));
                     }
@@ -696,12 +768,19 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         None => log.not_run(&["characters"], "ideas"),
     }
     // The viewer's counter portraits (army, large), file by file.
+    let values = log.values.clone();
     if let Some(stops) = log.read("characters.portraits", || {
         installed_content::characters::paths(layers)
             .into_iter()
             .map(|path| {
-                let (_, stop) =
-                    installed_content::characters::portraits(&layers.read(&path)?, "army", "large")?;
+                let (_, stop) = {
+                    let read =
+                        installed_content::characters::portraits(&layers.read(&path)?, "army", "large")?;
+                    if let Some(writer) = &values {
+                        writer.write("characters.portraits", &(&path, &read));
+                    }
+                    read
+                };
                 Ok(stop.map(|stop| format!("{path}: {stop}")))
             })
             .collect::<io::Result<Vec<_>>>()
@@ -875,7 +954,14 @@ fn units(
     let tags = log.read("viewer.country_tags", || {
         crate::map::trains::country_tag_index(layers)
     });
-    match (cultures, tags, layers.descriptor_roster()) {
+    let roster = layers.descriptor_roster();
+    if log.values.is_some() {
+        log.value(
+            "mesh.roster",
+            &roster.as_ref().map_err(|error| error.to_string()),
+        );
+    }
+    match (cultures, tags, roster) {
         (Some(cultures), Some(tags), Ok(roster)) => {
             let is_tag = |tag: &str| tags.contains_key(tag);
             let has_entity = |entity: &str| roster.descriptors.entities.contains_key(entity);

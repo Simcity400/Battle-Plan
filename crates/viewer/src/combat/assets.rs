@@ -448,6 +448,7 @@ fn expand_gui(document: &mut installed_content::parser::Document) {
 /// commander and tooltip content, with the reads' warnings in the order
 /// [`Assets::load`] reports them. The tactic registry keeps its own
 /// ([`CombatContent::warnings`]).
+#[derive(Debug)]
 pub(crate) struct CombatContent {
     traits: installed_content::unit_leader::Traits,
     tactics: super::tactics::Content,

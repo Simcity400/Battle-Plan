@@ -126,6 +126,7 @@ impl Report {
 /// What the movement timing reads from the recorded content stack, loaded once
 /// per document: the movement map and the movement `NDefines`
 /// ([`MovementDefines::read`]), so a mod's defines apply.
+#[derive(Debug)]
 pub struct MovementContent {
     pub map: MovementMap,
     pub defines: Defines,

@@ -45,6 +45,7 @@ pub(super) struct Menu {
     pub entries: Vec<Values>,
 }
 
+#[derive(Debug)]
 struct Definition {
     active: bool,
     attacker: bool,
@@ -72,6 +73,7 @@ pub(super) struct Effects {
     pub defender_org: i64,
 }
 
+#[derive(Debug)]
 struct RegistryEntry {
     id: i32,
     token: Vec<u8>,
@@ -89,7 +91,7 @@ struct Candidate {
 /// All expressions and presentation constants are matching-content inputs.
 /// The matching tactic file supplies registry order, identity and definitions.
 /// The recorded lexical dictionary supplies the native dynamic unlock token.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct Content {
     phases: Vec<Vec<u8>>,
     registry: Vec<RegistryEntry>,

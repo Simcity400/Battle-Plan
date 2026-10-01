@@ -6,6 +6,7 @@ use super::{
 use installed_content::{defines::Defines, states::StateDefinition};
 use std::collections::BTreeMap;
 
+#[derive(Debug)]
 pub struct Content {
     pub intel: Result<intel::Defines, String>,
     pub speed: Result<SpeedDefines, String>,

@@ -141,6 +141,11 @@ pub struct PathSearch {
     cache: Mutex<Cache>,
     budget: usize,
 }
+crate::corpus::values::debug_fields!(PathSearch(this) {
+    graph, budget
+} {
+
+});
 
 impl PathSearch {
     pub fn new(graph: ProvinceGraph) -> Self {

@@ -6,19 +6,20 @@
 mod readers;
 mod report;
 mod stacks;
+pub(crate) mod values;
 
 use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
 pub const USAGE: &str =
     "viewer --mod-corpus --out <directory> [--game-dir <directory>] [--user-dir <directory>]
-         [--workshop <directory>] [--cache <directory>] [--only <stack,...>] [--jobs <n>]
+         [--workshop <directory>] [--cache <directory>] [--only <stack,...>] [--jobs <n>] [--values[=text]]
 viewer --mod-corpus-diff <base run> <head run> [--out <file.md>] [--examples <n>]";
 
 /// The stack with no mod, which every other stack mounts beneath its mod.
@@ -46,6 +47,7 @@ struct Options {
     cache: Option<PathBuf>,
     only: Option<Vec<String>>,
     jobs: usize,
+    values: Option<values::Mode>,
 }
 
 fn value(args: &mut std::slice::Iter<'_, OsString>, name: &str) -> io::Result<OsString> {
@@ -65,6 +67,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
     let (mut game_dir, mut user_dir, mut workshop, mut out, mut cache, mut only) =
         (None, None, None, None, None, None);
     let mut jobs = 4;
+    let mut values = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -83,6 +86,8 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
                 )
             }
             Some("--jobs") => jobs = number(value(&mut args, "--jobs")?, "--jobs")?,
+            Some("--values") => values = Some(values::Mode::Digest),
+            Some("--values=text") => values = Some(values::Mode::Text),
             _ => {
                 return Err(invalid(format!(
                     "unknown argument {}\n{USAGE}",
@@ -107,6 +112,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
         cache,
         only,
         jobs,
+        values,
     })
 }
 
@@ -134,11 +140,20 @@ fn run(args: &[OsString]) -> io::Result<()> {
         plans.retain(|plan| only.contains(&plan.id));
     }
     fs::create_dir_all(&options.out)?;
+    let value_dir = options.out.join("values");
+    // Do not let a reused run directory advertise stale values.
+    if options.values.is_some() {
+        if value_dir.exists() {
+            fs::remove_dir_all(&value_dir)?;
+        }
+        fs::create_dir_all(&value_dir)?;
+    }
     let scratch = options.out.join("scratch");
     let cache = options
         .cache
         .clone()
         .unwrap_or_else(|| scratch.join("hashes"));
+    let dump_error = options.values.map(|_| Arc::new(Mutex::new(None)));
     let queue = Mutex::new(plans.iter());
     let reports = Mutex::new(BTreeMap::new());
     std::thread::scope(|scope| {
@@ -155,6 +170,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
                         plan,
                         &scratch,
                         &cache,
+                        dump_error.as_ref(),
                     );
                     eprintln!(
                         "mod-corpus: {} gathered in {} ms, read in {} ms: {} diagnostics{}",
@@ -177,6 +193,11 @@ fn run(args: &[OsString]) -> io::Result<()> {
         }
     });
     let reports = reports.into_inner().unwrap_or_else(|e| e.into_inner());
+    if let Some(error) = dump_error
+        && let Some(error) = error.lock().unwrap().take()
+    {
+        return Err(error);
+    }
     report::write_run(&options.out, &reports)?;
     let mut summary = format!(
         "# Mod corpus\n\n{} stacks in {} ms with {} jobs.\n\n",
@@ -210,6 +231,7 @@ fn stack(
     plan: &stacks::Plan,
     scratch: &Path,
     cache: &Path,
+    dump_error: Option<&values::Error>,
 ) -> report::StackReport {
     let mut report = report::StackReport {
         stack: plan.id.clone(),
@@ -248,7 +270,17 @@ fn stack(
         })
         .collect();
     let started = Instant::now();
-    let (runs, diagnostics) = readers::run(content, decode);
+    let values = dump_error.map(|error| {
+        values::Writer::new(
+            options.out.join("values").join(&plan.id),
+            Arc::clone(error),
+            options.values.unwrap(),
+        )
+    });
+    let (runs, diagnostics) = readers::run(content, decode, values.clone());
+    if let Some(values) = values {
+        values.finish();
+    }
     report.read_milliseconds = started.elapsed().as_millis();
     report.readers = runs;
     report.diagnostics = diagnostics;
@@ -268,7 +300,8 @@ fn run_diff(args: &[OsString]) -> io::Result<()> {
     let [base, head] = runs.as_slice() else {
         return Err(invalid(format!("two run folders are required\n{USAGE}")));
     };
-    let text = report::diff(&report::read_run(base)?, &report::read_run(head)?, examples);
+    let mut text = report::diff(&report::read_run(base)?, &report::read_run(head)?, examples);
+    text.push_str(&values::diff(base, head)?);
     match out {
         Some(path) => fs::write(path, text),
         None => {

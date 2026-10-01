@@ -32,7 +32,7 @@ pub fn scale(value: f32) -> Matrix {
 }
 
 /// The importer scale is baked into positions and skeleton translations only.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Source {
     pub skeleton: Vec<NativeJoint>,
     pub mesh_scale: f32,
