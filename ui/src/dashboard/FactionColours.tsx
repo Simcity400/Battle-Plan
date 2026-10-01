@@ -1,61 +1,124 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { loadProduct } from './products';
+import { FactRequests, HourStore, nameKey, readFacts } from './countryFacts';
+import { factionFounders, founderReads, leaderColours } from './factionLeaders';
+import { STYLES } from './useCountriesAt';
+import type { Rgb } from '../shell/appearance/color';
 import { validateCountryGroupReply } from './groupsReply';
 import { Icon } from '../components/Icons';
 import { Popover, PopoverHeading, usePopover } from '../components/Popover';
 import { factionColours } from '../charts/factionColours';
 import { readTokens, subscribeTokens } from '../charts/tokens';
-import { newId } from '../shell/ids';
 import type { DashboardClient, DashboardSource } from './client';
-import { applyColourSet, saveCampaignSettings, saveColourSet, setFactionStyle, useCampaignSettings } from './campaignSettings';
-import type { CountryGroupReply, FactionGroup } from '../generated/dashboard';
+import { chosenColour, factionIdentity, saveCampaignSettings, setFactionColour, setFactionStyle, useCampaignSettings } from './campaignSettings';
+import type { ColourScope } from './campaignSettings';
+import { Segmented } from '../components/Segmented';
+import type { CountryGroupReply, CountryStyle, FactionGroup } from '../generated/dashboard';
 import { MAX_FACTIONS } from './campaignSettings';
 import './factionColours.css';
 
-interface CampaignFactions { key: string; factions?: FactionGroup[]; warnings: string[]; error?: string }
+/** How long the founders' map colours may take to read before a faction still unread
+ * keeps its palette colour (reads retry with backoff while they run). */
+const FOUNDER_WAIT_MS = 10_000;
+
+interface CampaignFactions {
+  key: string; factions?: FactionGroup[]; leaderColours?: ReadonlyMap<string, Rgb | null>;
+  /** Each faction's first recorded leader's tag, for its identity across campaigns. */
+  founders?: ReadonlyMap<string, string>;
+  warnings: string[]; error?: string;
+}
 
 /** Every faction recorded on any branch of the campaign (colours are campaign-wide),
- * with the recording's warnings about group history it could not read. */
+ * the map colour of the leader each had when first recorded (`factionFounders`), and
+ * the recording's warnings about group history it could not read. A leader colour
+ * that cannot be read leaves that faction on the palette, with a warning. */
 function useCampaignFactions(client: DashboardClient, source: DashboardSource | undefined): CampaignFactions {
   const key = source ? `${source.id}:${source.revision}` : '';
   const [state, setState] = useState<CampaignFactions>({ key: '', warnings: [] });
   useEffect(() => {
     if (!source) return;
     const controller = new AbortController();
+    const ids = { sourceId: source.id, revision: source.revision };
     Promise.all(source.metadata.branches.map(branch => loadProduct<CountryGroupReply>(client,
-      { sourceId: source.id, revision: source.revision, product: 'country-groups', params: { branchId: branch.id } }, controller.signal, validateCountryGroupReply)))
-      .then(replies => {
+      { ...ids, product: 'country-groups', params: { branchId: branch.id } }, controller.signal, validateCountryGroupReply)))
+      .then(async replies => {
         if (controller.signal.aborted) return;
         const byId = new Map<string, FactionGroup>();
         for (const faction of replies.flatMap(reply => reply.factions)) {
           const known = byId.get(faction.id);
-          byId.set(faction.id, known ? { ...known, name: known.name ?? faction.name } : faction);
+          byId.set(faction.id, known ? { ...known, name: known.name ?? faction.name, recordedName: known.recordedName || faction.recordedName } : faction);
         }
-        setState({ key, factions: [...byId.values()], warnings: [...new Set(replies.flatMap(reply => reply.warnings))] });
-      }, error => { if (!controller.signal.aborted) setState({ key, warnings: [], error: error instanceof Error ? error.message : String(error) }); });
+        const warnings = [...new Set(replies.flatMap(reply => reply.warnings))];
+        const founders = factionFounders(replies);
+        // Read through the shared bounded store (#146's FactRequests): at most two reads at
+        // once per branch, and a failed read (such as one the desktop rejected) backs off and
+        // is tried again. A founder still unread after FOUNDER_WAIT_MS keeps the palette, with
+        // a warning, rather than leaving the colours loading.
+        const read = await Promise.all([...founderReads(founders)].map(([branchId, wanted]) => new Promise<ReadonlyMap<string, CountryStyle | null>>(resolve => {
+          const store = new HourStore<CountryStyle>(0);
+          const hours = new Set(wanted.map(item => item.hour)).size;
+          let finished = false;
+          let deadline: ReturnType<typeof setTimeout> | undefined;
+          let requests: FactRequests<CountryStyle> | null = null;
+          const finish = () => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(deadline);
+            requests?.cancel();
+            resolve(store.pickRead(wanted));
+          };
+          const done = () => { if (wanted.every(item => store.answered(item.hour, item.tag))) finish(); };
+          requests = new FactRequests<CountryStyle>(store, (plan, signal, onChunk) => readFacts(client, { ...ids, branchId }, STYLES, plan, signal, onChunk), done);
+          controller.signal.addEventListener('abort', finish, { once: true });
+          deadline = setTimeout(finish, FOUNDER_WAIT_MS);
+          requests.want(wanted, hours, STYLES.perRequest);
+          done();
+        })));
+        if (controller.signal.aborted) return;
+        const byBranch = new Map([...founderReads(founders).keys()].map((branchId, index) => [branchId, read[index]]));
+        const leaderColoursRead = leaderColours(founders, founder => byBranch.get(founder.branchId)?.get(nameKey(founder.hour, founder.tag)));
+        const missing = [...leaderColoursRead.values()].filter(colour => !colour).length;
+        if (missing) warnings.push(`The leader's map colour of ${missing} ${missing === 1 ? 'faction' : 'factions'} was not recorded or could not be read in time; ${missing === 1 ? 'it takes' : 'they take'} a palette colour until the campaign is opened again.`);
+        setState({ key, factions: [...byId.values()], leaderColours: leaderColoursRead, founders: new Map([...founders].map(([id, founder]) => [id, founder.tag])), warnings });
+      }).catch(error => { if (!controller.signal.aborted) setState({ key, warnings: [], error: error instanceof Error ? error.message : String(error) }); });
     return () => controller.abort();
   }, [client, source, key]);
   return state.key === key ? state : { key, warnings: [] };
 }
 
-/** Each faction's campaign colour for charts: the user's choice, else the default
- * from `factionColours`. Faction leaders are not recorded yet, so defaults come
- * from the categorical palette. */
+/** Each faction's colour for charts: the user's choice (this campaign's own, else the
+ * one set for every campaign, found by the faction's identity), else the default from
+ * `factionColours`: the map colour of the leader the faction had when first recorded,
+ * exactly, grey included, nudged slightly only where it clashes with another faction's;
+ * a faction whose leader colour is not known takes the categorical palette. `identity`
+ * gives a faction's identity across campaigns (`factionIdentity`), and `setColour`
+ * saves a colour for every campaign or this one only, returning an error message if the
+ * device refused. */
 export function useFactionColours(client: DashboardClient, source: DashboardSource | undefined) {
   const settings = useCampaignSettings();
   const campaign = useCampaignFactions(client, source);
   const [surface, setSurface] = useState(() => readTokens().surface);
   useEffect(() => subscribeTokens(tokens => setSurface(tokens.surface)), []);
-  const chosen = source ? settings.campaigns[source.metadata.campaignKey]?.factions ?? {} : {};
+  const campaignKey = source?.metadata.campaignKey ?? '';
+  const own = settings.campaigns[campaignKey]?.factions ?? {};
   const factions = useMemo(() => campaign.factions ?? [], [campaign.factions]);
-  const colours = useMemo(() => factionColours(factions.map(faction => ({ id: faction.id })),
-    Object.fromEntries(Object.entries(chosen).map(([id, style]) => [id, style.colour])), surface), [factions, chosen, surface]);
-  const names = (faction: FactionGroup) => chosen[faction.id]?.name ?? faction.name;
-  return { factions, colours, names, loading: !campaign.factions && !campaign.error, warnings: campaign.warnings, error: campaign.error };
+  const leaders = campaign.leaderColours;
+  const founders = campaign.founders;
+  const identities = useMemo(() => new Map(factions.map(faction => [faction.id, factionIdentity(faction.recordedName, founders?.get(faction.id) ?? null)])), [factions, founders]);
+  const colours = useMemo(() => factionColours(factions.map(faction => ({ id: faction.id, leaderColor: leaders?.get(faction.id) ?? null })),
+    Object.fromEntries(factions.map(faction => [faction.id, chosenColour(settings, campaignKey, faction.id, identities.get(faction.id) ?? null)])), surface),
+  [factions, leaders, settings, campaignKey, identities, surface]);
+  const names = (faction: FactionGroup) => own[faction.id]?.name ?? faction.name;
+  const identity = (id: string) => identities.get(id) ?? null;
+  /** The tag of the leader a faction had when first recorded, if known. */
+  const founder = (id: string) => founders?.get(id) ?? null;
+  const setColour = (id: string, hex: string | null, scope: ColourScope) =>
+    saveCampaignSettings(setFactionColour(settings, scope, campaignKey, id, identity(id), hex));
+  return { factions, colours, names, identity, founder, setColour, loading: !campaign.factions && !campaign.error, warnings: campaign.warnings, error: campaign.error };
 }
 
-/** A campaign's faction colours and display names, and colour sets that carry them
- * to other campaigns. Opened from the campaign's row in the sidebar. */
+/** A campaign's faction colours, for every campaign or this one only, and its display
+ * names. Opened from the campaign's row in the sidebar. */
 export default function FactionColoursButton({ client, source, label }: { client: DashboardClient; source: DashboardSource; label: string }) {
   const id = useId();
   const menu = usePopover('start');
@@ -72,10 +135,15 @@ export default function FactionColoursButton({ client, source, label }: { client
 function FactionColoursEditor({ client, source }: { client: DashboardClient; source: DashboardSource }) {
   const settings = useCampaignSettings();
   const campaign = source.metadata.campaignKey;
-  const { factions, colours, loading, warnings, error } = useFactionColours(client, source);
+  const { factions, colours, identity, founder, setColour, loading, warnings, error } = useFactionColours(client, source);
+  // An unnamed faction is told apart by its first recorded leader, named as the recording's catalogue names it.
+  const unnamed = (id: string) => {
+    const tag = founder(id);
+    const name = tag ? source.metadata.countries.find(country => country.tag === tag)?.name || tag : null;
+    return name ? `Unnamed faction (${name})` : 'Unnamed faction';
+  };
   const chosen = settings.campaigns[campaign]?.factions ?? {};
-  const [setName, setSetName] = useState('');
-  const [setId, setSetId] = useState('');
+  const [scope, setScope] = useState<ColourScope>('all');
   const [message, setMessage] = useState<string | null>(null);
   /** Saves and returns whether it worked; a failure leaves its message showing. */
   const save = (next: typeof settings) => {
@@ -90,46 +158,34 @@ function FactionColoursEditor({ client, source }: { client: DashboardClient; sou
   if (!factions.length) return <p className="field-hint">{warnings.length
     ? `No factions could be read from this campaign. ${warnings.join(' ')}` : 'No factions were recorded in this campaign.'}</p>;
   return <div className="faction-colours-body">
-    <p className="field-hint">Colours apply to this campaign in every chart. Faction names come from the game; a display name here replaces it.</p>
+    <p className="field-hint">A colour you choose applies in every chart. Faction names come from the game; a display name here replaces it in this campaign.</p>
+    <Segmented label="Colour changes apply to" value={scope} options={SCOPES} onChange={setScope} />
     <ul className="faction-colours-list">{factions.map(faction => {
       const style = chosen[faction.id];
+      const shared = identity(faction.id) != null ? settings.shared[identity(faction.id)!] : undefined;
+      const set = scope === 'campaign' ? style?.colour : shared?.colour;
       return <li key={faction.id}>
         <label className="faction-swatch" data-tooltip="Change colour" style={{ background: colours.get(faction.id) }}>
-          <input type="color" value={colours.get(faction.id) ?? '#888888'} aria-label={`Colour for ${style?.name ?? faction.name ?? 'unnamed faction'}`}
-            onChange={event => save(setFactionStyle(settings, campaign, faction.id, { colour: event.currentTarget.value }))} /></label>
-        {/* Keyed on the stored name, so a reset or an applied set replaces any old text. */}
-        <input key={style?.name ?? ''} className="faction-name" defaultValue={style?.name ?? ''} placeholder={faction.name ?? 'Unnamed faction'} maxLength={160} aria-label="Display name"
+          <input type="color" value={colours.get(faction.id) ?? '#888888'} aria-label={`Colour for ${style?.name ?? faction.name ?? unnamed(faction.id)}`}
+            onChange={event => setMessage(setColour(faction.id, event.currentTarget.value, scope))} /></label>
+        {/* Keyed on the stored name, so a reset replaces any old text. */}
+        <input key={style?.name ?? ''} className="faction-name" defaultValue={style?.name ?? ''} placeholder={faction.name ?? unnamed(faction.id)} maxLength={160} aria-label="Display name"
           onBlur={event => {
             const name = event.currentTarget.value.trim();
             if (name !== (style?.name ?? '')) save(setFactionStyle(settings, campaign, faction.id, name ? { name } : { name: undefined }));
           }} />
-        {style && <button type="button" className="icon-button small" aria-label="Use the default colour and name" data-tooltip="Reset"
-          onClick={() => save(setFactionStyle(settings, campaign, faction.id, null))}><Icon name="refresh" /></button>}
+        {(set || style?.name) && <button type="button" className="icon-button small" aria-label={scope === 'campaign' ? 'Use the default colour and name in this campaign' : 'Use the default colour in every campaign'}
+          data-tooltip="Reset" onClick={() => {
+            const cleared = setFactionColour(settings, scope, campaign, faction.id, identity(faction.id), null);
+            save(scope === 'campaign' ? setFactionStyle(cleared, campaign, faction.id, null) : cleared);
+          }}><Icon name="refresh" /></button>}
       </li>;
     })}</ul>
-    <form className="faction-colours-sets" onSubmit={event => {
-      event.preventDefault();
-      if (!setName.trim()) return;
-      if (!save(saveColourSet(settings, `set-${newId().replaceAll('-', '').slice(0, 20)}`, setName, campaign, factions, colours))) return;
-      setSetName('');
-      setMessage('Saved. Apply it to another campaign from its faction colours.');
-    }}>
-      <input value={setName} onChange={event => setSetName(event.currentTarget.value)} placeholder="Name this colour set" maxLength={160} aria-label="Colour set name" />
-      <button type="submit" className="button small" disabled={!setName.trim()}><Icon name="save" />Save set</button>
-    </form>
-    {settings.sets.length > 0 && <div className="faction-colours-sets">
-      <select value={setId} onChange={event => setSetId(event.currentTarget.value)} aria-label="Saved colour set">
-        <option value="">Apply a saved set…</option>
-        {settings.sets.map(set => <option key={set.id} value={set.id}>{set.name}</option>)}
-      </select>
-      <button type="button" className="button small" disabled={!setId} onClick={() => {
-        const set = settings.sets.find(item => item.id === setId);
-        if (!set) return;
-        const result = applyColourSet(settings, set, campaign, factions);
-        const error = saveCampaignSettings(result.settings);
-        setMessage(error ?? `${result.matched} of ${factions.length} factions matched by name.`);
-      }}>Apply</button>
-    </div>}
     {message && <p className="field-hint" role="status">{message}</p>}
   </div>;
 }
+
+const SCOPES: readonly { value: ColourScope; label: string; tooltip: string }[] = [
+  { value: 'all', label: 'All campaigns', tooltip: 'The faction takes this colour in every campaign, matched by its recorded name (or, unnamed, its first leader), until you change it' },
+  { value: 'campaign', label: 'This campaign only', tooltip: 'Only this campaign, over any colour chosen for every campaign' },
+];

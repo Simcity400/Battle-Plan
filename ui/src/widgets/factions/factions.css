@@ -1,0 +1,2 @@
+.factions-widget { height: 100%; min-height: 0; overflow: auto; padding: var(--space-1) 0 var(--space-2); }
+.factions-widget > .chart-legend { padding-bottom: var(--space-2); }

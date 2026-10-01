@@ -55,7 +55,11 @@ impl Requests {
             return Err(CANCELLED.into());
         }
         if self.pending.len() >= MAX_PENDING {
-            return Err("Dashboard request capacity reached. Retry this view.".into());
+            // Starts with the service's own refusal, so the frontend tries it again.
+            return Err(format!(
+                "{}. Retry this view.",
+                dashboard::transport::CAPACITY_REACHED
+            ));
         }
         if self.pending.contains_key(id) {
             return Err("Dashboard request identifier was reused".into());

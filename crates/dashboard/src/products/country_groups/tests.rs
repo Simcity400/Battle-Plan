@@ -392,3 +392,50 @@ fn country_groups_date_war_starts_and_capitulations_as_the_engine_does() {
             .any(|warning| warning.contains("Capitulations could not be read"))
     );
 }
+
+#[test]
+fn country_groups_follow_each_faction_s_leader_at_order_zero() {
+    use crate::products::country_groups::{MembershipRun, scan_branch};
+    let run = |tag: &str, first_hour: i32, last_hour: i32| MembershipRun {
+        tag: tag.into(),
+        first_hour,
+        last_hour,
+    };
+    let frames = vec![
+        group_frame(100, &[], &[(7, "Pact", &[9001, 44])], &[]),
+        group_frame(101, &[], &[(7, "Pact", &[9001, 44, 55])], &[]),
+        // Leadership passes to FRA: the member order changes, the roster does not.
+        group_frame(102, &[], &[(7, "Pact", &[44, 9001, 55])], &[]),
+        // An order-zero member the links cannot name: no leader is known this hour.
+        group_frame(103, &[], &[(7, "Pact", &[888, 44])], &[]),
+        group_frame(104, &[], &[(7, "Pact", &[44])], &[]),
+        // Hour 105 is missing: the leader's run breaks there.
+        group_frame(106, &[], &[(7, "Pact", &[44])], &[]),
+    ];
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        scan.faction_leaders(7).unwrap(),
+        [
+            run("GER", 100, 101),
+            run("FRA", 102, 102),
+            run("FRA", 104, 104),
+            run("FRA", 106, 106)
+        ]
+    );
+    // Membership itself is unchanged by the change of leader.
+    assert_eq!(
+        scan.faction(7).unwrap().3,
+        [
+            run("GER", 100, 102),
+            run("FRA", 100, 104),
+            run("CTL", 101, 102),
+            run("FRA", 106, 106)
+        ]
+    );
+    let hour = crate::products::country_groups::HourSpan {
+        first_hour: 103,
+        last_hour: 103,
+    };
+    assert_eq!(scan.faction_incomplete(7), Some(&[hour][..]));
+}

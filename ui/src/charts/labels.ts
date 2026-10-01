@@ -30,8 +30,9 @@ export function layoutEndLabels(labels: readonly EndLabel[], top: number, bottom
 }
 
 /** A label column only as wide as its longest text over the whole campaign, so it
- * never jumps during playback; clamped to [min, max]. */
-export function fitLabelWidth(texts: Iterable<string>, measure: (text: string) => number, min: number, max: number, padding = 0): number {
+ * never jumps during playback; clamped to [min, max]. A text may carry more than its
+ * words (such as an indent), which `measure` then counts. */
+export function fitLabelWidth<T = string>(texts: Iterable<T>, measure: (text: T) => number, min: number, max: number, padding = 0): number {
   let widest = 0;
   for (const text of texts) widest = Math.max(widest, measure(text));
   return Math.ceil(Math.min(max, Math.max(min, widest + padding)));

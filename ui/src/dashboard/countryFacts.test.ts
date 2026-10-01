@@ -85,7 +85,8 @@ test('per-hour reads go around the shared product cache, so they never evict wid
   await readFacts(client, { sourceId: 's', revision: 'v', branchId: '1' }, spec, [...plan, [-1, ['GER']]], new AbortController().signal,
     (hour, _tags, values) => seen.push([hour, values ? values.size : null]));
   assert.equal(calls.get('country-styles'), 301);
-  assert.deepEqual(seen.at(-1), [-1, null]);
+  // The product's own error (the hour is a gap) is its answer: read, with nothing.
+  assert.deepEqual(seen.at(-1), [-1, 0]);
   assert.deepEqual(seen[0], [0, 1]);
   // The branch history is still cached: asking again makes no second round trip.
   await loadProduct(client, history, new AbortController().signal);

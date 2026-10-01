@@ -4,6 +4,7 @@
  * used most recently, the requests an hour still needs, and reading them on the
  * transient product path, so these many small per-hour replies never push a
  * widget's full-branch data out of the shared product cache. */
+import { TRANSIENT_ERRORS } from '../generated/dashboard.ts';
 import type { DashboardClient } from './client';
 import { loadTransientProduct } from './products.ts';
 
@@ -84,7 +85,25 @@ export class HourStore<V> {
     return picked;
   }
 
+  /** Like `pick`, but a country whose read finished without a value is there as
+   * null; one still being read is absent. */
+  pickRead(wanted: readonly NameAt[]): Map<string, V | null> {
+    const picked = new Map<string, V | null>();
+    for (const item of wanted) {
+      if (this.answered(item.hour, item.tag)) picked.set(nameKey(item.hour, item.tag), this.get(item.hour, item.tag) ?? null);
+    }
+    return picked;
+  }
+
   clear(): void { this.hours.clear(); this.wanted.clear(); }
+}
+
+/** What a set of wanted facts is asked for by: the track and each (hour, country)
+ * once, sorted, so the same countries in another order (a race re-ranking) are the
+ * same request and never cancel one still being read. */
+export function factsKey(trackKey: string, wanted: readonly NameAt[]): string {
+  const pairs = [...new Set(wanted.map(item => JSON.stringify([item.hour, item.tag])))].sort();
+  return JSON.stringify([trackKey, pairs]);
 }
 
 /** The hours `wanted` names, earliest first, at most `maxHours` of them. */
@@ -111,6 +130,183 @@ export function planRequests<V>(store: HourStore<V>, wanted: readonly NameAt[], 
   return plan;
 }
 
+/** Whether a failed request may be tried again: it was cancelled, the service could
+ * not be reached (the browser's fetch fails with a TypeError), or the service refused
+ * it for want of room (`TRANSIENT_ERRORS`, from the service's own messages). Any
+ * other error is the product's answer, and asking again would give it again. */
+export function transientError(error: unknown): boolean {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') return true;
+  if (error instanceof TypeError) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return TRANSIENT_ERRORS.some(refusal => message.startsWith(refusal));
+}
+
+/** Reads a plan, reporting each chunk (null: its read failed); stops when aborted. */
+export type FactRead<V> = (plan: readonly (readonly [number, readonly string[]])[], signal: AbortSignal,
+  onChunk: (hour: number, tags: readonly string[], found: ReadonlyMap<string, V> | null) => void) => Promise<void>;
+
+/** Reads one store runs at once: a sweep of a tooltip across hours never piles up
+ * requests past the desktop's limit. */
+export const MAX_READING = 2;
+/** The wait before a failed read is tried again: doubled each failure, up to the
+ * most, so a desktop out of room (other widgets holding every request) is asked
+ * again soon but never hammered. */
+export const RETRY_FIRST_MS = 250;
+export const RETRY_MOST_MS = 8000;
+
+/** When to try a read again after `failures` failures in a row. */
+export const retryDelay = (failures: number) => Math.min(RETRY_MOST_MS, RETRY_FIRST_MS * 2 ** Math.max(0, failures - 1));
+
+/** Time for the reads: now, and a callback after a delay (cancellable). */
+export interface FactClock {
+  now: () => number;
+  after: (ms: number, run: () => void) => () => void;
+}
+const REAL_CLOCK: FactClock = {
+  now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+  after: (ms, run) => { const timer = setTimeout(run, ms); return () => clearTimeout(timer); },
+};
+
+/** The reads for one store: one request per hour and chunk of countries, at most
+ * [`MAX_READING`] at once, the rest queued; the queue is always what is wanted now,
+ * so a sweep across hours asks only for the hour it stops at.
+ *
+ * - A read of an hour no longer wanted is cancelled, freeing its place.
+ * - A read of an hour still wanted goes on whatever countries join or leave (a
+ *   top-N race's last place changing every few frames), and its answer is kept; a
+ *   country being read is not asked for again.
+ * - Only a read that completed decides a fact: a country its answer lacks is read
+ *   with nothing. A read that failed (the desktop out of room, a transport error)
+ *   decides nothing: it is tried again while its hour is wanted, after a wait that
+ *   doubles each time ([`retryDelay`]), and `retry` tries at once.
+ * - Each read that ends starts the next queued, so nothing waits for a re-render.
+ *
+ * `cancel` (another track, nothing wanted, the widget off screen or gone) stops all. */
+export class FactRequests<V> {
+  /** Reads going, by id. */
+  private readonly reading = new Map<number, { hour: number; tags: readonly string[]; controller: AbortController }>();
+  /** The countries they read, by `nameKey`. */
+  private readonly keys = new Set<string>();
+  /** Failures in a row, and when each may be tried again, by `nameKey`. */
+  private readonly failures = new Map<string, { count: number; at: number }>();
+  private wanted: readonly NameAt[] = [];
+  private maxHours = MAX_NAME_HOURS;
+  private perRequest = 1;
+  private nextId = 0;
+  /** The wait for the next retry, and when it is due. */
+  private waiting: { at: number; stop: () => void } | null = null;
+  private readonly store: HourStore<V>;
+  private readonly read: FactRead<V>;
+  private readonly changed: () => void;
+  private readonly clock: FactClock;
+
+  /** `changed` is told whenever a read is recorded. */
+  constructor(store: HourStore<V>, read: FactRead<V>, changed: () => void, clock: FactClock = REAL_CLOCK) {
+    this.store = store;
+    this.read = read;
+    this.changed = changed;
+    this.clock = clock;
+  }
+
+  /** The countries being read now, keyed by `nameKey`. */
+  get pending(): ReadonlySet<string> { return this.keys; }
+
+  /** How many reads are going. */
+  get running(): number { return this.reading.size; }
+
+  /** Makes `wanted` what is wanted: cancels reads of hours it no longer names and
+   * starts what it needs that is neither read nor being read, as places free up.
+   * Returns the requests started now. */
+  want(wanted: readonly NameAt[], maxHours: number, perRequest: number): number {
+    this.wanted = wanted;
+    this.maxHours = maxHours;
+    this.perRequest = perRequest;
+    const hours = new Set(wantedHours(wanted, maxHours));
+    this.store.want(hours);
+    for (const [id, read] of [...this.reading]) if (!hours.has(read.hour)) this.stop(id);
+    return this.pump();
+  }
+
+  /** Tries again at once what failed, without waiting. */
+  retry(): number {
+    this.failures.clear();
+    return this.pump();
+  }
+
+  /** Stops every read going; what they would have answered is asked for again when wanted. */
+  cancel(): void {
+    for (const id of [...this.reading.keys()]) this.stop(id);
+    this.failures.clear();
+    this.waiting?.stop();
+    this.waiting = null;
+    this.wanted = [];
+  }
+
+  private pump(): number {
+    const now = this.clock.now();
+    let next = Infinity;
+    const missing = this.wanted.filter(item => {
+      const key = nameKey(item.hour, item.tag);
+      if (this.keys.has(key)) return false;
+      const failed = this.failures.get(key);
+      if (failed && failed.at > now) { next = Math.min(next, failed.at); return false; }
+      return true;
+    });
+    let started = 0;
+    for (const [hour, tags] of planRequests(this.store, missing, this.maxHours, this.perRequest)) {
+      if (this.reading.size >= MAX_READING) break;
+      this.start(hour, tags);
+      started++;
+    }
+    // A failed read still wanted is tried again when its wait is over.
+    if (next < Infinity && (!this.waiting || this.waiting.at > next)) {
+      this.waiting?.stop();
+      const at = next;
+      this.waiting = { at, stop: this.clock.after(Math.max(0, at - now), () => { if (this.waiting?.at === at) this.waiting = null; this.pump(); }) };
+    }
+    return started;
+  }
+
+  private start(hour: number, tags: readonly string[]): void {
+    const id = this.nextId++;
+    const controller = new AbortController();
+    this.reading.set(id, { hour, tags, controller });
+    for (const tag of tags) this.keys.add(nameKey(hour, tag));
+    let reported = false;
+    const done = (found: ReadonlyMap<string, V> | null) => {
+      if (reported || controller.signal.aborted || !this.reading.has(id)) return;
+      reported = true;
+      this.stop(id, false);
+      if (found) {
+        // A completed read decides every country it asked for: one its answer lacks
+        // is read with nothing.
+        for (const tag of tags) this.failures.delete(nameKey(hour, tag));
+        this.store.record(hour, tags, found);
+        this.changed();
+      } else {
+        // A failed read decides nothing; it is tried again after its wait.
+        const at = this.clock.now();
+        for (const tag of tags) {
+          const key = nameKey(hour, tag);
+          const count = (this.failures.get(key)?.count ?? 0) + 1;
+          this.failures.set(key, { count, at: at + retryDelay(count) });
+        }
+      }
+      this.pump();
+    };
+    // A read that ends without reporting its chunk failed.
+    void this.read([[hour, tags]], controller.signal, (_hour, _tags, found) => done(found)).then(() => done(null), () => done(null));
+  }
+
+  private stop(id: number, abort = true): void {
+    const read = this.reading.get(id);
+    if (!read) return;
+    if (abort) read.controller.abort();
+    this.reading.delete(id);
+    for (const tag of read.tags) this.keys.delete(nameKey(read.hour, tag));
+  }
+}
+
 /** How one kind of fact is read: its product, its parameters for an hour's
  * countries, and the value per country its reply gives. */
 export interface FactSpec<V> {
@@ -130,8 +326,11 @@ export async function readFacts<V>(client: DashboardClient, source: { sourceId: 
       const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product,
         params: spec.params(source.branchId, hour, tags) }, signal);
       found = spec.extract(data);
-    } catch {
-      // Not read: the caller's fallback shows, and it is asked again next time.
+    } catch (error) {
+      // An error the product gave (the game folders not chosen, an hour not recorded)
+      // is its answer: it has nothing for these countries. Only a refusal for want of
+      // room, a cancelled request or a service out of reach is tried again.
+      if (!transientError(error)) found = new Map();
     }
     if (signal.aborted) return;
     onChunk(hour, tags, found);

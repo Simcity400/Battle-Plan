@@ -4,6 +4,7 @@ pub mod abilities;
 pub mod adjacencies;
 pub mod adjacency_rules;
 pub mod ambient;
+pub mod autonomy;
 pub mod buildings;
 pub mod characters;
 pub mod cities;

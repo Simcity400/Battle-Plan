@@ -2,7 +2,7 @@
 //! every product uses.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     path::Path,
     sync::{
@@ -15,7 +15,7 @@ use replay::{
     BranchId,
     branches::{BranchStart, Parentage},
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, Metrics, TableView},
+    frame::{DecodedFrame, FrameDecoder, Metrics, SharedView, TableView},
     rows::{CountryLinkRow, CountryRow, TableId, tables},
 };
 
@@ -128,6 +128,59 @@ pub fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
         .binary_search_by_key(&raw, |link| link.id)
         .ok()
         .map(|index| links[index].canonical_slot)
+}
+
+/// Each raw country link id's tag this hour, for a scan over a branch's hours.
+/// Rebuilt only when the country tables change (unchanged tables share one
+/// allocation from hour to hour). The views are held, not just their addresses,
+/// so a freed table's address can never be mistaken for them. A link whose
+/// country has no tag, or a tag that is not UTF-8, names no country.
+#[derive(Default)]
+pub struct LinkTags {
+    tags: HashMap<u32, String>,
+    from: Option<(SharedView, SharedView)>,
+}
+
+impl LinkTags {
+    /// Reads this hour's country tables: `Ok(true)` when the tags were rebuilt,
+    /// `Ok(false)` when the tables are those of the hour before, and an error when
+    /// either table is not complete this hour (the tags are then left as they were).
+    pub fn update(&mut self, frame: &DecodedFrame) -> io::Result<bool> {
+        let (countries, links) = country_tables(frame)?;
+        let views = (
+            frame.tables[TableId::Countries.index()].clone(),
+            frame.tables[TableId::CountryLinks.index()].clone(),
+        );
+        let same = self.from.as_ref().is_some_and(|(countries, links)| {
+            SharedView::ptr_eq(countries, &views.0) && SharedView::ptr_eq(links, &views.1)
+        });
+        if same {
+            return Ok(false);
+        }
+        let slots: HashMap<u32, &[u8]> = countries
+            .iter()
+            .map(|country| (country.canonical_slot, country.tag.as_slice()))
+            .collect();
+        self.tags = links
+            .iter()
+            .filter_map(|link| {
+                let tag = std::str::from_utf8(slots.get(&link.canonical_slot)?).ok()?;
+                (!tag.is_empty()).then(|| (link.id, tag.to_owned()))
+            })
+            .collect();
+        self.from = Some(views);
+        Ok(true)
+    }
+
+    /// The tag a raw link id names, if any.
+    pub fn get(&self, raw: u32) -> Option<&String> {
+        self.tags.get(&raw)
+    }
+
+    /// Every raw link id and its tag.
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &String)> {
+        self.tags.iter()
+    }
 }
 
 /// A tag's country hour by hour, as (canonical slot, country id): whether this

@@ -306,10 +306,9 @@ impl Inner {
                         .push_back((job.request, "Source lease identity exhausted".into()));
                 }
             }
-            Ok(_) => pending.errors.push_back((
-                job.request,
-                "Too many open dashboard source bindings".into(),
-            )),
+            Ok(_) => pending
+                .errors
+                .push_back((job.request, crate::transport::TOO_MANY_SOURCES.into())),
             Err(error) => pending
                 .errors
                 .push_back((job.request, bounded_text(&error, 2048))),

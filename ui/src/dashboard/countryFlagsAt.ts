@@ -20,7 +20,7 @@ export function flagImageUrl(image: CountryFlagImage): string | undefined {
 
 /** One reading spec per flag size (a `country-flags` request draws at most 32 countries). */
 const specs = new Map<CountryFlagSize, FactSpec<string>>();
-function flagSpec(size: CountryFlagSize): FactSpec<string> {
+export function flagSpec(size: CountryFlagSize): FactSpec<string> {
   let spec = specs.get(size);
   if (!spec) {
     spec = {

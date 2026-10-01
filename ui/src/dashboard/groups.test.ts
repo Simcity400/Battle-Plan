@@ -1,19 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply } from '../generated/dashboard';
-import { groupLabel, groupMembers, groupRuns, groupUnobserved, membershipChanges } from './groups.ts';
+import { groupLabel, groupMembers, groupRuns, groupUnobserved, membershipChanges, worldFilter } from './groups.ts';
+import { createWidget } from './model.ts';
 import { parseTemplate } from './storage.ts';
 import { defaultTemplate } from './model.ts';
+import { Lineage } from './identity.ts';
 import '../widgets/definitions.ts';
 
 const REPLY: CountryGroupReply = {
   branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], unobserved: { humans: [], factions: [{ firstHour: 190, lastHour: 200 }], wars: [] },
   humans: [{ tag: 'GER', firstHour: 100, lastHour: 200 }, { tag: 'ENG', firstHour: 150, lastHour: 200 }],
-  factions: [{ id: '5', name: 'Axis', firstHour: 100, lastHour: 200, members: [
-    { tag: 'GER', firstHour: 100, lastHour: 200 }, { tag: 'ITA', firstHour: 120, lastHour: 170 }, { tag: 'HUN', firstHour: 180, lastHour: 200 }] , incomplete: [] },
-  { id: '6', name: null, firstHour: 190, lastHour: 200, members: [] , incomplete: [] }],
+  factions: [{ id: '5', name: 'Axis', recordedName: 'Axis', firstHour: 100, lastHour: 200, members: [
+    { tag: 'GER', firstHour: 100, lastHour: 200 }, { tag: 'ITA', firstHour: 120, lastHour: 170 }, { tag: 'HUN', firstHour: 180, lastHour: 200 }], leaders: [], incomplete: [] },
+  { id: '6', name: null, recordedName: '', firstHour: 190, lastHour: 200, members: [], leaders: [], incomplete: [] }],
   wars: [{ first: 'FRA', second: 'GER', firstHour: 130, lastHour: 200 }, { first: 'GER', second: 'POL', firstHour: 110, lastHour: 140 }],
 };
+
+test('world filters resolve countries at the counted membership hour, including tag reuse within a run', () => {
+  const identityChanges = [{ hour: 10, from: 'AAA', to: 'BBB' }];
+  const lineage = new Lineage(identityChanges);
+  const reply: CountryGroupReply = { ...REPLY, identityChanges,
+    humans: [{ tag: 'AAA', firstHour: 0, lastHour: 9 }, { tag: 'BBB', firstHour: 10, lastHour: 20 }],
+  };
+  const filter = (membership: 'hour' | 'end' | 'ever', data = reply) =>
+    worldFilter({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false }, [], data, 5, 20, lineage);
+  assert.deepEqual([...filter('end').tags!], ['BBB']);
+  assert.deepEqual(filter('end').countryIds, new Set([lineage.countryAt('AAA', 5)]));
+  assert.deepEqual(filter('hour').countryIds, filter('end').countryIds);
+  assert.deepEqual(filter('ever').countryIds, filter('end').countryIds);
+  // A tag's continuous membership can name two countries during the run.
+  const reused = { ...reply, humans: [{ tag: 'BBB', firstHour: 0, lastHour: 20 }] };
+  assert.deepEqual(filter('ever', reused).countryIds, new Set([lineage.countryAt('BBB', 0), lineage.countryAt('BBB', 10)]));
+});
 
 test('members at each hour, at the end, or anyone ever', () => {
   const axis = groupRuns(REPLY, { type: 'faction', id: '5' })!;
@@ -67,6 +86,9 @@ test('an hour whose membership was not recorded is unknown, not an empty group',
   assert.deepEqual(groupMembers(runs, 'hour', 107, 110, Infinity, gap), ['GER']);
   assert.equal(groupMembers(runs, 'end', 107, 105, Infinity, gap), null);
   assert.deepEqual(groupMembers(runs, 'ever', 104, 110, Infinity, gap), ['GER']);
+  // Anyone ever: none recorded is empty only when every hour was recorded.
+  assert.equal(groupMembers([], 'ever', 104, 110, Infinity, gap), null);
+  assert.deepEqual(groupMembers([], 'ever', 104, 110), []);
   // Each group has its own gaps: a faction gap does not hide human players.
   assert.deepEqual(groupUnobserved(REPLY, { type: 'humans' }), []);
   assert.deepEqual(groupUnobserved(REPLY, { type: 'faction', id: '5' }), [{ firstHour: 190, lastHour: 200 }]);
@@ -85,7 +107,42 @@ test('a group gives at most the widget limit', () => {
 });
 
 test('a faction is unobserved where no faction was read or its own roster was incomplete', () => {
-  const reply: CountryGroupReply = { ...REPLY, factions: REPLY.factions.map((faction, index) => index === 0 ? { ...faction, incomplete: [{ firstHour: 50, lastHour: 50 }] } : faction) };
+  const reply: CountryGroupReply = { ...REPLY, factions: REPLY.factions.map((faction, index) => index === 0 ? { ...faction, leaders: [], incomplete: [{ firstHour: 50, lastHour: 50 }] } : faction) };
   const group = { type: 'faction' as const, id: reply.factions[0].id };
   assert.deepEqual(groupUnobserved(reply, group).map(span => span.firstHour), [50, 190]);
+});
+
+test('a widget about the whole world shows all countries by default, narrowed by chosen ones or a group', () => {
+  assert.deepEqual(createWidget('factions', 'main').countries, { kind: 'all' });
+  assert.deepEqual(createWidget('political-power', 'main').countries, { kind: 'selected' });
+  const filter = (selection: Parameters<typeof worldFilter>[0], fallback: string[] = [], reply: CountryGroupReply | undefined = REPLY, hour = 150) =>
+    worldFilter(selection, fallback, reply, hour, 200);
+  assert.deepEqual(filter({ kind: 'all' }, ['GER']), { tags: null, reason: null });
+  assert.deepEqual([...filter({ kind: 'selected' }, ['GER']).tags!], ['GER']);
+  assert.deepEqual([...filter({ kind: 'tags', tags: ['D01', 'MY TAG'] }, ['GER']).tags!], ['D01', 'MY TAG']);
+  assert.match(filter({ kind: 'selected' }).reason!, /Choose a country/);
+  assert.match(filter({ kind: 'group', group: { type: 'faction', id: '9' }, membership: 'hour', aggregate: false }).reason!, /not in this campaign branch/);
+  // While the groups load, nothing is shown rather than everything.
+  assert.deepEqual(worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], undefined, 150, 200), { tags: new Set(), reason: null });
+});
+
+test('a whole-world widget narrowed to a group honours its membership setting', () => {
+  const humans = (membership: 'hour' | 'end' | 'ever', hour: number) =>
+    worldFilter({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false }, [], REPLY, hour, 200);
+  // At each hour: the members at the moment shown. ENG is human only from 150.
+  assert.deepEqual([...humans('hour', 120).tags!], ['GER']);
+  assert.deepEqual([...humans('hour', 160).tags!].sort(), ['ENG', 'GER']);
+  // At the end: the members at the branch's last hour, whatever the moment shown.
+  assert.deepEqual([...humans('end', 120).tags!].sort(), ['ENG', 'GER']);
+  // Anyone ever.
+  assert.deepEqual([...humans('ever', 100).tags!].sort(), ['ENG', 'GER']);
+  const axis = (membership: 'hour' | 'end' | 'ever', hour: number) =>
+    worldFilter({ kind: 'group', group: { type: 'faction', id: '5' }, membership, aggregate: false }, [], REPLY, hour, 200);
+  assert.deepEqual([...axis('hour', 150).tags!].sort(), ['GER', 'ITA']);
+  assert.deepEqual([...axis('ever', 150).tags!].sort(), ['GER', 'HUN', 'ITA']);
+  // The faction's roster was not recorded from 190: unknown, not empty.
+  assert.match(axis('end', 150).reason!, /not recorded at the end/);
+  assert.match(axis('hour', 195).reason!, /not recorded at this moment/);
+  // Before any member joined, the group is empty at that moment.
+  assert.match(axis('hour', 90).reason!, /no members at this moment/);
 });

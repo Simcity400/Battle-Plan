@@ -15,6 +15,12 @@ export interface TimelineSpan {
   shade?: number;
   /** Drawn in the accent colour, such as a spirit still active at the playhead. */
   emphasis?: boolean;
+  /** A fill of its own (such as a faction's or a subject level's colour), over
+   * `shade` and `emphasis`; text inside it takes a readable colour. */
+  color?: string;
+  /** A short mark drawn at the start of the bar where it fits (such as a star for
+   * a faction's leader); the tooltip says what it means. */
+  glyph?: string;
   /** A band instead of a bar: its thickness follows a value over the span's hours
    * (such as a production line's factories each day), on the timeline's `bandMax`.
    * Hours no step covers are not drawn. */
@@ -37,10 +43,36 @@ export interface TimelineLane {
   identity?: { label: string; icon?: string };
   /** Faded in the left column, such as a line that has ended. */
   muted?: boolean;
+  /** How far the left column indents the lane, in levels, for a tree such as an
+   * overlord's subjects beneath it. */
+  depth?: number;
+  /** A lane heading the lanes after it (a faction above its members): its name is
+   * bold, and it has no icon placeholder when it names no icon. */
+  heading?: boolean;
 }
 
 export const AXIS_HEIGHT = 24;
 export const ROW_HEIGHT = 40;
+/** The left column's indent per `depth` level. */
+export const INDENT = 18;
+
+/** The lanes a view shows, first and last (inclusive): the view is `height` pixels
+ * tall, the time axis stays at its top, and it starts `offset` pixels down the
+ * lanes. Last is below first when no lane is in view. So a timeline of any number
+ * of lanes draws, and asks about, only what can be seen. */
+export function lanesInView(offset: number, height: number, count: number): [number, number] {
+  const top = Math.max(0, offset);
+  const bottom = offset + Math.max(0, height - AXIS_HEIGHT);
+  return [Math.max(0, Math.floor(top / ROW_HEIGHT)), Math.min(count - 1, Math.ceil(bottom / ROW_HEIGHT) - 1)];
+}
+
+/** How far a view of `height` pixels has scrolled down lanes whose full height is
+ * `full`, given where the view's top is (`viewTop`) against the lanes' top
+ * (`contentTop`), both in the same pixels: never before the first lane nor past
+ * the last. */
+export function laneOffset(viewTop: number, contentTop: number, height: number, full: number): number {
+  return Math.max(0, Math.min(Math.max(0, full - height), viewTop - contentTop));
+}
 
 /** The lane under a y position, or null above the lanes or below the last. */
 export function laneAt(y: number, count: number): number | null {

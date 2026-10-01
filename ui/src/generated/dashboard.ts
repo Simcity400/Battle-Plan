@@ -187,7 +187,18 @@ id: string,
 /**
  * The faction's name as the game showed it; null when it cannot be resolved.
  */
-name: string | null, firstHour: number, lastHour: number, members: Array<MembershipRun>,
+name: string | null,
+/**
+ * The name as recorded (the engine's literal: a localisation key or a player's
+ * text), before localisation; empty when the faction has none. Stable across
+ * languages and content, so settings can key a faction by it.
+ */
+recordedName: string, firstHour: number, lastHour: number, members: Array<MembershipRun>,
+/**
+ * Who led the faction (its member at order zero), as runs of consecutive
+ * recorded hours; a change of leader ends one run and starts another.
+ */
+leaders: Array<MembershipRun>,
 /**
  * Hours this faction's roster named a country the links cannot resolve: its
  * roster is not known then (other factions' rosters are).
@@ -842,3 +853,46 @@ series: Array<ResourceSeries>,
  * deals.
  */
 dealHours: Array<HourSpan>, trades: Array<TradeRun>, warnings: Array<string>, };
+export type SubjectParams = { branchId: string, };
+export type SubjectLevel = {
+/**
+ * The autonomy state's id, as recorded.
+ */
+token: string,
+/**
+ * The game's name for it; null when the localisation has none or is not read.
+ */
+name: string | null,
+/**
+ * Whether the content defines the state and orders it (by its
+ * `min_freedom_level`); a level it does not is listed after those it does.
+ */
+ordered: boolean, };
+export type LevelStep = { firstHour: number, lastHour: number, level: string | null, };
+export type SubjectRun = { overlord: string, subject: string,
+/**
+ * The hour the relation began, as the engine dates it (may be before the branch).
+ */
+startHour: number, firstHour: number, lastHour: number,
+/**
+ * The subject's level through the run, in hour order, covering every hour of it.
+ */
+steps: Array<LevelStep>, };
+export type SubjectReply = { branchId: string,
+/**
+ * Every level the runs name, least free first in the content's order.
+ */
+levels: Array<SubjectLevel>,
+/**
+ * Every run, by first hour, then overlord and subject.
+ */
+runs: Array<SubjectRun>,
+/**
+ * Hours inside the branch whose relations were not observed: a run that ends
+ * or starts next to one of these is a gap, not an end or a start.
+ */
+unobserved: Array<HourSpan>, warnings: Array<string>, };
+/** Errors that only say the service had no room: the request may be tried again. */
+export const TRANSIENT_ERRORS = ["Dashboard request capacity reached", "Too many open dashboard source bindings", "The recording bridge is busy", "Native dashboard request queue is full"] as const;
+export const BROWSER_BRIDGE_BUSY = "The recording bridge is busy" as const;
+export const NATIVE_QUEUE_FULL = "Native dashboard request queue is full" as const;

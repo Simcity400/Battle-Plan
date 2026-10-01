@@ -11,21 +11,26 @@
 //! the list is incomplete, though the runs of the countries it names go on.
 //! A war counts only while its
 //! recorded relation is ongoing. Faction names are the recorded
-//! engine names, localised when they are a localisation key. Which member leads
-//! a faction is not recorded: member order is kept, but order zero only means
-//! "first member".
+//! engine names, localised when they are a localisation key; a faction formed
+//! from a template has no literal name (its template is not recorded), so its
+//! name is null.
+//!
+//! A faction's leader is its member at order zero. The engine keeps the leader
+//! first in the faction's member vector (`engine::cfaction::MEMBERS`,
+//! `engine::cfaction_system::MemberRow::ordinal`), the save writes the members in
+//! that order (`installed_content::save::Faction::members`), and the fresh-save oracle
+//! compares every recorded ordinal with the save's order (`compare_factions` in
+//! the recorder). A 1936 save lists each faction's leader first (GER, ENG, SOV,
+//! JAP). An hour whose order-zero member the links cannot name has no known
+//! leader, and that faction's roster is incomplete then.
 
 use super::{LoadContext, Product};
 use crate::{
     Source, catalogue, content,
-    metadata::{branch_bounds, validate_campaign},
+    metadata::{LinkTags, branch_bounds, validate_campaign},
 };
 use installed_content::localisation::Localisation;
-use replay::{
-    container::Replay,
-    frame::{FrameDecoder, SharedView},
-    rows::tables,
-};
+use replay::{container::Replay, frame::FrameDecoder, rows::tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -68,9 +73,16 @@ pub struct FactionGroup {
     pub id: String,
     /// The faction's name as the game showed it; null when it cannot be resolved.
     pub name: Option<String>,
+    /// The name as recorded (the engine's literal: a localisation key or a player's
+    /// text), before localisation; empty when the faction has none. Stable across
+    /// languages and content, so settings can key a faction by it.
+    pub recorded_name: String,
     pub first_hour: i32,
     pub last_hour: i32,
     pub members: Vec<MembershipRun>,
+    /// Who led the faction (its member at order zero), as runs of consecutive
+    /// recorded hours; a change of leader ends one run and starts another.
+    pub leaders: Vec<MembershipRun>,
     /// Hours this faction's roster named a country the links cannot resolve: its
     /// roster is not known then (other factions' rosters are).
     pub incomplete: Vec<HourSpan>,
@@ -234,9 +246,11 @@ impl Product for CountryGroups {
                     .inspect_err(|reason| refused.note(reason.clone(), format!("faction {id}")))
                     .ok()
                     .flatten(),
+                recorded_name: faction.name.clone(),
                 first_hour: faction.first_hour,
                 last_hour: faction.last_hour,
                 members: faction.members.clone(),
+                leaders: faction.leaders.clone(),
                 incomplete: faction.incomplete.clone(),
             })
             .collect();
@@ -282,6 +296,7 @@ struct ScannedFaction {
     first_hour: i32,
     last_hour: i32,
     members: Vec<MembershipRun>,
+    leaders: Vec<MembershipRun>,
     incomplete: Vec<HourSpan>,
 }
 
@@ -298,7 +313,7 @@ pub struct Scan {
 }
 
 /// A run of consecutive hours.
-trait HourRun {
+pub(super) trait HourRun {
     fn last_hour(&self) -> i32;
     fn set_last_hour(&mut self, hour: i32);
 }
@@ -322,7 +337,7 @@ impl HourRun for WarPairRun {
 /// Extends the open run for `key` when `hour` follows its last hour, else starts
 /// one with `start`. A second row for the same key in the same hour changes
 /// nothing. Returns whether a run was started.
-fn extend<K: Ord, R: HourRun>(
+pub(super) fn extend<K: Ord, R: HourRun>(
     open: &mut BTreeMap<K, usize>,
     runs: &mut Vec<R>,
     key: K,
@@ -407,6 +422,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
     let mut human_open = BTreeMap::new();
     let mut factions: BTreeMap<u64, ScannedFaction> = BTreeMap::new();
     let mut member_open: BTreeMap<(u64, String), usize> = BTreeMap::new();
+    let mut leader_open: BTreeMap<(u64, String), usize> = BTreeMap::new();
     let mut wars: Vec<WarPairRun> = Vec::new();
     let mut war_starts: BTreeSet<WarStart> = BTreeSet::new();
     let mut capitulations: BTreeSet<Capitulation> = BTreeSet::new();
@@ -444,11 +460,8 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
         .find(|start| start.id == branch)
         .map(|start| branch_bounds(replay, start));
     let mut previous_hour: Option<i32> = bounds.and_then(|(first, _)| first.checked_sub(1));
-    // Link id to tag, rebuilt only when the country tables change (unchanged tables
-    // share one allocation from hour to hour). The views are held, not just their
-    // addresses, so a freed table's address can never be mistaken for it.
-    let mut tags: HashMap<u32, String> = HashMap::new();
-    let mut tags_from: Option<(SharedView, SharedView)> = None;
+    // Link id to tag, rebuilt only when the country tables change.
+    let mut tags = LinkTags::default();
     for block in replay.index.iter().filter(|block| block.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancel());
@@ -478,41 +491,19 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                 continuous_since = None;
             }
             previous_hour = Some(hour);
-            let (Ok(countries), Ok(links)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-            ) else {
+            let Ok(rebuilt) = tags.update(decoded) else {
                 incomplete += 1;
                 mark_all(&mut unobserved, hour, hour);
                 continuous_since = None;
                 continue;
             };
-            let views = (
-                decoded.tables[replay::rows::TableId::Countries.index()].clone(),
-                decoded.tables[replay::rows::TableId::CountryLinks.index()].clone(),
-            );
-            let same = tags_from.as_ref().is_some_and(|(countries, links)| {
-                SharedView::ptr_eq(countries, &views.0) && SharedView::ptr_eq(links, &views.1)
-            });
-            if !same {
-                let slots: HashMap<u32, &[u8]> = countries
-                    .iter()
-                    .map(|country| (country.canonical_slot, country.tag.as_slice()))
-                    .collect();
-                tags = links
-                    .iter()
-                    .filter_map(|link| {
-                        let tag = std::str::from_utf8(slots.get(&link.canonical_slot)?).ok()?;
-                        (!tag.is_empty()).then(|| (link.id, tag.to_owned()))
-                    })
-                    .collect();
-                tags_from = Some(views);
+            if rebuilt {
                 // An id naming another tag than the hour before, with no gap between.
                 if continuous_since.is_some() {
                     let mut changed: Vec<IdentityChange> = named_since
                         .iter()
                         .filter_map(|(id, (from, _))| {
-                            let to = tags.get(id)?;
+                            let to = tags.get(*id)?;
                             (to != from).then(|| IdentityChange {
                                 hour,
                                 from: from.clone(),
@@ -531,8 +522,8 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                         identity_changes.push(change);
                     }
                 }
-                named_since.retain(|id, (tag, _)| tags.get(id) == Some(tag));
-                for (id, tag) in &tags {
+                named_since.retain(|id, (tag, _)| tags.get(*id) == Some(tag));
+                for (id, tag) in tags.iter() {
                     named_since
                         .entry(*id)
                         .or_insert_with(|| (tag.clone(), hour));
@@ -546,7 +537,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
             };
             // Every group table names countries by their raw link id.
             let tag_of = |raw: u32, unmapped: &mut BTreeSet<u32>| -> Option<&String> {
-                let tag = tags.get(&raw);
+                let tag = tags.get(raw);
                 if tag.is_none() {
                     unmapped.insert(raw);
                 }
@@ -594,6 +585,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                             first_hour: hour,
                             last_hour: hour,
                             members: Vec::new(),
+                            leaders: Vec::new(),
                             incomplete: Vec::new(),
                         });
                         faction.last_hour = hour;
@@ -629,6 +621,21 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                                 },
                             );
                             runs += usize::from(started);
+                            // The member at order zero leads the faction (module notes).
+                            if member.ordinal == 0 {
+                                let started = extend(
+                                    &mut leader_open,
+                                    &mut faction.leaders,
+                                    (member.faction, tag.clone()),
+                                    hour,
+                                    || MembershipRun {
+                                        tag: tag.clone(),
+                                        first_hour: hour,
+                                        last_hour: hour,
+                                    },
+                                );
+                                runs += usize::from(started);
+                            }
                         }
                     }
                 }
@@ -826,6 +833,11 @@ impl Scan {
     }
     pub fn unobserved(&self) -> &UnobservedHours {
         &self.unobserved
+    }
+    pub fn faction_leaders(&self, id: u64) -> Option<&[MembershipRun]> {
+        self.factions
+            .get(&id)
+            .map(|faction| faction.leaders.as_slice())
     }
     pub fn faction(&self, id: u64) -> Option<(&str, i32, i32, &[MembershipRun])> {
         self.factions.get(&id).map(|faction| {

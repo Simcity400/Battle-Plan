@@ -93,6 +93,22 @@ pub fn typescript_contract() -> String {
         );
         text.push('\n');
     }
+    // The service's refusals that say nothing of the product, only that it had no
+    // room: a reader tries these again, and takes any other error as the product's answer.
+    let transient = transport::TRANSIENT_ERRORS
+        .iter()
+        .map(|message| format!("{message:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    text.push_str(&format!(
+        "/** Errors that only say the service had no room: the request may be tried again. */\nexport const TRANSIENT_ERRORS = [{transient}] as const;\n"
+    ));
+    for (name, message) in [
+        ("BROWSER_BRIDGE_BUSY", transport::BROWSER_BRIDGE_BUSY),
+        ("NATIVE_QUEUE_FULL", transport::NATIVE_QUEUE_FULL),
+    ] {
+        text.push_str(&format!("export const {name} = {message:?} as const;\n"));
+    }
     text
 }
 

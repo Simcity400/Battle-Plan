@@ -13,6 +13,24 @@ use crate::ReplayMetadata;
 
 /// Includes one serialized response, before the control-envelope escaping.
 pub const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
+
+/// The service had no room for the request: nothing is said of the product, and
+/// the request may be tried again (the desktop host's own refusal starts with it).
+pub const CAPACITY_REACHED: &str = "Dashboard request capacity reached";
+/// Every source binding is taken: the request may be tried again once one is released.
+pub const TOO_MANY_SOURCES: &str = "Too many open dashboard source bindings";
+/// The browser adapter has no room until one of its pending requests finishes.
+pub const BROWSER_BRIDGE_BUSY: &str = "The recording bridge is busy";
+/// The desktop's native command queue has no room until its writer drains it.
+pub const NATIVE_QUEUE_FULL: &str = "Native dashboard request queue is full";
+/// The refusals a reader may try again, exported to the frontend's contract; any
+/// other error is the product's own answer.
+pub const TRANSIENT_ERRORS: [&str; 4] = [
+    CAPACITY_REACHED,
+    TOO_MANY_SOURCES,
+    BROWSER_BRIDGE_BUSY,
+    NATIVE_QUEUE_FULL,
+];
 /// JSON has already escaped control characters. Escaping its quotes/backslashes
 /// again uses at most twice this size, leaving room in the 64 KiB control frame.
 const FRAGMENT_BYTES: usize = 16 * 1024;
@@ -303,6 +321,16 @@ pub fn bounded_text(value: &str, maximum: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capacity_catalogue_includes_the_existing_browser_and_native_refusals() {
+        for message in [
+            "The recording bridge is busy",
+            "Native dashboard request queue is full",
+        ] {
+            assert!(TRANSIENT_ERRORS.contains(&message));
+        }
+    }
 
     #[test]
     fn map_settings_targets_keep_legacy_campaign_scope_and_validate_widget_ids() {

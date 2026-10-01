@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
-import { HourStore, MAX_NAME_HOURS, nameKey, planRequests, readFacts, wantedHours } from './countryFacts.ts';
-import type { FactSpec, NameAt } from './countryFacts';
+import { FactRequests, factsKey, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
+import type { FactRead, FactSpec, NameAt } from './countryFacts';
 import type { BoundTrack } from './model';
 
 export { MAX_NAME_HOURS, nameKey };
@@ -19,33 +19,57 @@ export type { NameAt };
  * at its hour is absent, so the caller shows its fallback. */
 export function useCountryFactsAt<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
   spec: FactSpec<V>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V> {
-  // Structured, so no tag (a mod's tags may hold any character) can blur two requests.
-  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, spec.product]) : '';
-  const key = JSON.stringify([trackKey, wanted.map(item => [item.hour, item.tag])]);
-  const store = useRef<{ trackKey: string; store: HourStore<V> } | null>(null);
-  if (!store.current || store.current.trackKey !== trackKey) store.current = { trackKey, store: new HourStore<V>(MAX_NAME_HOURS) };
-  const held = store.current.store;
-  const [version, setVersion] = useState(0);
-  useEffect(() => {
-    if (!active || !track) return;
-    // Nothing wanted: whatever was read is released.
-    if (!wanted.length) { if (held.size) { held.clear(); setVersion(value => value + 1); } return; }
-    held.want(wantedHours(wanted, maxHours));
-    const plan = planRequests(held, wanted, maxHours, spec.perRequest);
-    if (!plan.length) return;
-    const controller = new AbortController();
-    void readFacts(client, { sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id }, spec, plan, controller.signal,
-      (hour, tags, found) => {
-        if (found) held.record(hour, tags, found);
-        setVersion(value => value + 1);
-      });
-    return () => controller.abort();
-    // The key names every request; the arrays behind it are rebuilt each render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, key, active, attempt, held]);
+  const { held, key, version } = useFactStore(client, track, wanted, active, spec, maxHours, attempt);
   // Only what is wanted is handed out, so an update never copies everything read.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => held.pick(wanted), [held, key, version]);
+}
+
+/** Like `useCountryFactsAt`, but tells a read still going or failing (absent: it is
+ * tried again) from one that completed without the fact (null): what was read is
+ * known, and what the recording does not give is not, never an older value in its
+ * place. A new `attempt` tries a failing read again at once. */
+export function useCountryFactsRead<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
+  spec: FactSpec<V>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V | null> {
+  const { held, key, version } = useFactStore(client, track, wanted, active, spec, maxHours, attempt);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => held.pickRead(wanted), [held, key, version]);
+}
+
+/** The store behind both hooks. */
+function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
+  spec: FactSpec<V>, maxHours: number, attempt: number) {
+  // Structured, so no tag (a mod's tags may hold any character) can blur two requests.
+  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, spec.product]) : '';
+  // The same countries in another order are the same request (`factsKey`).
+  const key = factsKey(trackKey, wanted);
+  const [version, setVersion] = useState(0);
+  // One store and one set of reads per track and client; a change of what is wanted
+  // asks only for what is new and cancels nothing (`FactRequests`).
+  const store = useRef<{ trackKey: string; client: DashboardClient; store: HourStore<V>; requests: FactRequests<V> } | null>(null);
+  if (!store.current || store.current.trackKey !== trackKey || store.current.client !== client) {
+    store.current?.requests.cancel();
+    const held = new HourStore<V>(MAX_NAME_HOURS);
+    const source = track ? { sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id } : null;
+    const read: FactRead<V> = (plan, signal, onChunk) => source ? readFacts(client, source, spec, plan, signal, onChunk) : Promise.resolve();
+    store.current = { trackKey, client, store: held, requests: new FactRequests(held, read, () => setVersion(value => value + 1)) };
+  }
+  const { store: held, requests } = store.current;
+  const attempted = useRef(attempt);
+  // Reads stop when the widget goes away or another track takes over.
+  useEffect(() => () => requests.cancel(), [requests]);
+  useEffect(() => {
+    // Off screen, nothing is read.
+    if (!active || !track) { requests.cancel(); return; }
+    // Nothing wanted: whatever was read is released.
+    if (!wanted.length) { requests.cancel(); if (held.size) { held.clear(); setVersion(value => value + 1); } return; }
+    requests.want(wanted, maxHours, spec.perRequest);
+    // A new attempt tries a failing read again without waiting.
+    if (attempted.current !== attempt) { attempted.current = attempt; requests.retry(); }
+    // The key names every request; the arrays behind it are rebuilt each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, active, attempt, requests]);
+  return { held, key, version };
 }
 
 /** Names from `country-styles`, which names at most 64 countries per request. */

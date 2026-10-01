@@ -118,19 +118,7 @@ impl NativeHost {
             }
             return Err("The native data connection closed".into());
         }
-        if let DataCommand::Cancel { id } = &request {
-            // If a request has not left this queue, remove it entirely. A copy
-            // already taken by the writer precedes the queued Cancel on its pipe.
-            inner
-                .pending
-                .data
-                .retain(|(queued, _)| queued.request_id() != Some(id.as_str()));
-        }
-        let bytes: usize = inner.pending.data.iter().map(|(_, bytes)| *bytes).sum();
-        if inner.pending.data.len() >= 128 || bytes.saturating_add(length) > 2 * 1024 * 1024 {
-            return Err("Native dashboard request queue is full".into());
-        }
-        inner.pending.data.push_back((request, length));
+        inner.pending.enqueue_data(request, length)?;
         drop(inner);
         self.shared.1.notify_all();
         Ok(())

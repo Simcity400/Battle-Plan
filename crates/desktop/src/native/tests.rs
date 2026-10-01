@@ -2,6 +2,58 @@ use super::line_reader::read_lines;
 use super::*;
 
 #[test]
+fn full_data_queues_refuse_transiently_and_accept_again_after_draining() {
+    let request = |id: usize| DataCommand::Open {
+        id: id.to_string(),
+        path: "fixture.battleplan".into(),
+        revision: "1".into(),
+    };
+    for (count, length) in [(128, 1), (64, 32 * 1024)] {
+        let mut pending = Pending::default();
+        for id in 0..count {
+            pending.enqueue_data(request(id), length).unwrap();
+        }
+        let refusal = pending.enqueue_data(request(count), length).unwrap_err();
+        assert_eq!(refusal, dashboard::transport::NATIVE_QUEUE_FULL);
+        assert!(dashboard::transport::TRANSIENT_ERRORS.contains(&refusal.as_str()));
+        assert_eq!(pending.data.len(), count);
+        pending.take_commands(false);
+        pending.enqueue_data(request(count), length).unwrap();
+    }
+}
+
+#[test]
+fn cancellation_removes_its_queued_request_before_admission_at_capacity() {
+    let mut pending = Pending::default();
+    for id in 0..128 {
+        pending
+            .enqueue_data(
+                DataCommand::Open {
+                    id: id.to_string(),
+                    path: "fixture.battleplan".into(),
+                    revision: "1".into(),
+                },
+                1,
+            )
+            .unwrap();
+    }
+    pending
+        .enqueue_data(DataCommand::Cancel { id: "0".into() }, 1)
+        .unwrap();
+    assert_eq!(pending.data.len(), 128);
+    assert!(matches!(
+        pending.data.back(),
+        Some((DataCommand::Cancel { .. }, _))
+    ));
+    assert!(
+        !pending
+            .data
+            .iter()
+            .any(|(command, _)| matches!(command, DataCommand::Open { id, .. } if id == "0"))
+    );
+}
+
+#[test]
 fn resized_commands_coalesce_and_close_takes_priority() {
     let mut pending = Pending {
         visibility: Some(true),

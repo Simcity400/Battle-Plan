@@ -1,0 +1,280 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
+import { laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, validateSubjectReply } from './subjectsData.ts';
+import { Lineage } from '../../dashboard/identity.ts';
+import type { LaneOptions } from './subjectsData';
+import { assertLinear } from '../../charts/linearTime.ts';
+import { worldFilter } from '../../dashboard/groups.ts';
+import { laneRequests } from '../../charts/timeline/laneRequests.ts';
+
+/** A modded campaign: a mod's own levels (one the content does not order, one with
+ * no localisation), a dynamic overlord, and a subject released and taken again. */
+const levels: SubjectLevel[] = [
+  { token: 'autonomy_mod_march', name: 'March', ordered: true },
+  { token: 'autonomy_puppet', name: 'Puppet', ordered: true },
+  { token: 'autonomy_mod_unnamed', name: null, ordered: true },
+  { token: 'autonomy_mod_unordered', name: 'Unordered', ordered: false },
+];
+const step = (firstHour: number, lastHour: number, level: string | null) => ({ firstHour, lastHour, level });
+const reply: SubjectReply = {
+  branchId: '1', levels, warnings: [],
+  unobserved: [{ firstHour: 300, lastHour: 309 }],
+  runs: [
+    { overlord: 'D01', subject: 'MY TAG', startHour: 50, firstHour: 100, lastHour: 199,
+      steps: [step(100, 149, 'autonomy_mod_march'), step(150, 199, 'autonomy_puppet')] },
+    { overlord: 'D01', subject: 'MY TAG', startHour: 250, firstHour: 250, lastHour: 299, steps: [step(250, 299, 'autonomy_mod_unnamed')] },
+    // One relation recorded either side of an unrecorded stretch: two runs, one start.
+    { overlord: 'D01', subject: 'A:B', startHour: 120, firstHour: 120, lastHour: 299, steps: [step(120, 299, null)] },
+    { overlord: 'ENG', subject: 'CAN', startHour: 10, firstHour: 100, lastHour: 400, steps: [step(100, 400, 'autonomy_puppet')] },
+    { overlord: 'D01', subject: 'A:B', startHour: 120, firstHour: 310, lastHour: 400, steps: [step(310, 400, 'autonomy_mod_unordered')] },
+  ],
+};
+
+const names: Record<string, string> = { D01: 'Free Republic', 'MY TAG': 'Modded Realm', 'A:B': 'Colon Land', ENG: 'United Kingdom', CAN: 'Canada' };
+const text = { country: (tag: string) => ({ name: names[tag] ?? tag }), day: (hour: number) => `day ${hour}` };
+const options: LaneOptions = { order: 'first', subjects: 'since', ended: true, countries: null };
+const byToken = new Map(levels.map(level => [level.token, level]));
+
+test('a late recorded name outside the window reorders both overlords and subjects', () => {
+  for (const field of ['subject', 'overlord'] as const) {
+    const tags = Array.from({ length: 50 }, (_, index) => `T${index}`);
+    const metadata = new Map(tags.map((tag, index) => [tag, index === 49 ? 'Zulu' : `Country ${String(index).padStart(2, '0')}`]));
+    const recorded = new Map<string, string>();
+    const labels = { ...text, country: (tag: string) => ({ name: recorded.get(tag) ?? metadata.get(tag) ?? tag }) };
+    const views = overlordViews({ ...reply, unobserved: [], runs: tags.map((tag, index) => ({
+      overlord: field === 'overlord' ? tag : 'OVR', subject: field === 'subject' ? tag : `S${index}`,
+      startHour: 0, firstHour: 0, lastHour: 20, steps: [step(0, 20, null)],
+    })) });
+    const layout = () => subjectLanes(views, byToken, new Map(), 20,
+      { ...options, order: field === 'overlord' ? 'name' : 'first', subjects: field === 'subject' ? 'name' : 'since' }, labels, []);
+    const before = layout();
+    const requests = laneRequests(before.lanes, [0, 24]);
+    assert.ok(!laneCountries(requests.looks, before.info, 20).includes('T49'), field);
+    const wanted = laneCountries(requests.names, before.info, 20);
+    if (wanted.includes('T49')) recorded.set('T49', 'Aardvark');
+    assert.equal(layout().lanes[field === 'overlord' ? 0 : 1].identity?.label, 'Aardvark', field);
+  }
+});
+
+test('end membership keeps the human subject’s overlord visible before its change of tag', () => {
+  const groups: CountryGroupReply = { branchId: '1', warnings: [], factions: [], wars: [], warStarts: [], capitulations: [],
+    identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [] },
+    humans: [{ tag: 'AAA', firstHour: 0, lastHour: 9 }, { tag: 'BBB', firstHour: 10, lastHour: 20 }],
+  };
+  const views = overlordViews({ ...reply, unobserved: [], runs: [
+    { overlord: 'OVR', subject: 'AAA', startHour: 0, firstHour: 0, lastHour: 9, steps: [step(0, 9, null)] },
+    { overlord: 'OVR', subject: 'BBB', startHour: 0, firstHour: 10, lastHour: 20, steps: [step(10, 20, null)] },
+  ] }, new Lineage(groups.identityChanges));
+  const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [], groups, 5, 20, views[0].lineage);
+  const lanes = subjectLanes(views, byToken, new Map(), 5, { ...options, countries: filter.tags, countryIds: filter.countryIds }, text, []).lanes;
+  assert.deepEqual(lanes.map(lane => lane.identity?.label), ['OVR', 'AAA']);
+});
+
+test('a relation spanning a swap follows each country and clips its level steps', () => {
+  const lineage = new Lineage([{ hour: 10, from: 'AAA', to: 'BBB' }, { hour: 10, from: 'BBB', to: 'AAA' }]);
+  for (const field of ['subject', 'overlord'] as const) {
+    const swapped: SubjectReply = { ...reply, unobserved: [], runs: ['AAA', 'BBB'].map((tag, index) => ({
+      overlord: field === 'overlord' ? tag : 'OVR', subject: field === 'subject' ? tag : 'SUB',
+      startHour: 0, firstHour: 0, lastHour: index ? 14 : 20,
+      steps: [step(0, 11, 'autonomy_puppet'), step(12, index ? 14 : 20, 'autonomy_mod_march')],
+    })) };
+    const views = overlordViews(swapped, lineage);
+    const held = views.flatMap(overlord => overlord.subjects.flatMap(subject => subject.runs
+      .filter(run => run.firstHour <= 16 && 16 <= run.lastHour)
+      .map(() => lineage.tagOf(field === 'overlord' ? overlord.key : subject.subject, 16))));
+    assert.deepEqual(held, ['AAA'], field);
+    for (const overlord of views) for (const subject of overlord.subjects) for (const run of subject.runs) {
+      assert.equal(run.steps[0].firstHour, run.firstHour);
+      assert.equal(run.steps.at(-1)!.lastHour, run.lastHour);
+    }
+  }
+});
+
+test('a subjects reply is validated, down to steps covering their run and naming listed levels', () => {
+  assert.equal(validateSubjectReply(reply).runs.length, 5);
+  const broken = structuredClone(reply);
+  broken.runs[0].steps[1].firstHour = 151;
+  assert.throws(() => validateSubjectReply(broken), /malformed/);
+  const unlisted = structuredClone(reply);
+  unlisted.runs[0].steps[0].level = 'autonomy_not_listed';
+  assert.throws(() => validateSubjectReply(unlisted), /malformed/);
+  assert.throws(() => validateSubjectReply({ ...reply, levels: undefined }), /malformed/);
+});
+
+test('level colours follow the content order, never a level name, and fold past the palette', () => {
+  const colours = levelColours(levels, ['c0', 'c1', 'c2'], 'other');
+  assert.deepEqual([...colours], [['autonomy_mod_march', 'c0'], ['autonomy_puppet', 'c1'], ['autonomy_mod_unnamed', 'c2'], ['autonomy_mod_unordered', 'other']]);
+  // A level with no localisation shows its id, and an unrecorded level says so.
+  assert.equal(levelName(byToken, 'autonomy_mod_unnamed'), 'autonomy_mod_unnamed');
+  assert.equal(levelName(byToken, null), 'Level not recorded');
+});
+
+test('each overlord heads its subjects, dated as the game dates them, coloured by level', () => {
+  const views = overlordViews(reply);
+  const colours = levelColours(levels, ['c0', 'c1', 'c2', 'c3'], 'other');
+  const { lanes, info } = subjectLanes(views, byToken, colours, 160, options, text, reply.unobserved);
+  // ENG's subject began first (the game dates it at hour 10), so ENG comes first.
+  assert.deepEqual(lanes.map(lane => [lane.identity?.label, lane.label]), [
+    ['United Kingdom', '1 subject'], ['Canada', 'Puppet · since day 10'],
+    ['Free Republic', '2 subjects'], ['Modded Realm', 'Puppet · since day 50'], ['Colon Land', 'Level not recorded · since day 120'],
+  ]);
+  assert.equal(lanes[0].heading, true);
+  assert.equal(lanes[1].depth, 1);
+  // The overlord's band counts its subjects.
+  assert.deepEqual(lanes[2].spans[0].band?.map(item => [item.firstHour, item.value]).slice(0, 2), [[100, 1], [120, 2]]);
+  // A bar per level stretch, coloured by level; an unrecorded level is left uncoloured.
+  const realm = lanes[3].spans;
+  assert.deepEqual(realm.map(span => [span.firstHour, span.label, span.color]), [[100, 'March', 'c0'], [150, 'Puppet', 'c1'], [250, 'autonomy_mod_unnamed', 'c2']]);
+  assert.equal(lanes[4].spans[0].color, undefined);
+  assert.ok(lanes.some(lane => info.get(lane.id)?.subject?.runs[0].subject === 'A:B'));
+  assert.deepEqual(laneCountries(lanes, info, 160).sort(), ['A:B', 'CAN', 'D01', 'ENG', 'MY TAG']);
+});
+
+test('ended and unrecorded stretches are said honestly, and can be hidden or narrowed', () => {
+  const views = overlordViews(reply);
+  const colours = levelColours(levels, ['c0', 'c1', 'c2', 'c3'], 'other');
+  const at = (hour: number, extra: Partial<LaneOptions> = {}) => subjectLanes(views, byToken, colours, hour, { ...options, ...extra }, text, reply.unobserved)
+    .lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
+  assert.ok(at(220).includes('Modded Realm: Ended day 200'));
+  // Taken again later: a new relation, dated by its own start.
+  assert.ok(at(260).includes('Modded Realm: autonomy_mod_unnamed · since day 250'));
+  // Its hours after 299 were not recorded: unknown, then ended by the first recorded hour.
+  assert.ok(at(305).includes('Modded Realm: Last recorded day 299'));
+  assert.ok(at(320).includes('Modded Realm: Ended by day 310'));
+  assert.ok(at(305).includes('Free Republic: Subjects not recorded'));
+  assert.ok(!at(320, { ended: false }).some(label => label.startsWith('Modded Realm')));
+  assert.deepEqual(at(320, { countries: new Set(['CAN']) }), ['United Kingdom: 1 subject', 'Canada: Puppet · since day 10']);
+  assert.deepEqual(at(320, { order: 'name', subjects: 'name' }).filter(label => !label.includes('·')).slice(0, 1), ['Free Republic: 1 subject']);
+});
+
+test('an unrecorded hour is a gap in the overlord band, not a drop in its subjects', () => {
+  // At 101 a relation named a country the recording could not identify: the hour is unobserved.
+  const partial: SubjectReply = { ...reply, unobserved: [{ firstHour: 101, lastHour: 101 }], runs: [
+    { overlord: 'D01', subject: 'AAA', startHour: 50, firstHour: 100, lastHour: 200, steps: [step(100, 200, 'autonomy_puppet')] },
+    { overlord: 'D01', subject: 'BBB', startHour: 50, firstHour: 100, lastHour: 100, steps: [step(100, 100, 'autonomy_puppet')] },
+    { overlord: 'D01', subject: 'BBB', startHour: 50, firstHour: 102, lastHour: 200, steps: [step(102, 200, 'autonomy_puppet')] },
+  ] };
+  const [overlord] = overlordViews(partial);
+  assert.deepEqual(overlord.counts.map(item => [item.firstHour, item.lastHour, item.value]), [[100, 100, 2], [102, 200, 2]]);
+  // And BBB's relation continues across it: one stretch, never "ended".
+  assert.equal(overlord.subjects.find(view => view.runs[0].subject === 'BBB')!.stretches.length, 1);
+});
+
+test('a relation continued across an unrecorded stretch is still held; a new start is a new relation', () => {
+  const gap: SubjectReply = { ...reply, unobserved: [{ firstHour: 200, lastHour: 209 }], runs: [
+    { overlord: 'D01', subject: 'AAA', startHour: 50, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
+    { overlord: 'D01', subject: 'AAA', startHour: 50, firstHour: 210, lastHour: 300, steps: [step(210, 300, 'autonomy_puppet')] },
+    // Released and taken again across the same gap: another start hour, so ended then.
+    { overlord: 'D01', subject: 'BBB', startHour: 60, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
+    { overlord: 'D01', subject: 'BBB', startHour: 205, firstHour: 210, lastHour: 300, steps: [step(210, 300, 'autonomy_puppet')] },
+  ] };
+  const [overlord] = overlordViews(gap);
+  const view = (tag: string) => overlord.subjects.find(item => item.runs[0].subject === tag)!;
+  assert.deepEqual(view('AAA').stretches.map(item => [item.firstHour, item.lastHour]), [[100, 300]]);
+  assert.deepEqual(view('BBB').stretches.map(item => [item.firstHour, item.lastHour]), [[100, 199], [210, 300]]);
+  const colours = levelColours(levels, ['c0', 'c1'], 'other');
+  const labels = subjectLanes([overlord], byToken, colours, 300, options, text, gap.unobserved).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
+  assert.deepEqual(labels.slice(1), ['AAA: Puppet · since day 50', 'BBB: Puppet · since day 205']);
+});
+
+test('a change of tag of a subject or its overlord keeps one lane and one overlord', () => {
+  const renamed: SubjectReply = { ...reply, unobserved: [], runs: [
+    { overlord: 'D01', subject: 'AAA', startHour: 50, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
+    { overlord: 'D01', subject: 'BBB', startHour: 50, firstHour: 200, lastHour: 249, steps: [step(200, 249, 'autonomy_puppet')] },
+    // The overlord changes tag too; its other subject keeps its relation.
+    { overlord: 'D01', subject: 'CCC', startHour: 70, firstHour: 100, lastHour: 249, steps: [step(100, 249, 'autonomy_colony')] },
+    { overlord: 'D02', subject: 'BBB', startHour: 50, firstHour: 250, lastHour: 300, steps: [step(250, 300, 'autonomy_puppet')] },
+    { overlord: 'D02', subject: 'CCC', startHour: 70, firstHour: 250, lastHour: 300, steps: [step(250, 300, 'autonomy_colony')] },
+  ] };
+  const changes = new Lineage([{ hour: 200, from: 'AAA', to: 'BBB' }, { hour: 250, from: 'D01', to: 'D02' }]);
+  const views = overlordViews(renamed, changes);
+  assert.equal(views.length, 1);
+  assert.equal(views[0].subjects.length, 2);
+  for (const subject of views[0].subjects) assert.equal(subject.stretches.length, 1);
+  assert.equal(overlordTagAt(views[0], 120), 'D01');
+  assert.equal(overlordTagAt(views[0], 280), 'D02');
+  const colours = levelColours(levels, ['c0', 'c1'], 'other');
+  const labels = subjectLanes(views, byToken, colours, 280, options, text, []).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
+  // Named by the tags they have at the hour, neither said to have ended.
+  assert.deepEqual(labels, ['D02: 2 subjects', 'BBB: Puppet · since day 50', 'CCC: autonomy_colony · since day 70']);
+  // Without the changes, the renamed subject would look released and another taken.
+  assert.equal(overlordViews(renamed).length, 2);
+});
+
+test('a tag an overlord gave up and another country later took is another overlord', () => {
+  // AAA holds S1, becomes BBB at 200 still holding it; at 400 another country takes AAA and S2.
+  const reused: SubjectReply = { ...reply, unobserved: [], runs: [
+    { overlord: 'AAA', subject: 'S1', startHour: 50, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
+    { overlord: 'BBB', subject: 'S1', startHour: 50, firstHour: 200, lastHour: 500, steps: [step(200, 500, 'autonomy_puppet')] },
+    { overlord: 'AAA', subject: 'S2', startHour: 400, firstHour: 400, lastHour: 500, steps: [step(400, 500, 'autonomy_puppet')] },
+  ] };
+  const views = overlordViews(reused, new Lineage([{ hour: 200, from: 'AAA', to: 'BBB' }]));
+  assert.equal(views.length, 2);
+  const byTag = (tag: string) => views.find(view => overlordTagAt(view, 450) === tag)!;
+  assert.deepEqual(byTag('BBB').subjects.map(view => view.runs.map(run => run.subject)), [['S1', 'S1']]);
+  assert.deepEqual(byTag('AAA').subjects.map(view => view.runs.map(run => run.subject)), [['S2']]);
+  // Every lane id is unique.
+  const colours = levelColours(levels, ['c0'], 'other');
+  const ids = subjectLanes(views, byToken, colours, 450, options, text, []).lanes.map(lane => lane.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('a subject released by a country later renamed is not merged into whoever takes the old tag', () => {
+  // AAA holds S1 and S2, releases S2 at 151, becomes BBB at 200 keeping S1; a new AAA takes S2 at 400.
+  const released: SubjectReply = { ...reply, unobserved: [], runs: [
+    { overlord: 'AAA', subject: 'S1', startHour: 50, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
+    { overlord: 'AAA', subject: 'S2', startHour: 60, firstHour: 100, lastHour: 150, steps: [step(100, 150, 'autonomy_puppet')] },
+    { overlord: 'BBB', subject: 'S1', startHour: 50, firstHour: 200, lastHour: 500, steps: [step(200, 500, 'autonomy_puppet')] },
+    { overlord: 'AAA', subject: 'S2', startHour: 400, firstHour: 400, lastHour: 500, steps: [step(400, 500, 'autonomy_puppet')] },
+  ] };
+  const views = overlordViews(released, new Lineage([{ hour: 200, from: 'AAA', to: 'BBB' }]));
+  const byTag = (tag: string) => views.find(view => overlordTagAt(view, 450) === tag)!;
+  // The renamed country keeps both its lanes; the new AAA has its own overlord and lane.
+  assert.equal(views.length, 2);
+  assert.deepEqual(byTag('BBB').subjects.map(view => view.runs.map(run => `${run.overlord}/${run.subject}@${run.firstHour}`)).sort(),
+    [['AAA/S1@100', 'BBB/S1@200'], ['AAA/S2@100']]);
+  assert.deepEqual(byTag('AAA').subjects.map(view => view.runs.map(run => `${run.overlord}/${run.subject}@${run.firstHour}`)), [['AAA/S2@400']]);
+});
+
+test('a former subject renamed after its release is named, and chosen, by its tags then', () => {
+  // S1 is released at 150 and renamed S2 at 200; a new S1 appears at 400 under nobody.
+  const released: SubjectReply = { ...reply, unobserved: [], runs: [
+    { overlord: 'OVR', subject: 'S1', startHour: 50, firstHour: 100, lastHour: 150, steps: [step(100, 150, 'autonomy_puppet')] },
+    { overlord: 'OVR', subject: 'KEPT', startHour: 50, firstHour: 100, lastHour: 500, steps: [step(100, 500, 'autonomy_puppet')] },
+  ] };
+  const views = overlordViews(released, new Lineage([{ hour: 200, from: 'S1', to: 'S2' }]));
+  const colours = levelColours(levels, ['c0'], 'other');
+  const labels = (extra: Partial<LaneOptions>) => subjectLanes(views, byToken, colours, 450, { ...options, ...extra }, text, []).lanes.map(lane => lane.identity?.label);
+  assert.deepEqual(labels({}), ['OVR', 'KEPT', 'S2']);
+  // Choosing S2 finds its former overlord; choosing the new S1 does not.
+  assert.deepEqual(labels({ countries: new Set(['S2']) }), ['OVR', 'KEPT', 'S2']);
+  assert.deepEqual(labels({ countries: new Set(['S1']) }), []);
+});
+
+test('grouping any number of runs stays about linear', () => {
+  const runs = (count: number): SubjectReply => ({ ...reply, unobserved: [], runs: Array.from({ length: count }, (_, index) => ({
+    overlord: `O${index % 40}`, subject: `S${index % (count / 4)}`, startHour: index, firstHour: index * 3, lastHour: index * 3 + 1,
+    steps: [step(index * 3, index * 3 + 1, 'autonomy_puppet')] })) });
+  assertLinear('runs', count => { const data = runs(count); return () => overlordViews(data); }, 5000);
+});
+
+test('a world of 1,500 countries lays out in about linear time', () => {
+  // `size` subjects under size / 10 overlords, each released and taken again at another level.
+  const world = (size: number): SubjectReply => ({
+    ...reply, unobserved: [],
+    runs: Array.from({ length: size }, (_, index) => [
+      { overlord: `O${index % Math.max(1, size / 10)}`, subject: `S${index}`, startHour: index, firstHour: index, lastHour: index + 500,
+        steps: [step(index, index + 250, 'autonomy_puppet'), step(index + 251, index + 500, 'autonomy_mod_march')] },
+      { overlord: `O${index % Math.max(1, size / 10)}`, subject: `S${index}`, startHour: index + 600, firstHour: index + 600, lastHour: index + 900,
+        steps: [step(index + 600, index + 900, null)] },
+    ]).flat(),
+  });
+  const colours = levelColours(levels, ['c0', 'c1'], 'other');
+  const lanes = subjectLanes(overlordViews(world(1500)), byToken, colours, 2500, options, text, []).lanes;
+  assert.equal(lanes.length, 1500 + 150);
+  assertLinear('subjects', size => {
+    const views = overlordViews(world(size));
+    return () => subjectLanes(views, byToken, colours, 2500, options, text, []);
+  }, 1500);
+});

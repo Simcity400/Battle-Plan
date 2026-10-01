@@ -1,17 +1,40 @@
 import { useSyncExternalStore } from 'react';
 import { normalizeColor } from '../shell/appearance/color.ts';
 
-/** Per-campaign app settings, kept with the app (never in the recording): each
- * recorded faction's colour and display name, and saved colour sets that can be
- * applied to other campaigns, matched by faction name. Campaigns are keyed by the
- * recorded campaign identity, so every recording of a campaign shares them. */
+/** Faction settings, kept with the app (never in the recording). A faction colour the
+ * user sets applies in every campaign (`shared`, keyed by the faction's identity,
+ * `factionIdentity`) until changed again; a campaign can override it for itself
+ * (`campaigns`, keyed by the recorded campaign identity and faction id, so every
+ * recording of a campaign shares them), with its own display names. Saved colour sets
+ * can still be applied to other campaigns, matched by faction name. */
 
 export interface FactionStyle { colour?: string; name?: string }
 export interface FactionColourSet { id: string; name: string; entries: { faction: string; colour: string; name?: string }[] }
 export interface CampaignSettings {
   version: 1;
   campaigns: Record<string, { factions: Record<string, FactionStyle> }>;
+  /** Colours chosen for every campaign, by faction identity (`factionIdentity`). */
+  shared: Record<string, { colour: string }>;
   sets: FactionColourSet[];
+}
+
+/** Where a colour the user picks applies: every campaign (the default), or only this one. */
+export type ColourScope = 'all' | 'campaign';
+
+/** A faction's identity across campaigns, for colours set for every campaign: its
+ * name exactly as recorded (a localisation key or a player's text, never its
+ * translation, so it holds across languages and content), else the tag of the leader
+ * it had when first recorded. Null when neither is known: such a faction's colour can
+ * only be set for its campaign.
+ *
+ * Until factions' templates are recorded this key has limits: two factions recorded
+ * under one name share a colour; and a faction formed from a template has no recorded
+ * name, so it is known by its first leader's tag, which is not stable across
+ * campaigns (the same template led first by another country is not matched, and
+ * another faction first led by that tag is). */
+export function factionIdentity(recordedName: string | null, founder: string | null): string | null {
+  const key = recordedName ? JSON.stringify(['name', recordedName]) : founder ? JSON.stringify(['leader', founder]) : null;
+  return key && key.length <= MAX_IDENTITY ? key : null;
 }
 
 const KEY = 'hoi4-replay.campaign-settings.v1';
@@ -19,7 +42,8 @@ export const MAX_CAMPAIGNS = 256;
 export const MAX_FACTIONS = 256;
 export const MAX_SETS = 64;
 const MAX_TEXT = 160;
-const EMPTY: CampaignSettings = { version: 1, campaigns: {}, sets: [] };
+const MAX_IDENTITY = 400;
+const EMPTY: CampaignSettings = { version: 1, campaigns: {}, shared: {}, sets: [] };
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null && !Array.isArray(value);
@@ -51,6 +75,11 @@ export function parseCampaignSettings(input: unknown): CampaignSettings {
     }
     campaigns[key] = { factions };
   }
+  const shared: CampaignSettings['shared'] = {};
+  for (const [key, value] of Object.entries(object(input.shared) ? input.shared : {}).slice(0, MAX_FACTIONS * 4)) {
+    const hex = object(value) ? colour(value.colour) : undefined;
+    if (hex && key.length <= MAX_IDENTITY && !['__proto__', 'constructor', 'prototype'].includes(key)) shared[key] = { colour: hex };
+  }
   const sets: FactionColourSet[] = [];
   for (const value of Array.isArray(input.sets) ? input.sets.slice(0, MAX_SETS) : []) {
     if (!object(value) || !safeKey(String(value.id), /^[a-zA-Z0-9_-]{1,64}$/) || !text(value.name) || !Array.isArray(value.entries)) continue;
@@ -62,7 +91,31 @@ export function parseCampaignSettings(input: unknown): CampaignSettings {
     });
     if (!sets.some(set => set.id === value.id)) sets.push({ id: String(value.id), name: value.name.trim(), entries });
   }
-  return { version: 1, campaigns, sets };
+  return { version: 1, campaigns, shared, sets };
+}
+
+/** Sets or clears a faction's colour. For every campaign (`all`): it is stored by the
+ * faction's identity and this campaign's own colour for it is dropped, so the choice
+ * shows here too; a faction with no identity falls back to this campaign alone. For
+ * this campaign only: it overrides the colour for every campaign here. `null` clears
+ * the colour at that scope. */
+export function setFactionColour(settings: CampaignSettings, scope: ColourScope, campaign: string, faction: string,
+  identity: string | null, hex: string | null): CampaignSettings {
+  if (scope === 'campaign' || identity == null) return setFactionStyle(settings, campaign, faction, { colour: hex ?? undefined });
+  const value = hex == null ? null : colour(hex);
+  if (hex != null && !value) return settings;
+  const shared = { ...settings.shared };
+  if (value) {
+    if (!(identity in shared) && Object.keys(shared).length >= MAX_FACTIONS * 4) return settings;
+    shared[identity] = { colour: value };
+  } else delete shared[identity];
+  const next = { ...settings, shared };
+  return settings.campaigns[campaign]?.factions[faction]?.colour ? setFactionStyle(next, campaign, faction, { colour: undefined }) : next;
+}
+
+/** A faction's chosen colour, if any: this campaign's own, else the one for every campaign. */
+export function chosenColour(settings: CampaignSettings, campaign: string, faction: string, identity: string | null): string | undefined {
+  return settings.campaigns[campaign]?.factions[faction]?.colour ?? (identity != null ? settings.shared[identity]?.colour : undefined);
 }
 
 /** Sets or clears one faction's colour or display name. */
@@ -71,6 +124,7 @@ export function setFactionStyle(settings: CampaignSettings, campaign: string, fa
   // A new faction past the limit is refused here, rather than dropped when saved.
   if (patch !== null && !(faction in factions) && Object.keys(factions).length >= MAX_FACTIONS) return settings;
   const next: FactionStyle = patch === null ? {} : { ...factions[faction], ...patch };
+  if (next.colour === undefined) delete next.colour;
   if (next.colour !== undefined) {
     const hex = colour(next.colour);
     if (!hex) return settings;

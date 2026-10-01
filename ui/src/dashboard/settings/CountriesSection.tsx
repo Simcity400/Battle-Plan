@@ -22,13 +22,17 @@ export function CountriesSection({ widget, reference, runtime, limits, onChange 
   if (limits.max <= 1) return <CountryPicker key={source?.id ?? 'unbound'} {...common}
     selectedTag={widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : fallback}
     onChange={tag => onChange(tag && tag !== fallback ? { kind: 'tags', tags: [tag] } : { kind: 'selected' })} />;
-  const grouped = widget.countries.kind === 'group';
+  const mode = widget.countries.kind === 'group' ? 'group' : widget.countries.kind === 'all' && limits.all ? 'all' : 'countries';
+  // A widget about the whole world offers all countries first, and narrows to chosen ones or a group.
+  const modes = [...(limits.all ? [{ value: 'all' as const, label: 'All' }] : []), { value: 'countries' as const, label: 'Countries' }, { value: 'group' as const, label: 'Group' }];
   return <>
-    <Segmented label="Choose countries by" value={grouped ? 'group' : 'countries'} options={[{ value: 'countries', label: 'Countries' }, { value: 'group', label: 'Group' }]}
-      onChange={value => { if ((value === 'group') !== grouped) onChange(value === 'group' ? { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } : { kind: 'selected' }); }} />
-    {widget.countries.kind === 'group'
-      ? <GroupFields selection={widget.countries} reference={reference} runtime={runtime} limits={limits} onChange={onChange} />
-      : <CountryChips widget={widget} reference={reference} runtime={runtime} max={limits.max} onChange={onChange} />}
+    <Segmented label="Choose countries by" value={mode} options={modes}
+      onChange={value => { if (value !== mode) onChange(value === 'group' ? { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }
+        : value === 'all' ? { kind: 'all' } : { kind: 'selected' }); }} />
+    {mode === 'all' ? <p className="field-hint">Every country the recording names.</p>
+      : widget.countries.kind === 'group'
+        ? <GroupFields selection={widget.countries} reference={reference} runtime={runtime} limits={limits} onChange={onChange} />
+        : <CountryChips widget={widget} reference={reference} runtime={runtime} max={limits.max} onChange={onChange} />}
   </>;
 }
 

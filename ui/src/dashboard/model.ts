@@ -67,7 +67,7 @@ export function createWidget(kind: WidgetKind, trackId: string, id: string = new
   if (!definition) throw new Error(`Unknown widget type: ${kind}`);
   return {
     id, kind, configVersion: definition.version, title: definition.title, campaign: 'default',
-    trackIds: [trackId], countries: { kind: 'selected' },
+    trackIds: [trackId], countries: definition.countries?.all ? { kind: 'all' } : { kind: 'selected' },
     time: { mode: definition.defaultTime }, contentScale: 100,
   };
 }

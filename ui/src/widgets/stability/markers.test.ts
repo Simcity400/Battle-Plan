@@ -11,8 +11,8 @@ const base = { tag: 'GER', extent: [0, 1000] as const, branch: [0, 1000] as cons
 const groups: CountryGroupReply = {
   branchId: '1', humans: [], warnings: [],
   factions: [
-    { id: '1', name: 'Axis', firstHour: 100, lastHour: 1000, members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }, { tag: 'ITA', firstHour: 150, lastHour: 1000 }] , incomplete: [] },
-    { id: '2', name: 'Pact', firstHour: 0, lastHour: 1000, members: [{ tag: 'GER', firstHour: 300, lastHour: 399 }] , incomplete: [] },
+    { id: '1', name: 'Axis', recordedName: 'Axis', firstHour: 100, lastHour: 1000, members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }, { tag: 'ITA', firstHour: 150, lastHour: 1000 }], leaders: [], incomplete: [] },
+    { id: '2', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 1000, members: [{ tag: 'GER', firstHour: 300, lastHour: 399 }], leaders: [], incomplete: [] },
   ],
   wars: [{ first: 'FRA', second: 'GER', firstHour: 200, lastHour: 500 }, { first: 'GER', second: 'POL', firstHour: 180, lastHour: 1000 }],
   warStarts: [{ hour: 180, attacking: 'GER', defending: 'POL' }, { hour: 200, attacking: 'FRA', defending: 'GER' }],
@@ -61,26 +61,26 @@ test('laws and advisors taken on while recorded are government changes; focuses 
 });
 
 test('a continuing advisor, a shared founding and a repeated focus are read honestly', () => {
-  const shared: CountryGroupReply = { ...groups, factions: [{ id: '3', name: 'Pact', firstHour: 100, lastHour: 1000,
-    members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }, { tag: 'ITA', firstHour: 100, lastHour: 1000 }] , incomplete: [] }], warStarts: [], capitulations: [], wars: [] };
+  const shared: CountryGroupReply = { ...groups, factions: [{ id: '3', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 1000,
+    members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }, { tag: 'ITA', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] }], warStarts: [], capitulations: [], wars: [] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: shared }, ALL).map(badge => badge.label), ['Joined Pact']);
   // A sole first member of an incomplete first roster (another member not resolved) only joined.
-  const partial: CountryGroupReply = { ...shared, factions: [{ ...shared.factions[0], members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }] , incomplete: [] }],
+  const partial: CountryGroupReply = { ...shared, factions: [{ ...shared.factions[0], members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] }],
     unobserved: { humans: [], factions: [{ firstHour: 100, lastHour: 100 }], wars: [] } };
   assert.deepEqual(stabilityMarkers({ ...base, groups: partial }, ALL).map(badge => badge.label), ['Joined Pact']);
   // The same when only this faction's roster was incomplete then.
-  const partialOwn: CountryGroupReply = { ...shared, factions: [{ ...shared.factions[0], members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }], incomplete: [{ firstHour: 100, lastHour: 100 }] }] };
+  const partialOwn: CountryGroupReply = { ...shared, factions: [{ ...shared.factions[0], members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [{ firstHour: 100, lastHour: 100 }] }] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: partialOwn }, ALL).map(badge => badge.label), ['Joined Pact']);
   // A country whose id changes tag while in the faction neither leaves nor joins it.
   const renamed: CountryGroupReply = { ...shared, identityChanges: [{ hour: 500, from: 'AAA', to: 'GER' }],
-    factions: [{ id: '3', name: 'Pact', firstHour: 100, lastHour: 1000, members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'GER', firstHour: 500, lastHour: 1000 }] , incomplete: [] }] };
+    factions: [{ id: '3', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 1000, members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'GER', firstHour: 500, lastHour: 1000 }], leaders: [], incomplete: [] }] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: renamed }, ALL), []);
   // AAA founded it (its sole first member) and never left: the change of tag is no leave.
   assert.deepEqual(stabilityMarkers({ ...base, tag: 'AAA', groups: renamed }, ALL).map(badge => badge.label), ['Founded Pact']);
   // A tag change in the same hour as a real move between factions hides neither.
   const switched: CountryGroupReply = { ...shared, identityChanges: [{ hour: 500, from: 'AAA', to: 'GER' }], factions: [
-    { id: '3', name: 'First Pact', firstHour: 100, lastHour: 1000, members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'ITA', firstHour: 100, lastHour: 1000 }] , incomplete: [] },
-    { id: '4', name: 'Second Pact', firstHour: 100, lastHour: 1000, members: [{ tag: 'GER', firstHour: 500, lastHour: 1000 }, { tag: 'HUN', firstHour: 100, lastHour: 1000 }] , incomplete: [] }] };
+    { id: '3', name: 'First Pact', recordedName: 'First Pact', firstHour: 100, lastHour: 1000, members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'ITA', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] },
+    { id: '4', name: 'Second Pact', recordedName: 'Second Pact', firstHour: 100, lastHour: 1000, members: [{ tag: 'GER', firstHour: 500, lastHour: 1000 }, { tag: 'HUN', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] }] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: switched }, ALL).map(badge => badge.label), ['Joined Second Pact']);
   assert.deepEqual(stabilityMarkers({ ...base, tag: 'AAA', groups: switched }, ALL).map(badge => badge.label), ['Joined First Pact', 'Left First Pact']);
   const ideas = {

@@ -1,6 +1,6 @@
 use super::Inner;
 use dashboard::protocol::{DashboardMapView, NativeCommand, ViewBounds, ViewerState};
-use dashboard::transport::DataCommand;
+use dashboard::transport::{DataCommand, NATIVE_QUEUE_FULL};
 use std::collections::VecDeque;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +45,26 @@ pub(super) struct Pending {
 }
 
 impl Pending {
+    /// Queues a data request, or refuses it with the transient `NATIVE_QUEUE_FULL`
+    /// while the queue is at its budget. A Cancel removes its request if still queued;
+    /// one taken by the writer precedes the Cancel on its pipe.
+    pub(super) fn enqueue_data(
+        &mut self,
+        request: DataCommand,
+        length: usize,
+    ) -> Result<(), String> {
+        if let DataCommand::Cancel { id } = &request {
+            self.data
+                .retain(|(queued, _)| queued.request_id() != Some(id.as_str()));
+        }
+        let bytes: usize = self.data.iter().map(|(_, bytes)| *bytes).sum();
+        if self.data.len() >= 128 || bytes.saturating_add(length) > 2 * 1024 * 1024 {
+            return Err(NATIVE_QUEUE_FULL.into());
+        }
+        self.data.push_back((request, length));
+        Ok(())
+    }
+
     pub(super) fn can_send(&self, visible: bool) -> bool {
         self.close
             || !self.actions.is_empty()

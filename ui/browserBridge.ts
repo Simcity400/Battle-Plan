@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Plugin } from 'vite';
 import { listReplayFolder, savedReplayFolder, saveReplayFolder } from './replayLibrary.ts';
+import { BROWSER_BRIDGE_BUSY } from './src/generated/dashboard.ts';
 
 const runFile = promisify(execFile);
 
@@ -59,7 +60,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     if (signal.aborted) { reject(new Error('Request cancelled')); return; }
     // Match the desktop service and native loader admission budget. A saved
     // dashboard can have more concurrent consumers than the old browser limit.
-    if (pending.size >= 64) { reject(new Error('The recording bridge is busy')); return; }
+    if (pending.size >= 64) { reject(new Error(BROWSER_BRIDGE_BUSY)); return; }
     const process = start();
     const id = `browser-${++next}`;
     const cancel = () => {

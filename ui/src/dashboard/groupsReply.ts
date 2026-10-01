@@ -16,7 +16,7 @@ export function validateCountryGroupReply(data: unknown): CountryGroupReply {
     && listOf(reply.warnings, warning => typeof warning === 'string')
     && listOf(reply.humans, isRun)
     && listOf(reply.factions, faction => isSpan(faction) && isObject(faction) && typeof faction.id === 'string'
-      && (faction.name === null || typeof faction.name === 'string') && listOf(faction.members, isRun) && listOf(faction.incomplete, isSpan))
+      && (faction.name === null || typeof faction.name === 'string') && typeof faction.recordedName === 'string' && listOf(faction.members, isRun) && listOf(faction.leaders, isRun) && listOf(faction.incomplete, isSpan))
     && listOf(reply.wars, war => isSpan(war) && isObject(war) && typeof war.first === 'string' && typeof war.second === 'string')
     && listOf(reply.warStarts, start => isObject(start) && isHour(start.hour) && typeof start.attacking === 'string' && typeof start.defending === 'string')
     && listOf(reply.capitulations, event => isObject(event) && isHour(event.hour) && typeof event.tag === 'string')

@@ -2,6 +2,7 @@ import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/da
 import { clipToSpans } from '../charts/series.ts';
 import type { Run } from '../charts/series';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
+import type { Lineage } from './identity';
 
 /** Smart country groups, resolved from the recording's own history: human players,
  * any recorded faction (including ones founded or dissolved partway through),
@@ -34,13 +35,15 @@ export function groupUnobserved(reply: CountryGroupReply, group: CountryGroup): 
 /** The group's members under a membership rule, in order of first membership:
  * at `hour`, at the branch's last hour, or anyone ever a member. At most `max`,
  * the widget's own country limit, when given. Null when membership was not
- * recorded at the hour counted, so a missing hour never reads as an empty group. */
+ * recorded at the hour counted (for anyone ever: no member was recorded and some
+ * hours were not), so a missing hour never reads as an empty group. */
 export function groupMembers(runs: readonly MembershipRun[], membership: GroupMembership, hour: number, lastHour: number,
   max = Infinity, unobserved: readonly HourSpan[] = []): string[] | null {
   const at = membership === 'hour' ? hour : lastHour;
   if (membership !== 'ever' && unobserved.some(span => span.firstHour <= at && at <= span.lastHour)) return null;
   const ordered = [...runs].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
   const tags = ordered.filter(run => membership === 'ever' || (run.firstHour <= at && at <= run.lastHour)).map(run => run.tag);
+  if (membership === 'ever' && !tags.length && unobserved.length) return null;
   return [...new Set(tags)].slice(0, max);
 }
 
@@ -81,6 +84,59 @@ export function clipRuns(runs: readonly Run[], membership: readonly MembershipRu
   return clipToSpans(runs, membership);
 }
 
+/** Why a group's members are unknown under a membership rule (`groupMembers` null). */
+function unrecorded(membership: GroupMembership): string {
+  switch (membership) {
+    case 'hour': return 'This group’s members were not recorded at this moment.';
+    case 'end': return 'This group’s members were not recorded at the end of this campaign branch.';
+    case 'ever': return 'No member of this group was recorded, and its membership was not recorded for part of this campaign branch.';
+  }
+}
+
+export interface WorldFilter {
+  tags: ReadonlySet<string> | null;
+  reason: string | null;
+  /** When a lineage is supplied: countries resolved at the hours membership counts. */
+  countryIds?: ReadonlySet<string> | null;
+}
+
+/** The countries a widget about the whole world (`countries.all`) narrows to: null for
+ * every country; else the chosen tags (the dashboard's country by default), or the
+ * chosen group's members under its membership setting (`groupMembers`): at `hour`,
+ * the moment shown; at the branch's `lastHour`; or anyone ever a member. `reason`
+ * says why the set is empty or not known: a membership not recorded at the hour it is
+ * counted is unknown, never an empty group. With `lineage`, `countryIds` resolves
+ * each member at the hour counted, or through its own runs for anyone ever. */
+export function worldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
+  hour: number, lastHour: number, lineage?: Lineage): WorldFilter {
+  const result = (tags: ReadonlySet<string> | null, reason: string | null, at = hour, runs?: readonly MembershipRun[]): WorldFilter => {
+    if (!lineage) return { tags, reason };
+    const countryIds = tags && new Set<string>();
+    if (countryIds) {
+      if (runs) for (const run of runs) {
+        countryIds.add(lineage.countryAt(run.tag, run.firstHour));
+        for (const changed of lineage.changeHours(run.tag, run.firstHour + 1, run.lastHour)) countryIds.add(lineage.countryAt(run.tag, changed));
+      }
+      else for (const tag of tags!) countryIds.add(lineage.countryAt(tag, at));
+    }
+    return { tags, reason, countryIds };
+  };
+  if (selection.kind === 'all') return result(null, null);
+  if (selection.kind !== 'group') {
+    const tags = selection.kind === 'tags' ? selection.tags : fallback;
+    return result(new Set(tags), tags.length ? null : 'Choose a country in the widget settings.');
+  }
+  if (!groups) return result(new Set(), null);
+  const runs = groupRuns(groups, selection.group);
+  if (!runs) return result(new Set(), 'This group is not in this campaign branch.');
+  const members = groupMembers(runs, selection.membership, hour, lastHour, Infinity, groupUnobserved(groups, selection.group));
+  if (!members) return result(new Set(), unrecorded(selection.membership));
+  return result(new Set(members), members.length ? null
+    : selection.membership === 'ever' ? 'This group has no members in this campaign branch.'
+      : selection.membership === 'end' ? 'This group has no members at the end of this campaign branch.' : 'This group has no members at this moment.',
+  selection.membership === 'hour' ? hour : lastHour, selection.membership === 'ever' ? runs : undefined);
+}
+
 export interface ResolvedCountries {
   tags: string[];
   /** For a group counted at each hour: each country's membership runs. */
@@ -105,8 +161,8 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   if (!runs) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: 'This group is not in this campaign branch.' };
   const unobserved = groupUnobserved(groups, selection.group);
   const members = groupMembers(runs, selection.membership === 'end' ? 'end' : 'ever', lastHour, lastHour, Infinity, unobserved);
-  // Unknown is not empty: the group's membership at the branch end was not recorded.
-  if (!members) return { tags: [], membership: null, unobserved, dropped: 0, reason: 'This group’s members were not recorded at the end of this campaign branch.' };
+  // Unknown is not empty: the membership counted was not recorded.
+  if (!members) return { tags: [], membership: null, unobserved, dropped: 0, reason: unrecorded(selection.membership === 'end' ? 'end' : 'ever') };
   const tags = members.slice(0, max);
   const membership = selection.membership === 'hour'
     ? new Map(tags.map(tag => [tag, runs.filter(run => run.tag === tag)])) : null;

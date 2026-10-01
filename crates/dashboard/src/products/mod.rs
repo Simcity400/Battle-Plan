@@ -23,6 +23,7 @@ pub mod politics_content;
 pub mod research;
 pub mod resource_balance;
 pub mod stability_parts;
+pub mod subjects;
 
 use std::{io, sync::atomic::AtomicBool};
 
@@ -215,6 +216,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
     register::<resource_balance::ResourceBalance>(),
+    register::<subjects::Subjects>(),
 ];
 
 /// A recorded character's script token: its lexer id (`CCharacter` +0x18,
@@ -500,6 +502,7 @@ mod tests {
             "IdeaHistoryReply",
             "PartyHistoryReply",
             "ResourceBalanceReply",
+            "SubjectReply",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == name).count(),

@@ -68,7 +68,7 @@ impl Pending {
             // Reserve at most another MAX_PENDING small rejection replies. A
             // conforming host already bounds all outstanding requests to 64.
             self.errors
-                .push_back((request, "Dashboard request capacity reached".into()));
+                .push_back((request, crate::transport::CAPACITY_REACHED.into()));
             None
         } else {
             Some(request)
