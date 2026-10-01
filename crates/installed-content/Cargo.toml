@@ -9,14 +9,14 @@ publish.workspace = true
 # PUC Lua 5.1, the runtime the game links, for common/defines.
 mlua = { version = "0.12", default-features = false, features = ["lua51", "vendored", "send"] }
 # The PNG plugin of the game's FreeImage decodes through libpng; see image::native.
-png = "0.18"
+png.workspace = true
 # libpng's iCCP profiles are zlib streams (see image::native::png_colorspace); archive layers
 # inflate their records as raw deflate (content::physfs_zip).
 miniz_oxide = "0.8"
-replay = { path = "../replay" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
+replay.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
 
 [features]
 # Hand-built fixtures for other crates' unit tests, such as
@@ -25,4 +25,4 @@ test-support = []
 
 [target.'cfg(windows)'.dependencies]
 # The monitors the game's SDL display indices name; see settings::desktops.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }

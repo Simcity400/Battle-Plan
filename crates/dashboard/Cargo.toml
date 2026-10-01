@@ -6,16 +6,16 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-replay = { path = "../replay" }
-installed-content = { path = "../installed-content" }
-engine = { path = "../engine" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+replay.workspace = true
+installed-content.workspace = true
+engine.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 ts-rs = "11.1"
 base64 = "0.22.1"
-png = "0.18"
-uuid = { version = "1", features = ["v4"] }
-rfd = "0.17"
+png.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+rfd.workspace = true
 
 [[bin]]
 name = "export-types"
@@ -27,4 +27,4 @@ path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
 # Folder layers, so tests load localisation files as the game content does.
-installed-content = { path = "../installed-content", features = ["test-support"] }
+installed-content = { workspace = true, features = ["test-support"] }

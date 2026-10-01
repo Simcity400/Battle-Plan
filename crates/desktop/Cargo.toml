@@ -10,13 +10,13 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-dashboard = { path = "../dashboard" }
-installed-content = { path = "../installed-content" }
-rfd = "0.17"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+dashboard.workspace = true
+installed-content.workspace = true
+rfd.workspace = true
 tokio = { version = "1", features = ["sync"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

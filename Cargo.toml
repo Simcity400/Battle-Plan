@@ -7,3 +7,18 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 publish = false
+
+[workspace.dependencies]
+bytemuck = "1"
+dashboard = { path = "crates/dashboard" }
+engine = { path = "crates/engine" }
+installed-content = { path = "crates/installed-content" }
+png = "0.18"
+pollster = "0.4"
+replay = { path = "crates/replay" }
+rfd = "0.17"
+serde = "1"
+serde_json = "1"
+sha2 = "0.10"
+uuid = "1"
+windows-sys = "0.61.2"
