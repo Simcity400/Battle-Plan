@@ -199,17 +199,23 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
     Ok(())
 }
 
-/// Whether this hour's frame read a daily table: a walk of any table of its slot
-/// was timed, since a shared read times only its anchor (as the fresh-save
-/// oracle dates daily tables, `recorder::oracle::last_read_hours`). Its slot hour
-/// and full hours (branch start, load, gap, refresh) read it; other hours carry
-/// the last read. Every product that dates a daily table's values by their read
-/// uses this.
-pub fn slot_read(metrics: &Metrics, table: TableId) -> bool {
+/// Whether this hour's frame read a daily table: its slot hour by the cadence
+/// (`replay::cadence::is_refresh`), or any hour where a walk of a table of its
+/// slot was timed, which covers full hours (branch start, load, gap, refresh)
+/// and a shared read that times only its anchor (as the fresh-save oracle dates
+/// daily tables, `recorder::oracle::last_read_hours`). Timing alone is not
+/// enough: a shared read may be charged to a table outside the slot, as the
+/// economy-rest raw copy charges its daily tables' read to the hourly
+/// ProvinceSupply, so their slot hours show no timing. CountryIntel's walk can
+/// move off its slot, so only timing dates it. A walk that failed leaves the
+/// table incomplete, which callers check. Other hours carry the last read.
+/// Every product that dates a daily table's values by their read uses this.
+pub fn slot_read(metrics: &Metrics, table: TableId, hour: i32) -> bool {
     let slot = replay::cadence::cadence(table);
-    TableId::ALL.into_iter().any(|other| {
-        replay::cadence::cadence(other) == slot && metrics.table_ns[other.index()] != 0
-    })
+    (table != TableId::CountryIntel && replay::cadence::is_refresh(table, hour))
+        || TableId::ALL.into_iter().any(|other| {
+            replay::cadence::cadence(other) == slot && metrics.table_ns[other.index()] != 0
+        })
 }
 
 /// A branch's first and last hour: its start, every block and every recorded gap.

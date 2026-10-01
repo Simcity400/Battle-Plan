@@ -164,9 +164,12 @@ fn fuel_reads_carry_until_the_next_keep_whole_days_once_and_never_cross_gaps() {
     use crate::products::country_fuel::{DayLeftOut, scan};
     let slot = fuel_slot(1000);
     let full = (655_360_000, 655_360_000, 1_000_000, 65_536);
-    // Every hour from -25 to 336 is recorded but 25 and 311. Reads (relative to
-    // the fuel slot): a branch start at -25, the slot at 0, a refresh at 2, then
-    // daily slot reads, an off-slot read at 127 (and no slot reads at 120 or 144).
+    // Every hour from -25 to 336 is recorded but 25 and 311. Timed reads
+    // (relative to the fuel slot): a branch start at -25, the slot at 0, a
+    // refresh at 2, then daily slot reads and an off-slot refresh at 127. The
+    // slot hours 120 and 144 time no table of the slot, as recordings whose
+    // shared economy read is charged to the hourly ProvinceSupply show: the
+    // cadence still reads the table there.
     let reads = [
         -25, 0, 2, 24, 48, 72, 96, 127, 168, 192, 216, 240, 264, 288, 312, 336,
     ];
@@ -224,8 +227,10 @@ fn fuel_reads_carry_until_the_next_keep_whole_days_once_and_never_cross_gaps() {
     assert_eq!(
         reads,
         [
-            // The branch's first read: its day lies before the recording.
-            (-25, -1, true, "32768", false, unknown),
+            // The branch's first read, then the slot read a day before: their
+            // days lie before the recording.
+            (-25, -25, true, "32768", false, unknown),
+            (-24, -1, false, "32768", false, unknown),
             (0, 1, false, "65536", true, None),
             // A refresh two hours after the slot read: its day overlaps the slot read's.
             (2, 23, false, "98304", false, overlaps),
@@ -235,9 +240,12 @@ fn fuel_reads_carry_until_the_next_keep_whole_days_once_and_never_cross_gaps() {
             (48, 48, true, full, false, unknown),
             // The first update of this day followed a sample of the old country.
             (72, 95, true, full, false, stale),
-            (96, 126, false, full, true, None),
-            // Off the slot, a day and more from every other read, it keeps its day.
-            (127, 167, false, full, true, None),
+            (96, 119, false, full, true, None),
+            // A slot hour reads the table by its cadence, timed or not.
+            (120, 126, false, full, true, None),
+            // A refresh within a day of the slot reads: its day overlaps theirs.
+            (127, 143, false, full, false, overlaps),
+            (144, 167, false, full, true, None),
             // Without a state at 150 the game did not update the ring.
             (168, 191, false, full, false, stale),
             // The read's own sample (without a state) governs the next update.
@@ -256,15 +264,15 @@ fn fuel_reads_carry_until_the_next_keep_whole_days_once_and_never_cross_gaps() {
         ]
     );
     assert_eq!(
-        scanned.reads[3]
+        scanned.reads[4]
             .day
             .as_ref()
             .map(|day| (day.gained_raw.as_str(), day.burned_raw.as_str())),
         Some(("1000000", "65536"))
     );
-    assert_eq!(scanned.reads[3].capacity_raw, "655360000");
+    assert_eq!(scanned.reads[4].capacity_raw, "655360000");
     // The latest hour's lend-lease fuel, which the day's gain does not include.
-    assert_eq!(scanned.reads[3].lend_lease_raw, "7");
+    assert_eq!(scanned.reads[4].lend_lease_raw, "7");
 }
 
 #[test]
@@ -359,7 +367,8 @@ fn fuel_replies_with_the_engine_scales_and_answers_again_from_the_cache() {
             CAMPAIGN.into(),
             &[records(
                 1,
-                // A whole recorded day before the slot read, then a read an hour later.
+                // A whole recorded day before the slot read, which starts at the
+                // previous day's slot read, then a read an hour later.
                 (slot - 24..=slot + 1)
                     .map(|hour| {
                         fuel_frame(hour, hour >= slot, 9001, (65_536, 98_304, 200_000, 32_768))
@@ -396,8 +405,10 @@ fn fuel_replies_with_the_engine_scales_and_answers_again_from_the_cache() {
         (reply.quantity_scale, reply.gain_scale, reply.day_hours),
         (32_768, 100_000, 24)
     );
-    assert_eq!(reply.reads.len(), 2);
-    assert!(reply.reads[1].day.is_none());
+    assert_eq!(reply.reads.len(), 3);
+    assert!(reply.reads[0].day.is_none());
+    assert!(reply.reads[1].day.is_some());
+    assert!(reply.reads[2].day.is_none());
     assert!(
         reply
             .warnings

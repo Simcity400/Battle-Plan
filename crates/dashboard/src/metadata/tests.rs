@@ -122,3 +122,46 @@ fn a_tag_is_found_absent_or_unresolved() {
     );
     assert_eq!(tagged_country(&countries, &links[..1], "GER").found(), None);
 }
+
+fn daily_slot_of(table: TableId) -> i32 {
+    let replay::cadence::Cadence::Daily(slot) = replay::cadence::cadence(table) else {
+        panic!("{table:?} is read in a daily slot");
+    };
+    slot as i32
+}
+
+#[test]
+fn a_slot_hour_reads_its_tables_even_when_another_table_is_charged() {
+    let slot = daily_slot_of(TableId::CountryFuel);
+    let day = 1000 * replay::cadence::STAGGER_PERIOD;
+    // Part Q's pattern: the shared economy read is charged to the hourly
+    // ProvinceSupply, so no table of the slot is timed at its slot hour.
+    let mut charged = replay::frame::Metrics::default();
+    charged.table_ns[TableId::ProvinceSupply.index()] = 1_051_200;
+    for table in [TableId::CountryFuel, TableId::CountryExperience] {
+        assert!(super::slot_read(&charged, table, day + slot));
+        assert!(!super::slot_read(&charged, table, day + slot + 1));
+    }
+    // A full hour times the slot's tables off their slot hour.
+    let mut full = replay::frame::Metrics::default();
+    full.table_ns[TableId::CountryExperience.index()] = 72_100;
+    assert!(super::slot_read(
+        &full,
+        TableId::CountryFuel,
+        day + slot + 9
+    ));
+}
+
+#[test]
+fn country_intel_is_dated_only_by_its_measured_walk() {
+    let slot = daily_slot_of(TableId::CountryIntel);
+    let hour = 1000 * replay::cadence::STAGGER_PERIOD + slot;
+    assert!(!super::slot_read(
+        &replay::frame::Metrics::default(),
+        TableId::CountryIntel,
+        hour
+    ));
+    let mut timed = replay::frame::Metrics::default();
+    timed.table_ns[TableId::CountryIntel.index()] = 1;
+    assert!(super::slot_read(&timed, TableId::CountryIntel, hour + 5));
+}
