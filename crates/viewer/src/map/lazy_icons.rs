@@ -797,7 +797,7 @@ mod tests {
         let before = textures.version();
         assert_eq!(flags.get("T0002"), None);
         woken
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::TEST_HANG_GUARD)
             .expect("the loader woke the window");
         assert!(textures.version() > before);
         assert!(flags.get("T0002").is_some());

@@ -1916,7 +1916,7 @@ mod tests {
             release.send(()).unwrap();
             // The destructor frees the queue in order, then the thread ends.
             drop(dropper);
-            let deadline = Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = Instant::now() + crate::TEST_HANG_GUARD;
             while dropped.load(Ordering::SeqCst) < 3 + 3 * capacity {
                 assert!(
                     Instant::now() < deadline,
@@ -2256,7 +2256,7 @@ mod tests {
             let _ = done.send(asker.frame(branch, hour));
         });
         result
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::TEST_HANG_GUARD)
             .expect("the lane answers")
     }
 
@@ -2322,7 +2322,7 @@ mod tests {
         let lane = lane_over(&replay);
         let shared = Arc::downgrade(&lane.shared);
         drop(lane);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + crate::TEST_HANG_GUARD;
         while shared.strong_count() > 0 {
             assert!(
                 std::time::Instant::now() < deadline,
