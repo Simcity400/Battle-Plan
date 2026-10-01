@@ -277,6 +277,21 @@ pub const INVASION_PREPARATION: Family = Family {
     tables: &[TableId::InvasionPreparations],
 };
 
+/// The naval mission icon's active counts and efficiencies (140FA2AC0,
+/// 140F99450, 140F98DE0): combined task-force keys, mission-owner escort,
+/// roster-owner weather and expeditionary/roster-owner underway range.
+pub const NAVAL_MISSIONS: Family = Family {
+    name: "naval mission active counts and efficiencies",
+    keys: &engine::naval_mission_inputs::COUNTRY_KEYS,
+    tokens: &[],
+    tables: &[
+        TableId::NavalMissionTaskForces,
+        TableId::NavalMissionLedgers,
+        TableId::NavalMissionCountries,
+        TableId::NavalMissionCommanders,
+    ],
+};
+
 pub const RESEARCH_IDLE: Family = Family {
     name: "research slots",
     keys: &[],
@@ -361,6 +376,7 @@ pub const FAMILIES: &[Family] = &[
     RAID_INTEL,
     RAID_SUCCESS,
     INVASION_PREPARATION,
+    NAVAL_MISSIONS,
     RESEARCH_IDLE,
     ORACLE_FIXED15,
     ORACLE_INFRASTRUCTURE,

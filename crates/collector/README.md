@@ -186,4 +186,12 @@ LocalPlayer is captured in the visibility worker with an independent failure out
 
 Agency-name storage is also presized from live string demand by `country_scale::observe_politics`, then grows from the walk's exact required bytes. The hourly appearance walk also copies each country's three retained old-name strings. Gender is a Characters-only span in the shared character copy plan; its failure leaves independent role spans usable. Country and state manpower operands are copied with their existing hourly rows, and the country projection includes the residual in change detection.
 
+Naval mission icon operands ([naval_mission_inputs.rs](src/extended/naval_mission_inputs.rs)) run in the Slow job. One authenticated fleet walk gathers strike, raid, escort and invasion-support operands and the complete task-force census. Ledger discovery scans each navy's live region headers, independently of the narrower accessible-region list, preserving registrations in order with repeats. Presence is read for every nonempty ledger: the icon also updates unlisted escort entries while they fade out. Country modifiers/hubs and fleet-leader/HQ accumulators use the `naval_missions` daily sliced family, with SliceReads witnesses; new countries or changed leader/commander references are refreshed within the hour. Arenas grow off-thread to live demand, and partial walks cannot publish the dependent family. The ignored `naval_mission_bench` test measures the synthetic capture at country scale; it does not establish live recorder cost.
+
+The naval mission commander slice includes explicit rows for successfully read references
+that contribute zero. Missing commander rows remain unknown in playback. An unresolved
+mission or expeditionary owner keeps its raw reference in the operand row and is excluded
+from the sliced family census. Playback names the missing link; the ledger and other
+country and commander inputs remain available.
+
 CountryFactoryCounts is read hourly in the country-counter pack, independently of its other tables. Its three stored i32 counts drive scripted text seeds through the unified trigger evaluator. Row storage scales from the live country registry and grows off the callback; native reads and time are charged to this table. Live recorder cost is unverified.

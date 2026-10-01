@@ -29,6 +29,8 @@ keys! {
     AIR_RANGE_FACTOR = 0x5;
     /// Register@14058AB21 (token global 0x1427bff80).
     AIR_STRATEGIC_BOMBER_BOMBING_FACTOR = 0xa;
+    /// Register@1405d3603 (token global 0x1427c00d0).
+    NAVAL_COORDINATION = 0x19;
     /// Register@1405cad3e (token global 0x1427c00e0).
     INVASION_PREPARATION = 0x1a;
     /// Register@1405cc61c (token global 0x1427c058c).
@@ -77,6 +79,10 @@ keys! {
     NAVY_ANTI_AIR_ATTACK = 0x88;
     /// Register@1405c9460 (token global 0x1427bffb4).
     NAVY_ANTI_AIR_ATTACK_FACTOR = 0x89;
+    /// Register@1405C9885; built-in navy_max_range.
+    NAVAL_RANGE = 0x8a;
+    /// Register@1405C9CAA; built-in navy_max_range_factor.
+    NAVAL_RANGE_FACTOR = 0x8b;
     /// Register@140562322 (token global 0x1427c0524).
     POWER_BALANCE_DAILY = 0x98;
     /// Register@140562747 (token global 0x1427c0528).
@@ -93,6 +99,8 @@ keys! {
     NAVY_SCREEN_ATTACK_FACTOR = 0xc6;
     /// Register@1405c4deb (token global 0x1427c0030).
     NAVY_SCREEN_DEFENCE_FACTOR = 0xc7;
+    /// Register@1405c7fa7 (token global 0x1427c0044).
+    CONVOY_RAIDING_EFFICIENCY_FACTOR = 0xcc;
     /// Register@140553467 (token global 0x1427c0050).
     RESEARCH_SPEED_FACTOR = 0xcd;
     /// Register@140553c9f (token global 0x1427c0168).
@@ -109,6 +117,8 @@ keys! {
     NAVAL_NIGHT_ATTACK = 0x107;
     /// Register@14059022A (token global 0x1427c049c).
     AIR_CARRIER_NIGHT_PENALTY_REDUCTION_FACTOR = 0x10d;
+    /// Register@1405c8c16 (token global 0x1427c0690).
+    CONVOY_ESCORT_EFFICIENCY = 0x10e;
     /// Register@1405a589e (token global 0x1427c00d8).
     COMBAT_WIDTH_FACTOR = 0x10f;
     /// Register@140594b39 (token global 0x1427bfb64).
@@ -185,6 +195,8 @@ keys! {
     ACE_EFFECTIVENESS_FACTOR = 0x25a;
     /// Register@1405fbc77 (token global 0x1427c0660).
     SCIENTIST_RESEARCH_BONUS_FACTOR = 0x27a;
+    /// Register@1405DCB37; built-in underway_replenishment_range.
+    UNDERWAY_REPLENISHMENT_RANGE_FACTOR = 0x27c;
     /// Register@1405d1d25 (token global 0x1427bfb10).
     MAX_ORGANISATION = 0x27e;
     /// Register@1405fd97a (token global 0x1427c05dc).

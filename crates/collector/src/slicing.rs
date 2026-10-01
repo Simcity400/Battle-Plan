@@ -59,9 +59,10 @@ pub(crate) const STABILITY: usize = 6;
 pub(crate) const RETREAT_BANS: usize = 7;
 pub(crate) const AIR_RELATIONS: usize = 8;
 pub(crate) const AIR_HISTORIES: usize = 9;
+pub(crate) const NAVAL_MISSIONS: usize = 10;
 
 /// Every sliced family. Index with the family constants above.
-pub(crate) const FAMILIES: [SliceFamily; 10] = [
+pub(crate) const FAMILIES: [SliceFamily; 11] = [
     SliceFamily {
         name: "research",
         owner: OwnerKind::Country,
@@ -148,6 +149,16 @@ pub(crate) const FAMILIES: [SliceFamily; 10] = [
         name: "air_histories",
         owner: OwnerKind::CanonicalSlot,
         tables: &[TableId::AirNavalPatrolHistories],
+    },
+    // The countries the hour's naval mission task forces name; the fingerprint is their
+    // leader and headquarters-commander references (extended/naval_mission_inputs.rs).
+    SliceFamily {
+        name: "naval_missions",
+        owner: OwnerKind::Country,
+        tables: &[
+            TableId::NavalMissionCountries,
+            TableId::NavalMissionCommanders,
+        ],
     },
 ];
 
@@ -650,5 +661,7 @@ mod tests {
         assert_eq!(FAMILIES[STABILITY].name, "stability");
         assert_eq!(FAMILIES[AIR_RELATIONS].owner, OwnerKind::CanonicalSlot);
         assert_eq!(FAMILIES[AIR_HISTORIES].owner, OwnerKind::CanonicalSlot);
+        assert_eq!(FAMILIES[NAVAL_MISSIONS].name, "naval_missions");
+        assert_eq!(FAMILIES[NAVAL_MISSIONS].owner, OwnerKind::Country);
     }
 }

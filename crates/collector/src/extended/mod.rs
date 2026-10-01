@@ -355,7 +355,8 @@ packs!(
     country_stability,
     new_divisions,
     country_tactic_unlocks,
-    weather
+    weather,
+    naval_mission_inputs
 );
 
 impl Capacities {
@@ -383,6 +384,7 @@ impl Capacities {
         self.hired_advisors.raise_for_countries(slots);
         self.country_stability.raise_for_countries(slots);
         self.country_tactic_unlocks.raise_for_countries(slots);
+        self.naval_mission_inputs.raise_for_countries(slots);
     }
 
     /// Presize CountryIntel from the live dense record total.
@@ -455,6 +457,7 @@ impl Captured {
         self.raid_state_inputs.reset_selections(hour, force_full);
         self.division_presentation.reset_selection(hour, force_full);
         self.country_stability.prepare_hour(hour, force_full);
+        self.naval_mission_inputs.reset_selection(hour, force_full);
         self.air.prepare_hour(hour, force_full);
         self.fog.prepare_hour(hour, force_full);
         self.naval_history.prepare_hour(hour, force_full);
@@ -724,6 +727,7 @@ impl Captured {
             crate::slicing::RETREAT_BANS => self.division_presentation.bans_selection(),
             crate::slicing::AIR_RELATIONS => self.air_relations.selection(),
             crate::slicing::AIR_HISTORIES => self.air_histories.selection(),
+            crate::slicing::NAVAL_MISSIONS => self.naval_mission_inputs.selection(),
             _ => unreachable!("unregistered sliced family {family}"),
         }
     }
@@ -1117,7 +1121,7 @@ impl Captured {
         state: usize,
         hour: i32,
         force_full: bool,
-        stability_fingerprints: Option<Box<crate::slicing::SliceFingerprints>>,
+        stores: SlowStores,
     ) -> crate::acquisition_jobs::SlowRequest {
         self.slow_ticks = None;
         let mut packs = self.slow_spare.take().expect("slow spare present");
@@ -1130,28 +1134,43 @@ impl Captured {
             hour,
             force_full,
             packs,
-            stability_fingerprints,
+            stores,
         }
     }
 
-    /// Returns the stability family's fingerprint store: forgotten if the job
-    /// failed, and with this hour's selection invalidated if a stability
+    /// Returns the Slow job's fingerprint stores: forgotten if the job
+    /// failed, and with this hour's selection invalidated where a family's
     /// table was not read completely, so its countries are read again at the
     /// next hour.
     pub(crate) fn restore_slow_request(
         &mut self,
         request: crate::acquisition_jobs::SlowRequest,
         completed: bool,
-    ) -> Option<Box<crate::slicing::SliceFingerprints>> {
+    ) -> SlowStores {
         let mut packs = request.packs;
-        let mut fingerprints = request.stability_fingerprints;
+        let mut stores = request.stores;
         if !completed {
             packs.fail(request.hour, request.force_full, "slow acquisition failed");
-            if let Some(fingerprints) = fingerprints.as_mut() {
-                fingerprints.forget();
+            for store in [&mut stores.stability, &mut stores.naval_missions]
+                .into_iter()
+                .flatten()
+            {
+                store.forget();
             }
         }
-        if let Some(fingerprints) = fingerprints.as_mut()
+        if let Some(fingerprints) = stores.naval_missions.as_mut() {
+            let outcomes = packs.naval_mission_inputs.outcomes();
+            if naval_mission_inputs::SLICED
+                .iter()
+                .any(|&index| !matches!(outcomes[index], Outcome::Rows { .. }))
+            {
+                packs
+                    .naval_mission_inputs
+                    .selection()
+                    .invalidate(fingerprints);
+            }
+        }
+        if let Some(fingerprints) = stores.stability.as_mut()
             && packs.country_stability.outcomes().iter().any(|outcome| {
                 !matches!(outcome, Outcome::Rows { .. })
                     && !matches!(outcome, Outcome::Unavailable { reason } if *reason == replay::cadence::SKIPPED_REASON)
@@ -1162,7 +1181,7 @@ impl Captured {
         self.slow_ticks = Some(packs.ticks);
         self.swap_slow(&mut packs);
         self.slow_spare = Some(packs);
-        fingerprints
+        stores
     }
 
     /// Loan the raid target statuses to their own pool job, so they run
@@ -1486,6 +1505,10 @@ impl Captured {
         std::mem::swap(
             &mut self.country_tactic_unlocks,
             &mut packs.country_tactic_unlocks,
+        );
+        std::mem::swap(
+            &mut self.naval_mission_inputs,
+            &mut packs.naval_mission_inputs,
         );
     }
 
@@ -2621,6 +2644,14 @@ impl OrdinaryPacks {
     }
 }
 
+/// The Slow job's owner stores (`slicing::STABILITY`, `NAVAL_MISSIONS`). A
+/// missing store only drops that family's early reads for the hour.
+#[derive(Default)]
+pub(crate) struct SlowStores {
+    pub(crate) stability: Option<Box<crate::slicing::SliceFingerprints>>,
+    pub(crate) naval_missions: Option<Box<crate::slicing::SliceFingerprints>>,
+}
+
 /// The raid state job's owner stores (`slicing::RAID_STATE`, `RAID_BUILDINGS`).
 pub(crate) struct RaidStateStores {
     pub(crate) states: Box<crate::slicing::SliceFingerprints>,
@@ -2662,6 +2693,7 @@ pub(crate) struct SlowPacks {
     pub(crate) character_inputs: character_inputs::Captured,
     pub(crate) country_stability: country_stability::Captured,
     pub(crate) country_tactic_unlocks: country_tactic_unlocks::Captured,
+    pub(crate) naval_mission_inputs: naval_mission_inputs::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -2809,6 +2841,8 @@ impl SlowPacks {
             .fail_capture(hour, force_full, reason);
         self.country_tactic_unlocks
             .fail_capture(hour, force_full, reason);
+        self.naval_mission_inputs
+            .fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
@@ -2824,6 +2858,7 @@ impl SlowPacks {
             + self.character_inputs.allocated_bytes()
             + self.country_stability.allocated_bytes()
             + self.country_tactic_unlocks.allocated_bytes()
+            + self.naval_mission_inputs.allocated_bytes()
     }
 
     fn spare() -> Box<Self> {
@@ -2838,6 +2873,7 @@ impl SlowPacks {
             character_inputs: character_inputs::Captured::vacant(),
             country_stability: country_stability::Captured::vacant(),
             country_tactic_unlocks: country_tactic_unlocks::Captured::vacant(),
+            naval_mission_inputs: naval_mission_inputs::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         })
     }
@@ -2849,7 +2885,7 @@ impl SlowPacks {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        stability_fingerprints: Option<&mut crate::slicing::SliceFingerprints>,
+        stores: &mut SlowStores,
     ) {
         let mut ticks = [0; TABLE_COUNT];
         macro_rules! staggered {
@@ -2878,9 +2914,18 @@ impl SlowPacks {
             game_state,
             hour,
             force_full,
-            stability_fingerprints,
+            stores.stability.as_deref_mut(),
         );
         scatter(&country_stability::TABLES, cost, &mut ticks);
+        let cost = self.naval_mission_inputs.capture(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            stores.naval_missions.as_deref_mut(),
+        );
+        scatter(&naval_mission_inputs::TABLES, cost, &mut ticks);
         self.ticks = ticks;
     }
 }
@@ -3297,7 +3342,8 @@ mod tests {
             assert_vacant(&captured);
 
             let slow_box = std::ptr::from_ref(&**captured.slow_spare.as_ref().unwrap());
-            let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, None);
+            let request =
+                captured.take_slow_request(&countries, 11, 0x1000, 9, false, SlowStores::default());
             assert_eq!(std::ptr::from_ref(&*request.packs), slow_box);
             assert_eq!(
                 captured.allocated_bytes() + request.packs.allocated_bytes(),
@@ -3700,8 +3746,14 @@ mod tests {
             captured.prepare_hour(hour, force_full);
             let bytes = captured.allocated_bytes();
             let mut orders = Orders::vacant();
-            let mut request =
-                captured.take_slow_request(&countries, 11, 0x1000, hour, force_full, None);
+            let mut request = captured.take_slow_request(
+                &countries,
+                11,
+                0x1000,
+                hour,
+                force_full,
+                SlowStores::default(),
+            );
             request.packs.ticks.fill(17);
             captured.restore_slow_request(request, false);
             let state = RaidStateStores::new();
@@ -5089,23 +5141,29 @@ mod tests {
     }
 
     #[test]
-    fn the_stability_store_travels_with_the_slow_job_and_always_returns() {
+    fn the_slow_job_stores_travel_with_it_and_always_return() {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
         for completed in [true, false] {
-            let store = Box::new(crate::slicing::SliceFingerprints::new());
-            let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, Some(store));
-            assert!(request.stability_fingerprints.is_some());
-            // Nothing was read: the unpublished read is invalidated or the
-            // failed job's store forgotten, and the store comes back either way.
-            assert!(captured.restore_slow_request(request, completed).is_some());
+            let stores = SlowStores {
+                stability: Some(Box::new(crate::slicing::SliceFingerprints::new())),
+                naval_missions: Some(Box::new(crate::slicing::SliceFingerprints::new())),
+            };
+            let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, stores);
+            assert!(request.stores.stability.is_some() && request.stores.naval_missions.is_some());
+            // Nothing was read: the unpublished reads are invalidated or the
+            // failed job's stores forgotten, and the stores come back either way.
+            let stores = captured.restore_slow_request(request, completed);
+            assert!(stores.stability.is_some() && stores.naval_missions.is_some());
             assert!(!matches!(
                 captured.country_stability.outcomes()[0],
                 Outcome::Rows { .. }
             ));
         }
-        let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, None);
-        assert!(captured.restore_slow_request(request, true).is_none());
+        let request =
+            captured.take_slow_request(&countries, 11, 0x1000, 9, false, SlowStores::default());
+        let stores = captured.restore_slow_request(request, true);
+        assert!(stores.stability.is_none() && stores.naval_missions.is_none());
     }
 
     #[test]
@@ -5113,7 +5171,8 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
         captured.set_modifier_definitions_moved(true);
-        let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, None);
+        let request =
+            captured.take_slow_request(&countries, 11, 0x1000, 9, false, SlowStores::default());
         assert!(request.packs.modifier_definitions.header_changed);
         assert!(!captured.modifier_definitions.header_changed);
         captured.restore_slow_request(request, true);

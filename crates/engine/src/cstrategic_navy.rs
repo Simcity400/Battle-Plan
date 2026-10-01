@@ -15,6 +15,11 @@ pub const SECONDARY_VTABLE_RVA: usize = 0x0295_c670;
 pub const SECONDARY: usize = 8;
 /// CStrategicNavy owner raw country tag; 140E88190 stores +10, E90910 resolves it.
 pub const OWNER: usize = 0x10;
+/// CStrategicNavy mission ledger: a pointer to one 0x18-byte `CPdxArray<CNavalMission*>`
+/// header per strategic region, indexed by region id (`GetMissionsInRegion@140E90DC0`);
+/// supply fleet regions outside the mission's narrower accessible list.
+pub const REGION_MISSIONS: usize = 0x68;
+pub const REGION_MISSIONS_STRIDE: usize = 0x18;
 /// CStrategicNavy `CPdxArray<i64>`; 140E88190 constructs +C8, E90CD0 indexes by region id.
 pub const REGIONAL_OPERANDS: usize = 0xc8;
 

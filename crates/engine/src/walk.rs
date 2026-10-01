@@ -45,58 +45,33 @@ pub(crate) fn pointers<R>(
     }
     let mut len = 0;
     let mut unread_rows = 0;
-    const POINTERS_PER_BATCH: usize = 64;
-    let mut pointers = [[0_u8; 8]; POINTERS_PER_BATCH];
-    let mut first = 1;
-    while first < array.count {
-        let count = ((array.count - first) as usize).min(POINTERS_PER_BATCH);
-        let addresses: [usize; POINTERS_PER_BATCH] = std::array::from_fn(|slot| {
-            if slot < count {
-                array.element(first + slot as u32, 8).unwrap_or(0)
-            } else {
-                0
-            }
-        });
-        let mut fields = pointers.iter_mut().enumerate();
-        let copied = memory.copy_scattered(
-            addresses,
-            &mut std::array::from_fn(|_| {
-                let (slot, bytes) = fields.next().unwrap();
-                // Empty trailing spans never inspect their source addresses.
-                &mut bytes[..if slot < count { 8 } else { 0 }]
-            }),
-        );
-        for (slot, bytes) in pointers.iter().take(copied.min(count)).enumerate() {
-            let Ok(pointer) = usize::try_from(u64::from_le_bytes(*bytes)) else {
-                return Outcome::Unavailable {
-                    reason: "table pointer unreadable",
-                };
+    let source = match array.slice(1, array.count - 1, 8) {
+        Ok(source) => source,
+        Err(_) => {
+            return Outcome::Unavailable {
+                reason: "table address overflow",
             };
+        }
+    };
+    let result = crate::cpdx_array::pointers(
+        memory,
+        source,
+        "table pointer unreadable",
+        |index, pointer| {
             if pointer == 0 {
-                continue;
+                return Ok(());
             }
             if len == output.len() {
                 unread_rows += 1;
-                continue;
+                return Ok(());
             }
-            match read_row(first + slot as u32, pointer) {
-                Ok(row) => {
-                    output[len] = row;
-                    len += 1;
-                }
-                Err(reason) => return Outcome::Unavailable { reason },
-            }
-        }
-        if copied < count {
-            return Outcome::Unavailable {
-                reason: if array.element(first + copied as u32, 8).is_none() {
-                    "table address overflow"
-                } else {
-                    "table pointer unreadable"
-                },
-            };
-        }
-        first += count as u32;
+            output[len] = read_row(index + 1, pointer)?;
+            len += 1;
+            Ok(())
+        },
+    );
+    if let Err(reason) = result {
+        return Outcome::Unavailable { reason };
     }
     if unread_rows == 0 {
         Outcome::Rows { len }

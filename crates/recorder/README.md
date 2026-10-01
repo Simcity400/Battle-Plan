@@ -35,6 +35,8 @@ The [naval input comparisons](src/oracle/pass_inputs.rs) check each TaskForceMap
 
 TaskForceMissions is compared with each task force's saved mission block: `spotting_region` with the current region and `accessible_regions` with the region list, in order with repeats. The recorded task forces must be exactly those that save either field, so a missing, extra (even empty) or repeated row is a difference. The save does not hold the mission owner; it is only checked to resolve through CountryLinks, and the report lists that as a limitation.
 
+The adjacent [naval mission comparison](src/oracle/naval_missions.rs) checks mission-input census, stored fuel/requested/underway fields, saved fleet-leader references, HQ counts and escort presence. The mission kind is mandatory in the save; convoy counts are saved only when positive, so omission means nonpositive and exact negative values are a named limitation. Ledger references are checked, but membership/order, supply hubs, mission owner/range, stat/ratio operands and modifier accumulators are explicitly named save limitations. The accessible list is not an oracle for ledger membership: native refresh can register a wider fleet region list.
+
 To compare every daily, static and sliced table, take the save at a full-refresh hour. At any other hour the oracle compares only what was read at that hour:
 - Relations only for the owners read at that hour; their read hours are in SliceReads, and relations are sliced by owner country. The other owners are listed as carried.
 - Research technologies only at a proven full refresh: the save has no per-owner scope, and owners without rows have no read record. Otherwise they are listed as carried.

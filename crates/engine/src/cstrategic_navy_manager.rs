@@ -49,6 +49,20 @@ pub(crate) fn authenticate_owner(
     })
 }
 
+/// The country's strategic navy (`CCountry::GetStrategicNavy@1406ECBF0`), its identity and
+/// owner authenticated.
+pub fn navy(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    country: ccountry::Country,
+) -> Result<usize, &'static str> {
+    with_navy(memory, base, state, country, |navy| {
+        cstrategic_navy::authenticate_owner(memory, base, state, navy, country)?;
+        Ok(navy)
+    })
+}
+
 /// The country's regional mine level, raw fixed5; `CanLayMinesInRegion@140F65E40`
 pub fn regional_operand(
     memory: &impl Memory,

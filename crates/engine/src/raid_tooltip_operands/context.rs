@@ -46,11 +46,7 @@ fn region(m: &impl Memory, base: usize, province: usize) -> Result<Option<u32>, 
     region_id(m, base, pointer(m, province, cprovince::STRATEGIC_REGION)?)
 }
 fn region_id(m: &impl Memory, base: usize, p: usize) -> Result<Option<u32>, &'static str> {
-    if p == 0 {
-        return Ok(None);
-    }
-    authenticate(m, base, p, cstrategic_region::VTABLE_RVA)?;
-    field(m, p, 0x58).map(Some)
+    cstrategic_region::id(m, base, p)
 }
 
 /// 141581940 -> 141580C30: capture the kind of the exact selected base.

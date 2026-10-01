@@ -1923,9 +1923,10 @@ mod tests {
         // tables with the raid and political tables; main alone is 16,519 B
         // per slot between 1,500 and 5,000 slots), dominated by the project
         // pools and the per-slot research, party and raid rows; the doctrine
-        // tactic unlock rows add about 21 bytes per slot.
+        // tactic unlock rows add about 21 bytes per slot. Measured 2026-10-02
+        // with the naval mission inputs and main's factory counts: 20,497 B.
         assert!(
-            large - per_state <= 3_500 * 20 * 1024,
+            large - per_state <= 3_500 * 21 * 1024,
             "vanilla {vanilla}, 1,501 slots {per_state}, 5,001 slots {large}"
         );
     }

@@ -733,21 +733,22 @@ fn pointers(
     first: u32,
     output: &mut [usize],
 ) -> Result<(), &'static str> {
-    let mut bytes = [0_u8; BATCH * 8];
-    let bytes = &mut bytes[..output.len() * 8];
-    let at = array
-        .element(first, 8)
-        .ok_or("template pointer index invalid")?;
-    if !read_slice(memory, at, bytes) {
-        return Err("template pointers unreadable");
-    }
-    for (pointer, chunk) in output.iter_mut().zip(bytes.chunks_exact(8)) {
-        *pointer = usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap()))
-            .ok()
-            .filter(|pointer| *pointer != 0)
-            .ok_or("template pointer null")?;
-    }
-    Ok(())
+    let source = array
+        .slice(first, output.len() as u32, 8)
+        .map_err(|_| "template pointer index invalid")?;
+    // Validate in element order: an earlier null wins over a later unreadable pointer.
+    crate::cpdx_array::pointers(
+        memory,
+        source,
+        "template pointers unreadable",
+        |index, pointer| {
+            if pointer == 0 {
+                return Err("template pointer null");
+            }
+            output[index as usize] = pointer;
+            Ok(())
+        },
+    )
 }
 
 /// Every country's templates in roster order. Each roster batch's fixed fields

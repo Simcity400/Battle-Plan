@@ -44,58 +44,59 @@ pub(crate) struct Shape {
     pub theatre_links: bool,
 }
 
-struct Heap {
-    bytes: Vec<u8>,
+pub(crate) struct Heap {
+    pub(crate) bytes: Vec<u8>,
     /// The address of offset zero, the module base.
-    origin: usize,
+    pub(crate) origin: usize,
 }
 
 impl Heap {
-    fn alloc(&mut self, size: usize) -> usize {
+    pub(crate) fn alloc(&mut self, size: usize) -> usize {
         let at = self.bytes.len().next_multiple_of(16);
         self.bytes.resize(at + size, 0);
         at
     }
     /// The address of `offset`; offset zero stays a null pointer.
-    fn ptr(&self, offset: usize) -> u64 {
+    pub(crate) fn ptr(&self, offset: usize) -> u64 {
         if offset == 0 {
             0
         } else {
             (self.origin + offset) as u64
         }
     }
-    fn rva(&self, rva: usize) -> u64 {
+    pub(crate) fn rva(&self, rva: usize) -> u64 {
         (self.origin + rva) as u64
     }
-    fn put(&mut self, at: usize, value: &[u8]) {
+    pub(crate) fn put(&mut self, at: usize, value: &[u8]) {
         self.bytes[at..at + value.len()].copy_from_slice(value);
     }
-    fn u32(&mut self, at: usize, value: u32) {
+    pub(crate) fn u32(&mut self, at: usize, value: u32) {
         self.put(at, &value.to_le_bytes());
     }
-    fn u64(&mut self, at: usize, value: u64) {
+    pub(crate) fn u64(&mut self, at: usize, value: u64) {
         self.put(at, &value.to_le_bytes());
     }
-    fn array(&mut self, at: usize, data: usize, count: u32) {
+    pub(crate) fn array(&mut self, at: usize, data: usize, count: u32) {
         self.u64(at, self.ptr(data));
         self.u32(at + 8, count);
         self.u32(at + 12, count);
     }
-    fn pointers(&mut self, at: usize, values: &[usize]) {
+    pub(crate) fn pointers(&mut self, at: usize, values: &[usize]) -> usize {
         let data = self.alloc(values.len().max(1) * 8);
         for (index, value) in values.iter().enumerate() {
             self.u64(data + index * 8, self.ptr(*value));
         }
         self.array(at, data, values.len() as u32);
+        data
     }
-    fn words(&mut self, at: usize, values: &[u32]) {
+    pub(crate) fn words(&mut self, at: usize, values: &[u32]) {
         let data = self.alloc(values.len().max(1) * 4);
         for (index, value) in values.iter().enumerate() {
             self.u32(data + index * 4, *value);
         }
         self.array(at, data, values.len() as u32);
     }
-    fn string(&mut self, at: usize, text: &[u8]) {
+    pub(crate) fn string(&mut self, at: usize, text: &[u8]) {
         if text.len() <= msvc_string::INLINE_CAPACITY as usize {
             self.put(at, text);
             self.u64(at + msvc_string::CAPACITY, msvc_string::INLINE_CAPACITY);
@@ -106,6 +107,20 @@ impl Heap {
             self.u64(at + msvc_string::CAPACITY, text.len() as u64);
         }
         self.u64(at + msvc_string::LENGTH, text.len() as u64);
+    }
+}
+
+impl Heap {
+    pub(crate) fn vtable(&mut self, at: usize, rva: usize) {
+        self.u64(at, self.rva(rva));
+    }
+    pub(crate) fn accumulator(&mut self, at: usize, entries: &[(u32, i64)]) {
+        let data = self.alloc(entries.len().max(1) * 16);
+        for (index, (key, raw)) in entries.iter().enumerate() {
+            self.u32(data + index * 16, *key);
+            self.u64(data + index * 16 + 8, *raw as u64);
+        }
+        self.array(at, data, entries.len() as u32);
     }
 }
 

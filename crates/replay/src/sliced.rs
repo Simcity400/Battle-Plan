@@ -20,9 +20,10 @@
 
 use crate::rows::{
     AceRangeInputRow, AirCountryRelationRow, AirNavalPatrolHistoryRow, CountryBuildingResourceRow,
-    CountryStabilityInputRow, CountryStabilityLineRow, DivisionRetreatBanRow, RaidAirSiteRow,
-    RaidCountryInputRow, RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow,
-    ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
+    CountryStabilityInputRow, CountryStabilityLineRow, DivisionRetreatBanRow,
+    NavalMissionCommanderRow, NavalMissionCountryRow, RaidAirSiteRow, RaidCountryInputRow,
+    RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow, ResearchInputRow,
+    ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
     StateDynamicModifierRow, StateResourceInputRow, StateResourceRow, StockpileArchetypeRow,
     TableId, TableRows,
 };
@@ -51,7 +52,9 @@ sliced_by!(
     ResearchTechnologyRow,
     CountryBuildingResourceRow,
     CountryStabilityInputRow,
-    CountryStabilityLineRow
+    CountryStabilityLineRow,
+    NavalMissionCountryRow,
+    NavalMissionCommanderRow
 );
 // Canonical country slots: the raid launch family keys its rows by slot.
 sliced_by!(
@@ -145,6 +148,12 @@ macro_rules! dispatch {
             }
             (TableRows::CountryStabilityLines($old), TableRows::CountryStabilityLines($new)) => {
                 Ok(TableRows::CountryStabilityLines($body?))
+            }
+            (TableRows::NavalMissionCountries($old), TableRows::NavalMissionCountries($new)) => {
+                Ok(TableRows::NavalMissionCountries($body?))
+            }
+            (TableRows::NavalMissionCommanders($old), TableRows::NavalMissionCommanders($new)) => {
+                Ok(TableRows::NavalMissionCommanders($body?))
             }
             (previous, fresh) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -292,6 +301,8 @@ pub fn owners(rows: &TableRows) -> Vec<u32> {
         TableRows::RelationTuples(rows) => collect(rows),
         TableRows::CountryStabilityInputs(rows) => collect(rows),
         TableRows::CountryStabilityLines(rows) => collect(rows),
+        TableRows::NavalMissionCountries(rows) => collect(rows),
+        TableRows::NavalMissionCommanders(rows) => collect(rows),
         _ => Vec::new(),
     }
 }

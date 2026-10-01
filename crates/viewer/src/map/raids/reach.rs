@@ -108,6 +108,28 @@ impl<'w, 'a> Moves<'w, 'a> {
         }
     }
 
+    /// 141534980 / 1415349B0: the shared rule verdict, submarine or navy bit.
+    pub(crate) fn naval_rule(
+        &self,
+        rule: &installed_content::adjacency_rules::AdjacencyRule,
+        raw_owner: u32,
+        submarine: bool,
+    ) -> Fact<bool> {
+        if let Some(reason) = &rule.unsupported {
+            return Err(format!("adjacency rule {}: {reason}", rule.name));
+        }
+        let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
+        let mover = Mover { graph, world: self };
+        Ok(rule.permits(
+            mover.verdict(rule, self.slot(raw_owner)?)?,
+            if submarine {
+                installed_content::adjacency_rules::SUBMARINE
+            } else {
+                installed_content::adjacency_rules::NAVY
+            },
+        ))
+    }
+
     pub fn invasion_seas(&self, source: u32, target: u32) -> Fact<Option<(u32, u32)>> {
         let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
         let mover = Mover { graph, world: self };

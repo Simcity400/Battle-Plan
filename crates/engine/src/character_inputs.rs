@@ -603,18 +603,22 @@ fn copy_pointers(
     array: Array,
     output: &mut [usize],
 ) -> Result<(), &'static str> {
-    let mut bytes = [0_u8; PAGE * 8];
-    let bytes = &mut bytes[..output.len() * 8];
-    if !read_slice(memory, array.data, bytes) {
-        return Err("character roster pointers unreadable");
-    }
-    for (pointer, bytes) in output.iter_mut().zip(bytes.chunks_exact(8)) {
-        *pointer = usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-            .ok_or("character roster pointer unreadable or null")?;
-    }
-    Ok(())
+    let source = array
+        .slice(0, output.len() as u32, 8)
+        .map_err(|_| "character roster pointers unreadable")?;
+    // Validate in element order: an earlier null wins over a later unreadable pointer.
+    crate::cpdx_array::pointers(
+        memory,
+        source,
+        "character roster pointers unreadable",
+        |index, pointer| {
+            if pointer == 0 {
+                return Err("character roster pointer unreadable or null");
+            }
+            output[index as usize] = pointer;
+            Ok(())
+        },
+    )
 }
 
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {

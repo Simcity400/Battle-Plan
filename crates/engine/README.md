@@ -77,4 +77,9 @@ The hourly research modifier reader follows only assigned technology links from 
 
 The scripted-localisation readers preserve `CCharacter` gender, the country manpower residual, each state's available manpower, the intelligence agency's stored name and created byte, and each country's retained old name, adjective and definite name. Agency names use validated native string lengths and an externally sized arena; a capacity shortage omits whole rows with exact demand, and a bad header or terminator refuses the table. The old names are bounded strings in the appearance row: an unreadable or longer one leaves only that country's old names absent. Native getter and save-writer evidence is beside the field declarations.
 
+The [naval mission input reader](src/naval_mission_inputs.rs) reads the native strike/invasion range and convoy-efficiency chain, authenticated embedded missions, stored navy ledger headers and supply-hub lists, and raw country/fleet-leader/HQ accumulators. Native reader/writer addresses stay beside the fields; the build-fixed modifier registrations are in [modifier_keys.rs](src/modifier_keys.rs).
+
+[fixed5.rs](src/fixed5.rs) owns the native logarithm, exponential and power series
+(1424DAA00, 1424DA930, 1424DAB50), shared by movement and naval mission derivation.
+
 [cproduction_status.rs](src/cproduction_status.rs) reads every canonical country's three stored factory group-head counts with independent authentication and failure handling. The unified evaluator uses them for `num_of_controlled_factories`; the fixed5 production totals are different values.

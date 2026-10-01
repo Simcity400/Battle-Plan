@@ -2005,18 +2005,25 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     launch_store,
                 )
             ));
-            // The stability family's store travels with the Slow job. A missing
-            // store only drops the fingerprint's early reads for this hour.
-            // SAFETY: only this callback takes and returns the store.
-            let stability_store =
-                unsafe { &mut *shared.slice_fingerprints[crate::slicing::STABILITY].get() }.take();
+            // The stability and naval mission families' stores travel with the
+            // Slow job. A missing store only drops that family's early reads
+            // for this hour.
+            // SAFETY: only this callback takes and returns the stores.
+            let slow_stores = unsafe {
+                crate::extended::SlowStores {
+                    stability: (*shared.slice_fingerprints[crate::slicing::STABILITY].get()).take(),
+                    naval_missions: (*shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS]
+                        .get())
+                    .take(),
+                }
+            };
             let slow_pending = queue!(acquisition::Job::Slow(frame.extended.take_slow_request(
                 &country_snapshot,
                 shared.base,
                 state,
                 clock.hour,
                 force_full,
-                stability_store
+                slow_stores
             )));
             let mut air_relations_pending: [Option<PendingAcquisition>; AIR_RELATION_PARTS] =
                 [const { None }; AIR_RELATION_PARTS];
@@ -2741,15 +2748,18 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 .extended
                 .restore_ordinary_request(ordinary_request, ordinary_failure);
             let (slow_request, _, slow_failure) = completed!(slow_pending, Slow);
-            if let Some(store) = frame
+            let stores = frame
                 .extended
-                .restore_slow_request(slow_request, slow_failure.is_none())
-            {
-                // SAFETY: only this callback takes and returns the store.
-                unsafe {
-                    *shared.slice_fingerprints[crate::slicing::STABILITY].get() = Some(store)
-                };
-            }
+                .restore_slow_request(slow_request, slow_failure.is_none());
+            // SAFETY: only this callback takes and returns the stores.
+            unsafe {
+                if let Some(store) = stores.stability {
+                    *shared.slice_fingerprints[crate::slicing::STABILITY].get() = Some(store);
+                }
+                if let Some(store) = stores.naval_missions {
+                    *shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS].get() = Some(store);
+                }
+            };
             // Only a completed Slow job's hour is counted; the game thread
             // never waits for the status thread's copy.
             let failures = frame.extended.template_model_failures();
