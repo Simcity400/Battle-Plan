@@ -14,6 +14,9 @@
 //! through the reference registry. The roster's pointers are copied in pages
 //! and each page's identities and role fields in one guarded gather; the maps,
 //! roles and trait arrays are read as the role walks read them.
+//!
+//! Synthetic fixtures cover the role-trait and unit-leader input walks; live
+//! capture and fresh-save agreement remain unverified.
 
 use crate::{
     Memory, cadvisor,

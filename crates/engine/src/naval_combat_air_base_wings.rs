@@ -5,6 +5,8 @@
 //! twice to the dense vector, so neither containers nor wing handles are
 //! deduplicated here. The caller supplies only bases referenced by captured
 //! naval combats; this is not a census of every base in the game.
+//! The referenced bases are gathered once, in first-reference order, through
+//! `UniqueHandles`.
 
 use crate::{
     Memory, cair_base, cair_wing, cair_wing_pool, ccountry_air_container, cpdx_array::Array,

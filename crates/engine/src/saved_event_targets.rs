@@ -10,6 +10,17 @@
 //! 1401F2A20 emits one saved_event_target per record through 14052F780.
 //! Name IDs are case-sensitive interned strings (FNV-1a, 140F43E10), not
 //! lexer tokens. The reverse string vector is used by 14052BE50/14052F780.
+//!
+//! The reader keeps the registry's native order and resolves each name through
+//! the reverse name vector. It records the stored selectors and character ID,
+//! all nine object-reference liveness bits with region/combatant presence, the
+//! omission of an intern-ID-0 name from saves, and GetUnitLeader's result.
+//! UnitLeaders does not cover its fallback reference. A null leader identity
+//! refuses only that row's leader consumer. A nonempty registry whose native
+//! 16-bit name IDs have wrapped is unavailable by name: the reverse vector
+//! cannot reconstruct name aliases. An empty registry remains complete.
+//! Synthetic memory covers strings, ID wrapping, invalid reads and exact
+//! capacity demand; live capture is unverified.
 use crate::{Memory, cpdx_array::Array, creference_registry, read, read_slice, walk::Outcome};
 
 /// CGameState's saved-global CPdxArray (1401DB7B0, 1401ECF60).
