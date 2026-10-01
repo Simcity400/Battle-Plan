@@ -210,7 +210,7 @@ pub(crate) enum Tested {
 }
 
 /// Advances one side's flag by one sampled hour. `evaluate(lists, when)` is
-/// [`test`] of the side's `lists` under this hour's links and relations
+/// `test` of the side's `lists` under this hour's links and relations
 /// (`when` 0) or the previous sample's (1). As the game refreshes the byte only on its
 /// refresh events (1413CEBE0) and a side keeps it otherwise, only the
 /// candidates the refresh allows are evaluated, and a held side none.

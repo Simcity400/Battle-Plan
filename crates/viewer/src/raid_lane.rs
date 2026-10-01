@@ -87,7 +87,7 @@ impl State {
 
     /// What the window shows this frame. New content or a branch the lane
     /// does not hold starts the cycle again; every other reset is the
-    /// window's presentation reset ([`RaidLane::reset`]).
+    /// window's presentation reset (`RaidLane::reset`).
     fn view(
         &mut self,
         new_content: bool,

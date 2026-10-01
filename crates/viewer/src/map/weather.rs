@@ -90,7 +90,7 @@ pub fn grid_size(width: u32, height: u32) -> [u32; 2] {
     [width / SNOW_MUD_BLOCK, height / SNOW_MUD_BLOCK]
 }
 
-/// Every table [`grid`] reads; the window keeps a grid while the hours share
+/// Every table `grid` reads; the window keeps a grid while the hours share
 /// them (`crate::map::memo`).
 pub const TABLES: &[TableId] = &[TableId::WeatherProvinces];
 
@@ -166,7 +166,7 @@ fn grid_with(
 /// Which provinces each grid cell's sixteen pixels read, so an hour's grid
 /// costs one pass over the cells rather than over every pixel.
 ///
-/// A cell's sum is the same integer [`rasterise`] adds pixel by pixel: every
+/// A cell's sum is the same integer `rasterise` adds pixel by pixel: every
 /// `perm_snow` pixel counts 255 snow, every other pixel its province's snow
 /// byte, and every pixel its province's mud byte.
 pub struct SnowCells {
@@ -242,7 +242,7 @@ impl SnowCells {
         })
     }
 
-    /// [`rasterise`]'s cells for these per-province bytes.
+    /// `rasterise`'s cells for these per-province bytes.
     fn average(&self, bytes: &[[u8; 2]]) -> (u32, u32, Vec<u8>) {
         let area = SNOW_MUD_BLOCK * SNOW_MUD_BLOCK;
         let mut cells = vec![0u8; self.perm.len() * 2];

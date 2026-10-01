@@ -533,7 +533,7 @@ pub struct Viewer {
         crate::document::OverlayTables,
     )>,
     /// Which country the counters are drawn for; the header's own control sets
-    /// it and [`Document::perspective`] is kept in step with it.
+    /// it and `Document::perspective` is kept in step with it.
     perspective: map::perspective::Choice,
     /// The viewing-country chooser's tag filter.
     country_filter: String,

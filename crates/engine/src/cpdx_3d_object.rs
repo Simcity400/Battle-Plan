@@ -5,7 +5,7 @@
 pub const VTABLE_RVA: usize = 0x02b2_9ba0;
 /// CPdx3DObject constructor, func_1422c2410.decompile.c:7-11 identifies the class.
 pub const CONSTRUCTOR_RVA: usize = 0x022c_2410;
-/// CPdx3DObject transform f32[16], func_1422c2410.decompile.c:12-29 identity-initializes the block; world resolution is not implied.
+/// CPdx3DObject transform `f32[16]`, func_1422c2410.decompile.c:12-29 identity-initializes the block; world resolution is not implied.
 pub const TRANSFORM: usize = 0x10;
 /// CPdx3DObject descriptor pointer from the constructor's second argument, func_1422c2410.decompile.c:22; particle traversal reads it in a729_hook.rs:6339.
 pub const DESCRIPTOR: usize = 0x58;

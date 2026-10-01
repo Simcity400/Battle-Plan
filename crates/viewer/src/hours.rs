@@ -758,7 +758,7 @@ const FRAME_CACHE: usize = 96;
 /// own row sizes ([`replay::rows::TableRows::allocated_bytes`]), without the
 /// strings and lists a row owns on the heap. The cache keeps at most
 /// [`FRAME_CACHE`] hours and, past this budget, only the hours the current
-/// want still reaches ([`FrameCache::evict`]).
+/// want still reaches (`FrameCache::evict`).
 const FRAME_CACHE_BYTES: u64 = 2 << 30;
 
 /// A decoded table's row allocation in bytes.

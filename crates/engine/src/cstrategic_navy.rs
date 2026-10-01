@@ -15,7 +15,7 @@ pub const SECONDARY_VTABLE_RVA: usize = 0x0295_c670;
 pub const SECONDARY: usize = 8;
 /// CStrategicNavy owner raw country tag; 140E88190 stores +10, E90910 resolves it.
 pub const OWNER: usize = 0x10;
-/// CStrategicNavy CPdxArray<i64>; 140E88190 constructs +C8, E90CD0 indexes by region id.
+/// CStrategicNavy `CPdxArray<i64>`; 140E88190 constructs +C8, E90CD0 indexes by region id.
 pub const REGIONAL_OPERANDS: usize = 0xc8;
 
 fn with_identity<T>(

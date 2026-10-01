@@ -695,7 +695,7 @@ impl PoliticalGpu {
         self.layer_with(device, layer, None)
     }
 
-    /// Like [`Self::new_layer`], dispatching through `scratch` when given.
+    /// Like `Self::new_layer`, dispatching through `scratch` when given.
     fn layer_with(
         &self,
         device: &wgpu::Device,

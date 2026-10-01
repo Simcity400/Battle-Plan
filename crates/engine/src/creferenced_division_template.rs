@@ -934,7 +934,7 @@ pub fn walk(
 /// is read live and the slots grow.
 /// Each roster batch is gathered in two spans a template (identity and one
 /// contiguous span through the model entity), the grouped entries in one more,
-/// and definitions resolve through [`Definitions`].
+/// and definitions resolve through `Definitions`.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_icons(
     memory: &impl Memory,

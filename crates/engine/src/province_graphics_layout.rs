@@ -31,7 +31,7 @@ pub const LOCATOR_FLOAT_A: usize = 0x13ac;
 pub const LOCATOR_FLOAT_B: usize = 0x1448;
 /// CProvinceGraphics locator float-array element width, func_14127a390.decompile.c:68-69 multiplies each slot by four.
 pub const LOCATOR_FLOAT_STRIDE: usize = 4;
-/// CProvinceGraphics special slot position f32[3], func_14127a390.decompile.c:45-46 fills +0x13a0..+0x13ab.
+/// CProvinceGraphics special slot position `f32[3]`, func_14127a390.decompile.c:45-46 fills +0x13a0..+0x13ab.
 pub const SPECIAL_STACK_POSITION: usize = 0x13a0;
 /// CProvinceGraphics special slot float A, func_14127a390.decompile.c:47 copies record+0x0c.
 pub const SPECIAL_LOCATOR_FLOAT_A: usize = 0x1444;

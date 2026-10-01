@@ -106,7 +106,7 @@ pub struct Capture {
     pub outcome: Outcome,
     pub required_rows: usize,
     pub required_unlocks: usize,
-    /// Database table slots ([`registry_slots`] of the entries including the
+    /// Database table slots (`registry_slots` of the entries including the
     /// null entry at index 0).
     pub required_registry: usize,
     /// Bytes of the database entries or the longest country list.

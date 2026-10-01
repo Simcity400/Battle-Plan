@@ -13,5 +13,5 @@ pub const DEFAULT_BLEND_STATE: usize = 0x58;
 pub const DEFAULT_DEPTH_STENCIL_STATE: usize = 0x60;
 /// Default rasterizer wrapper pointer; FUN1423FF310:296-297 stores the raster lowerer's result at +68, read through context+280 by FUN142400330.
 pub const DEFAULT_RASTERIZER_STATE: usize = 0x68;
-/// D3D device pointer; FUN1423FF310 uses puVar6[14] for device calls and FUN1423FD2F0/FUN1423FD550 receive that same backend for state lowering.
+/// D3D device pointer; FUN1423FF310 uses `puVar6[14]` for device calls and FUN1423FD2F0/FUN1423FD550 receive that same backend for state lowering.
 pub const DEVICE: usize = 0x70;
