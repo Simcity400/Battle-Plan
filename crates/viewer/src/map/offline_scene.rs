@@ -168,7 +168,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
             &device,
             &queue,
             &tree_assets,
-            trees::geometry(&tree_assets),
+            trees::geometry(&tree_assets)?,
             &tree_field,
         )?;
         scene.set_map_frame(&device, &queue, &frame_assets)?;

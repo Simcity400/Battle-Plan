@@ -5,43 +5,63 @@ use installed_content::pdxshader::{
     Address,
     program::{Filter, Sampler, Stage},
 };
-use shader_pipeline::{ScalarKind, VertexInput, binding, gpu};
+use shader_pipeline::{
+    ScalarKind, VertexInput, binding, gpu,
+    vertices::{NativeBuffer, pack_native},
+};
 use std::{collections::BTreeMap, io};
 
 /// Imported geometry stays in mesh space; actor transforms belong to b1/b2.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Geometry {
+    /// 142250C70's compact native allocation.
     pub vertices: Vec<f32>,
     pub skin: Vec<SkinVertex>,
     pub indices: Vec<u32>,
     pub uv1: bool,
+    pub stride: u64,
 }
 
 impl Geometry {
     pub fn from_mesh(sub: &installed_content::mesh::SubMesh, scale: f32) -> io::Result<Self> {
-        if !sub.is_drawable() {
-            return Err(io::Error::other(
-                "native mesh requires incomplete-stream input assembly",
-            ));
+        let count = sub.vertex_count();
+        if count == 0 {
+            return Err(io::Error::other("native mesh has no positions (14224EDD0)"));
         }
-        let uv1 = sub.uv1.as_ref().filter(|v| v.len() == sub.vertex_count());
-        let mut vertices =
-            Vec::with_capacity(sub.vertex_count() * if uv1.is_some() { 14 } else { 12 });
+        // 142250C70 packs correctly sized p,n,ta,u0,u1,u2,u3 without holes.
+        let normals = (sub.normals.len() == count).then_some(&sub.normals);
+        let tangents = (sub.tangents.len() == count).then_some(&sub.tangents);
+        let uv0 = (sub.uv0.len() == count).then_some(&sub.uv0);
+        let coordinates = [&sub.uv1, &sub.uv2, &sub.uv3]
+            .map(|values| values.as_ref().filter(|v| v.len() == count));
+        let width = 3
+            + usize::from(normals.is_some()) * 3
+            + usize::from(tangents.is_some()) * 4
+            + usize::from(uv0.is_some()) * 2
+            + coordinates.iter().filter(|v| v.is_some()).count() * 2;
+        let mut vertices = Vec::with_capacity(count * width);
+        // 142250C70 writes bit pattern 0x3C23D70A for both repairs, including -0.
         let direction = |mut v: [f32; 3]| {
             if v == [0.; 3] {
                 v[1] = 0.01;
             }
             v
         };
-        for i in 0..sub.vertex_count() {
+        for i in 0..count {
             vertices.extend(sub.positions[i].map(|v| v * scale));
-            vertices.extend(direction(sub.normals[i]));
-            let [x, y, z, w] = sub.tangents[i];
-            vertices.extend(direction([x, y, z]));
-            vertices.push(if w == 0. { 0.01 } else { w });
-            vertices.extend(sub.uv0[i]);
-            if let Some(uv1) = uv1 {
-                vertices.extend(uv1[i]);
+            if let Some(normals) = normals {
+                vertices.extend(direction(normals[i]));
+            }
+            if let Some(tangents) = tangents {
+                let [x, y, z, w] = tangents[i];
+                vertices.extend(direction([x, y, z]));
+                vertices.push(if w == 0. { 0.01 } else { w });
+            }
+            if let Some(uv0) = uv0 {
+                vertices.extend(uv0[i]);
+            }
+            for values in coordinates.iter().flatten() {
+                vertices.extend(values[i]);
             }
         }
         let skin = sub.skin.as_ref().map_or_else(Vec::new, |skin| {
@@ -55,8 +75,32 @@ impl Geometry {
             vertices,
             skin,
             indices: sub.indices.clone(),
-            uv1: uv1.is_some(),
+            // 14224EDD0 clears the UV1 bit only when u1 is absent, not wrong-sized.
+            uv1: sub.uv1.is_some(),
+            stride: (width * 4) as u64,
         })
+    }
+
+    /// 14224BB00's fixed fetches; 141261100 always includes UV1 for trees.
+    pub fn packed(&self, uv1: bool) -> io::Result<Vec<f32>> {
+        let bytes = bytemuck::cast_slice(&self.vertices);
+        let known = 0..bytes.len() as u64;
+        let buffers = BTreeMap::from([(
+            0,
+            Some(NativeBuffer {
+                bytes,
+                size: known.end,
+                offset: 0,
+                known: std::slice::from_ref(&known),
+            }),
+        )]);
+        let count = u32::try_from(bytes.len() as u64 / self.stride).map_err(io::Error::other)?;
+        let packed = pack_native(&[declaration(uv1, self.stride)], &buffers, count, 1)
+            .map_err(io::Error::other)?;
+        Ok(packed.bytes[0]
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect())
     }
 }
 
@@ -165,7 +209,22 @@ impl SkinVertex {
     }
 }
 
-/// Declaration14224BB00. Stream strides describe the uploaded records, not reflection size.
+// 14224BB00; 141261100 uses the same fields with unconditional UV1.
+const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2
+];
+const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+    wgpu::vertex_attr_array![5 => Uint8x4, 6 => Float32x3];
+
+fn declaration(uv1: bool, stride: u64) -> gpu::VertexLayout {
+    gpu::VertexLayout {
+        stride,
+        step: wgpu::VertexStepMode::Vertex,
+        attributes: MESH_ATTRIBUTES[..if uv1 { 5 } else { 4 }].to_vec(),
+    }
+}
+
+/// 14224BB00; omitted UV1/skin inputs fail CreateInputLayout (HRESULT ignored at1423FC6D1).
 pub fn vertex_layouts(
     inputs: &[VertexInput],
     uv1: bool,
@@ -184,31 +243,33 @@ pub fn vertex_layouts(
         });
     }
     for input in inputs {
-        let (stream, offset, format, kind, width) = match input.semantic.as_str() {
-            "POSITION" | "POSITION0" => (0, 0, wgpu::VertexFormat::Float32x3, ScalarKind::Float, 3),
-            "TEXCOORD" | "TEXCOORD0" => {
-                (0, 12, wgpu::VertexFormat::Float32x3, ScalarKind::Float, 3)
-            }
-            "TEXCOORD1" => (0, 24, wgpu::VertexFormat::Float32x4, ScalarKind::Float, 4),
-            "TEXCOORD2" => (0, 40, wgpu::VertexFormat::Float32x2, ScalarKind::Float, 2),
-            "TEXCOORD3" if uv1 => (0, 48, wgpu::VertexFormat::Float32x2, ScalarKind::Float, 2),
-            "TEXCOORD4" if skinned => (1, 0, wgpu::VertexFormat::Uint8x4, ScalarKind::Uint, 4),
-            "TEXCOORD5" if skinned => (1, 4, wgpu::VertexFormat::Float32x3, ScalarKind::Float, 3),
+        let (stream, attribute) = match input.semantic.as_str() {
+            "POSITION" | "POSITION0" => (0, MESH_ATTRIBUTES[0]),
+            "TEXCOORD" | "TEXCOORD0" => (0, MESH_ATTRIBUTES[1]),
+            "TEXCOORD1" => (0, MESH_ATTRIBUTES[2]),
+            "TEXCOORD2" => (0, MESH_ATTRIBUTES[3]),
+            "TEXCOORD3" if uv1 => (0, MESH_ATTRIBUTES[4]),
+            "TEXCOORD4" if skinned => (1, SKIN_ATTRIBUTES[0]),
+            "TEXCOORD5" if skinned => (1, SKIN_ATTRIBUTES[1]),
             _ => {
                 return Err(io::Error::other(format!(
                     "native mesh declaration cannot supply {input:?}"
                 )));
             }
         };
-        if input.kind != kind || input.components > width {
+        let (kind, width) = if attribute.format == wgpu::VertexFormat::Uint8x4 {
+            (ScalarKind::Uint, 4)
+        } else {
+            (ScalarKind::Float, attribute.format.size() / 4)
+        };
+        if input.kind != kind || u64::from(input.components) > width {
             return Err(io::Error::other(format!(
                 "native mesh declaration cannot supply {input:?}"
             )));
         }
         layouts[stream].attributes.push(wgpu::VertexAttribute {
-            format,
-            offset,
             shader_location: input.location,
+            ..attribute
         });
     }
     Ok(layouts)
@@ -253,6 +314,73 @@ pub fn map_samplers() -> BTreeMap<u32, Sampler> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn triangle() -> installed_content::mesh::SubMesh {
+        installed_content::mesh::SubMesh {
+            positions: vec![[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]],
+            normals: vec![[10., 11., 12.]; 3],
+            tangents: vec![[20., 21., 22., 23.]; 3],
+            uv0: vec![[30., 31.]; 3],
+            indices: vec![0, 1, 2],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn absent_and_wrong_sized_streams_are_omitted_from_the_stride() {
+        for count in [0, 1] {
+            let mut sub = triangle();
+            sub.normals.truncate(count);
+            sub.tangents.truncate(count);
+            sub.uv0.truncate(count);
+            let geometry = Geometry::from_mesh(&sub, 1.).unwrap();
+            assert_eq!(geometry.stride, 12);
+            assert_eq!(geometry.vertices, sub.positions.concat());
+        }
+    }
+
+    #[test]
+    fn fixed_fetches_alias_next_records_and_zero_whole_elements_past_the_end() {
+        let mut sub = triangle();
+        sub.normals.clear();
+        let geometry = Geometry::from_mesh(&sub, 1.).unwrap();
+        assert_eq!(geometry.stride, 36);
+        let packed = geometry.packed(false).unwrap();
+        assert_eq!(&packed[3..12], &[20., 21., 22., 23., 30., 31., 4., 5., 6.]);
+        assert_eq!(&packed[30..36], &[0.; 6]);
+    }
+
+    #[test]
+    fn absent_uv1_and_skin_omit_their_declaration_elements() {
+        let geometry = Geometry::from_mesh(&triangle(), 1.).unwrap();
+        assert!(!geometry.uv1);
+        assert!(geometry.skin.is_empty());
+        for semantic in ["TEXCOORD3", "TEXCOORD4", "TEXCOORD5"] {
+            let input = VertexInput {
+                semantic: semantic.into(),
+                location: 0,
+                components: 2,
+                kind: ScalarKind::Float,
+            };
+            let error = vertex_layouts(&[input], geometry.uv1, false).unwrap_err();
+            assert!(error.to_string().contains(semantic));
+        }
+        assert_eq!(vertex_layouts(&[], false, false).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn wrong_sized_uv1_keeps_its_declaration_and_fetches_extra_coordinates() {
+        let mut sub = triangle();
+        sub.uv1 = Some(Vec::new());
+        sub.uv2 = Some(vec![[40., 41.]; 3]);
+        sub.uv3 = Some(vec![[50., 51.]; 3]);
+        let geometry = Geometry::from_mesh(&sub, 1.).unwrap();
+        assert!(geometry.uv1);
+        assert_eq!(geometry.stride, 64);
+        assert_eq!(&geometry.vertices[12..16], &[40., 41., 50., 51.]);
+        assert_eq!(&geometry.packed(geometry.uv1).unwrap()[12..14], &[40., 41.]);
+    }
+
     #[test]
     fn imported_geometry_preserves_local_streams_and_native_repairs() {
         let sub = installed_content::mesh::SubMesh {
@@ -279,6 +407,7 @@ mod tests {
         assert_eq!(without_uv1.vertices.len(), 24);
         assert!(!without_uv1.uv1);
     }
+
     #[test]
     fn native_skin_preserves_slots_truncates_indices_and_ignores_fourth_weight() {
         let vertex = SkinVertex::from_authored([-9, 257, 2, -1], [0.7, 0.25, -0.125, 99.]);

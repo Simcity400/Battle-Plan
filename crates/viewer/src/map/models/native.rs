@@ -62,7 +62,13 @@ pub(super) fn descriptor(
             records.push((
                 shape.lod,
                 Part {
-                    geometry: mesh_shader::Geometry::from_mesh(sub, resolved.definition.scale)?,
+                    geometry: mesh_shader::Geometry::from_mesh(sub, resolved.definition.scale)
+                        .map_err(|error| {
+                            invalid(format!(
+                                "{} shape {:?} record {}: {error}",
+                                resolved.definition.file, shape.name, sub.child_index
+                            ))
+                        })?,
                     material: resolved.definition.material(&shape.name, sub),
                     material_index: material_index(&shape.name, sub)?,
                 },
@@ -254,7 +260,7 @@ impl Pending {
             stream.bind_texture(key / 2, stage(key), Some(texture), sampler);
         }
         let resident = &parts[&part];
-        retained.bind_vertex(0, resident.stride, resident.cpu_vertices.clone());
+        retained.bind_vertex(0, resident.native_stride, resident.cpu_vertices.clone());
         if let Some(skin) = self.skin.and_then(|part| parts[&part].cpu_skin.clone()) {
             retained.bind_vertex(1, 16, skin);
         }
@@ -270,6 +276,7 @@ struct Resident {
     /// The lit program's native binds, which later passes retain.
     retained: shader_scene::Program,
     stride: u64,
+    native_stride: u64,
     cpu_vertices: Arc<[u8]>,
     cpu_skin: Option<Arc<[u8]>>,
     /// Pooled geometry: vertex chunk and first vertex, index chunk and first index.
@@ -729,7 +736,7 @@ impl ModelPass {
                                         inputs.samples,
                                     )?
                                 };
-                                let layouts = mesh_shader::vertex_layouts(
+                                let mut layouts = mesh_shader::vertex_layouts(
                                     &selection
                                         .effect
                                         .compiled(selection.index)
@@ -739,9 +746,12 @@ impl ModelPass {
                                     source.geometry.uv1,
                                     !source.geometry.skin.is_empty(),
                                 )?;
+                                // Retained declarations bind 142250C70's compact stride.
+                                layouts[0].stride = source.geometry.stride;
                                 let stride = if source.geometry.uv1 { 56 } else { 48 };
                                 let skin: Option<&[u8]> = (!source.geometry.skin.is_empty())
                                     .then(|| bytemuck::cast_slice(&source.geometry.skin));
+                                let packed = source.geometry.packed(source.geometry.uv1)?;
                                 let vertices = native
                                     .pools
                                     .entry((stride, skin.is_some()))
@@ -750,11 +760,8 @@ impl ModelPass {
                                         arena,
                                         wgpu::BufferUsages::VERTEX,
                                         [stride, 16],
-                                        [
-                                            Some(bytemuck::cast_slice(&source.geometry.vertices)),
-                                            skin,
-                                        ],
-                                        source.geometry.vertices.len() as u64 * 4 / stride,
+                                        [Some(bytemuck::cast_slice(&packed)), skin],
+                                        packed.len() as u64 * 4 / stride,
                                     )?;
                                 let indices = native.indices.place(
                                     arena,
@@ -781,6 +788,7 @@ impl ModelPass {
                                         &effect.depth_stencil(technique),
                                     ),
                                     stride,
+                                    native_stride: source.geometry.stride,
                                     cpu_vertices: bytemuck::cast_slice(&source.geometry.vertices)
                                         .into(),
                                     cpu_skin: (!source.geometry.skin.is_empty()).then(|| {

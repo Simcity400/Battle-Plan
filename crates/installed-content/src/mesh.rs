@@ -588,13 +588,18 @@ pub struct SubMesh {
     /// Ordinal among all shape children, before filtering to `[mesh]` (14224F250).
     pub child_index: usize,
     pub positions: Vec<[f32; 3]>,
+    /// Optional stream lengths may differ from vertex_count; 142250C70 omits mismatches.
     pub normals: Vec<[f32; 3]>,
-    /// `ta`: tangent in `xyz` and the bitangent handedness in `w`.
+    /// `ta`: tangent XYZ and handedness W; optional stream lengths may differ from vertex_count.
     pub tangents: Vec<[f32; 4]>,
+    /// Optional stream lengths may differ from vertex_count.
     pub uv0: Vec<[f32; 2]>,
-    /// `u1`, which the tree shader reads as the tint row and the height jitter.
-    /// Absent on meshes that declare only one texture coordinate set.
+    /// `u1`: tree tint row/height jitter; presence does not guarantee vertex_count entries.
     pub uv1: Option<Vec<[f32; 2]>>,
+    /// Extra packed coordinates; present streams may differ from vertex_count (142250C70).
+    pub uv2: Option<Vec<[f32; 2]>>,
+    /// Extra packed coordinates; present streams may differ from vertex_count (142250C70).
+    pub uv3: Option<Vec<[f32; 2]>>,
     /// `tri`, three indices per triangle, each inside the vertex streams.
     pub indices: Vec<u32>,
     pub bounds: Option<Bounds>,
@@ -610,20 +615,6 @@ impl SubMesh {
 
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
-    }
-
-    /// Whether the sub-mesh carries the streams a lit pass needs.
-    ///
-    /// A shipped `.mesh` can hold collision geometry beside its drawn shapes  -
-    /// `GER_infantry.mesh` carries a `collision_boxShape` of eight positions
-    /// and no normals, tangents or texture coordinates  -  and that geometry is
-    /// not something a shader with a normal map can draw.
-    pub fn is_drawable(&self) -> bool {
-        let vertices = self.vertex_count();
-        vertices > 0
-            && self.normals.len() == vertices
-            && self.tangents.len() == vertices
-            && self.uv0.len() == vertices
     }
 }
 
@@ -1312,32 +1303,15 @@ pub fn read_animation(bytes: &[u8]) -> io::Result<Animation> {
 
 fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {
     let positions = vectors::<3>(shape, node, "p")?.unwrap_or_default();
-    let normals = vectors::<3>(shape, node, "n")?.unwrap_or_default();
-    let tangents = vectors::<4>(shape, node, "ta")?.unwrap_or_default();
-    let uv0 = vectors::<2>(shape, node, "u0")?.unwrap_or_default();
-    let uv1 = vectors::<2>(shape, node, "u1")?;
+    let normals = optional_vectors::<3>(shape, node, "n")?.unwrap_or_default();
+    let tangents = optional_vectors::<4>(shape, node, "ta")?.unwrap_or_default();
+    let uv0 = optional_vectors::<2>(shape, node, "u0")?.unwrap_or_default();
+    let uv1 = optional_vectors::<2>(shape, node, "u1")?;
+    let uv2 = optional_vectors::<2>(shape, node, "u2")?;
+    let uv3 = optional_vectors::<2>(shape, node, "u3")?;
     let vertices = positions.len();
-    // A stream the file does not declare at all is legitimate: shipped meshes
-    // carry collision hulls (`GER_infantry.mesh`'s `collision_boxShape`) that
-    // hold only positions and triangles, and the last LOD of `beech.mesh`
-    // declares no `u1`. A stream that *is* declared has to cover every vertex.
-    let mut disagreeing = Vec::new();
-    for (name, count) in [
-        ("n", normals.len()),
-        ("ta", tangents.len()),
-        ("u0", uv0.len()),
-        ("u1", uv1.as_ref().map_or(vertices, Vec::len)),
-    ] {
-        if count != vertices && count != 0 {
-            disagreeing.push(format!("{name} has {count}"));
-        }
-    }
-    if !disagreeing.is_empty() {
-        return Err(invalid(format!(
-            "the PDX mesh shape \"{shape}\" has {vertices} positions but {}",
-            disagreeing.join(", ")
-        )));
-    }
+    // 142250C70 omits wrong-sized optional streams; retain their presence here
+    // because 14224EDD0 clears declaration bits only for an absent property.
     let raw = node.property("tri").and_then(Value::ints).unwrap_or(&[]);
     if !raw.len().is_multiple_of(3) {
         return Err(invalid(format!(
@@ -1380,6 +1354,8 @@ fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {
         tangents,
         uv0,
         uv1,
+        uv2,
+        uv3,
         indices,
         bounds,
         material,
@@ -1425,6 +1401,23 @@ fn read_skin(shape: &str, node: &Node, vertices: usize) -> io::Result<Skin> {
         joints,
         weights,
     })
+}
+
+/// Keeps optional property presence while omitting ragged vectors.
+fn optional_vectors<const N: usize>(
+    shape: &str,
+    node: &Node,
+    name: &str,
+) -> io::Result<Option<Vec<[f32; N]>>> {
+    // 142250C70 omits ragged streams; 14224EDD0 retains their presence bit.
+    if node
+        .property(name)
+        .and_then(Value::floats)
+        .is_some_and(|values| !values.len().is_multiple_of(N))
+    {
+        return Ok(Some(Vec::new()));
+    }
+    vectors(shape, node, name)
 }
 
 /// Splits one float property into fixed-width vectors.
@@ -3325,7 +3318,9 @@ mod tests {
             })
         );
         assert!(sub.skin.is_none());
-        assert!(sub.is_drawable());
+        assert_eq!(sub.normals.len(), sub.vertex_count());
+        assert_eq!(sub.tangents.len(), sub.vertex_count());
+        assert_eq!(sub.uv0.len(), sub.vertex_count());
         let lods = mesh.lods();
         assert_eq!(lods.len(), 1);
         assert_eq!(lods[0][0].name, "planeShape");
@@ -3440,7 +3435,7 @@ mod tests {
     }
 
     #[test]
-    fn disagreeing_streams_and_out_of_range_triangles_are_named_errors() {
+    fn optional_stream_counts_are_preserved_and_invalid_triangles_are_named() {
         let short = Builder::new()
             .node(1, "object")
             .node(2, "s")
@@ -3450,8 +3445,9 @@ mod tests {
             .floats("ta", &[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0])
             .floats("u0", &[0.0, 0.0, 0.0, 0.0])
             .bytes;
-        let error = read(&short).unwrap_err().to_string();
-        assert!(error.contains("n has 1"), "{error}");
+        let decoded = read(&short).unwrap();
+        assert_eq!(decoded.shapes[0].meshes[0].normals.len(), 1);
+        assert_eq!(decoded.shapes[0].meshes[0].vertex_count(), 2);
 
         // A stream the file omits entirely is a collision hull, not an error.
         let hull = Builder::new()
@@ -3465,7 +3461,8 @@ mod tests {
         let sub = &mesh.shapes[0].meshes[0];
         assert_eq!(sub.vertex_count(), 3);
         assert!(sub.normals.is_empty());
-        assert!(!sub.is_drawable());
+        assert!(sub.tangents.is_empty());
+        assert!(sub.uv0.is_empty());
 
         let ragged = Builder::new()
             .node(1, "object")
@@ -3514,6 +3511,48 @@ mod tests {
                 .contains("not a multiple of three")
         );
         assert!(read(&MAGIC).unwrap_err().to_string().contains("[object]"));
+    }
+
+    #[test]
+    fn extra_uv_streams_and_empty_uv1_keep_their_authored_presence() {
+        let bytes = Builder::new()
+            .node(1, "object")
+            .node(2, "shape")
+            .node(3, "mesh")
+            .floats("p", &[1., 2., 3.])
+            .floats("u1", &[])
+            .floats("u2", &[4., 5.])
+            .floats("u3", &[6., 7.])
+            .bytes;
+        let decoded = read(&bytes).unwrap();
+        let sub = &decoded.shapes[0].meshes[0];
+        assert_eq!(sub.uv1, Some(Vec::new()));
+        assert_eq!(sub.uv2, Some(vec![[4., 5.]]));
+        assert_eq!(sub.uv3, Some(vec![[6., 7.]]));
+    }
+
+    #[test]
+    fn ragged_optional_properties_are_omitted_without_losing_uv1_presence() {
+        let bytes = Builder::new()
+            .node(1, "object")
+            .node(2, "shape")
+            .node(3, "mesh")
+            .floats("p", &[1., 2., 3.])
+            .floats("n", &[4., 5.])
+            .floats("ta", &[6., 7., 8.])
+            .floats("u0", &[9.])
+            .floats("u1", &[10.])
+            .floats("u2", &[11.])
+            .floats("u3", &[12.])
+            .bytes;
+        let decoded = read(&bytes).unwrap();
+        let sub = &decoded.shapes[0].meshes[0];
+        assert!(sub.normals.is_empty());
+        assert!(sub.tangents.is_empty());
+        assert!(sub.uv0.is_empty());
+        assert_eq!(sub.uv1, Some(Vec::new()));
+        assert_eq!(sub.uv2, Some(Vec::new()));
+        assert_eq!(sub.uv3, Some(Vec::new()));
     }
 
     #[test]

@@ -291,6 +291,7 @@ fn mesh_writers(
         sub.uv0.push([0.5, 0.5]);
     }
     let geometry = mesh::Geometry::from_mesh(&sub, 1.)?;
+    let packed = geometry.packed(geometry.uv1)?;
     let mut out = Vec::new();
     for name in ["PdxMeshStandard", "PdxMeshAdvancedSnow"] {
         let selection = effect
@@ -390,7 +391,7 @@ fn mesh_writers(
             .map_err(io::Error::other)?;
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh/name native declaration"),
-            contents: bytemuck::cast_slice(&geometry.vertices),
+            contents: bytemuck::cast_slice(&packed),
             usage: wgpu::BufferUsages::VERTEX,
         });
         out.push(MeshWriter {

@@ -177,7 +177,8 @@ pub(super) fn run(
                         usage: wgpu::BufferUsages::VERTEX,
                     })
                 };
-                let vertex = buffer(bytemuck::cast_slice(&geometry.vertices));
+                let packed = geometry.packed(geometry.uv1)?;
+                let vertex = buffer(bytemuck::cast_slice(&packed));
                 let skin = skinned.then(|| buffer(bytemuck::cast_slice(&geometry.skin)));
                 let texture = |format| {
                     device.create_texture(&wgpu::TextureDescriptor {
