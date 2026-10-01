@@ -741,6 +741,16 @@ pub(crate) fn render_with(
     arena: &gpu::Arena,
     draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
 ) -> Vec<u8> {
+    render_format(device, queue, arena, wgpu::TextureFormat::Rgba8Unorm, draw)
+}
+
+fn render_format(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    arena: &gpu::Arena,
+    format: wgpu::TextureFormat,
+    draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
+) -> Vec<u8> {
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("native effect pixel comparison"),
         size: wgpu::Extent3d {
@@ -751,7 +761,7 @@ pub(crate) fn render_with(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
@@ -808,7 +818,11 @@ pub(crate) fn render_with(
     let bytes = slice.get_mapped_range().unwrap();
     bytes
         .chunks_exact(256)
-        .flat_map(|row| row[..64].iter().copied())
+        .flat_map(|row| {
+            row[..16 * format.block_copy_size(None).unwrap() as usize]
+                .iter()
+                .copied()
+        })
         .collect()
 }
 

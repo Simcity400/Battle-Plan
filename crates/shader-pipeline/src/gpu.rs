@@ -24,10 +24,21 @@ pub struct Pipeline {
     /// Ascending binding order, the order of the constant group's dynamic offsets.
     buffers: Vec<Buffer>,
     textures: Vec<(u32, super::TextureKind)>,
-    /// The texture bindings a paired sampler filters, which a view must be filterable for.
+    /// Texture bindings with a filtering image/sampler pair.
     filtered: Vec<u32>,
+    fallback: Option<Fallback>,
     inputs: Vec<super::VertexInput>,
     groups: Mutex<Groups>,
+}
+
+/// Float formats are known only when views are bound; keep variants by native binding mask.
+struct Fallback {
+    compiled: Compiled,
+    effect: String,
+    technique: Technique,
+    state: State,
+    pass: Pass,
+    variants: Mutex<HashMap<u32, Cached>>,
 }
 
 /// Bind groups by resource identity: constants per arena buffer, textures per view list.
@@ -134,6 +145,7 @@ const BUFFERS: usize = CONSTANT_BINDINGS;
 const TEXTURES: usize = TEXTURE_BINDINGS;
 
 pub struct Bindings {
+    pipeline: wgpu::RenderPipeline,
     groups: [wgpu::BindGroup; 3],
     offsets: [u32; BUFFERS],
     count: usize,
@@ -146,6 +158,10 @@ impl Bindings {
     /// Bind after `previous` of the same pipeline in the same pass, setting only the
     /// groups that differ. Each set merges all of a group's resources into the pass.
     pub fn bind_after(&self, pass: &mut wgpu::RenderPass<'_>, previous: Option<&Self>) {
+        // The bound views may select a shader-filtered variant of the caller's pipeline.
+        if previous.is_none_or(|previous| previous.pipeline != self.pipeline) {
+            pass.set_pipeline(&self.pipeline);
+        }
         let offsets = &self.offsets[..self.count];
         if previous.is_none_or(|previous| {
             previous.groups[0] != self.groups[0] || previous.offsets[..previous.count] != *offsets
@@ -377,7 +393,7 @@ impl Pipeline {
     ) -> Result<Self, String> {
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = Self::create(device, compiled, program, technique, state, pass);
+        let result = Self::create(device, compiled, &program.effect, technique, state, pass, 0);
         let error = pollster::block_on(validation.pop()).or(pollster::block_on(memory.pop()));
         match error {
             Some(error) => Err(error.to_string()),
@@ -389,16 +405,34 @@ impl Pipeline {
                 program.effect, technique.name
             )
         })
+        .map(|mut pipeline| {
+            if !pipeline.filtered.is_empty()
+                && !device
+                    .features()
+                    .contains(wgpu::Features::FLOAT32_FILTERABLE)
+            {
+                pipeline.fallback = Some(Fallback {
+                    compiled: compiled.clone(),
+                    effect: program.effect.clone(),
+                    technique: technique.clone(),
+                    state: state.clone(),
+                    pass: pass.clone(),
+                    variants: Mutex::default(),
+                });
+            }
+            pipeline
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
     fn create(
         device: &wgpu::Device,
         compiled: &Compiled,
-        program: &Program,
+        effect: &str,
         technique: &Technique,
         state: &State,
         pass: &Pass,
+        unfilterable: u32,
     ) -> Result<Self, String> {
         let mut buffers = compiled.vertex.buffers.clone();
         buffers.extend_from_slice(&compiled.pixel.buffers);
@@ -516,7 +550,8 @@ impl Pipeline {
                         visibility: visibility(*binding),
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float {
-                                filterable: filterable(binding),
+                                filterable: filterable(binding)
+                                    && unfilterable & (1 << binding) == 0,
                             },
                             view_dimension: cube.view(),
                             multisampled: false,
@@ -543,7 +578,7 @@ impl Pipeline {
             }),
         ];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(&program.effect),
+            label: Some(effect),
             bind_group_layouts: &[
                 Some(&constants),
                 Some(&textures_layout),
@@ -569,6 +604,7 @@ impl Pipeline {
                     &compiled.vertex.wgsl,
                     &state.samplers,
                     &compiled.vertex.textures,
+                    unfilterable,
                 )?
                 .into(),
             ),
@@ -580,6 +616,7 @@ impl Pipeline {
                     &compiled.pixel.wgsl,
                     &state.samplers,
                     &compiled.pixel.textures,
+                    unfilterable,
                 )?
                 .into(),
             ),
@@ -596,7 +633,7 @@ impl Pipeline {
             })
             .collect();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(&format!("{}:{}", program.effect, technique.name)),
+            label: Some(&format!("{effect}:{}", technique.name)),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &vertex,
@@ -629,6 +666,7 @@ impl Pipeline {
             textures,
             inputs: compiled.vertex.inputs.clone(),
             groups: Mutex::default(),
+            fallback: None,
         })
     }
 
@@ -673,6 +711,48 @@ impl Pipeline {
         constants: impl Fn(u32) -> Option<&'a [u8]>,
         textures: impl Fn(u32) -> Option<&'a wgpu::TextureView>,
     ) -> Result<Bindings, String> {
+        if let Some(fallback) = &self.fallback {
+            let device = arena.device();
+            let mask = self.filtered.iter().fold(0, |mask, binding| {
+                let manual = textures(*binding).is_some_and(|view| {
+                    view.texture()
+                        .format()
+                        .sample_type(None, Some(device.features()))
+                        == Some(wgpu::TextureSampleType::Float { filterable: false })
+                });
+                mask | if manual { 1 << binding } else { 0 }
+            });
+            if mask != 0 {
+                let variant = fallback
+                    .variants
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .entry(mask)
+                    .or_insert_with(|| {
+                        scoped(device, || {
+                            Self::create(
+                                device,
+                                &fallback.compiled,
+                                &fallback.effect,
+                                &fallback.technique,
+                                &fallback.state,
+                                &fallback.pass,
+                                mask,
+                            )
+                        })
+                        .and_then(|result| result)
+                        .map(Arc::new)
+                        .map_err(|reason| {
+                            format!(
+                                "effect {:?}, technique {:?}: {reason}",
+                                fallback.effect, fallback.technique.name
+                            )
+                        })
+                    })
+                    .clone()?;
+                return variant.bind_with(arena, constants, textures);
+            }
+        }
         // Compilation refuses registers past D3D11's, so both lists fit their arrays.
         let mut blocks: [(&[u8], u64); BUFFERS] = [(&[], 0); BUFFERS];
         for (block, buffer) in blocks.iter_mut().zip(&self.buffers) {
@@ -770,29 +850,6 @@ impl Pipeline {
                 group.clone()
             }
             None => {
-                // A float format filters only on a device with FLOAT32_FILTERABLE: a program that
-                // filters one is refused by name there (a viewer hardware requirement), as the
-                // native device filters it.
-                for ((binding, _), view) in self.textures.iter().zip(views.iter().flatten()) {
-                    let format = view.texture().format();
-                    if self.filtered.contains(binding)
-                        && format.sample_type(None, Some(device.features()))
-                            == Some(wgpu::TextureSampleType::Float { filterable: false })
-                    {
-                        return Err(format!(
-                            "native {} texture slot {} is filtered by its paired sampler, and a \
-                             {format:?} texture filters only on a device with \
-                             FLOAT32_FILTERABLE, which this one lacks: a viewer hardware \
-                             requirement, not drawn",
-                            if binding.is_multiple_of(2) {
-                                "vertex"
-                            } else {
-                                "pixel"
-                            },
-                            binding / 2
-                        ));
-                    }
-                }
                 let group = scoped(device, || {
                     device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("native textures"),
@@ -815,6 +872,7 @@ impl Pipeline {
             }
         };
         Ok(Bindings {
+            pipeline: self.pipeline.clone(),
             groups: [constants, textures, self.samplers.clone()],
             offsets,
             count,
@@ -840,7 +898,6 @@ impl Pipeline {
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, draw: &Draw) {
-        pass.set_pipeline(&self.pipeline);
         // 142400090 passes a null BlendFactor pointer, whose D3D11 value is all ones.
         pass.set_blend_constant(wgpu::Color::WHITE);
         draw.bindings.bind(pass);

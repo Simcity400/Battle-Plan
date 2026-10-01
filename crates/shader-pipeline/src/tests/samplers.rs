@@ -147,21 +147,238 @@ Effect Test { VertexShader = V PixelShader = P }
         &state,
     )
     .unwrap();
-    // Float32 linear filtering still needs its real device capability, refused by name.
-    let refusal = filtered
+    filtered
         .bindings(&arena, &BTreeMap::<u32, Vec<u8>>::new(), &textures)
-        .err()
-        .expect("a filtered float32 texture without FLOAT32_FILTERABLE");
-    for part in [
-        "pixel texture slot 0",
-        "Rgba32Float",
-        "FLOAT32_FILTERABLE",
-        "hardware",
+        .unwrap();
+    println!(
+        "PASS point float32: 256 exact pixels without FLOAT32_FILTERABLE; cross-register sampler pairs; linear float32 bindings accepted"
+    );
+}
+
+#[test]
+#[ignore = "requires a shader compiler and GPU"]
+fn linear_float32_matches_bilinear_and_mip_addressing_without_feature() {
+    use installed_content::pdxshader::{Address, program::Filter};
+    let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
+    let compiler = Compiler::discover().unwrap();
+    let (device, queue) = device();
+    assert!(
+        !device
+            .features()
+            .contains(wgpu::Features::FLOAT32_FILTERABLE)
+    );
+    let arena = gpu::Arena::new(&device);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("exact 16-bit channel values"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 3,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let texel = |l: u32, x: i32, y: i32| {
+        [
+            (x as f32 + l as f32 + 1.) / 31.,
+            (y as f32 + 1.) / 63.,
+            (x + y + 3) as f32 / 31.,
+            1.,
+        ]
+    };
+    for level in 0..3 {
+        let n = 4 >> level;
+        let data: Vec<f32> = (0..n * n)
+            .flat_map(|p| texel(level, p % n, p / n))
+            .collect();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                mip_level: level,
+                ..texture.as_image_copy()
+            },
+            bytemuck::cast_slice(&data),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(n as u32 * 16),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: n as u32,
+                height: n as u32,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    let textures = BTreeMap::from([(
+        binding(0, Stage::Pixel),
+        texture.create_view(&Default::default()),
+    )]);
+    let vertices: Vec<[f32; 5]> = [0, 1, 2, 0, 2, 3]
+        .iter()
+        .map(|&i| {
+            [
+                [-1., 1., 1., -1.][i],
+                [1., 1., -1., -1.][i],
+                0.,
+                [-2., 2., 2., -2.][i],
+                [-2., -2., 2., 2.][i],
+            ]
+        })
+        .collect();
+    let address = |mode, i: i32, n: i32| match mode {
+        Address::Wrap => Some(i.rem_euclid(n)),
+        Address::Mirror => {
+            let p = i.rem_euclid(2 * n);
+            Some(if p < n { p } else { 2 * n - p - 1 })
+        }
+        Address::Clamp => Some(i.clamp(0, n - 1)),
+        Address::MirrorOnce => Some((if i < 0 { -i - 1 } else { i }).clamp(0, n - 1)),
+        Address::Border => (0..n).contains(&i).then_some(i),
+    };
+    for (method, args, bias, offset) in [
+        ("Sample", "", 0.375, [0, 0]),
+        ("SampleBias", ", 0.375", 0., [1, -1]),
+        ("SampleLevel", ", 0.375", 0., [0, 0]),
+        (
+            "SampleGrad",
+            ", float2(0.25,0), float2(0,0.25)",
+            0.375,
+            [1, -1],
+        ),
     ] {
-        assert!(refusal.contains(part), "{part}: {refusal}");
+        let texel_offset = if offset == [0, 0] { "" } else { ", int2(1,-1)" };
+        let source = format!(
+            r#"
+VertexStruct I {{
+float3 position : POSITION;
+float2 uv : TEXCOORD0;
+}};
+VertexStruct O {{
+float4 position : SV_POSITION;
+float2 uv : TEXCOORD0;
+}};
+VertexShader = {{ MainCode V [[ O main(I v) {{ O o; o.position=float4(v.position,1); o.uv=v.uv; return o; }} ]] }}
+PixelShader = {{
+Samplers = {{ Map = {{ Index = 0 MagFilter = Linear MinFilter = Linear MipFilter = Linear }} }}
+MainCode P [[ float4 main(O v) : SV_TARGET {{ return Map_Texture.{method}(Map_Sampler, v.uv{args}{texel_offset}); }} ]]
+}}
+Effect Test {{ VertexShader = V PixelShader = P }}
+"#
+        );
+        let program = installed_content::pdxshader::program::read_with(b"float.shader", &|path| {
+            Some(if path == b"float.shader" {
+                source.as_bytes().to_vec()
+            } else {
+                Vec::new()
+            })
+        })
+        .unwrap();
+        let compiled = compiler
+            .compile(&program, &program.techniques[0], &[])
+            .unwrap();
+        for mode in [
+            Address::Wrap,
+            Address::Mirror,
+            Address::Clamp,
+            Address::MirrorOnce,
+            Address::Border,
+        ] {
+            if mode == Address::Border
+                && !device
+                    .features()
+                    .contains(wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER)
+            {
+                println!("SKIP Border: adapter lacks ADDRESS_MODE_CLAMP_TO_BORDER");
+                continue;
+            }
+            for mip in [Filter::Point, Filter::Linear] {
+                let mut state = gpu::State::authored(&program, &program.techniques[0]).unwrap();
+                let sampler = state.samplers.get_mut(&binding(0, Stage::Pixel)).unwrap();
+                sampler.u = mode;
+                sampler.v = mode;
+                sampler.mip = mip;
+                sampler.lod_bias = bias;
+                let pipeline = gpu::Pipeline::with_state(
+                    &device,
+                    &compiled,
+                    &program,
+                    &program.techniques[0],
+                    wgpu::TextureFormat::Rgba32Float,
+                    1,
+                    &state,
+                )
+                .unwrap();
+                let draw = pipeline
+                    .prepare(
+                        &arena,
+                        &BTreeMap::<u32, Vec<u8>>::new(),
+                        &textures,
+                        &vertices::Vertices {
+                            declaration: vertices::Declaration::Sprite,
+                            bytes: bytemuck::cast_slice(&vertices),
+                            stride: 20,
+                            count: 6,
+                        },
+                    )
+                    .unwrap();
+                let bytes = render_format(
+                    &device,
+                    &queue,
+                    &arena,
+                    wgpu::TextureFormat::Rgba32Float,
+                    |pass| pipeline.draw(pass, &draw),
+                );
+                for (p, pixel) in bytes.chunks_exact(16).enumerate() {
+                    let u = -2. + 4. * ((p % 16) as f32 + 0.5) / 16.;
+                    let v = -2. + 4. * ((p / 16) as f32 + 0.5) / 16.;
+                    let bilinear = |l: u32| {
+                        let n = 4 >> l;
+                        let q = [
+                            u * n as f32 + offset[0] as f32 - 0.5,
+                            v * n as f32 + offset[1] as f32 - 0.5,
+                        ];
+                        let base = q.map(|a| a.floor() as i32);
+                        let f = q.map(|a| a - a.floor());
+                        let mut out = [0.; 4];
+                        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                            if let (Some(x), Some(y)) = (
+                                address(mode, base[0] + dx, n),
+                                address(mode, base[1] + dy, n),
+                            ) {
+                                let weight = (if dx == 0 { 1. - f[0] } else { f[0] })
+                                    * (if dy == 0 { 1. - f[1] } else { f[1] });
+                                for (c, value) in texel(l, x, y).iter().enumerate() {
+                                    out[c] += value * weight;
+                                }
+                            }
+                        }
+                        out
+                    };
+                    let low = bilinear(0);
+                    let high = bilinear(1);
+                    for c in 0..4 {
+                        let expected = if mip == Filter::Linear {
+                            low[c] * 0.625 + high[c] * 0.375
+                        } else {
+                            low[c]
+                        };
+                        let actual =
+                            f32::from_le_bytes(pixel[c * 4..c * 4 + 4].try_into().unwrap());
+                        assert!(
+                            (actual - expected).abs() < 1e-6,
+                            "{method} {mode:?} {mip:?} pixel {p} channel {c}: {actual} != {expected}"
+                        );
+                    }
+                }
+            }
+        }
     }
     println!(
-        "PASS point float32: 256 exact pixels without FLOAT32_FILTERABLE; cross-register sampler pairs; linear float32 refusal preserved"
+        "PASS shader-filtered float32: bilinear/mips and address edges, full-precision readback"
     );
 }
 

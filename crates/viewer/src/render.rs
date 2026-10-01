@@ -221,28 +221,9 @@ pub fn choose_adapter(
         })
 }
 
-/// The features of the device the viewer creates ([`device_descriptor`] records them), which
-/// decide whether a 16-bit GUI texture uploads (`map::textures::sixteen_bit_upload`).
-static DEVICE_FEATURES: std::sync::Mutex<Option<wgpu::Features>> = std::sync::Mutex::new(None);
-
-fn record_device_features(features: wgpu::Features) {
-    *DEVICE_FEATURES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(features);
-}
-
-/// The features of the device the GUI textures go up to: the ones [`device_descriptor`] asked
-/// for, or none while no device has been asked for (no 16-bit GUI texture is then taken).
-pub fn device_features() -> wgpu::Features {
-    DEVICE_FEATURES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .unwrap_or(wgpu::Features::empty())
-}
-
 /// Asks, before a headless dump loads its document, for the device descriptor of the adapter
-/// the dump will render on ([`dump_png`] selects it the same way), so the GUI textures loaded
-/// with the document are decided for that device's features ([`device_features`]).
+/// the dump will render on ([`dump_png`] selects it the same way), checking adapter support
+/// before loading the document.
 pub fn probe_dump_device() -> io::Result<()> {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -281,16 +262,6 @@ pub fn select_adapter(
 /// diagnostics (the App's warnings, the details output and the headless dump's).
 pub fn device_requirements(features: wgpu::Features) -> Vec<String> {
     let mut missing = Vec::new();
-    if !features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
-        missing.push(
-            "the adapter lacks FLOAT32_FILTERABLE: 16-bit (B5G6R5/B5G5R5A1) GUI textures, which \
-             the game samples as UNORM, need f32 filtering to draw exactly, the map's shadow \
-             receivers filter its R32Float shadow buffer, and compiled effects whose samplers \
-             filter another float32 texture need it too; none of them is drawn on this device \
-             (a viewer hardware requirement, not missing replay data)"
-                .to_owned(),
-        );
-    }
     // The compiled GUI and map effects' own states (`shader_pipeline::gpu`): a program the
     // device cannot build is refused by name where it is drawn.
     if !features.contains(wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER) {
@@ -346,14 +317,8 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     };
     // Atlases built on the CPU page to this side ([`crate::map::atlas_pages`]).
     crate::map::atlas_pages::record_device_limit(limits.max_texture_dimension_2d);
-    // FLOAT32_FILTERABLE when the adapter offers it: a 16-bit GUI texture goes up as exact
-    // `f32` channels, which the filtering samplers take only with it (`map::textures`); without
-    // it such a texture is not drawn, never quantized. The map's shadow receivers filter the
-    // R32Float shadow buffer (`map::shadow`); the RGBA32F point-light table needs no filtering,
-    // as the game point samples it (`map::pointlights`). Clamp-to-border and dual-source blending
-    // when offered: compiled effects that author them are refused without them. Each missing
-    // one is a viewer hardware requirement, named here once at start-up and in the diagnostics
-    // ([`device_requirements`]).
+    // Float32 filtering uses hardware when available, otherwise shader-pipeline lowers it.
+    // Clamp-to-border and dual-source blending remain optional device requirements.
     static NAMED: std::sync::Once = std::sync::Once::new();
     NAMED.call_once(|| {
         for requirement in device_requirements(adapter.features()) {
@@ -370,7 +335,6 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
         wanted |= crate::map::gpu_passes::features();
     }
     let features = adapter.features() & wanted;
-    record_device_features(features);
     let sample_mask = [1, 2, 4, 8]
         .into_iter()
         .filter(|&count| {
@@ -962,29 +926,6 @@ mod tests {
     use super::*;
     use wgpu::{Backend, DeviceType};
 
-    /// A device without `FLOAT32_FILTERABLE` is named, with what it costs, as a viewer hardware
-    /// requirement: the line start-up logs and the diagnostics carry. A device with it and the
-    /// compiled effects' optional states has none.
-    #[test]
-    fn a_missing_float32_filtering_feature_is_named_as_a_device_requirement() {
-        let all = wgpu::Features::FLOAT32_FILTERABLE
-            | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
-            | wgpu::Features::DUAL_SOURCE_BLENDING;
-        assert!(device_requirements(all).is_empty());
-        let named = device_requirements(all - wgpu::Features::FLOAT32_FILTERABLE);
-        assert_eq!(named.len(), 1);
-        for part in [
-            "FLOAT32_FILTERABLE",
-            "B5G6R5/B5G5R5A1",
-            "shadow receivers",
-            "float32 texture",
-            "none of them is drawn",
-            "hardware requirement",
-        ] {
-            assert!(named[0].contains(part), "{part}: {}", named[0]);
-        }
-    }
-
     /// The compiled effects' optional device states, clamp-to-border sampling and dual-source
     /// blending, are named the same way when the device lacks them: effects that author them
     /// are refused where they are drawn.
@@ -993,6 +934,7 @@ mod tests {
         let all = wgpu::Features::FLOAT32_FILTERABLE
             | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
             | wgpu::Features::DUAL_SOURCE_BLENDING;
+        assert!(device_requirements(all - wgpu::Features::FLOAT32_FILTERABLE).is_empty());
         for (feature, name) in [
             (
                 wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER,
@@ -1004,7 +946,7 @@ mod tests {
             assert_eq!(named.len(), 1, "{named:?}");
             assert!(named[0].contains(name) && named[0].contains("hardware requirement"));
         }
-        assert_eq!(device_requirements(wgpu::Features::empty()).len(), 3);
+        assert_eq!(device_requirements(wgpu::Features::empty()).len(), 2);
     }
 
     fn adapter(name: &str, device_type: DeviceType, backend: Backend) -> AdapterCandidate {
