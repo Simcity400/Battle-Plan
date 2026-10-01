@@ -1,0 +1,364 @@
+use super::{NativeHost, job::Job, line_reader::read_lines};
+use dashboard::protocol::{
+    DashboardMapState, EVENT_PREFIX, NativeCommand, NativeEvent, ViewerState,
+};
+use std::{
+    io::Write,
+    process::{Child, Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Emitter, WebviewWindow};
+
+pub(super) struct Process {
+    child: Child,
+    _job: Job,
+}
+
+impl NativeHost {
+    pub(crate) fn ensure_started(&self, window: &WebviewWindow) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        use tauri::Manager;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+        // Existing viewers need no disk reads. Preference resolution itself reads
+        // host status, so release this lock before it and recheck before spawning.
+        if self
+            .shared
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .process
+            .is_some()
+        {
+            return Ok(());
+        }
+        let display = crate::video::launch_actions(window)?;
+        let saved_diagnostics =
+            crate::video::current_map_diagnostics(&window.state::<crate::video::VideoState>());
+        let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+        // A change saved after the read above has already reached `set_diagnostics`.
+        let diagnostics = inner.diagnostics.unwrap_or(saved_diagnostics);
+        if inner.process.is_some() {
+            return Ok(());
+        }
+        if inner.shutting_down {
+            return Err("The application is closing".into());
+        }
+        let executable = std::env::current_exe()
+            .map_err(|e| e.to_string())?
+            .with_file_name("viewer.exe");
+        if !executable.is_file() {
+            return Err(format!(
+                "Native viewer is missing at {}. Run npm run dev or npm run build:desktop to build both executables.",
+                executable.display()
+            ));
+        }
+        let parent = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
+        let mut child = Command::new(&executable)
+            .args(std::env::args_os().skip(1))
+            .env("BATTLE_PLAN_VIEWER_PARENT", parent.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("Could not start {}: {e}", executable.display()))?;
+        let job = match Job::attach(&child) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        let input = child
+            .stdin
+            .take()
+            .ok_or("Native viewer input pipe is missing")?;
+        let output = child
+            .stdout
+            .take()
+            .ok_or("Native viewer output pipe is missing")?;
+        let errors = child
+            .stderr
+            .take()
+            .ok_or("Native viewer error pipe is missing")?;
+        if inner.generation > 0 {
+            inner.restore_commands();
+        }
+        inner.generation += 1;
+        let generation = inner.generation;
+        inner.status.running = true;
+        inner.status.ready = false;
+        inner.status.error = None;
+        inner.last_diagnostic = None;
+        if inner.active_dashboard {
+            let views = inner.dashboard_views.clone().unwrap_or_default();
+            inner.pending.maps = Some(views);
+        } else {
+            inner.pending.bounds = inner.bounds;
+            inner.pending.visibility = Some(inner.status.visible);
+        }
+        inner.pending.actions.extend(display);
+        inner
+            .pending
+            .actions
+            .push_back(dashboard::protocol::MapAction::Diagnostics {
+                enabled: diagnostics,
+            });
+        inner.process = Some(Process { child, _job: job });
+        drop(inner);
+
+        let writer = self.clone();
+        let writer_app = window.app_handle().clone();
+        thread::spawn(move || writer.write_commands(input, generation, &writer_app));
+        let reader = self.clone();
+        let reader_app = window.app_handle().clone();
+        thread::spawn(move || {
+            read_lines(output, |line| {
+                if let Some(json) = line.strip_prefix(EVENT_PREFIX)
+                    && let Ok(event) = serde_json::from_str::<NativeEvent>(json)
+                {
+                    reader.receive(event, generation, &reader_app);
+                }
+            });
+        });
+        let diagnostics = self.clone();
+        thread::spawn(move || {
+            read_lines(errors, |line| {
+                let mut inner = diagnostics
+                    .shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if inner.generation == generation && !line.trim().is_empty() {
+                    inner.last_diagnostic = Some(line.chars().take(2000).collect());
+                }
+            });
+        });
+        let monitor = self.clone();
+        let monitor_app = window.app_handle().clone();
+        thread::spawn(move || monitor.monitor(generation, &monitor_app));
+        Ok(())
+    }
+
+    fn write_commands(&self, mut input: impl Write, generation: u64, app: &AppHandle) {
+        loop {
+            let commands = {
+                let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                while !inner.pending.can_send(inner.status.visible)
+                    && inner.generation == generation
+                    && inner.process.is_some()
+                {
+                    inner = self.shared.1.wait(inner).unwrap_or_else(|e| e.into_inner());
+                }
+                if inner.generation != generation || inner.process.is_none() {
+                    return;
+                }
+                let visible = inner.status.visible;
+                inner.pending.take_commands(visible)
+            };
+            for command in commands {
+                let close = matches!(command, NativeCommand::Close);
+                let result = serde_json::to_writer(&mut input, &command)
+                    .map_err(std::io::Error::other)
+                    .and_then(|()| input.write_all(b"\n"))
+                    .and_then(|()| input.flush());
+                if let Err(error) = result {
+                    self.receive(
+                        NativeEvent::Error {
+                            message: format!("Native viewer connection closed: {error}"),
+                        },
+                        generation,
+                        app,
+                    );
+                    crate::dashboard_service::disconnected(
+                        app,
+                        "The native data connection closed",
+                    );
+                    return;
+                }
+                if close {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn receive(&self, event: NativeEvent, generation: u64, app: &AppHandle) {
+        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.generation != generation || inner.shutting_down || inner.process.is_none() {
+            return;
+        }
+        match event {
+            NativeEvent::MapDetails { details } => inner.status.map_details = Some(details),
+            NativeEvent::ToggleDiagnostics => {
+                // The shortcut pressed in the native map; the host owns the choice.
+                drop(inner);
+                if let Err(error) = crate::video::change_map_diagnostics(app, None) {
+                    let _ = app.emit("map-diagnostics-error", error);
+                }
+                return;
+            }
+            NativeEvent::Data { response } => {
+                drop(inner);
+                crate::dashboard_service::receive_data(app, response);
+                return;
+            }
+            NativeEvent::MapStates { mut states } => {
+                let Some(requested) = inner.dashboard_views.as_ref() else {
+                    return;
+                };
+                states.retain_mut(|state| {
+                    let Some(view) = requested.iter().find(|view| view.id == state.id) else {
+                        return false;
+                    };
+                    if state
+                        .source_id
+                        .as_ref()
+                        .is_some_and(|id| *id != view.source_id)
+                        || state
+                            .revision
+                            .as_ref()
+                            .is_some_and(|revision| *revision != view.revision)
+                    {
+                        return false;
+                    }
+                    if state.requested_sequence < view.sequence {
+                        state.requested_sequence = view.sequence;
+                        state.loading = true;
+                        state.error = None;
+                    }
+                    true
+                });
+                let _ = app.emit("dashboard-map-state", states);
+                return;
+            }
+            NativeEvent::Ready { .. } => inner.status.ready = true,
+            NativeEvent::State {
+                path,
+                branch,
+                hour,
+                revision,
+                error,
+            } => {
+                if inner.requested_path.as_ref() == path.as_ref()
+                    && inner.requested_revision.as_ref() == revision.as_ref()
+                {
+                    inner.requested_path = None;
+                    inner.requested_revision = None;
+                }
+                inner.status.viewer = ViewerState {
+                    path,
+                    branch,
+                    hour,
+                    revision,
+                };
+                if inner.requested_path.is_none()
+                    && inner
+                        .requested_seek
+                        .as_ref()
+                        .is_some_and(|target| target.matches(&inner.status.viewer))
+                {
+                    inner.requested_seek = None;
+                }
+                inner.status.error = error;
+            }
+            NativeEvent::Error { message } => {
+                inner.last_diagnostic = Some(message.clone());
+                inner.status.error = Some(message);
+            }
+        }
+        // Publish while holding the state lock so reader and exit notifications
+        // reach the frontend in mutation order.
+        let _ = app.emit("viewer-state", inner.status.clone());
+    }
+
+    fn monitor(&self, generation: u64, app: &AppHandle) {
+        loop {
+            thread::sleep(Duration::from_millis(250));
+            {
+                let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                if inner.generation != generation {
+                    return;
+                }
+                let Some(process) = inner.process.as_mut() else {
+                    return;
+                };
+                match process.child.try_wait() {
+                    Ok(None) => continue,
+                    result => {
+                        inner.process = None;
+                        inner.generation += 1;
+                        inner.status.running = false;
+                        inner.status.ready = false;
+                        inner.pending.data.clear();
+                        if !inner.shutting_down {
+                            let reason = match result {
+                                Ok(Some(exit)) => format!("Native viewer exited ({exit})"),
+                                Err(error) => format!("Cannot observe native viewer: {error}"),
+                                Ok(None) => unreachable!(),
+                            };
+                            inner.status.error = Some(match inner.last_diagnostic.as_ref() {
+                                Some(detail) => format!("{reason}: {detail}"),
+                                None => reason,
+                            });
+                        }
+                        let _ = app.emit("viewer-state", inner.status.clone());
+                        if let Some(views) = &inner.dashboard_views {
+                            let states: Vec<_> = views
+                                .iter()
+                                .map(|view| DashboardMapState {
+                                    id: view.id.clone(),
+                                    requested_sequence: view.sequence,
+                                    error: inner.status.error.clone(),
+                                    ..Default::default()
+                                })
+                                .collect();
+                            let _ = app.emit("dashboard-map-state", states);
+                        }
+                    }
+                }
+            };
+            crate::dashboard_service::disconnected(
+                app,
+                "The native data runtime exited. Reopen the recording to restore its sources.",
+            );
+            self.shared.1.notify_all();
+            return;
+        }
+    }
+
+    pub fn shutdown(&self) {
+        {
+            let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            if inner.shutting_down {
+                return;
+            }
+            inner.shutting_down = true;
+            inner.pending.close = true;
+        }
+        self.shared.1.notify_all();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(process) = inner.process.as_mut() else {
+                break;
+            };
+            if process.child.try_wait().ok().flatten().is_some() {
+                inner.process = None;
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = process.child.kill();
+                let _ = process.child.wait();
+                inner.process = None;
+                break;
+            }
+            drop(inner);
+            thread::sleep(Duration::from_millis(20));
+        }
+        self.shared.1.notify_all();
+    }
+}
