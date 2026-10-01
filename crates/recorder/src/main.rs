@@ -2,6 +2,8 @@ mod movement_oracle;
 mod oracle;
 mod recording;
 mod replay_io;
+#[cfg(test)]
+mod test_support;
 mod windows;
 
 fn main() -> std::process::ExitCode {

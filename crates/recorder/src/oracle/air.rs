@@ -614,29 +614,15 @@ fn compare_statistics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::frame;
     use installed_content::parser;
     use replay::{
-        frame::{Metrics, TableView},
+        frame::TableView,
         rows::{
             AirDamageEntry, AirHistoryEntry, AirRegionDamageRow, AirRegionHistoryRow,
             AirStatisticsRow, TableId, TableRows, WingCumulativeRow, WingEquipmentRow,
         },
     };
-
-    fn frame(rows: impl IntoIterator<Item = TableRows>) -> DecodedFrame {
-        let mut tables =
-            std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
-        for rows in rows {
-            let index = rows.table().index();
-            tables[index] = TableView::Complete(rows);
-        }
-        DecodedFrame {
-            branch: 1,
-            hour: 7,
-            tables: tables.map(Into::into),
-            metrics: Metrics::default(),
-        }
-    }
 
     fn parsed(text: &[u8]) -> Pack {
         air::parse(&parser::parse(text).unwrap().items).unwrap()

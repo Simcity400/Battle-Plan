@@ -714,14 +714,18 @@ fn release_projects_job(mut job: ProjectsJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
-pub fn acquire_lexical_job() -> LexicalJob {
-    if let Ok(mut pool) = LEXICAL_JOB_POOL.try_lock()
+fn pop_job<J: Default>(pool: &Mutex<Vec<J>>) -> J {
+    if let Ok(mut pool) = pool.try_lock()
         && let Some(job) = pool.pop()
     {
         return job;
     }
-    LexicalJob::default()
+    J::default()
+}
+
+/// Take reusable storage, or return an empty job without allocating on pool miss.
+pub fn acquire_lexical_job() -> LexicalJob {
+    pop_job(&LEXICAL_JOB_POOL)
 }
 
 /// Defer clearing, growth and recycling to the decode worker.
@@ -747,12 +751,7 @@ fn release_lexical_job(mut job: LexicalJob) {
 
 /// Take reusable storage, or return an empty job without allocating on pool miss.
 pub fn acquire_divisions_job() -> DivisionsJob {
-    if let Ok(mut pool) = DIVISIONS_JOB_POOL.try_lock()
-        && let Some(job) = pool.pop()
-    {
-        return job;
-    }
-    DivisionsJob::default()
+    pop_job(&DIVISIONS_JOB_POOL)
 }
 
 /// Defer clearing, growth and recycling to the decode worker.
@@ -777,12 +776,7 @@ fn release_divisions_job(mut job: DivisionsJob) {
 
 /// Take reusable storage, or return an empty job without allocating on pool miss.
 pub fn acquire_focus_job() -> FocusJob {
-    if let Ok(mut pool) = FOCUS_JOB_POOL.try_lock()
-        && let Some(job) = pool.pop()
-    {
-        return job;
-    }
-    FocusJob::default()
+    pop_job(&FOCUS_JOB_POOL)
 }
 
 /// Defer clearing, growth and recycling to the decode worker.
@@ -807,12 +801,7 @@ fn release_focus_job(mut job: FocusJob) {
 
 /// Take reusable storage, or return an empty job without allocating on pool miss.
 pub fn acquire_air_wing_job() -> AirWingJob {
-    if let Ok(mut pool) = AIR_WING_JOB_POOL.try_lock()
-        && let Some(job) = pool.pop()
-    {
-        return job;
-    }
-    AirWingJob::default()
+    pop_job(&AIR_WING_JOB_POOL)
 }
 
 /// Defer clearing, growth and recycling to the decode worker.
@@ -837,12 +826,7 @@ fn release_air_wing_job(mut job: AirWingJob) {
 
 /// Take reusable storage, or return an empty job without allocating on pool miss.
 pub fn acquire_air_stats_job() -> AirStatsJob {
-    if let Ok(mut pool) = AIR_STATS_JOB_POOL.try_lock()
-        && let Some(job) = pool.pop()
-    {
-        return job;
-    }
-    AirStatsJob::default()
+    pop_job(&AIR_STATS_JOB_POOL)
 }
 
 /// Defer clearing, growth and recycling to the decode worker.
@@ -3121,17 +3105,34 @@ mod tests {
     fn exhausted_or_contended_payload_pools_decline_without_allocating() {
         let _guard = TEST_LOCK.lock().unwrap();
         reset_calibration_for_test();
-        let mut pool = AIR_STATS_JOB_POOL.lock().unwrap();
-        let contended = acquire_air_stats_job();
-        assert_eq!(contended.log.spans.capacity(), 0);
-        assert_eq!(contended.log.bytes.capacity(), 0);
-        let owned = std::mem::take(&mut *pool);
-        drop(pool);
-        let exhausted = acquire_air_stats_job();
-        assert_eq!(exhausted.log.spans.capacity(), 0);
-        assert_eq!(exhausted.log.bytes.capacity(), 0);
-        assert!(AIR_STATS_JOB_POOL.lock().unwrap().is_empty());
-        *AIR_STATS_JOB_POOL.lock().unwrap() = owned;
+        fn check<J>(pool: &Mutex<Vec<J>>, acquire: fn() -> J, vacant: impl Fn(J)) {
+            let mut locked = pool.lock().unwrap();
+            vacant(acquire());
+            let owned = std::mem::take(&mut *locked);
+            drop(locked);
+            vacant(acquire());
+            assert!(pool.lock().unwrap().is_empty());
+            *pool.lock().unwrap() = owned;
+        }
+        check(&LEXICAL_JOB_POOL, acquire_lexical_job, |job| {
+            assert!(!job.initialized());
+            assert_eq!(job.capacities(), (0, 0));
+        });
+        check(&DIVISIONS_JOB_POOL, acquire_divisions_job, |job| {
+            assert!(!job.initialized());
+            assert_eq!(job.census.allocated_bytes(), 0);
+        });
+        check(&FOCUS_JOB_POOL, acquire_focus_job, |job| {
+            assert!(!job.is_provisioned());
+            assert_eq!(job.capacities(), ([0; 2], 0));
+        });
+        check(&AIR_WING_JOB_POOL, acquire_air_wing_job, |job| {
+            assert!(!job.has_storage());
+        });
+        check(&AIR_STATS_JOB_POOL, acquire_air_stats_job, |job| {
+            assert_eq!(job.log.spans.capacity(), 0);
+            assert_eq!(job.log.bytes.capacity(), 0);
+        });
     }
 
     #[test]

@@ -365,9 +365,10 @@ fn show(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::frame;
     use installed_content::save::{self, parse};
     use replay::{
-        frame::{Metrics, TableView},
+        frame::TableView,
         rows::{
             AirBaseRegistrationRow, RadarCoverageRow, StationedUnitRow, TableId, TableRows,
             TheatreAreaRow, UnitIntelRow, VolunteerHostRow,
@@ -377,21 +378,6 @@ mod tests {
     const DIVISION: u64 = (9_u64 << 32) | 4919;
     const RAILWAY_GUN: u64 = (7_u64 << 32) | 74;
     const THEATRE: u64 = (5_u64 << 32) | 67;
-
-    fn frame(rows: impl IntoIterator<Item = TableRows>) -> DecodedFrame {
-        let mut tables =
-            std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
-        for rows in rows {
-            let index = rows.table().index();
-            tables[index] = TableView::Complete(rows);
-        }
-        DecodedFrame {
-            branch: 1,
-            hour: 7,
-            tables: tables.map(Into::into),
-            metrics: Metrics::default(),
-        }
-    }
 
     fn saved() -> save::Save {
         parse(

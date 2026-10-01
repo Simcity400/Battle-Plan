@@ -7,7 +7,7 @@ use crate::{
     sampling::qpc,
     slicing::{SliceFingerprints, SliceSelection},
     spooling::{table, unavailable},
-    table_capture::{Arena, CaptureRows, grow_vec},
+    table_capture::{Arena, CaptureRows, bounded, grow_vec},
 };
 use engine::{
     Memory, ccharacter, ccharacter_manager, ccountry, ccountry_intel, ccountry_intel_network,
@@ -1418,20 +1418,6 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
-    if outcome.len() > capacity {
-        Outcome::Unavailable {
-            reason: "walker row count exceeds allocated buffer",
-        }
-    } else if matches!(outcome, Outcome::Truncated { unread_rows: 0, .. }) {
-        Outcome::Unavailable {
-            reason: "walker marked truncation without missing rows",
-        }
-    } else {
-        outcome
-    }
-}
-
 fn capture_rows<R>(captured: &mut CaptureRows<R>, walk: impl FnOnce(&mut [R]) -> Outcome) {
     captured.outcome = bounded(walk(&mut captured.rows), captured.rows.len());
 }
@@ -1875,7 +1861,7 @@ enum OpinionSlot {
 
 type OpinionStore = std::sync::Mutex<OpinionSlot>;
 
-#[cfg_attr(test, allow(dead_code))]
+#[cfg(not(test))]
 static RELATION_OPINIONS: OpinionStore = std::sync::Mutex::new(OpinionSlot::Unmade);
 
 /// Tests keep a private store per job, so parallel tests never share one.

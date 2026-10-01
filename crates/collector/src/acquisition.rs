@@ -73,24 +73,6 @@ pub(crate) struct Profile {
     pub collected_qpc: i64,
 }
 
-#[cfg(feature = "callback_profile")]
-fn profile_thread_cycles() -> Option<u64> {
-    unsafe extern "system" {
-        fn QueryThreadCycleTime(
-            thread: windows_sys::Win32::Foundation::HANDLE,
-            cycles: *mut u64,
-        ) -> i32;
-    }
-    let mut cycles = 0;
-    let ok = unsafe {
-        QueryThreadCycleTime(
-            windows_sys::Win32::System::Threading::GetCurrentThread(),
-            &mut cycles,
-        )
-    };
-    (ok != 0).then_some(cycles)
-}
-
 /// Pool and admission identity prevent stale tickets from consuming another
 /// request's output. Collection is single-use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -331,7 +313,7 @@ impl<J, R> Shared<J, R> {
         #[cfg(feature = "callback_profile")]
         let runner_begin_qpc = crate::sampling::qpc();
         #[cfg(feature = "callback_profile")]
-        let runner_cycles_begin = profile_thread_cycles();
+        let runner_cycles_begin = crate::callback_profile::thread_cycles();
         let report = match catch_unwind(AssertUnwindSafe(|| (self.run)(&mut request))) {
             Ok(report) => Ok(report),
             Err(payload) => {
@@ -342,7 +324,7 @@ impl<J, R> Shared<J, R> {
             }
         };
         #[cfg(feature = "callback_profile")]
-        let runner_cycles_end = profile_thread_cycles();
+        let runner_cycles_end = crate::callback_profile::thread_cycles();
         #[cfg(feature = "callback_profile")]
         let runner_end_qpc = crate::sampling::qpc();
         let table_reads = reads.finish();

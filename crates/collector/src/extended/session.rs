@@ -13,7 +13,7 @@ use crate::{
     read_accounting,
     sampling::qpc,
     spooling::{table, unavailable},
-    table_capture::{Arena, CaptureRows},
+    table_capture::{Arena, CaptureRows, bounded},
 };
 use engine::{Memory, cthreat_source, cworld_threat, walk::Outcome};
 use replay::{
@@ -254,20 +254,6 @@ fn text(arena: &[u8], start: usize, len: usize) -> Option<&[u8]> {
 
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
-}
-
-fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
-    if outcome.len() > capacity {
-        Outcome::Unavailable {
-            reason: "walker row count exceeds allocated buffer",
-        }
-    } else if matches!(outcome, Outcome::Truncated { unread_rows: 0, .. }) {
-        Outcome::Unavailable {
-            reason: "walker marked truncation without missing rows",
-        }
-    } else {
-        outcome
-    }
 }
 
 // ===========================================================================

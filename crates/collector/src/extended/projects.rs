@@ -5,7 +5,7 @@ use crate::{
     read_accounting,
     sampling::qpc,
     spooling::{table, unavailable},
-    table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
+    table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
 use engine::raid_tooltip_operands;
 use engine::{
@@ -2299,20 +2299,6 @@ fn copy_programs(
         if log.overflowed {
             return;
         }
-    }
-}
-
-fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
-    if outcome.len() > capacity {
-        Outcome::Unavailable {
-            reason: "walker row count exceeds allocated buffer",
-        }
-    } else if matches!(outcome, Outcome::Truncated { unread_rows: 0, .. }) {
-        Outcome::Unavailable {
-            reason: "walker marked truncation without missing rows",
-        }
-    } else {
-        outcome
     }
 }
 

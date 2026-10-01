@@ -7,6 +7,20 @@ const UNAVAILABLE: Outcome = Outcome::Unavailable {
     reason: "clock unavailable",
 };
 
+pub(crate) fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
+    if outcome.len() > capacity {
+        Outcome::Unavailable {
+            reason: "walker row count exceeds allocated buffer",
+        }
+    } else if matches!(outcome, Outcome::Truncated { unread_rows: 0, .. }) {
+        Outcome::Unavailable {
+            reason: "walker marked truncation without missing rows",
+        }
+    } else {
+        outcome
+    }
+}
+
 pub struct CaptureRows<R> {
     pub rows: Vec<R>,
     pub outcome: Outcome,
@@ -123,6 +137,57 @@ impl<T: Default + Clone> Arena<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_preserves_outcomes_and_refuses_invalid_counts_in_order() {
+        for outcome in [
+            Outcome::Rows { len: 0 },
+            Outcome::Rows { len: 1 },
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 3,
+            },
+            Outcome::Unavailable {
+                reason: "guarded copy failed",
+            },
+        ] {
+            assert_eq!(bounded(outcome, 1), outcome);
+        }
+        assert_eq!(
+            bounded(Outcome::Rows { len: 0 }, 0),
+            Outcome::Rows { len: 0 }
+        );
+        for outcome in [
+            Outcome::Rows { len: 2 },
+            Outcome::Truncated {
+                len: 2,
+                unread_rows: 3,
+            },
+            Outcome::Truncated {
+                len: 2,
+                unread_rows: 0,
+            },
+        ] {
+            assert_eq!(
+                bounded(outcome, 1),
+                Outcome::Unavailable {
+                    reason: "walker row count exceeds allocated buffer",
+                }
+            );
+        }
+        assert_eq!(
+            bounded(
+                Outcome::Truncated {
+                    len: 1,
+                    unread_rows: 0
+                },
+                1
+            ),
+            Outcome::Unavailable {
+                reason: "walker marked truncation without missing rows",
+            }
+        );
+    }
 
     #[test]
     fn failed_publication_retains_growth_demand_until_reset() {

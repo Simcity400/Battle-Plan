@@ -6,7 +6,7 @@ use crate::{
     read_accounting,
     sampling::qpc,
     spooling::unavailable,
-    table_capture::{Arena, CaptureRows, grow_vec},
+    table_capture::{Arena, CaptureRows, bounded, grow_vec},
 };
 use engine::{
     Memory, ccountry, ccountry_experience_status, ccountry_fuel_status, ccountry_resources,
@@ -631,20 +631,6 @@ impl Captured {
 
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
-}
-
-fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
-    if outcome.len() > capacity {
-        Outcome::Unavailable {
-            reason: "walker row count exceeds allocated buffer",
-        }
-    } else if matches!(outcome, Outcome::Truncated { unread_rows: 0, .. }) {
-        Outcome::Unavailable {
-            reason: "walker marked truncation without missing rows",
-        }
-    } else {
-        outcome
-    }
 }
 
 fn capture_rows<R>(captured: &mut CaptureRows<R>, mut walk: impl FnMut(&mut [R]) -> Outcome) {

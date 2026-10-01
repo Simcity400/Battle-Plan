@@ -19,7 +19,7 @@ use crate::{
     read_accounting,
     sampling::qpc,
     spooling::{table, unavailable},
-    table_capture::{Arena, CaptureRows},
+    table_capture::{Arena, CaptureRows, bounded},
 };
 use engine::{
     Memory, cair_group, cair_theatre, cair_wing, cdominance_values, cgame_date, cgame_state,
@@ -1014,19 +1014,6 @@ fn source_unavailable() -> Outcome {
 fn invalid_names() -> Outcome {
     Outcome::Unavailable {
         reason: "name range exceeds captured arena",
-    }
-}
-fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
-    if outcome.len() > capacity {
-        Outcome::Unavailable {
-            reason: "walker row count exceeds allocated buffer",
-        }
-    } else if matches!(outcome, Outcome::Truncated { unread_rows: 0, .. }) {
-        Outcome::Unavailable {
-            reason: "walker marked truncation without missing rows",
-        }
-    } else {
-        outcome
     }
 }
 fn complete_source<R>(captured: &CaptureRows<R>, finished: bool) -> bool {

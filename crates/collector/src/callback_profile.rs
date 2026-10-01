@@ -237,7 +237,7 @@ pub(crate) struct Stamp {
     cycles: Option<u64>,
 }
 
-fn thread_cycles() -> Option<u64> {
+pub(crate) fn thread_cycles() -> Option<u64> {
     unsafe extern "system" {
         fn QueryThreadCycleTime(
             thread: windows_sys::Win32::Foundation::HANDLE,

@@ -4,7 +4,7 @@
 use crate::{
     read_accounting,
     sampling::qpc,
-    table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
+    table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
 use engine::{
     Memory, cair_base, ccontroller_area, ccountry, ctheatre,
@@ -829,20 +829,6 @@ impl ArenaRow<u64> for cair_base::RegistrationRow {
 
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
-}
-
-fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
-    if outcome.len() > capacity {
-        Outcome::Unavailable {
-            reason: "walker row count exceeds allocated buffer",
-        }
-    } else if matches!(outcome, Outcome::Truncated { unread_rows: 0, .. }) {
-        Outcome::Unavailable {
-            reason: "walker marked truncation without missing rows",
-        }
-    } else {
-        outcome
-    }
 }
 
 fn valid_arena<R: ArenaRow<T>, T>(outcome: Outcome, rows: &[R], arena: &Arena<T>) -> bool {
