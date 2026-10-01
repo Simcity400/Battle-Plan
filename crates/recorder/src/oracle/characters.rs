@@ -1,8 +1,7 @@
 //! Character and persistent-ability comparisons against native text serialization.
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
-use installed_content::parser::c_string;
-use installed_content::save::characters as saved;
+use installed_content::{leader_traits::LeaderTraits, parser::c_string, save::characters as saved};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, tables},
@@ -106,6 +105,7 @@ pub(super) fn compare(
     pack: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     tokens: &TokenNames<'_>,
+    country_leader_traits: Result<&LeaderTraits, &str>,
     report: &mut Report,
 ) -> io::Result<()> {
     let mut complete = true;
@@ -133,7 +133,7 @@ pub(super) fn compare(
             compare_trait_experience(frame, manager, tokens, unrepresented.as_ref(), report)
         });
         complete &= report.attempt("CharacterRoleTraits", |report| {
-            compare_role_traits(frame, manager, tokens, report)
+            compare_role_traits(frame, manager, tokens, country_leader_traits, report)
         });
         complete &= report.attempt("CharacterOperatives", |report| {
             compare_operatives(frame, manager, report)
@@ -357,26 +357,36 @@ fn compare_advisors(
 /// order, the membership built from the save and the role tables alone:
 /// `CCharacter::Serialize@140F913A0` writes the country-leader roles
 /// (`CCountryLeader::vf2@140FB73E0`, traits by token) and the advisor roles
-/// (`CAdvisor::vf2@1412902F0`, traits by the trait's name, which its token
-/// was made from) in their maps' order, so the saved role at a position is
-/// the recorded CountryLeaderRoles key (ascending, signed: the map's
-/// comparator, `140F8A750`) or AdvisorRoles ordinal at that position; the
-/// scientist (`CScientist::vf2@1413F7B60`, by token) is joined directly. The
-/// saved `ideology` is `CCountryLeader+0x140`, which `set_country_leader_ideology`
-/// (`1403611C0`) rewrites without moving the role in the map, so it is not
-/// the join. Every writer omits `traits` for an empty array, which has no
-/// row.
+/// (`CAdvisor::vf2@1412902F0`, traits by name) in their maps' order, so the
+/// saved role at a position is the recorded CountryLeaderRoles key
+/// (ascending, signed: the map's comparator, `140F8A750`) or AdvisorRoles
+/// ordinal at that position; the scientist (`CScientist::vf2@1413F7B60`, by
+/// token) is joined directly. The saved `ideology` is `CCountryLeader+0x140`,
+/// which `set_country_leader_ideology` (`1403611C0`) rewrites without moving
+/// the role in the map, so it is not the join. Every writer omits `traits`
+/// for an empty array, which has no row.
+///
+/// A token's literal is not always its trait's name. `CCountryLeaderTrait`'s
+/// constructor (`140710C80`) copies the definition's key to `+0x18`, which
+/// the advisor writer saves, and sets its token (`+0x8`) to
+/// `AddOrFindDynamicToken@1424A6500` of that key. The lexer finds an existing
+/// token case-insensitively and keeps the literal it was first given
+/// (`add_dynamic_token_impl@1424A65A0`), so a key spelled differently
+/// elsewhere earlier saves differently by name than by token. An advisor
+/// trait is therefore named by the content's definition at its recorded
+/// ordinal (`+0x1A0`), whose key must be its token's under the lexer's rule.
 fn compare_role_traits(
     frame: &DecodedFrame,
     manager: &saved::Manager,
     tokens: &TokenNames<'_>,
+    country_leader_traits: Result<&LeaderTraits, &str>,
     report: &mut Report,
 ) -> io::Result<()> {
     use replay::rows::CharacterRoleTraitRow as Row;
     let rows = complete::<tables::CharacterRoleTraits>(frame)?;
-    let mut recorded = BTreeMap::<(u64, u8, u32), &[u32]>::new();
+    let mut recorded = BTreeMap::<(u64, u8, u32), &Row>::new();
     for row in rows {
-        recorded.insert((handle(73, row.character), row.kind, row.role), &row.tokens);
+        recorded.insert((handle(73, row.character), row.kind, row.role), row);
     }
     let mut leader_keys = BTreeMap::<u64, Vec<i32>>::new();
     for row in complete::<tables::CountryLeaderRoles>(frame)? {
@@ -439,19 +449,39 @@ fn compare_role_traits(
                 membership(report, "CharacterRoleTraits", (id, key), true);
                 continue;
             };
-            let mut names = Vec::with_capacity(actual.len());
-            for token in actual {
-                match tokens.get(token) {
-                    Some(name) => names.push(c_string(name)),
-                    None => {
-                        unnamed.push(format!("{label} token {token}"));
-                        break;
-                    }
+            let names = if key.0 == Row::ADVISOR {
+                advisor_trait_names(actual, tokens, country_leader_traits)
+            } else {
+                actual
+                    .tokens
+                    .iter()
+                    .map(|token| {
+                        tokens
+                            .get(token)
+                            .map(|name| c_string(name))
+                            .ok_or_else(|| Unnamed::Limitation(format!("token {token}")))
+                    })
+                    .collect()
+            };
+            let names = match names {
+                Ok(names) => names,
+                Err(Unnamed::Limitation(why)) => {
+                    unnamed.push(format!("{label} {why}"));
+                    continue;
                 }
-            }
-            if names.len() != actual.len() {
-                continue;
-            }
+                Err(Unnamed::Difference {
+                    ordinal,
+                    token,
+                    key,
+                }) => {
+                    report.difference(
+                        format!("{label} definition {ordinal}: recorded token, content key"),
+                        token,
+                        key,
+                    );
+                    continue;
+                }
+            };
             compared += 1;
             report.scalar_checks += 1;
             let saved: Vec<&[u8]> = saved.iter().map(Vec::as_slice).collect();
@@ -480,16 +510,88 @@ fn compare_role_traits(
     }
     if !unnamed.is_empty() {
         report.limitation(
-            "recorded trait tokens absent from the recorded lexical dictionary cannot be named",
+            "role traits the recorded lexical dictionary, or for an advisor the content's country-leader traits, cannot name are not compared",
             unnamed.join(", "),
         );
     }
     report.compared("CharacterRoleTraits", compared);
     report.limitation(
-        "the role writers save a country-leader trait by name, not its database ordinal (CCountryLeaderTrait+0x1A0), so CharacterRoleTraits.definitions is not compared",
+        "the country-leader role writer saves a trait by token, not its database ordinal (CCountryLeaderTrait+0x1A0), so a country-leader row's definitions are not compared; an advisor row's select the keys its names are compared as",
         "CharacterRoleTraits.definitions",
     );
     Ok(())
+}
+
+/// Why a role's traits cannot be named for the comparison.
+enum Unnamed {
+    /// The recording or the content cannot say: a limitation.
+    Limitation(String),
+    /// The content's key at the recorded ordinal does not make the recorded
+    /// token: the recording and the content disagree.
+    Difference {
+        ordinal: u32,
+        token: String,
+        key: String,
+    },
+}
+impl From<String> for Unnamed {
+    fn from(why: String) -> Self {
+        Self::Limitation(why)
+    }
+}
+
+/// An advisor role's traits as `CAdvisor::vf2` saves them: each definition's
+/// key (`CCountryLeaderTrait+0x18`), found in the content at the recorded
+/// ordinal (`+0x1A0`). The key must give the recorded token: token 0 for an
+/// empty key or one beginning with a digit or `-`, which the lexer refuses
+/// (`1424A65A0`), otherwise the token whose literal equals it ignoring ASCII
+/// case.
+fn advisor_trait_names<'a>(
+    row: &replay::rows::CharacterRoleTraitRow,
+    tokens: &TokenNames<'_>,
+    content: Result<&'a LeaderTraits, &str>,
+) -> Result<Vec<&'a [u8]>, Unnamed> {
+    let content =
+        content.map_err(|why| format!("(content's country-leader traits unavailable: {why})"))?;
+    if row.definitions.len() != row.tokens.len() {
+        return Err(format!(
+            "({} definitions for {} tokens)",
+            row.definitions.len(),
+            row.tokens.len()
+        )
+        .into());
+    }
+    let mut names = Vec::with_capacity(row.tokens.len());
+    for (&token, &ordinal) in row.tokens.iter().zip(&row.definitions) {
+        let key = content
+            .by_ordinal(ordinal)
+            .ok_or_else(|| format!("definition {ordinal} (not determined by the content)"))?
+            .token
+            .as_bytes();
+        let refused = key
+            .first()
+            .is_none_or(|&first| first == b'-' || first.is_ascii_digit());
+        let literal = tokens.get(&token).map(|literal| c_string(literal));
+        let made = if refused {
+            token == 0
+        } else {
+            literal
+                .ok_or_else(|| format!("token {token}"))?
+                .eq_ignore_ascii_case(key)
+        };
+        if !made {
+            return Err(Unnamed::Difference {
+                ordinal,
+                token: match literal {
+                    Some(literal) => format!("{token} {}", String::from_utf8_lossy(literal)),
+                    None => token.to_string(),
+                },
+                key: String::from_utf8_lossy(key).into_owned(),
+            });
+        }
+        names.push(key);
+    }
+    Ok(names)
 }
 
 /// Each recorded unit-leader reference against the character's saved
@@ -891,6 +993,25 @@ mod tests {
         },
     };
 
+    const NO_TRAITS: Result<&LeaderTraits, &str> = Err("outside this fixture");
+
+    /// The country-leader traits of one `common/country_leader` file.
+    fn leader_traits(text: &str) -> LeaderTraits {
+        let root = std::env::temp_dir().join(format!(
+            "oracle_leader_traits_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let file = root.join("common/country_leader/traits.txt");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, text).unwrap();
+        let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let (traits, _) = installed_content::leader_traits::read(&layers).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        traits
+    }
+
     fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
         let character = handle(73, u32::MAX);
         let leader = handle(4713, u32::MAX);
@@ -1048,7 +1169,7 @@ mod tests {
             frame.hour = hour;
             let mut report = Report::default();
             report.record_tables(&frame);
-            compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+            compare(&frame, &pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
             assert_eq!(report.differences.len(), 1, "hour {hour}");
         }
     }
@@ -1069,7 +1190,7 @@ mod tests {
             rows[0].gender = 2;
         }
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        compare(&frame, &pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
         pack.manager
             .as_mut()
@@ -1080,7 +1201,7 @@ mod tests {
             .unwrap()
             .gender = None;
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        compare(&frame, &pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
     }
 
@@ -1095,7 +1216,7 @@ mod tests {
             (8, b"GER_template"),
         ]);
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        compare(&frame, &pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         let TableView::Complete(TableRows::UnitLeaders(rows)) =
             &mut *frame.tables[TableId::UnitLeaders.index()]
@@ -1113,12 +1234,22 @@ mod tests {
         let trait_row = &mut rows[0];
         trait_row.token_id = 7;
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        compare(&frame, &pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
         assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
         *frame.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Unavailable {
             reason: "read fault".into(),
         };
-        assert!(compare(&frame, &pack, &links, &tokens, &mut Report::default()).is_err());
+        assert!(
+            compare(
+                &frame,
+                &pack,
+                &links,
+                &tokens,
+                NO_TRAITS,
+                &mut Report::default()
+            )
+            .is_err()
+        );
     }
 
     /// Each role's trait tokens compare, by name, with the role's saved
@@ -1204,8 +1335,9 @@ mod tests {
                     ..Default::default()
                 },
             ]));
+        let traits = leader_traits("leader_traits = { captain = { } }");
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        compare(&frame, &pack, &links, &tokens, Ok(&traits), &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["CharacterRoleTraits"], 3);
         // A different trait, a missing role and a different reference.
@@ -1223,8 +1355,89 @@ mod tests {
         };
         rows[0].reference ^= 1 << 32;
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        compare(&frame, &pack, &links, &tokens, Ok(&traits), &mut report).unwrap();
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    }
+
+    /// An advisor trait saves its definition's key, not its token's literal:
+    /// the token can have been made earlier from another spelling of the key
+    /// (in vanilla, `SWI_FASCIST` in an AI strategy before the `SWI_fascist`
+    /// trait). The key at the recorded ordinal is compared; one that cannot
+    /// have made the token is a difference, content that cannot say a
+    /// limitation, and a key the lexer refuses makes token 0.
+    #[test]
+    fn advisor_traits_compare_by_the_content_key_at_their_ordinal() {
+        use replay::rows::CharacterRoleTraitRow as Row;
+        let (mut frame, mut pack, country) = fixture();
+        let links = BTreeMap::from([(102, &country)]);
+        let saved = pack
+            .manager
+            .as_mut()
+            .unwrap()
+            .characters
+            .get_mut(&handle(73, u32::MAX))
+            .unwrap();
+        saved.advisors = vec![saved::Advisor {
+            slot: None,
+            idea: None,
+            traits: vec![b"SWI_fascist".to_vec(), b"1st".to_vec()],
+        }];
+        *frame.tables[TableId::AdvisorRoles.index()] =
+            TableView::Complete(TableRows::AdvisorRoles(vec![
+                replay::rows::AdvisorRoleRow {
+                    character: u32::MAX,
+                    country: 102,
+                    ..Default::default()
+                },
+            ]));
+        let set = |frame: &mut DecodedFrame, tokens: Vec<u32>, definitions: Vec<u32>| {
+            *frame.tables[TableId::CharacterRoleTraits.index()] =
+                TableView::Complete(TableRows::CharacterRoleTraits(vec![Row {
+                    character: u32::MAX,
+                    kind: Row::ADVISOR,
+                    role: 0,
+                    tokens,
+                    definitions,
+                }]));
+        };
+        let tokens = BTreeMap::from([
+            (5, b"script_token".as_slice()),
+            (8, b"GER_template"),
+            (30, b"SWI_FASCIST"),
+            (31, b"other"),
+        ]);
+        let traits = leader_traits("leader_traits = { other = { } SWI_fascist = { } 1st = { } }");
+        let run = |frame: &DecodedFrame, content| {
+            let mut report = Report::default();
+            compare(frame, &pack, &links, &tokens, content, &mut report).unwrap();
+            report
+        };
+        set(&mut frame, vec![30, 0], vec![2, 3]);
+        let report = run(&frame, Ok(&traits));
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CharacterRoleTraits"], 1);
+        // Without the content the traits are not named.
+        let report = run(&frame, NO_TRAITS);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CharacterRoleTraits"], 0);
+        // A key that cannot have made the recorded token, and a refused key
+        // with a nonzero token.
+        for (tokens, definitions) in [(vec![31, 0], vec![2, 3]), (vec![30, 31], vec![2, 3])] {
+            set(&mut frame, tokens, definitions);
+            let differences = run(&frame, Ok(&traits)).differences;
+            assert!(
+                differences.len() == 1 && differences[0].contains("definition"),
+                "{differences:?}"
+            );
+        }
+        // A wrong ordinal whose key does make the token still differs from
+        // the save, and one the content lacks is not named.
+        set(&mut frame, vec![31, 0], vec![1, 3]);
+        assert_eq!(run(&frame, Ok(&traits)).differences.len(), 1);
+        set(&mut frame, vec![30, 0], vec![2, 9]);
+        let report = run(&frame, Ok(&traits));
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CharacterRoleTraits"], 0);
     }
 
     /// The saved country-leader role is joined by its map position, not by
@@ -1273,7 +1486,7 @@ mod tests {
                 (21, name),
             ]);
             let mut report = Report::default();
-            compare(frame, &pack, &links, &tokens, &mut report).unwrap();
+            compare(frame, &pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
             report.differences
         };
         let set = |frame: &mut DecodedFrame, rows: Vec<Row>| {
@@ -1323,7 +1536,7 @@ mod tests {
         ]);
         let run = |frame: &DecodedFrame, pack: &saved::Pack| {
             let mut report = Report::default();
-            compare(frame, pack, &links, &tokens, &mut report).unwrap();
+            compare(frame, pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
             report
         };
         let edit = |edit: &dyn Fn(&mut CharacterRow)| {
@@ -1383,7 +1596,7 @@ mod tests {
         ]);
         let run = |frame: &DecodedFrame, pack: &saved::Pack| {
             let mut report = Report::default();
-            compare(frame, pack, &links, &tokens, &mut report).unwrap();
+            compare(frame, pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
             report.differences
         };
         let edit = |edit: &dyn Fn(&mut UnitLeaderRow)| {
@@ -1499,7 +1712,7 @@ mod tests {
             (8, b"GER_template"),
         ]);
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        compare(&frame, &pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(
             report.limitations["text serialization stops at the first NUL; captured suffix bytes are not comparable"].len(),
@@ -1515,7 +1728,7 @@ mod tests {
             (7, b"wrong progress"),
         ]);
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &wrong, &mut report).unwrap();
+        compare(&frame, &pack, &links, &wrong, NO_TRAITS, &mut report).unwrap();
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
         let TableView::Complete(TableRows::Characters(rows)) =
             &mut *frame.tables[TableId::Characters.index()]
@@ -1524,7 +1737,7 @@ mod tests {
         };
         rows[0].name_token_id = -1;
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &tokens, &mut report).unwrap();
+        compare(&frame, &pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         let missing = report
             .limitations
@@ -1567,6 +1780,7 @@ mod tests {
                 &pack,
                 &BTreeMap::from([(102, &country)]),
                 &BTreeMap::from([(0x167, b"script_token".as_slice())]),
+                NO_TRAITS,
                 &mut report,
             )
             .is_err()
@@ -1585,7 +1799,15 @@ mod tests {
         let (mut frame, pack, country) = fixture();
         let links = BTreeMap::from([(102, &country)]);
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &BTreeMap::new(), &mut report).unwrap();
+        compare(
+            &frame,
+            &pack,
+            &links,
+            &BTreeMap::new(),
+            NO_TRAITS,
+            &mut report,
+        )
+        .unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         let missing_names = report
             .limitations
@@ -1608,7 +1830,15 @@ mod tests {
         };
         rows[0].skill_level -= 1;
         let mut report = Report::default();
-        compare(&frame, &pack, &links, &BTreeMap::new(), &mut report).unwrap();
+        compare(
+            &frame,
+            &pack,
+            &links,
+            &BTreeMap::new(),
+            NO_TRAITS,
+            &mut report,
+        )
+        .unwrap();
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
         assert!(
             !report
@@ -1658,6 +1888,7 @@ mod tests {
                 &pack,
                 &BTreeMap::from([(102, &country)]),
                 &BTreeMap::new(),
+                NO_TRAITS,
                 &mut report
             )
             .is_err()
@@ -1707,6 +1938,7 @@ mod tests {
                 &pack,
                 &BTreeMap::from([(102, &country)]),
                 &BTreeMap::new(),
+                NO_TRAITS,
                 &mut report
             )
             .is_err()
