@@ -11,6 +11,7 @@ import ideaTimeline from './idea-timeline';
 import map from './map';
 import nationalFocus from './national-focus';
 import nationalSpirits from './national-spirits';
+import occupiedStates from './occupied-states';
 import placeholder from './placeholder';
 import politicalPower from './political-power';
 import research from './research';
@@ -18,6 +19,6 @@ import resourceBalance from './resource-balance';
 import rulingParty from './ruling-party';
 import spiritHistory from './spirit-history';
 
-const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, fuel, experience, placeholder };
+const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, fuel, 'occupied-states': occupiedStates, experience, placeholder };
 
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

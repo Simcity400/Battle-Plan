@@ -463,7 +463,8 @@ impl RecordedScopes {
     /// input it would need ([`Unresolved::Missing`]).
     ///
     /// Not yet implemented: the `occupied` promotion, which
-    /// `StateResistance.country` (the state's occupying country) would
+    /// `StateResistance.country` (the occupied country's original tag,
+    /// StartResistance 140F85ED0 writes CResistance+0x50) would
     /// answer; it is refused as unrecorded until a consumer needs it.
     pub fn resolve(&self, scope: &Scope, context: &Context) -> Result<Target, Unresolved> {
         use Unresolved::{Missing, Nothing};

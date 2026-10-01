@@ -1,0 +1,35 @@
+/* Shared style-5 Scoreboard measures; its colours come from the active theme. */
+.chart-table { --table-comfortable-height: 34px; --table-compact-height: 25px; --table-header-height: 26px; --table-muted-opacity: .55; --table-row-height: var(--table-comfortable-height); --table-cell-y: 7px; --table-font: 13px; min-height: 0; height: 100%; overflow: auto; padding: 0 6px 8px; }
+.chart-table.is-compact { --table-row-height: var(--table-compact-height); --table-cell-y: 3px; --table-font: 12px; }
+.chart-table table { display: grid; width: 100%; min-width: max-content; border-collapse: collapse; font-size: var(--table-font); }
+.chart-table thead { position: sticky; top: 0; z-index: 2; background: var(--surface); }
+.chart-table tr { display: grid; grid-template-columns: var(--table-columns); }
+.chart-table th { height: var(--table-header-height); padding: 0 12px; align-content: center; text-align: start; color: var(--muted); font-size: 12px; font-weight: 500; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.chart-table th button { display: inline; width: 100%; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; text-align: inherit; color: inherit; font: inherit; }
+.chart-table th[aria-sort='ascending'], .chart-table th[aria-sort='descending'] { color: var(--text); }
+.chart-table .table-sort { color: var(--accent); }
+.chart-table tbody { display: block; position: relative; }
+.chart-table tbody tr { position: absolute; inset: 0 0 auto; height: var(--table-row-height); border-bottom: 1px solid color-mix(in srgb, var(--border) 35%, transparent); }
+.chart-table tbody tr:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.chart-table td { min-width: 0; min-height: 0; padding: var(--table-cell-y) 12px; align-content: center; line-height: 19px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chart-table.is-compact td { line-height: 18px; }
+.chart-table .is-numeric, .chart-table .table-rank { font-variant-numeric: tabular-nums; }
+.chart-table .align-start { text-align: start; }
+.chart-table .align-end { text-align: end; }
+.chart-table .table-rank { color: var(--muted); text-align: start; overflow: visible; }
+.chart-table tbody tr.is-muted { filter: grayscale(1); opacity: var(--table-muted-opacity); }
+.chart-table tbody tr.is-muted.is-leaving { opacity: 0; }
+.chart-table tbody tr.is-activatable { cursor: pointer; }
+.table-delta { font-size: 10px; margin-left: 4px; }
+.table-delta.is-positive { color: var(--positive); }
+.table-delta.is-negative { color: var(--error); }
+.table-cell { position: relative; display: inline-block; min-width: 64px; }
+.table-cellbar { position: absolute; right: 0; top: 50%; height: 16px; transform: translateY(-50%); border-radius: 3px; background: color-mix(in srgb, var(--accent) 16%, transparent); transition: width var(--table-bar-glide); }
+.chart-table .align-start .table-cellbar { left: 0; right: auto; }
+.table-cell > span { position: relative; padding-right: 4px; }
+.table-country { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; vertical-align: top; }
+.table-country > span { overflow: hidden; text-overflow: ellipsis; }
+.table-country img, .table-flag-missing { width: 18px; height: 12px; flex: none; object-fit: contain; border-radius: 1px; }
+.table-flag-missing { border: 1px solid var(--border); }
+.chart-table tr:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) { .chart-table .moving-row { transition: none; animation: none; } }

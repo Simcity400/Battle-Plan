@@ -31,6 +31,17 @@ The service, transport, host and frontend route by key and never name a product.
 
 Current products: national focus order, research slot history, country flags, country styles (each country's engine-built name and recorded map colour at an hour), country groups (human players, recorded factions with their members, and war pairs, as runs of consecutive recorded hours), country balances (political power or command power: exact balance runs and net drops per country), party history (popularity, ruling runs and elections per country, with content ideology colours), idea history (each idea a country held, joined to its content category, slot, effects and artwork, with how the game formats each effect's modifier (`idea_format.rs`: the recorded modifier definitions, else content's scripted ones); `politics_content.rs` reads the Politics content once per catalogue), country stability (displayed stability, war support and maximum command power computed from recorded inputs with the engine's arithmetic, plus an hour's formula terms, tree lines with their source identity or recorded text, and an explicit remainder), stability parts (each of those parts of one country over the branch, as runs, known only where recorded), resource balance (one country's recorded resource pools and trade deals as hourly runs, with content's resource names and icons), land ownership and country fuel (one country's tank level and capacity at each daily read, and the fuel gained and burned in the 24 hourly updates before it, each update counted once and only while the game updated it). Their rules live beside their code and in the matching widget README.
 
+The `occupied-states` product supplies the whole branch's active occupied-state
+inventory as equal-value runs, with separate daily read dates and gaps. Daily
+occupation joins freeze the read's controller and country links; other hours
+project only owner/name changes. It uses
+the shared state-name precedence and recorded occupation-law content. The
+unrecorded country-level law pointer prevents guessing a default; displayed
+garrison strength also needs unrecorded equipment allocation/requirements.
+The native garrison amount and failure marker are recorded; the bar is known
+only for the failure flag or complete zero assigned manpower. Those
+limitations remain explicit in the [widget guide](../../ui/src/widgets/occupied-states/README.md).
+
 The Experience widget reads [`country_experience.rs`](src/products/country_experience.rs): banked army, navy and air experience at each read, and their net change from a read one day earlier in the same unbroken country stretch. Its [widget guide](../../ui/src/widgets/experience/README.md) describes the display and missing-data rules. Multi-country line products share selection validation in `products/mod.rs`.
 
 ## Service

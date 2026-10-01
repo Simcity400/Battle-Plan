@@ -435,6 +435,53 @@ dayHours: number,
  * In hour order.
  */
 reads: Array<FuelRead>, warnings: Array<string>, };
+export type OccupiedStatesParams = { branchId: string, };
+export type OccupiedValues = { name: string | null, nameMissing: string | null, owner: string | null, occupier: string | null,
+/**
+ * Original occupied country, which can differ from today's legal owner.
+ */
+occupied: string | null,
+/**
+ * Stored fixed5 percentage units. Speeds are percentage points/day.
+ */
+resistanceRaw: string, complianceRaw: string, resistanceSpeedRaw: string, complianceSpeedRaw: string,
+/**
+ * Native displayed strength in fixed5 percentage units, when established.
+ */
+garrisonStrengthRaw: string | null, requiredManpower: number | null,
+/**
+ * Recorded required template amount, not garrison strength.
+ */
+garrisonRequiredRaw: string | null,
+/**
+ * +0x60: native requirement failure, displayed as a red exclamation mark.
+ */
+garrisonAlert: boolean,
+/**
+ * Below the content threshold, only when displayed strength is established.
+ */
+garrisonRed: boolean | null, assignedManpower: number | null, garrisonMissing: string | null,
+/**
+ * Known explicit per-state override only. See `law_for`.
+ */
+law: string | null, lawMissing: string | null, };
+export type OccupiedRun = { firstHour: number, lastHour: number, value: OccupiedValues, };
+export type OccupiedSeries = { state: number, runs: Array<OccupiedRun>, };
+export type OccupiedObservation = { firstHour: number, lastHour: number,
+/**
+ * Read supplying resistance/compliance and the daily occupation tables.
+ */
+readHour: number,
+/**
+ * False means known rows are shown but the inventory is incomplete.
+ */
+complete: boolean, };
+export type OccupationLawInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
+export type OccupiedStatesReply = { branchId: string, decimals: number, states: Array<OccupiedSeries>,
+/**
+ * Includes known empty inventories, distinguishing them from gaps.
+ */
+observed: Array<OccupiedObservation>, laws: Array<OccupationLawInfo>, strengthMissing: string, warnings: Array<string>, };
 export type ExperienceParams = { branchId: string, tags: Array<string>, };
 export type ExperienceChange = { armyRaw: string, navyRaw: string, airRaw: string, };
 export type ChangeUnknown = "noMatchingRead";

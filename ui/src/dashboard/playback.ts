@@ -49,6 +49,7 @@ export class PlaybackController {
     return Math.min(bounds.lastHour, position + Math.max(0, now - this.lastTime) / 1000 * hoursPerSecond);
   };
   getHour = () => this.snapshot.hour;
+  getSpeed = () => this.snapshot.hoursPerSecond;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   subscribeHour = (listener: () => void) => { this.hourListeners.add(listener); return () => { this.hourListeners.delete(listener); }; };
 
@@ -137,4 +138,9 @@ export class PlaybackController {
 const noSubscription = () => () => {};
 export function usePlaybackHour(clock: PlaybackController, follow = true): number {
   return useSyncExternalStore(follow ? clock.subscribeHour : noSubscription, clock.getHour, clock.getHour);
+}
+
+/** Speed changes publish while paused too; ticks with the same speed do not render. */
+export function usePlaybackSpeed(clock: PlaybackController): number {
+  return useSyncExternalStore(clock.subscribe, clock.getSpeed, clock.getSpeed);
 }

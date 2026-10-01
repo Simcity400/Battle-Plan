@@ -494,18 +494,100 @@ fn image_frame_png(
     }
     let frame_width = image.width / frames;
     let left = frame * frame_width;
-    let scale = (frame_width.max(image.height) as f64 / f64::from(max_edge)).max(1.0);
-    let width = (frame_width as f64 / scale).round().max(1.0) as u32;
-    let height = (image.height as f64 / scale).round().max(1.0) as u32;
+    png_data_url(&sample_frame(
+        image,
+        [frame_width as f64, image.height as f64],
+        [left as f64, 0.0],
+        max_edge,
+    )?)
+}
+
+/// A static plain sprite's authored frame, using native strip geometry
+/// (frame_dimensions 14222B4B0, build_geometry 14222CB90). Shader-driven
+/// and animated forms need the native renderer and are refused by name.
+pub fn sprite_frame_png(
+    layers: &ResolvedLayers,
+    sprite: &installed_content::gfx::SpriteType,
+    frame: u32,
+    max_edge: u32,
+) -> io::Result<String> {
+    use installed_content::gui::native::{
+        resources::frame_geometry,
+        sprites::{DEFAULT_EFFECT, SpriteKind},
+    };
+    let SpriteKind::Plain(plain) = &sprite.facts.kind else {
+        return Err(invalid(format!(
+            "{} needs native sprite rendering",
+            sprite.facts.kind.keyword()
+        )));
+    };
+    if !plain.animations.is_empty()
+        || !plain.masking_texture.is_empty()
+        || plain.effect() != DEFAULT_EFFECT
+        || !matches!(plain.frame_direction, 0 | 1)
+        || plain.stretch != 1.0
+        || plain.v_scale != 1.0
+        || plain.flip_u
+    {
+        return Err(invalid(
+            "animation, masking, custom effect or nonstandard frame geometry needs native sprite rendering",
+        ));
+    }
+    if plain.frames <= 0 || frame >= plain.frames as u32 || max_edge == 0 {
+        return Err(invalid("invalid icon frame"));
+    }
+    let path = sprite
+        .texture
+        .as_deref()
+        .ok_or_else(|| invalid("sprite has no texture"))?;
+    let image = read_texture(layers, path)?;
+    let extent = frame_geometry(plain, [image.width, image.height]);
+    let offset = if plain.frame_direction_y() {
+        [0.0, frame as f32 * extent[1]]
+    } else {
+        [frame as f32 * extent[0], 0.0]
+    };
+    png_data_url(&sample_frame(
+        &image,
+        extent.map(f64::from),
+        offset.map(f64::from),
+        max_edge,
+    )?)
+}
+
+/// Point-sample one extent at an offset; horizontal and native sprite frames share it.
+fn sample_frame(
+    image: &Rgba8Image,
+    extent: [f64; 2],
+    offset: [f64; 2],
+    max_edge: u32,
+) -> io::Result<Rgba8Image> {
+    if max_edge == 0
+        || image.width == 0
+        || image.height == 0
+        || extent
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        || offset
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return Err(invalid("invalid frame sampling geometry"));
+    }
+    let scale = (extent[0].max(extent[1]) / max_edge as f64).max(1.0);
+    let width = (extent[0] / scale).round().max(1.0) as u32;
+    let height = (extent[1] / scale).round().max(1.0) as u32;
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {
         for x in 0..width {
-            let at = ((y * image.height / height * image.width + left + x * frame_width / width)
-                * 4) as usize;
+            let px = (offset[0] + x as f64 * extent[0] / width as f64) as u32;
+            let py = (offset[1] + y as f64 * extent[1] / height as f64) as u32;
+            let at =
+                ((py.min(image.height - 1) * image.width + px.min(image.width - 1)) * 4) as usize;
             pixels.extend_from_slice(&image.pixels[at..at + 4]);
         }
     }
-    png_data_url(&Rgba8Image {
+    Ok(Rgba8Image {
         width,
         height,
         pixels,
@@ -769,6 +851,40 @@ pub(crate) mod tests {
             refusals.lines("names are"),
             ["2 names are not shown: why; A, B"]
         );
+    }
+
+    #[test]
+    fn frame_sampler_shares_horizontal_vertical_and_downsampled_offsets() {
+        let image = Rgba8Image {
+            width: 4,
+            height: 4,
+            pixels: (0u8..16).flat_map(|value| [value, 0, 0, 255]).collect(),
+        };
+        let values = |sample: Rgba8Image| {
+            sample
+                .pixels
+                .chunks_exact(4)
+                .map(|pixel| pixel[0])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            values(sample_frame(&image, [2.0, 4.0], [2.0, 0.0], 4).unwrap()),
+            [2, 3, 6, 7, 10, 11, 14, 15]
+        );
+        assert_eq!(
+            values(sample_frame(&image, [4.0, 2.0], [0.0, 2.0], 4).unwrap()),
+            [8, 9, 10, 11, 12, 13, 14, 15]
+        );
+        assert_eq!(
+            values(sample_frame(&image, [4.0, 4.0], [0.0, 0.0], 2).unwrap()),
+            [0, 2, 8, 10]
+        );
+        assert_eq!(
+            values(sample_frame(&image, [1.5, 2.0], [1.5, 2.0], 4).unwrap()),
+            [9, 10, 13, 14]
+        );
+        assert!(sample_frame(&image, [0.0, 4.0], [0.0, 0.0], 4).is_err());
+        assert!(sample_frame(&image, [4.0, 4.0], [0.0, 0.0], 0).is_err());
     }
 
     #[test]

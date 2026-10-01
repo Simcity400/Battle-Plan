@@ -17,6 +17,7 @@ pub mod idea_format;
 pub mod idea_history;
 pub mod land_owners;
 pub mod national_focus;
+pub mod occupied_states;
 pub mod party_history;
 pub mod politics_content;
 pub mod research;
@@ -209,6 +210,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<stability_parts::StabilityParts>(),
     register::<country_measure::CountryMeasure>(),
     register::<country_fuel::CountryFuel>(),
+    register::<occupied_states::OccupiedStates>(),
     register::<country_experience::CountryExperience>(),
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),

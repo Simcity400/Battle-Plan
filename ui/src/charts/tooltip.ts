@@ -132,6 +132,16 @@ export function showTooltip(owner: string, content: TooltipContent, x: number, y
   emit();
 }
 
+/** Refreshes current content without taking the layer from another owner. The
+ * builder runs only while this owner's tooltip is still shown. */
+export function refreshTooltip(owner: string, build: () => TooltipContent | null, contentKey?: string): void {
+  if (state?.owner !== owner) return;
+  const { x, y } = state;
+  const content = build();
+  if (content) showTooltip(owner, content, x, y, contentKey);
+  else hideTooltip(owner);
+}
+
 /** Hides the tooltip if this owner is showing it. */
 export function hideTooltip(owner: string): void {
   if (state?.owner !== owner) return;

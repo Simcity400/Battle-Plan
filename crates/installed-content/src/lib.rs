@@ -35,6 +35,7 @@ pub mod movement;
 pub mod names;
 pub mod naval_combat_defines;
 pub mod naval_path;
+pub mod occupation_laws;
 pub mod parser;
 pub mod particles;
 pub mod pdxshader;

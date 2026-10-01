@@ -3,6 +3,36 @@ use super::*;
 use crate::triggers::{ContentFacts, Eval, Evaluator, LeaderRoles, Scope, Scopes, Temps, World};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) type StateNames = BTreeMap<u32, Result<String, String>>;
+
+pub(crate) struct StateContent {
+    pub defines: installed_content::defines::Defines,
+    pub states: installed_content::states::States,
+    pub names: StateNames,
+    pub warnings: Vec<String>,
+}
+
+/// Shared state templates and name keys, resolved through the recorded stack.
+pub(crate) fn read_state_content(
+    layers: &installed_content::ResolvedLayers,
+) -> std::io::Result<StateContent> {
+    let defines = installed_content::defines::read(layers)?;
+    let map = installed_content::terrain::read_default_map(layers)?;
+    let provinces = installed_content::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
+    let (states, warnings) = installed_content::states::read(layers, &defines, &provinces)?;
+    let names = states
+        .definitions()
+        .iter()
+        .map(|(&id, state)| (id, state.name_key.clone()))
+        .collect();
+    Ok(StateContent {
+        defines,
+        states,
+        names,
+        warnings,
+    })
+}
+
 pub(crate) struct Environment {
     pub warnings: Vec<String>,
     pub(super) state_names: BTreeMap<u32, Result<String, String>>,
@@ -31,11 +61,12 @@ pub(crate) struct Environment {
 
 impl Environment {
     fn read(layers: &installed_content::ResolvedLayers) -> std::io::Result<Self> {
-        let defines = installed_content::defines::read(layers)?;
-        let map = installed_content::terrain::read_default_map(layers)?;
-        let provinces =
-            installed_content::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
-        let (states, warnings) = installed_content::states::read(layers, &defines, &provinces)?;
+        let StateContent {
+            defines,
+            states,
+            names: state_names,
+            warnings,
+        } = read_state_content(layers)?;
         let states = states.definitions();
         let state_provinces = states
             .iter()
@@ -52,10 +83,7 @@ impl Environment {
                 .iter()
                 .filter_map(|(&id, s)| s.impassable.then_some(id))
                 .collect(),
-            state_names: states
-                .iter()
-                .map(|(&id, state)| (id, state.name_key.clone()))
-                .collect(),
+            state_names,
             neighbors,
             terrain: installed_content::movement::MovementMap::read(layers, &defines).ok(),
             dlcs: layers.dlc_names()?,
@@ -220,28 +248,42 @@ impl<'a> ScriptedText<'a> {
             .iter()
             .find(|s| s.id == id)
             .ok_or_else(|| format!("state {id}: States {gap}"))?;
-        // CState::display_name (1409CC380): the custom name, else the owner
-        // name, else the template's. set_state_name (140310B50) stores the
-        // localised text of its argument as the custom name; SetOwner
-        // (1409D1710, also on load) has 1409D3770 store the localised
-        // `<owner original tag or tag>_<template name key>` as the owner name,
-        // or clear it when the key is missing.
-        for (bytes, what) in [
-            (&state.custom_name, "the custom name (CState+0x38)"),
-            (&state.owner_name, "the owner name (CState+0xE8)"),
-        ] {
-            if !bytes.is_empty() {
-                return self.stored_text(bytes, &format!("GetName of state {id}: {what}"));
-            }
-        }
-        let environment = self.environment()?;
-        let definition = environment
-            .state_names
-            .get(&id)
-            .ok_or_else(|| format!("GetName: state {id} has no recorded-content template"))?;
-        let key = definition.as_ref().map_err(Clone::clone)?;
-        self.localise(key)
+        state_name_from(
+            state,
+            |bytes, what| self.stored_text(bytes, what),
+            |id| {
+                let environment = self.environment()?;
+                let definition = environment.state_names.get(&id).ok_or_else(|| {
+                    format!("GetName: state {id} has no recorded-content template")
+                })?;
+                self.localise(definition.as_ref().map_err(Clone::clone)?)
+            },
+        )
     }
+}
+
+/// Shared with state tables: native name precedence without another ID scan.
+pub(crate) fn state_name_from(
+    state: &replay::rows::StateRow,
+    stored: impl Fn(&[u8], &str) -> Result<String, String>,
+    template: impl Fn(u32) -> Result<String, String>,
+) -> Result<String, String> {
+    let id = state.id;
+    // CState::display_name (1409CC380): the custom name, else the owner
+    // name, else the template's. set_state_name (140310B50) stores the
+    // localised text of its argument as the custom name; SetOwner
+    // (1409D1710, also on load) has 1409D3770 store the localised
+    // `<owner original tag or tag>_<template name key>` as the owner name,
+    // or clear it when the key is missing.
+    for (bytes, what) in [
+        (&state.custom_name, "the custom name (CState+0x38)"),
+        (&state.owner_name, "the owner name (CState+0xE8)"),
+    ] {
+        if !bytes.is_empty() {
+            return stored(bytes, &format!("GetName of state {id}: {what}"));
+        }
+    }
+    template(id)
 }
 
 /// The event scope 1410CD900 evaluates an entry in, as an index into the

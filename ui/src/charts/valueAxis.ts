@@ -67,6 +67,18 @@ export function formatFixed(raw: string | bigint, scale: number, digits: number)
   return `${negative && /[1-9]/.test(text) ? '−' : ''}${grouped}${fraction}`;
 }
 
+/** Fixed5ToString's fixed-digit mode (1424B6200 -> 1424B89F0 mode 1).
+ * The whole part narrows to i32 through 1424B7A80; fraction digits truncate,
+ * keep trailing zeros and have no grouping. Sort/tooltips retain the exact raw. */
+export function formatNativeFixed5(raw: string | bigint, digits = 2): string {
+  if (!Number.isInteger(digits) || digits < 0 || digits > 5) throw new RangeError('Native fixed5 precision must be 0–5.');
+  const value = typeof raw === 'bigint' ? raw : BigInt(raw);
+  const magnitude = value < 0n ? -value : value;
+  const whole = BigInt.asIntN(32, magnitude / 100000n).toString();
+  const fraction = digits ? `.${(magnitude % 100000n).toString().padStart(5, '0').slice(0, digits)}` : '';
+  return `${value < 0n ? '-' : ''}${whole}${fraction}`;
+}
+
 /** A plotting value for a fixed-point integer; labels should use `formatFixed`. */
 export function fixedNumber(raw: string | bigint, scale: number): number {
   return Number(typeof raw === 'bigint' ? raw : BigInt(raw)) / 10 ** scale;

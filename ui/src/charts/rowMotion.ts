@@ -18,13 +18,17 @@ export interface MovingRow<T> {
  * it fading out for `leaveMs` from `now`. A row coming back while it fades stays.
  * On the `first` update nothing flashes in: the table is simply shown. */
 export function nextRows<T>(previous: readonly MovingRow<T>[], items: readonly { key: string; item: T }[], now: number, leaveMs: number, first = false): MovingRow<T>[] {
-  const before = new Map(previous.map(row => [row.key, row]));
-  const shown = new Set(items.map(item => item.key));
-  const rows: MovingRow<T>[] = items.map(({ key, item }, slot) => ({
-    key, item, slot, phase: first || before.has(key) ? 'staying' : 'entering', since: now,
-  }));
+  const remaining = new Set<string>();
+  for (const row of previous) remaining.add(row.key);
+  const rows: MovingRow<T>[] = items.map(({ key, item }, slot) => {
+    const existed = remaining.delete(key);
+    return { key, item, slot, phase: first || existed ? 'staying' : 'entering', since: now };
+  });
+  // Stable row keys are unique. If all previous rows remain, there are no
+  // fades to inspect and no second key set to allocate on every redraw.
+  if (!remaining.size) return rows;
   for (const row of previous) {
-    if (shown.has(row.key)) continue;
+    if (!remaining.has(row.key)) continue;
     const since = row.phase === 'leaving' ? row.since : now;
     if (now - since < leaveMs) rows.push({ ...row, phase: 'leaving', since });
   }
