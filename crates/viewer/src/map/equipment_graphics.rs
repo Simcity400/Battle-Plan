@@ -191,6 +191,8 @@ struct Pool {
     ideologies: BTreeSet<String>,
     cultures: BTreeSet<String>,
     limit: Vec<Limit>,
+    /// The `graphic_db` file that declares the pool.
+    file: String,
 }
 
 impl Default for Pool {
@@ -203,6 +205,7 @@ impl Default for Pool {
             ideologies: BTreeSet::new(),
             cultures: BTreeSet::new(),
             limit: Vec::new(),
+            file: String::new(),
         }
     }
 }
@@ -330,7 +333,7 @@ impl Content {
             layers.descriptor_paths("gfx/interface/equipmentdesigner/graphic_db", &[".txt"])?
         {
             document(&layers.read_uncovered(&path)?, names)
-                .and_then(|items| content.read_document(&items, names))
+                .and_then(|items| content.read_document(&items, names, &path))
                 .map_err(|error| invalid(format!("{path}: {error}")))?;
         }
         Ok(content)
@@ -340,11 +343,11 @@ impl Content {
     #[cfg(test)]
     pub(crate) fn from_test_document(text: &[u8], names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
-        content.read_document(&document(text, names)?, names)?;
+        content.read_document(&document(text, names)?, names, "test")?;
         Ok(content)
     }
 
-    fn read_document(&mut self, items: &[Item], names: &Names) -> io::Result<()> {
+    fn read_document(&mut self, items: &[Item], names: &Names, file: &str) -> io::Result<()> {
         for root in items {
             let Some(bucket) = names.bucket(
                 root.key.as_deref().unwrap_or_default(),
@@ -366,7 +369,10 @@ impl Content {
                     let Some(fields) = item.value.items() else {
                         continue;
                     };
-                    let mut pool = Pool::default();
+                    let mut pool = Pool {
+                        file: file.to_owned(),
+                        ..Pool::default()
+                    };
                     for field in fields {
                         // ReadFixed5: a failed conversion keeps the slot.
                         let fixed = |slot: &mut i64| {
@@ -406,6 +412,39 @@ impl Content {
             }
         }
         Ok(())
+    }
+
+    /// Every pool limit predicate the lookup refuses, with the file and
+    /// the bucket and equipment key its pool is under: a lookup that meets
+    /// the pool fails.
+    pub fn refusals(&self) -> Vec<(&str, String)> {
+        fn walk<'a>(limits: &'a [Limit], out: &mut Vec<&'a str>) {
+            for limit in limits {
+                match limit {
+                    Limit::Unsupported(name) => out.push(name),
+                    Limit::All(inner) | Limit::Any(inner) | Limit::Not(inner) => walk(inner, out),
+                    Limit::Dlc(_) => {}
+                }
+            }
+        }
+        let mut refusals = Vec::new();
+        for (bucket, definitions) in &self.buckets {
+            for (equipment, pools) in definitions {
+                for pool in pools {
+                    let mut names = Vec::new();
+                    walk(&pool.limit, &mut names);
+                    for name in names {
+                        refusals.push((
+                            pool.file.as_str(),
+                            format!(
+                                "{bucket:?} pool for {equipment}: unsupported empty-scope predicate {name}"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        refusals
     }
 
     /// Return the native graphic candidates, ready for legacy insertion.
@@ -542,7 +581,7 @@ mod tests {
 
     fn content(text: &[u8]) -> io::Result<Content> {
         let mut content = Content::default();
-        content.read_document(&document(text, &names())?, &names())?;
+        content.read_document(&document(text, &names())?, &names(), "graphic_db/a.txt")?;
         Ok(content)
     }
 
@@ -649,6 +688,24 @@ mod tests {
             scoped
                 .lookup(&context(None, &[]), |_| Some(true), |_| true)
                 .is_err()
+        );
+        // Each refused predicate, nested ones included, is named with its file.
+        let nested = content(
+            b"default = { tank = { pool = { limit = { OR = { tag = GER has_dlc = a } } models = { x } } } }",
+        )
+        .unwrap();
+        assert_eq!(
+            nested.refusals(),
+            [(
+                "graphic_db/a.txt",
+                "Default pool for tank: unsupported empty-scope predicate tag".to_owned()
+            )]
+        );
+        assert!(
+            content(b"default = { tank = { pool = { models = { x } } } }")
+                .unwrap()
+                .refusals()
+                .is_empty()
         );
     }
 

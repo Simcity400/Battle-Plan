@@ -2,6 +2,7 @@ mod app;
 mod blocks;
 mod combat;
 mod compare;
+mod corpus;
 mod dashboard_maps;
 mod document;
 mod embedded;
@@ -764,8 +765,11 @@ fn run_compare(options: &Options, paths: &[PathBuf; 2]) -> io::Result<()> {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("{USAGE}");
+        println!("{USAGE}\n{}", corpus::USAGE);
         return Ok(());
+    }
+    if let Some(result) = corpus::dispatch(&args) {
+        return Ok(result?);
     }
     let options = Options::parse(args.into_iter())?;
     let parent = embedded::Parent::from_environment()?;

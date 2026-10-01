@@ -229,6 +229,15 @@ impl TokenKeys {
         }
     }
 
+    /// Each set of content keys equal under the lexer's fold, which every
+    /// spelling of them names at once: [`Self::resolve`] refuses them.
+    pub fn ambiguous(&self) -> impl Iterator<Item = &[String]> {
+        self.0
+            .values()
+            .map(Vec::as_slice)
+            .filter(|keys| keys.len() > 1)
+    }
+
     /// Every content key equal to a spelling under the lexer's fold, in the order given.
     pub fn keys(&self, spelling: &str) -> &[String] {
         self.0.get(&fold_token(spelling)).map_or(&[], Vec::as_slice)

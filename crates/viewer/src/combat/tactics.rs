@@ -341,6 +341,17 @@ impl Content {
 
     /// Every picture sprite a proven tactic names, with its texture path,
     /// for the sprite declarations.
+    /// Every registry entry the viewer refuses, and every proven tactic's
+    /// picture it cannot form: what each tactic's widgets refuse.
+    pub(super) fn refusals(&self) -> impl Iterator<Item = &str> {
+        self.registry
+            .iter()
+            .filter_map(|entry| match &entry.definition {
+                Err(why) => Some(why.as_str()),
+                Ok(definition) => definition.picture.as_ref().err().map(String::as_str),
+            })
+    }
+
     pub(super) fn pictures(&self) -> impl Iterator<Item = (&str, String)> {
         self.registry.iter().filter_map(|entry| {
             let key = entry.definition.as_ref().ok()?.picture.as_deref().ok()?;

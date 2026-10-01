@@ -39,6 +39,7 @@ use crate::{
     map::{sprites::Batch, text as map_text},
 };
 pub use assets::Assets;
+pub(crate) use assets::CombatContent;
 use assets::Sprite;
 pub(crate) use battle_name::battle_name_candidates;
 use binding::Bindings;

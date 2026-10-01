@@ -443,6 +443,107 @@ fn expand_gui(document: &mut installed_content::parser::Document) {
         walk(&mut item.value, &variables);
     }
 }
+/// What the combat interface reads from the content alone, before any
+/// artwork: the trait names, the tactic registry, the division names and the
+/// commander and tooltip content, with the reads' warnings in the order
+/// [`Assets::load`] reports them. The tactic registry keeps its own
+/// ([`CombatContent::warnings`]).
+pub(crate) struct CombatContent {
+    traits: installed_content::unit_leader::Traits,
+    tactics: super::tactics::Content,
+    division_names: installed_content::division_names::Database,
+    commander_tooltips: super::commander_tooltips::Content,
+    tooltips: super::tooltips::Content,
+    /// The tooltip placement and timing defines, or why they are unreadable.
+    tooltip_defines: Result<super::tooltip_painter::TooltipDefines, String>,
+    warnings: Vec<String>,
+}
+
+impl CombatContent {
+    pub(crate) fn read(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
+        // The one trait-name inventory (append_trait 140AD7890) and the one
+        // sub-unit database, for has_trait, has_artillery_ratio, the trait
+        // sprites and the commander hovers.
+        let traits = installed_content::unit_leader::Traits::registered(layers)?;
+        let sub_units =
+            installed_content::unit_leader::sub_units(layers).map_err(|error| error.to_string());
+        // The country-leader traits, which a character's has_trait and the
+        // advisor-trait hover lines name.
+        let country_leader_traits = installed_content::leader_traits::read(layers)
+            .map(|(traits, _)| Arc::new(traits))
+            .map_err(|error| error.to_string());
+        // The tactic registry as the game reads it: the file's one read
+        // (installed_content::combat_tactics).
+        let tactics =
+            super::tactics::Content::from_database(installed_content::combat_tactics::read(layers)?)
+                .with_inventories(
+                    traits.clone(),
+                    sub_units.as_ref(),
+                    installed_content::scripted_triggers::read(layers)?,
+                )
+                .with_country_leader_traits(country_leader_traits.clone());
+        let (division_names, mut warnings) = installed_content::division_names::read(layers)?;
+        let (commander_tooltips, skills) = super::commander_tooltips::Content::load(
+            layers,
+            defines,
+            sub_units,
+            country_leader_traits,
+        )?;
+        let tooltips = super::tooltips::Content::load(skills);
+        warnings.extend(tooltips.warnings().iter().cloned());
+        warnings.extend(commander_tooltips.warnings());
+        warnings.extend(traits.unsupported.iter().map(|reason| {
+            format!("Combat UI: {reason}; no trait sprite is loaded for those names.")
+        }));
+        let tooltip_defines = super::tooltip_painter::TooltipDefines::read(defines)
+            .map_err(|error| error.to_string());
+        Ok(Self {
+            traits,
+            tactics,
+            division_names,
+            commander_tooltips,
+            tooltips,
+            tooltip_defines,
+            warnings,
+        })
+    }
+
+    /// Why the combat tooltips are unavailable, as a warning.
+    fn tooltip_warning(&self) -> Option<String> {
+        let reason = self.tooltip_defines.as_ref().err()?;
+        Some(format!("Combat tooltips are unavailable: {reason}."))
+    }
+
+    /// Hands the tactic triggers the count trigger names, as
+    /// [`Assets::set_count_trigger_names`] does.
+    pub(crate) fn set_count_trigger_names(
+        &mut self,
+        buildings: &installed_content::buildings::Buildings,
+        ideologies: &installed_content::ideologies::Ideologies,
+        resources: &[installed_content::resources::Resource],
+    ) {
+        self.tactics
+            .set_count_names(installed_content::trigger_keys::CountTriggerNames::new(
+                buildings, ideologies, resources,
+            ));
+    }
+
+    /// The reads' warnings, then the tactic registry's and the tooltip
+    /// defines', in the order [`Assets::load`] reports them.
+    pub(crate) fn warnings(&self) -> impl Iterator<Item = String> + '_ {
+        self.warnings
+            .iter()
+            .chain(self.tactics.warnings())
+            .cloned()
+            .chain(self.tooltip_warning())
+    }
+
+    /// Each tactic the registry refuses, or whose picture it cannot form.
+    pub(crate) fn refusals(&self) -> impl Iterator<Item = &str> {
+        self.tactics.refusals()
+    }
+}
+
 impl Assets {
     pub fn load(
         shared: &Arc<ResolvedLayers>,
@@ -478,28 +579,19 @@ impl Assets {
             let key = format!("combat_portrait:{texture}");
             declarations.insert(key, Declaration::texture(Some(texture)));
         }
-        // The one trait-name inventory (append_trait 140AD7890) and the one
-        // sub-unit database, for has_trait, has_artillery_ratio, the trait
-        // sprites and the commander hovers.
-        let traits = installed_content::unit_leader::Traits::registered(layers)?;
-        let sub_units =
-            installed_content::unit_leader::sub_units(layers).map_err(|error| error.to_string());
-        // The country-leader traits, which a character's has_trait and the
-        // advisor-trait hover lines name.
-        let country_leader_traits = installed_content::leader_traits::read(layers)
-            .map(|(traits, _)| Arc::new(traits))
-            .map_err(|error| error.to_string());
-        // The tactic registry as the game reads it: the file's one read
-        // (installed_content::combat_tactics). Each proven tactic's picture declares
-        // its texture; the widgets look it up through the registry.
-        let tactics =
-            super::tactics::Content::from_database(installed_content::combat_tactics::read(layers)?)
-                .with_inventories(
-                    traits.clone(),
-                    sub_units.as_ref(),
-                    installed_content::scripted_triggers::read(layers)?,
-                )
-                .with_country_leader_traits(country_leader_traits.clone());
+        let content = CombatContent::read(layers, defines)?;
+        let content_warnings: Vec<String> = content.warnings().collect();
+        let CombatContent {
+            traits,
+            tactics,
+            division_names,
+            commander_tooltips,
+            tooltips,
+            tooltip_defines,
+            ..
+        } = content;
+        // Each proven tactic's picture declares its texture; the widgets look
+        // it up through the registry.
         for (key, texture) in tactics.pictures() {
             declarations.insert(key.to_owned(), Declaration::texture(Some(texture)));
         }
@@ -586,13 +678,6 @@ impl Assets {
         for name in traits.spellings() {
             wanted.insert(format!("GFX_trait_{name}"));
         }
-        let trait_warnings: Vec<String> = traits
-            .unsupported
-            .iter()
-            .map(|reason| {
-                format!("Combat UI: {reason}; no trait sprite is loaded for those names.")
-            })
-            .collect();
         for name in declarations.keys().filter(|name| {
             name.starts_with("GFX_terrain_")
                 || name.starts_with("GFX_navalcombat_ship_icon_")
@@ -613,23 +698,7 @@ impl Assets {
             wanted.insert(name.clone());
         }
         let mut sprites = BTreeMap::new();
-        let (division_names, mut warnings) = installed_content::division_names::read(layers)?;
-        let (commander_tooltips, skills) = super::commander_tooltips::Content::load(
-            layers,
-            defines,
-            sub_units,
-            country_leader_traits,
-        )?;
-        let tooltips = super::tooltips::Content::load(skills);
-        warnings.extend(tooltips.warnings().iter().cloned());
-        warnings.extend(commander_tooltips.warnings());
-        warnings.extend(trait_warnings);
-        warnings.extend(tactics.warnings().iter().cloned());
-        let tooltip_defines = super::tooltip_painter::TooltipDefines::read(defines)
-            .map_err(|error| error.to_string());
-        if let Err(reason) = &tooltip_defines {
-            warnings.push(format!("Combat tooltips are unavailable: {reason}."));
-        }
+        let mut warnings = content_warnings;
         let mut decoded = BTreeMap::new();
         let mut uncovered_portraits = false;
         // Resolve every wanted sprite's reads up front; the first textures

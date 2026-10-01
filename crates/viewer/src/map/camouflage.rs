@@ -58,6 +58,17 @@ impl Content {
         )
     }
 
+    /// Each set of categories equal under the lexer's fold, which a
+    /// recorded status names at once and so refuses.
+    pub fn refusals(&self) -> impl Iterator<Item = String> + '_ {
+        self.category_tokens.ambiguous().map(|keys| {
+            format!(
+                "acclimatization categories {} are one token under the lexer's fold",
+                keys.join(", ")
+            )
+        })
+    }
+
     pub(crate) fn parse(bytes: &[u8], show_at: i64, show_in_state: i64) -> io::Result<Self> {
         let mut categories = BTreeMap::new();
         for item in parser::parse(bytes)?.items {
