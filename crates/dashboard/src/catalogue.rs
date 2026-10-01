@@ -160,7 +160,7 @@ pub struct Catalogue {
     pub sprites: SpriteSet,
     /// Notes from verifying the recording, such as unverified content allowed by the user.
     pub verification: Vec<String>,
-    /// Standing notes about the recorded content, such as unparsed lines.
+    /// Standing notes about the recorded content, such as native reader logs.
     pub warnings: Vec<String>,
     /// The recording client's game language (the replay identity's, without
     /// its `l_`): the language of text the game stored already localised.
@@ -186,7 +186,8 @@ impl Catalogue {
         let localisation = content::localisation(source, options)?;
         let sprites = installed_content::gfx::read(&content.layers)?;
         for (label, count) in [
-            ("unparsed localisation lines", localisation.unparsed.len()),
+            ("logged localisation diagnostics", localisation.logged.len()),
+            ("refused localisation forms", localisation.refused.len()),
             ("duplicate localisation keys", localisation.duplicates.len()),
         ] {
             if count > 0 {

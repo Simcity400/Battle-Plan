@@ -298,12 +298,11 @@ fn interface(
     if let Some(localisation) = log.read("localisation", || {
         installed_content::localisation::read(layers, language)
     }) {
-        for line in &localisation.unparsed {
-            log.note(
-                "localisation",
-                Kind::ParseFailure,
-                format!("unparsed line {line}"),
-            );
+        for message in &localisation.logged {
+            log.note("localisation", Kind::Logged, message.clone());
+        }
+        for message in &localisation.refused {
+            log.note("localisation", Kind::Refused, message.clone());
         }
         for duplicate in &localisation.duplicates {
             let (key, files) = duplicate.split_once(' ').unwrap_or((duplicate, ""));

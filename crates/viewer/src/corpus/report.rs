@@ -26,7 +26,7 @@ pub enum Kind {
     Unsupported,
     /// A definition, value or lookup refused by name.
     Refused,
-    /// An error the game's reader logs and reads past.
+    /// An error the game logs, then continues or skips as the message states.
     Logged,
     /// Any other note a reader returns about the content.
     Warning,
