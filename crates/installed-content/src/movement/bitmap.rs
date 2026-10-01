@@ -24,7 +24,7 @@ pub(crate) struct NativeBitmap {
 }
 
 impl NativeBitmap {
-    pub fn decode(data: &[u8]) -> io::Result<Self> {
+    pub(crate) fn decode(data: &[u8]) -> io::Result<Self> {
         let head = data
             .get(..54)
             .ok_or_else(|| invalid("BMP is shorter than the native 54-byte header"))?;
@@ -104,12 +104,12 @@ impl NativeBitmap {
     }
 
     /// First stored byte of native pixel `(x, y)`; `y` counts file rows.
-    pub fn byte(&self, x: usize, y: usize) -> io::Result<u8> {
+    pub(super) fn byte(&self, x: usize, y: usize) -> io::Result<u8> {
         Ok(self.at(x, y, 1)?[0])
     }
 
     /// The three bytes the province loader reads as blue, green and red.
-    pub fn rgb(&self, x: usize, y: usize) -> io::Result<[u8; 3]> {
+    pub(crate) fn rgb(&self, x: usize, y: usize) -> io::Result<[u8; 3]> {
         let [b, g, r] = self.at(x, y, 3)?.try_into().unwrap();
         Ok([r, g, b])
     }
