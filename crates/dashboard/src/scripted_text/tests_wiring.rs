@@ -332,6 +332,7 @@ fn first_party_leaders_and_custom_party_names_use_the_real_localiser() {
                 party: 9,
                 ordinal: 0,
                 character: Some(7),
+                role: Some(9),
                 ..Default::default()
             },
             PartyLeaderRow {
@@ -339,6 +340,7 @@ fn first_party_leaders_and_custom_party_names_use_the_real_localiser() {
                 party: 9,
                 ordinal: 1,
                 character: Some(8),
+                role: Some(9),
                 ..Default::default()
             },
             PartyLeaderRow {
@@ -353,6 +355,7 @@ fn first_party_leaders_and_custom_party_names_use_the_real_localiser() {
                 party: 10,
                 ordinal: 1,
                 character: Some(8),
+                role: Some(9),
                 ..Default::default()
             },
         ],
@@ -417,6 +420,7 @@ fn genders_manpower_and_agency_preserve_native_empty_and_wrapping_rules() {
             country: 100,
             party: 9,
             character: Some(7),
+            role: Some(9),
             ..Default::default()
         }],
     );

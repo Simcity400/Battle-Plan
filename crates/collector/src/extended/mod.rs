@@ -431,8 +431,6 @@ impl Capacities {
             .raise_for_demand(demand.character_inputs);
         self.governance
             .raise_for_party_leaders(demand.party_leaders);
-        self.country_appearance
-            .raise_for_leader_traits(demand.leader_traits);
         self.country_counters
             .raise_for_civil_wars(demand.civil_wars);
         self.hired_advisors

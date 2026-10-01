@@ -197,6 +197,7 @@ impl MapIcons {
         )?;
         let mut raids = super::raids::RaidAssets::load(layers, defines, map, &interface.registry)?;
         raids.triggers = combat.tactics.trigger_names();
+        raids.character_traits = combat.tactics.trait_databases();
         counters
             .gui
             .load(layers, &raids.gui_assets(), &mut images)?;

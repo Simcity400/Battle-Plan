@@ -299,27 +299,14 @@ impl<'a> Tables<'a> {
             // The first definition of the name, by identity: its database
             // ordinal (+0x1A0), which a later definition of the name lacks.
             Ok(Some(ordinal)) => {
-                // A role holding the name's token at another ordinal holds a
-                // later definition of the name; the content must agree, or
-                // its reading counts definitions differently from 1407112F0.
                 let token = names.lexer.token_of(operand)?;
-                let mut held = false;
-                for row in own().filter(|row| row.kind != CharacterRoleTraitRow::SCIENTIST) {
-                    for (&held_token, &definition) in row.tokens.iter().zip(&row.definitions) {
-                        if definition == ordinal {
-                            held = true;
-                        } else if Some(held_token) == token
-                            && !country_leaders
-                                .by_ordinal(definition)
-                                .is_some_and(|found| found.token.eq_ignore_ascii_case(name))
-                        {
-                            return Err(format!(
-                                "character {character} holds trait {shown}'s token as definition {definition}, which the content's country-leader traits do not give that name, so which definition 140712D30 finds is unknown"
-                            ));
-                        }
-                    }
-                }
-                Ok(held)
+                holds_country_leader_trait(
+                    own().filter(|row| row.kind != CharacterRoleTraitRow::SCIENTIST),
+                    country_leaders,
+                    name,
+                    ordinal,
+                    token,
+                )
             }
             // The scientist trait database is keyed by the token (14022F320).
             Ok(None) => Ok(names.lexer.token_of(operand)?.is_some_and(|token| {
@@ -329,4 +316,32 @@ impl<'a> Tables<'a> {
             })),
         }
     }
+}
+
+/// 1403D7D20 and 140B9D6D0 compare trait pointers, recorded as ordinals.
+pub(crate) fn holds_country_leader_trait<'a>(
+    rows: impl Iterator<Item = &'a CharacterRoleTraitRow>,
+    traits: &LeaderTraits,
+    name: &str,
+    ordinal: u32,
+    token: Option<u32>,
+) -> Evaluation<bool> {
+    let mut held = false;
+    for row in rows {
+        for (&held_token, &definition) in row.tokens.iter().zip(&row.definitions) {
+            if definition == ordinal {
+                held = true;
+            } else if Some(held_token) == token
+                && !traits
+                    .by_ordinal(definition)
+                    .is_some_and(|found| found.token.eq_ignore_ascii_case(name))
+            {
+                return Err(format!(
+                    "character {} holds trait {name}'s token as definition {definition}, which the content's country-leader traits do not give that name, so which definition 140712D30 finds is unknown",
+                    row.character
+                ));
+            }
+        }
+    }
+    Ok(held)
 }

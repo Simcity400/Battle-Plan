@@ -2030,6 +2030,7 @@ impl Captured {
                 ordinal: r.ordinal,
                 character: r.character,
                 leader_id: r.leader_id,
+                role: r.role,
             })),
         ]
     }
@@ -2039,6 +2040,57 @@ impl Captured {
 mod tests {
     use super::*;
     use engine::cnational_focus;
+
+    #[test]
+    fn party_leader_role_identity_survives_capture_at_country_scale() {
+        use engine::{ccharacter, ccountry, ccountry_leader, cideology_group, memory::SliceMemory};
+        let mut bytes = vec![0_u8; 0x3000];
+        let mut word = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        word(0x100, ccountry::VTABLE_RVA as u64);
+        word(0x100 + ccountry::POLITICAL_STATUS, 0x1200);
+        word(0x1200, cpolitical_status::VTABLE_RVA as u64);
+        word(0x1200 + cpolitical_status::COUNTRY, 0x100);
+        word(0x1200 + cpolitical_status::PARTIES, 0x1400);
+        word(0x1200 + cpolitical_status::PARTIES + 8, (1 << 32) | 1);
+        word(0x1400, 0x1500);
+        word(0x1500, cpolitical_party::VTABLE_RVA as u64);
+        word(0x1500 + cpolitical_party::ID, 7);
+        word(0x1500 + cpolitical_party::IDEOLOGY_GROUP, 0x1600);
+        word(0x1600, cideology_group::VTABLE_RVA as u64);
+        word(0x1600 + cideology_group::ID, 7);
+        word(0x1500 + cpolitical_party::COUNTRY_LEADERS, 0x1700);
+        word(0x1500 + cpolitical_party::COUNTRY_LEADERS + 8, (1 << 32) | 1);
+        word(0x1700, 0x1800);
+        word(0x1800, ccountry_leader::VTABLE_RVA as u64);
+        word(0x1800 + ccountry_leader::CHARACTER, 0x1a00);
+        word(0x1800 + ccountry_leader::LEADER_ID, 12);
+        word(0x1800 + 0x140, 0x2500); // Changed ideology; the role key is still -7.
+        word(0x1a00, ccharacter::VTABLE_RVA as u64);
+        word(0x1a00 + ccharacter::TYPE, (91_u64 << 32) | u64::from(ccharacter::REFERENCE_TYPE));
+        word(0x1a00 + ccharacter::LEADER_MAP_HEAD, 0x1c00);
+        word(0x1a00 + ccharacter::LEADER_MAP_SIZE, 1);
+        for offset in [0, 8, 16] {
+            word(0x1c00 + offset, 0x1c40);
+            word(0x1c40 + offset, 0x1c00);
+        }
+        word(0x1c00 + 0x18, 1 << 8);
+        word(0x1c40 + 0x20, u64::from((-7_i32) as u32));
+        word(0x1c40 + 0x28, 0x1800);
+        let memory = SliceMemory { base: 0, bytes: &bytes };
+        let reader = cpolitical_status::Reader::new(&memory, 0, 0x100).unwrap();
+        let mut captured = Captured::vacant();
+        captured.party_leaders = CaptureRows::new(5_000);
+        for (index, destination) in captured.party_leaders.rows.iter_mut().enumerate() {
+            assert_eq!(reader.party_leaders(index as u32 + 1, std::slice::from_mut(destination)), Outcome::Rows { len: 1 });
+        }
+        captured.party_leaders.outcome = Outcome::Rows { len: 5_000 };
+        let tables = captured.tables();
+        let TableView::Complete(TableRows::PartyLeaders(rows)) = &tables[21] else { panic!("leaders missing") };
+        assert_eq!(rows.len(), 5_000);
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!((row.country, row.character, row.role, row.leader_id), (index as u32 + 1, Some(91), Some(-7), 12));
+        }
+    }
 
     #[test]
     fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {

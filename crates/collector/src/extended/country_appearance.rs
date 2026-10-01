@@ -1,11 +1,7 @@
 //! Current country colour bits, cosmetic tag, name operands, the retained old
-//! names and the ruling party's first leader's character and trait tokens,
+//! names and the ruling party's first leader's character,
 //! sampled hourly.
-use crate::{
-    sampling::qpc,
-    spooling::{table, unavailable},
-    table_capture::{Arena, CaptureRows},
-};
+use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
 use engine::{Memory, ccountry, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -19,14 +15,10 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
-    traits: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
-        Self {
-            rows: 512,
-            traits: 512,
-        }
+        Self { rows: 512 }
     }
 }
 impl Capacities {
@@ -34,58 +26,43 @@ impl Capacities {
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));
     }
-
-    /// The trait arena from the live total of every ruling first leader's
-    /// traits (`country_scale::observe_politics`), with the three-quarters
-    /// growth rule's headroom. Never lowers.
-    pub(crate) fn raise_for_leader_traits(&mut self, traits: usize) {
-        crate::country_scale::raise(&mut self.traits, crate::country_scale::rows(traits, 1));
-    }
 }
 
 pub struct Captured {
     rows: CaptureRows<ccountry::AppearanceRow>,
-    traits: Arena<u32>,
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
-        Self::with_capacities(&Capacities { rows: 0, traits: 0 })
+        Self::with_capacities(&Capacities { rows: 0 })
     }
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
-            traits: Arena::new(capacity.traits),
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
-        self.traits.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes() + self.traits.allocated_bytes()
+        self.rows.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
-        self.traits.grow(&mut capacity.traits);
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         match ccountry::dynamic_boundary(memory, base) {
             Some(boundary) => {
-                let walk = ccountry::walk_appearance(
+                self.rows.outcome = ccountry::walk_appearance(
                     memory,
                     base,
                     state,
                     boundary,
                     &mut self.rows.rows,
-                    &mut self.traits.first,
                 );
-                self.rows.outcome = walk.outcome;
-                self.traits.len = walk.traits_len;
-                self.traits.required = walk.required_traits;
             }
             None => {
                 self.rows.outcome = Outcome::Unavailable {
@@ -100,18 +77,6 @@ impl Captured {
     }
 
     pub fn tables(&self) -> [TableView; N] {
-        let Some(traits) = self.traits.first.get(..self.traits.len) else {
-            return [unavailable("leader trait arena length invalid")];
-        };
-        let span = |row: &ccountry::AppearanceRow| {
-            row.leader_traits_start
-                .checked_add(row.leader_traits_len)
-                .and_then(|end| traits.get(row.leader_traits_start..end))
-        };
-        let rows = &self.rows.rows[..self.rows.outcome.len().min(self.rows.rows.len())];
-        if rows.iter().any(|row| span(row).is_none()) {
-            return [unavailable("leader traits outside captured arena")];
-        }
         [table::<tables::CountryAppearance, _>(
             self.outcomes()[0],
             &self.rows.rows,
@@ -131,7 +96,6 @@ impl Captured {
                 ui_green: r.ui_rgba[1],
                 ui_blue: r.ui_rgba[2],
                 ui_alpha: r.ui_rgba[3],
-                leader_traits: span(r).unwrap().to_vec(),
                 old_name: r.old_names.map(|names| names[0].as_bytes().to_vec()),
                 old_adjective: r.old_names.map(|names| names[1].as_bytes().to_vec()),
                 old_definite_name: r.old_names.map(|names| names[2].as_bytes().to_vec()),
@@ -150,7 +114,7 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        let mut capture = Captured::with_capacities(&Capacities { rows: 1, traits: 4 });
+        let mut capture = Captured::with_capacities(&Capacities { rows: 1 });
         capture.capture(&memory, 0, 0);
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         capture.reset();
@@ -160,10 +124,6 @@ mod tests {
         capture.rows.rows[0].cosmetic_tag.bytes[..3].copy_from_slice(&[65, 0, 255]);
         capture.rows.rows[0].cosmetic_tag.len = 3;
         capture.rows.rows[0].leader_character = Some(0);
-        capture.traits.first[..3].copy_from_slice(&[9, 0x2ff1, 7]);
-        capture.traits.len = 3;
-        capture.rows.rows[0].leader_traits_start = 1;
-        capture.rows.rows[0].leader_traits_len = 2;
         capture.rows.outcome = Outcome::Rows { len: 1 };
         let [TableView::Complete(replay::rows::TableRows::CountryAppearance(rows))] =
             capture.tables()
@@ -180,20 +140,6 @@ mod tests {
             [rows[0].ui_red, rows[0].ui_green, rows[0].ui_blue, rows[0].ui_alpha],
             [0x3f000000, 0x00000001, 0x7f800000, 0xbf800000]
         );
-        assert_eq!(rows[0].leader_traits, [0x2ff1, 7]);
         assert_eq!(rows[0].old_name, None);
-        // A span past the captured traits withholds the table.
-        capture.rows.rows[0].leader_traits_len = 3;
-        assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
-    }
-
-    #[test]
-    fn trait_capacity_follows_the_live_trait_total() {
-        let mut capacity = Capacities::default();
-        capacity.raise_for_leader_traits(30_000);
-        assert!(capacity.traits >= 40_000);
-        let raised = capacity;
-        capacity.raise_for_leader_traits(3);
-        assert!(capacity == raised);
     }
 }

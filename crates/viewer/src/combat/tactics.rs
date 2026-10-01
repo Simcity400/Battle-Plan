@@ -208,6 +208,13 @@ impl Content {
         }
     }
 
+    /// Share the loaded trait content with the raid trigger evaluator.
+    pub(crate) fn trait_databases(&self) -> Option<(Traits, Result<Arc<LeaderTraits>, String>)> {
+        self.country_leader_traits
+            .as_ref()
+            .map(|traits| (self.leader_traits.clone(), traits.clone()))
+    }
+
     /// The unit-leader trait names and the sub-unit database, each from its
     /// one reader in installed_content::unit_leader, and the scripted triggers
     /// (installed_content::scripted_triggers), with their refusals. Scripted bodies load

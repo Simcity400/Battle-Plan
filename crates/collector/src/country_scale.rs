@@ -170,7 +170,7 @@ pub fn observe_characters(memory: &impl Memory, base: usize) -> Option<Character
 /// Live demand of the political and character tables whose per-country
 /// sizes content and play decide: CountryCharacters' active-character
 /// records, CountryRetiredCharacters' retired ones, PartyLeaders' party
-/// leaders, CountryAppearance's leader trait tokens, CountryCivilWars'
+/// leaders, CountryCivilWars'
 /// entries, AdvisorTokens' keys and bytes, FactionAdvisors' occupied slots
 /// and token bytes, and the character inputs' rows and values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -178,7 +178,6 @@ pub struct PoliticsDemand {
     pub active_characters: usize,
     pub retired_characters: usize,
     pub party_leaders: usize,
-    pub leader_traits: usize,
     pub civil_wars: usize,
     pub advisor_tokens: usize,
     pub advisor_token_bytes: usize,
@@ -195,7 +194,6 @@ impl PoliticsDemand {
             || self.active_characters > seen.active_characters
             || self.retired_characters > seen.retired_characters
             || self.party_leaders > seen.party_leaders
-            || self.leader_traits > seen.leader_traits
             || self.civil_wars > seen.civil_wars
             || self.advisor_tokens > seen.advisor_tokens
             || self.advisor_token_bytes > seen.advisor_token_bytes
@@ -211,7 +209,6 @@ impl PoliticsDemand {
             active_characters: self.active_characters.max(other.active_characters),
             retired_characters: self.retired_characters.max(other.retired_characters),
             party_leaders: self.party_leaders.max(other.party_leaders),
-            leader_traits: self.leader_traits.max(other.leader_traits),
             civil_wars: self.civil_wars.max(other.civil_wars),
             advisor_tokens: self.advisor_tokens.max(other.advisor_tokens),
             advisor_token_bytes: self.advisor_token_bytes.max(other.advisor_token_bytes),
@@ -250,7 +247,6 @@ pub fn observe_politics(memory: &impl Memory, base: usize) -> Option<PoliticsDem
         retired_characters: demand(retired),
         party_leaders: engine::cpolitical_status::party_leader_demand(memory, base, state)
             .unwrap_or(0),
-        leader_traits: engine::ccountry::leader_trait_demand(memory, base, state).unwrap_or(0),
         civil_wars: demand(engine::ccountry::walk_civil_wars(
             memory,
             base,
@@ -376,12 +372,6 @@ mod tests {
         assert!(sizing.extended != before);
         let before = sizing.extended;
         sizing.extended.raise_for_politics(PoliticsDemand {
-            leader_traits: 1 << 20,
-            ..Default::default()
-        });
-        assert!(sizing.extended != before);
-        let before = sizing.extended;
-        sizing.extended.raise_for_politics(PoliticsDemand {
             civil_wars: 1 << 20,
             ..Default::default()
         });
@@ -406,7 +396,6 @@ mod tests {
             active_characters: 5,
             retired_characters: 1,
             party_leaders: 3,
-            leader_traits: 2,
             civil_wars: 1,
             advisor_tokens: 4,
             advisor_token_bytes: 40,

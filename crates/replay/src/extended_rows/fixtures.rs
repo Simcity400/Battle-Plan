@@ -623,7 +623,7 @@ fixture!(NavalCombatShipRow, |key| { combat: (key >> 33) as u64, side: ((key >> 
 fixture!(NavalCombatResultDetailsRow, |key| { result: key as u64 }, { sides: [NavalResultSideDetails;2] });
 // Combat fixture end
 fixture!(TrainInventoryRow, |key| {country: key as u32}, {node_count: u32, allocations: Vec<TrainAllocation>, controller_access: SparseBytes});
-fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, leader_traits: Vec<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32});
+fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32});
 fixture!(ArmyIconInputRow, |key| {division: key as u64}, {separate_counter: u8, alternate_template: u64});
 fixture!(ProvinceUnitOrderRow,|key| {province:key as u32},{mixed:Vec<u64>,naval:Vec<u64>});
 sample_struct!(CharacterPortrait {category:u32,size:u32,is_set:u8,kind:u32,identity:Vec<u8>});
@@ -713,7 +713,7 @@ fixture!(DivisionRetreatBanRow, |key| {division: key as u64}, {owner: u32, bans:
 fixture!(StateCoreRow, |key| {state: key as u32}, {cores: Vec<u32>});
 fixture!(InvasionPreparationRow, |key| {owner_group: (key >> 32) as u64, instance: key as u32}, {progress: i64, target: u32, country_term: i64, relation_term: Option<i64>, relation_bonus: Option<i64>, leader_term: Option<i64>, leader_applies: u8, days_term: i64, unit_owner: u32, zero_war_present: u8, zero_war_retired: u8, zero_co_belligerent: u8, co_belligerents: Vec<u32>});
 fixture!(CountryCharacterRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {character: Option<u32>});
-fixture!(PartyLeaderRow, |key| {country: (key >> 64) as u32, party: (key >> 32) as u32, ordinal: key as u32}, {character: Option<u32>, leader_id: i32});
+fixture!(PartyLeaderRow, |key| {country: (key >> 64) as u32, party: (key >> 32) as u32, ordinal: key as u32}, {character: Option<u32>, leader_id: i32, role: Option<i32>});
 fixture!(CountryCivilWarRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {target: u32});
 fixture!(AdvisorTokenRow, |key| {ordinal: key as u32}, {token: Vec<u8>});
 fixture!(FactionAdvisorRow, |key| {faction: (key >> 32) as u64, ordinal: key as u32}, {token: Vec<u8>});
@@ -1779,6 +1779,52 @@ fn train_inventory_access_for_five_thousand_controllers_round_trips_sparsely() {
 }
 
 #[test]
+fn party_leader_role_keys_round_trip_and_delta() {
+    let previous = PartyLeaderRow {
+        character: Some(0),
+        role: Some(i32::MIN),
+        leader_id: -1,
+        ..Default::default()
+    };
+    for role in [i32::MIN, 0, i32::MAX] {
+        let row = PartyLeaderRow {
+            role: Some(role),
+            ..previous.clone()
+        };
+        let mut bytes = Vec::new();
+        encode_row(&row, 0, &mut bytes).unwrap();
+        assert_eq!(
+            decode_row::<PartyLeaderRow>(0, &mut Decoder::new(&bytes)).unwrap(),
+            row
+        );
+        if role != i32::MIN {
+            let delta = row.delta(Some(&previous)).unwrap().unwrap();
+            assert_eq!(delta.mask, 1 << 2);
+            assert_eq!(delta.apply(Some(previous.clone())).unwrap(), row);
+        }
+    }
+    let none = PartyLeaderRow {
+        character: None,
+        role: None,
+        ..previous.clone()
+    };
+    let delta = none.delta(Some(&previous)).unwrap().unwrap();
+    assert_eq!(delta.apply(Some(previous.clone())).unwrap(), none);
+    for row in [
+        PartyLeaderRow {
+            role: None,
+            ..previous.clone()
+        },
+        PartyLeaderRow {
+            character: None,
+            ..previous
+        },
+    ] {
+        assert!(encode_row(&row, 0, &mut Vec::new()).is_err());
+    }
+}
+
+#[test]
 fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
     let previous = CountryAppearanceRow {
         country: u32::MAX,
@@ -1792,7 +1838,6 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         overlord: -1,
         graphical_culture: b"western_european_gfx".to_vec(),
         leader_character: Some(u32::MAX),
-        leader_traits: vec![0, u32::MAX, 7],
         old_name: Some(b"Deutsches Reich".to_vec()),
         old_adjective: Some(Vec::new()),
         old_definite_name: None,
@@ -1843,7 +1888,7 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
             next
         );
         let delta = next.delta(Some(&previous)).unwrap().unwrap();
-        assert_eq!(delta.mask, 1 << 11);
+        assert_eq!(delta.mask, 1 << 10);
         assert_eq!(delta.apply(Some(previous.clone())).unwrap(), next);
     }
     // A cosmetic change rewrites the UI colour: its own column, not the primary's.
@@ -1852,7 +1897,7 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         ..previous.clone()
     };
     let delta = recoloured.delta(Some(&previous)).unwrap().unwrap();
-    assert_eq!(delta.mask, 1 << 15);
+    assert_eq!(delta.mask, 1 << 14);
     assert_eq!(delta.apply(Some(previous.clone())).unwrap(), recoloured);
 }
 

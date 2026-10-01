@@ -292,7 +292,7 @@ fn compare_country_leader_roles(
         count += actual.min(character.country_leaders.len());
     }
     report.compared("CountryLeaderRoles (per-character census)", count);
-    report.limitation("country leader serializer writes the role's ideology definition; the captured native map key is not serialized directly and its runtime equivalence is unproved; only per-character role census and country are compared", "CountryLeaderRoles.ideology");
+    report.limitation("country leader serializer does not write numeric role-map keys; the oracle compares the per-character census and joins trait and party-leader rows by signed map order", "CountryLeaderRoles.ideology, PartyLeaders.role");
     report.limitation("persistent country leader and advisor roles do not assert ruling status or cabinet appointment; those require same-hour political membership", "CountryLeaderRoles, AdvisorRoles");
     Ok(())
 }
@@ -353,6 +353,20 @@ fn compare_advisors(
     Ok(())
 }
 
+/// Signed map order is the serializer's role order (140F913A0, comparator 140F8A750).
+pub(super) fn leader_role_keys(frame: &DecodedFrame) -> io::Result<BTreeMap<u64, Vec<i32>>> {
+    let mut keys = BTreeMap::<u64, Vec<i32>>::new();
+    for row in complete::<tables::CountryLeaderRoles>(frame)? {
+        keys.entry(handle(73, row.character))
+            .or_default()
+            .push(row.ideology);
+    }
+    for keys in keys.values_mut() {
+        keys.sort_unstable();
+    }
+    Ok(keys)
+}
+
 /// Each recorded role trait array against the role's saved `traits`, in
 /// order, the membership built from the save and the role tables alone:
 /// `CCharacter::Serialize@140F913A0` writes the country-leader roles
@@ -388,20 +402,13 @@ fn compare_role_traits(
     for row in rows {
         recorded.insert((handle(73, row.character), row.kind, row.role), row);
     }
-    let mut leader_keys = BTreeMap::<u64, Vec<i32>>::new();
-    for row in complete::<tables::CountryLeaderRoles>(frame)? {
-        leader_keys
-            .entry(handle(73, row.character))
-            .or_default()
-            .push(row.ideology);
-    }
+    let mut leader_keys = leader_role_keys(frame)?;
     let mut unnamed = Vec::new();
     let mut compared = 0;
     for (&id, character) in &manager.characters {
         // (kind, role) -> the saved trait names, for every nonempty saved array.
         let mut expected = BTreeMap::<(u8, u32), &[Vec<u8>]>::new();
-        let mut keys = leader_keys.remove(&id).unwrap_or_default();
-        keys.sort_unstable();
+        let keys = leader_keys.remove(&id).unwrap_or_default();
         if keys.len() == character.country_leaders.len() {
             for (key, role) in keys.iter().zip(&character.country_leaders) {
                 if !role.traits.is_empty() {
