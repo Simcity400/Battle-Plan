@@ -164,6 +164,13 @@ impl Captured {
             + self.air.allocated_bytes()
             + self.hits.allocated_bytes()
             + self.planes.allocated_bytes()
+            + self
+                .planes
+                .first
+                .iter()
+                .flat_map(|plane| &plane.wings)
+                .map(|wings| wings.capacity() * size_of::<u64>())
+                .sum::<usize>()
             + self.plane_air.allocated_bytes()
             + self.plane_hits.allocated_bytes()
             + self.plane_kills.allocated_bytes()
@@ -189,9 +196,11 @@ impl Captured {
         c.weapon_terms = c.weapon_terms.max(self.weapon_terms.first.capacity());
         self.details.grow(&mut c.details);
         self.ships.grow(&mut c.ships);
-        self.damage.grow(&mut c.damage);
-        self.air.grow(&mut c.air);
-        self.hits.grow(&mut c.hits);
+        // These owned arenas grew from successfully read entries in the
+        // worker. A failed payload's declared count must not size a pool.
+        grow_vec(&mut self.damage.first, c.damage);
+        grow_vec(&mut self.air.first, c.air);
+        grow_vec(&mut self.hits.first, c.hits);
         grow_capacity(&mut c.groups, self.required_groups);
         grow_vec(&mut self.groups, c.groups);
         self.planes.grow(&mut c.planes);
@@ -199,8 +208,8 @@ impl Captured {
         self.plane_hits.grow(&mut c.plane_hits);
         self.plane_kills.grow(&mut c.plane_kills);
         self.commanders.grow(&mut c.commanders);
-        self.weapon_sources.grow(&mut c.weapon_sources);
-        self.weapon_terms.grow(&mut c.weapon_terms);
+        grow_vec(&mut self.weapon_sources.first, c.weapon_sources);
+        grow_vec(&mut self.weapon_terms.first, c.weapon_terms);
         self.dense_bases.grow(&mut c.dense_bases);
         self.dense_wings.grow(&mut c.dense_wings);
         if self.base_handles.len() >= c.dense_bases.saturating_sub(c.dense_bases / 4) {
@@ -421,9 +430,7 @@ impl Captured {
                                 air_base: p.air_base,
                                 casualties: p.casualties,
                                 time_duration: p.time_duration,
-                                wings: std::array::from_fn(|i| {
-                                    p.wings[i][..p.wing_counts[i]].to_vec()
-                                }),
+                                wings: p.wings.clone(),
                                 initial_planes: p.initial_planes,
                                 current_planes: p.current_planes,
                                 country: p.country,
@@ -877,6 +884,8 @@ mod tests {
         c.planes.first[0].naval_hits = [0, 1];
         c.plane_air.first[0].variant = 111;
         c.plane_hits.first[0].target_slot = 12;
+        const WINGS: usize = 257;
+        c.planes.first[0].wings[0] = (1..=WINGS as u64).collect();
         c.ships.rows[0].member.combat = 42;
         c.ships.rows[0].member.battle_slot = 5;
         c.ships.rows[0].air_hits[0] = [0, 1];
@@ -899,6 +908,8 @@ mod tests {
         };
         assert_eq!(details[0].sides[0].planes[0].air_hits[0][0].variant, 111);
         assert_eq!(details[0].sides[0].planes[0].naval_hits[0].target_slot, 12);
+        assert_eq!(details[0].sides[0].planes[0].wings[0].len(), WINGS);
+        assert_eq!(details[0].sides[0].planes[0].wings[0][WINGS - 1], WINGS as u64);
         assert_eq!(ships[0].air_hits[0][0].variant, 222);
         assert_eq!(ships[0].naval_hits[0].target_slot, 34);
         assert_eq!(ships[0].weapon_context.sources[0].scope, 3);

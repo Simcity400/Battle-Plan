@@ -17,12 +17,13 @@
 
 use crate::{
     Memory, cadvisor,
-    ccharacter::{self, RoleTree, at},
+    ccharacter::{self, at},
     ccharacter_manager::Roster,
     ccountry_leader, character_advisor_node, character_leader_node,
     cpdx_array::Array,
     creference_registry, cscientist, cunit_leader, cunit_leader_skill, cunit_leader_trait,
     memory::{RecordField, RecordLayout, RecordSources},
+    msvc_tree_node::Cursor as RoleTree,
     null_unit_leader_skill, read, read_slice,
     walk::Outcome,
 };

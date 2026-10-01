@@ -81,10 +81,7 @@ fn values(memory: &impl Memory, address: usize) -> Result<[Modifier; 5], &'stati
     if cached {
         return Ok(result);
     }
-    let array = Array::read(memory, address, 16).ok_or("naval summary modifier array invalid")?;
-    if array.count > 8192 {
-        return Err("naval summary modifier bound exceeded");
-    }
+    Array::read(memory, address, 16).ok_or("naval summary modifier array invalid")?;
     let mut raw = [accumulator::Value::default(); 5];
     accumulator::lookup_many_at(memory, address, &MODIFIER_KEYS, &mut raw)?;
     for (out, value) in result.iter_mut().zip(raw) {
@@ -351,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_modifier_lookup_preserves_absence_extremes_and_rejects_unbounded_arrays() {
+    fn raw_modifier_lookup_preserves_absence_extremes_and_rejects_short_arrays() {
         let mut data = vec![0; 64];
         data[..8].copy_from_slice(&0x1020u64.to_le_bytes());
         data[8..12].copy_from_slice(&2u32.to_le_bytes());
@@ -390,7 +387,33 @@ mod tests {
                 },
                 0x1000
             ),
-            Err("naval summary modifier bound exceeded")
+            Err("modifier accumulator entry unreadable")
+        );
+    }
+
+    #[test]
+    fn modifier_arrays_past_8192_are_read_whole() {
+        const COUNT: usize = 8193;
+        let mut data = vec![0; 16 + COUNT * 16];
+        data[..8].copy_from_slice(&0x1010u64.to_le_bytes());
+        data[8..12].copy_from_slice(&(COUNT as u32).to_le_bytes());
+        data[12..16].copy_from_slice(&(COUNT as u32).to_le_bytes());
+        for index in 0..COUNT {
+            let at = 16 + index * 16;
+            data[at..at + 4].copy_from_slice(&(index as u32 + 1).to_le_bytes());
+            data[at + 8..at + 16].copy_from_slice(&i64::MIN.to_le_bytes());
+        }
+        let row = values(
+            &crate::memory::SliceMemory {
+                base: 0x1000,
+                bytes: &data,
+            },
+            0x1000,
+        )
+        .unwrap();
+        assert!(
+            row.iter()
+                .all(|value| value.present == 1 && value.raw == i64::MIN)
         );
     }
 }

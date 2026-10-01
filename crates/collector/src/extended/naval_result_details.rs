@@ -15,6 +15,7 @@ use replay::{
     frame::TableView,
     rows::{self, TableId, tables},
 };
+use std::collections::HashMap;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NavalCombatResultDetails];
@@ -46,7 +47,7 @@ impl Default for Capacities {
         }
     }
 }
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, PartialEq, Eq)]
 struct Side {
     details: side::DetailsRow,
     ships: [usize; 2],
@@ -54,7 +55,7 @@ struct Side {
     hq_modifiers: [usize; 2],
     commanders: [Option<usize>; 2],
 }
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, PartialEq, Eq)]
 struct Row {
     result: u64,
     sides: [Side; 2],
@@ -69,8 +70,7 @@ pub struct Captured {
     sources: Arena<influence::SourceRow>,
     terms: Arena<influence::ModifierTerm>,
     commanders: Arena<commander::Row>,
-    commander_keys: Vec<u64>,
-    commander_slots: Vec<u32>,
+    commander_keys: HashMap<u64, usize>,
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -84,8 +84,7 @@ impl Captured {
             sources: Arena::new(0),
             terms: Arena::new(0),
             commanders: Arena::new(0),
-            commander_keys: Vec::new(),
-            commander_slots: Vec::new(),
+            commander_keys: HashMap::new(),
         }
     }
 
@@ -99,8 +98,7 @@ impl Captured {
             sources: Arena::new(c.sources),
             terms: Arena::new(c.terms),
             commanders: Arena::new(c.commanders),
-            commander_keys: vec![0; 65_536],
-            commander_slots: vec![0; 131_072],
+            commander_keys: HashMap::with_capacity(c.commanders),
         }
     }
     pub fn reset(&mut self) {
@@ -115,6 +113,13 @@ impl Captured {
     }
     pub fn allocated_bytes(&self) -> usize {
         self.results.allocated_bytes()
+            + self
+                .results
+                .rows
+                .iter()
+                .flat_map(|row| &row.sides)
+                .map(|side| side.details.hq_influences.capacity() * size_of::<u64>())
+                .sum::<usize>()
             + self.ships.allocated_bytes()
             + self.planes.allocated_bytes()
             + self.air.allocated_bytes()
@@ -122,8 +127,7 @@ impl Captured {
             + self.sources.allocated_bytes()
             + self.terms.allocated_bytes()
             + self.commanders.allocated_bytes()
-            + self.commander_keys.capacity() * size_of::<u64>()
-            + self.commander_slots.capacity() * size_of::<u32>()
+            + self.commander_keys.capacity() * (size_of::<(u64, usize)>() + 1)
     }
     pub fn grow(&mut self, c: &mut Capacities) {
         // Ordinary can grow owned storage during its original native walk.
@@ -137,16 +141,18 @@ impl Captured {
         c.terms = c.terms.max(self.terms.first.capacity());
         c.commanders = c.commanders.max(self.commanders.first.capacity());
         self.results.grow(&mut c.results);
-        self.ships.grow(&mut c.ships);
-        self.planes.grow(&mut c.planes);
-        self.air.grow(&mut c.air);
-        self.hits.grow(&mut c.hits);
-        self.sources.grow(&mut c.sources);
-        self.terms.grow(&mut c.terms);
-        self.commanders.grow(&mut c.commanders);
+        // All owned arenas grow from readable entries in the original pass;
+        // copy their allocations without trusting a failed payload's count.
+        grow_vec(&mut self.ships.first, c.ships);
+        grow_vec(&mut self.planes.first, c.planes);
+        grow_vec(&mut self.air.first, c.air);
+        grow_vec(&mut self.hits.first, c.hits);
+        grow_vec(&mut self.sources.first, c.sources);
+        grow_vec(&mut self.terms.first, c.terms);
+        grow_vec(&mut self.commanders.first, c.commanders);
     }
     fn pass(&mut self, memory: &impl Memory, base: usize, state: usize) -> Outcome {
-        self.commander_slots.fill(0);
+        self.commander_keys.clear();
         let mut pass = Pass {
             rows: &mut self.results.rows,
             ships: &mut self.ships.first,
@@ -157,7 +163,6 @@ impl Captured {
             terms: &mut self.terms.first,
             commanders: &mut self.commanders.first,
             commander_keys: &mut self.commander_keys,
-            commander_slots: &mut self.commander_slots,
             commanders_len: 0,
             commanders_required: 0,
             len: 0,
@@ -220,10 +225,10 @@ impl Captured {
             &self.results.rows,
             |r| rows::NavalCombatResultDetailsRow {
                 result: r.result,
-                sides: r.sides.map(|s| rows::NavalResultSideDetails {
+                sides: r.sides.each_ref().map(|s| rows::NavalResultSideDetails {
                     leader: s.details.leader,
                     hq_leader: s.details.hq_leader,
-                    hq_influences: s.details.hq_influences[..s.details.hq_influence_count].to_vec(),
+                    hq_influences: s.details.hq_influences.clone(),
                     commander_context: s.commanders[0]
                         .filter(|index| self.commanders.first[*index].commander != 0)
                         .map(|index| {
@@ -315,8 +320,7 @@ struct Pass<'a> {
     sources: &'a mut Vec<influence::SourceRow>,
     terms: &'a mut Vec<influence::ModifierTerm>,
     commanders: &'a mut Vec<commander::Row>,
-    commander_keys: &'a mut Vec<u64>,
-    commander_slots: &'a mut Vec<u32>,
+    commander_keys: &'a mut HashMap<u64, usize>,
     commanders_len: usize,
     commanders_required: usize,
     len: usize,
@@ -333,44 +337,24 @@ impl Pass<'_> {
         if handle == 0 {
             return Ok(None);
         }
-        // Keep the existing independent census bound, including when the
-        // allocation-free placeholder is exercised by a synthetic fixture.
-        grow_vec(self.commander_keys, 65_536);
-        grow_vec(self.commander_slots, 131_072);
-        let mut hash = handle ^ (handle >> 33);
-        hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
-        hash ^= hash >> 33;
-        let mask = self.commander_slots.len() - 1;
-        let mut slot = hash as usize & mask;
-        for _ in 0..self.commander_slots.len() {
-            let entry = self.commander_slots[slot];
-            if entry == 0 {
-                let index = self.commanders_required;
-                if index == 65_536 {
-                    return Err("naval result commander census bound exceeded");
-                }
-                self.commander_keys[index] = handle;
-                self.commander_slots[slot] = (index + 1) as u32;
-                self.commanders_required += 1;
-                ensure(self.commanders, index + 1);
-                //1417C8060 hides a missing retained commander portrait. Preserve
-                // the side's full handle while the optional context is absent.
-                self.commanders[index] =
-                    if engine::creference_registry::resolve(memory, base, handle)?.is_some() {
-                        commander::capture(memory, base, handle)?
-                    } else {
-                        commander::Row::default()
-                    };
-                self.commanders_len = index + 1;
-                return Ok(Some(index));
-            }
-            let index = entry as usize - 1;
-            if self.commander_keys[index] == handle {
-                return Ok(Some(index));
-            }
-            slot = (slot + 1) & mask;
+        if let Some(&index) = self.commander_keys.get(&handle) {
+            return Ok(Some(index));
         }
-        Err("naval result commander hash bound exceeded")
+        let index = self.commanders_required;
+        let end = index.checked_add(1).ok_or("naval result commander demand overflow")?;
+        self.commander_keys.insert(handle, index);
+        self.commanders_required = end;
+        ensure(self.commanders, end);
+        // P: 1417C8060 hides a missing retained commander portrait. Preserve
+        // the side's full handle while the optional context is absent.
+        self.commanders[index] =
+            if engine::creference_registry::resolve(memory, base, handle)?.is_some() {
+                commander::capture(memory, base, handle)?
+            } else {
+                commander::Row::default()
+            };
+        self.commanders_len = end;
+        Ok(Some(index))
     }
     fn visit(
         &mut self,
@@ -557,8 +541,21 @@ mod tests {
             Outcome::Unavailable { .. }
         ));
     }
+
     #[test]
-    fn commander_growth_keeps_unique_missing_context_and_census_bound() {
+    fn failed_owned_payload_demand_cannot_size_the_recycled_pool() {
+        let mut c = capacities(1);
+        let mut captured = Captured::with_capacities(&c);
+        captured.results.outcome = Outcome::Unavailable { reason: "naval detail nested pointer unreadable" };
+        captured.hits.required = i32::MAX as usize;
+        captured.air.required = 2 * i32::MAX as usize;
+        captured.terms.required = i32::MAX as usize;
+        captured.grow(&mut c);
+        assert_eq!((c.hits, c.air, c.terms), (1, 1, 1));
+        assert_eq!((captured.hits.first.len(), captured.air.first.len(), captured.terms.first.len()), (1, 1, 1));
+    }
+    #[test]
+    fn commander_growth_keeps_unique_missing_context_and_checked_demand() {
         struct Missing(RefCell<Vec<usize>>);
         impl Memory for Missing {
             fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -576,8 +573,7 @@ mod tests {
             sources: &mut Vec::new(),
             terms: &mut Vec::new(),
             commanders: &mut Vec::new(),
-            commander_keys: &mut Vec::new(),
-            commander_slots: &mut Vec::new(),
+            commander_keys: &mut HashMap::new(),
             commanders_len: 0,
             commanders_required: 0,
             len: 0,
@@ -586,7 +582,7 @@ mod tests {
         };
         let memory = Missing(RefCell::default());
         assert_eq!(pass.commander(&memory, 0, 0).unwrap(), None);
-        assert!(pass.commander_keys.is_empty() && pass.commander_slots.is_empty());
+        assert!(pass.commander_keys.is_empty());
         assert_eq!(
             pass.commander(&memory, 0, 0xaaaa_bbbb_cccc_dddd).unwrap(),
             Some(0)
@@ -609,12 +605,67 @@ mod tests {
                 engine::creference_registry::LOW_ROOTS_RVA + 17 * 8
             ]
         );
-        pass.commanders_required = 65_536;
+        pass.commanders_required = usize::MAX;
         assert_eq!(
             pass.commander(&memory, 0, 0x1234_5678),
-            Err("naval result commander census bound exceeded")
+            Err("naval result commander demand overflow")
         );
         assert_eq!(memory.0.borrow().len(), 2);
+    }
+
+    #[test]
+    fn commander_census_grows_past_65536_without_repeating_context() {
+        struct Missing;
+        impl Memory for Missing {
+            fn copy(&self, _: usize, destination: &mut [u8]) -> bool {
+                destination.fill(0);
+                true
+            }
+        }
+        let mut captured = Captured::vacant();
+        let mut pass = Pass {
+            rows: &mut captured.results.rows,
+            ships: &mut captured.ships.first,
+            planes: &mut captured.planes.first,
+            air: &mut captured.air.first,
+            hits: &mut captured.hits.first,
+            sources: &mut captured.sources.first,
+            terms: &mut captured.terms.first,
+            commanders: &mut captured.commanders.first,
+            commander_keys: &mut captured.commander_keys,
+            commanders_len: 0,
+            commanders_required: 0,
+            len: 0,
+            lengths: [0; 6],
+            required_arenas: [0; 6],
+        };
+        const COUNT: usize = 65_537;
+        for index in 0..COUNT {
+            let handle = ((index as u64 + 1) << 32) | 1;
+            assert_eq!(pass.commander(&Missing, 0, handle), Ok(Some(index)));
+            assert_eq!(pass.commander(&Missing, 0, handle), Ok(Some(index)));
+        }
+        assert_eq!(pass.commander_keys.len(), COUNT);
+        assert_eq!((pass.commanders_len, pass.commanders_required), (COUNT, COUNT));
+        assert!(pass.commanders.len() >= COUNT);
+        assert!(pass.commanders[..COUNT].iter().all(|row| row.commander == 0));
+    }
+
+    #[test]
+    fn projection_keeps_all_retained_hq_influences_past_256() {
+        const COUNT: usize = 257;
+        let mut captured = Captured::with_capacities(&capacities(1));
+        captured.results.outcome = Outcome::Rows { len: 1 };
+        captured.results.rows[0].result = 42;
+        let side = &mut captured.results.rows[0].sides[0].details;
+        side.hq_influences = (1..=COUNT as u64).collect();
+        let [TableView::Complete(rows::TableRows::NavalCombatResultDetails(rows))] =
+            captured.tables()
+        else {
+            panic!("complete retained HQ references were not projected")
+        };
+        assert_eq!(rows[0].sides[0].hq_influences.len(), COUNT);
+        assert_eq!(rows[0].sides[0].hq_influences[COUNT - 1], COUNT as u64);
     }
 
     #[test]

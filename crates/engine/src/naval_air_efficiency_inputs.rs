@@ -3,9 +3,6 @@
 //! organisation, fighter bonus or kill aggregation is evaluated here.
 use crate::{Memory, cnaval_combatant::field, cpdx_array::Array};
 
-const WING_LIMIT: usize = crate::cfex_air::WING_CAPACITY;
-const KILL_LIMIT: u32 = 4096;
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Modifier {
     pub raw: i64,
@@ -71,13 +68,9 @@ fn array(
     pointer: usize,
     offset: usize,
     stride: usize,
-    limit: u32,
 ) -> Result<Array, &'static str> {
     let header = field(memory, pointer, offset)?;
     let array = Array::from_header(header, stride).ok_or("naval air array invalid")?;
-    if array.count > limit {
-        return Err("naval air array bound exceeded");
-    }
     Ok(array)
 }
 fn element(array: Array, index: u32, stride: usize) -> Result<usize, &'static str> {
@@ -114,7 +107,7 @@ fn modifier(memory: &impl Memory, address: usize, key: u32) -> Result<Modifier, 
     let value = if let Some(value) = memory.modifier_accumulator_value(address, key) {
         value?
     } else {
-        let _ = array(memory, address, 0, 16, 8192)?;
+        array(memory, address, 0, 16)?;
         crate::modifier_accumulator::lookup_at(memory, address, key)?
     };
     Ok(Modifier {
@@ -138,7 +131,7 @@ pub fn read(
     if ptr(memory, plane, 8)? != group {
         return Err("naval air group mismatch");
     }
-    let wings = array(memory, plane, 0x40, 8, WING_LIMIT as u32)?;
+    let wings = array(memory, plane, 0x40, 8)?;
     let mut row = Row::default();
     if wings.count == 0 {
         return Ok(row);
@@ -167,9 +160,6 @@ pub fn read(
     auth(memory, base, task, crate::ctask_force::VTABLE_RVA)?;
     let country_id = field::<u32>(memory, task, crate::cunit::ROSTER_OWNER)?;
     row.mission = field(memory, task, 0x4ec)?;
-    if !(0..256).contains(&row.mission) {
-        return Err("naval air mission bound exceeded");
-    }
     // 141963700 selects the authored sortie ratio by this mission. Matching
     // content supplies the ratio table and initial/default sortie defines.
     let side = ptr(memory, group, crate::cfex_group::SIDE)?;
@@ -217,7 +207,7 @@ pub fn read(
     let province_id = field::<u32>(memory, province, crate::cprovince::ID)?;
     let weather = ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)?;
     auth(memory, base, weather, crate::cweather_manager::VTABLE_RVA)?;
-    let weather_provinces = array(memory, weather, 0x370, 0x330, 65536)?;
+    let weather_provinces = array(memory, weather, 0x370, 0x330)?;
     row.modifiers[2] = modifier(
         memory,
         add(element(weather_provinces, province_id, 0x330)?, 0x280)?,
@@ -229,13 +219,7 @@ pub fn read(
     } else {
         countries.resolve(crowd_country)?.canonical_slot
     };
-    let containers = array(
-        memory,
-        air_base,
-        crate::cair_base::COUNTRY_CONTAINERS,
-        8,
-        65536,
-    )?;
+    let containers = array(memory, air_base, crate::cair_base::COUNTRY_CONTAINERS, 8)?;
     let container = ptr(memory, element(containers, slot, 8)?, 0)?;
     if container != 0 {
         auth(
@@ -298,17 +282,19 @@ fn capture_kills(
     demand: &mut usize,
 ) -> Result<[usize; 2], &'static str> {
     auth(memory, base, plane, crate::cfex_air::VTABLE_RVA)?;
-    let wings = array(memory, plane, 0x40, 8, WING_LIMIT as u32)?;
-    let mut sources = [None; WING_LIMIT];
+    let wings = array(memory, plane, 0x40, 8)?;
+    // P: 1417D2430 visits each active wing and its +9F8 category vector.
+    // Keep repeated occurrences; grow scratch only after a guarded header.
+    let mut sources = Vec::new();
     let mut required = 0usize;
     for index in 0..wings.count {
         let reference = field(memory, element(wings, index, 8)?, 0)?;
         if let Some(primary) = wing(memory, base, reference)? {
-            let kills = array(memory, primary, 0x9f8, 16, KILL_LIMIT)?;
+            let kills = array(memory, primary, 0x9f8, 16)?;
             required = required
                 .checked_add(kills.count as usize)
                 .ok_or("naval air kill demand overflow")?;
-            sources[index as usize] = Some((reference, kills));
+            sources.push((reference, kills));
         }
     }
     *demand = demand
@@ -323,7 +309,7 @@ fn capture_kills(
     }
     let mut length = start;
     let mut bytes = [0u8; 64 * 16];
-    for (reference, kills) in sources.into_iter().take(wings.count as usize).flatten() {
+    for (reference, kills) in sources {
         for index in (0..kills.count as usize).step_by(64) {
             let count = (kills.count as usize - index).min(64);
             if !crate::read_slice(
@@ -447,6 +433,31 @@ mod tests {
                     count
                 }
             );
+        }
+    }
+    #[test]
+    fn wing_and_category_kill_counts_grow_past_the_old_limits() {
+        for (wings, kills) in [(1, 4097), (257, 2)] {
+            let mut fixture = Fixture::new();
+            fixture.bytes.resize(0x20000 + kills * 16, 0);
+            fixture.array(PLANE + 0x40, 0x10000, wings as u32);
+            fixture.array(WING + 0x9f8, 0x20000, kills as u32);
+            for index in 0..wings {
+                fixture.q(0x10000 + index * 8, HANDLE);
+            }
+            for index in 0..kills {
+                fixture.q(0x20000 + index * 16, index as u64 + 1);
+                fixture.d(0x20008 + index * 16, i32::MIN as u32);
+            }
+            let mut rows = vec![WingKill::default(); wings * kills];
+            let (mut used, mut required) = (0, 0);
+            assert_eq!(
+                capture_kills(&fixture, 0, PLANE, &mut rows, &mut used, &mut required),
+                Ok([0, wings * kills])
+            );
+            assert_eq!((used, required), (wings * kills, wings * kills));
+            assert_eq!(rows.last().unwrap().index, kills as u32 - 1);
+            assert_eq!(rows.last().unwrap().count, i32::MIN);
         }
     }
     #[test]

@@ -2734,7 +2734,7 @@ fn copy_heap_literal_bytes(
     true
 }
 
-/// Traversal state mirroring `ccharacter::RoleTree`'s read set: the mirror
+/// Traversal state mirroring `msvc_tree_node::Cursor`'s read set: the mirror
 /// issues the identical sentinel, link and node reads in the identical
 /// successor order, parsing link values locally to choose branches.
 struct TreeWalk {

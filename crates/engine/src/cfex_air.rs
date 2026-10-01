@@ -3,7 +3,6 @@
 use crate::{Memory, cequipment_variant, cnaval_combatant::field, cpdx_array::Array};
 
 pub const VTABLE_RVA: usize = 0x02a0_a588;
-pub const WING_CAPACITY: usize = 256;
 
 // +88 display name is populated through1419660C0->140C44FC0 (including the
 // expanded carrier name); +A8 tooltip strings through141963460->140F4A4B0
@@ -12,7 +11,7 @@ pub const WING_CAPACITY: usize = 256;
 // weighted wing values at +C8..+E8. None is an input to the viewer's naval
 // aircraft display, so the recorder excludes all six values.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
     /// Native ordered source:0 active group,1 retained group,2 independent side.
     pub source: u8,
@@ -25,8 +24,8 @@ pub struct Row {
     pub carrier_member_present: u8,
     pub carrier_state: u32,
     pub air_base: u64,
-    pub wings: [[u64; WING_CAPACITY]; 2],
-    pub wing_counts: [usize; 2],
+    /// P: 141962F80/141969B60 own growable vectors at +28/+40, not inline arrays.
+    pub wings: [Vec<u64>; 2],
     pub initial_planes: i32,
     pub current_planes: i32,
     pub casualties: i32,
@@ -41,34 +40,6 @@ pub struct Row {
     pub efficiency: crate::naval_air_efficiency_inputs::Row,
 }
 
-impl Default for Row {
-    fn default() -> Self {
-        Self {
-            source: 0,
-            group_index: 0,
-            index: 0,
-            carrier_slot: 0,
-            carrier_member_present: 0,
-            carrier_state: 0,
-            air_base: 0,
-            wings: [[0; WING_CAPACITY]; 2],
-            wing_counts: [0; 2],
-            initial_planes: 0,
-            current_planes: 0,
-            casualties: 0,
-            time_duration: 0,
-            country: 0,
-            date: 0,
-            flags: [0; 2],
-            variant: 0,
-            naval_hits: [0; 2],
-            air_hits: [[0; 2]; 2],
-            kills: [0; 2],
-            efficiency: Default::default(),
-        }
-    }
-}
-
 /// CFEXAir retained naval damage+100, aircraft losses+118 and+130. Loader
 ///141969540 and teardown141963180 preserve the three independent arrays.
 pub(crate) fn read_hits(
@@ -78,9 +49,10 @@ pub(crate) fn read_hits(
     row: &mut Row,
     buffers: &mut crate::cfex_member::DetailBuffers<'_>,
 ) -> Result<(), &'static str> {
-    use crate::cfex_member::{DETAIL_ARENA_CAPACITY, append_entries};
+    use crate::cfex_member::{DETAIL_ARENA_CAPACITY, EntryOutput, append_entries};
     let mut counts = [0usize; 2];
-    for (offset, lane) in [(0x100, 1), (0x118, 0), (0x130, 0)] {
+    let mut arrays = [Array::default(); 3];
+    for (header, (offset, lane)) in arrays.iter_mut().zip([(0x100, 1), (0x118, 0), (0x130, 0)]) {
         let array = Array::read(
             memory,
             pointer
@@ -89,10 +61,8 @@ pub(crate) fn read_hits(
             8,
         )
         .ok_or("naval plane hit array invalid")?;
-        if array.count > 16384 {
-            return Err("naval plane hit bound exceeded");
-        }
         counts[lane] += array.count as usize;
+        *header = array;
     }
     let capacity = [buffers.plane_air_hits.len(), buffers.plane_naval_hits.len()];
     let mut fits = true;
@@ -109,21 +79,19 @@ pub(crate) fn read_hits(
     }
     row.naval_hits = append_entries(
         memory,
-        pointer,
-        0x100,
+        arrays[0],
         8,
-        buffers.plane_naval_hits,
+        EntryOutput::Slice(buffers.plane_naval_hits),
         &mut buffers.plane_hit_lengths[1],
         |p| crate::naval_combat_hit::read(memory, base, p),
         true,
     )?;
-    for (index, offset) in [0x118, 0x130].into_iter().enumerate() {
+    for (index, array) in arrays[1..].iter().copied().enumerate() {
         row.air_hits[index] = append_entries(
             memory,
-            pointer,
-            offset,
+            array,
             8,
-            buffers.plane_air_hits,
+            EntryOutput::Slice(buffers.plane_air_hits),
             &mut buffers.plane_hit_lengths[0],
             |p| crate::naval_combat_air_hit::read(memory, base, p),
             true,
@@ -192,18 +160,15 @@ pub(crate) fn read(
             .checked_add(offset)
             .ok_or("naval plane wing array overflow")?;
         let array = Array::read(memory, address, 8).ok_or("naval plane wing array invalid")?;
-        if array.count as usize > WING_CAPACITY {
-            return Err("naval plane wing capacity exceeded");
-        }
-        row.wing_counts[index] = array.count as usize;
         for i in 0..array.count {
-            row.wings[index][i as usize] = crate::read(
+            let reference = crate::read(
                 memory,
                 array
                     .element(i, 8)
                     .ok_or("naval plane wing element overflow")?,
             )
             .ok_or("naval plane wing unreadable")?;
+            row.wings[index].push(reference);
         }
     }
     Ok(row)
@@ -214,7 +179,7 @@ mod presentation_cache_tests {
     use super::*;
 
     #[test]
-    fn active_air_excludes_names_and_unused_weighted_values() {
+    fn active_air_excludes_unused_values_and_reads_hits_past_16384() {
         const ENTRY: usize = 0x100;
         struct Guard(Vec<u8>);
         impl Memory for Guard {
@@ -232,7 +197,7 @@ mod presentation_cache_tests {
         bytes[ENTRY..ENTRY + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
         bytes[ENTRY + 0x88..ENTRY + 0xc0].fill(0xff);
         bytes[ENTRY + 0xc0..ENTRY + 0xf0].fill(0xff);
-        let memory = Guard(bytes);
+        let mut memory = Guard(bytes);
         let mut row = read(&memory, 0, ENTRY, 0).unwrap();
         let mut buffers = crate::cfex_member::DetailBuffers {
             damage: &mut Vec::new(),
@@ -264,6 +229,31 @@ mod presentation_cache_tests {
             summary_countries_len: 0,
         };
         read_hits(&memory, 0, ENTRY, &mut row, &mut buffers).unwrap();
-        assert_eq!(row.wing_counts, [0; 2]);
+        assert!(row.wings.iter().all(Vec::is_empty));
+
+        const COUNT: usize = 16_385;
+        const DATA: usize = 0x1000;
+        const HIT: usize = 0x900;
+        memory.0.resize(DATA + COUNT * 8, 0);
+        for (at, value) in [
+            (ENTRY + 0x100, DATA as u64),
+            (HIT, crate::naval_combat_hit::VTABLE_RVA as u64),
+            (HIT + 0x28, crate::msvc_string::INLINE_CAPACITY),
+            (HIT + 0x38, i64::MIN as u64),
+        ] {
+            memory.0[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        for offset in [0x108, 0x10c] {
+            memory.0[ENTRY + offset..ENTRY + offset + 4]
+                .copy_from_slice(&(COUNT as u32).to_le_bytes());
+        }
+        for entry in memory.0[DATA..].chunks_exact_mut(8) {
+            entry.copy_from_slice(&(HIT as u64).to_le_bytes());
+        }
+        let mut hits = vec![crate::naval_combat_hit::Row::default(); COUNT];
+        buffers.plane_naval_hits = &mut hits;
+        read_hits(&memory, 0, ENTRY, &mut row, &mut buffers).unwrap();
+        assert_eq!(row.naval_hits, [0, COUNT]);
+        assert_eq!(buffers.plane_naval_hits[COUNT - 1].damage, i64::MIN);
     }
 }
