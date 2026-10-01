@@ -1463,7 +1463,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // counters
         println!(
-            "Counters: {} land ({} between provinces), {} naval ({} task forces not drawn, {} standing for an unplaced route); {} air bases ({} showing their plane count, {} hidden by fog of war), {} naval bases, {} naval HQs, {} facilities ({} unresolved sprites; undecided: {} bases, {} HQs, {} facilities); {} land combats, {} naval combats ({} undecided), {} naval result icons ({} undecided); {} stacks with no anchor",
+            "Counters: {} land ({} between provinces), {} naval ({} task forces not drawn, {} standing for an unplaced route); {} air bases ({} hidden by fog of war), {} naval bases, {} naval HQs, {} facilities ({} unresolved sprites; undecided: {} bases, {} HQs, {} facilities); {} land combats, {} naval combats ({} undecided), {} naval result icons ({} undecided); {} stacks with no anchor",
             counter_report.land_counters,
             counter_report.moving,
             counter_report.naval_counters,
@@ -1478,7 +1478,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(BTreeSet::len)
                 .sum::<usize>(),
             counter_report.air_bases,
-            counter_report.air_base_counts,
             counter_report.hidden_air_bases,
             counter_report.naval_bases,
             counter_report.naval_headquarters,

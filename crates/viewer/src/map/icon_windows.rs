@@ -8,43 +8,85 @@ use super::{
     counters::{NativeWindows, gui_windows, naval_windows},
     native_gui::{
         self,
-        lifecycle::{Admission, Instance, MapIconPool, Pool, Rewrote, SlotId, Unknown},
+        lifecycle::{Admission, Instance, MapIconPool, Pool, Rewrote, SlotId, Unknown, Visible},
     },
     native_resources::Context,
 };
 
 /// One owner request and its projected position, with the province's dirty-bit bypass.
-pub struct Owner {
-    pub id: u32,
+pub struct Owner<K = u32> {
+    pub id: K,
     pub screen: [f32; 2],
     pub dirty: bool,
 }
 
 /// The native template, type pool and alignment of one consumer family.
-pub struct Plan<'a> {
+pub struct Plan<'a, K = u32> {
     pub name: &'a str,
     pub kind: MapIconPool,
     pub alignment: u8,
-    pub owners: &'a [Owner],
+    pub owners: &'a [Owner<K>],
 }
 
 /// One visible owner's layout, before the consumer assigns its draw layer.
-pub struct Drawn {
-    pub owner: u32,
+pub struct Drawn<K = u32> {
+    pub owner: K,
     pub origin: [i32; 2],
     pub layout: native_gui::Layout,
 }
 
+/// Layout and count diagnostics for one visible window, shared with naval grid holders.
+pub fn visible_layout<K: Copy>(
+    icon: &Visible<'_, K>,
+    root: &native::Element,
+    name: &str,
+    resources: &dyn native_gui::Resources,
+    notes: &mut BTreeMap<String, usize>,
+) -> Option<Drawn<K>> {
+    if let Some(why) = icon.withheld {
+        *notes
+            .entry(format!("{name} is not drawn: {why}"))
+            .or_default() += 1;
+        return None;
+    }
+    match icon.instance.layout(root, resources, None) {
+        Ok(Some(layout)) => {
+            gui_windows::count_noted(notes, name, &layout.diagnostics);
+            Some(Drawn {
+                owner: *icon.owner,
+                origin: icon.instance.position(),
+                layout,
+            })
+        }
+        Ok(None) => None,
+        Err(why) => {
+            gui_windows::count_refused(notes, name, &why);
+            None
+        }
+    }
+}
+
 /// Pool membership, window history and presentation clock for one native icon type.
-#[derive(Debug, Default)]
-pub struct PoolView {
+#[derive(Debug)]
+pub struct PoolView<K = u32> {
     built: Option<(NativeWindows, [i32; 2])>,
-    pool: Option<Pool<u32>>,
+    pool: Option<Pool<K>>,
     last: Option<f32>,
     active: bool,
 }
 
-impl PoolView {
+impl<K> Default for PoolView<K> {
+    fn default() -> Self {
+        Self {
+            built: None,
+            pool: None,
+            last: None,
+            active: false,
+        }
+    }
+}
+
+impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
     pub fn same<R>(&self, context: &Context<'_, R>) -> bool {
         self.built.as_ref().is_some_and(|(windows, viewport)| {
             windows.same(context.windows) && *viewport == context.viewport
@@ -58,11 +100,11 @@ impl PoolView {
     pub fn present(
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
-        plan: &Plan<'_>,
+        plan: &Plan<'_, K>,
         initialize: native_gui::lifecycle::Setup,
-        mut update: impl FnMut(u32, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
+        mut update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
         notes: &mut BTreeMap<String, usize>,
-    ) -> Vec<Drawn> {
+    ) -> Vec<Drawn<K>> {
         let mut drawn = Vec::new();
         let run = || -> Result<(), String> {
             let root = context
@@ -138,23 +180,10 @@ impl PoolView {
                 if !owners.contains_key(icon.owner) {
                     continue;
                 }
-                if let Some(why) = icon.withheld {
-                    *notes
-                        .entry(format!("{} is not drawn: {why}", plan.name))
-                        .or_default() += 1;
-                    continue;
-                }
-                match icon.instance.layout(root, context.resources, None) {
-                    Ok(Some(layout)) => {
-                        gui_windows::count_noted(notes, plan.name, &layout.diagnostics);
-                        drawn.push(Drawn {
-                            owner: *icon.owner,
-                            origin: icon.instance.position(),
-                            layout,
-                        });
-                    }
-                    Ok(None) => {}
-                    Err(why) => gui_windows::count_refused(notes, plan.name, &why),
+                if let Some(layout) =
+                    visible_layout(&icon, root, plan.name, context.resources, notes)
+                {
+                    drawn.push(layout);
                 }
             }
             self.active |= pool.active();
@@ -178,6 +207,8 @@ pub struct Views {
     pub labels: super::labels::LabelView,
     pub pings: PoolView,
     pub raids: PoolView,
+    pub bases: [PoolView; 3],
+    pub land_combats: super::counters::land_windows::View,
 }
 
 impl Views {
@@ -186,7 +217,12 @@ impl Views {
         let labels = self.labels.take_running();
         let pings = self.pings.take_running();
         let raids = self.raids.take_running();
-        naval || labels || pings || raids
+        let mut bases = false;
+        for view in &mut self.bases {
+            bases |= view.take_running();
+        }
+        let land_combats = self.land_combats.take_running();
+        naval || labels || pings || raids || bases || land_combats
     }
 }
 
@@ -202,6 +238,44 @@ mod tests {
         size = { width = 100 height = 100 }
         iconType = { name = icon spriteType = GFX_even }
     } }"#;
+
+    #[test]
+    fn combat_handles_keep_their_high_bits_in_pool_ownership() {
+        let resources = fixture();
+        let windows = windows(GUI);
+        let context = Context {
+            resources: &resources,
+            windows: &windows,
+            viewport: [2048, 1152],
+            time: Some(1.),
+        };
+        let ids = [1_u64, (1_u64 << 32) | 1];
+        let owners = ids.map(|id| Owner {
+            id,
+            screen: [100., 200.],
+            dirty: false,
+        });
+        let drawn = PoolView::<u64>::default().present(
+            &context,
+            &Plan {
+                name: "test_icon",
+                kind: MapIconPool::LandCombat,
+                alignment: 0x12,
+                owners: &owners,
+            },
+            Box::new(|_, _| Ok(())),
+            |_, _, _, _| Ok(()),
+            &mut BTreeMap::new(),
+        );
+        assert_eq!(drawn.len(), 2);
+        assert_eq!(
+            drawn
+                .iter()
+                .map(|icon| icon.owner)
+                .collect::<std::collections::BTreeSet<_>>(),
+            ids.into_iter().collect()
+        );
+    }
 
     fn present(
         view: &mut PoolView,
