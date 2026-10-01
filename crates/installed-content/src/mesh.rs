@@ -612,7 +612,8 @@ impl SubMesh {
         self.positions.len()
     }
 
-    pub fn triangle_count(&self) -> usize {
+    #[cfg(test)]
+    fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
 }
