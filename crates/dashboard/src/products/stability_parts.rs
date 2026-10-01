@@ -47,7 +47,7 @@ const MAX_RUNS: usize = 400_000;
 const NAMED_HOURS: usize = 24 * 8;
 /// Countries whose parts are kept per source.
 const CACHED_COUNTRIES: usize = 4;
-/// The formula term each measure's modifier lines replace, and their key.
+/// The formula terms and recorded modifier names (`engine::country_stability::KEY_NAMES`).
 const LINES_OF: [(&str, &str); 2] = [
     ("stabilityFactor", "stability_factor"),
     ("warSupportFactor", "war_support_factor"),
@@ -551,11 +551,22 @@ impl Product for StabilityParts {
         Ok(StabilityPartsReply {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
-            decimals: 5,
+            decimals: super::country_measure::MEASURE_DECIMALS,
             stability,
             war_support,
             warnings,
         })
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn line_keys_are_the_engine_s_recorded_modifier_names() {
+    for (_, key) in LINES_OF {
+        assert!(
+            engine::country_stability::KEY_NAMES.contains(&key.as_bytes()),
+            "{key}"
+        );
     }
 }
 

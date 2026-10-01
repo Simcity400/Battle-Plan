@@ -19,7 +19,7 @@ import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
-import { countryLineColours } from '../../dashboard/countryLineColours';
+import { countryLineColours, uncolouredWarning } from '../../dashboard/countryLineColours';
 import { useCountryLineStyles } from '../../dashboard/useCountryLineStyles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { clipRuns, isMember, membershipChanges, resolveCountries } from '../../dashboard/groups';
@@ -90,13 +90,15 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
   const known = styles.known;
 
   useEffect(() => {
+    const uncoloured = uncolouredWarning((data?.series ?? []).map(item => item.tag), known, !!styles.data);
     const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []), ...(groups.data?.warnings ?? []),
       ...(ceilingRequest && ceiling.error ? [`The ${config.ceiling} could not be loaded: ${ceiling.error}`] : []),
       ...(ceilingRequest ? ceiling.data?.warnings ?? [] : []),
+      ...(uncoloured ? [uncoloured] : []),
       ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget draws at most ${resolved.tags.length}.`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, styles.data, groups.data, resolved.dropped, resolved.tags.length, onDiagnostics, ceilingRequest != null, ceiling.error, ceiling.data, config.ceiling]);
+  }, [data, styles.data, known, groups.data, resolved.dropped, resolved.tags.length, onDiagnostics, ceilingRequest != null, ceiling.error, ceiling.data, config.ceiling]);
 
   const series = useMemo(() => {
     if (!data) return [];

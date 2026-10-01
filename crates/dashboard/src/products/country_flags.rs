@@ -7,7 +7,7 @@
 //! the recorded top bar's `player_flag` button names.
 
 use super::{LoadContext, Product, recorded_rows, validate_tag};
-use crate::{Source, content, invalid};
+use crate::{Source, catalogue::Catalogue, content, invalid};
 use installed_content::{ResolveOptions, content::ResolvedContent, flags::FlagSet, image::Rgba8Image};
 use replay::{
     container::{Replay, SeekResult},
@@ -53,10 +53,16 @@ impl CountryFlagSize {
     }
 }
 
-/// CTopBar::CTopBar@14187C8D0, literal@142934CD8.
-const TOPBAR: &[u8] = b"topbar";
-const TOPBAR_GUI: &str = "interface/topbar.gui";
-/// CTopBar::setup@14188BA30, literal@1429FA990.
+/// The window the engine opens as the top bar: `topbar` (`142934CD8`), which
+/// `technology_canvas_owner::constructor@140B52390` passes to
+/// `CTopBar::CTopBar@14187C8D0` (kept at `+0x48`), and
+/// `hud_topbar_controller_layout::setup@14188BA30` opens through
+/// `CGui::container_factory@142246270`.
+const TOP_BAR: &str = "topbar";
+/// The flag button setup then asks that window for
+/// (`CContainerWindow::FindButton@1422A4A20`): `player_flag` at `1429FA990`,
+/// also used by `CTopBar::UpdateContent@14188EC80`. The sprite it draws is
+/// content, read from the top bar's own declaration wherever it is.
 const PLAYER_FLAG: &str = "player_flag";
 /// Decoded hours kept per source, so a picker and a header following playback
 /// do not evict each other.
@@ -176,7 +182,7 @@ impl Product for CountryFlags {
             let catalogue = crate::catalogue::catalogue(source, content)?;
             let decode = *catalogue.gui_decode.as_ref().map_err(|why| {
                 invalid(format!(
-                    "{TOPBAR_GUI}: player_flag shield artwork unavailable: {why}"
+                    "the top bar's {PLAYER_FLAG} shield artwork is unavailable: {why}"
                 ))
             })?;
             let current = state
@@ -220,28 +226,26 @@ struct FlagState {
 /// The top bar's `player_flag` sprite as the recorded content declares it (a
 /// `maskedShieldType`, `GFX_shield_medium` in vanilla): `textureFile2` supplies
 /// the alpha and `textureFile1` is drawn over the flag.
-struct ShieldStyle {
+pub(crate) struct ShieldStyle {
     mask: Rgba8Image,
     overlay: Option<Rgba8Image>,
+    pub(crate) warnings: Vec<String>,
 }
 
 impl ShieldStyle {
-    fn load(catalogue: &crate::catalogue::Catalogue) -> io::Result<Self> {
-        // CTopBar::CTopBar@14187C8D0 binds the player flag through FindButton@1422A4A20.
+    pub(crate) fn load(catalogue: &Catalogue) -> io::Result<Self> {
         let content = &catalogue.content;
         let decode = *catalogue.gui_decode.as_ref().map_err(|why| {
             invalid(format!(
-                "{TOPBAR_GUI}: player_flag shield artwork unavailable: {why}"
+                "the top bar's {PLAYER_FLAG} shield artwork is unavailable: {why}"
             ))
         })?;
-        let topbar = catalogue
-            .guis
-            .template(TOPBAR)
-            .ok_or_else(|| invalid(format!("{TOPBAR_GUI}: the GUI registry has no topbar")))?;
-        let name = crate::catalogue::gui_sprite_name(
-            topbar,
-            installed_content::gui::native::Kind::Button,
+        let mut warnings = Vec::new();
+        let name = installed_content::gui::window_button_sprite(
+            &catalogue.guis,
+            TOP_BAR,
             PLAYER_FLAG,
+            &mut warnings,
         )?;
         let sprite = crate::catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
         let installed_content::gui::native::sprites::SpriteKind::MaskedShield { shield, .. } =
@@ -263,8 +267,71 @@ impl ShieldStyle {
                     decode,
                 )?)
             },
+            warnings,
         })
     }
+}
+
+/// Whether a recorded flag key names a file this reader can resolve inside a
+/// flag folder. The engine's path is the folder, the key and `.tga` joined as
+/// `variants/red` names `gfx/flags/variants/red.tga`. A key is accepted when it
+/// is bounded and every `/`-separated part is non-empty, not `.` or `..`, and
+/// free of backslashes, NUL and drive colons: so it stays below the folder.
+/// Tags are otherwise opaque (spaces, lower case and other bytes are the
+/// country's own).
+fn safe_flag_key(key: &str) -> bool {
+    key.len() <= 256
+        && key.split('/').all(|part| {
+            !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', '\0', ':'])
+        })
+}
+
+/// The flag the engine draws for one country from its candidate keys in order.
+#[derive(Debug)]
+pub(crate) enum FlagSearch {
+    Found {
+        asset: String,
+        image: Rgba8Image,
+    },
+    /// A candidate this reader cannot resolve: the engine would have tried it
+    /// before the rest, so no later candidate may stand in for it.
+    Unresolvable(String),
+    Absent,
+}
+
+/// Searches `sets` in order, and in each the candidates in order, as
+/// `LoadFirstDecodableCountryFlag` (`14122A730`) does: a missing file or one
+/// the engine's decoder refuses falls through to the next candidate. A
+/// candidate [`safe_flag_key`] refuses stops the search, because falling past
+/// it would draw a flag the game does not.
+pub(crate) fn find_flag(
+    layers: &installed_content::ResolvedLayers,
+    sets: &[FlagSet],
+    cells: &[[u32; 2]; 3],
+    candidates: &[String],
+) -> io::Result<FlagSearch> {
+    for &set in sets {
+        let cell = cells[match set {
+            FlagSet::Normal => 0,
+            FlagSet::Medium => 1,
+            FlagSet::Small => 2,
+        }];
+        for key in candidates {
+            if !safe_flag_key(key) {
+                return Ok(FlagSearch::Unresolvable(key.clone()));
+            }
+            let asset = format!("{}{key}.tga", set.directory());
+            let bytes = match layers.read_uncovered(&asset) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if let Some(image) = installed_content::flags::decode(&bytes, cell) {
+                return Ok(FlagSearch::Found { asset, image });
+            }
+        }
+    }
+    Ok(FlagSearch::Absent)
 }
 
 /// The extent `width` x `height` scaled so its longer side is at most `edge`.
@@ -471,6 +538,9 @@ impl FlagContext {
     ) -> io::Result<CountryFlagReply> {
         let mut flags = Vec::new();
         let mut warnings = self.warnings.clone();
+        if let Some(style) = shield_style {
+            warnings.extend(style.warnings.iter().cloned());
+        }
         for tag in &request.tags {
             if cancelled.load(Ordering::Acquire) {
                 return Err(invalid("Flag request cancelled"));
@@ -479,33 +549,16 @@ impl FlagContext {
                 warnings.push(format!("{tag}: country identity unavailable at this hour"));
                 continue;
             };
-            let mut found = None;
-            'search: for &set in request.size.sets() {
-                let cell = self.cells[match set {
-                    FlagSet::Normal => 0,
-                    FlagSet::Medium => 1,
-                    FlagSet::Small => 2,
-                }];
-                for key in &choice.candidates {
-                    if key.is_empty()
-                        || key.len() > 256
-                        || !key
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                    {
-                        return Err(invalid("Invalid recorded flag asset name"));
-                    }
-                    let asset = format!("{}{key}.tga", set.directory());
-                    let bytes = match self.content.layers.read_uncovered(&asset) {
-                        Ok(bytes) => bytes,
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                        Err(error) => return Err(error),
-                    };
-                    // As `LoadFirstDecodableCountryFlag` (`14122a730`), a file the
-                    // engine's decoder refuses falls through to the next candidate.
-                    let Some(image) = installed_content::flags::decode(&bytes, cell) else {
-                        continue;
-                    };
+            // A flag key is the recorded tag (any bytes but NUL, spaces
+            // included) with a cosmetic tag or party token; one this reader
+            // cannot resolve costs only this country's flag.
+            match find_flag(
+                &self.content.layers,
+                request.size.sets(),
+                &self.cells,
+                &choice.candidates,
+            )? {
+                FlagSearch::Found { asset, image } => {
                     let image = match shield_style {
                         Some(style) => shield(&image, &style.mask, style.overlay.as_ref()),
                         None => {
@@ -513,22 +566,21 @@ impl FlagContext {
                             resize(&image, width, height)
                         }
                     };
-                    found = Some(CountryFlagImage {
+                    flags.push(CountryFlagImage {
                         tag: tag.clone(),
                         asset,
                         width: image.width,
                         height: image.height,
                         pixels: image.pixels,
                     });
-                    break 'search;
                 }
-            }
-            if let Some(flag) = found {
-                flags.push(flag);
-            } else {
-                warnings.push(format!(
+                FlagSearch::Unresolvable(key) => warnings.push(format!(
+                    "{tag}: flag name {key:?} cannot be resolved inside the flag folder, \
+                     so the country's flag is unavailable"
+                )),
+                FlagSearch::Absent => warnings.push(format!(
                     "{tag}: flag artwork unavailable in the recorded content"
-                ));
+                )),
             }
         }
         Ok(CountryFlagReply {

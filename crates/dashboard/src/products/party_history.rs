@@ -247,6 +247,26 @@ pub struct ScannedParties {
     pub unobserved: Vec<HourSpan>,
 }
 
+/// Content ideology names and colours, preserving the native coverage warning.
+pub(crate) fn ideology_infos(
+    politics: &super::politics_content::PoliticsContent,
+    warnings: &mut Vec<String>,
+) -> Vec<IdeologyInfo> {
+    let (groups, gap) = politics.ideologies.groups();
+    if let Some(gap) = gap {
+        warnings.push(format!("Ideologies may be missing or out of date: {gap}."));
+    }
+    groups
+        .iter()
+        .map(|group| IdeologyInfo {
+            token: group.token.clone(),
+            // Ideology names are plain (140616BC0).
+            name: politics.localised(&group.token, View::Plain),
+            color: group.color.as_ref().ok().map(|color| chart_color(*color)),
+        })
+        .collect()
+}
+
 /// The portrait entry the leader views ask character `id`'s recorded holder for:
 /// civilian, large, else the first large entry, used only when set.
 fn leader_portrait(
@@ -634,21 +654,9 @@ impl Product for PartyHistory {
                 None
             }
         };
-        let ideologies = politics.as_ref().map_or_else(Vec::new, |politics| {
-            let (groups, gap) = politics.ideologies.groups();
-            if let Some(gap) = gap {
-                warnings.push(format!("Ideologies may be missing or out of date: {gap}."));
-            }
-            groups
-                .iter()
-                .map(|group| IdeologyInfo {
-                    token: group.token.clone(),
-                    // Ideology names are plain (140616BC0).
-                    name: politics.localised(&group.token, View::Plain),
-                    color: group.color.as_ref().ok().map(|color| chart_color(*color)),
-                })
-                .collect()
-        });
+        let ideologies = politics
+            .as_ref()
+            .map_or_else(Vec::new, |politics| ideology_infos(politics, &mut warnings));
         let types: BTreeSet<&str> = scanned
             .leaders
             .iter()

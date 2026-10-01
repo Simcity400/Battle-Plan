@@ -27,7 +27,21 @@ test('focus histories reject overlap, future completion bounds and invalid artwo
   const art = { token: 'one', name: 'One', description: 'Game description', baseDurationDays: 70, icon: null };
   assert.equal(validateFocusReply({ ...reply, artwork: [art] }).artwork[0].baseDurationDays, 70);
   for (const baseDurationDays of [-1, NaN, Infinity]) assert.throws(() => validateFocusReply({ ...reply, artwork: [{ ...art, baseDurationDays }] }));
-  for (const icon of ['https://example.com/remote.png', 'data:text/html;base64,YQ==']) assert.throws(() => validateFocusReply({ ...reply, artwork: [{ ...art, icon }] }));
+  // An icon that is not a bounded PNG data URL is never drawn: it shows as missing art,
+  // and the rest of the reply (a mod's oversized icon included) still loads.
+  for (const icon of ['https://example.com/remote.png', 'data:text/html;base64,YQ==', `data:image/png;base64,${'A'.repeat(200 * 1024)}`]) {
+    assert.equal(validateFocusReply(structuredClone({ ...reply, artwork: [{ ...art, icon }] })).artwork[0].icon, null);
+  }
+  // A malformed entry is still refused rather than reaching the widget.
+  for (const bad of [null, 'one', {}, { ...art, token: 7 }]) {
+    assert.throws(() => validateFocusReply({ ...reply, artwork: [bad] } as unknown as FocusReply));
+  }
+});
+
+test('a modded tree may complete any number of focuses', () => {
+  const completed = Array.from({ length: 900 }, (_, ordinal) => ({ ordinal, token: `mod_focus_${ordinal}`, completedByHour: null }));
+  const big = { ...reply, history: { progress: [], segments: [{ firstHour: 100, lastHour: 200, order: { ...first, completed } }] } };
+  assert.equal(validateFocusReply(big).history.segments[0].order.completed.length, 900);
 });
 
 test('exact local playback preserves unknown dates and never bridges gaps or leaks future focuses', () => {

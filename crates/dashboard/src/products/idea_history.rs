@@ -486,7 +486,7 @@ pub struct Joined<'a> {
 }
 
 impl<'a> Joined<'a> {
-    fn of(
+    pub(crate) fn of(
         content: &'a PoliticsContent,
         localise: &'a dyn Fn(&str, View) -> Option<String>,
     ) -> Self {
@@ -773,199 +773,213 @@ impl Product for IdeaHistory {
                 scanned
             }
         };
-        let tokens: BTreeSet<&str> = scanned
-            .spans
-            .iter()
-            .map(|span| span.token.as_str())
-            .collect();
-        let localise = |key: &str, view: View| content.localised(key, view);
-        let joined = Joined::of(&content, &localise);
-        let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned()];
-        warnings.extend(content.warnings.iter().cloned());
-        // A file that could declare a category or law stops short.
-        let (_, category_gap) = content.ideas.tags.categories();
-        let (_, law_gap) = content.ideas.laws("");
-        for gap in category_gap.into_iter().chain(law_gap) {
-            warnings.push(format!(
-                "Idea categories and laws may be incomplete: {gap}."
+        reply(&content, &source.replay(), params, &scanned, cancelled)
+    }
+}
+
+fn reply(
+    content: &PoliticsContent,
+    replay: &Replay,
+    params: &CountryParams,
+    scanned: &ScannedIdeas,
+    cancelled: &AtomicBool,
+) -> io::Result<IdeaHistoryReply> {
+    let tokens: BTreeSet<&str> = scanned
+        .spans
+        .iter()
+        .map(|span| span.token.as_str())
+        .collect();
+    let localise = |key: &str, view: View| content.localised(key, view);
+    let joined = Joined::of(content, &localise);
+    let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned()];
+    warnings.extend(content.warnings.iter().cloned());
+    // A file that could declare a category or law stops short.
+    let (_, category_gap) = content.ideas.tags.categories();
+    let (_, law_gap) = content.ideas.laws("");
+    for gap in category_gap.into_iter().chain(law_gap) {
+        warnings.push(format!(
+            "Idea categories and laws may be incomplete: {gap}."
+        ));
+    }
+    warnings.extend(scanned.warnings.iter().cloned());
+    let mut artwork = Vec::new();
+    let mut holders = Vec::new();
+    let mut ideas = Vec::new();
+    let mut unplaced = Vec::new();
+    for token in tokens {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Idea request cancelled",
             ));
         }
-        warnings.extend(scanned.warnings.iter().cloned());
-        let mut artwork = Vec::new();
-        let mut holders = Vec::new();
-        let mut ideas = Vec::new();
-        let mut unplaced = Vec::new();
-        for token in tokens {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Idea request cancelled",
+        let latest = scanned.spans.iter().rev().find(|span| span.token == token);
+        // The identity the latest span belongs to names the idea.
+        let naming = latest
+            .and_then(|span| {
+                let index = scanned
+                    .identity_starts
+                    .partition_point(|start| *start <= span.first_hour);
+                index
+                    .checked_sub(1)
+                    .and_then(|index| scanned.identity_naming.get(index))
+            })
+            .cloned()
+            .unwrap_or_default();
+        let country = if latest.is_some() {
+            naming.for_tag(&params.tag)
+        } else {
+            IdeaCountry {
+                tag: &params.tag,
+                slot: 0,
+                look: None,
+            }
+        };
+        let built = match latest
+            .and_then(|span| span.character.as_ref())
+            .map(|holder| scanned.templates.get(&holder.id))
+        {
+            Some(Some(Ok(template))) => Ok(template),
+            Some(Some(Err(reason))) => Err(reason.as_str()),
+            Some(None) | None => Err("no recorded holder names its template"),
+        };
+        let found = info(
+            &joined,
+            token,
+            latest.and_then(|span| span.slot.as_deref()),
+            built,
+        );
+        if found.category.is_none() {
+            unplaced.push(token.to_owned());
+        }
+        // A holder's artwork: the content's for its script token, named as recorded.
+        let holder_art = |script: Option<&str>, saved: &str| {
+            let (mut art, mut problem) = content.idea_artwork(token, script, country);
+            // Without a script token the content cannot say whose portrait
+            // this is; the idea's authored advisor may be someone else.
+            if script.is_none() {
+                art.icon = None;
+                problem = Some(format!(
+                    "{token}: artwork is unknown because the holder has no recorded script token; a placeholder is shown"
                 ));
             }
-            let latest = scanned.spans.iter().rev().find(|span| span.token == token);
-            // The identity the latest span belongs to names the idea.
-            let naming = latest
-                .and_then(|span| {
-                    let index = scanned
-                        .identity_starts
-                        .partition_point(|start| *start <= span.first_hour);
-                    index
-                        .checked_sub(1)
-                        .and_then(|index| scanned.identity_naming.get(index))
-                })
-                .cloned()
-                .unwrap_or_default();
-            let country = if latest.is_some() {
-                naming.for_tag(&params.tag)
-            } else {
-                IdeaCountry {
-                    tag: &params.tag,
-                    slot: 0,
-                    look: None,
-                }
-            };
-            let built = match latest
-                .and_then(|span| span.character.as_ref())
-                .map(|holder| scanned.templates.get(&holder.id))
-            {
-                Some(Some(Ok(template))) => Ok(template),
-                Some(Some(Err(reason))) => Err(reason.as_str()),
-                Some(None) | None => Err("no recorded holder names its template"),
-            };
-            let found = info(
-                &joined,
-                token,
-                latest.and_then(|span| span.slot.as_deref()),
-                built,
-            );
-            if found.category.is_none() {
-                unplaced.push(token.to_owned());
+            // The saved name first, so a renamed character shows its current name.
+            match content.recorded_name(saved) {
+                RecordedName::Named(name) => art.name = Some(name),
+                RecordedName::Unresolved(_) => art.name = None,
+                RecordedName::None => {}
             }
-            // A holder's artwork: the content's for its script token, named as recorded.
-            let holder_art = |script: Option<&str>, saved: &str| {
-                let (mut art, problem) = content.idea_artwork(token, script, country);
-                // Without a script token the content cannot say whose portrait
-                // this is; the idea's authored advisor may be someone else.
-                if script.is_none() {
-                    art.icon = None;
-                }
-                // The saved name first, so a renamed character shows its current name.
-                match content.recorded_name(saved) {
-                    RecordedName::Named(name) => art.name = Some(name),
-                    RecordedName::Unresolved(_) => art.name = None,
-                    RecordedName::None => {}
-                }
-                (art, problem)
-            };
-            // The idea's artwork shows its latest holder as recorded; each holder
-            // also has its own.
-            let (art, problem) = match latest.and_then(|span| span.character.as_ref()) {
-                Some(holder) => holder_art(
-                    (!holder.token.is_empty()).then_some(holder.token.as_str()),
-                    &holder.name,
-                ),
-                None => content.idea_artwork(token, None, country),
-            };
-            artwork.push(art);
-            warnings.extend(problem);
-            let mut seen = BTreeSet::new();
-            for holder in scanned
-                .spans
-                .iter()
-                .filter(|span| span.token == token)
-                .filter_map(|span| span.character.as_ref())
-                .filter(|holder| {
-                    (!holder.token.is_empty() || !holder.name.is_empty())
-                        && seen.insert((holder.id, holder.token.clone(), holder.name.clone()))
-                })
-            {
-                let script = (!holder.token.is_empty()).then_some(holder.token.as_str());
-                let (art, problem) = holder_art(script, &holder.name);
-                holders.push(HolderArtwork {
-                    token: token.to_owned(),
-                    character: holder.id,
-                    character_token: holder.token.clone(),
-                    name: holder.name.clone(),
-                    artwork: art,
-                });
-                warnings.extend(problem);
-            }
-            ideas.push(found);
-        }
-        if !unplaced.is_empty() {
-            warnings.push(format!(
-                "{} ideas are in no category the content defines: {}.",
-                unplaced.len(),
-                unplaced
-                    .iter()
-                    .take(8)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        // How the effects are shown, and the texts the tooltips name.
-        let mut modifier_keys = BTreeSet::new();
-        let mut text_keys: BTreeSet<String> = ["YES", "NO"].map(str::to_owned).into();
-        let mut effects = |lines: &[EffectLine], targeted: &[EffectGroup], tooltips: &[String]| {
-            modifier_keys.extend(
-                lines
-                    .iter()
-                    .chain(targeted.iter().flat_map(|group| &group.lines))
-                    .map(|line| line.key.clone()),
-            );
-            text_keys.extend(tooltips.iter().cloned());
-            text_keys.extend(
-                targeted
-                    .iter()
-                    .flat_map(|group| group.tooltips.iter().cloned()),
-            );
+            (art, problem)
         };
-        for idea in &ideas {
-            effects(&idea.effects, &idea.targeted, &idea.tooltips);
-            for found in &idea.traits {
-                effects(&found.lines, &found.targeted, &found.tooltips);
-            }
+        // The idea's artwork shows its latest holder as recorded; each holder
+        // also has its own.
+        let (art, problem) = match latest.and_then(|span| span.character.as_ref()) {
+            Some(holder) => holder_art(
+                (!holder.token.is_empty()).then_some(holder.token.as_str()),
+                &holder.name,
+            ),
+            None => content.idea_artwork(token, None, country),
+        };
+        artwork.push(art);
+        warnings.extend(problem);
+        let mut seen = BTreeSet::new();
+        for holder in scanned
+            .spans
+            .iter()
+            .filter(|span| span.token == token)
+            .filter_map(|span| span.character.as_ref())
+            .filter(|holder| {
+                (!holder.token.is_empty() || !holder.name.is_empty())
+                    && seen.insert((holder.id, holder.token.clone(), holder.name.clone()))
+            })
+        {
+            let script = (!holder.token.is_empty()).then_some(holder.token.as_str());
+            let (art, problem) = holder_art(script, &holder.name);
+            holders.push(HolderArtwork {
+                token: token.to_owned(),
+                character: holder.id,
+                character_token: holder.token.clone(),
+                name: holder.name.clone(),
+                artwork: art,
+            });
+            warnings.extend(problem);
         }
-        for idea in &ideas {
-            text_keys.extend(
-                idea.research
-                    .iter()
-                    .map(|line| format!("{}_research", line.key)),
-            );
-            text_keys.extend(
-                idea.equipment
-                    .iter()
-                    .chain(idea.traits.iter().flat_map(|found| &found.equipment))
-                    .filter_map(|group| group.target.clone()),
-            );
-        }
-        let (modifiers, format_warnings) = super::idea_format::modifier_formats(
-            &source.replay(),
-            params.branch(),
-            &modifier_keys,
-            &content,
-            cancelled,
-        )?;
-        warnings.extend(format_warnings);
-        let texts = super::idea_format::texts(&content, &text_keys);
-        // Names left out for a localisation refusal, by reason and key.
-        warnings.extend(content.catalogue.refusal_lines());
-        Ok(IdeaHistoryReply {
-            branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
-            spans: scanned.spans.clone(),
-            ideas,
-            artwork,
-            holders,
-            categories: categories(&joined),
-            unobserved: scanned.unobserved.clone(),
-            identity_starts: scanned.identity_starts.clone(),
-            modifiers,
-            texts,
-            warnings,
-        })
+        ideas.push(found);
     }
+    if !unplaced.is_empty() {
+        warnings.push(format!(
+            "{} ideas are in no category the content defines: {}.",
+            unplaced.len(),
+            unplaced
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    // YES/NO: FormatValue 14054FE50 (YES at 142760760).
+    let mut modifier_keys = BTreeSet::new();
+    let mut text_keys: BTreeSet<String> = ["YES", "NO"].map(str::to_owned).into();
+    let mut effects = |lines: &[EffectLine], targeted: &[EffectGroup], tooltips: &[String]| {
+        modifier_keys.extend(
+            lines
+                .iter()
+                .chain(targeted.iter().flat_map(|group| &group.lines))
+                .map(|line| line.key.clone()),
+        );
+        text_keys.extend(tooltips.iter().cloned());
+        text_keys.extend(
+            targeted
+                .iter()
+                .flat_map(|group| group.tooltips.iter().cloned()),
+        );
+    };
+    for idea in &ideas {
+        effects(&idea.effects, &idea.targeted, &idea.tooltips);
+        for found in &idea.traits {
+            effects(&found.lines, &found.targeted, &found.tooltips);
+        }
+    }
+    for idea in &ideas {
+        // _research: CCountryTechnologyView::BuildTooltip 1415E5420, 1427516B0.
+        text_keys.extend(
+            idea.research
+                .iter()
+                .map(|line| format!("{}_research", line.key)),
+        );
+        text_keys.extend(
+            idea.equipment
+                .iter()
+                .chain(idea.traits.iter().flat_map(|found| &found.equipment))
+                .filter_map(|group| group.target.clone()),
+        );
+    }
+    let (modifiers, format_warnings) = super::idea_format::modifier_formats(
+        replay,
+        params.branch(),
+        &modifier_keys,
+        content,
+        cancelled,
+    )?;
+    warnings.extend(format_warnings);
+    let texts = super::idea_format::texts(content, &text_keys);
+    // Names left out for a localisation refusal, by reason and key.
+    warnings.extend(content.catalogue.refusal_lines());
+    Ok(IdeaHistoryReply {
+        branch_id: params.branch_id.clone(),
+        tag: params.tag.clone(),
+        spans: scanned.spans.clone(),
+        ideas,
+        artwork,
+        holders,
+        categories: categories(&joined),
+        unobserved: scanned.unobserved.clone(),
+        identity_starts: scanned.identity_starts.clone(),
+        modifiers,
+        texts,
+        warnings,
+    })
 }
 
 #[cfg(test)]

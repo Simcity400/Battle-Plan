@@ -94,6 +94,12 @@ test('a content set holds its whole limit of long tokens, and says which tokens 
   assert.equal(storableToken('x'.repeat(MAX_TOKEN + 1)), false);
   assert.equal(storableToken('two words'), false);
   assert.equal(storableToken(''), false);
+  // A mod's script tokens may hold any non-space character, non-ASCII included.
+  for (const token of ['mod_rés', 'КОМ_idea', 'mod-cat.v2:x', 'ideas@mod']) assert.equal(storableToken(token), true, token);
+  assert.equal(storableToken('tab\there'), false);
+  const category: readonly OptionField[] = [{ key: 'category', section: 'options', label: 'Category', kind: 'content-choice', automatic: 'First', default: '' }];
+  assert.deepEqual(setOption(category, undefined, 'category', 'mod_catégorie'), { category: 'mod_catégorie' });
+  assert.deepEqual(resolveOptions(category, parseStoredOptions({ category: 'mod_catégorie' })!), { category: 'mod_catégorie' });
 });
 
 test('settings sections keep one fixed order and appear only when they apply', () => {

@@ -17,6 +17,13 @@ const object = (value: unknown): value is Record<string, unknown> => typeof valu
 const integer = (value: unknown, min = -4_294_967_296, max = 4_294_967_296): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
 const text = (value: unknown, max = 160): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
 const id = (value: unknown): value is string => text(value, 80) && /^[a-zA-Z0-9_-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
+/** Longest stored country tag, in UTF-8 bytes: the products' own bound (`validate_tag`). */
+export const MAX_TAG_BYTES = 128;
+const utf8 = new TextEncoder();
+/** A country tag as the engine takes one: any text but NUL (spaces, lower case and
+ * dynamic `D01` tags included), bounded as the products bound it. */
+export const storableTag = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+  && !value.includes('\0') && utf8.encode(value).length <= MAX_TAG_BYTES;
 
 function offsetWindow(value: unknown): OffsetWindow | null {
   return object(value) && integer(value.firstOffset) && integer(value.lastOffset) && value.firstOffset <= value.lastOffset
@@ -39,11 +46,11 @@ function countryGroup(value: unknown): CountryGroup | null {
   if (!object(value)) return null;
   if (value.type === 'humans') return { type: 'humans' };
   if (value.type === 'faction' && typeof value.id === 'string' && /^\d{1,20}$/.test(value.id)) return { type: 'faction', id: value.id };
-  if (value.type === 'war' && text(value.tag, 128)) return { type: 'war', tag: value.tag };
+  if (value.type === 'war' && storableTag(value.tag)) return { type: 'war', tag: value.tag };
   if (value.type === 'top' && integer(value.count, 1, 64)) return { type: 'top', count: value.count };
   return null;
 }
-function selection(value: unknown): CountrySelection | null {
+function selection(value: unknown, dropped?: (count: number) => void): CountrySelection | null {
   if (!object(value)) return null;
   if (value.kind === 'selected' || value.kind === 'all') return { kind: value.kind };
   if (value.kind === 'group') {
@@ -51,8 +58,11 @@ function selection(value: unknown): CountrySelection | null {
     return group && (value.membership === 'hour' || value.membership === 'end' || value.membership === 'ever') && typeof value.aggregate === 'boolean'
       ? { kind: 'group', group, membership: value.membership, aggregate: value.aggregate } : null;
   }
-  return value.kind === 'tags' && Array.isArray(value.tags) && value.tags.length <= 256 && value.tags.every((tag) => text(tag, 32))
-    ? { kind: 'tags', tags: [...new Set(value.tags as string[])] } : null;
+  // A tag that cannot be stored is dropped on its own; the widget and the layout stay.
+  if (value.kind !== 'tags' || !Array.isArray(value.tags) || value.tags.length > 256) return null;
+  const tags = value.tags.filter(storableTag);
+  dropped?.(value.tags.length - tags.length);
+  return { kind: 'tags', tags: [...new Set(tags)] };
 }
 
 /** Runs a widget's migration, keeping the stored widget unchanged if the migration
@@ -70,14 +80,22 @@ function safeMigrate(widget: WidgetSpec, trackIds: Set<string>): WidgetSpec {
 
 /** Parse an allowlist; unknown fields can never smuggle runtime data into storage. */
 export function parseTemplate(input: unknown): DashboardTemplate | null {
+  return parseTemplateWithNotes(input)?.template ?? null;
+}
+
+/** A restored template and the country tag entries its bounds could not retain. */
+export function parseTemplateWithNotes(input: unknown): { template: DashboardTemplate; droppedTags: number } | null {
+  let droppedTags = 0;
   if (!object(input) || input.version !== 1 || !text(input.name) || !['calendar', 'anchors'].includes(String(input.alignment))) return null;
   if (!Array.isArray(input.roles) || !input.roles.length || input.roles.length > MAX_ROLES
     || !Array.isArray(input.tracks) || !input.tracks.length || input.tracks.length > MAX_TRACKS
     || !Array.isArray(input.widgets) || input.widgets.length > MAX_WIDGETS || !object(input.layouts)) return null;
   const roles: SourceRole[] = [];
   for (const role of input.roles) {
-    if (!object(role) || !id(role.id) || !text(role.label) || !(role.selectedTag === null || text(role.selectedTag, 32)) || roles.some((item) => item.id === role.id)) return null;
-    roles.push({ id: role.id, label: role.label, selectedTag: role.selectedTag });
+    if (!object(role) || !id(role.id) || !text(role.label) || !(role.selectedTag === null || typeof role.selectedTag === 'string') || roles.some((item) => item.id === role.id)) return null;
+    // An unstorable selected country clears to none, with a restoration warning.
+    if (role.selectedTag !== null && !storableTag(role.selectedTag)) droppedTags++;
+    roles.push({ id: role.id, label: role.label, selectedTag: storableTag(role.selectedTag) ? role.selectedTag : null });
   }
   if (!roles.some((role) => role.id === 'primary')) return null;
   const tracks: TrackSpec[] = [];
@@ -95,7 +113,7 @@ export function parseTemplate(input: unknown): DashboardTemplate | null {
       || !(widget.contentScale === undefined || WIDGET_CONTENT_SCALES.some(scale => scale === widget.contentScale))
       || !Array.isArray(widget.trackIds) || !widget.trackIds.length || !widget.trackIds.every((value) => typeof value === 'string' && trackIds.has(value))
       || widgets.some((item) => item.id === widget.id)) return null;
-    const countries = selection(widget.countries);
+    const countries = selection(widget.countries, count => { droppedTags += count; });
     const time = timeMode(widget.time, trackIds);
     // Options are kept even for a widget type that is not installed.
     const options = widget.options === undefined ? undefined : parseStoredOptions(widget.options);
@@ -124,22 +142,29 @@ export function parseTemplate(input: unknown): DashboardTemplate | null {
     layouts[breakpoint] = layout;
   }
   if (!layouts.lg) return null;
-  return { version: 1, name: input.name, alignment: input.alignment as DashboardTemplate['alignment'], roles, tracks, widgets, layouts };
+  return { template: { version: 1, name: input.name, alignment: input.alignment as DashboardTemplate['alignment'], roles, tracks, widgets, layouts }, droppedTags };
 }
 
 export function parseLayoutLibrary(input: unknown): LayoutLibrary | null {
+  return parseLayoutLibraryWithNotes(input)?.library ?? null;
+}
+
+export function parseLayoutLibraryWithNotes(input: unknown): { library: LayoutLibrary; droppedTags: number } | null {
+  let droppedTags = 0;
   if (!object(input) || input.version !== 1 || !id(input.activeId) || !Array.isArray(input.layouts)
     || !input.layouts.length || input.layouts.length > MAX_LAYOUTS) return null;
   const layouts: LayoutLibrary['layouts'] = [];
   for (const entry of input.layouts) {
     if (!object(entry) || !id(entry.id) || layouts.some((item) => item.id === entry.id)) return null;
-    const template = parseTemplate(entry.template);
-    if (!template || !template.name.trim()) return null;
+    const parsed = parseTemplateWithNotes(entry.template);
+    if (!parsed || !parsed.template.name.trim()) return null;
+    const { template } = parsed;
+    droppedTags += parsed.droppedTags;
     template.name = template.name.trim();
     if (layouts.some((item) => item.template.name.toLowerCase() === template.name.toLowerCase())) return null;
     layouts.push({ id: entry.id, template });
   }
-  return layouts.some((entry) => entry.id === input.activeId) ? { version: 1, activeId: input.activeId, layouts } : null;
+  return layouts.some((entry) => entry.id === input.activeId) ? { library: { version: 1, activeId: input.activeId, layouts }, droppedTags } : null;
 }
 
 function migrateDefaultName(library: LayoutLibrary): LayoutLibrary {
@@ -148,36 +173,41 @@ function migrateDefaultName(library: LayoutLibrary): LayoutLibrary {
     ? { ...entry, template: { ...entry.template, name: 'Default layout' } } : entry) };
 }
 
-export function loadLayouts(storage?: LayoutStorage): { library: LayoutLibrary; warning: string | null } {
+export function droppedTagWarning(count: number): string | null {
+  return count ? `${count} country tag ${count === 1 ? 'entry was' : 'entries were'} left out of the saved layout because ${count === 1 ? 'it' : 'they'} could not be stored.` : null;
+}
+
+export function loadLayouts(storage?: LayoutStorage): { library: LayoutLibrary; warning: string | null; droppedTags: number } {
   const fallback: LayoutLibrary = { version: 1, activeId: 'default', layouts: [{ id: 'default', template: { ...defaultTemplate(), name: 'Default layout' } }] };
   try {
     const target = storage ?? localStorage;
     const raw = target.getItem(LIBRARY_KEY);
     if (raw !== null) {
       if (raw.length > 4_000_000) throw new Error('Saved layouts are too large.');
-      const library = parseLayoutLibrary(JSON.parse(raw));
-      if (!library) throw new Error('Invalid layouts');
-      return { library: migrateDefaultName(library), warning: null };
+      const parsed = parseLayoutLibraryWithNotes(JSON.parse(raw));
+      if (!parsed) throw new Error('Invalid layouts');
+      return { library: migrateDefaultName(parsed.library), warning: droppedTagWarning(parsed.droppedTags), droppedTags: parsed.droppedTags };
     }
     // Restore the previous single-layout format without overwriting it.
     const legacy = target.getItem(STORAGE_KEY);
     if (legacy !== null) {
       if (legacy.length > 1_000_000) throw new Error('Saved layout is too large.');
-      const library = parseLayoutLibrary({ ...fallback, layouts: [{ id: 'default', template: JSON.parse(legacy) }] });
-      if (!library) throw new Error('Invalid layout');
-      return { library: migrateDefaultName(library), warning: null };
+      const parsed = parseLayoutLibraryWithNotes({ ...fallback, layouts: [{ id: 'default', template: JSON.parse(legacy) }] });
+      if (!parsed) throw new Error('Invalid layout');
+      return { library: migrateDefaultName(parsed.library), warning: droppedTagWarning(parsed.droppedTags), droppedTags: parsed.droppedTags };
     }
-    return { library: fallback, warning: null };
+    return { library: fallback, warning: null, droppedTags: 0 };
   } catch {
-    return { library: fallback, warning: 'Saved layouts could not be restored. A default layout is open; your recording is unaffected.' };
+    return { library: fallback, warning: 'Saved layouts could not be restored. A default layout is open; your recording is unaffected.', droppedTags: 0 };
   }
 }
 
 export function saveLayouts(library: LayoutLibrary, storage?: LayoutStorage): string | null {
   try {
-    const safe = parseLayoutLibrary(library);
-    if (!safe) throw new Error('Invalid layouts');
-    const raw = JSON.stringify(safe);
+    const parsed = parseLayoutLibraryWithNotes(library);
+    if (!parsed) throw new Error('Invalid layouts');
+    if (parsed.droppedTags) return `${parsed.droppedTags} country tag entries could not be saved. Your current workspace is still available.`;
+    const raw = JSON.stringify(parsed.library);
     if (raw.length > 4_000_000) throw new Error('Saved layouts are too large.');
     (storage ?? localStorage).setItem(LIBRARY_KEY, raw);
     return null;

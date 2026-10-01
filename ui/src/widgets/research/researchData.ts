@@ -1,5 +1,6 @@
 import type { ProductRequest } from '../../dashboard/client';
 import type { CountryParams, ResearchReply } from '../../generated/dashboard';
+import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
 
 export const PRODUCT = 'research';
 
@@ -94,9 +95,10 @@ export function validateResearchReply(input: unknown): ResearchReply {
     && BigInt(value) >= -9223372036854775808n && BigInt(value) <= 9223372036854775807n;
   let index = -1, entries = 0, states = 0, progress = 0;
   const valid = !!reply && typeof reply === 'object' && Array.isArray(reply.artwork) && Array.isArray(reply.history?.slots)
-    && intervals(reply.history.coverage) && reply.history.slots.length <= 64 && reply.history.slots.every(s => {
+    // Any number of slots: content and effects set how many a country has.
+    && intervals(reply.history.coverage) && reply.history.slots.every(s => {
       let last = -Infinity;
-      const valid = Number.isInteger(s.index) && s.index > index && s.index < 64 && s.availability.length > 0 && intervals(s.availability)
+      const valid = Number.isInteger(s.index) && s.index > index && s.availability.length > 0 && intervals(s.availability)
         && s.entries.every(e => {
           const ok = typeof e.token === 'string' && e.token.length > 0 && e.token.length <= 512 && Number.isInteger(e.level)
             && Number.isInteger(e.technologyHandle) && e.technologyHandle >= 0 && e.technologyHandle <= 4294967295
@@ -143,9 +145,11 @@ export function validateResearchReply(input: unknown): ResearchReply {
         })));
       index = s.index;
       return valid;
-    }) && entries <= 100000 && states <= 100000 && progress <= 100000 && reply.artwork.length <= 2048 && reply.artwork.every(a =>
-      a.icon === null || (a.icon.length <= 128 * 1024 && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(a.icon)));
+    // The product answers at most 2048 artwork tokens per request (`products/artwork.rs`).
+    // Each entry must have the product's shape; only an icon it cannot draw becomes missing art.
+    }) && entries <= 100000 && states <= 100000 && progress <= 100000 && reply.artwork.length <= 2048 && reply.artwork.every(artworkEntry);
   if (!valid) throw new Error('Research history does not match this country and recording.');
+  keepDrawableIcons(reply.artwork);
   return reply;
 }
 

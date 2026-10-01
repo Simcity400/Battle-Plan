@@ -94,6 +94,7 @@ interface Section { rows: TooltipRow[]; authored: boolean; featured?: boolean }
  * `hidden_modifier` names left out entirely (FormatLine@14054F6D0 skips the
  * hidden-key set), zero values only where the definition shows them. */
 function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): Section {
+  // YES/NO: modifier_definition::FormatValue 14054FE50 (YES at 142760760).
   const words = { yes: sources.text('YES') ?? 'Yes', no: sources.text('NO') ?? 'No' };
   const order = (key: string) => sources.formats.get(key)?.index ?? Number.MAX_SAFE_INTEGER;
   let authored = false;
@@ -167,6 +168,7 @@ function equipmentSection(group: EffectGroup, sources: IdeaTooltipSources): Sect
  * as a signed whole percentage). */
 function researchRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): TooltipRow[] {
   return lines.filter(line => !line.hidden).map(line => {
+    // _research: CCountryTechnologyView::BuildTooltip 1415E5420, 1427516B0.
     const label = `${sources.text(`${line.key}_research`) ?? line.key}:`;
     const raw = BigInt(line.fixed5);
     return { label, value: `${raw > 0n ? '+' : ''}${fixed5Text(raw * 100n, 0)}%`, tone: raw < 0n ? 'negative' as const : 'positive' as const };

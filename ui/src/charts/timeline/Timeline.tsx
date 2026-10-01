@@ -17,6 +17,7 @@ import type { ViewAction, ViewState } from '../view';
 import { AXIS_HEIGHT, INDENT, ROW_HEIGHT, bandHalf, bandHitAt, barHours, inSpans, laneAt, laneBandLayouts, laneBands, laneOffset, lanesInView, laneStops, leftColumn, spanAt } from './layout';
 import type { CachedBands } from './layout';
 import type { TimelineLane, TimelineSpan } from './layout';
+import { barContent } from './barLabel';
 import '../charts.css';
 
 export type { BandStep, TimelineLane, TimelineSpan } from './layout';
@@ -345,7 +346,8 @@ export default function Timeline(props: TimelineProps) {
           if (to - from < 1.5) continue;
           context.beginPath(); context.roundRect(from, centre - 12, to - from, 24, 5); context.fill();
           let textX = from + 7;
-          if ((lane.icons ?? p.showIcons) && span.icon && to - from > 28) { drawIcon(span.icon, from + 2, centre, BAR_ICON); textX = from + BAR_ICON + 6; }
+          const content = barContent(lane.icons ?? p.showIcons, lane.names ?? p.showNames, !!span.icon);
+          if (content.icon && to - from > 28) { drawIcon(span.icon, from + 2, centre, BAR_ICON); textX = from + BAR_ICON + 6; }
           context.font = font(tokens, tokens.fontSize.small, 600);
           if (span.glyph) {
             const width = context.measureText(span.glyph).width;
@@ -355,7 +357,7 @@ export default function Timeline(props: TimelineProps) {
               textX += width + 3;
             }
           }
-          if (!(lane.names ?? p.showNames)) continue;
+          if (!content.name) continue;
           context.font = font(tokens, tokens.fontSize.small, 500);
           if (context.measureText(span.label).width + (textX - from) + 6 < to - from) {
             context.fillStyle = onFill;

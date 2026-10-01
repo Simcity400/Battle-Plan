@@ -6,6 +6,92 @@ use replay::{
 };
 use std::sync::atomic::AtomicBool;
 
+#[test]
+fn artwork_problems_reach_the_reply_once_and_an_unidentified_holder_is_unknown() {
+    use super::{IdeaCharacter, IdeaSpan, ScannedIdeas, reply};
+    use crate::products::{CountryParams, politics_content::PoliticsContent};
+    let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/mod.lua",
+            "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"mod_officers\" } } }",
+        ),
+        (
+            "common/ideas/mod.txt",
+            "ideas = { mod_group = { mod_idea = { } } }",
+        ),
+        (
+            "interface/mod.gfx",
+            "spriteTypes = { spriteType = { name = GFX_idea_mod_idea noOfFrames = -2 } spriteType = { name = GFX_unused noOfFrames = -3 } }",
+        ),
+    ]);
+    catalogue
+        .warnings
+        .push("unused catalogue sprite refusals: GFX_unused".into());
+    let content = PoliticsContent::load(std::sync::Arc::new(catalogue)).unwrap();
+    let replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![idea_frame(100, &[])])]).unwrap();
+    let params = CountryParams {
+        branch_id: "1".into(),
+        tag: "GER".into(),
+    };
+    let mut scanned = ScannedIdeas {
+        spans: vec![IdeaSpan {
+            token: "mod_idea".into(),
+            first_hour: 100,
+            last_hour: 100,
+            slot: None,
+            character: None,
+        }],
+        ..Default::default()
+    };
+    let shown = reply(
+        &content,
+        &replay,
+        &params,
+        &scanned,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(shown.artwork[0].icon, None);
+    let problems: Vec<_> = shown
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("GFX_idea_mod_idea"))
+        .collect();
+    assert_eq!(problems.len(), 1, "{:?}", shown.warnings);
+    assert!(problems[0].contains("mod.gfx"));
+    assert!(shown.warnings.iter().all(
+        |warning| !warning.contains("GFX_unused") && !warning.contains("ideas have no artwork")
+    ));
+    scanned.spans[0].character = Some(IdeaCharacter {
+        id: 7,
+        token: String::new(),
+        name: String::new(),
+    });
+    let shown = reply(
+        &content,
+        &replay,
+        &params,
+        &scanned,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(shown.artwork[0].icon, None);
+    assert!(
+        shown
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("artwork is unknown")
+                && warning.contains("no recorded script token"))
+    );
+    assert!(
+        shown
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("no artwork in the recorded content"))
+    );
+}
+
 /// GER (link 9001) holding the given ideas. `GER_schacht_idea` is an appointed
 /// advisor: like the game, it is in the appointed-advisor list, not the active ideas.
 fn idea_frame(hour: i32, ideas: &[&str]) -> DecodedFrame {

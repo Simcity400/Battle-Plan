@@ -6,7 +6,10 @@ import type { Artwork, HourSpan, IdeaHistoryReply, IdeaSpan } from '../../genera
 
 /** National spirits from the idea history: the ideas whose content category is a
  * national-spirit category (`type = national_spirit` in content, whatever a mod
- * names it). */
+ * names it). `national_spirit` is the engine's category type keyword:
+ * `CIdeaCategory::vf4@140FC0730` maps its token (0x3443) to type 1, beside
+ * `army_spirit`, `navy_spirit` and `air_spirit`. */
+export const NATIONAL_SPIRIT_TYPE = 'national_spirit';
 
 export type SpiritSort = 'gained' | 'ended' | 'name';
 
@@ -18,7 +21,7 @@ export interface Spirit {
 }
 
 export function spirits(reply: IdeaHistoryReply): Spirit[] {
-  const spiritCategories = new Set(reply.categories.filter(category => category.kind === 'national_spirit').map(category => category.token));
+  const spiritCategories = new Set(reply.categories.filter(category => category.kind === NATIONAL_SPIRIT_TYPE).map(category => category.token));
   const tokens = new Set(reply.ideas.filter(info => info.category && spiritCategories.has(info.category)).map(info => info.token));
   const art = new Map<string, Artwork>(reply.artwork.map(item => [item.token, item]));
   const byToken = new Map<string, Spirit>();

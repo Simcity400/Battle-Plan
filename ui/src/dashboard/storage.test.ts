@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
-import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, saveLayouts } from './storage.ts';
+import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, saveLayouts } from './storage.ts';
 import '../widgets/definitions.ts';
 
 function memoryStorage() {
@@ -121,4 +121,39 @@ test('widget options round-trip, survive an uninstalled widget type and refuse u
     Object.assign(raw.layouts[0].template.widgets[0], { options: invalid });
     assert.equal(parseLayoutLibrary(raw), null);
   }
+});
+
+test('modded, dynamic and unusual country tags survive saving and reloading', () => {
+  const storage = memoryStorage();
+  const { library } = loadLayouts(storage);
+  const template = library.layouts[0].template;
+  // Tags are opaque: spaces, lower case, dynamic countries, long mod tags and non-ASCII text.
+  const tags = ['D01', 'ger', 'my tag', 'MOD_LONG_COUNTRY_TAG_FROM_A_TOTAL_CONVERSION_MOD', 'ÉTAT'];
+  template.widgets[0].countries = { kind: 'tags', tags };
+  template.roles[0].selectedTag = 'my tag';
+  assert.equal(saveLayouts(library, storage), null);
+  const restored = loadLayouts(storage).library.layouts[0].template;
+  assert.deepEqual(restored.widgets[0].countries, { kind: 'tags', tags });
+  assert.equal(restored.roles[0].selectedTag, 'my tag');
+  // A tag the products would refuse costs only itself, never the widget or the library.
+  const raw = structuredClone(library);
+  raw.layouts[0].template.widgets[0].countries = { kind: 'tags', tags: ['GER', 'a\0b', 'x'.repeat(129), ''] };
+  raw.layouts[0].template.roles[0].selectedTag = 'x'.repeat(129);
+  const parsed = parseLayoutLibraryWithNotes(raw);
+  assert.ok(parsed);
+  assert.equal(parsed.droppedTags, 4);
+  assert.deepEqual(parsed.library.layouts[0].template.widgets[0].countries, { kind: 'tags', tags: ['GER'] });
+  assert.equal(parsed.library.layouts[0].template.roles[0].selectedTag, null);
+  storage.setItem('hoi4-replay.workspace-layouts.v1', JSON.stringify(raw));
+  const loaded = loadLayouts(storage);
+  assert.equal(loaded.droppedTags, 4);
+  assert.match(loaded.warning!, /4 country tag entries were left out/);
+  assert.deepEqual(loaded.library, parsed.library);
+  const before = storage.getItem('hoi4-replay.workspace-layouts.v1');
+  assert.match(saveLayouts(raw, storage)!, /4 country tag entries could not be saved/);
+  assert.equal(storage.getItem('hoi4-replay.workspace-layouts.v1'), before);
+  storage.values.delete('hoi4-replay.workspace-layouts.v1');
+  storage.setItem('hoi4-replay.workspace-template.v1', JSON.stringify(raw.layouts[0].template));
+  assert.equal(loadLayouts(storage).droppedTags, 4);
+  assert.match(loadLayouts(storage).warning!, /4 country tag entries were left out/);
 });

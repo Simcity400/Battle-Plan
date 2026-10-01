@@ -15,7 +15,7 @@ import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { countryLineColours } from '../../dashboard/countryLineColours';
+import { countryLineColours, uncolouredWarning } from '../../dashboard/countryLineColours';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { membershipChanges, resolveCountries } from '../../dashboard/groups';
@@ -71,11 +71,13 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   useEffect(() => { if (!active) setTipHour(null); }, [active]);
   const menu = useContextMenu('Experience actions');
   useEffect(() => {
+    const uncoloured = uncolouredWarning((data?.series ?? []).map(item => item.tag), styles.known, !!styles.data);
     const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []), ...(groups.data?.warnings ?? []),
+      ...(uncoloured ? [uncoloured] : []),
       ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget draws at most ${resolved.tags.length}.`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, styles.data, groups.data, resolved.dropped, resolved.tags.length, onDiagnostics]);
+  }, [data, styles.data, styles.known, groups.data, resolved.dropped, resolved.tags.length, onDiagnostics]);
 
   const countries = useMemo(() => {
     if (!data) return [];

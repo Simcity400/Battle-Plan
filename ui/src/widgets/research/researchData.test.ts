@@ -94,7 +94,20 @@ test('research responses reject stale identities, overlapping assignments and un
   assert.throws(() => validateResearchReply({ ...reply, history: { ...history, coverage: [...history.coverage, history.coverage[0]] } }));
   const badEntry = { ...history.slots[0].entries[0], endedByHour: 99 };
   assert.throws(() => validateResearchReply({ ...reply, history: { ...history, slots: [{ ...history.slots[0], entries: [badEntry] }] } }));
-  assert.throws(() => validateResearchReply({ ...reply, artwork: [{ token: 'A', name: null, description: null, baseDurationDays: null, icon: 'https://example.com/image.png' }] }));
+  // An unsafe icon is never drawn: it shows as missing art rather than refusing the history.
+  const unsafe = validateResearchReply({ ...reply, artwork: [{ token: 'A', name: null, description: null, baseDurationDays: null, icon: 'https://example.com/image.png' }] });
+  assert.equal(unsafe.artwork[0].icon, null);
+  assert.equal(unsafe.artwork[0].token, 'A');
+  // A malformed entry is still refused: the widget reads every entry's token.
+  for (const bad of [null, 'A', {}, { token: '', name: null, description: null, baseDurationDays: null, icon: null },
+    { token: 'A', name: 1, description: null, baseDurationDays: null, icon: null }, { token: 'A', name: null, description: null, baseDurationDays: -1, icon: null }]) {
+    assert.throws(() => validateResearchReply({ ...reply, artwork: [bad] } as unknown as ResearchReply), String(bad));
+  }
+});
+
+test('a country may have any number of research slots, as content and effects give it', () => {
+  const slots = Array.from({ length: 80 }, (_, index) => ({ index, availability: [{ firstHour: 100, lastHour: 400 }], states: [], progress: [], entries: [] }));
+  assert.equal(validateResearchReply({ ...reply, history: { ...history, slots } }).history.slots.length, 80);
 });
 
 test('research widgets share preparation and playback does not fetch per hour', async () => {

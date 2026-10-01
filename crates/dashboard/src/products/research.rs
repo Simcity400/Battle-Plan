@@ -152,7 +152,8 @@ struct SlotMark {
 }
 struct HistoryMark {
     structure: usize,
-    slots: [SlotMark; 64],
+    /// One mark per slot the history had; a slot added later counts from zero.
+    slots: Vec<SlotMark>,
 }
 
 fn structure_bytes(history: &ResearchHistory) -> usize {
@@ -171,14 +172,15 @@ fn structure_bytes(history: &ResearchHistory) -> usize {
 }
 
 fn history_mark(history: &ResearchHistory) -> HistoryMark {
-    let mut slots = [SlotMark::default(); 64];
-    for (mark, slot) in slots.iter_mut().zip(&history.slots) {
-        *mark = SlotMark {
+    let slots = history
+        .slots
+        .iter()
+        .map(|slot| SlotMark {
             entries: slot.entries.len(),
             states: slot.states.len(),
             progress: slot.progress.len(),
-        };
-    }
+        })
+        .collect();
     HistoryMark {
         structure: structure_bytes(history),
         slots,
@@ -202,7 +204,8 @@ fn history_growth(history: &ResearchHistory, before: &HistoryMark) -> usize {
         + history
             .slots
             .iter()
-            .zip(&before.slots)
+            .enumerate()
+            .map(|(index, slot)| (slot, before.slots.get(index).copied().unwrap_or_default()))
             .map(|(slot, mark)| {
                 slot.entries[mark.entries..]
                     .iter()
@@ -261,16 +264,15 @@ impl Country {
         bonuses: Option<&[replay::rows::ResearchAppliedBonusRow]>,
         modifier_rows: Option<&[replay::rows::ResearchModifierRow]>,
     ) {
-        if inputs.len() > 64
-            || inputs.iter().enumerate().any(|(i, r)| {
-                r.index as usize != i
-                    || r.technology_present > 1
-                    || (r.technology_present != 0
-                        && (r.token.is_empty()
-                            || r.token.len() > 512
-                            || std::str::from_utf8(&r.token).is_err()))
-            })
-        {
+        // Any number of slots: content and effects set how many a country has.
+        if inputs.iter().enumerate().any(|(i, r)| {
+            r.index as usize != i
+                || r.technology_present > 1
+                || (r.technology_present != 0
+                    && (r.token.is_empty()
+                        || r.token.len() > 512
+                        || std::str::from_utf8(&r.token).is_err()))
+        }) {
             return;
         }
         let read_after = self.read_after;

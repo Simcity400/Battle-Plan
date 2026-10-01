@@ -255,6 +255,91 @@ pub fn format(items: &[Item]) -> Option<&str> {
     last(items, b"format").and_then(Value::scalar_str)
 }
 
+/// The sprite of a window's own button, through the native GUI registry
+/// (FindGuiType 142247660, container_factory 142246270, FindButton 1422A4A20).
+/// Every file is read in native order, including EOF closure and later
+/// replacements; no fixed GUI filename or independent registry is used.
+pub fn window_button_sprite(
+    guis: &native::Guis,
+    window: &str,
+    button: &str,
+    warnings: &mut Vec<String>,
+) -> io::Result<String> {
+    let declarations: Vec<_> = guis
+        .files
+        .iter()
+        .flat_map(|(path, gui)| {
+            gui.templates()
+                .iter()
+                .filter(move |template| template.is_named(window))
+                .map(move |template| (path, template))
+        })
+        .collect();
+    if declarations.len() > 1 {
+        warnings.push(format!(
+            "{window} is declared {} times ({}); the native registry selects the kept declaration.",
+            declarations.len(),
+            declarations
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let kept = guis
+        .files
+        .iter()
+        .rposition(|(_, gui)| gui.template(window).is_some());
+    // An unread suffix can register this name again. A later readable declaration
+    // settles earlier files; unrelated refusals cannot change this lookup.
+    for (path, gui) in &guis.files[kept.unwrap_or(0)..] {
+        if let Some(why) = gui
+            .refusals()
+            .iter()
+            .find(|why| why.cause == native::Cause::Unaligned)
+        {
+            return Err(invalid(format!(
+                "{window}: GUI file {path} may register the window in its unread suffix: {why}"
+            )));
+        }
+    }
+    let element = kept
+        .and_then(|index| guis.files[index].1.template(window))
+        .ok_or_else(|| invalid(format!("no interface file declares a {window} window")))?;
+    if element.kind != native::Kind::Container {
+        return Err(invalid(format!(
+            "{window} is {}, not the containerWindowType the game opens",
+            element.kind.keyword()
+        )));
+    }
+    let child = element
+        .find(native::Kind::Button, button)
+        .ok_or_else(|| invalid(format!("{window} has no {button} button")))?;
+    let refusals: Vec<_> = element
+        .refusals()
+        .iter()
+        .chain(child.refusals())
+        .map(ToString::to_string)
+        .collect();
+    if !refusals.is_empty() {
+        return Err(invalid(format!(
+            "{window}.{button}: {} GUI refusals: {}",
+            refusals.len(),
+            refusals.join("; ")
+        )));
+    }
+    let bytes = &child
+        .button()
+        .ok_or_else(|| invalid(format!("{window}.{button}: button fields unavailable")))?
+        .sprite;
+    let name = crate::parser::text(bytes)
+        .map_err(|why| invalid(format!("{window}.{button}: sprite is {why}")))?;
+    if name.is_empty() {
+        return Err(invalid(format!("{button} in {window} names no sprite")));
+    }
+    Ok(name.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

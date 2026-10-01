@@ -18,44 +18,6 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-/// A code-bound sprite control, using the template registry and the window's
-/// kind-local lookup (FindGuiType@142247660, FindButton@1422A4A20,
-/// FindGuiElementInParallelNameArrays@14229E5C0). Refusing this control does
-/// not refuse unrelated elements in the same file.
-pub(crate) fn gui_sprite_name(
-    root: &installed_content::gui::native::Element,
-    kind: installed_content::gui::native::Kind,
-    name: &str,
-) -> io::Result<String> {
-    let child = root
-        .find(kind, name)
-        .ok_or_else(|| invalid(format!("{} has no sprite control {name}", root.path)))?;
-    let refusals: Vec<_> = root
-        .refusals()
-        .iter()
-        .chain(child.refusals())
-        .map(ToString::to_string)
-        .collect();
-    if !refusals.is_empty() {
-        return Err(invalid(format!(
-            "{} is refused: {}",
-            child.path,
-            refusals.join("; ")
-        )));
-    }
-    let bytes = child
-        .button()
-        .map(|button| &button.sprite)
-        .or_else(|| child.icon().map(|icon| &icon.sprite))
-        .ok_or_else(|| invalid(format!("{} is not a sprite control", child.path)))?;
-    std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
-        invalid(format!(
-            "{} names a sprite the dashboard cannot represent as UTF-8",
-            child.path
-        ))
-    })
-}
-
 /// `CreateGuiObjectBySpriteName@142222AD0` retries the executable's fallback
 /// only when the requested name is absent. A declared but refused sprite stays refused.
 pub(crate) fn created_gui_sprite<'a>(
@@ -67,7 +29,9 @@ pub(crate) fn created_gui_sprite<'a>(
     }
     let fallback = std::str::from_utf8(installed_content::gui::native::resources::FALLBACK_SPRITE)
         .expect("the executable's fallback sprite literal is ASCII");
-    sprites.lookup(fallback).map_err(invalid)
+    sprites
+        .lookup(fallback)
+        .map_err(|why| invalid(format!("{name} is not declared, and its fallback: {why}")))
 }
 
 /// How the game's view of a name treats `[...]` scripted text, settled per
@@ -237,8 +201,8 @@ impl Catalogue {
         content::check_replay(&replay, options.allow_unverified, &mut verification)?;
         let language = &replay.identity.language;
         let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
-        let mut warnings = Vec::new();
         let content = source.content(&options.options)?;
+        let mut warnings = Vec::new();
         let settings = installed_content::settings::read_keys(&options.options.user_dir);
         let language = match &settings {
             Ok(settings) => settings.language()?,
@@ -258,11 +222,29 @@ impl Catalogue {
                 language,
             ),
         )?;
-        let sprites = installed_content::gfx::read(&content.layers)?;
-        let guis = installed_content::gui::native::read_layers(&content.layers)?;
         let gui_decode = settings
             .map(|settings| settings.texture_decode())
             .map_err(|why| format!("settings.txt is unavailable: {why}"));
+        Self::from_content(
+            content,
+            localisation,
+            verification,
+            warnings,
+            recorded_language,
+            gui_decode,
+        )
+    }
+
+    fn from_content(
+        content: Arc<ResolvedContent>,
+        localisation: Arc<Localisation>,
+        verification: Vec<String>,
+        mut warnings: Vec<String>,
+        recorded_language: String,
+        gui_decode: Result<installed_content::image::native::Decode, String>,
+    ) -> io::Result<Self> {
+        let sprites = installed_content::gfx::read(&content.layers)?;
+        let guis = installed_content::gui::native::read_layers(&content.layers)?;
         for (label, count) in [
             ("logged localisation diagnostics", localisation.logged.len()),
             ("refused localisation forms", localisation.refused.len()),
@@ -293,6 +275,23 @@ impl Catalogue {
             refused: Mutex::default(),
             scripted: OnceLock::new(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn of_layers(layers: ResolvedLayers, language: &str) -> io::Result<Self> {
+        let localisation = Arc::new(installed_content::localisation::read(&layers, language)?);
+        let content = Arc::new(ResolvedContent {
+            layers,
+            stats: Default::default(),
+        });
+        Self::from_content(
+            content,
+            localisation,
+            Vec::new(),
+            Vec::new(),
+            language.to_owned(),
+            Ok(Default::default()),
+        )
     }
 
     /// [`localised_in`], noting a refusal: a key the content lacks is its own
@@ -617,7 +616,7 @@ pub(crate) mod tests {
 
     #[test]
     fn gui_sprite_binding_uses_native_inheritance_and_kind_local_names() {
-        use installed_content::gui::native::{self, Kind};
+        use installed_content::gui::native;
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = topbar
@@ -628,12 +627,16 @@ pub(crate) mod tests {
             buttonType = { name = player_flag parent = base }
         } }"#,
         );
-        let root = gui.template(b"topbar").unwrap();
+        let guis = native::Guis {
+            files: vec![("interface/topbar.gui".into(), gui)],
+        };
+        let mut warnings = Vec::new();
         assert_eq!(
-            gui_sprite_name(root, Kind::Button, "PLAYER_FLAG").unwrap(),
+            installed_content::gui::window_button_sprite(&guis, "TOPBAR", "PLAYER_FLAG", &mut warnings)
+                .unwrap(),
             "GFX_inherited"
         );
-        assert!(gui_sprite_name(root, Kind::Icon, "player_flag").is_err());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

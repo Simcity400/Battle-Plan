@@ -1,0 +1,974 @@
+//! Modded content stacks for the Politics, resource, sprite, GUI and building
+//! readers: a base game layer and a mod layer as `ResolvedLayers::from_folders`
+//! stacks them, so additions, overrides, removals and refused forms are read
+//! through the same layer resolution as recorded content.
+
+use crate::ResolvedLayers;
+use std::path::{Path, PathBuf};
+
+/// A base game folder and a mod folder under a fresh temporary root.
+struct Stack {
+    root: PathBuf,
+}
+
+impl Stack {
+    fn new(name: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_mod_layers_{name}_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        Self { root }
+    }
+
+    fn base(&self) -> PathBuf {
+        self.root.join("base")
+    }
+
+    fn addon(&self) -> PathBuf {
+        self.root.join("mod")
+    }
+
+    fn write(&self, layer: &Path, path: &str, text: &str) {
+        let path = layer.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn layers(&self, replace_paths: &[&str]) -> ResolvedLayers {
+        let (base, addon) = (self.base(), self.addon());
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&addon).unwrap();
+        ResolvedLayers::from_folders(&[(&base, &[]), (&addon, replace_paths)]).unwrap()
+    }
+}
+
+impl Drop for Stack {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
+    let stack = Stack::new("ideas");
+    let (base, addon) = (stack.base(), stack.addon());
+    stack.write(
+        &base,
+        "common/idea_tags/00_idea.txt",
+        "idea_categories = { political_advisor = { character_slot = political_advisor } \
+         economy = { slot = economy_slot } }",
+    );
+    // The mod replaces the base file at the same path: `economy` is gone.
+    stack.write(
+        &addon,
+        "common/idea_tags/00_idea.txt",
+        "idea_categories = { political_advisor = { character_slot = political_advisor } }",
+    );
+    stack.write(
+        &addon,
+        "common/idea_tags/mod_tags.txt",
+        "idea_categories = { mod_council = { slot = mod_seat cost = @council_cost } }",
+    );
+    stack.write(
+        &base,
+        "common/ideas/b_base.txt",
+        "ideas = { country = { base_spirit = { modifier = { stability_factor = 0.1 } } } }",
+    );
+    // Named before the base file, so it loads first; the base file's definition wins.
+    stack.write(
+        &addon,
+        "common/ideas/a_mod.txt",
+        "@mod_cost = 150 \
+         ideas = { mod_seat = { mod_law = { cost = @mod_cost removal_cost = [?scripted] \
+         modifier = { stability_factor = [?mod_value]  } } } \
+         country = { base_spirit = { modifier = { stability_factor = 0.5 } } } }",
+    );
+    // `common/ideas` loads only its direct files.
+    stack.write(
+        &addon,
+        "common/ideas/nested/ignored.txt",
+        "ideas = { country = { nested_spirit = { } } }",
+    );
+    // Native database loaders take direct files; a nested file is ignored.
+    stack.write(
+        &addon,
+        "common/idea_tags/extra/ignored.txt",
+        "idea_categories = { nested_category = { slot = nested_slot } }",
+    );
+    let layers = stack.layers(&[]);
+    let (content, _, warnings) = crate::ideas::read(&layers, &[]).unwrap();
+    let names: Vec<_> = content
+        .tags
+        .categories()
+        .0
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(names, ["political_advisor", "mod_council"]);
+    assert!(content.tags.resolve("economy").unwrap().is_none());
+    assert!(content.tags.resolve("nested_category").unwrap().is_none());
+    // An unknown `@variable` is refused by name, not read as a missing cost.
+    assert_eq!(
+        content.tags.resolve("mod_council").unwrap().unwrap().cost,
+        None
+    );
+    let law = content.idea("mod_law").unwrap().unwrap();
+    assert_eq!((law.cost, law.removal_cost), (Some(150.0), None));
+    assert!(content.idea("nested_spirit").unwrap().is_none());
+    // By name across layers: a_mod.txt before b_base.txt, so the base definition is last.
+    assert_eq!(
+        content
+            .idea("base_spirit")
+            .unwrap()
+            .unwrap()
+            .modifiers
+            .values[0]
+            .value,
+        10_000
+    );
+    let refused = warnings
+        .iter()
+        .find(|w| w.contains("failed native numeric conversion") && w.contains("mod_law"))
+        .expect("refused forms are counted");
+    for named in [
+        "mod_law: removal_cost = [?scripted]",
+        "mod_law: stability_factor = [?mod_value]",
+    ] {
+        assert!(refused.contains(named), "{named} in {refused}");
+    }
+    assert!(refused.contains("2 content values"), "{refused}");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("mod_council: cost = @council_cost")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_mod_ideology_brings_its_colour_and_a_replaced_folder_drops_the_base_ones() {
+    let stack = Stack::new("ideologies");
+    let (base, addon) = (stack.base(), stack.addon());
+    stack.write(
+        &base,
+        "common/ideologies/00_ideologies.txt",
+        "ideologies = { democratic = { types = { conservatism = { } } color = { 0 0 255 } } }",
+    );
+    stack.write(
+        &addon,
+        "common/ideologies/mod_ideologies.txt",
+        "ideologies = { technocracy = { types = { futurism = { } } color = { 12 200 180 } } \
+         mystic = { color = 16711680 } }",
+    );
+    let (added, warnings) = crate::ideologies::read(&stack.layers(&[])).unwrap();
+    assert_eq!(
+        added
+            .groups()
+            .0
+            .iter()
+            .map(|g| (g.token.as_str(), g.color.clone().ok()))
+            .collect::<Vec<_>>(),
+        [
+            ("democratic", Some([0.0, 0.0, 1.0, 1.0])),
+            (
+                "technocracy",
+                Some([12.0 / 255.0, 200.0 / 255.0, 180.0 / 255.0, 1.0])
+            ),
+            ("mystic", None)
+        ]
+    );
+    assert_eq!(
+        added.group_of("futurism").unwrap().unwrap().token,
+        "technocracy"
+    );
+    // The refused colour form is named, never converted by guesswork.
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("mystic") && w.contains("packed colour 16711680")),
+        "{warnings:?}"
+    );
+    // replace_path hides every base ideology.
+    let (replaced, _) = crate::ideologies::read(&stack.layers(&["common/ideologies"])).unwrap();
+    assert!(replaced.get("democratic").unwrap().is_none());
+    assert!(replaced.get("technocracy").unwrap().is_some());
+}
+
+#[test]
+fn every_portrait_role_the_engine_accepts_is_read_and_others_are_refused_by_name() {
+    let stack = Stack::new("characters");
+    stack.write(
+        &stack.addon(),
+        "common/characters/mod_characters.txt",
+        "characters = { \
+           MOD_pilot = { portraits = { air = { small = GFX_pilot_small } } } \
+           MOD_spy = { portraits = { operative = { small = GFX_spy_small } } } \
+           MOD_scholar = { portraits = { scientist = { small = GFX_scholar_small } } } \
+           MOD_wrong = { portraits = { airforce = { small = GFX_wrong } } } \
+           MOD_adviser = { advisor = { slot = political_advisor } } }",
+    );
+    let (characters, warnings) =
+        crate::characters::read(&stack.layers(&[]), Default::default()).unwrap();
+    let small = |token: &str, role: &str| {
+        characters
+            .portraits(token)
+            .unwrap()
+            .unwrap()
+            .get(&(role.to_owned(), "small".to_owned()))
+            .cloned()
+    };
+    assert_eq!(
+        small("MOD_pilot", "air"),
+        Some(crate::characters::Authored::Asset("GFX_pilot_small".into()))
+    );
+    assert_eq!(
+        small("MOD_spy", "operative"),
+        Some(crate::characters::Authored::Asset("GFX_spy_small".into()))
+    );
+    assert_eq!(
+        small("MOD_scholar", "scientist"),
+        Some(crate::characters::Authored::Asset(
+            "GFX_scholar_small".into()
+        ))
+    );
+    let refused = warnings.join("; ");
+    assert!(
+        refused.contains("MOD_wrong: portrait role `airforce` is not one the game reads"),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("MOD_adviser: advisor idea_token or slot missing"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn one_unreadable_mod_sprite_costs_only_itself_and_keys_match_without_case() {
+    let stack = Stack::new("sprites");
+    let (base, addon) = (stack.base(), stack.addon());
+    stack.write(
+        &base,
+        "interface/base.gfx",
+        "spriteTypes = { spriteType = { name = GFX_idea_x texturefile = gfx/interface/base_x.dds } }",
+    );
+    stack.write(
+        &addon,
+        "interface/zz_mod.gfx",
+        "spriteTypes = { \
+           SpriteType = { name = GFX_idea_x TextureFile = \"gfx//interface/mod_x.tga\" NoOfFrames = 2 } \
+           spriteType = { name = GFX_broken texturefile = gfx/interface/b.dds noOfFrames = -2 } \
+           spriteType = { name = GFX_fine texturefile = gfx/interface/f.dds } }",
+    );
+    let layers = stack.layers(&[]);
+    let set = crate::gfx::read(&layers).unwrap();
+    // The mod's later declaration wins, whatever case its keys are written in.
+    let idea = set.lookup("GFX_idea_x").unwrap();
+    assert_eq!(
+        (idea.texture.as_deref(), idea.frames),
+        (Some("gfx/interface/mod_x.tga"), 2)
+    );
+    assert!(set.contains("GFX_fine"));
+    assert!(set.find("GFX_broken").is_err());
+    assert_eq!(set.refused.len(), 1);
+    assert!(set.refused[0].contains("GFX_broken"), "{:?}", set.refused);
+    assert!(
+        set.refusal("GFX_broken")
+            .unwrap()
+            .contains("noOfFrames is -2")
+    );
+}
+
+#[test]
+fn a_refused_sprite_override_withdraws_the_earlier_declaration() {
+    let stack = Stack::new("sprite_override");
+    let (base, addon) = (stack.base(), stack.addon());
+    stack.write(
+        &base,
+        "interface/base.gfx",
+        "spriteTypes = { spriteType = { name = GFX_idea_x texturefile = gfx/interface/base_x.dds } \
+         spriteType = { name = GFX_idea_y texturefile = gfx/interface/base_y.dds } }",
+    );
+    // The mod redeclares both; its GFX_idea_x cannot be read, and its GFX_idea_y
+    // is refused and then declared again readably later in the same file.
+    stack.write(
+        &addon,
+        "interface/zz_mod.gfx",
+        "spriteTypes = { \
+           spriteType = { name = GFX_idea_x texturefile = gfx/interface/mod_x.dds noOfFrames = -2 } \
+           spriteType = { name = GFX_idea_y texturefile = gfx/interface/mod_y.dds noOfFrames = -2 } \
+           spriteType = { name = GFX_idea_y texturefile = gfx/interface/mod_y2.dds } }",
+    );
+    let set = crate::gfx::read(&stack.layers(&[])).unwrap();
+    // Never the base art the refused override replaced: the name is unavailable, with its reason.
+    let reason = set.lookup("GFX_idea_x").unwrap_err();
+    assert!(
+        reason.contains("zz_mod.gfx") && reason.contains("GFX_idea_x"),
+        "{reason}"
+    );
+    // A later readable declaration is read as usual.
+    assert_eq!(
+        set.lookup("GFX_idea_y").unwrap().texture.as_deref(),
+        Some("gfx/interface/mod_y2.dds")
+    );
+    assert!(set.find("GFX_none").unwrap().is_none());
+}
+
+#[test]
+fn a_tree_unreadable_sprite_file_keeps_its_native_prefix_and_later_replacements() {
+    let stack = Stack::new("sprite_unreadable");
+    let (base, addon) = (stack.base(), stack.addon());
+    stack.write(
+        &base,
+        "interface/base.gfx",
+        "spriteTypes = { spriteType = { name = GFX_idea_x texturefile = gfx/interface/base_x.dds } \
+         spriteType = { name = GFX_idea_y texturefile = gfx/interface/base_y.dds } \
+         spriteType = { name = GFX_idea_z texturefile = gfx/interface/base_z.dds } }",
+    );
+    // The mod redeclares GFX_idea_x and GFX_idea_z before an unrelated
+    // stray closing brace. The native file reader stops there, retaining its prefix.
+    let broken = "spriteTypes = { spriteType = { name = GFX_idea_x texturefile = gfx/interface/mod_x.dds } \
+                  spriteType = { name = \"GFX_idea_z\" texturefile = gfx/interface/mod_z.dds } } } \
+                  spriteTypes = { spriteType = { name = GFX_other } }";
+    assert!(crate::parser::parse(broken.as_bytes()).is_err());
+    stack.write(&addon, "interface/mod.gfx", broken);
+    // A file after it declares GFX_idea_z readably again.
+    stack.write(
+        &addon,
+        "interface/zz_mod.gfx",
+        "spriteTypes = { spriteType = { name = GFX_idea_z texturefile = gfx/interface/zz_z.dds } }",
+    );
+    let set = crate::gfx::read(&stack.layers(&[])).unwrap();
+    assert_eq!(
+        set.lookup("GFX_idea_x").unwrap().texture.as_deref(),
+        Some("gfx/interface/mod_x.dds")
+    );
+    assert_eq!(
+        set.lookup("GFX_idea_y").unwrap().texture.as_deref(),
+        Some("gfx/interface/base_y.dds")
+    );
+    assert_eq!(
+        set.lookup("GFX_idea_z").unwrap().texture.as_deref(),
+        Some("gfx/interface/zz_z.dds")
+    );
+    assert!(set.find("GFX_other").unwrap().is_none());
+    assert!(set.refused.is_empty(), "{:?}", set.refused);
+}
+
+#[test]
+fn a_mod_resource_takes_its_frame_through_a_file_variable() {
+    let stack = Stack::new("resources");
+    stack.write(
+        &stack.base(),
+        "common/resources/00_resources.txt",
+        "resources = { oil = { icon_frame = 1 } }",
+    );
+    stack.write(
+        &stack.addon(),
+        "common/resources/mod_resources.txt",
+        "@ore_frame = 7 resources = { mod_ore = { icon_frame = @ore_frame } mod_gas = { icon_frame = @missing } }",
+    );
+    let (resources, warnings) = crate::resources::read(&stack.layers(&[])).unwrap();
+    assert_eq!(
+        resources
+            .iter()
+            .map(|r| (r.token.as_str(), r.icon_frame))
+            .collect::<Vec<_>>(),
+        [("oil", Some(1)), ("mod_ore", Some(7)), ("mod_gas", None)]
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("mod_gas: icon_frame = @missing")),
+        "{warnings:?}"
+    );
+}
+
+/// `window_button_sprite` for `resources_info_entry` → `resources_icon`.
+fn resource_icon(stack: &Stack) -> (std::io::Result<String>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let sprite = crate::gui::window_button_sprite(
+        &crate::gui::native::read_layers(&stack.layers(&[])).unwrap(),
+        "resources_info_entry",
+        "resources_icon",
+        &mut warnings,
+    );
+    (sprite, warnings)
+}
+
+#[test]
+fn a_gui_window_is_found_in_whichever_file_declares_it_and_a_later_file_replaces_it() {
+    let stack = Stack::new("gui");
+    stack.write(
+        &stack.addon(),
+        "interface/mod/mod_trade.gui",
+        "guiTypes = { containerWindowType = { name = resources_info_entry \
+         buttonType = { name = resources_icon spriteType = GFX_mod_resources_strip } } }",
+    );
+    let (sprite, warnings) = resource_icon(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_mod_resources_strip");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    // The base file loads first (files before subfolders), so the mod's
+    // declaration replaces it, and the replacement is reported.
+    stack.write(
+        &stack.base(),
+        "interface/countrytradeview.gui",
+        "guiTypes = { containerWindowType = { name = resources_info_entry \
+         buttonType = { name = resources_icon spriteType = GFX_resources_strip } } }",
+    );
+    let (sprite, warnings) = resource_icon(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_mod_resources_strip");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("resources_info_entry is declared 2 times"),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings[0].contains("interface/mod/mod_trade.gui"),
+        "{warnings:?}"
+    );
+    // load_screen.gui is read before every other file, so it is replaced too.
+    stack.write(
+        &stack.addon(),
+        "interface/load_screen.gui",
+        "guiTypes = { containerWindowType = { name = resources_info_entry \
+         buttonType = { name = resources_icon spriteType = GFX_load_screen } } }",
+    );
+    assert_eq!(
+        crate::gui::native::read_layers(&stack.layers(&[]))
+            .unwrap()
+            .files[0]
+            .0,
+        "interface/load_screen.gui"
+    );
+    assert_eq!(resource_icon(&stack).0.unwrap(), "GFX_mod_resources_strip");
+}
+
+#[test]
+fn every_declaration_of_a_gui_window_in_one_file_is_weighed_as_the_registry_does() {
+    let stack = Stack::new("gui_one_file");
+    let row = |sprite: &str| {
+        format!(
+            "containerWindowType = {{ name = resources_info_entry \
+             buttonType = {{ name = resources_icon spriteType = {sprite} }} }}"
+        )
+    };
+    // Two declarations alone in a block: the registry inserts the second
+    // first, so the first is kept, and both are named.
+    stack.write(
+        &stack.addon(),
+        "interface/mod_trade.gui",
+        &format!("guiTypes = {{ {} {} }}", row("GFX_A"), row("GFX_B")),
+    );
+    let (sprite, warnings) = resource_icon(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_A");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("resources_info_entry is declared 2 times"),
+        "{warnings:?}"
+    );
+    // A third after them in the block is inserted last, so it is kept.
+    stack.write(
+        &stack.addon(),
+        "interface/mod_trade.gui",
+        &format!(
+            "guiTypes = {{ {} {} {} }}",
+            row("GFX_A"),
+            row("GFX_B"),
+            row("GFX_C")
+        ),
+    );
+    let (sprite, warnings) = resource_icon(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_C");
+    assert!(
+        warnings[0].contains("resources_info_entry is declared 3 times"),
+        "{warnings:?}"
+    );
+    // A later guiTypes block in the same file replaces the earlier one.
+    stack.write(
+        &stack.addon(),
+        "interface/mod_trade.gui",
+        &format!(
+            "guiTypes = {{ {} {} }} guiTypes = {{ {} }}",
+            row("GFX_A"),
+            row("GFX_B"),
+            row("GFX_D")
+        ),
+    );
+    let (sprite, warnings) = resource_icon(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_D");
+    assert!(
+        warnings[0].contains("resources_info_entry is declared 3 times"),
+        "{warnings:?}"
+    );
+    // The native registry names unnamed templates and establishes their order too.
+    stack.write(
+        &stack.addon(),
+        "interface/mod_trade.gui",
+        &format!(
+            "guiTypes = {{ {} {} iconType = {{ spriteType = GFX_unnamed }} }}",
+            row("GFX_A"),
+            row("GFX_B")
+        ),
+    );
+    let (sprite, warnings) = resource_icon(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_A");
+    assert!(
+        warnings[0].contains("resources_info_entry is declared 2 times"),
+        "{warnings:?}"
+    );
+    // A later block replaces the earlier batch like any other.
+    stack.write(
+        &stack.addon(),
+        "interface/mod_trade.gui",
+        &format!(
+            "guiTypes = {{ {} {} iconType = {{ spriteType = GFX_unnamed }} }} guiTypes = {{ {} }}",
+            row("GFX_A"),
+            row("GFX_B"),
+            row("GFX_C")
+        ),
+    );
+    assert_eq!(resource_icon(&stack).0.unwrap(), "GFX_C");
+    // So does a later file.
+    stack.write(
+        &stack.addon(),
+        "interface/mod_trade.gui",
+        &format!(
+            "guiTypes = {{ {} {} iconType = {{ spriteType = GFX_unnamed }} }}",
+            row("GFX_A"),
+            row("GFX_B")
+        ),
+    );
+    stack.write(
+        &stack.addon(),
+        "interface/zz_trade.gui",
+        &format!("guiTypes = {{ {} }}", row("GFX_D")),
+    );
+    let (sprite, warnings) = resource_icon(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_D");
+    assert!(
+        warnings[0].starts_with("resources_info_entry is declared 3 times"),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
+    let stack = Stack::new("gui_unclosed");
+    stack.write(
+        &stack.base(),
+        "interface/topbar.gui",
+        "guiTypes = { containerWindowType = { name = topbar \
+         buttonType = { name = player_flag quadTextureSprite = GFX_shield_medium } } }",
+    );
+    let flag = |stack: &Stack| {
+        let mut warnings = Vec::new();
+        let sprite = crate::gui::window_button_sprite(
+            &crate::gui::native::read_layers(&stack.layers(&[])).unwrap(),
+            "topbar",
+            "player_flag",
+            &mut warnings,
+        );
+        (sprite, warnings)
+    };
+    // The override leaves out its final closing braces; the game closes them.
+    stack.write(
+        &stack.addon(),
+        "interface/zz_mod.gui",
+        "guiTypes = { containerWindowType = { name = topbar \
+         buttonType = { name = player_flag quadTextureSprite = GFX_mod_shield } }",
+    );
+    assert_eq!(flag(&stack).0.unwrap(), "GFX_mod_shield");
+    // A stray close ends the native file. Its declared top bar replaces
+    // the base window, so the missing button never falls back to base art.
+    let broken = "guiTypes = { containerWindowType = { name = topbar } } } \
+                  guiTypes = { containerWindowType = { name = other } }";
+    assert!(crate::parser::parse(broken.as_bytes()).is_err());
+    stack.write(&stack.addon(), "interface/zz_mod.gui", broken);
+    let (sprite, warnings) = flag(&stack);
+    let error = sprite.unwrap_err().to_string();
+    assert!(error.contains("topbar has no player_flag"), "{error}");
+    assert!(
+        warnings[0].contains("topbar is declared 2 times"),
+        "{warnings:?}"
+    );
+    // A later file that declares it readably settles it.
+    stack.write(
+        &stack.addon(),
+        "interface/zzz_mod.gui",
+        "guiTypes = { containerWindowType = { name = topbar \
+         buttonType = { name = player_flag quadTextureSprite = GFX_later } } }",
+    );
+    assert_eq!(flag(&stack).0.unwrap(), "GFX_later");
+    // A later file declaring only another name leaves the top bar alone.
+    stack.write(
+        &stack.addon(),
+        "interface/zzz_mod.gui",
+        "guiTypes = { containerWindowType = { name = topbar_extra } } }",
+    );
+    stack.write(
+        &stack.addon(),
+        "interface/zz_mod.gui",
+        "guiTypes = { containerWindowType = { name = topbar \
+         buttonType = { name = player_flag quadTextureSprite = GFX_mod_shield } } }",
+    );
+    let (sprite, warnings) = flag(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_mod_shield");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("topbar is declared 2 times")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_gui_button_is_the_first_direct_button_of_its_name_in_its_own_window() {
+    let stack = Stack::new("gui_scope");
+    stack.write(
+        &stack.base(),
+        "interface/topbar.gui",
+        "guiTypes = { containerWindowType = { name = topbar \
+         buttonType = { name = player_flag quadTextureSprite = GFX_shield_medium } } }",
+    );
+    // Another window's child of the same name, with other art, is not the top
+    // bar's (the file names `topbar`, so it is read).
+    stack.write(
+        &stack.addon(),
+        "interface/mod_diplomacy.gui",
+        "guiTypes = { containerWindowType = { name = topbar_extra \
+         buttonType = { name = player_flag quadTextureSprite = GFX_mod_flag } } \
+         iconType = { name = player_flag spriteType = GFX_mod_icon } }",
+    );
+    let flag = |stack: &Stack| {
+        crate::gui::window_button_sprite(
+            &crate::gui::native::read_layers(&stack.layers(&[])).unwrap(),
+            "topbar",
+            "player_flag",
+            &mut Vec::new(),
+        )
+    };
+    assert_eq!(flag(&stack).unwrap(), "GFX_shield_medium");
+    for (window, expected) in [
+        // Window and control names match without regard to case.
+        (
+            "containerWindowType = { name = TopBar \
+             buttonType = { name = Player_Flag quadTextureSprite = GFX_cased } }",
+            Ok("GFX_cased"),
+        ),
+        // A button in a nested window is in that window's list, not the top bar's.
+        (
+            "containerWindowType = { name = topbar containerWindowType = { name = inner \
+             buttonType = { name = player_flag quadTextureSprite = GFX_nested } } }",
+            Err("has no player_flag"),
+        ),
+        // CContainerWindowType::parse_field@1422FAF80's shared name tree
+        // discards the later button before FindButton searches its own array.
+        (
+            "containerWindowType = { name = topbar \
+             iconType = { name = player_flag spriteType = GFX_icon } \
+             buttonType = { name = player_flag quadTextureSprite = GFX_later } }",
+            Err("has no player_flag button"),
+        ),
+        (
+            "containerWindowType = { name = topbar \
+             buttonType = { name = player_flag quadTextureSprite = GFX_first } \
+             buttonType = { name = player_flag quadTextureSprite = GFX_second } }",
+            Ok("GFX_first"),
+        ),
+        // Only a containerWindowType opens as a window.
+        (
+            "windowType = { name = topbar \
+             buttonType = { name = player_flag quadTextureSprite = GFX_window } }",
+            Err("is windowType, not the containerWindowType"),
+        ),
+    ] {
+        stack.write(
+            &stack.addon(),
+            "interface/zz_topbar.gui",
+            &format!("guiTypes = {{ {window} }}"),
+        );
+        match (flag(&stack), expected) {
+            (Ok(sprite), Ok(expected)) => assert_eq!(sprite, expected, "{window}"),
+            (Err(error), Err(expected)) => {
+                assert!(error.to_string().contains(expected), "{window}: {error}")
+            }
+            (result, _) => panic!("{window}: {result:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_gui_unread_suffix_refuses_only_until_a_later_declaration_settles_it() {
+    let stack = Stack::new("gui_poison");
+    let row = "guiTypes = { containerWindowType = { name = resources_info_entry \
+               buttonType = { name = resources_icon spriteType = GFX_kept } } }";
+    stack.write(&stack.base(), "interface/00_row.gui", row);
+    stack.write(
+        &stack.addon(),
+        "interface/zz_poison.gui",
+        "guiTypes = { containerWindowType = { name = other \
+         gridBoxType = { name = grid max_slots = { 1 2 3 4 q = 5 } } } }",
+    );
+    let (sprite, _) = resource_icon(&stack);
+    let error = sprite.unwrap_err().to_string();
+    assert!(
+        error.contains("zz_poison.gui") && error.contains("unread suffix"),
+        "{error}"
+    );
+    stack.write(&stack.addon(), "interface/zzz_row.gui", row);
+    let (sprite, warnings) = resource_icon(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_kept");
+    assert!(
+        warnings.iter().all(|warning| !warning.contains("poison")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn unrelated_gui_refusals_do_not_reach_a_window_lookup() {
+    let stack = Stack::new("gui_unrelated");
+    stack.write(
+        &stack.base(),
+        "interface/row.gui",
+        "guiTypes = { containerWindowType = { name = resources_info_entry \
+         buttonType = { name = resources_icon spriteType = GFX_kept } } }",
+    );
+    stack.write(
+        &stack.addon(),
+        "interface/zz_other.gui",
+        "guiTypes = { containerWindowType = { name = other \
+         extendedScrollbarType = { name = scroll background = { parent = missing } } } }",
+    );
+    let guis = crate::gui::native::read_layers(&stack.layers(&[])).unwrap();
+    let unrelated = guis.template("other").unwrap().subtree_refusals();
+    assert!(!unrelated.is_empty());
+    assert!(
+        unrelated
+            .iter()
+            .all(|refusal| refusal.cause != crate::gui::native::Cause::Unaligned)
+    );
+    let (sprite, warnings) = resource_icon(&stack);
+    assert_eq!(sprite.unwrap(), "GFX_kept");
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn resource_and_modifier_integer_notes_do_not_count_misread_blocks_as_scans() {
+    let stack = Stack::new("integer_notes");
+    for (path, key) in [
+        ("common/resources/mod.txt", "icon_frame"),
+        ("common/modifier_definitions/mod.txt", "precision"),
+    ] {
+        let body = format!("mod_value = {{ {key} = {{ }} }}");
+        let text = if key == "icon_frame" {
+            format!("resources = {{ {body} }}")
+        } else {
+            body
+        };
+        stack.write(&stack.addon(), path, &text);
+    }
+    let layers = stack.layers(&[]);
+    let (_, resource_notes) = crate::resources::read(&layers).unwrap();
+    let (_, definition_notes) = crate::modifier_definitions::read(&layers).unwrap();
+    for notes in [resource_notes, definition_notes] {
+        assert!(!notes.is_empty());
+        assert!(
+            notes
+                .iter()
+                .all(|note| !note.contains("numeric conversion")),
+            "{notes:?}"
+        );
+    }
+    // Both database paths use the same scalar scanner and lossy display.
+    std::fs::write(
+        stack.addon().join("common/resources/mod.txt"),
+        b"resources = { mod_value = { icon_frame = \"\xfe\" } }",
+    )
+    .unwrap();
+    std::fs::write(
+        stack.addon().join("common/modifier_definitions/mod.txt"),
+        b"mod_value = { precision = \"\xfe\" }",
+    )
+    .unwrap();
+    let layers = stack.layers(&[]);
+    let (_, resource_notes) = crate::resources::read(&layers).unwrap();
+    let (_, definition_notes) = crate::modifier_definitions::read(&layers).unwrap();
+    for (notes, key) in [
+        (resource_notes, "icon_frame"),
+        (definition_notes, "precision"),
+    ] {
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains(&format!("{key} = \u{fffd}"))),
+            "{notes:?}"
+        );
+    }
+}
+
+#[test]
+fn a_mod_may_blank_a_base_building_file() {
+    let stack = Stack::new("buildings");
+    stack.write(
+        &stack.base(),
+        "common/buildings/00_buildings.txt",
+        "buildings = { infrastructure = { max_level = 5 } }",
+    );
+    stack.write(
+        &stack.base(),
+        "common/buildings/01_extra.txt",
+        "buildings = { mod_removed = { max_level = 1 } }",
+    );
+    // The mod replaces 01_extra.txt with an empty file, removing its building.
+    stack.write(&stack.addon(), "common/buildings/01_extra.txt", "");
+    let buildings = crate::buildings::read(&stack.layers(&[])).unwrap();
+    assert!(buildings.types.contains_key("infrastructure"));
+    assert!(!buildings.types.contains_key("mod_removed"));
+    // An empty native file declares nothing, including when parsed alone.
+    assert!(
+        crate::buildings::parse(b"", &crate::key_names::KeyNames::default())
+            .unwrap()
+            .types
+            .is_empty()
+    );
+}
+
+/// Scalar redeclarations are read by each native object reader, with their
+/// recovery named. Categories and resources append, groups replace, traits
+/// and modifier registrations keep their first match, and characters agree.
+#[test]
+fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
+    let stack = Stack::new("withdrawn");
+    let (base, addon) = (stack.base(), stack.addon());
+    stack.write(
+        &base,
+        "common/idea_tags/00_idea.txt",
+        "idea_categories = { economy = { slot = economy } kept = { slot = kept } }",
+    );
+    stack.write(
+        &addon,
+        "common/idea_tags/zz_mod.txt",
+        "idea_categories = { economy = yes }",
+    );
+    stack.write(
+        &base,
+        "common/ideologies/00_ideologies.txt",
+        "ideologies = { democratic = { color = { 0 0 255 } } kept = { color = { 1 2 3 } } }",
+    );
+    stack.write(
+        &addon,
+        "common/ideologies/zz_mod.txt",
+        "ideologies = { democratic = yes }",
+    );
+    stack.write(
+        &base,
+        "common/country_leader/00_traits.txt",
+        "leader_traits = { tough = { army_morale_factor = 0.1 } }",
+    );
+    stack.write(
+        &addon,
+        "common/country_leader/zz_mod.txt",
+        "leader_traits = { tough = 1 }",
+    );
+    stack.write(
+        &base,
+        "common/modifier_definitions/00_defs.txt",
+        "mod_speed = { value_type = percentage precision = 1 }",
+    );
+    stack.write(
+        &addon,
+        "common/modifier_definitions/zz_mod.txt",
+        "@x = 1 mod_speed = fast",
+    );
+    stack.write(
+        &base,
+        "common/characters/00_chars.txt",
+        "characters = { MOD_hero = { name = MOD_hero portraits = { civilian = { small = GFX_hero } } \
+         advisor = { slot = political_advisor idea_token = MOD_hero_idea } } }",
+    );
+    stack.write(
+        &addon,
+        "common/characters/zz_mod.txt",
+        "characters = { MOD_hero = yes }",
+    );
+    stack.write(
+        &base,
+        "common/resources/00_resources.txt",
+        "resources = { oil = { icon_frame = 1 } }",
+    );
+    stack.write(
+        &addon,
+        "common/resources/zz_mod.txt",
+        "resources = { oil = broken oil = { icon_frame = 5 } }",
+    );
+    let layers = stack.layers(&[]);
+
+    let (ideas, _, warnings) = crate::ideas::read(&layers, &[]).unwrap();
+    // Categories append; resolve selects the first matching category.
+    assert_eq!(
+        ideas.tags.resolve("economy").unwrap().unwrap().slots,
+        ["economy"]
+    );
+    assert!(ideas.tags.resolve("kept").unwrap().is_some());
+    assert!(!warnings.is_empty(), "{warnings:?}");
+
+    let (ideologies, warnings) = crate::ideologies::read(&layers).unwrap();
+    // Ideology lookup keeps the first native match, including after a scalar redeclaration.
+    assert_eq!(
+        ideologies.get("democratic").unwrap().unwrap().color,
+        Ok([0.0, 0.0, 1.0, 1.0])
+    );
+    assert!(ideologies.get("kept").unwrap().is_some());
+    assert!(!warnings.is_empty(), "{warnings:?}");
+
+    let (traits, warnings) = crate::leader_traits::read(&layers).unwrap();
+    // Trait lookup selects the first native match.
+    assert_eq!(
+        traits.get("tough").unwrap().unwrap().modifiers.values[0].value,
+        10_000
+    );
+    assert!(!warnings.is_empty(), "{warnings:?}");
+
+    let (definitions, warnings) = crate::modifier_definitions::read(&layers).unwrap();
+    // Modifier definitions keep the first registered name.
+    assert_eq!(definitions.get("mod_speed").unwrap().precision, 1);
+    assert!(!warnings.is_empty(), "{warnings:?}");
+
+    let (characters, warnings) = crate::characters::read(&layers, Default::default()).unwrap();
+    // Character projections agree across definitions, never resurrecting
+    // the earlier portrait when the later template disagrees.
+    assert!(matches!(
+        characters.portraits("MOD_hero").unwrap().unwrap()
+            [&("civilian".to_owned(), "small".to_owned())],
+        crate::characters::Authored::Ambiguous(_)
+    ));
+    assert!(!warnings.is_empty(), "{warnings:?}");
+
+    let (resources, warnings) = crate::resources::read(&layers).unwrap();
+    // The resource loop has no brace guard: the scalar body consumes the
+    // following declaration as its fields, keeping only the missing-frame entry.
+    assert_eq!(
+        resources
+            .iter()
+            .map(|r| (r.token.as_str(), r.icon_frame))
+            .collect::<Vec<_>>(),
+        [("oil", Some(1)), ("oil", None)]
+    );
+    assert!(!warnings.is_empty(), "{warnings:?}");
+    // A later file still appends its declaration; no earlier entry is revived.
+    stack.write(
+        &addon,
+        "common/resources/zzz_later.txt",
+        "resources = { oil = { icon_frame = 5 } }",
+    );
+    let (resources, _) = crate::resources::read(&stack.layers(&[])).unwrap();
+    assert_eq!(
+        resources
+            .iter()
+            .map(|r| (r.token.as_str(), r.icon_frame))
+            .collect::<Vec<_>>(),
+        [("oil", Some(1)), ("oil", None), ("oil", Some(5))]
+    );
+}

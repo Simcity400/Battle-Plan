@@ -38,15 +38,20 @@ export type OptionField = FieldBase & (
 export const MAX_TOKEN = 160;
 /** The most tokens any content set stores. */
 export const MAX_SET_TOKENS = 16;
-/** A stored content-choice value: empty (automatic) or a content token. */
-const CONTENT_TOKEN = new RegExp(`^[\\w.:-]{0,${MAX_TOKEN}}$`);
+/** The characters a stored content token may hold. A script token holds no
+ * whitespace but may hold other characters, non-ASCII included (a mod's own
+ * names), so only whitespace, control characters and commas are refused: spaces
+ * separate a content set's tokens, and a comma-joined list is never one token. */
+const TOKEN_TEXT = /^[^\s\p{Cc},]*$/u;
+/** Bounded in UTF-16 units, as the stored text as a whole is. */
+const contentToken = (value: string) => value.length <= MAX_TOKEN && TOKEN_TEXT.test(value);
 /** One token of a content set. */
-const SET_TOKEN = new RegExp(`^[\\w.:-]{1,${MAX_TOKEN}}$`);
+const setToken = (value: string) => value.length > 0 && contentToken(value);
 
 /** Whether a content token can be stored in a content set: some content names
  * cannot (too long, or with characters a stored token may not hold), and a control
  * offering them says so rather than failing when picked. */
-export const storableToken = (token: string) => SET_TOKEN.test(token);
+export const storableToken = (token: string) => setToken(token);
 /** Why a chip for a token that cannot be stored is disabled. */
 export const UNSTORABLE = 'Its content name is too long or holds characters a setting cannot store';
 
@@ -99,7 +104,7 @@ export function validOption(field: OptionField, value: unknown): value is Option
   switch (field.kind) {
     case 'toggle': return typeof value === 'boolean';
     case 'choice': return typeof value === 'string' && field.choices.some(choice => choice.value === value);
-    case 'content-choice': return typeof value === 'string' && CONTENT_TOKEN.test(value);
+    case 'content-choice': return typeof value === 'string' && contentToken(value);
     case 'content-set': {
       if (typeof value !== 'string') return false;
       const tokens = contentSet(value);

@@ -183,6 +183,7 @@ fn definitions(items: &[Item]) -> Vec<Result<ModifierDefinition, NotText>> {
 /// kept (1405FF750).
 pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<String>)> {
     let mut warnings = Vec::new();
+    let mut scans = crate::modifiers::ScanFailures::default();
     let mut result = ModifierDefinitions::default();
     for path in script_files::paths(layers, "common/modifier_definitions/", Some(".txt")) {
         let read = read_file(&layers.read(&path)?);
@@ -191,6 +192,13 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<Str
                 .iter()
                 .map(|misread| format!("Modifier definitions in {path}: {misread}.")),
         );
+        for entry in &read.items {
+            for field in entry.value.items().unwrap_or_default() {
+                if field.keyword_is("precision") {
+                    scans.int32(entry.key_str().unwrap_or("<non-text key>"), field);
+                }
+            }
+        }
         let mut repeated = Vec::new();
         for definition in definitions(&read.items) {
             match definition {
@@ -218,6 +226,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<Str
             ));
         }
     }
+    warnings.extend(scans.warning());
     Ok((result, warnings))
 }
 

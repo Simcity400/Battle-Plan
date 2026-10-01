@@ -46,6 +46,17 @@ test('the breakdown lists the game tooltip lines, named in the viewer language o
   assert.equal(warSupport.recorded, false);
 });
 
+test('a formula term this list does not name still shows, by its key', () => {
+  const extra: StabilityBreakdown = { ...GER, stability: { ...GER.stability, terms: [...GER.stability.terms, { term: 'futureTerm', valueRaw: '2000' }, { term: 'missingTerm', valueRaw: null }, { term: 'zeroTerm', valueRaw: '0' }] } };
+  const { rows, unavailable } = breakdownRows(extra, 'stability', 5, 'Stability');
+  assert.deepEqual(rows.slice(-4, -1), [
+    { label: 'futureTerm', value: '2000' },
+    { label: 'missingTerm', value: 'Not recorded', tone: 'muted' },
+    { label: 'zeroTerm', value: '0' },
+  ]);
+  assert.equal(unavailable, true);
+});
+
 test('lines that do not add up show the rest as its own part, and missing inputs stay missing', () => {
   const partial: StabilityBreakdown = { ...GER, modifiers: [{ ...GER.modifiers[0], totalRaw: '8000', remainderRaw: '3000' }],
     stability: { ...GER.stability, terms: GER.stability.terms.map(term => term.term === 'popularity' ? { ...term, valueRaw: null } : term) } };

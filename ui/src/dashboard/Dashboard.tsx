@@ -9,7 +9,7 @@ import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
 import { addGridItem, addGridItemBelow, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
-import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseTemplate, saveLayouts } from './storage';
+import { droppedTagWarning, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseTemplate, parseTemplateWithNotes, saveLayouts } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
@@ -182,15 +182,16 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
       setSaveError('A layout already has that name. Choose a different name.'); return;
     }
     if (asNew && library.layouts.length >= MAX_LAYOUTS) { setSaveError(`You can save up to ${MAX_LAYOUTS} layouts.`); return; }
-    const clean = parseTemplate({ ...includeCampaigns(draftTemplate, campaigns), name });
-    if (!clean) { setSaveError('This layout could not be saved. Your changes are still available.'); return; }
+    const parsed = parseTemplateWithNotes({ ...includeCampaigns(draftTemplate, campaigns), name });
+    if (!parsed) { setSaveError('This layout could not be saved. Your changes are still available.'); return; }
+    const { template: clean, droppedTags } = parsed;
     const id = asNew ? newId() : library.activeId;
     const entry = { id, template: clean };
     const next = { ...library, activeId: id, layouts: asNew ? [...library.layouts, entry] : library.layouts.map((item) => item.id === id ? entry : item) };
     const error = saveLayouts(next);
     setSaveError(error);
     if (error) return;
-    setLibrary(next); setTemplate(clean); setSavedTemplate(clean); saveMenu.popup.current?.hidePopover(); setEditing(false); setWarning(null);
+    setLibrary(next); setTemplate(clean); setSavedTemplate(clean); saveMenu.popup.current?.hidePopover(); setEditing(false); setWarning(droppedTagWarning(droppedTags));
     editButton.current?.focus();
   };
 

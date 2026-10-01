@@ -3,8 +3,11 @@ import type { Oklch, Rgb } from '../shell/appearance/color';
 
 /** Colours for things that are categories, not countries (slices, stacked parts,
  * advisor types). Countries keep their recorded map colours. The hue order is
- * fixed and never cycled: a ninth category folds into "Other". Each theme gets
- * its own steps, solved for contrast against that theme's surface. */
+ * fixed. Content may have any number of categories (a mod's resources or
+ * ideologies), and none is hidden for want of a colour: lines past the eighth
+ * take the colours again with dashes of their own (`lineStyles`), and bands take
+ * them again in order. Each theme gets its own steps, solved for contrast against
+ * that theme's surface. */
 
 /** The validated categorical hues, in order, for dark and light surfaces. */
 const CATEGORICAL = {

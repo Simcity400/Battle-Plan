@@ -12,7 +12,7 @@ There is one widget kind for every category. Its **Category** setting lists the 
 
 ## Settings
 
-- **Category** (from content), **Laws** (escalation shading, icons or both) and **Advisors and designers** (portrait and name, name, or portrait).
+- **Category** (from content), **Laws** (escalation shading, icons or both) and **Advisors and designers** (portrait and name, name, or portrait). With portraits only, a holder whose content has no portrait (a mod's missing art) keeps its name, so no bar is blank.
 - **Time:** Live, Whole campaign, Pinned or Date range. Zoom and Jump to work as in every time chart.
 
 ## Not yet

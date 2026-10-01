@@ -379,20 +379,19 @@ fn date_completions(order: &mut FocusOrder, previous: &FocusOrder, hour: i32) {
     }
 }
 
+/// Whether a country's completed focuses are whole and in order. Any number is
+/// valid: a modded tree may complete more focuses than any base game tree has.
 fn valid_order(rows: &[&replay::rows::CompletedFocusRow], count: i32) -> bool {
     count >= 0
         && count as usize == rows.len()
-        && rows.len() <= 512
         && rows.iter().enumerate().all(|(index, row)| {
             row.ordinal == index as u32 && !row.token.is_empty() && row.token.len() <= 512
         })
 }
 
 fn ordered(rows: &[&replay::rows::CompletedFocusRow], count: i32) -> io::Result<Vec<FocusEntry>> {
-    if count < 0 || count as usize != rows.len() || rows.len() > 512 {
-        return Err(io::Error::other(
-            "Completed focus order is incomplete or exceeds its limit",
-        ));
+    if count < 0 || count as usize != rows.len() {
+        return Err(io::Error::other("Completed focus order is incomplete"));
     }
     let mut rows = rows.to_vec();
     rows.sort_by_key(|row| row.ordinal);

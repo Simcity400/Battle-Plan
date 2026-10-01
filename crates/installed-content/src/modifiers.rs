@@ -646,9 +646,121 @@ pub fn research_bonuses(items: &[Item], unheld: &mut Unheld) -> Vec<Modifier> {
         .collect()
 }
 
+/// Failed native number conversions, named and counted without changing
+/// the stored value the game retains (ReadFixed5 1424ABB10, ReadInt 1424AB970).
+#[derive(Default)]
+pub(crate) struct ScanFailures {
+    count: usize,
+    examples: Vec<String>,
+    distinct: Option<BTreeSet<(String, String, String)>>,
+}
+
+impl ScanFailures {
+    /// Character alternatives repeat their common body; count each problem once.
+    pub(crate) fn distinct() -> Self {
+        Self {
+            distinct: Some(BTreeSet::new()),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn note(&mut self, owner: &str, key: &str, text: &str) {
+        if let Some(seen) = &mut self.distinct
+            && !seen.insert((owner.to_owned(), key.to_owned(), text.to_owned()))
+        {
+            return;
+        }
+        self.count += 1;
+        if self.examples.len() < 5 {
+            self.examples.push(format!("{owner}: {key} = {text}"));
+        }
+    }
+
+    pub(crate) fn fixed5(&mut self, owner: &str, item: &Item) {
+        if item.kind == native::Kind::Open {
+            return;
+        }
+        if let Some(text) = item.value.scalar()
+            && read_fixed5(item).is_none()
+        {
+            self.note(
+                owner,
+                item.key_str().unwrap_or("<non-text key>"),
+                &String::from_utf8_lossy(text),
+            );
+        }
+    }
+
+    pub(crate) fn int32(&mut self, owner: &str, item: &Item) {
+        // Shape::One keeps the opening token as scalar text; the reader already
+        // names this block as a misread, rather than a scalar conversion failure.
+        if item.kind == native::Kind::Open {
+            return;
+        }
+        if let Some(text) = item.value.scalar()
+            && !matches!(crate::crt::scan_i32(text), crate::crt::Scanned::Stored(_))
+        {
+            self.note(
+                owner,
+                item.key_str().unwrap_or("<non-text key>"),
+                &String::from_utf8_lossy(text),
+            );
+        }
+    }
+
+    pub(crate) fn scan<'a>(&mut self, owner: &str, values: impl IntoIterator<Item = &'a Modifier>) {
+        for value in values {
+            if crate::fixed5::script_fixed5(value.text.as_bytes()).is_none() {
+                self.note(owner, &value.key, &value.text);
+            }
+        }
+    }
+
+    pub(crate) fn modifiers(&mut self, owner: &str, values: &Modifiers) {
+        self.scan(owner, &values.values);
+        for child in &values.children {
+            self.modifiers(owner, child);
+        }
+    }
+
+    pub(crate) fn warning(&self) -> Option<String> {
+        let more = match self.count - self.examples.len() {
+            0 => String::new(),
+            more => format!("; and {more} more"),
+        };
+        (self.count > 0).then(|| {
+            format!(
+                "{} content values failed native numeric conversion; the game's stored \
+                 destinations are retained: {}{more}.",
+                self.count,
+                self.examples.join("; "),
+            )
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_notes_skip_blocks_and_show_invalid_scalar_bytes_lossily() {
+        let document =
+            crate::parser::parse(b"block = { } integer = \"\xfe\" fixed = \"\xfe\"").unwrap();
+        let mut scans = ScanFailures::default();
+        scans.int32("mod_owner", &document.items[0]);
+        scans.fixed5("mod_owner", &document.items[0]);
+        assert!(scans.warning().is_none());
+        scans.int32("mod_owner", &document.items[1]);
+        scans.fixed5("mod_owner", &document.items[2]);
+        let warning = scans.warning().unwrap();
+        assert!(warning.starts_with("2 content values failed"), "{warning}");
+        assert!(
+            warning.contains("integer = \u{fffd}") && warning.contains("fixed = \u{fffd}"),
+            "{warning}"
+        );
+        assert!(!warning.contains("= {"), "{warning}");
+    }
 
     /// A test file: `block` is a CModifier, `t` a targeted modifier, `e` an
     /// equipment bonus loop; anything else is skipped.

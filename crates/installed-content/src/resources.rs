@@ -23,6 +23,10 @@ pub struct Resource {
 }
 
 pub fn parse(input: &[u8]) -> io::Result<Vec<Resource>> {
+    parse_file(input).map(|(resources, _)| resources)
+}
+
+fn parse_file(input: &[u8]) -> io::Result<(Vec<Resource>, Vec<String>)> {
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -70,6 +74,7 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<Resource>> {
         return Err(invalid(format!("resources: {cause}")));
     }
     let mut resources = Vec::new();
+    let mut scans = modifiers::ScanFailures::default();
     for root in read
         .items
         .iter()
@@ -83,11 +88,13 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<Resource>> {
             // scan (1424AB970 -> 1424B02C0) retains it on a failed scan.
             let mut icon_frame = 0;
             for field in item.value.items().unwrap_or_default() {
-                if field.keyword_is("icon_frame")
-                    && let Scanned::Stored(value) =
-                        scan_i32(field.value.scalar().unwrap_or_default())
-                {
-                    icon_frame = value;
+                if field.keyword_is("icon_frame") {
+                    scans.int32(token, field);
+                    if let Some(text) = field.value.scalar()
+                        && let Scanned::Stored(value) = scan_i32(text)
+                    {
+                        icon_frame = value;
+                    }
                 }
             }
             resources.push(Resource {
@@ -96,7 +103,9 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<Resource>> {
             });
         }
     }
-    Ok(resources)
+    let mut warnings: Vec<String> = read.misreads.iter().map(ToString::to_string).collect();
+    warnings.extend(scans.warning());
+    Ok((resources, warnings))
 }
 
 /// Every resource declaration in load order. A token declared again is kept as
@@ -107,8 +116,15 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Vec<Resource>, Vec<String>)>
     let mut warnings = Vec::new();
     let mut result: Vec<Resource> = Vec::new();
     for path in script_files::paths(layers, "common/resources/", Some(".txt")) {
-        match parse(&layers.read(&path)?) {
-            Ok(resources) => result.extend(resources),
+        match parse_file(&layers.read(&path)?) {
+            Ok((resources, notes)) => {
+                result.extend(resources);
+                warnings.extend(
+                    notes
+                        .into_iter()
+                        .map(|note| format!("Resources in {path}: {note}")),
+                );
+            }
             Err(error) => warnings.push(format!("Resources unavailable in {path}: {error}")),
         }
     }

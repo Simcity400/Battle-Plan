@@ -82,7 +82,8 @@ pub(super) fn breakdown(input: &ResearchInputRow, rows: Option<&[R]>) -> Option<
         .iter()
         .filter(|r| r.kind == R::SCIENTIST_CATEGORY)
         .collect();
-    if scientist_rows.len() != scientist_count || scientist_count > 128 {
+    // Any number of scientist categories: the rows name as many as were recorded.
+    if scientist_rows.len() != scientist_count {
         return None;
     }
     let scientist = i64::try_from(
@@ -98,10 +99,8 @@ pub(super) fn breakdown(input: &ResearchInputRow, rows: Option<&[R]>) -> Option<
     }
     let mut sharing_sources = Vec::new();
     let mut sharing = 0_i128;
+    // Sharing groups are content (`common/technology_sharing`): a mod may add any number.
     let groups: Vec<_> = slot.iter().filter(|r| r.kind == R::SHARING).collect();
-    if groups.len() > 32 {
-        return None;
-    }
     let mut predecessor_rows = std::collections::BTreeMap::<u32, Vec<&R>>::new();
     for row in slot.iter().filter(|r| r.kind == R::SHARING_PREDECESSOR) {
         u32::try_from(row.raw).ok()?;

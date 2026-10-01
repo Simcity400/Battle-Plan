@@ -1,5 +1,6 @@
 import type { CountryParams, FocusHistory, FocusOrder, FocusProgress, FocusReply } from '../../generated/dashboard';
 import type { ProductRequest } from '../../dashboard/client';
+import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
 
 export const PRODUCT = 'national-focus';
 const FIXED = 100_000n;
@@ -69,7 +70,8 @@ export function focusCompletion(state: FocusProgressState, baseDurationDays: num
   };
 }
 
-/** Shape checks on the product payload; identity is checked by the transport. */
+/** Shape checks on the product payload; identity is checked by the transport. Any
+ * number of completed focuses is valid: a modded tree may have more than any base one. */
 export function validateFocusReply(input: unknown): FocusReply {
   const reply = input as FocusReply;
   let last = -Infinity;
@@ -78,7 +80,7 @@ export function validateFocusReply(input: unknown): FocusReply {
     && Array.isArray(reply.artwork) && Array.isArray(reply.warnings)
     && reply.history.segments.length <= 100000 && reply.history.segments.every(segment => {
       const ok = Number.isInteger(segment.firstHour) && Number.isInteger(segment.lastHour) && segment.firstHour > last && segment.lastHour >= segment.firstHour
-        && segment.order.completed.length <= 512 && segment.order.completed.every((entry, index) => entry.ordinal === index
+        && Array.isArray(segment.order.completed) && segment.order.completed.every((entry, index) => entry.ordinal === index
           && (entry.completedByHour === null || (Number.isInteger(entry.completedByHour) && entry.completedByHour <= segment.firstHour)));
       last = segment.lastHour;
       return ok;
@@ -89,8 +91,10 @@ export function validateFocusReply(input: unknown): FocusReply {
       lastProgress = run.lastHour;
       return ok;
     })
-    && reply.artwork.length <= 2048 && reply.artwork.every(({ icon, baseDurationDays }) => (baseDurationDays === null || (Number.isFinite(baseDurationDays) && baseDurationDays >= 0))
-      && (icon === null || (icon.length <= 128 * 1024 && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(icon))));
+    // The product answers at most 2048 artwork tokens per request (`products/artwork.rs`).
+    // Each entry must have the product's shape; only an icon it cannot draw becomes missing art.
+    && reply.artwork.length <= 2048 && reply.artwork.every(artworkEntry);
   if (!valid) throw new Error('Focus history does not match this country and recording.');
+  keepDrawableIcons(reply.artwork);
   return reply;
 }

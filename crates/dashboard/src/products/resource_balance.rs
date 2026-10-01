@@ -85,9 +85,11 @@ const MAX_RUNS: usize = 400_000;
 const CACHED_COUNTRIES: usize = 8;
 /// Longest side of a returned resource icon.
 const ICON_EDGE: u32 = 48;
-/// CTradeResourceInfoItem::CTradeResourceInfoItem@141CA4B50: template literal
-/// 142A4A878, button literal 1429C0690, FindButton vtable +0x68.
-const TRADE_VIEW_GUI: &str = "interface/countrytradeview.gui";
+/// The trade view's resource row and its icon button, the element the game gives
+/// each resource's `icon_frame`: `CTradeResourceInfoItem::CTradeResourceInfoItem@141CA4B50`
+/// opens template literal 142A4A878 and asks it for button literal 1429C0690
+/// (FindButton, vtable +0x68). Vanilla declares the row in
+/// `interface/countrytradeview.gui`; any GUI file may declare it.
 const RESOURCE_ROW: &str = "resources_info_entry";
 const RESOURCE_ICON: &str = "resources_icon";
 
@@ -477,9 +479,9 @@ struct ContentCache {
 
 /// A declaration's name and icon from content.
 #[derive(Clone)]
-struct Declared {
-    name: Option<String>,
-    icon: Option<String>,
+pub(crate) struct Declared {
+    pub(crate) name: Option<String>,
+    pub(crate) icon: Option<String>,
 }
 
 /// The icon sprite of the trade view's resource row, and each content declaration's
@@ -492,19 +494,20 @@ struct Icons {
 
 fn icons(catalogue: &Catalogue) -> io::Result<(Icons, Vec<String>)> {
     let layers = &catalogue.content.layers;
-    let row = catalogue.guis.template(RESOURCE_ROW).ok_or_else(|| {
-        crate::invalid(format!(
-            "{TRADE_VIEW_GUI}: the GUI registry has no {RESOURCE_ROW}"
-        ))
-    })?;
-    let name =
-        catalogue::gui_sprite_name(row, installed_content::gui::native::Kind::Button, RESOURCE_ICON)?;
+    let mut gui_warnings = Vec::new();
+    let name = installed_content::gui::window_button_sprite(
+        &catalogue.guis,
+        RESOURCE_ROW,
+        RESOURCE_ICON,
+        &mut gui_warnings,
+    )?;
     let sprite = catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
     let texture = sprite
         .texture
         .clone()
         .ok_or_else(|| crate::invalid(format!("{name} has no texture")))?;
-    let (resources, warnings) = installed_content::resources::read(layers)?;
+    let (resources, mut warnings) = installed_content::resources::read(layers)?;
+    warnings.extend(gui_warnings);
     let mut icon_frames: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
     for resource in resources {
         icon_frames
@@ -561,7 +564,7 @@ fn resource_name(
 /// Names and icons for `wanted` declarations (token, ordinal) from content: the name
 /// the game's resource texts use ([`resource_name`]) and the declaration's frame of
 /// the trade view's icon.
-fn resource_content(
+pub(crate) fn resource_content(
     catalogue: &Catalogue,
     wanted: &[(String, u32)],
     cached: &mut BTreeMap<(String, u32), Declared>,

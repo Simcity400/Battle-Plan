@@ -31,6 +31,22 @@ const REPLY: IdeaHistoryReply = {
   holders: [],
 };
 
+test('a mod category is offered with its own name, and one the mod removed is gone', () => {
+  // The content a mod's stack gives: a base category replaced away, a new one added.
+  const modded: CategoryInfo[] = [
+    { token: 'mod_council', name: 'Council', kind: null, hidden: false, politicsTab: true, slots: [{ token: 'mod_seat', name: 'Seat', character: false, seats: 1, laws: ['mod_open'] }] },
+    { token: 'mod_hidden', name: null, kind: null, hidden: true, politicsTab: true, slots: [{ token: 'x', name: null, character: false, seats: 1, laws: [] }] },
+    ...OTHERS,
+  ];
+  assert.deepEqual(timelineCategories(modded).map(category => category.token), ['mod_council']);
+  assert.equal(chosenCategory(modded, '')?.token, 'mod_council');
+  // A saved vanilla category the mod removed is not offered; the widget says so rather than guessing.
+  assert.equal(chosenCategory(modded, 'government'), null);
+  const reply = { ...REPLY, categories: modded, spans: [{ token: 'mod_open', firstHour: 0, lastHour: 10, slot: null, character: null }], ideas: [idea('mod_open', 'mod_seat', 'mod_council')] };
+  const lanes = lanesFor(reply, modded[0], { laws: 'both', holders: 'both' });
+  assert.deepEqual(lanes.map(lane => [lane.label, lane.spans.map(span => span.label)]), [['Seat', ['mod_open']]]);
+});
+
 test('only political-screen categories with slots are offered, the first one by default', () => {
   assert.deepEqual(timelineCategories(REPLY.categories).map(category => category.token), ['government']);
   assert.equal(chosenCategory(REPLY.categories, '')?.token, 'government');

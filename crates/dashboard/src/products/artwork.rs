@@ -125,6 +125,9 @@ impl Context {
         self.catalogue.localised(&key, self.view())
     }
 
+    /// The `_desc` suffix is the executable's (`1427C7718`), appended by
+    /// for technologies. That function first tries a `<TAG>_` prefixed key for
+    /// the viewing country; artwork is per token, so that variant is not read.
     fn description(&self, token: &str) -> Option<String> {
         let key = self
             .definitions
@@ -159,8 +162,7 @@ impl Context {
             Some(id) => find(id)?,
             None => None,
         };
-        // The installed technology interface declares GFX_<technology>_medium
-        // (e.g. basic_machine_tools). Resolve only actual authored sprites.
+        // _medium: technology_badge_controller::update 141BC1A00, 142936B70.
         let declared = match declared {
             None if self.kind == Kind::Technology => find(&format!("GFX_{token}_medium"))?,
             declared => declared,

@@ -42,7 +42,10 @@ function OptionRow({ field, value, choices, onChange }: {
       return <label className="setting-row">{caption}
         <select value={String(value)} onChange={event => onChange(event.currentTarget.value)}>
           <option value="">{field.automatic}</option>
-          {[...listed, ...kept].map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
+          {/* A choice whose token cannot be stored says why instead of doing nothing when picked. */}
+          {[...listed, ...kept].map(choice => storableToken(choice.value)
+            ? <option key={choice.value} value={choice.value}>{choice.label}</option>
+            : <option key={choice.value} value={choice.value} disabled title={UNSTORABLE}>{`${choice.label} (cannot be saved)`}</option>)}
         </select></label>;
     }
     case 'content-set': {
