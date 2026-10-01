@@ -43,9 +43,10 @@ use std::{
 
 use super::{
     camera::Camera,
-    map_buildings::{BuildingHistory, province_view},
+    map_buildings::BuildingHistory,
     mesh_budget::Budget,
     models::{ModelField, ModelInstance},
+    province_admission::Admission,
     province_schedule::Update,
     unit_models::Gates,
 };
@@ -542,7 +543,7 @@ impl History {
         buildings: &mut BuildingHistory,
         buildings_enabled: bool,
     ) -> FrameModels {
-        let in_view = province_view(camera, viewport);
+        let admission = Admission::new(camera, viewport);
         let bounds = Arc::clone(&self.bounds);
         let mut buildings = buildings.frame(camera, viewport, time, buildings_enabled, self.steady);
         let mut budget = Budget::new(limit, self.steady);
@@ -551,7 +552,7 @@ impl History {
             gates,
             [gates.units(camera.height), gates.ships(camera.height)],
             camera.height < gates.arrows,
-            |id| bounds.get(&id).is_some_and(|bounds| in_view(*bounds)),
+            |id| admission.admits_province(&bounds, id),
             &mut budget,
             |id, budget| buildings.through(id, budget),
         );

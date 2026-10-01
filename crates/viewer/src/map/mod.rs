@@ -64,6 +64,7 @@ pub mod naval_count_approx;
 // counters: the viewing country and what it can see
 pub mod perspective;
 pub mod presentation;
+mod province_admission;
 pub mod province_schedule;
 // orders: the recorded player's battle plan
 pub mod orders;
