@@ -564,3 +564,6 @@ pub(crate) fn scan_parts(
         scanned.warnings.clone(),
     ))
 }
+
+#[cfg(test)]
+mod tests;

@@ -256,21 +256,4 @@ impl HourStyles {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_hour_named_with_another_localisation_is_read_again() {
-        let english: Arc<Localisation> = Arc::new(Localisation::default());
-        let french: Arc<Localisation> = Arc::new(Localisation::default());
-        let key = |localisation: Option<&Arc<Localisation>>| HourKey {
-            branch_id: "1".into(),
-            hour: 100,
-            localisation: localisation.cloned(),
-        };
-        assert!(key(Some(&english)).matches(&key(Some(&english))));
-        assert!(!key(Some(&english)).matches(&key(Some(&french))));
-        assert!(!key(None).matches(&key(Some(&english))));
-        assert!(key(None).matches(&key(None)));
-    }
-}
+mod tests;

@@ -967,3 +967,6 @@ impl Product for IdeaHistory {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

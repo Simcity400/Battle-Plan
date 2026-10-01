@@ -808,48 +808,4 @@ impl Product for ResourceBalance {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::resource_name;
-
-    /// The name is `PRODUCTION_MATERIALS_` and the upper-cased token through
-    /// the plain localiser (140BBC360 -> 142230F20), loaded as content loads.
-    #[test]
-    fn a_resource_is_named_as_the_games_resource_texts_name_it() {
-        let localisation = crate::catalogue::tests::loaded(concat!(
-            "l_english:\n",
-            " PRODUCTION_MATERIALS_OIL:0 \"Oil [ROOT.GetName]\"\n",
-            " PRODUCTION_MATERIALS_STEEL:0 \"\"\n",
-            " PRODUCTION_MATERIALS_COAL:0 \"a¤b\"\n",
-            " state_resource_oil:0 \"Not the name\"\n",
-        ));
-        let mut warnings = Vec::new();
-        // Mixed case: toupper folds the token, so both name the same key.
-        for token in ["oil", "Oil"] {
-            assert_eq!(
-                resource_name(&localisation, token, &mut warnings).as_deref(),
-                Some("Oil [ROOT.GetName]")
-            );
-        }
-        assert_eq!(
-            resource_name(&localisation, "steel", &mut warnings).as_deref(),
-            Some("")
-        );
-        assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(
-            resource_name(&localisation, "tungsten", &mut warnings).as_deref(),
-            Some("PRODUCTION_MATERIALS_TUNGSTEN")
-        );
-        assert_eq!(resource_name(&localisation, "coal", &mut warnings), None);
-        // The "C" locale's toupper leaves a byte above 0x7F.
-        assert_eq!(
-            resource_name(&localisation, "stål", &mut warnings).as_deref(),
-            Some("PRODUCTION_MATERIALS_STåL")
-        );
-        assert_eq!(
-            warnings,
-            [
-                "coal: no name: localisation PRODUCTION_MATERIALS_COAL holds the control byte 0x14 (an authored `¤`), which plain text cannot show",
-            ]
-        );
-    }
-}
+mod tests;

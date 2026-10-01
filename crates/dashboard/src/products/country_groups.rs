@@ -855,3 +855,6 @@ impl Scan {
         &self.identity_changes
     }
 }
+
+#[cfg(test)]
+mod tests;

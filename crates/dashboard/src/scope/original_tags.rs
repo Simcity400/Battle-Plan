@@ -257,3 +257,6 @@ impl OriginalTagLists {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -208,3 +208,6 @@ impl Product for LandOwnersProduct {
         Ok(state.as_ref().expect("land owners cached").1.clone())
     }
 }
+
+#[cfg(test)]
+mod tests;

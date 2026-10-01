@@ -414,39 +414,7 @@ fn ordered(rows: &[&replay::rows::CompletedFocusRow], count: i32) -> io::Result<
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use replay::rows::CompletedFocusRow;
-    #[test]
-    fn preserves_recorded_order_and_repeats() {
-        let rows = [
-            CompletedFocusRow {
-                country: 42,
-                ordinal: 2,
-                token: b"a".to_vec(),
-            },
-            CompletedFocusRow {
-                country: 42,
-                ordinal: 0,
-                token: b"a".to_vec(),
-            },
-            CompletedFocusRow {
-                country: 42,
-                ordinal: 1,
-                token: b"z".to_vec(),
-            },
-        ];
-        let result = ordered(&rows.iter().collect::<Vec<_>>(), 3).unwrap();
-        assert_eq!(
-            result.iter().map(|r| r.token.as_str()).collect::<Vec<_>>(),
-            ["a", "z", "a"]
-        );
-        assert!(ordered(&[&rows[0]], 1).is_err());
-        assert!(ordered(&[], 1).is_err());
-        assert!(ordered(&[], -1).is_err());
-        assert!(ordered(&[], 0).unwrap().is_empty());
-    }
-}
+mod tests;
 
 pub struct NationalFocus;
 

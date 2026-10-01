@@ -177,3 +177,6 @@ impl Source {
             .expect("state is keyed by its own type")
     }
 }
+
+#[cfg(test)]
+mod tests;

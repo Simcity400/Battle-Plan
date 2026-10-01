@@ -97,4 +97,4 @@ pub fn typescript_contract() -> String {
 }
 
 #[cfg(test)]
-mod tests;
+mod test_fixtures;

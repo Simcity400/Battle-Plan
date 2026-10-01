@@ -400,3 +400,6 @@ mod local_player_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
