@@ -20,6 +20,10 @@ pub(super) struct LutRenderer {
 }
 
 impl LutRenderer {
+    pub(super) fn invalidate(&mut self) {
+        self.last = None;
+    }
+
     pub(super) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

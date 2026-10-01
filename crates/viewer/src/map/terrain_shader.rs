@@ -117,10 +117,9 @@ fn heights(bytes: &[u8], map: [u32; 2], patch: Patch) -> Vec<[i16; 2]> {
         .collect()
 }
 
-/// Select uniform blocks over the approved camera grid, separately for each wrap.
-fn patches(grid: Grid, map: [u32; 2], offset: f32) -> io::Result<Vec<Patch>> {
+fn validate_grid(grid: Grid, map: [u32; 2]) -> io::Result<()> {
     if grid.quads() == 0 {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let step = grid.step as u32;
     if step == 0
@@ -132,6 +131,15 @@ fn patches(grid: Grid, map: [u32; 2], offset: f32) -> io::Result<Vec<Patch>> {
             "uniform grid step does not divide the content map dimensions",
         ));
     }
+    Ok(())
+}
+/// Select uniform blocks over the approved camera grid, separately for each wrap.
+fn patches(grid: Grid, map: [u32; 2], offset: f32) -> io::Result<Vec<Patch>> {
+    if grid.quads() == 0 {
+        return Ok(Vec::new());
+    }
+    validate_grid(grid, map)?;
+    let step = grid.step as u32;
     let pitch = SIDE * step;
     let start = [(grid.origin[0] - offset).max(0.), grid.origin[1].max(0.)];
     let end = [
@@ -192,7 +200,7 @@ struct Geometry {
 }
 pub struct Terrain {
     pub effect: Arc<Effect>,
-    pipelines: BTreeMap<Mode, Arc<gpu::Pipeline>>,
+    pipelines: BTreeMap<Mode, Result<Arc<gpu::Pipeline>, String>>,
     programs: BTreeMap<Mode, super::shader_scene::Program>,
     positions: wgpu::Buffer,
     bytes: Vec<u8>,
@@ -247,9 +255,22 @@ impl Terrain {
         })
     }
     fn pipeline(&mut self, device: &wgpu::Device, mode: Mode) -> io::Result<Arc<gpu::Pipeline>> {
-        if let Some(pipeline) = self.pipelines.get(&mode) {
-            return Ok(pipeline.clone());
+        if !self.pipelines.contains_key(&mode) {
+            let compiled = self
+                .build_pipeline(device, mode)
+                .map_err(|error| error.to_string());
+            self.pipelines.insert(mode, compiled);
         }
+        self.pipelines[&mode]
+            .as_ref()
+            .cloned()
+            .map_err(|reason| io::Error::other(reason.clone()))
+    }
+    fn build_pipeline(
+        &mut self,
+        device: &wgpu::Device,
+        mode: Mode,
+    ) -> io::Result<Arc<gpu::Pipeline>> {
         let technique = mode.technique();
         let selection = self
             .effect
@@ -338,8 +359,11 @@ impl Terrain {
                 &DepthStencilState::default(),
             ),
         );
-        self.pipelines.insert(mode, pipeline.clone());
         Ok(pipeline)
+    }
+    // Grid/content refusals remain fatal, before preflight shader isolation.
+    pub fn validate_grid(&self, grid: Grid) -> io::Result<()> {
+        validate_grid(grid, self.map)
     }
     pub fn prepare(
         &mut self,
@@ -347,6 +371,7 @@ impl Terrain {
         mode: Mode,
         inputs: Inputs<'_>,
     ) -> io::Result<Prepared> {
+        self.validate_grid(inputs.grid)?;
         let device = arena.device();
         let pipeline = self.pipeline(device, mode)?;
         let textures = inputs

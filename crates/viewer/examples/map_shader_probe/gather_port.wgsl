@@ -81,4 +81,3 @@ fn adapt_main(input: FullScreen) -> @location(0) f32 {
     // supplied by the caller: 1 for a headless frame and a settled camera.
     return previous + (current - previous) * post.grade.w;
 }
-

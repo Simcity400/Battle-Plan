@@ -1105,6 +1105,7 @@ impl Viewer {
         }
         warnings.extend(self.counter_report.warnings());
         if let Some(scene) = &self.scene {
+            warnings.extend(scene.pass_warnings());
             warnings.extend(
                 scene
                     .shader_refusals()

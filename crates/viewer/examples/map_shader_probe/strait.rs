@@ -113,7 +113,7 @@ pub(super) fn run(
     );
     let source = source.create_view(&Default::default());
     let mut native =
-        compiled::Straits::new(device, &effect, 1, format, depth_format, source.clone())?;
+        compiled::Straits::new(device, &effect, 1, format, depth_format, source.clone());
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         address_mode_u: wgpu::AddressMode::Repeat,
         address_mode_v: wgpu::AddressMode::Repeat,

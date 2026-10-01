@@ -1083,6 +1083,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output,
             (!unverified.is_empty()).then_some(unverified.as_str()),
         )?;
+        for warning in &report.pass_warnings {
+            eprintln!("{warning}");
+        }
         for (reason, count) in &report.shader_refusals {
             eprintln!("GUI shader: {count} refused draws: {reason}");
         }

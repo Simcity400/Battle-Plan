@@ -594,6 +594,7 @@ fn read_texture(
 
 /// What one headless render reports back.
 pub struct DumpReport {
+    pub pass_warnings: Vec<String>,
     pub shader_refusals: std::collections::BTreeMap<String, u64>,
     /// Adapter name and backend, so a dump identifies the GPU it used.
     pub adapter: String,
@@ -817,6 +818,7 @@ pub fn dump_png(
         }
         let grid = scene.grid();
         let report = DumpReport {
+            pass_warnings: scene.pass_warnings(),
             shader_refusals: scene.shader_refusals().clone(),
             adapter: format!("{} ({:?})", info.name, info.backend),
             device_requirements: device_requirements(device.features()),

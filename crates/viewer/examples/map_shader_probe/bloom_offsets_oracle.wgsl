@@ -51,4 +51,3 @@ fn blur_main(input: FullScreen) -> @location(0) vec4<f32> {
     color = color + blur.weights[3] * (textureSampleLevel(luminance, linear_clamp, input.pair3.xy, 0.0).rgb + textureSampleLevel(luminance, linear_clamp, input.pair3.zw, 0.0).rgb);
     return vec4<f32>(color, 1.0);
 }
-

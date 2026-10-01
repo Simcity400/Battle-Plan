@@ -40,22 +40,19 @@ struct Vertex {
     uv: [f32; 4],
 }
 
-pub struct Straits {
+struct Compiled {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     stencil_reference: u32,
-    texture: wgpu::TextureView,
-    geometry: Option<(wgpu::Buffer, wgpu::Buffer, u32)>,
 }
 
-impl Straits {
-    pub fn new(
+impl Compiled {
+    fn new(
         device: &wgpu::Device,
         effect: &Arc<Effect>,
         samples: u32,
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
-        texture: wgpu::TextureView,
     ) -> io::Result<Self> {
         let selection = effect
             .select("strait")
@@ -115,9 +112,31 @@ impl Straits {
             retained,
             pipeline,
             stencil_reference,
+        })
+    }
+}
+
+pub struct Straits {
+    compiled: Result<Compiled, String>,
+    texture: wgpu::TextureView,
+    geometry: Option<(wgpu::Buffer, wgpu::Buffer, u32)>,
+}
+
+impl Straits {
+    pub fn new(
+        device: &wgpu::Device,
+        effect: &Arc<Effect>,
+        samples: u32,
+        format: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        texture: wgpu::TextureView,
+    ) -> Self {
+        Self {
+            compiled: Compiled::new(device, effect, samples, format, depth)
+                .map_err(|error| error.to_string()),
             texture,
             geometry: None,
-        })
+        }
     }
 
     pub fn upload(&mut self, device: &wgpu::Device, source: &[StraitVertex]) -> io::Result<()> {
@@ -179,6 +198,10 @@ impl Straits {
         snow_mud_and_intel: [&wgpu::TextureView; 2],
         retained: Option<&std::cell::RefCell<super::shader_scene::State>>,
     ) -> io::Result<()> {
+        let compiled = self
+            .compiled
+            .as_ref()
+            .map_err(|reason| io::Error::other(reason.clone()))?;
         let Some((vertices, indices, count)) = &self.geometry else {
             return Ok(());
         };
@@ -194,7 +217,7 @@ impl Straits {
             .iter()
             .map(|frame| {
                 if let Some(retained) = retained {
-                    self.retained.bind(
+                    compiled.retained.bind(
                         &mut retained.borrow_mut(),
                         &BTreeMap::from([
                             (binding(0, Stage::Vertex), frame.to_vec()),
@@ -203,7 +226,8 @@ impl Straits {
                         &textures,
                     );
                 }
-                self.pipeline
+                compiled
+                    .pipeline
                     .bindings(
                         arena,
                         &BTreeMap::from([
@@ -223,8 +247,8 @@ impl Straits {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.pipeline.pipeline);
-        pass.set_stencil_reference(self.stencil_reference);
+        pass.set_pipeline(&compiled.pipeline.pipeline);
+        pass.set_stencil_reference(compiled.stencil_reference);
         pass.set_blend_constant(wgpu::Color::WHITE);
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint16);

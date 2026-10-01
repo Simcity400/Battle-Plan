@@ -7,7 +7,7 @@ use std::{cell::RefCell, io, sync::Arc};
 pub const REFRACTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 pub struct WaterPass {
-    compiled: RefCell<Option<(String, super::water_shader::Water)>>,
+    compiled: RefCell<Option<(String, Result<super::water_shader::Water, String>)>>,
     effect: Arc<shader_pipeline::library::Effect>,
     map: [u32; 2],
     samples: u32,
@@ -52,13 +52,11 @@ impl WaterPass {
                     self.format,
                     DEPTH_FORMAT,
                     technique,
-                )?,
+                )
+                .map_err(|error| error.to_string()),
             ));
         }
-        compiled
-            .as_ref()
-            .expect("created above")
-            .1
+        super::scene::passes::compiled(&compiled.as_ref().expect("created above").1)?
             .draw(arena, encoder, target, inputs)
     }
 }
