@@ -39,11 +39,12 @@ junction to `fleet/`.
 
 ## Write (do this before you finish)
 
-```
-hoi4re name 1422198a0 CApplication::Run --summary "main loop; calls Frame until quit" --confidence high --evidence "SetThreadAffinityMask then loop on Frame"
+```powershell
+$env:HOI4RE_AUTHOR = 'your-name'
+hoi4re name 1422198a0 CApplication::Run --summary "main loop; calls Frame until quit" --confidence medium --evidence "SetThreadAffinityMask then loop on Frame"
 hoi4re note 1401dcef0 "sets tick_busy (+0x4c0) before advancing the hour"
 hoi4re field CGameState 0x4c0 TICK_BUSY --type u8 --meaning "set for the whole hourly tick"
-hoi4re batch @findings.jsonl        # lines: {"op":"name","target":"...","name":"..."} | {"op":"note",...} | {"op":"field","cls":...}
+hoi4re batch '@findings.jsonl'      # lines: {"op":"name","target":"...","name":"..."} | {"op":"note",...} | {"op":"field","cls":...}
 ```
 
 Confidence is `low`, `medium`, `high` or `verified`; a name never replaces one of higher confidence (it is kept as a note).
@@ -58,7 +59,7 @@ Struct layouts used by the recorder stay authoritative in `crates/engine/src`; `
   define globals (with the value and comment from `00_defines.lua`), compiler plumbing (unwind funclets, adjustor thunks,
   static destructors), one-line accessors, constructors and destructors, and overrides of any named virtual. Naming a
   virtual re-runs `virtuals` automatically. Re-run the rest after `seed`.
-- `export`: agent-written knowledge as JSONL (`batch` reads it back). `backup [--dest D]`: dated copy of the knowledge
+- `export`: non-RTTI symbols plus all notes and fields as JSONL (`batch` reads it back). `backup [--dest D]`: dated copy of the knowledge
   database and journal on another drive (`HOI4RE_BACKUP` changes the default).
 - Patch day: `migrate export`, `migrate index`, `migrate names` (see `migrate.py`), then `HOI4RE_BUILD=<id>`.
   Matching order: RTTI slot, identical bytes, unique instruction shape, call-graph neighbours.
@@ -70,5 +71,5 @@ Struct layouts used by the recorder stay authoritative in `crates/engine/src`; `
 `todo fill` builds ranked queues; `todo next <kind> --author A --count 5` claims items and prints the brief to follow
 (`briefs/RULES.md` plus one file per kind: `hot`, `cited`, `sourced`, `class`, `docs`); `todo status` shows what is left.
 Function items close when the function gets a name at `low` or better; `todo done` closes the rest. Claims lapse after 3 hours.
-Every agent write needs an author, and confidence above `medium` needs `HOI4RE_TRUSTED=1`.
+Every agent write needs `--author`, a batch row's `author`, or `HOI4RE_AUTHOR`. Agent confidence above `medium` is capped to `medium` unless `HOI4RE_TRUSTED=1`.
 `review authors`, `review sample --author A`, `review drop --author A` check and, if needed, remove one agent's work.

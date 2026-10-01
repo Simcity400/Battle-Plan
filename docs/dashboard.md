@@ -27,15 +27,15 @@ flowchart LR
   H -->|raw bytes| C
 ```
 
-A product is one Rust module: typed parameters, one typed reply covering a whole branch, and a per-source cache. The service, transport, host and frontend route by the product's key and never name it. The frontend parses each reply once and resolves the playback hour locally, so widgets update every hour without a request.
+A product is one Rust module with typed parameters, a typed reply and optional per-source state. History products cover a whole branch, so playback resolves their values locally. Hour-specific artwork and formula details use separate requests; the frontend's transient path keeps these out of the history cache. The service and host route generic product requests by key; widgets and their data helpers choose the product. The frontend parses each reply once.
 
 ## Identity and time
 
-A source is an opened recording revision; several leases, maps and widgets share it. Every reply echoes the lease and revision it answers, and a changed file invalidates everything derived from it. Tracks map the shared clock to a recorded hour per recording. A widget follows playback, holds its branch end, or pins a moment; only the clock advances time, and nothing invents values between recorded hours or across gaps.
+A source is an opened recording revision; several leases, maps and widgets share it. Product replies echo the lease, revision and product key they answer. A changed revision uses a separate source and caches; opening with an outdated expected revision is refused. Tracks map the shared clock to a recorded hour per recording. A widget follows playback, holds its branch end, or pins a moment. History products preserve gaps and distinguish sampled values from carried daily inputs.
 
 ## Limits
 
-Requests are admitted, fragmented and cancellable at every step. One reply is at most 32 MiB; the service keeps at most 64 MiB serialized in flight; the frontend cache holds 64 MiB of replies per client. Product caches are per source and evicted with it. These bound the data path, not total process memory or GPU use.
+Requests are admitted and cancellable; replies are fragmented. One reply is at most 32 MiB; the service keeps at most 64 MiB serialized in flight. The frontend history cache evicts settled replies above 128 entries or an estimated 64 MiB per client (twice the JSON string length). Product state is per source and evicted with it. These limits do not bound total process memory or GPU use.
 
 ## Checks
 
