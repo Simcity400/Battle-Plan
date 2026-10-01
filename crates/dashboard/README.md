@@ -12,7 +12,7 @@ Everything a widget needs natively: opened recordings, data products, the host/v
 | `scope.rs` | Script scope targets resolved over one recorded hour (`RecordedScopes`), with `_CountriesForOriginalTags` derived from the branch (`scope/original_tags.rs`). |
 | `metadata.rs` | Branch ranges, gaps and the first readable country catalogue, and the helpers every product shares: frame checks, a tag's country this hour (`tagged_country`: found, absent, or unresolved when the links cannot tell which country holds it), a raw link's canonical slot (`link_slot`) and which hours read a daily table (`slot_read`: a walk of any table of its slot was timed, as the fresh-save oracle dates daily tables; a product dating values by their read uses it). |
 | `products/` | One module per data product, registered once in `products/mod.rs`. |
-| `service.rs` | The native data service: source leases, a loader pool and the bounded response pump. |
+| `service.rs`, `service/` | The service facade and its private modules for admission and leases, source and loader jobs, and the bounded response pump. |
 | `transport.rs` | Data commands, the generic product request and fragmented replies. |
 | `protocol.rs` | Control messages between the Tauri host and the viewer process. |
 | `map_settings.rs`, `config.rs`, `content.rs` | Map preferences, game folders and content verification. |
