@@ -1,0 +1,302 @@
+use super::*;
+use std::cell::{Cell, RefCell};
+
+struct Observed<'a> {
+    source: &'a PresentationMemory,
+    reads: RefCell<Vec<(usize, usize)>>,
+    batches: Cell<usize>,
+    fault: Option<usize>,
+    changing: bool,
+}
+
+impl<'a> Observed<'a> {
+    fn new(source: &'a PresentationMemory, fault: Option<usize>) -> Self {
+        Self {
+            source,
+            reads: RefCell::new(Vec::new()),
+            batches: Cell::new(0),
+            fault,
+            changing: false,
+        }
+    }
+}
+
+impl crate::Memory for Observed<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let ordinal = self.reads.borrow().len();
+        self.reads.borrow_mut().push((address, output.len()));
+        if self.fault == Some(ordinal) {
+            let partial = output.len().div_ceil(2);
+            output[..partial].fill(0xfe);
+            return false;
+        }
+        let success = self.source.copy(address, output);
+        if success && self.changing {
+            output[0] = output[0].wrapping_add(ordinal as u8);
+        }
+        success
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.batches.set(self.batches.get() + 1);
+        struct Scalar<'a, 'b>(&'a Observed<'b>);
+        impl crate::Memory for Scalar<'_, '_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.0.copy(address, output)
+            }
+        }
+        crate::Memory::copy_scattered(&Scalar(self), addresses, destinations)
+    }
+}
+
+fn scalar_prefixes(
+    memory: &impl crate::Memory,
+    routes: [crate::cpdx_array::Array; 2],
+    outputs: [&mut [u32]; 2],
+) -> Result<(), &'static str> {
+    for (route, output) in routes.into_iter().zip(outputs) {
+        let mut bytes = vec![0; output.len() * 4];
+        let bytes = bytes.as_mut_slice();
+        if !crate::read_slice(memory, route.data, bytes) {
+            return Err("movement route unreadable");
+        }
+        for (slot, word) in output.iter_mut().zip(bytes.chunks_exact(4)) {
+            *slot = u32::from_le_bytes(word.try_into().unwrap());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn prefixes_preserve_empty_spans_order_duplicates_and_partial_failures() {
+    use crate::cpdx_array::Array;
+    let source = shared_geometry_fixture();
+    for lengths in [[0, 0], [0, 1], [1, 0], [1, 1], [3, 2], [256, 256]] {
+        for addresses in [
+            [0x16000, 0x17000],
+            [0x16000, 0x16000],
+            [0, 0x17000],
+            [0x16000, 0],
+            [0x16000, usize::MAX - 1],
+            [usize::MAX, 0x17000],
+        ] {
+            let routes = std::array::from_fn(|i| Array {
+                data: addresses[i],
+                count: lengths[i] as u32,
+            });
+            for fault in [None, Some(0), Some(1)] {
+                let mut actual = Observed::new(&source, fault);
+                let mut expected = Observed::new(&source, fault);
+                actual.changing = true;
+                expected.changing = true;
+                let mut a = [0xdead_beef; 256];
+                let mut b = a;
+                let mut x = a;
+                let mut y = a;
+                let result = carmy::movement_route_prefixes(
+                    &actual,
+                    routes[0],
+                    routes[1],
+                    &mut Vec::new(),
+                    &mut a[..lengths[0]],
+                    &mut b[..lengths[1]],
+                );
+                let reference = scalar_prefixes(
+                    &expected,
+                    routes,
+                    [&mut x[..lengths[0]], &mut y[..lengths[1]]],
+                );
+                assert_eq!((result, a, b), (reference, x, y));
+                assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
+                assert_eq!(actual.batches.get(), usize::from(lengths != [0, 0]));
+            }
+        }
+    }
+}
+
+#[cfg(all(windows, target_env = "msvc"))]
+#[test]
+fn native_pairs_keep_ordered_failure_prefixes() {
+    use crate::cpdx_array::Array;
+    // SAFETY: sources are immutable test arrays and failed addresses
+    // are passed only to LiveMemory's guarded copy protocol.
+    let memory = unsafe { crate::memory::LiveMemory::new() };
+    let values = [3_u32, 9, 27];
+    let route = Array {
+        data: values.as_ptr() as usize,
+        count: 3,
+    };
+    let bad = Array { data: 1, count: 1 };
+    for (first, second, expected) in [(route, bad, [3, 9]), (bad, route, [0xdead_beef; 2])] {
+        let mut path = [0xdead_beef; 2];
+        let mut alternate = [0xdead_beef];
+        assert_eq!(
+            carmy::movement_route_prefixes(
+                &memory,
+                first,
+                second,
+                &mut Vec::new(),
+                &mut path,
+                &mut alternate
+            ),
+            Err("movement route unreadable"),
+        );
+        assert_eq!(path, expected);
+        assert_eq!(alternate, [0xdead_beef]);
+    }
+    let mut path = [0; 3];
+    carmy::movement_route_prefixes(&memory, bad, route, &mut Vec::new(), &mut [], &mut path)
+        .unwrap();
+    assert_eq!(path, values);
+}
+
+#[test]
+fn packet_route_staging_grows_off_capture_and_survives_reuse() {
+    let mut source = shared_geometry_fixture();
+    let mut packet = carmy::MovementPacket::new(0, 0);
+    assert_eq!(packet.allocated_bytes(), 0);
+    for length in [2, 4, 1, 4] {
+        array(
+            &mut source.bytes,
+            A1 + crate::cunit::ORDINARY_ROUTE_DATA,
+            0x16000,
+            length,
+        );
+        array(
+            &mut source.bytes,
+            A1 + crate::cunit::ALTERNATE_ROUTE_DATA,
+            0x17000,
+            length,
+        );
+        for index in 0..length {
+            p32(&mut source.bytes, 0x16000 + index as usize * 4, 1);
+            p32(&mut source.bytes, 0x17000 + index as usize * 4, 77 + index);
+        }
+        let mut seeds = [carmy::DivisionSeed {
+            pointer: A1,
+            division: presentation_source()[0].division,
+            ..Default::default()
+        }];
+        carmy::capture_division_seeds(&source, &mut seeds);
+        let mut geometry = cprovince::GeometryPacket::default();
+        geometry.begin(&source, 0, GS).unwrap();
+        let paths = length as usize * 2;
+        packet.reserve(1, paths);
+        let allocated = packet.allocated_bytes();
+        let outcome = carmy::capture_movement_inputs(
+            &source,
+            0,
+            GS,
+            &seeds,
+            Outcome::Rows { len: 1 },
+            1,
+            paths,
+            &mut geometry,
+            &mut packet,
+        );
+        assert_eq!(outcome.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(packet.allocated_bytes(), allocated);
+        assert_eq!(packet.paths[..length as usize], vec![1; length as usize]);
+        assert_eq!(
+            packet.paths[length as usize..],
+            (77..77 + length).collect::<Vec<_>>()
+        );
+        packet.clear();
+        packet.reserve(1, paths);
+        assert_eq!(packet.allocated_bytes(), allocated);
+    }
+}
+
+#[test]
+fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
+    let mut source = shared_geometry_fixture();
+    array(
+        &mut source.bytes,
+        A1 + crate::cunit::ALTERNATE_ROUTE_DATA,
+        0x17000,
+        2,
+    );
+    p32(&mut source.bytes, 0x17000, 77);
+    p32(&mut source.bytes, 0x17004, 88);
+    let mut seeds = [carmy::DivisionSeed {
+        pointer: A1,
+        division: presentation_source()[0].division,
+        ..Default::default()
+    }];
+    carmy::capture_division_seeds(&source, &mut seeds);
+    let capture = |memory: &Observed<'_>, rows, paths| {
+        let mut geometry = cprovince::GeometryPacket::default();
+        geometry.begin(memory, 0, GS).unwrap();
+        let mut packet = carmy::MovementPacket::new(1, 4);
+        let allocated = packet.allocated_bytes();
+        carmy::capture_movement_inputs(
+            memory,
+            0,
+            GS,
+            &seeds,
+            Outcome::Rows { len: 1 },
+            rows,
+            paths,
+            &mut geometry,
+            &mut packet,
+        );
+        assert_eq!(packet.allocated_bytes(), allocated);
+        packet
+    };
+    let success = Observed::new(&source, None);
+    let packet = capture(&success, 1, 4);
+    assert_eq!(packet.outcome().outcome, Outcome::Rows { len: 1 });
+    assert_eq!(packet.paths, [1, 1, 77, 88]);
+    // One record gather, as on main: main's movement capture no longer
+    // pairs route endpoints, which #75 had batched here.
+    assert_eq!(success.batches.get(), 1);
+    let trace = success.reads.borrow().clone();
+    for (address, width, expected_paths, reason) in [
+        (0x16000, 8, vec![0, 0, 0, 0], "movement route unreadable"),
+        (0x17000, 8, vec![1, 1, 0, 0], "movement route unreadable"),
+    ] {
+        let ordinal = trace
+            .iter()
+            .position(|&span| span == (address, width))
+            .unwrap();
+        let memory = Observed::new(&source, Some(ordinal));
+        let failed = capture(&memory, 1, 4);
+        assert_eq!(failed.outcome().outcome, Outcome::Unavailable { reason });
+        assert_eq!(
+            (failed.result.paths_len, failed.result.required_paths),
+            (0, 4)
+        );
+        assert_eq!(failed.paths, expected_paths);
+        assert!(failed.units.is_empty());
+        let reads = memory.reads.borrow();
+        assert_eq!(&reads[..=ordinal], &trace[..=ordinal]);
+        assert_eq!(
+            reads
+                .iter()
+                .filter(|&&span| span == (address, width))
+                .count(),
+            1
+        );
+        assert_eq!(*reads, trace[..=ordinal]);
+    }
+    for (rows, paths) in [(0, 4), (1, 3)] {
+        let memory = Observed::new(&source, None);
+        let omitted = capture(&memory, rows, paths);
+        assert_eq!(
+            omitted.outcome().outcome,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(
+            (omitted.result.paths_len, omitted.result.required_paths),
+            (0, 4)
+        );
+        assert_eq!(memory.batches.get(), 0);
+    }
+}
