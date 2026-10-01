@@ -5328,7 +5328,7 @@ mod tests {
 
     #[test]
     fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
-        use std::{sync::mpsc, time::Duration};
+        use std::sync::mpsc;
         let shared = Arc::new(Shared::new(0, 0, 1));
         let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
         let original = shared.frames[held[0]].load(Ordering::Acquire);
@@ -5342,16 +5342,15 @@ mod tests {
             let result = consumer.take_frame();
             send.send(result).unwrap();
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while shared.buffer_wait_calls.load(Ordering::Relaxed) == 0
-            && std::time::Instant::now() < deadline
-        {
+        // Nothing is returned until the waiter is counted in the wait path, so
+        // it can only leave early by not waiting at all, which ends the thread.
+        while shared.buffer_wait_calls.load(Ordering::Relaxed) == 0 && !waiter.is_finished() {
             std::thread::yield_now();
         }
         let waited = shared.buffer_wait_calls.load(Ordering::Relaxed);
         let pending = receive.try_recv().is_err();
         shared.recycle_frame(held[0]);
-        let result = receive.recv_timeout(Duration::from_secs(2));
+        let result = receive.recv();
         shared.cancel_buffer_wait.store(true, Ordering::Release);
         waiter.join().unwrap();
         assert_eq!(waited, 1);

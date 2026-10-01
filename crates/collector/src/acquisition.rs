@@ -1278,19 +1278,53 @@ mod tests {
 
     #[test]
     fn collector_spins_on_its_running_ticket_only_while_a_worker_is_idle() {
-        let (pool, started) = sleeping_pool(2);
+        // Each job holds its worker until the test releases it, so the join
+        // always finds its ticket running however the threads are scheduled.
+        let released = Arc::new(AtomicU64::new(0));
+        let started = Arc::new(AtomicU64::new(0));
+        let (gate, counter) = (Arc::clone(&released), Arc::clone(&started));
+        let pool = Pool::start(2, 4, move |job: &mut u64| {
+            let order = counter.fetch_add(1, Ordering::AcqRel) + 1;
+            while gate.load(Ordering::Acquire) < order {
+                std::thread::yield_now();
+            }
+            *job
+        })
+        .unwrap();
+        pool.reserve_worker_slots(4).unwrap();
+        // Collects the `order`th job while a helper waits for the join to
+        // spin, holds the job for `hold` more, then releases it. The helper
+        // always releases, so a join that never spins fails instead of hanging.
+        let collect = |job: u64, order: u64, hold: std::time::Duration| {
+            let spins_before = pool.calibration().spins;
+            let ticket = unsafe { pool.submit_with_priority(&mut Some(job), 0, true) }.unwrap();
+            wait_for_starts(&started, order);
+            std::thread::scope(|scope| {
+                let helper = scope.spawn(|| {
+                    let limit = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while pool.calibration().spins == spins_before
+                        && std::time::Instant::now() < limit
+                    {
+                        std::thread::yield_now();
+                    }
+                    let spun = pool.calibration().spins > spins_before;
+                    std::thread::sleep(hold);
+                    released.store(order, Ordering::Release);
+                    spun
+                });
+                let report = pool.finish(ticket).unwrap().report.unwrap();
+                (ticket, report, helper.join().unwrap())
+            })
+        };
         // One running job, one idle worker: the join spins and collects it.
-        // The job outlasts scheduling noise so the join finds it running.
-        let short = unsafe { pool.submit_with_priority(&mut Some(20), 0, true) }.unwrap();
-        wait_for_starts(&started, 1);
-        assert_eq!(pool.finish(short).unwrap().report.unwrap(), 20);
+        let (short, report, spun) = collect(20, 1, std::time::Duration::ZERO);
+        assert_eq!((report, spun), (20, true));
         let after_short = pool.calibration().spins;
-        assert!(after_short >= 1);
-        // A job longer than the cap is still collected after the spin parks.
-        let long_ms = JOIN_SPIN.as_millis() as u64 * 25;
-        let long = unsafe { pool.submit_with_priority(&mut Some(long_ms), 0, true) }.unwrap();
-        wait_for_starts(&started, 2);
-        assert_eq!(pool.finish(long).unwrap().report.unwrap(), long_ms);
+        // A job held past the cap is still collected after the spin parks.
+        // The cap's deadline is set before the spin is counted, so holding
+        // for longer than the cap after seeing the spin always outlasts it.
+        let (_, report, spun) = collect(50, 2, JOIN_SPIN * 25);
+        assert_eq!((report, spun), (50, true));
         let calibration = pool.calibration();
         assert!(calibration.spins > after_short);
         // Worker-only tickets are never executed by the collector.
@@ -1298,6 +1332,7 @@ mod tests {
         assert_eq!(calibration.worker_executed, 2);
         assert!(pool.finish(short).is_none());
         // A slot reused by a later generation is not mistaken for the old one.
+        released.store(u64::MAX, Ordering::Release);
         let again = unsafe { pool.submit_with_priority(&mut Some(2), 0, true) }.unwrap();
         assert_eq!(pool.finish(again).unwrap().report.unwrap(), 2);
     }
