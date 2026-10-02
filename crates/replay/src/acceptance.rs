@@ -743,6 +743,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         FactionRow {
             id: 0,
             name: b"Synthetic faction".to_vec(),
+            ..FactionRow::default()
         },
         FactionRow {
             id: FACTION_A,
@@ -751,12 +752,22 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
                 1 => vec![0xff, 0, b'F'],
                 _ => b"Renamed faction".to_vec(),
             },
+            // A template and colour that change now and then, as a recolour or a new
+            // template would, so their columns are encoded as deltas too.
+            template_token: (!(index / 13).is_multiple_of(3))
+                .then_some(((index / 13) % 3) as u32 * 0x4c1a),
+            color_red: (((index / 7) % 5) as f32 / 4.0).to_bits(),
+            color_green: [0.5_f32, 0.25][(index / 9) % 2].to_bits(),
+            color_blue: [f32::NAN, 0.0][(index / 23) % 2].to_bits(),
+            color_alpha: [1.0_f32, 0.5][(index / 29) % 2].to_bits(),
+            color_overridden: ((index / 19) % 3) as u8,
         },
     ];
     if index % 17 < 5 {
         factions.push(FactionRow {
             id: u64::MAX,
             name: b"Temporary faction".to_vec(),
+            ..FactionRow::default()
         });
     }
     let mut members = vec![

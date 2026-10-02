@@ -28,6 +28,7 @@ fn group_frame(
             .map(|&(id, name, _)| replay::rows::FactionRow {
                 id,
                 name: name.as_bytes().to_vec(),
+                ..Default::default()
             })
             .collect(),
     ));

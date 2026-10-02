@@ -2223,6 +2223,12 @@ fn faction_table(captured: &Captured) -> TableView {
             id: faction.id,
             name: captured.faction_names[faction.name_start..faction.name_start + faction.name_len]
                 .to_vec(),
+            template_token: faction.template_token,
+            color_red: faction.color[0],
+            color_green: faction.color[1],
+            color_blue: faction.color[2],
+            color_alpha: faction.color[3],
+            color_overridden: faction.color_overridden,
         }
     })
 }
@@ -3701,6 +3707,7 @@ mod tests {
             id: 88,
             name_start: 0,
             name_len: 3,
+            ..Default::default()
         };
         source.factions_result = Outcome::Rows { len: 1 };
         source.faction_names[..3].copy_from_slice(&[b'N', 0, 255]);
@@ -3732,6 +3739,7 @@ mod tests {
             TableView::Complete(TableRows::Factions(vec![FactionRow {
                 id: 88,
                 name: vec![b'N', 0, 255],
+                ..FactionRow::default()
             }]))
         );
     }
@@ -3766,6 +3774,7 @@ mod tests {
             id: 88,
             name_start: 0,
             name_len: 3,
+            ..Default::default()
         };
         source.faction_names_len = 3;
         for hour in [11, 12] {
@@ -3811,6 +3820,7 @@ mod tests {
             id: u64::MAX,
             name_start: 2,
             name_len: 4,
+            ..Default::default()
         };
         source.factions_result = Outcome::Rows { len: 1 };
         source.faction_names[..6].copy_from_slice(&[0, 0, b'A', 0, 255, b'B']);
@@ -3843,7 +3853,8 @@ mod tests {
             frame.tables[TableId::Factions.index()],
             TableView::Complete(TableRows::Factions(vec![FactionRow {
                 id: u64::MAX,
-                name: vec![b'A', 0, 255, b'B']
+                name: vec![b'A', 0, 255, b'B'],
+                ..FactionRow::default()
             }]))
         );
         assert_eq!(
@@ -3873,6 +3884,7 @@ mod tests {
             id: 88,
             name_start: usize::MAX,
             name_len: 1,
+            ..Default::default()
         };
         source.factions_result = Outcome::Rows { len: 1 };
         assert_eq!(

@@ -202,7 +202,12 @@ mod tests {
     const SYSTEM: usize = 0x2200;
     const FACTION_POINTERS: usize = 0x2300;
     const FIRST: usize = 0x3000;
-    const SECOND: usize = 0x3800;
+    // A CFaction spans past its colour at +0x9d0, so the second one sits after every other object.
+    const SECOND: usize = 0xb000;
+    const TEMPLATE_OBJECT: usize = 0xbc00;
+    const TEMPLATE_TOKEN: u32 = 0x4c1a_0042;
+    /// The first faction's colour as `CColor` components: 81, 78 and 74 of 255, and alpha 1.
+    const FIRST_COLOR: [f32; 4] = [81.0 / 255.0, 78.0 / 255.0, 74.0 / 255.0, 1.0];
     const HEAP_NAME: usize = 0x4000;
     const MEMBER_POINTERS: usize = 0x4300;
     const C1: usize = 0x5000;
@@ -242,7 +247,7 @@ mod tests {
     }
 
     fn fixture() -> Vec<u8> {
-        let mut bytes = vec![0; 0xb000];
+        let mut bytes = vec![0; 0xc000];
         array(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRIES, 4, 4);
         array(&mut bytes, GS + cgame_state::COUNTRY_LINKS, LINKS, 8, 8);
         // Slot zero is not a country; slot three aliases the object in slot one.
@@ -282,10 +287,42 @@ mod tests {
         put64(&mut bytes, FACTION_POINTERS + 8, SECOND as u64);
         // Spare capacity is deliberately unreadable as an object and must be ignored.
         put64(&mut bytes, FACTION_POINTERS + 16, u64::MAX);
-        for (faction, id) in [(FIRST, FIRST_ID), (SECOND, SECOND_ID)] {
+        for (faction, id, color, overridden) in [
+            (FIRST, FIRST_ID, FIRST_COLOR, 0),
+            (SECOND, SECOND_ID, [1.0; 4], 1),
+        ] {
             put64(&mut bytes, faction, cfaction::VTABLE_RVA as u64);
             put64(&mut bytes, faction + cfaction::REFERENCE, id);
+            put64(
+                &mut bytes,
+                faction + cfaction::COLOR,
+                cfaction::COLOR_VTABLE_RVA as u64,
+            );
+            for (index, component) in color.into_iter().enumerate() {
+                put32(
+                    &mut bytes,
+                    faction + cfaction::COLOR + cfaction::COLOR_COMPONENTS + index * 4,
+                    component.to_bits(),
+                );
+            }
+            bytes[faction + cfaction::COLOR_OVERRIDDEN] = overridden;
         }
+        // The first faction was formed from a template; the second has none.
+        put64(
+            &mut bytes,
+            FIRST + cfaction::TEMPLATE,
+            TEMPLATE_OBJECT as u64,
+        );
+        put64(
+            &mut bytes,
+            TEMPLATE_OBJECT,
+            crate::cfaction_template::VTABLE_RVA as u64,
+        );
+        put32(
+            &mut bytes,
+            TEMPLATE_OBJECT + crate::cfaction_template::IDENTIFIER_TOKEN,
+            TEMPLATE_TOKEN,
+        );
         name(&mut bytes, FIRST, b"Axis");
         name(&mut bytes, SECOND, b"");
         array(&mut bytes, FIRST + cfaction::MEMBERS, MEMBER_POINTERS, 3, 2);
@@ -325,12 +362,18 @@ mod tests {
                 cfaction::Row {
                     id: FIRST_ID,
                     name_start: 0,
-                    name_len: 4
+                    name_len: 4,
+                    template_token: Some(TEMPLATE_TOKEN),
+                    color: FIRST_COLOR.map(f32::to_bits),
+                    color_overridden: 0,
                 },
                 cfaction::Row {
                     id: SECOND_ID,
                     name_start: 4,
-                    name_len: 0
+                    name_len: 0,
+                    template_token: None,
+                    color: [1.0_f32.to_bits(); 4],
+                    color_overridden: 1,
                 },
             ]
         );
@@ -419,6 +462,60 @@ mod tests {
             names(&bytes, &mut [], &mut []).outcome,
             Outcome::Unavailable { .. }
         ));
+    }
+
+    /// The presentation costs one record copy per faction (template pointer, the whole
+    /// colour and the override byte) and one more span per faction with a template.
+    #[test]
+    fn presentation_is_one_record_copy_per_faction_and_one_span_per_template() {
+        let counted = |bytes: &[u8]| {
+            crate::memory::ReadCounts::take_current();
+            let memory = crate::memory::CountedMemory::new(SliceMemory { base: 0, bytes });
+            let walk = cfaction::walk(
+                &memory,
+                0,
+                GS,
+                &mut [cfaction::Row::default(); 2],
+                &mut [0; 4],
+            );
+            assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
+            crate::memory::ReadCounts::take_current()
+        };
+        let templated = counted(&fixture());
+        let mut bytes = fixture();
+        put64(&mut bytes, FIRST + cfaction::TEMPLATE, 0);
+        let plain = counted(&bytes);
+        assert_eq!(templated.record_calls, 2);
+        assert_eq!(plain.record_calls, 2);
+        assert_eq!(templated.copy_calls, plain.copy_calls + 1);
+        // A record cut short (the second faction's colour past readable memory) fails the
+        // walk rather than keeping the fields read before it.
+        // (`bytes` has no template, which lies past the cut too.)
+        assert_eq!(
+            names(
+                &bytes[..SECOND + cfaction::COLOR + 8],
+                &mut [cfaction::Row::default(); 2],
+                &mut [0; 4]
+            )
+            .outcome,
+            Outcome::Unavailable {
+                reason: "faction presentation unreadable"
+            }
+        );
+    }
+
+    /// A template or colour that is not the object it should be fails the walk, rather than a
+    /// faction being recorded with a guessed template or colour.
+    #[test]
+    fn a_foreign_template_or_colour_is_unavailable() {
+        for at in [TEMPLATE_OBJECT, FIRST + cfaction::COLOR] {
+            let mut bytes = fixture();
+            put64(&mut bytes, at, 0x1234);
+            assert!(matches!(
+                names(&bytes, &mut [cfaction::Row::default(); 2], &mut [0; 4]).outcome,
+                Outcome::Unavailable { .. }
+            ));
+        }
     }
 
     #[test]

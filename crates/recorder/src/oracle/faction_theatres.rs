@@ -151,6 +151,9 @@ mod tests {
             name: Vec::new(),
             members: Vec::new(),
             icon: Some(icon.to_vec()),
+            template: None,
+            color: None,
+            color_overridden: None,
             theatres,
         };
         save.factions

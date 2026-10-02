@@ -6,7 +6,7 @@ use std::{
 use installed_content::save::Save;
 use replay::{
     frame::DecodedFrame,
-    rows::{CountryRow, TableId, tables},
+    rows::{CountryRow, FactionRow, TableId, tables},
 };
 
 use super::{
@@ -616,6 +616,13 @@ pub(super) fn compare_factions(
             ));
         }
     }
+    // Template tokens are named by the recorded lexer dictionary; without it they are a limitation.
+    let tokens: Option<BTreeMap<u32, &[u8]>> =
+        frame.complete::<tables::LexicalTokens>().ok().map(|rows| {
+            rows.iter()
+                .map(|row| (row.token, row.literal.as_slice()))
+                .collect()
+        });
     let mut saved_members = BTreeSet::new();
     for (&id, expected) in &save.factions {
         if id == 0 || id != expected.id {
@@ -641,6 +648,7 @@ pub(super) fn compare_factions(
                 &expected.name,
             );
         }
+        compare_faction_presentation(&label, actual, expected, tokens.as_ref(), report);
         let actual_members = members.remove(&id).unwrap_or_default();
         for (ordinal, expected_tag) in expected.members.iter().enumerate() {
             let ordinal_key = u32::try_from(ordinal)
@@ -674,6 +682,93 @@ pub(super) fn compare_factions(
             "absent",
         );
     }
-    report.limitation("faction names compare only literal bytes; templates, localization fallback and rendered friendly names are not recorded", "factions");
+    report.limitation("faction names compare only literal bytes; the template's localised name and the rendered friendly name are not recorded (the template is, as its token)", "factions");
     Ok(())
+}
+
+/// A faction's template, colour and colour override against the save.
+/// `CFaction::Serialize@140D7B4D0` writes `template` (the template token's spelling)
+/// only when the faction has one, `color` through `CColor::vf1@142237ad0` (each of r,
+/// g, b as `(int)(c * 255.0f)`, and alpha only when it is not 1.0) and
+/// `is_color_overridden` from the raw byte.
+fn compare_faction_presentation(
+    label: &str,
+    actual: &FactionRow,
+    expected: &installed_content::save::Faction,
+    tokens: Option<&BTreeMap<u32, &[u8]>>,
+    report: &mut Report,
+) {
+    // Presence is compared whatever the dictionary: the serializer writes `template`
+    // exactly when the template pointer is non-null, so a template on one side only is
+    // a difference. Only the spelling of two present templates needs LexicalTokens.
+    match (actual.template_token, expected.template.as_deref()) {
+        (None, None) => {}
+        (Some(token), None) => report.difference(
+            format!("{label}.template"),
+            format!("token {token}"),
+            "absent",
+        ),
+        (None, Some(saved)) => report.difference(
+            format!("{label}.template"),
+            "absent",
+            String::from_utf8_lossy(saved),
+        ),
+        (Some(token), Some(saved)) => match tokens {
+            None => report.limitation(
+                "faction template tokens cannot be spelled without a complete LexicalTokens table",
+                label,
+            ),
+            Some(tokens) => match tokens.get(&token).copied() {
+                None => report.difference(
+                    format!("{label}.template"),
+                    format!("token {token} not in LexicalTokens"),
+                    String::from_utf8_lossy(saved),
+                ),
+                Some(spelling) if spelling != saved => report.difference(
+                    format!("{label}.template"),
+                    String::from_utf8_lossy(spelling),
+                    String::from_utf8_lossy(saved),
+                ),
+                Some(_) => {}
+            },
+        },
+    }
+    let written = saved_colour([
+        actual.color_red,
+        actual.color_green,
+        actual.color_blue,
+        actual.color_alpha,
+    ]);
+    if expected.color.as_deref() != Some(written.as_slice()) {
+        report.difference(format!("{label}.color"), &written, &expected.color);
+    }
+    if actual.color_overridden > 1 {
+        report.limitation("yes/no is_color_overridden preserves truth but cannot certify noncanonical raw flag bits", label);
+    }
+    if expected.color_overridden != Some(actual.color_overridden != 0) {
+        report.difference(
+            format!("{label}.is_color_overridden"),
+            actual.color_overridden,
+            expected.color_overridden,
+        );
+    }
+}
+
+/// The integers `CColor::vf1@142237ad0` writes for four f32 components (raw bits):
+/// each of r, g, b as `(int)(c * 255.0f)`, the product in f32 and the conversion a
+/// truncating `cvttss2si` (NaN or out of range gives `i32::MIN`), then alpha the same
+pub(super) fn saved_colour(components: [u32; 4]) -> Vec<i64> {
+    let scale = |bits: u32| {
+        let product = f32::from_bits(bits) * 255.0_f32;
+        if product.is_nan() || product <= i32::MIN as f32 - 1.0 || product >= 2_147_483_648.0 {
+            i64::from(i32::MIN)
+        } else {
+            i64::from(product as i32)
+        }
+    };
+    let mut written: Vec<i64> = components[..3].iter().map(|&bits| scale(bits)).collect();
+    if f32::from_bits(components[3]) != 1.0 {
+        written.push(scale(components[3]));
+    }
+    written
 }

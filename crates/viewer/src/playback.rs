@@ -510,6 +510,7 @@ pub(crate) mod tests {
                     TableView::Complete(TableRows::Factions(vec![FactionRow {
                         id: 1_u64 << 32 | 42,
                         name: Vec::new(),
+                        ..FactionRow::default()
                     }])),
                     TableView::Complete(TableRows::FactionMembers(vec![FactionMemberRow {
                         country: 1,

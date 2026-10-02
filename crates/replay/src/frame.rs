@@ -2103,6 +2103,7 @@ mod tests {
         FactionRow {
             id,
             name: name.to_vec(),
+            ..FactionRow::default()
         }
     }
 

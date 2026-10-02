@@ -998,6 +998,10 @@ fn relations_fixture() -> (
             name: Vec::new(),
             members: vec![b"ENG".to_vec(), b"GER".to_vec()],
             icon: None,
+            // A template faction, coloured from its leader's colour.
+            template: Some(b"faction_template_axis".to_vec()),
+            color: Some(vec![127, 63, 255]),
+            color_overridden: Some(false),
             theatres: Vec::new(),
             advisor_slots: Vec::new(),
         },
@@ -1009,6 +1013,10 @@ fn relations_fixture() -> (
             name: b"Literal".to_vec(),
             members: Vec::new(),
             icon: None,
+            // No template; an overridden colour with its alpha written, since it is not 1.0.
+            template: None,
+            color: Some(vec![255, 0, 63, 127]),
+            color_overridden: Some(true),
             theatres: Vec::new(),
             advisor_slots: Vec::new(),
         },
@@ -1017,12 +1025,31 @@ fn relations_fixture() -> (
         FactionRow {
             id: 88,
             name: Vec::new(),
+            template_token: Some(TEMPLATE_TOKEN),
+            color_red: 0.5_f32.to_bits(),
+            color_green: 0.25_f32.to_bits(),
+            color_blue: 1.0_f32.to_bits(),
+            color_alpha: 1.0_f32.to_bits(),
+            color_overridden: 0,
         },
         FactionRow {
             id: 1_u64 << 63,
             name: b"Literal".to_vec(),
+            template_token: None,
+            color_red: 1.0_f32.to_bits(),
+            color_green: 0.0_f32.to_bits(),
+            color_blue: 0.25_f32.to_bits(),
+            color_alpha: 0.5_f32.to_bits(),
+            color_overridden: 1,
         },
     ]));
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            replay::rows::LexicalTokenRow {
+                token: TEMPLATE_TOKEN,
+                literal: b"faction_template_axis".to_vec(),
+            },
+        ]));
     *frame.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(vec![
             FactionMemberRow {
@@ -1038,6 +1065,9 @@ fn relations_fixture() -> (
         ]));
     (frame, save, membership, equipment)
 }
+
+/// The fixture's faction template token (any id the dictionary names).
+const TEMPLATE_TOKEN: u32 = 0x4c1a;
 
 fn war_row_mut(frame: &mut DecodedFrame) -> &mut WarRelationRow {
     let TableView::Complete(TableRows::WarRelations(rows)) =
@@ -1499,6 +1529,114 @@ fn faction_names_handles_and_membership_order_are_exact() {
             .len(),
         2
     );
+}
+
+/// The template is named by the lexer dictionary, the colour compared through
+/// CColor's own write (a truncating cast of the f32 product) and the override byte.
+#[test]
+fn faction_templates_colours_and_overrides_compare_as_the_save_writes_them() {
+    let (frame, save, membership, equipment) = relations_fixture();
+    let report = compare(&frame, &save, &membership, &equipment).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let mut changed = frame.clone();
+    let TableView::Complete(TableRows::Factions(rows)) =
+        &mut *changed.tables[TableId::Factions.index()]
+    else {
+        unreachable!()
+    };
+    // 0.3 * 255 is 76.5 in f32: written as 76, never rounded to 77.
+    rows[0].color_red = 0.3_f32.to_bits();
+    rows[0].template_token = Some(TEMPLATE_TOKEN + 1);
+    rows[1].color_overridden = 0;
+    let differences = compare(&changed, &save, &membership, &equipment)
+        .unwrap()
+        .differences;
+    assert_eq!(differences.len(), 3, "{differences:?}");
+    assert!(
+        differences
+            .iter()
+            .any(|line| line.contains(".color: replay [76, 63, 255]")),
+        "{differences:?}"
+    );
+    assert!(
+        differences
+            .iter()
+            .any(|line| line.contains("not in LexicalTokens")),
+        "{differences:?}"
+    );
+    assert!(
+        differences
+            .iter()
+            .any(|line| line.contains(".is_color_overridden")),
+        "{differences:?}"
+    );
+    // Without the dictionary the spelling of two present templates is a limitation,
+    // not a difference.
+    let spelling =
+        "faction template tokens cannot be spelled without a complete LexicalTokens table";
+    let unavailable = TableView::Unavailable {
+        reason: "fixture".into(),
+    };
+    let truncated = TableView::Truncated {
+        rows: TableRows::LexicalTokens(Vec::new()),
+        missing: 1,
+    };
+    for dictionary in [unavailable, truncated] {
+        let mut unnamed = frame.clone();
+        *unnamed.tables[TableId::LexicalTokens.index()] = dictionary;
+        let report = compare(&unnamed, &save, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(report.limitations.contains_key(spelling));
+        // Presence needs no dictionary: the save writes `template` for every
+        // non-null template, so a template the save lacks is a difference however
+        // the dictionary was recorded.
+        let TableView::Complete(TableRows::Factions(rows)) =
+            &mut *unnamed.tables[TableId::Factions.index()]
+        else {
+            unreachable!()
+        };
+        rows[1].template_token = Some(42);
+        let report = compare(&unnamed, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(
+            report.differences[0].contains(".template: replay \"token 42\""),
+            "{:?}",
+            report.differences
+        );
+    }
+    // A saved template the replay lacks, and a raw override byte above one, are named.
+    let mut dropped = frame.clone();
+    let TableView::Complete(TableRows::Factions(rows)) =
+        &mut *dropped.tables[TableId::Factions.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].template_token = None;
+    rows[1].color_overridden = 2;
+    let report = compare(&dropped, &save, &membership, &equipment).unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("is_color_overridden"))
+    );
+}
+
+#[test]
+fn a_colour_is_written_as_the_native_float_conversion_does() {
+    let bits = |values: [f32; 4]| values.map(f32::to_bits);
+    assert_eq!(relations::saved_colour(bits([0.5, 0.25, 1.0, 1.0])), [127, 63, 255]);
+    assert_eq!(
+        relations::saved_colour(bits([0.0, 1.0, 0.999, 0.5])),
+        [0, 255, 254, 127]
+    );
+    // cvttss2si gives the integer indefinite for NaN and out-of-range products.
+    assert_eq!(
+        relations::saved_colour(bits([f32::NAN, 1e30, -1e30, 1.0])),
+        [i64::from(i32::MIN); 3]
+    );
+    assert_eq!(relations::saved_colour(bits([-0.5, 0.0, 0.0, 1.0])), [-127, 0, 0]);
 }
 
 #[test]

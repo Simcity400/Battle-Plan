@@ -114,7 +114,8 @@ mod tests {
     const SYSTEM: usize = 0x2200;
     const FACTIONS: usize = 0x2300;
     const FIRST: usize = 0x3000;
-    const SECOND: usize = 0x3800;
+    // A CFaction spans past its colour at +0x9d0, so the second one sits after every other object.
+    const SECOND: usize = 0xb000;
     const MEMBERS: usize = 0x4300;
     const C1: usize = 0x5000;
     const C2: usize = 0x7000;
@@ -139,7 +140,7 @@ mod tests {
     }
 
     fn fixture() -> Vec<u8> {
-        let mut bytes = vec![0; 0xb000];
+        let mut bytes = vec![0; 0xc000];
         array(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRIES, 4);
         array(&mut bytes, GS + cgame_state::COUNTRY_LINKS, LINKS, 8);
         // Canonical country one has native reference seven and an alias slot.
@@ -182,6 +183,19 @@ mod tests {
                 faction + cfaction::NAME + msvc_string::CAPACITY,
                 15,
             );
+            // No template, and the default colour: CColor's vtable with 1.0 components.
+            put64(
+                &mut bytes,
+                faction + cfaction::COLOR,
+                cfaction::COLOR_VTABLE_RVA as u64,
+            );
+            for index in 0..4 {
+                put32(
+                    &mut bytes,
+                    faction + cfaction::COLOR + cfaction::COLOR_COMPONENTS + index * 4,
+                    1.0_f32.to_bits(),
+                );
+            }
         }
         bytes[FIRST + cfaction::NAME..FIRST + cfaction::NAME + NAME.len()].copy_from_slice(&NAME);
         put64(
