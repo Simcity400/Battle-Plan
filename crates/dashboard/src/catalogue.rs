@@ -170,6 +170,16 @@ impl Refusals {
     }
 }
 
+/// A string the engine built for display, recorded as bytes, as plain text.
+/// Stored colour codes and icons use the shared game localiser; unsupported
+/// controls and invalid UTF-8 stay refusals instead of invented text.
+pub fn display_text(bytes: &[u8]) -> Result<String, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "is not UTF-8".to_owned())?;
+    plain_text(text)
+        .map(|text| text.trim().to_owned())
+        .map_err(|reason| format!("holds {reason}"))
+}
+
 /// One source's shared content facts for one set of folders.
 pub struct Catalogue {
     pub content: Arc<ResolvedContent>,

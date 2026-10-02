@@ -6,6 +6,7 @@
 //! its key.
 
 pub mod artwork;
+pub mod autonomy;
 pub mod country_experience;
 pub mod country_factories;
 pub mod country_flags;
@@ -32,6 +33,7 @@ pub mod resources;
 pub mod stability_parts;
 pub mod subjects;
 pub mod trade_flows;
+pub mod world_tension;
 
 use std::{io, sync::atomic::AtomicBool};
 
@@ -99,6 +101,26 @@ impl CountryParams {
             return Err("Invalid branch");
         }
         validate_tag(&self.tag)
+    }
+
+    pub fn branch(&self) -> u64 {
+        self.branch_id.parse().expect("validated branch id")
+    }
+}
+
+/// Parameters of a product about the whole world of one branch.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BranchParams {
+    pub branch_id: String,
+}
+
+impl BranchParams {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        self.branch_id
+            .parse::<u64>()
+            .map(|_| ())
+            .map_err(|_| "Invalid branch")
     }
 
     pub fn branch(&self) -> u64 {
@@ -233,6 +255,8 @@ pub static PRODUCTS: &[Registered] = &[
     register::<equipment_produced::EquipmentProduced>(),
     register::<trade_flows::TradeFlows>(),
     register::<subjects::Subjects>(),
+    register::<world_tension::WorldTension>(),
+    register::<autonomy::Autonomy>(),
 ];
 
 pub fn find(key: &str) -> Option<&'static Registered> {
@@ -305,6 +329,9 @@ mod tests {
             "ResourceInfo",
             "TradeFlowsReply",
             "SubjectReply",
+            "BranchParams",
+            "TensionReply",
+            "AutonomyReply",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == name).count(),

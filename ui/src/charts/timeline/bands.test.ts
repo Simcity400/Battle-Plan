@@ -130,6 +130,22 @@ test('the keyboard stops at every band step in view, so each value a pointer rea
   assert.deepEqual(laneStops([holed], 20, 100, null).map(stop => stop.hour), [30]);
 });
 
+test('a span also stops at its own hours: readings the bar does not show, a count published at its end', () => {
+  // Settings unchanged from 100 to 171 (one step), output read at 100, 124 and 148: every
+  // reading is reachable; one list serves every span, each taking the hours inside it.
+  const reads = [100, 124, 148, 172, 196];
+  const line = { id: 'line', firstHour: 100, lastHour: 171, label: 'Line', band: [{ firstHour: 100, lastHour: 171, value: 3 }], stops: reads };
+  assert.deepEqual(laneStops([line], 0, 500, null).map(stop => [stop.id, stop.hour]), [['line@100', 100], ['line@124', 124], ['line@148', 148]]);
+  // A view starting between two readings reaches the one carried into it, named by it.
+  assert.deepEqual(laneStops([line], 130, 500, null).map(stop => [stop.id, stop.hour]), [['line@124', 130], ['line@148', 148]]);
+  // A bar made between two reads (101 to 124) reaches its count published at 124.
+  const between = { id: 'between', firstHour: 101, lastHour: 124, label: 'Made between', stops: [124] };
+  assert.deepEqual(laneStops([between], 0, 500, null).map(stop => [stop.id, stop.hour]), [['between@101', 101], ['between@124', 124]]);
+  // A stop coinciding with a step's start is one stop; one outside every step is none.
+  const holed = { ...line, band: [{ firstHour: 100, lastHour: 110, value: 3 }, { firstHour: 124, lastHour: 171, value: 5 }], stops: [115, 124] };
+  assert.deepEqual(laneStops([holed], 0, 500, null).map(stop => stop.hour), [100, 124]);
+});
+
 test('a lane places its band spans together, so a gap between two spans stays visible', () => {
   // Finding: two separate equal-valued band spans covering only hours 8 and 28 (1.19 px apart).
   const spans = [

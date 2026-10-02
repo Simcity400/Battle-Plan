@@ -32,6 +32,13 @@ test('the pointer picks the nearest badge in the strip, with the other events of
   assert.equal(new Set(hovered.map(badge => badge.hour)).size, 1);
 });
 
+test('triangle markers are found like glyph badges, in the strip above the plot', () => {
+  const event = { hour: 1500, glyph: '▼', label: 'Declared war', color: '#123456', shape: 'triangle' as const };
+  assert.deepEqual(badgesAt({ x: FRAME.toX(1500) + 2, y: FRAME.plotTop - 6 }, FRAME, [event, WAR], null), [event]);
+  assert.deepEqual(badgesAt({ x: FRAME.toX(1500), y: FRAME.plotTop + 40 }, FRAME, [event], null), []);
+  assert.deepEqual(visibleBadges([event], [1000, 2000], 1400), []);
+});
+
 test('hovered badges become tooltip rows naming each event', () => {
   const rows = badgeRows([WAR, { ...LAW, color: '#123456' }]);
   assert.deepEqual(rows.map(row => [row.label, row.swatch, row.divider]), [['⚔ War with FRA', undefined, true], ['⚙ Law: War Economy', '#123456', false]]);

@@ -2,6 +2,7 @@
  * span holds a lane at an hour, and where a span's bar runs. */
 
 import { keyStops } from '../frame.ts';
+import type { ChartTokens } from '../tokens.ts';
 
 export interface TimelineSpan {
   id: string;
@@ -25,6 +26,11 @@ export interface TimelineSpan {
    * (such as a production line's factories each day), on the timeline's `bandMax`.
    * Hours no step covers are not drawn. */
   band?: readonly BandStep[];
+  /** More hours, ascending, the keyboard stops at inside the span, besides its start
+   * (and its band's steps): where a value its tooltip shows changes without the bar
+   * changing, such as each daily reading, or a count published at its end. Hours
+   * outside the span are ignored, so one list may serve every span of a lane. */
+  stops?: readonly number[];
 }
 
 /** A value held over hours, both included: one step of a band. */
@@ -49,7 +55,16 @@ export interface TimelineLane {
   /** A lane heading the lanes after it (a faction above its members): its name is
    * bold, and it has no icon placeholder when it names no icon. */
   heading?: boolean;
+  /** A coloured pill under the lane's name in the left column, in place of `label`
+   * (such as a subject's level at the playhead). */
+  pill?: { text: string; color: string };
+  /** Draws the lane's plot itself instead of its spans' bars, clipped to the lane;
+   * spans still give its hover, keyboard stops and Jump to. */
+  paint?: (ctx: CanvasRenderingContext2D, lane: LaneGeometry, tokens: ChartTokens) => void;
 }
+
+/** A painted lane's visible plot geometry, in the sticky canvas's pixels. */
+export interface LaneGeometry { top: number; height: number; left: number; right: number; hours: readonly [number, number]; toX: (hour: number) => number; playhead: number | null }
 
 export const AXIS_HEIGHT = 24;
 export const ROW_HEIGHT = 40;
@@ -60,10 +75,10 @@ export const INDENT = 18;
  * tall, the time axis stays at its top, and it starts `offset` pixels down the
  * lanes. Last is below first when no lane is in view. So a timeline of any number
  * of lanes draws, and asks about, only what can be seen. */
-export function lanesInView(offset: number, height: number, count: number): [number, number] {
+export function lanesInView(offset: number, height: number, count: number, rowHeight = ROW_HEIGHT): [number, number] {
   const top = Math.max(0, offset);
   const bottom = offset + Math.max(0, height - AXIS_HEIGHT);
-  return [Math.max(0, Math.floor(top / ROW_HEIGHT)), Math.min(count - 1, Math.ceil(bottom / ROW_HEIGHT) - 1)];
+  return [Math.max(0, Math.floor(top / rowHeight)), Math.min(count - 1, Math.ceil(bottom / rowHeight) - 1)];
 }
 
 /** How far a view of `height` pixels has scrolled down lanes whose full height is
@@ -75,9 +90,9 @@ export function laneOffset(viewTop: number, contentTop: number, height: number, 
 }
 
 /** The lane under a y position, or null above the lanes or below the last. */
-export function laneAt(y: number, count: number): number | null {
+export function laneAt(y: number, count: number, rowHeight = ROW_HEIGHT): number | null {
   if (y < AXIS_HEIGHT) return null;
-  const index = Math.floor((y - AXIS_HEIGHT) / ROW_HEIGHT);
+  const index = Math.floor((y - AXIS_HEIGHT) / rowHeight);
   return index >= 0 && index < count ? index : null;
 }
 
@@ -420,9 +435,10 @@ export function bandHalf(value: number, max: number, least: number, most: number
 }
 
 /** Where the keyboard can stop in a lane: a bar's first hour shown, or, for a band,
- * each step's first hour shown, so every value a pointer can reach is reachable. */
+ * each step's first hour shown, and any of the span's own `stops`, so every value a
+ * pointer can reach is reachable. */
 export interface LaneStop {
-  /** The span and the step (its first hour) the stop belongs to, stable through zoom. */
+  /** The span and the stop (its hour, or the step's first) it belongs to, stable through zoom. */
   id: string;
   hour: number;
   span: TimelineSpan;
@@ -432,9 +448,10 @@ export interface LaneStop {
  * hour order: for each span shown, its stops by the kit's `keyStops` (those in view,
  * and the view's start when an earlier stop carries its value into it; a stop is
  * described at its whole hour, as hover floors it). A span covering the view's first,
- * partial hour is reachable there even when that hour is its last. A band's stops are
- * its steps' first hours within the span (steps cut to it, as drawn); an hour no step
- * covers is not a stop. Linear in the steps. */
+ * partial hour is reachable there even when that hour is its last. A bar's stops are
+ * its first hour; a band's, its steps' first hours within the span (steps cut to it, as
+ * drawn), where an hour no step covers is not a stop. Either adds the span's `stops`
+ * inside it. Linear in the steps and stops. */
 export function laneStops(spans: readonly TimelineSpan[], from: number, to: number, playhead: number | null): LaneStop[] {
   const end = Math.min(playhead ?? to, to);
   const stops: LaneStop[] = [];
@@ -444,25 +461,64 @@ export function laneStops(spans: readonly TimelineSpan[], from: number, to: numb
     // A span whose last hour is the view's first, partial hour reaches up to the view's
     // start: hover there shows that hour, so its carried stop is the view's start.
     const last = Math.max(Math.min(end, span.lastHour), Math.floor(from) <= span.lastHour ? Math.min(from, end) : -Infinity);
-    if (!span.band) {
-      for (const hour of keyStops([span.firstHour], from, last)) stops.push({ id: `${span.id}@${span.firstHour}`, hour, span });
-      continue;
-    }
-    // Steps cut to the span's hours, as its band is drawn (`laneBands`). The stops and the
-    // steps are both in hour order: one walk pairs each stop with the step holding its
-    // hour (as hover floors it), so this is linear in the steps.
-    const band = span.band.flatMap(step => {
+    // Steps cut to the span's hours, as its band is drawn (`laneBands`).
+    const band = span.band?.flatMap(step => {
       const firstHour = Math.max(step.firstHour, span.firstHour);
       const lastHour = Math.min(step.lastHour, span.lastHour);
       return firstHour <= lastHour ? [{ ...step, firstHour, lastHour }] : [];
     });
+    const starts = band ? band.map(step => step.firstHour) : [span.firstHour];
+    const own = span.stops?.filter(hour => hour > span.firstHour && hour <= span.lastHour) ?? [];
+    const all = own.length ? mergeHours(starts, own) : starts;
+    // The stops, the steps and `all` are in hour order: one walk pairs each stop with the
+    // step holding its hour (as hover floors it) and the stop it is carried from.
     let index = 0;
-    for (const hour of keyStops(band.map(step => step.firstHour), from, last)) {
+    let source = 0;
+    for (const hour of keyStops(all, from, last)) {
       const whole = Math.floor(hour);
-      while (index < band.length && band[index].lastHour < whole) index++;
-      const step = band[index];
-      if (step && step.firstHour <= whole) stops.push({ id: `${span.id}@${step.firstHour}`, hour, span });
+      if (band) {
+        while (index < band.length && band[index].lastHour < whole) index++;
+        const step = band[index];
+        if (!step || step.firstHour > whole) continue;
+      }
+      while (source + 1 < all.length && all[source + 1] <= hour) source++;
+      stops.push({ id: `${span.id}@${all[source]}`, hour, span });
     }
   }
   return stops;
+}
+
+/** Two ascending hour lists as one, each hour once. */
+function mergeHours(a: readonly number[], b: readonly number[]): number[] {
+  const merged: number[] = [];
+  let [i, j] = [0, 0];
+  while (i < a.length || j < b.length) {
+    const next = j >= b.length || (i < a.length && a[i] <= b[j]) ? a[i++] : b[j++];
+    if (merged.at(-1) !== next) merged.push(next);
+  }
+  return merged;
+}
+
+/** What a lane's left column shows and cross-fades from: the holder drawn now, the
+ * one before it, and how far the fade has come (0–1). */
+export interface HolderState { key: string | null; previous: TimelineSpan | null; current: TimelineSpan | null; t: number }
+
+/** What the left column draws of a holder: its id, name and picture. A lane about
+ * one thing keeps its id while its name or picture changes (such as a production
+ * line naming its variant at the hour shown), so all three decide. */
+const holderKey = (span: TimelineSpan | null) => span ? `${span.id}\u0000${span.label}\u0000${span.icon ?? ''}` : null;
+
+/** The left column's state for this frame: unchanged while the same holder is drawn,
+ * else a fade from the one drawn to `current`. A lane's first holder shows at once.
+ * Ordinary lanes update names and pictures immediately, preserving a holder fade. */
+export function nextHolder(state: HolderState | undefined, current: TimelineSpan | null, fadePresentation = true): HolderState {
+  const key = holderKey(current);
+  if (!state) return { key, previous: null, current, t: 1 };
+  if (!fadePresentation && state.current?.id === current?.id) {
+    state.key = key;
+    state.current = current;
+    return state;
+  }
+  if (state.key === key) return state;
+  return { key, previous: state.current, current, t: 0 };
 }

@@ -92,6 +92,9 @@ test('timeline layout: lanes by row, spans cover their last observed day, bars s
   assert.equal(laneAt(AXIS_HEIGHT - 1, 3), null);
   assert.equal(laneAt(AXIS_HEIGHT + ROW_HEIGHT * 1.5, 3), 1);
   assert.equal(laneAt(AXIS_HEIGHT + ROW_HEIGHT * 3, 3), null);
+  // Taller lanes (a painted lane's own height).
+  assert.equal(laneAt(AXIS_HEIGHT + 54 * 1.5, 3, 54), 1);
+  assert.equal(laneAt(AXIS_HEIGHT + 54 * 3, 3, 54), null);
   const spans = [{ id: 'a', firstHour: 10, lastHour: 20, label: 'A' }];
   assert.equal(spanAt(spans, 20.5)?.id, 'a');
   assert.equal(spanAt(spans, 21), null);

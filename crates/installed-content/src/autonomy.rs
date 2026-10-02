@@ -56,6 +56,21 @@ fn last<'a>(items: &'a [crate::parser::Item], key: &[u8]) -> Option<&'a Value> {
         .map(|item| &item.value)
 }
 
+/// Require a complete decimal, so a numeric prefix of unsupported content is
+/// never mistaken for a known level. Conversion still uses the engine's fixed5.
+fn plain_number(bytes: &[u8]) -> bool {
+    let digits = bytes
+        .strip_prefix(b"-")
+        .or_else(|| bytes.strip_prefix(b"+"))
+        .unwrap_or(bytes);
+    let mut parts = digits.splitn(2, |byte| *byte == b'.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next();
+    !whole.is_empty()
+        && whole.iter().all(u8::is_ascii_digit)
+        && fraction.is_none_or(|part| part.iter().all(u8::is_ascii_digit))
+}
+
 fn from_document(
     document: &Document,
     path: &str,
@@ -81,11 +96,7 @@ fn from_document(
         let level = last(items, b"min_freedom_level");
         let min_freedom_level = level
             .and_then(Value::scalar)
-            .filter(|bytes| {
-                bytes
-                    .first()
-                    .is_some_and(|byte| byte.is_ascii_digit() || matches!(byte, b'-' | b'+' | b'.'))
-            })
+            .filter(|bytes| plain_number(bytes))
             .and_then(fixed5::script_fixed5);
         if min_freedom_level.is_none() {
             warnings.push(format!(
@@ -205,6 +216,28 @@ mod tests {
         assert!(warnings[0].contains("not a plain number"));
         assert!(warnings[1].contains("no min_freedom_level"));
         assert!(warnings[2].contains("no id"));
+    }
+
+    #[test]
+    fn unsupported_numeric_suffixes_are_unknown_instead_of_prefix_levels() {
+        let (read, warnings) = states(&[(
+            "mod.txt",
+            "autonomy_state = { id = suffix min_freedom_level = 0.4a } \
+             autonomy_state = { id = exponent min_freedom_level = 1e3 } \
+             autonomy_state = { id = block min_freedom_level = { value = 0.2 } } \
+             autonomy_state = { id = signed min_freedom_level = +0.60 } \
+             autonomy_state = { id = negative min_freedom_level = -1.234567 }",
+        )]);
+        for id in ["suffix", "exponent", "block"] {
+            assert_eq!(read.get(id).unwrap().min_freedom_level, None);
+            assert!(warnings.iter().any(|warning| warning.contains(id)));
+        }
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(read.get("signed").unwrap().min_freedom_level, Some(60_000));
+        assert_eq!(
+            read.get("negative").unwrap().min_freedom_level,
+            Some(-123_456)
+        );
     }
 
     #[test]

@@ -160,12 +160,34 @@ export function drawBands(ctx: CanvasRenderingContext2D, frame: PlotFrame, token
       return;
     }
     ctx.beginPath();
-    hours.forEach((hour, index) => index ? ctx.lineTo(frame.toX(hour), frame.toY(band.high[index])) : ctx.moveTo(frame.toX(hour), frame.toY(band.high[index])));
+    traceBandEdge(ctx, frame, hours, band.high);
     for (let index = hours.length - 1; index >= 0; index--) ctx.lineTo(frame.toX(hours[index]), frame.toY(band.low[index]));
     ctx.closePath();
     ctx.fillStyle = colors[layer]; ctx.fill();
     ctx.lineWidth = 1; ctx.strokeStyle = tokens.surface; ctx.stroke();
   });
+}
+
+/** One band's edge, with the very vertices drawBands joins, without resampling
+ * or curving between reads. Call separately for each recorded stretch. */
+export function drawBandLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+  hours: readonly number[], values: readonly number[], color: string): void {
+  if (!hours.length) return;
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = color; ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.beginPath(); traceBandEdge(ctx, frame, hours, values); ctx.stroke();
+  ctx.restore();
+}
+
+function traceBandEdge(ctx: CanvasRenderingContext2D, frame: PlotFrame, hours: readonly number[], values: readonly number[]): void {
+  if (hours.length === 1) {
+    const x = frame.toX(hours[0]);
+    const y = frame.toY(values[0]);
+    ctx.moveTo(x - 1, y); ctx.lineTo(x + 1, y);
+    return;
+  }
+  hours.forEach((hour, index) => index ? ctx.lineTo(frame.toX(hour), frame.toY(values[index])) : ctx.moveTo(frame.toX(hour), frame.toY(values[index])));
 }
 
 export function drawStack(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], tops: readonly (readonly number[])[], colors: readonly string[]): void {

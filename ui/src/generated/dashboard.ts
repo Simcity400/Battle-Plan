@@ -1231,6 +1231,187 @@ runs: Array<SubjectRun>,
  * or starts next to one of these is a gap, not an end or a start.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type BranchParams = { branchId: string, };
+export type TensionRead = {
+/**
+ * The hour it was read, where its values start.
+ */
+firstHour: number,
+/**
+ * The last hour the read's values hold.
+ */
+lastHour: number,
+/**
+ * The read follows a gap or an hour without the tables.
+ */
+startsSegment: boolean,
+/**
+ * World tension as the game showed it, in [`TensionReply::tension_scale`]
+ * units (`WorldTension.total_raw`).
+ */
+tensionRaw: string,
+/**
+ * Every country's contribution summed before the game's cap, in
+ * [`TensionReply::contribution_scale`] units.
+ */
+sumRaw: string,
+/**
+ * The part of `sum_raw` from country slots no recorded country row names,
+ * in the same units; "0" when every contributing country is named.
+ */
+unnamedRaw: string, };
+export type TensionCountry = {
+/**
+ * The tag the country held at these reads.
+ */
+tag: string,
+/**
+ * Its identity: the canonical country slot its contributions were recorded
+ * under. Two entries may share a tag, never a slot and a tag.
+ */
+slot: number,
+/**
+ * In [`TensionReply::contribution_scale`] units. A run starts a segment where
+ * the hours before it were not recorded (a gap, or an hour without the
+ * tables); after a recorded zero it continues the line.
+ */
+runs: Array<FixedRun>, };
+export type TensionAdded = {
+/**
+ * The read where the source first held this value.
+ */
+hour: number,
+/**
+ * The source's `final_raw`, in [`TensionReply::contribution_scale`] units.
+ */
+addedRaw: string, };
+export type TensionEvent = {
+/**
+ * The hour the game created it (`date`).
+ */
+hour: number,
+/**
+ * The country that caused it; null when no recorded country row names it.
+ */
+tag: string | null,
+/**
+ * The game's own text for it, without formatting codes.
+ */
+reason: string,
+/**
+ * What it adds, from its first read on; a later entry when the game changed it.
+ */
+added: Array<TensionAdded>,
+/**
+ * The first and last read listing it.
+ */
+firstRead: number, lastRead: number, };
+export type TensionReply = { branchId: string,
+/**
+ * World tension units per percentage point.
+ */
+tensionScale: number,
+/**
+ * Contribution units per percentage point.
+ */
+contributionScale: number,
+/**
+ * The sum of contributions world tension is capped at, in contribution units.
+ */
+ceilingRaw: string,
+/**
+ * In hour order.
+ */
+reads: Array<TensionRead>,
+/**
+ * Every country that contributed in the branch, in tag then slot order.
+ */
+countries: Array<TensionCountry>,
+/**
+ * In hour order, then first read.
+ */
+events: Array<TensionEvent>, warnings: Array<string>, };
+export type AutonomyParams = { branchId: string,
+/**
+ * Every subject these countries had in the branch.
+ */
+overlords: Array<string>,
+/**
+ * These countries, whenever they were subjects. Both selections empty asks
+ * for the whole branch, so frontend country lineage can resolve tag changes.
+ */
+subjects: Array<string>, };
+export type AutonomyLevel = {
+/**
+ * The autonomy state's id, as recorded.
+ */
+id: string,
+/**
+ * Its localised name; null without the game folders or a localisation.
+ */
+name: string | null,
+/**
+ * Whether the content's autonomy states place it in level order (define it with
+ * a plain `min_freedom_level`).
+ */
+defined: boolean, };
+export type AutonomyRun = { firstHour: number, lastHour: number,
+/**
+ * Follows a gap, an hour without the tables or another country under the tag.
+ */
+startsSegment: boolean,
+/**
+ * The overlord's tag; null when no relation names the subject this hour.
+ */
+overlord: string | null,
+/**
+ * Index into [`AutonomyReply::levels`].
+ */
+level: number,
+/**
+ * In [`AutonomyReply::score_scale`] units.
+ */
+scoreRaw: string,
+/**
+ * The score below which it moves down a level.
+ */
+lowerRaw: string,
+/**
+ * The score at which it moves up a level.
+ */
+upperRaw: string,
+/**
+ * No level below (`previous` is null) or above (`next` is null).
+ */
+lowest: boolean, highest: boolean,
+/**
+ * The relation's recorded `autonomy_ratio`, fixed5; null without a relation.
+ */
+ratioRaw: string | null, };
+export type AutonomySubject = { tag: string, runs: Array<AutonomyRun>, };
+export type AutonomyReply = { branchId: string,
+/**
+ * Units per point of a score.
+ */
+scoreScale: number,
+/**
+ * Every level recorded in the branch, in level order.
+ */
+levels: Array<AutonomyLevel>,
+/**
+ * The requested subjects in the order they first became subjects.
+ */
+subjects: Array<AutonomySubject>,
+/**
+ * The hours recorded with both tables complete, in order: outside them nothing
+ * is known, so a country without a lane there is not recorded, not a non-subject.
+ */
+recorded: Array<HourSpan>,
+/**
+ * The recorded hours, in order, with a subject or overlord the recording does
+ * not name: a country without a lane there may be one of them.
+ */
+unidentified: Array<HourSpan>, warnings: Array<string>, };
 /** Refusals for want of room: a message starting with one may be tried again. */
 export const CAPACITY_REACHED = "Dashboard request capacity reached";
 export const TOO_MANY_SOURCES = "Too many open dashboard source bindings";
@@ -1240,4 +1421,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "subjects"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "subjects", "autonomy"] as const;

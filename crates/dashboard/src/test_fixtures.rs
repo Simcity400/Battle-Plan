@@ -559,3 +559,28 @@ pub(crate) fn resource_frame(
         ));
     frame
 }
+
+/// A frame with Germany (slot 7, links 11 and 9001), Italy (slot 8, link 21) and,
+/// when `austria`, a dynamic country with a space in its tag (`D01 mod`, slot
+/// 9, link 31), as a mod's tags may be. Other tables are unavailable.
+pub(crate) fn world_frame(hour: i32, austria: bool) -> DecodedFrame {
+    let mut frame = source(1, hour, Some(1));
+    let country = |id, canonical_slot, tag: &[u8]| CountryRow {
+        id,
+        canonical_slot,
+        tag: tag.to_vec(),
+        ..Default::default()
+    };
+    let mut countries = vec![country(21, 8, b"ITA"), country(9001, 7, b"GER")];
+    let link = |id, canonical_slot| CountryLinkRow { id, canonical_slot };
+    let mut links = vec![link(11, 7), link(21, 8), link(9001, 7)];
+    if austria {
+        countries.insert(1, country(31, 9, b"D01 mod"));
+        links.insert(2, link(31, 9));
+    }
+    *frame.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries));
+    *frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(links));
+    frame
+}

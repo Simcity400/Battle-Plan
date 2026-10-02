@@ -1,5 +1,6 @@
 // Pure widget metadata for node tests and the layout model; no React or CSS.
 import { registerWidgets } from '../dashboard/definitions.ts';
+import { definition as autonomy } from './autonomy/definition.ts';
 import { definition as commandPower } from './command-power/definition.ts';
 import { definition as equipmentProduced } from './equipment-produced/definition.ts';
 import { definition as factories } from './factories/definition.ts';
@@ -21,7 +22,8 @@ import { definition as spiritHistory } from './spirit-history/definition.ts';
 import { definition as stability } from './stability/definition.ts';
 import { definition as subjects } from './subjects/definition.ts';
 import { definition as tradeFlows } from './trade-flows/definition.ts';
+import { definition as worldTension } from './world-tension/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, factories, equipmentProduced, occupiedStates, experience, factions, subjects, tradeFlows, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, factories, equipmentProduced, occupiedStates, experience, factions, subjects, tradeFlows, worldTension, autonomy, placeholder] as const;
 
 registerWidgets(widgetMetas);

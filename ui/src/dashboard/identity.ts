@@ -103,10 +103,12 @@ function entryAt<E extends { hour: number }>(list: readonly E[], hour: number): 
 /** Runs kept by tag (in any order), split wherever that tag names another country,
  * then grouped by country. A tag's native run can span a swap of its holders.
  * Each group is in hour order, groups by first run. */
-export function joinTagChanges<R extends { tag: string; firstHour: number; lastHour: number }>(runs: readonly R[], lineage: Lineage): R[][] {
+export function joinTagChanges<R extends { tag: string; firstHour: number; lastHour: number }>(runs: readonly R[], lineage: Lineage,
+  relatedTags: (run: R) => readonly string[] = () => []): R[][] {
   const groups = new Map<string, R[]>();
   for (const run of runs) {
-    const starts = [run.firstHour, ...lineage.changeHours(run.tag, run.firstHour + 1, run.lastHour)];
+    const changes = [run.tag, ...relatedTags(run)].flatMap(tag => lineage.changeHours(tag, run.firstHour + 1, run.lastHour));
+    const starts = [run.firstHour, ...new Set(changes.sort((a, b) => a - b))];
     for (let index = 0; index < starts.length; index++) {
       const firstHour = starts[index];
       const lastHour = (starts[index + 1] ?? run.lastHour + 1) - 1;
@@ -118,4 +120,10 @@ export function joinTagChanges<R extends { tag: string; firstHour: number; lastH
   }
   return [...groups.values()].map(group => group.sort((a, b) => a.firstHour - b.firstHour))
     .sort((a, b) => a[0].firstHour - b[0].firstHour);
+}
+
+/** Group membership by country, split at recorded tag changes, so a renamed
+ * member keeps its history and a later holder of its old tag gets only its own. */
+export function countryMembership<R extends { tag: string; firstHour: number; lastHour: number }>(runs: readonly R[], lineage: Lineage): Map<string, R[]> {
+  return new Map(joinTagChanges(runs, lineage).map(group => [lineage.countryAt(group[0].tag, group[0].firstHour), group]));
 }
