@@ -463,6 +463,184 @@ pub(crate) fn named_frame(hour: i32, name: Option<&[u8]>) -> DecodedFrame {
 pub(crate) fn replay(frames: Vec<DecodedFrame>) -> replay::container::Replay {
     replay::container::Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
 }
+
+/// Equipment types from authored texts, as `installed_content::equipment` reads a folder's files.
+pub(crate) fn equipment_types(texts: &[&[u8]]) -> std::io::Result<installed_content::equipment::Database> {
+    let texts: Vec<String> = texts
+        .iter()
+        .map(|text| String::from_utf8(text.to_vec()).unwrap())
+        .collect();
+    let paths: Vec<String> = (0..texts.len())
+        .map(|i| format!("common/units/equipment/{i:04}.txt"))
+        .collect();
+    let files: Vec<(&str, &str)> = paths
+        .iter()
+        .zip(&texts)
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect();
+    let (database, _) = installed_content::equipment::fixture::load(&files);
+    match &database.lost {
+        Some(reason) => Err(std::io::Error::other(reason.clone())),
+        None => Ok(database),
+    }
+}
+
+// Start these scenarios on the production slot, as the shared reader dates it.
+pub(crate) const PRODUCTION_HOUR: i32 = 4 * replay::cadence::STAGGER_PERIOD
+    + match replay::cadence::cadence(TableId::ProductionLines) {
+        replay::cadence::Cadence::Daily(slot) => slot as i32,
+        _ => panic!("production lines have a daily slot"),
+    };
+
+/// One line of the production fixture: (handle, variant, active factories,
+/// efficiency Q15).
+pub(crate) type LineFixture = (u64, u64, i32, i64);
+
+/// One output row of the production fixture: (line, variant, units, exact, ended).
+pub(crate) type OutputFixture = (u64, u64, i64, bool, bool);
+
+/// A frame with Germany (native id `germany`, linked through id 11 too) and
+/// Italy (slot 0), Germany's `lines` and output, one Italian line, and Germany's
+/// organisation 79 (Mauser). `read` times a walk of another table of the
+/// production slot only, as a shared read times only its anchor; `variants` does
+/// the same for the variant slot; `output` is None where the output table is
+/// unavailable. Variants 70 and 71 are infantry equipment (71 named "Gewehr 98" by
+/// its designer); every variant's icon entry is the auto-design ".".
+pub(crate) fn production_frame(
+    hour: i32,
+    read: bool,
+    variants: bool,
+    germany: u32,
+    lines: &[LineFixture],
+    output: Option<&[OutputFixture]>,
+) -> DecodedFrame {
+    use replay::rows::{
+        CountryAppearanceRow, IndustrialOrganisationRow, LexicalTokenRow, ProductionLineOutputRow,
+        ProductionLineRow, VariantDefinitionRow,
+    };
+    let mut frame = source(1, hour, Some(1));
+    let country = |id, canonical_slot, tag: &[u8]| CountryRow {
+        id,
+        canonical_slot,
+        tag: tag.to_vec(),
+        ..Default::default()
+    };
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+        country(21, 0, b"ITA"),
+        country(germany, 7, b"GER"),
+    ]));
+    let link = |id, canonical_slot| CountryLinkRow { id, canonical_slot };
+    *frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(vec![
+            link(11, 7),
+            link(21, 0),
+            link(germany, 7),
+        ]));
+    *frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 11,
+            ..Default::default()
+        }]));
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 601,
+                literal: b"infantry_equipment_1".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 602,
+                literal: b"GER_mauser_organization".to_vec(),
+            },
+        ]));
+    let variant = |id, display: &[u8]| VariantDefinitionRow {
+        id,
+        equipment_token: 601,
+        creator_link: 11,
+        display_name: display.to_vec(),
+        append_variant_name: 1,
+        icon_active: 1,
+        icon_kind: 1,
+        icon: b".".to_vec(),
+        ..Default::default()
+    };
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![
+            variant(70, b""),
+            variant(71, b"Gewehr 98"),
+        ]));
+    let line =
+        |&(handle, variant, active_factories, efficiency_raw): &LineFixture| ProductionLineRow {
+            handle,
+            // Germany's lines name it by its other link.
+            country: 11,
+            kind: 0,
+            variant,
+            mio: 79,
+            active_factories,
+            requested_factories: active_factories + 1,
+            max_factories: 150,
+            cost_raw: 50_000,
+            speed_raw: 310_000,
+            efficiency_raw,
+            amount: -1,
+            ..Default::default()
+        };
+    let mut rows: Vec<_> = lines.iter().map(line).collect();
+    rows.push(ProductionLineRow {
+        handle: 999,
+        country: 21,
+        variant: 70,
+        cost_raw: 50_000,
+        ..Default::default()
+    });
+    *frame.tables[TableId::ProductionLines.index()] =
+        TableView::Complete(TableRows::ProductionLines(rows));
+    *frame.tables[TableId::IndustrialOrganisations.index()] =
+        TableView::Complete(TableRows::IndustrialOrganisations(vec![
+            IndustrialOrganisationRow {
+                organisation: 79,
+                country: 11,
+                owner: 11,
+                token: 602,
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::ProductionLineOutput.index()] = match output {
+        Some(output) => TableView::Complete(TableRows::ProductionLineOutput(
+            output
+                .iter()
+                .enumerate()
+                .map(
+                    |(ordinal, &(line, variant, units, exact, ended))| ProductionLineOutputRow {
+                        line,
+                        ordinal: ordinal as u32,
+                        country: 11,
+                        variant,
+                        mio: 79,
+                        units,
+                        mio_credit: units,
+                        since_hour: PRODUCTION_HOUR,
+                        observed_since_creation: line != 5,
+                        ended,
+                        exact,
+                    },
+                )
+                .collect(),
+        )),
+        None => TableView::Unavailable {
+            reason: "a tick went unobserved".into(),
+        },
+    };
+    frame.metrics.table_ns[TableId::Countries.index()] = 1;
+    if read {
+        frame.metrics.table_ns[TableId::Stockpiles.index()] = 1;
+    }
+    if variants {
+        frame.metrics.table_ns[TableId::VariantModules.index()] = 1;
+    }
+    frame
+}
+
 /// Germany (raw links 11 and `germany`, slot 7), Italy (21, slot 8) and Spain
 /// (31, slot 9), with steel and oil. Deals are (handle, exporter, importer,
 /// delivered).

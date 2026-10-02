@@ -5,8 +5,8 @@
 .time-chart canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .time-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
 .timeline-chart { position: relative; width: 100%; }
-/* Stays in view while the lanes scroll under its time axis (only the lanes in view are drawn). */
-.timeline-view { position: sticky; top: 0; }
+/* The dates stay in view while overscanned lanes scroll beneath them. */
+.timeline-view { position: sticky; top: 0; overflow: hidden; }
 .timeline-chart canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .timeline-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
 /* A flow diagram (flow/FlowDiagram.tsx) fills what its widget gives it. */

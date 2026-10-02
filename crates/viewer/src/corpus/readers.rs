@@ -972,7 +972,10 @@ fn units(
     }
     match (cultures, tags, roster) {
         (Some(cultures), Some(tags), Ok(roster)) => {
-            let is_tag = |tag: &str| tags.contains_key(tag);
+            if let Some(warning) = tags.warning() {
+                log.notes("viewer.country_tags", Kind::Warning, &[warning]);
+            }
+            let is_tag = |tag: &str| tags.files.contains_key(tag);
             let has_entity = |entity: &str| roster.descriptors.entities.contains_key(entity);
             if let Some(database) = log.read("train_gfx", || {
                 installed_content::train_gfx::Database::read(

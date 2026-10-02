@@ -7,16 +7,17 @@ import { approach, easeTau } from '../easing';
 import { fitLabelWidth } from '../labels';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
-import { backingSize, toLocal } from '../surface';
+import { toLocal } from '../surface';
 import { timeTicks } from '../timeAxis';
 import { readTokens, subscribeTokens } from '../tokens';
 import { hideTooltip, showTooltip, tooltipStore } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { EMPTY_VIEW, reduceView } from '../view';
 import type { ViewAction, ViewState } from '../view';
-import { AXIS_HEIGHT, INDENT, ROW_HEIGHT, bandHalf, bandHitAt, barHours, inSpans, laneAt, laneBandLayouts, laneBands, laneOffset, lanesInView, laneStops, leftColumn, nextHolder, spanAt } from './layout';
+import { AXIS_HEIGHT, INDENT, ROW_HEIGHT, bandHalf, bandHitAt, barExtent, barHitAt, barHours, inSpans, laneAt, laneBandLayouts, laneBands, lanesInView, laneStops, leftColumn, nextHolder, spanAt } from './layout';
 import type { CachedBands, HolderState } from './layout';
 import type { TimelineLane, TimelineSpan } from './layout';
+import { coversViewport, laneWindow, sizeLaneWindow, timelineHeight, timelineViewStyle, timelineViewport, timelineY } from './viewport';
 import { barContent } from './barLabel';
 import '../charts.css';
 
@@ -37,8 +38,16 @@ export interface TimelineProps {
   emptyLabel?: string;
   /** Hours the data was not recorded: a lane there has an unknown holder, not an empty slot. */
   unobserved?: readonly { firstHour: number; lastHour: number }[];
-  /** Taller lanes for a painted plot; every scroll and hit test uses this height. */
+  /** Taller lanes for a painted plot; every layout and interaction uses this height. */
   rowHeight?: number;
+  /** Keep the dates in view while lanes scroll; false lets them scroll with the lanes. */
+  stickyAxis?: boolean;
+  /** Fade name or picture changes under one holder id; painted lanes default to this. */
+  fadePresentation?: boolean;
+  /** End long labels in an ellipsis; false keeps fillText's squeezing. */
+  truncateLabels?: boolean;
+  /** Align holder art by its top edge or centre; pills default to top alignment. */
+  holderIconAlign?: 'top' | 'center';
   hoursPerSecond?: number;
   /** The value a band (`TimelineSpan.band`) is drawn full thickness at: the largest
    * any band reaches, so every lane shares one scale. */
@@ -83,36 +92,28 @@ function viewHeight(parent: HTMLElement, rowHeight: number): number {
   return Math.max(AXIS_HEIGHT + rowHeight, parent.clientHeight - (parseFloat(style.paddingTop) || 0) - (parseFloat(style.paddingBottom) || 0));
 }
 
-/** How far `count` lanes are scrolled under the time axis, in layout pixels: where the
- * canvas, which stays in view, sits against the spacer as tall as every lane. */
-function scrollOffset(view: HTMLCanvasElement, content: HTMLElement | null, count: number, rowHeight: number): number {
-  if (!content || !view.clientHeight) return 0;
-  const rect = view.getBoundingClientRect();
-  const box = content.getBoundingClientRect();
-  const toLayout = rect.height ? view.clientHeight / rect.height : 1;
-  return laneOffset((rect.top - box.top) * toLayout, 0, view.clientHeight, AXIS_HEIGHT + count * rowHeight + 8);
-}
-
 /** A lane timeline: one lane per slot with bars for who held it and when, and a left
  * column naming each slot's holder at the playhead (the approved style-4 look). Time
  * zooms like the time chart: wheel, Shift/middle-drag pan, drag the dates to stretch,
- * double-click or Escape to reset. Only the lanes in view are drawn: the canvas is
- * the height of the scrolling view around it, stays in place while the lanes scroll
- * under the time axis, and a spacer as tall as every lane gives the view its scroll,
- * so any number of lanes costs no more than a screenful. */
+ * double-click or Escape to reset. A full-height spacer keeps lane positions; the
+ * canvas covers only visible lanes and overscan in their original coordinates. */
 export default function Timeline(props: TimelineProps) {
   const owner = useId();
   const canvas = useRef<HTMLCanvasElement>(null);
-  const wrapper = useRef<HTMLDivElement>(null);
+  const spacer = useRef<HTMLDivElement>(null);
+  const viewportElement = useRef<HTMLDivElement>(null);
+  const offset = useRef(0);
+  const region = useRef(laneWindow(props.lanes.length, 0, window.innerHeight, props.rowHeight ?? ROW_HEIGHT));
   const latest = useRef(props);
   latest.current = props;
   const [zoomed, setZoomed] = useState(false);
   const rowHeight = props.rowHeight ?? ROW_HEIGHT;
-  const [height, setHeight] = useState(AXIS_HEIGHT + rowHeight + 8);
-  // The scrolling view's height: the canvas is never taller.
-  const [viewport, setViewport] = useState(Infinity);
-  // How far the lanes are scrolled under the axis, in layout pixels, as last drawn.
-  const scrolled = useRef(0);
+  const height = timelineHeight(props.lanes.length, rowHeight);
+  const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
+  const viewportState = () => {
+    const p = latest.current;
+    return timelineViewport(spacer.current!, viewportElement.current!, p.lanes.length, p.rowHeight ?? ROW_HEIGHT, p.stickyAxis !== false);
+  };
   const task = useRef<FrameTask | null>(null);
   const controls = useRef<{ dispatch: (action: ViewAction) => void } | null>(null);
 
@@ -127,9 +128,14 @@ export default function Timeline(props: TimelineProps) {
     let fitted = 120;
     let labelKey = '';
     let measured: readonly TimelineLane[] | null = null;
-    let shown: [number, number] = [0, -1];
-    // The lane under a pointer's y: none over the time axis, which stays at the top.
-    const laneUnder = (y: number) => y < AXIS_HEIGHT ? null : laneAt(y + scrolled.current, latest.current.lanes.length, latest.current.rowHeight ?? ROW_HEIGHT);
+    let labelEmpty: string | undefined;
+    let labelTruncate: boolean | undefined;
+    let inView: [number, number] = [0, -1];
+    const laneUnder = (y: number) => {
+      const p = latest.current;
+      const axisTop = p.stickyAxis !== false ? offset.current : 0;
+      return y < axisTop + AXIS_HEIGHT ? null : laneAt(y, p.lanes.length, p.rowHeight ?? ROW_HEIGHT);
+    };
     let pointer: { x: number; y: number; clientX: number; clientY: number } | null = null;
     let drag: { mode: 'axis'; grab: number } | { mode: 'pan'; lastX: number } | null = null;
     let zoomedFor = '';
@@ -143,9 +149,13 @@ export default function Timeline(props: TimelineProps) {
     // and step it draws (`bandHitAt`), even a short band moved off its own hours; elsewhere
     // the span holding the pointer's hour.
     const pointed = (lane: TimelineLane, px: number, hour: number): { span: TimelineSpan | null; hour: number } => {
+      if (lane.paint) return { span: spanAt(lane.spans, Math.floor(hour)), hour: Math.floor(hour) };
       const bands = layouts.get(lane.id)?.bands;
       const hit = bands && bandHitAt(bands, px, hour);
       if (hit) return { span: lane.spans.find(span => span.id === hit.spanId) ?? null, hour: hit.hour };
+      // A plain bar by the rectangle drawn, which a short bar widens past its hours.
+      const bar = barHitAt(lane.spans, px, latest.current.playhead, toX, hourAt, left, left + plotWidth());
+      if (bar) return bar;
       return { span: spanAt(lane.spans, Math.floor(hour)), hour: Math.floor(hour) };
     };
 
@@ -205,42 +215,46 @@ export default function Timeline(props: TimelineProps) {
 
     const draw = (info: FrameInfo): boolean => {
       const p = latest.current;
-      const layoutWidth = element.clientWidth;
-      const layoutHeight = element.clientHeight;
-      if (!layoutWidth || !layoutHeight) return false;
-      const rect = element.getBoundingClientRect();
-      const size = backingSize({ layoutWidth, layoutHeight, rectWidth: rect.width, rectHeight: rect.height, devicePixelRatio: window.devicePixelRatio || 1 });
-      if (element.width !== size.width) element.width = size.width;
-      if (element.height !== size.height) element.height = size.height;
+      const row = p.rowHeight ?? ROW_HEIGHT;
+      const { visible, offset: scrolled } = viewportState();
+      offset.current = scrolled;
+      const axisTop = p.stickyAxis !== false ? scrolled : 0;
+      const viewport = laneWindow(p.lanes.length, visible.top, visible.height, row);
+      region.current = viewport;
+      const size = sizeLaneWindow(element, viewport, scrolled, window.devicePixelRatio || 1);
+      if (!size) return false;
+      const shown = p.lanes.slice(viewport.first, viewport.end);
+      const { layoutWidth, layoutHeight } = size;
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       context.clearRect(0, 0, layoutWidth, layoutHeight);
+      context.translate(0, -viewport.top);
+      if (pointer) pointer = local(pointer);
 
-      // The left column fits its longest slot or holder name, measured over the whole campaign.
-      // A lane's identity is measured too, since the column names it, with its indent.
-      // Measured again only when the lanes change.
-      const key = p.lanes === measured && labelKey ? labelKey
-        : p.lanes.map(lane => `${lane.depth ?? 0}|${lane.label}|${lane.identity?.label ?? ''}|${lane.spans.map(span => span.label).join('|')}`).join('\n');
+      // Fit the campaign's names only when their text or presentation changes.
+      const key = p.lanes === measured && p.emptyLabel === labelEmpty && p.truncateLabels === labelTruncate && labelKey ? labelKey
+        : JSON.stringify([p.emptyLabel, p.truncateLabels, p.lanes.map(lane => [lane.depth, lane.heading, !!lane.pill,
+          lane.label, lane.identity?.label, lane.spans.map(span => span.label)])]);
       measured = p.lanes;
+      labelEmpty = p.emptyLabel;
+      labelTruncate = p.truncateLabels;
       if (key !== labelKey) {
         labelKey = key;
-        context.font = font(tokens, tokens.fontSize.body, 600);
         const texts = p.lanes.flatMap(lane => [lane.label, p.emptyLabel ?? 'Empty', ...(lane.identity ? [lane.identity.label] : []), ...lane.spans.map(span => span.label)]
-          .map(text => [text, (lane.depth ?? 0) * INDENT, lane.pill ? 500 : 600] as const));
+          .map(text => [text, (lane.depth ?? 0) * INDENT, p.truncateLabels === false ? lane.heading ? 600 : 500 : lane.pill ? 500 : 600] as const));
         fitted = fitLabelWidth(texts, ([text, indent, weight]) => {
           context.font = font(tokens, tokens.fontSize.body, weight);
           return context.measureText(text).width + indent;
         }, 120, 280, ICON + 30);
       }
       left = leftColumn(fitted, layoutWidth);
-      // How far the lanes are scrolled under the axis: the canvas stays in view while
-      // the spacer around it scrolls.
-      const row = p.rowHeight ?? ROW_HEIGHT;
-      scrolled.current = scrollOffset(element, wrapper.current, p.lanes.length, row);
-      const offset = scrolled.current;
-      const inView = lanesInView(offset, layoutHeight, p.lanes.length, row);
-      if (inView[0] !== shown[0] || inView[1] !== shown[1]) {
-        shown = inView;
-        queueMicrotask(() => latest.current.onLanesInView?.(inView[0], inView[1]));
+      // Report clipped lanes, excluding the sticky axis and drawing's overscan.
+      const plotTop = Math.max(visible.top, axisTop + AXIS_HEIGHT);
+      const plotBottom = visible.top + visible.height;
+      const visibleLanes: [number, number] = plotBottom > plotTop
+        ? lanesInView(plotTop - AXIS_HEIGHT, plotBottom - plotTop + AXIS_HEIGHT, p.lanes.length, row) : [0, -1];
+      if (visibleLanes[0] !== inView[0] || visibleLanes[1] !== inView[1]) {
+        inView = visibleLanes;
+        queueMicrotask(() => latest.current.onLanesInView?.(visibleLanes[0], visibleLanes[1]));
       }
       const extentKey = `${p.extent[0]}:${p.extent[1]}`;
       if (extentKey !== zoomedFor) {
@@ -255,35 +269,33 @@ export default function Timeline(props: TimelineProps) {
       if (keyed.current && (viewed.current?.[0] !== target[0] || viewed.current?.[1] !== target[1])) queueMicrotask(() => refreshKeyed.current());
       viewed.current = target;
       eased = x;
-      const bottom = Math.min(layoutHeight, AXIS_HEIGHT + p.lanes.length * row - offset);
+      const bottom = AXIS_HEIGHT + p.lanes.length * row;
       const right = left + plotWidth();
 
       // Dates along the top, from the recording's own calendar.
       context.font = font(tokens, tokens.fontSize.small);
       const ticks = timeTicks(x[0], x[1], plotWidth(), text => context.measureText(text).width);
-      context.strokeStyle = mix(tokens.surface, tokens.border, 0.8);
-      context.lineWidth = 1;
-      for (const hour of ticks.grid) {
-        const px = Math.round(toX(hour)) + 0.5;
-        context.beginPath(); context.moveTo(px, AXIS_HEIGHT - 4); context.lineTo(px, bottom); context.stroke();
-      }
-      context.fillStyle = tokens.muted;
-      context.textAlign = 'center'; context.textBaseline = 'middle';
-      for (const label of ticks.labels) context.fillText(label.text, toX(label.hour), AXIS_HEIGHT / 2);
+      const grid = (from: number, to: number) => {
+        context.strokeStyle = mix(tokens.surface, tokens.border, 0.8);
+        context.lineWidth = 1;
+        for (const hour of ticks.grid) {
+          const px = Math.round(toX(hour)) + 0.5;
+          context.beginPath(); context.moveTo(px, from); context.lineTo(px, to); context.stroke();
+        }
+      };
+      grid(axisTop + AXIS_HEIGHT - 4, bottom);
 
       let animating = false;
-      const visible = p.lanes.slice(inView[0], inView[1] + 1);
       // Each lane's bands, placed together so gaps between its spans stay visible too.
-      layouts = laneBandLayouts(visible, `${x[0]}:${x[1]}:${left}:${right}:${p.playhead}:${p.bandMax}`, layouts,
+      layouts = laneBandLayouts(shown, `${x[0]}:${x[1]}:${left}:${right}:${p.playhead}:${p.bandMax}`, layouts,
         lane => laneBands(lane.spans, p.playhead, toX, value => bandHalf(value, p.bandMax ?? 1, 1, 12), left, right));
       const holderHour = p.playhead ?? p.extent[1];
       const unknown = inSpans(p.unobserved, Math.floor(holderHour));
-      // Lanes scroll under the time axis, which stays at the top.
-      context.save();
-      context.beginPath(); context.rect(0, AXIS_HEIGHT, layoutWidth, layoutHeight); context.clip();
-      visible.forEach((lane, shownIndex) => {
-        const index = inView[0] + shownIndex;
-        const y = AXIS_HEIGHT + index * row - offset;
+      const kept = new Set(shown.map(lane => lane.id));
+      for (const id of holders.keys()) if (!kept.has(id)) holders.delete(id);
+      shown.forEach((lane, offset) => {
+        const index = viewport.first + offset;
+        const y = AXIS_HEIGHT + index * row;
         const centre = y + row / 2;
         const indent = (lane.depth ?? 0) * INDENT;
         if (index) { context.fillStyle = mix(tokens.surface, tokens.border, lane.heading ? 0.9 : 0.5); context.fillRect(8, y, layoutWidth - 16, 1); }
@@ -291,7 +303,7 @@ export default function Timeline(props: TimelineProps) {
         // A lane about one thing names it whatever the hour holds.
         const current = lane.identity ? { id: lane.id, firstHour: 0, lastHour: 0, ...lane.identity }
           : unknown ? null : spanAt(lane.spans, holderHour);
-        const state = nextHolder(holders.get(lane.id), current, !!lane.paint);
+        const state = nextHolder(holders.get(lane.id), current, p.fadePresentation ?? !!lane.paint);
         state.t = tokens.reducedMotion ? 1 : Math.min(1, state.t + info.dt / FADE_MS);
         if (state.t < 1) animating = true;
         holders.set(lane.id, state);
@@ -301,6 +313,7 @@ export default function Timeline(props: TimelineProps) {
         // A heading with no icon of its own starts its text where an icon would be.
         const textAt = indent + (blueprint ? 62 : lane.heading && !lane.identity?.icon ? 10 : ICON + 18);
         const textWidth = Math.max(8, left - textAt - 10);
+        const labelText = (text: string) => p.truncateLabels === false ? text : fitText(text, textWidth);
         const holder = (span: TimelineSpan | null, alpha: number) => {
           context.globalAlpha = alpha * fade;
           context.textAlign = 'left'; context.textBaseline = 'middle';
@@ -316,14 +329,14 @@ export default function Timeline(props: TimelineProps) {
               } else {
                 context.fillStyle = tokens.blueprintText; context.fillText('?', 27, centre);
               }
-            } else drawIcon(span.icon, 10 + indent, centre, ICON, !!lane.pill);
+            } else drawIcon(span.icon, 10 + indent, centre, ICON, p.holderIconAlign ? p.holderIconAlign === 'top' : !!lane.pill);
             context.fillStyle = tokens.text; context.font = font(tokens, tokens.fontSize.body, lane.heading ? 600 : 500);
-            context.fillText(lane.pill ? span.label : fitText(span.label, textWidth), textAt, centre - 7, textWidth);
+            context.fillText(lane.pill ? span.label : labelText(span.label), textAt, centre - 7, textWidth);
           } else {
             context.setLineDash([3, 3]); context.strokeStyle = mix(tokens.surface, tokens.text, 0.3);
             context.beginPath(); context.roundRect(11.5 + indent, centre - 15.5, 30, 30, 5); context.stroke(); context.setLineDash([]);
             context.fillStyle = tokens.muted; context.font = font(tokens, tokens.fontSize.body);
-            context.fillText(fitText(unknown ? 'Not recorded' : p.emptyLabel ?? 'Empty', textWidth), textAt, centre - 7, textWidth);
+            context.fillText(labelText(unknown ? 'Not recorded' : p.emptyLabel ?? 'Empty'), textAt, centre - 7, textWidth);
           }
           context.globalAlpha = 1;
         };
@@ -343,7 +356,7 @@ export default function Timeline(props: TimelineProps) {
           context.fillText(lane.pill.text, textAt + 6, pillTop + pillHeight / 2 + 0.5, Math.max(1, width - 12));
         } else {
           context.fillStyle = tokens.muted;
-          context.fillText(fitText(lane.label, textWidth), textAt, centre + 8, textWidth);
+          context.fillText(labelText(lane.label), textAt, centre + 8, textWidth);
         }
         context.globalAlpha = 1;
 
@@ -379,11 +392,12 @@ export default function Timeline(props: TimelineProps) {
             }
             continue;
           }
-          const from = Math.max(left, toX(hours[0]) + 1);
-          const to = Math.min(right, toX(hours[1]) - 1);
-          if (to - from < 1.5) continue;
-          const barHeight = Math.min(ROW_HEIGHT - 4, Math.max(2, p.barHeight ?? 24));
-          context.beginPath(); context.roundRect(from, centre - barHeight / 2, to - from, barHeight, Math.min(5, barHeight / 2)); context.fill();
+          // Never narrower than a pixel column, however short the bar at this zoom.
+          const extent = barExtent(toX(hours[0]), toX(hours[1]), left, right);
+          if (!extent) continue;
+          const [from, to] = extent;
+          const barHeight = Math.min(rowHeight - 4, Math.max(2, p.barHeight ?? 24));
+          context.beginPath(); context.roundRect(from, centre - barHeight / 2, to - from, barHeight, Math.min(5, barHeight / 2, (to - from) / 2)); context.fill();
           if (span.endLabel && to - from >= 16 && hours[1] >= span.lastHour + 1) {
             context.fillStyle = readableText(parseColor(fill) ?? parseColor(tokens.text)!);
             context.font = font(tokens, tokens.fontSize.small, 600);
@@ -391,7 +405,7 @@ export default function Timeline(props: TimelineProps) {
           }
           let textX = from + 7;
           const content = barContent(lane.icons ?? p.showIcons, lane.names ?? p.showNames, !!span.icon);
-          if (content.icon && to - from > 28) { drawIcon(span.icon, from + 2, centre, BAR_ICON); textX = from + BAR_ICON + 6; }
+          if (content.icon && to - from > 28) { drawIcon(span.icon, from + 2, centre, BAR_ICON, p.holderIconAlign === 'top'); textX = from + BAR_ICON + 6; }
           context.font = font(tokens, tokens.fontSize.small, 600);
           if (span.glyph) {
             const width = context.measureText(span.glyph).width;
@@ -410,14 +424,23 @@ export default function Timeline(props: TimelineProps) {
         }
         context.restore();
       });
-      context.restore();
+
+      if (p.stickyAxis !== false) {
+        context.fillStyle = tokens.surface;
+        context.fillRect(0, axisTop, layoutWidth, AXIS_HEIGHT);
+        grid(axisTop + AXIS_HEIGHT - 4, axisTop + AXIS_HEIGHT);
+      }
+      context.font = font(tokens, tokens.fontSize.small);
+      context.fillStyle = tokens.muted;
+      context.textAlign = 'center'; context.textBaseline = 'middle';
+      for (const label of ticks.labels) context.fillText(label.text, toX(label.hour), axisTop + AXIS_HEIGHT / 2);
 
       if (p.playhead != null && p.playhead >= x[0] && p.playhead <= x[1]) {
         const px = Math.round(toX(p.playhead)) + 0.5;
         context.strokeStyle = tokens.accent; context.lineWidth = 1.5;
-        context.beginPath(); context.moveTo(px, AXIS_HEIGHT - 6); context.lineTo(px, bottom); context.stroke();
+        context.beginPath(); context.moveTo(px, axisTop + AXIS_HEIGHT - 6); context.lineTo(px, bottom); context.stroke();
         context.fillStyle = tokens.accent;
-        context.beginPath(); context.moveTo(px - 4, AXIS_HEIGHT - 8); context.lineTo(px + 4, AXIS_HEIGHT - 8); context.lineTo(px, AXIS_HEIGHT - 3); context.fill();
+        context.beginPath(); context.moveTo(px - 4, axisTop + AXIS_HEIGHT - 8); context.lineTo(px + 4, axisTop + AXIS_HEIGHT - 8); context.lineTo(px, axisTop + AXIS_HEIGHT - 3); context.fill();
       }
 
       // Hover: the left column describes the lane's holder at the playhead; the plot, the span under the pointer.
@@ -430,7 +453,8 @@ export default function Timeline(props: TimelineProps) {
         const content = p.tooltip(lane, span && span.firstHour <= (p.playhead ?? Infinity) ? span : null, hour);
         if (content) showTooltip(owner, content, pointer.clientX, pointer.clientY, `${lane.id}:${span?.id ?? ''}:${hour}`); else hideTooltip(owner);
       } else if (!keyed.current) hideTooltip(owner);
-      element.style.cursor = drag?.mode === 'pan' ? 'grabbing' : pointer && pointer.y < AXIS_HEIGHT && pointer.x > left ? 'ew-resize' : 'default';
+      const cursor = drag?.mode === 'pan' ? 'grabbing' : pointer && pointer.y < axisTop + AXIS_HEIGHT && pointer.x > left ? 'ew-resize' : 'default';
+      if (element.style.cursor !== cursor) element.style.cursor = cursor;
 
       const settled = Math.abs(x[0] - target[0]) + Math.abs(x[1] - target[1]) < 1e-3;
       return !settled || animating || drag != null;
@@ -441,28 +465,35 @@ export default function Timeline(props: TimelineProps) {
     const wake = () => scheduler.wake(current);
     const remove = scheduler.add(current);
     const unsubscribe = subscribeTokens(next => { tokens = next; labelKey = ''; wake(); });
-    const observer = new ResizeObserver(() => wake());
+    const measureView = () => {
+      const parent = scrollParent(spacer.current!);
+      setViewportHeight(parent ? viewHeight(parent, latest.current.rowHeight ?? ROW_HEIGHT) : window.innerHeight);
+    };
+    const observer = new ResizeObserver(() => { measureView(); wake(); });
     observer.observe(element);
-    // The scrolling view around the timeline (else the window): scrolling it moves the
-    // lanes under the axis, and its height is the canvas's, known before the first draw.
-    const parent = wrapper.current && scrollParent(wrapper.current);
-    const scroller: HTMLElement | Window = parent ?? window;
-    const measureView = () => setViewport(parent ? viewHeight(parent, latest.current.rowHeight ?? ROW_HEIGHT) : window.innerHeight);
+    observer.observe(viewportElement.current!);
+    for (let parent: HTMLElement | null = spacer.current; parent; parent = parent.parentElement) observer.observe(parent);
     measureView();
-    const scrolledView = () => wake();
-    scroller.addEventListener('scroll', scrolledView, { passive: true });
-    const viewObserver = parent ? new ResizeObserver(measureView) : null;
-    if (parent) viewObserver?.observe(parent);
-    else window.addEventListener('resize', measureView);
+    const scroll = () => {
+      const p = latest.current;
+      const { visible } = viewportState();
+      if (p.active && (p.stickyAxis !== false || !coversViewport(region.current, p.lanes.length, visible, p.rowHeight ?? ROW_HEIGHT))) {
+        draw({ now: performance.now(), dt: 0 });
+      }
+      wake();
+      if (keyed.current) refreshKeyed.current();
+    };
+    document.addEventListener('scroll', scroll, true);
+    window.addEventListener('resize', scroll);
 
-    const local = (event: PointerEvent | WheelEvent | MouseEvent) => {
+    const local = (event: { clientX: number; clientY: number }) => {
       const point = toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight);
-      return { ...point, clientX: event.clientX, clientY: event.clientY };
+      return { ...point, y: timelineY(point.y, region.current), clientX: event.clientX, clientY: event.clientY };
     };
     const down = (event: PointerEvent) => {
       const point = local(event);
       if (point.x < left) return;
-      if (event.button === 0 && point.y < AXIS_HEIGHT) drag = { mode: 'axis', grab: hourAt(point.x) };
+      if (event.button === 0 && point.y < (latest.current.stickyAxis !== false ? offset.current : 0) + AXIS_HEIGHT) drag = { mode: 'axis', grab: hourAt(point.x) };
       else if (event.button === 1 || (event.button === 0 && event.shiftKey)) drag = { mode: 'pan', lastX: point.x };
       else return;
       event.preventDefault();
@@ -512,9 +543,9 @@ export default function Timeline(props: TimelineProps) {
     element.addEventListener('dblclick', doubleClick);
     element.addEventListener('contextmenu', menu);
     return () => {
-      remove(); unsubscribe(); observer.disconnect(); viewObserver?.disconnect(); hideTooltip(owner);
-      scroller.removeEventListener('scroll', scrolledView);
-      if (!parent) window.removeEventListener('resize', measureView);
+      remove(); unsubscribe(); observer.disconnect(); hideTooltip(owner);
+      document.removeEventListener('scroll', scroll, true);
+      window.removeEventListener('resize', scroll);
       element.removeEventListener('pointerdown', down);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerup', up);
@@ -532,10 +563,9 @@ export default function Timeline(props: TimelineProps) {
     if (task.current) scheduler.setVisible(task.current, props.active);
     if (!props.active) hideTooltip(owner);
   }, [props.active, owner]);
-  useEffect(() => { setHeight(AXIS_HEIGHT + props.lanes.length * rowHeight + 8); }, [props.lanes.length, rowHeight]);
   useEffect(() => {
-    const parent = wrapper.current && scrollParent(wrapper.current);
-    setViewport(parent ? viewHeight(parent, rowHeight) : window.innerHeight);
+    const parent = scrollParent(spacer.current!);
+    setViewportHeight(parent ? viewHeight(parent, rowHeight) : window.innerHeight);
   }, [rowHeight]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
 
@@ -556,29 +586,27 @@ export default function Timeline(props: TimelineProps) {
     return laneStops(p.lanes[lane]?.spans ?? [], from, to, p.playhead);
   };
   const [spoken, setSpoken] = useState('');
-  // Scrolls the nearest scrolling container so a keyboard-selected lane is in view,
-  // below the time axis that stays at the top.
+  // Scrolls the nearest scrolling container so a keyboard-selected lane is in view.
   const revealLane = (lane: number) => {
-    const element = wrapper.current;
+    const element = spacer.current;
     if (!element) return;
     const bounds = element.getBoundingClientRect();
     const scale = element.offsetHeight ? bounds.height / element.offsetHeight : 1;
     const row = latest.current.rowHeight ?? ROW_HEIGHT;
     const top = bounds.top + (AXIS_HEIGHT + lane * row) * scale;
     const bottom = top + row * scale;
-    const parent = scrollParent(element);
-    // No scrolling ancestor: the window scrolls, in its own pixels.
+    const axis = latest.current.stickyAxis !== false ? AXIS_HEIGHT * scale : 0;
+    let parent = element.parentElement;
+    while (parent && !(parent.scrollHeight > parent.clientHeight && /auto|scroll/.test(getComputedStyle(parent).overflowY))) parent = parent.parentElement;
     if (!parent) {
-      if (top < AXIS_HEIGHT * scale) window.scrollBy(0, top - AXIS_HEIGHT * scale);
+      if (top < axis) window.scrollBy(0, top - axis);
       else if (bottom > window.innerHeight) window.scrollBy(0, bottom - window.innerHeight);
       return;
     }
-    if (parent.scrollHeight <= parent.clientHeight) return;
     const box = parent.getBoundingClientRect();
     // Screen pixels to the container's own scroll units (a Size zoom scales them).
     const units = parent.clientHeight ? box.height / parent.clientHeight : 1;
-    const visibleTop = box.top + AXIS_HEIGHT * scale;
-    if (top < visibleTop) parent.scrollTop -= (visibleTop - top) / units;
+    if (top < box.top + axis) parent.scrollTop -= (box.top + axis - top) / units;
     else if (bottom > box.bottom) parent.scrollTop += (bottom - box.bottom) / units;
   };
   const showKeyed = () => {
@@ -608,13 +636,10 @@ export default function Timeline(props: TimelineProps) {
     const shown = holder && holder.firstHour <= (p.playhead ?? Infinity) ? holder : null;
     const content = p.tooltip(lane, shown, hour);
     if (!content) { hideTooltip(owner); setSpoken(''); return; }
-    const bounds = canvas.current.getBoundingClientRect();
+    const bounds = spacer.current!.getBoundingClientRect();
     // Layout pixels to screen pixels: the widget's Size zoom scales the canvas.
-    const scale = canvas.current.offsetHeight ? bounds.height / canvas.current.offsetHeight : 1;
-    // Read now: revealing the lane may have just scrolled it.
-    const row = p.rowHeight ?? ROW_HEIGHT;
-    const offset = scrollOffset(canvas.current, wrapper.current, p.lanes.length, row);
-    showTooltip(owner, content, bounds.left + bounds.width / 2, bounds.top + (AXIS_HEIGHT + (at.lane + 1) * row - offset) * scale, `key:${lane.id}:${stop?.id ?? shown?.id ?? ''}`);
+    const scale = spacer.current!.offsetHeight ? bounds.height / spacer.current!.offsetHeight : 1;
+    showTooltip(owner, content, bounds.left + bounds.width / 2, bounds.top + (AXIS_HEIGHT + (at.lane + 1) * (p.rowHeight ?? ROW_HEIGHT)) * scale, `key:${lane.id}:${stop?.id ?? shown?.id ?? ''}`);
     // Read out in full: every row, not only those the window fits.
     const full = p.tooltip(lane, shown, hour, true) ?? content;
     setSpoken([full.title, full.subtitle, ...full.rows.map(row => row.value ? `${row.label} ${row.value}` : row.label), full.description, full.note]
@@ -662,17 +687,19 @@ export default function Timeline(props: TimelineProps) {
     const menuHour = selected ? selected.hour : props.playhead;
     if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && menuHour != null) {
       event.preventDefault();
-      const bounds = canvas.current!.getBoundingClientRect();
+      const bounds = spacer.current!.getBoundingClientRect();
+      const scale = spacer.current!.clientHeight ? bounds.height / spacer.current!.clientHeight : 1;
+      const { visible } = viewportState();
       const lane = keyed.current ? lanes[keyed.current.lane] : undefined;
       const span = selected?.span ?? null;
-      props.onContextMenu(Math.floor(menuHour), bounds.left + bounds.width / 2, bounds.top + bounds.height / 2, lane, span);
+      props.onContextMenu(Math.floor(menuHour), bounds.left + bounds.width / 2, bounds.top + (visible.top + visible.height / 2) * scale, lane, span);
     }
   };
-  // The spacer is as tall as every lane; the view inside it stays in place while it scrolls.
-  return <div ref={wrapper} className="timeline-chart" style={{ height }}>
-    <div className="timeline-view" style={{ height: Math.min(height, viewport) }}>
+  return <div ref={spacer} className="timeline-chart" style={{ height }}>
+    <div ref={viewportElement} className="timeline-view" style={timelineViewStyle(height, viewportHeight, props.stickyAxis !== false)}>
       <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={props.description ? `${owner}-description` : undefined}
-        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight" onKeyDown={keyDown} onBlur={() => { keyed.current = null; hideTooltip(owner); setSpoken(''); }} />
+        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight" onKeyDown={keyDown} onBlur={() => { keyed.current = null; hideTooltip(owner); setSpoken(''); }}
+        style={{ position: 'absolute', top: 0, height: region.current.height }} />
       {zoomed && <button type="button" className="button small time-chart-reset" onClick={() => controls.current?.dispatch({ type: 'reset' })}>
         <Icon name="refresh" />Reset zoom</button>}
     </div>

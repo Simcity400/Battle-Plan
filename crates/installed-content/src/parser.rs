@@ -242,6 +242,11 @@ impl Operator {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Keyword<'a>(&'a [u8]);
 
+/// A text token's name under the lexer's ASCII fold (1424A7A90, 1424B8790).
+pub fn fold_token(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
 impl<'a> Keyword<'a> {
     /// Whether this is the keyword `name` (ASCII, compared without case).
     pub fn is(self, name: &str) -> bool {
@@ -338,6 +343,33 @@ impl Document {
             .filter(move |item| item.key.as_deref() == Some(key.as_ref()))
             .map(|item| &item.value)
     }
+
+    /// Every value of a keyword as the engine's script reader matches it: a key is a
+    /// lexer token, found through `1424A5EE0`'s hash folding only ASCII A–Z and
+    /// `_strnicmp@142549958` (`AddDynamicToken@1424A65A0`; [`fold_token`]), so
+    /// `ENABLE_EQUIPMENTS` is `enable_equipments`.
+    pub fn get_all_keyword<'a>(&'a self, keyword: &'a str) -> impl Iterator<Item = &'a Value> + 'a {
+        self.items
+            .iter()
+            .filter(move |item| is_keyword(item, keyword))
+            .map(|item| &item.value)
+    }
+
+    /// The first value of a keyword, matched as [`Document::get_all_keyword`] does.
+    pub fn get_keyword(&self, keyword: &str) -> Option<&Value> {
+        self.items
+            .iter()
+            .find(|item| is_keyword(item, keyword))
+            .map(|item| &item.value)
+    }
+}
+
+/// Whether an item's key is `keyword` as the lexer identifies tokens: only ASCII A–Z
+/// fold (see [`Document::get_all_keyword`]).
+pub fn is_keyword(item: &Item, keyword: &str) -> bool {
+    item.key
+        .as_deref()
+        .is_some_and(|key| key.eq_ignore_ascii_case(keyword.as_bytes()))
 }
 
 /// FNV-1a over a variable name after its `@` (1424AC830, 1424AB540).

@@ -1,15 +1,21 @@
 //! Equipment localisation links projected from the native technology reader.
+//! An equipment-unlocking technology can use its equipment's generic name and
+//! description instead of technology-localisation keys. [`read_enablers`] also
+//! projects its id and parent for the production icon's technology fallback.
 use crate::key_names::KeyNames;
 use crate::{
     ResolvedLayers,
     fields::invalid,
     modifiers,
     parser::{
-        Item,
+        self, Item, fold_token,
         native::{self, Shape},
     },
 };
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 mod units;
 
 /// Each technology's single unconditional equipment link, when known.
@@ -286,6 +292,204 @@ pub fn read_equipment(
     ))
 }
 
+/// A technology that enables equipment: its id and its `parent`, the alternate
+/// name the game's technology template keeps at `CTechnologyTemplate+0x3b0` (read
+/// id for names and equipment icons (`string_reader_140b3d930`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Enabler {
+    pub id: String,
+    pub parent: Option<String>,
+}
+
+/// A technology's `enable_equipments` and `parent` as one definition declares them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Enables {
+    /// The id as written.
+    pub id: String,
+    /// The types its plain entries name.
+    pub equipment: Vec<String>,
+    pub parent: Option<String>,
+    /// A scripted entry (a block, a keyed entry or an unresolved `@variable`): which
+    /// equipment it enables is not known.
+    pub scripted: Option<Scripted>,
+}
+
+/// What a refused entry could enable: the names it mentions, or any type at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Scripted {
+    pub names: Vec<String>,
+    /// It holds an `@variable` this reader does not resolve, so it could name any type.
+    pub any: bool,
+}
+
+/// Each technology's definition, by its id as the lexer identifies it (`ASCII token fold`).
+pub type EnabledBy = BTreeMap<String, Enables>;
+
+/// Every name a scripted entry mentions (keys and scalars), and whether it holds an
+/// unresolved `@variable`.
+fn mentioned(item: &parser::Item, scripted: &mut Scripted) {
+    let mut note = |bytes: &[u8]| {
+        if bytes.starts_with(b"@") {
+            scripted.any = true;
+        } else if let Ok(name) = std::str::from_utf8(bytes) {
+            scripted.names.push(name.to_owned());
+        }
+    };
+    if let Some(key) = &item.key {
+        note(key);
+    }
+    match &item.value {
+        parser::Value::Scalar(bytes) => note(bytes),
+        parser::Value::Block(items) | parser::Value::Tagged { items, .. } => {
+            for item in items {
+                mentioned(item, scripted);
+            }
+        }
+    }
+}
+
+/// Every technology's `enable_equipments` list and `parent`, by technology id; a
+/// later definition of an id (in any ASCII case: one lexer token) replaces an
+/// earlier one. A keyed, scripted or `@variable` entry is not read as a type: the
+/// technology is marked [`Scripted`] with the names it mentions, so only the types
+/// it could enable are left unknown.
+pub fn parse_enablers(input: &[u8]) -> io::Result<EnabledBy> {
+    let document = parser::parse(input)?;
+    let mut result = BTreeMap::new();
+    // Keywords are lexer tokens, matched in any ASCII case (`parser::is_keyword`).
+    for root in document.get_all_keyword("technologies") {
+        for technology in root.items().unwrap_or_default() {
+            let (Some(key), Some(fields)) = (&technology.key, technology.value.items()) else {
+                continue;
+            };
+            let Ok(token) = std::str::from_utf8(key) else {
+                continue;
+            };
+            let mut enables = Enables {
+                id: token.to_owned(),
+                ..Enables::default()
+            };
+            for field in fields {
+                let keyword = |name: &str| parser::is_keyword(field, name);
+                match () {
+                    () if keyword("enable_equipments") => {
+                        for item in field.value.items().unwrap_or_default() {
+                            match (item.key.is_none(), item.value.scalar_str()) {
+                                (true, Some(name)) if !name.starts_with('@') => {
+                                    enables.equipment.push(name.to_owned())
+                                }
+                                _ => mentioned(
+                                    item,
+                                    enables.scripted.get_or_insert_with(Scripted::default),
+                                ),
+                            }
+                        }
+                    }
+                    () if keyword("parent") => {
+                        enables.parent = field.value.scalar_str().map(str::to_owned)
+                    }
+                    () => {}
+                }
+            }
+            result.insert(fold_token(token), enables);
+        }
+    }
+    Ok(result)
+}
+
+/// Which technologies enable each equipment type, as the icon fallback asks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Enablers {
+    /// Each type's technologies named by a plain entry, by its folded key, in
+    /// technology id order.
+    pub plain: BTreeMap<String, Vec<Enabler>>,
+    /// Types (folded) a scripted entry mentions, with those technologies' ids.
+    pub uncertain: BTreeMap<String, BTreeSet<String>>,
+    /// Technologies with an entry that could name any type.
+    pub any: BTreeSet<String>,
+    /// Every technology with a scripted entry, as `<path>: <id>`, for a warning.
+    pub refused: Vec<String>,
+}
+
+impl Enablers {
+    /// The one technology that enables `key` (`string_source_scan@140b36c60` uses a
+    /// technology only when exactly one enables the type): none when no or several
+    /// plain entries name it; `Err` when a scripted entry may add one, so how many
+    /// enable it is not known.
+    pub fn single(&self, key: &str) -> Result<Option<&Enabler>, String> {
+        let key = fold_token(key);
+        let plain = self.plain.get(&key).map(Vec::as_slice).unwrap_or_default();
+        if plain.len() > 1 {
+            return Ok(None);
+        }
+        let uncertain: Vec<&str> = self
+            .uncertain
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .chain(&self.any)
+            .map(String::as_str)
+            .collect();
+        if !uncertain.is_empty() {
+            return Err(format!(
+                "technology {} may enable {key} through a script, which is not supported",
+                uncertain.join(", ")
+            ));
+        }
+        Ok(plain.first())
+    }
+}
+
+/// For each equipment type, every technology whose `enable_equipments` names it,
+/// in technology id order (the game's icon fallback uses a technology only when
+/// exactly one enables the type, `string_source_scan@140b36c60`). Files are read in
+/// layer and path order, a later technology of the same id replacing an earlier one.
+///
+/// Equipment and technology ids are lexer tokens, so both are compared as the lexer
+/// identifies them (`ASCII token fold`: only ASCII A–Z fold, `AddDynamicToken@1424A65A0`):
+/// the map is keyed by the folded equipment key, `enable_equipments = { TANK_1 }`
+/// names the type `tank_1`, and `Tank_Tech` redefines `tank_tech`. A technology keeps
+/// the spelling of its last definition. A scripted entry refuses only what that
+/// technology could enable ([`Enablers::single`]).
+pub fn read_enablers(layers: &ResolvedLayers) -> io::Result<Enablers> {
+    let paths = layers.directory_files("common/technologies", ".txt")?;
+    let mut technologies: BTreeMap<String, (String, Enables)> = BTreeMap::new();
+    for path in paths {
+        let parsed = parse_enablers(&layers.read(&path)?)
+            .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))?;
+        for (id, enables) in parsed {
+            technologies.insert(id, (path.clone(), enables));
+        }
+    }
+    let mut result = Enablers::default();
+    for (path, enables) in technologies.into_values() {
+        let id = enables.id;
+        for name in enables.equipment {
+            let list = result.plain.entry(fold_token(&name)).or_default();
+            if !list.iter().any(|enabler| enabler.id == id) {
+                list.push(Enabler {
+                    id: id.clone(),
+                    parent: enables.parent.clone(),
+                });
+            }
+        }
+        if let Some(scripted) = enables.scripted {
+            for name in scripted.names {
+                result
+                    .uncertain
+                    .entry(fold_token(&name))
+                    .or_default()
+                    .insert(id.clone());
+            }
+            if scripted.any {
+                result.any.insert(id.clone());
+            }
+            result.refused.push(format!("{path}: {id}"));
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +620,179 @@ mod tests {
         )
         .unwrap();
         assert_eq!(overrides["a"], None);
+    }
+    #[test]
+    fn enablers_list_each_technology_once_with_its_parent_and_mark_scripts() {
+        let parsed = parse_enablers(
+            br#"technologies = {
+            infantry_weapons1 = { enable_equipments = { infantry_equipment_1 } }
+            renamed = { Parent = infantry_weapons enable_equipments = { tank_1 tank_2 } }
+            other = { research_cost = 1 }
+            Other = { ENABLE_EQUIPMENTS = { TANK_3 } }
+            scripted = { enable_equipments = { gun_1 if = { limit = { always = yes } gun_2 } } }
+            variable = { enable_equipments = { @modded } }
+        }"#,
+        )
+        .unwrap();
+        let plain = |id: &str, equipment: &[&str], parent: Option<&str>| Enables {
+            id: id.to_owned(),
+            equipment: equipment.iter().map(|name| (*name).to_owned()).collect(),
+            parent: parent.map(str::to_owned),
+            scripted: None,
+        };
+        assert_eq!(
+            parsed["infantry_weapons1"],
+            plain("infantry_weapons1", &["infantry_equipment_1"], None)
+        );
+        assert_eq!(
+            parsed["renamed"],
+            plain("renamed", &["tank_1", "tank_2"], Some("infantry_weapons"))
+        );
+        // `Other` is the same lexer token as `other`: the later definition replaces it.
+        assert_eq!(parsed["other"], plain("Other", &["TANK_3"], None));
+        // A script keeps the plain entries and names what it mentions; a variable could be anything.
+        assert_eq!(parsed["scripted"].equipment, ["gun_1"]);
+        let scripted = parsed["scripted"].scripted.as_ref().unwrap();
+        assert!(scripted.names.contains(&"gun_2".to_owned()) && !scripted.any);
+        assert!(parsed["variable"].scripted.as_ref().unwrap().any);
+        // Keywords are lexer tokens too: in any ASCII case they are read, not ignored.
+        let shouted =
+            parse_enablers(b"TECHNOLOGIES = { tank_tech = { ENABLE_EQUIPMENTS = { tank_1 } } }")
+                .unwrap();
+        assert_eq!(shouted["tank_tech"].equipment, ["tank_1"]);
+        assert_eq!(
+            parse_equipment(
+                b"Technologies = { tank_tech = { Enable_Equipments = { tank_1 } } }",
+                &KeyNames::default(),
+            )
+            .unwrap()["tank_tech"],
+            Some("tank_1".to_owned())
+        );
+    }
+
+    /// A scripted entry leaves unknown only whether one technology enables the types
+    /// it mentions; every other type keeps its single enabler.
+    #[test]
+    fn a_scripted_unlock_leaves_only_the_types_it_mentions_unknown() {
+        let enablers = |text: &[u8]| {
+            let mut result = Enablers::default();
+            for enables in parse_enablers(text).unwrap().into_values() {
+                for name in &enables.equipment {
+                    result
+                        .plain
+                        .entry(fold_token(name))
+                        .or_default()
+                        .push(Enabler {
+                            id: enables.id.clone(),
+                            parent: None,
+                        });
+                }
+                if let Some(scripted) = &enables.scripted {
+                    for name in &scripted.names {
+                        result
+                            .uncertain
+                            .entry(fold_token(name))
+                            .or_default()
+                            .insert(enables.id.clone());
+                    }
+                    if scripted.any {
+                        result.any.insert(enables.id.clone());
+                    }
+                }
+            }
+            result
+        };
+        let found = enablers(
+            b"technologies = { rifles = { enable_equipments = { rifle_1 } } guns = { enable_equipments = { if = { limit = { always = yes } GUN_1 } } } both = { enable_equipments = { tank_1 } } tanks = { enable_equipments = { tank_1 } } }",
+        );
+        assert_eq!(found.single("rifle_1").unwrap().unwrap().id, "rifles");
+        let unknown = found.single("gun_1").unwrap_err();
+        assert!(unknown.contains("guns"), "{unknown}");
+        // Two plain enablers already rule the technology step out, script or not.
+        assert_eq!(found.single("tank_1"), Ok(None));
+        assert_eq!(found.single("nothing"), Ok(None));
+        let any = enablers(b"technologies = { rifles = { enable_equipments = { rifle_1 } } modded = { enable_equipments = { @unknown } } }");
+        assert!(any.single("rifle_1").unwrap_err().contains("modded"));
+    }
+
+    /// A mod redefining a vanilla technology in another ASCII case replaces it, and
+    /// its equipment is found in any case: both are one lexer token.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_mod_technology_replaces_vanilla_under_the_lexer_fold() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_installed_content_enablers_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let (vanilla, modded) = (root.join("game"), root.join("mod"));
+        for (folder, text) in [
+            (
+                &vanilla,
+                "technologies = { tank_tech = { enable_equipments = { tank_1 } } gun = { enable_equipments = { gun_1 } } }",
+            ),
+            (
+                &modded,
+                "technologies = { Tank_Tech = { parent = tanks enable_equipments = { MOD_TANK_1 } } }",
+            ),
+        ] {
+            let path = folder.join("common/technologies/tech.txt");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let enablers = read_enablers(
+            &ResolvedLayers::from_folders(&[(&vanilla, &[][..]), (&modded, &[][..])]).unwrap(),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        // The mod's file replaces the vanilla file of the same path; a mod
+        // technology in another file would replace `tank_tech` by its folded id.
+        assert!(!enablers.plain.contains_key("tank_1"));
+        assert!(enablers.refused.is_empty());
+        assert_eq!(
+            enablers.plain[&fold_token("mod_tank_1")],
+            [Enabler {
+                id: "Tank_Tech".to_owned(),
+                parent: Some("tanks".to_owned())
+            }]
+        );
+    }
+
+    /// Technologies in two files of one id in different cases are one token: the
+    /// later file's definition is the only one.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_technology_redefined_in_another_case_is_one_technology() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_installed_content_enablers_case_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for (file, text) in [
+            (
+                "00_a.txt",
+                "technologies = { tank_tech = { enable_equipments = { tank_1 } } }",
+            ),
+            (
+                "01_b.txt",
+                "technologies = { TANK_TECH = { enable_equipments = { TANK_1 } } }",
+            ),
+        ] {
+            let path = root.join("common/technologies").join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let enablers =
+            read_enablers(&ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            enablers.plain[&fold_token("Tank_1")],
+            [Enabler {
+                id: "TANK_TECH".to_owned(),
+                parent: None
+            }]
+        );
     }
 }

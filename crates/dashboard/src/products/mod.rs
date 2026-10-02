@@ -19,6 +19,7 @@ pub mod country_measure;
 pub mod country_stability;
 pub mod country_styles;
 pub mod equipment;
+pub mod equipment_icon;
 pub mod equipment_losses;
 pub mod equipment_produced;
 pub mod equipment_stockpile;
@@ -31,6 +32,7 @@ pub mod national_focus;
 pub mod occupied_states;
 pub mod party_history;
 pub mod politics_content;
+pub mod production_lines;
 pub mod research;
 pub mod resource_balance;
 pub mod resources;
@@ -256,6 +258,8 @@ pub static PRODUCTS: &[Registered] = &[
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
     register::<resource_balance::ResourceBalance>(),
+    register::<production_lines::ProductionLines>(),
+    register::<production_lines::ProductionLineDetail>(),
     register::<equipment_stockpile::EquipmentStockpile>(),
     register::<equipment_produced::EquipmentProduced>(),
     register::<trade_flows::TradeFlows>(),
@@ -332,6 +336,9 @@ mod tests {
             "IdeaHistoryReply",
             "PartyHistoryReply",
             "ResourceBalanceReply",
+            "ProductionLinesReply",
+            "ProductionLineDetailReply",
+            "LineRun",
             "EquipmentStockpileReply",
             "EquipmentProducedReply",
             "AmountRun",

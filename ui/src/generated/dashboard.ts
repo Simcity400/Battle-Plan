@@ -912,6 +912,238 @@ series: Array<ResourceSeries>,
  * deals.
  */
 dealHours: Array<HourSpan>, trades: Array<TradeRun>, warnings: Array<string>, };
+export type LineKind = "military" | "naval" | "shipRefit" | "railwayGun";
+export type LineStep = { firstHour: number, lastHour: number,
+/**
+ * The step follows a gap, a missing read or another country identity.
+ */
+startsSegment: boolean,
+/**
+ * The produced variant (`VariantDefinitions.id`).
+ */
+variant: string, activeFactories: number, requestedFactories: number, };
+export type OutputPart = { variant: string, mio: string,
+/**
+ * Units delivered, as a decimal string.
+ */
+units: string,
+/**
+ * False when a tick could not be counted: `units` then leave it out.
+ */
+exact: boolean, };
+export type OutputRun = { firstHour: number, lastHour: number,
+/**
+ * Its parts, in first-seen order; the total is their sum, exact only when every part is.
+ */
+parts: Array<OutputPart>,
+/**
+ * The sample that began the branch's observation.
+ */
+sinceHour: number,
+/**
+ * The line was first seen after the branch's first complete census, so the
+ * totals cover its whole life; otherwise they count from `since_hour`.
+ */
+wholeLife: boolean, };
+export type LineHistory = {
+/**
+ * Unique in the reply: the handle, and which appearance of it this is.
+ */
+key: string,
+/**
+ * The line's native handle.
+ */
+handle: string,
+/**
+ * Its native class; null for a line no census listed.
+ */
+kind: LineKind | null,
+/**
+ * Its variant and factories over its reads; empty for a line made and deleted
+ * between two censuses. Every other value is in `production-line-detail`.
+ */
+steps: Array<LineStep>,
+/**
+ * The output published when the line ended, counting every unit it made.
+ */
+finalOutput: OutputRun | null,
+/**
+ * The first read of its country that no longer listed it: it ended before.
+ */
+endedBy: number | null,
+/**
+ * Listed at the first read of its country in the branch: it began before recording.
+ */
+beforeRecording: boolean,
+/**
+ * For a line no census listed: the hours within which it ran and was deleted,
+ * up to the census that published its final output. From the census before when
+ * it was observed since its creation; else (`before_recording`) from when the
+ * observation began, since it ran before and its start is not known.
+ */
+betweenReads: HourSpan | null,
+/**
+ * For such a line, the variants its output names (it has no runs to name them).
+ */
+variants: Array<string>, };
+export type VariantName = { id: string,
+/**
+ * The read these values are from; they hold until the next entry of this id.
+ */
+firstHour: number,
+/**
+ * False from an hour the variant's names and icon stopped being known (a gap, or
+ * a variant table not read or carried: `VariantCatalogue`) until the next entry;
+ * its other fields are then empty.
+ */
+known: boolean,
+/**
+ * The equipment type's script key.
+ */
+token: string,
+/**
+ * The row's name (`GetDisplayName`); null when content does not name it.
+ */
+name: string | null,
+/**
+ * The row's equipment type line; null when content does not name it.
+ */
+typeName: string | null,
+/**
+ * The icon's key in `icons`; null when the row shows none or it is unknown.
+ */
+icon: string | null,
+/**
+ * Why the icon is unknown, when it is.
+ */
+iconUnknown: string | null, };
+export type OrganisationName = { id: string, firstHour: number,
+/**
+ * The script key.
+ */
+token: string,
+/**
+ * The localised name; null when content does not name it without runtime scope.
+ */
+name: string | null,
+/**
+ * Why the localised name cannot be determined from this read.
+ */
+nameUnknown: string | null,
+/**
+ * The icon's key in `icons`.
+ */
+icon: string | null,
+/**
+ * Why the icon cannot be determined from this read.
+ */
+iconUnknown: string | null, };
+export type EquipmentIcon = { key: string,
+/**
+ * A PNG data URL; null when the texture could not be read.
+ */
+image: string | null, };
+export type ProductionLinesReply = { branchId: string, tag: string, decimals: number,
+/**
+ * Every line of the country in the branch, in the order first seen.
+ */
+lines: Array<LineHistory>,
+/**
+ * The names and icons of every variant a line produced.
+ */
+variants: Array<VariantName>,
+/**
+ * The organisations the lines were assigned to.
+ */
+organisations: Array<OrganisationName>, icons: Array<EquipmentIcon>,
+/**
+ * Hours the country's lines were read, ascending.
+ */
+reads: Array<number>,
+/**
+ * Hours whose output is recorded, ascending spans.
+ */
+outputHours: Array<HourSpan>,
+/**
+ * Hours whose lines are recorded (a complete census, read or carried),
+ * ascending spans: outside them the lines are not known, which is not none.
+ */
+lineHours: Array<HourSpan>,
+/**
+ * Hours whose organisations are recorded, ascending spans: outside them an
+ * organisation's name and icon are not known (never an earlier read's).
+ */
+organisationHours: Array<HourSpan>,
+/**
+ * Hours whose lines made and ended there may be missing: a due read of the
+ * output, the only place such a line's rows are published, could not be read.
+ */
+unreadOutput: Array<HourSpan>,
+/**
+ * The hours one `production-line-detail` window covers.
+ */
+detailHours: number, warnings: Array<string>, };
+export type LineRun = { firstHour: number, lastHour: number,
+/**
+ * The run follows a gap, a missing read or another country identity.
+ */
+startsSegment: boolean,
+/**
+ * The produced variant (`VariantDefinitions.id`).
+ */
+variant: string,
+/**
+ * The organisation's reference (`IndustrialOrganisations.organisation`); "0" for none.
+ */
+mio: string, activeFactories: number, requestedFactories: number,
+/**
+ * The most factories the line takes (the efficiency average's clamp).
+ */
+maxFactories: number,
+/**
+ * IC per unit, after the organisation's cost bonus.
+ */
+costRaw: string,
+/**
+ * IC added at each production tick.
+ */
+speedRaw: string,
+/**
+ * Units per week by the game's weekly formula (`equipment::weekly_units_raw`),
+ * fixed5; null without a positive cost.
+ */
+weeklyRaw: string | null,
+/**
+ * The line's efficiency, Q15: 100% is 3276800.
+ */
+efficiencyRaw: string,
+/**
+ * Place in the country's production queue, from 0.
+ */
+priority: number,
+/**
+ * Units still ordered; −1 for no limit.
+ */
+amount: number, };
+export type LineDetail = {
+/**
+ * The line's key in `production-lines`.
+ */
+key: string, runs: Array<LineRun>,
+/**
+ * Its output at each read (the same reads as `runs`), where recorded.
+ */
+output: Array<OutputRun>, };
+export type ProductionDetailParams = { branchId: string, tag: string, window: number, };
+export type ProductionLineDetailReply = { branchId: string, tag: string, decimals: number, window: number,
+/**
+ * The window's hours, both included.
+ */
+firstHour: number, lastHour: number,
+/**
+ * Every line with a read in the window, in the order first seen.
+ */
+lines: Array<LineDetail>, };
 export type AmountRun = { firstHour: number, lastHour: number, amountRaw: string | null, };
 export type Domain = "land" | "air" | "naval";
 export type StockVariantName = {
@@ -1772,4 +2004,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;

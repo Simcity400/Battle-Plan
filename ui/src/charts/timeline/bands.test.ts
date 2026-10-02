@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assertLinear } from '../assertLinear.ts';
-import { bandHalf, bandHitAt, bandOutlines, laneBandLayouts, laneBands, laneStops } from './layout.ts';
+import { barExtent, barHitAt, bandHalf, bandHitAt, bandOutlines, laneBandLayouts, laneBands, laneStops } from './layout.ts';
 
 const toX = (hour: number) => hour;
 const same = (value: number) => value;
@@ -319,4 +319,54 @@ test('keyboard stops are found in one pass over a long band', () => {
   assert.deepEqual(stops.slice(0, 2).map(stop => [stop.id, stop.hour]), [['long@0', 0.5], ['long@2', 2]]);
   assert.equal(stops.at(-1)!.id, 'long@39998');
   assertLinear('steps', steps => { const l = long(steps); return () => laneStops([l.span], 0.5, l.to, null); });
+});
+
+test('a plain bar keeps a pixel column however short it is at this zoom', () => {
+  // A line made and deleted between two reads (hours 101–124) at a year in 700 px: about 1.9 px wide.
+  const perHour = 700 / (365 * 24);
+  const x0 = 100 + 101 * perHour, x1 = 100 + 125 * perHour;
+  assert.ok(x1 - x0 < 2);
+  const kept = barExtent(x0, x1, 100, 800)!;
+  assert.equal(kept[1] - kept[0], 1, 'one whole pixel column, as a band keeps');
+  assert.ok(kept[0] >= Math.floor(x0) && kept[1] <= Math.ceil(x1), 'within its hours');
+  // A wide bar keeps its gap of a pixel on each side; one outside the plot is not drawn.
+  assert.deepEqual(barExtent(200, 300, 100, 800), [201, 299]);
+  assert.deepEqual(barExtent(50, 150, 100, 800), [100, 149]);
+  assert.equal(barExtent(10, 20, 100, 800), null);
+  assert.equal(barExtent(900, 910, 100, 800), null);
+  // At the plot's right edge a short bar keeps a column inside it.
+  assert.deepEqual(barExtent(799.6, 800.4, 100, 800), [799, 800]);
+});
+
+test('a widened bar is hit where it is drawn, and describes an hour it covers', () => {
+  // 1,000 hours a pixel from hour 0 at x 0: a bar of hours 100–123 widens to column 0–1.
+  const toX = (hour: number) => hour / 1000;
+  const hourAt = (px: number) => px * 1000;
+  const bar = { id: 'between', firstHour: 100, lastHour: 123, label: 'Made between' };
+  assert.deepEqual(barExtent(toX(100), toX(124), 0, 700), [0, 1]);
+  // The pointer at the column's centre (hour 500) is on the bar, about an hour it covers.
+  const hit = barHitAt([bar], 0.5, null, toX, hourAt, 0, 700)!;
+  assert.equal(hit.span.id, 'between');
+  assert.ok(hit.hour >= 100 && hit.hour <= 123, `hour ${hit.hour}`);
+  // Off the drawn column: no bar; a band is left to its own hit test.
+  assert.equal(barHitAt([bar], 1.5, null, toX, hourAt, 0, 700), null);
+  assert.equal(barHitAt([{ ...bar, band: [{ firstHour: 100, lastHour: 123, value: 1 }] }], 0.5, null, toX, hourAt, 0, 700), null);
+  // A wide bar gives the pointer's own hour.
+  const wide = { id: 'wide', firstHour: 0, lastHour: 99, label: 'Wide' };
+  assert.deepEqual(barHitAt([wide], 50.5, null, h => h, px => px, 0, 700), { span: wide, hour: 50 });
+  // Not past the playhead.
+  assert.equal(barHitAt([wide], 50.5, 40, h => h, px => px, 0, 700), null);
+});
+
+test('where widened bars share a column, the one drawn on top answers', () => {
+  // 100 hours a pixel: 100–123 and 124–147 both widen to column 1–2; the second is drawn last.
+  const toX = (hour: number) => hour / 100;
+  const hourAt = (px: number) => px * 100;
+  const first = { id: 'first', firstHour: 100, lastHour: 123, label: 'First' };
+  const second = { id: 'second', firstHour: 124, lastHour: 147, label: 'Second' };
+  assert.deepEqual(barExtent(toX(100), toX(124), 0, 700), [1, 2]);
+  assert.deepEqual(barExtent(toX(124), toX(148), 0, 700), [1, 2]);
+  const hit = barHitAt([first, second], 1.5, null, toX, hourAt, 0, 700)!;
+  assert.equal(hit.span.id, 'second');
+  assert.ok(hit.hour >= 124 && hit.hour <= 147, `hour ${hit.hour}`);
 });

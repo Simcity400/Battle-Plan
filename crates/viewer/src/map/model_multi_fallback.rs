@@ -461,7 +461,7 @@ fn pair_candidates<'a>(
     ));
     let (ideology, culture) = creator_operands(definition, inputs.links, inputs.countries)?;
     let geography = inputs.geography.context(country_ref)?;
-    let graphical = inputs.graphics.lookup(
+    let graphical = inputs.graphics.lookup_with_limits(
         &equipment_graphics::Context {
             equipment: equipment_key,
             archetype: equipment.archetype,

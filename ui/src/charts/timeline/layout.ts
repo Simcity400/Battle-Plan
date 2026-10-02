@@ -67,7 +67,7 @@ export interface TimelineLane {
   paint?: (ctx: CanvasRenderingContext2D, lane: LaneGeometry, tokens: ChartTokens) => void;
 }
 
-/** A painted lane's visible plot geometry, in the sticky canvas's pixels. */
+/** A painted lane's plot geometry, in full-timeline layout pixels. */
 export interface LaneGeometry { top: number; height: number; left: number; right: number; hours: readonly [number, number]; toX: (hour: number) => number; playhead: number | null }
 
 export const AXIS_HEIGHT = 24;
@@ -438,6 +438,41 @@ export function bandHalf(value: number, max: number, least: number, most: number
   return least + (most - least) * Math.min(1, value / max);
 }
 
+/** Where a bar from `x0` to `x1` (its hours' edges, in pixels) is drawn within a plot
+ * from `left` to `right`: 1 pixel in from each edge, so neighbouring bars keep a gap,
+ * while that leaves at least a pixel and a half; a shorter bar (one made and deleted
+ * between two daily reads, at campaign zoom) keeps one whole pixel column at its
+ * middle, as a band keeps its column, so no recorded bar vanishes. Null when it is
+ * outside the plot. */
+export function barExtent(x0: number, x1: number, left: number, right: number): [number, number] | null {
+  const from = Math.max(left, x0 + 1);
+  const to = Math.min(right, x1 - 1);
+  if (to - from >= 1.5) return [from, to];
+  const middle = Math.floor((Math.max(left, x0) + Math.min(right, x1)) / 2);
+  const column = Math.min(Math.max(middle, Math.ceil(left)), Math.floor(right) - 1);
+  return x1 < left || x0 > right || column < left ? null : [column, column + 1];
+}
+
+/** The plain bar drawn under the pointer at `px` (its rectangle as `barExtent` draws
+ * it, which a short bar widens past its hours) and the hour it describes there: the
+ * pointer's hour kept inside the bar's hours, so hover and Jump to never describe a
+ * time the bar does not cover. Bars are tested in reverse drawing order, so where two
+ * widened bars share a column the one drawn on top answers. Null where no plain bar
+ * is drawn. */
+export function barHitAt(spans: readonly TimelineSpan[], px: number, playhead: number | null, toX: (hour: number) => number,
+  hourAt: (px: number) => number, left: number, right: number): { span: TimelineSpan; hour: number } | null {
+  for (let index = spans.length - 1; index >= 0; index--) {
+    const span = spans[index];
+    if (span.band) continue;
+    const hours = barHours(span, playhead);
+    const extent = hours && barExtent(toX(hours[0]), toX(hours[1]), left, right);
+    if (!hours || !extent || px < extent[0] || px >= extent[1]) continue;
+    const last = Math.min(span.lastHour, Math.ceil(hours[1]) - 1);
+    return { span, hour: Math.min(last, Math.max(span.firstHour, Math.floor(hourAt(px)))) };
+  }
+  return null;
+}
+
 /** Where the keyboard can stop in a lane: a bar's first hour shown, or, for a band,
  * each step's first hour shown, and any of the span's own `stops`, so every value a
  * pointer can reach is reachable. */
@@ -525,4 +560,17 @@ export function nextHolder(state: HolderState | undefined, current: TimelineSpan
   }
   if (state.key === key) return state;
   return { key, previous: state.current, current, t: 0 };
+}
+
+/** Every span's hours together, for fitting the time axis. */
+export function spansExtent(lanes: readonly TimelineLane[]): [number, number] | null {
+  let first = Infinity;
+  let last = -Infinity;
+  for (const lane of lanes) {
+    for (const span of lane.spans) {
+      first = Math.min(first, span.firstHour);
+      last = Math.max(last, span.lastHour + 1);
+    }
+  }
+  return first <= last ? [first, last] : null;
 }

@@ -18,6 +18,12 @@ pub struct VisualMod {
 pub(super) struct VisualLayer {
     source: LayerSource,
     files: BTreeSet<LayerPath>,
+    folded: BTreeMap<LayerPath, LayerPath>,
+}
+
+pub(super) enum Hit {
+    Folder(PathBuf),
+    Archive(usize, LayerPath),
 }
 
 struct Rule {
@@ -214,6 +220,7 @@ fn inspect(
                 VisualLayer {
                     source: layer.source,
                     files: BTreeSet::new(),
+                    folded: BTreeMap::new(),
                 },
             ));
         }
@@ -248,6 +255,12 @@ fn inspect(
         },
         VisualLayer {
             source: layer.source,
+            folded: files
+                .iter()
+                .rev()
+                .filter(|path| supported(path))
+                .map(|path| (path.to_ascii_lowercase(), path.clone()))
+                .collect(),
             files: files.into_iter().filter(|path| supported(path)).collect(),
         },
     ))
@@ -334,14 +347,17 @@ pub fn apply(
 }
 
 pub(super) fn read(layers: &[VisualLayer], relative: &[u8]) -> io::Result<Option<Vec<u8>>> {
-    for layer in layers.iter().rev() {
-        let bytes = match &layer.source {
+    lookup(layers, relative)?
+        .map(|hit| read_hit(layers, &hit))
+        .transpose()
+}
+
+pub(super) fn lookup(layers: &[VisualLayer], relative: &[u8]) -> io::Result<Option<Hit>> {
+    let lower = relative.to_ascii_lowercase();
+    for (index, layer) in layers.iter().enumerate().rev() {
+        let hit = match &layer.source {
             LayerSource::Folder(root) => {
-                let Some(name) = layer
-                    .files
-                    .iter()
-                    .find(|name| name.eq_ignore_ascii_case(relative))
-                else {
+                let Some(name) = layer.folded.get(&lower) else {
                     continue;
                 };
                 let path = root.join(folder_text(name)?).canonicalize()?;
@@ -351,7 +367,7 @@ pub(super) fn read(layers: &[VisualLayer], relative: &[u8]) -> io::Result<Option
                 if fs::metadata(&path)?.len() > 256 * 1024 * 1024 {
                     return Err(invalid("Visual asset is too large"));
                 }
-                fs::read(path)?
+                Hit::Folder(path)
             }
             LayerSource::Archive(path) => {
                 if !layer.files.contains(relative) {
@@ -365,16 +381,36 @@ pub(super) fn read(layers: &[VisualLayer], relative: &[u8]) -> io::Result<Option
                 if entry.size > 256 * 1024 * 1024 {
                     return Err(invalid("Visual asset is too large"));
                 }
-                match archive.read(entry, password)? {
-                    Some(bytes) => bytes,
-                    // The record does not open: the search goes on.
-                    None => continue,
+                if !archive.opens(entry, password)? {
+                    continue;
                 }
+                Hit::Archive(index, relative.to_vec())
             }
         };
-        return Ok(Some(bytes));
+        return Ok(Some(hit));
     }
     Ok(None)
+}
+
+pub(super) fn read_hit(layers: &[VisualLayer], hit: &Hit) -> io::Result<Vec<u8>> {
+    #[cfg(test)]
+    super::tests::LOADS.with(|loads| loads.set(loads.get() + 1));
+    match hit {
+        Hit::Folder(path) => fs::read(path),
+        Hit::Archive(index, relative) => {
+            let LayerSource::Archive(path) = &layers[*index].source else {
+                return Err(invalid("Visual layer is not an archive"));
+            };
+            let mut archive = physfs_zip::Archive::open(path)?;
+            let mounted = archive.mount()?;
+            let Some((entry, password)) = mounted.lookup(relative) else {
+                return Err(not_found(relative));
+            };
+            archive
+                .read(entry, password)?
+                .ok_or_else(|| not_found(relative))
+        }
+    }
 }
 
 #[cfg(test)]

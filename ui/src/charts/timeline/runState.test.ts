@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AXIS_HEIGHT, ROW_HEIGHT, laneOffset, lanesInView } from './layout.ts';
+import { AXIS_HEIGHT, ROW_HEIGHT, lanesInView } from './layout.ts';
 import { bandMaxOf, bridgeGaps, coverCounts, coveredBy, describeRun, runState, stretchAt, stretchesOf, withoutHours } from './runState.ts';
 
 test('the band maximum takes any number of steps without a spread', () => {
@@ -92,7 +92,7 @@ test('steps lose the hours spans cover, and split into unbroken stretches', () =
   assert.deepEqual(stretchesOf(steps).map(stretch => [stretch.firstHour, stretch.lastHour, stretch.steps.length]), [[0, 19, 2]]);
 });
 
-test('only the lanes in a scrolled view are drawn, the time axis staying at the top', () => {
+test('only the lanes in a scrolled view are reported', () => {
   // A view two and a half lanes tall under the axis, at the top: lanes 0..2.
   const height = AXIS_HEIGHT + ROW_HEIGHT * 2.5;
   assert.deepEqual(lanesInView(0, height, 1500), [0, 2]);
@@ -101,10 +101,4 @@ test('only the lanes in a scrolled view are drawn, the time axis staying at the 
   // Never past the last lane; none when there are none.
   assert.deepEqual(lanesInView(ROW_HEIGHT * 1498, height, 1500), [1498, 1499]);
   assert.deepEqual(lanesInView(0, height, 0), [0, -1]);
-  // The offset is where the view sits against the lanes, never before the first nor past the last.
-  const full = AXIS_HEIGHT + 1500 * ROW_HEIGHT + 8;
-  assert.equal(laneOffset(100, 0, 400, full), 100);
-  assert.equal(laneOffset(-20, 0, 400, full), 0);
-  assert.equal(laneOffset(full, 0, 400, full), full - 400);
-  assert.equal(laneOffset(50, 0, 400, 300), 0);
 });
