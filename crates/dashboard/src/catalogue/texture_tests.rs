@@ -187,6 +187,9 @@ pub(crate) fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
         height: 1,
         pixels: vec![255; 4],
     };
+    // 9000x9000: within the device limit, past the dashboard's decode budget.
+    let mut claim = dds(&strip());
+    claim[12..20].copy_from_slice(&[9000_u32.to_le_bytes(), 9000_u32.to_le_bytes()].concat());
     let mut cube = dds(&face);
     cube[112..116].copy_from_slice(&0xFE00_u32.to_le_bytes());
     for _ in 1..6 {
@@ -207,6 +210,7 @@ pub(crate) fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
         ),
         ("gfx/mod/device.dds", device, "graphics device"),
         ("gfx/mod/cube.dds", cube, "cube-map DDS"),
+        ("gfx/mod/claim.dds", claim, "texel decode budget"),
         (
             "gfx/mod/large.png",
             vec![0x13; (16 << 20) + 1],

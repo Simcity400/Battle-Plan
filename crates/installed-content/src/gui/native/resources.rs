@@ -70,13 +70,19 @@ pub enum NoTexture {
     /// What the game draws from the file depends on the graphics device
     /// ([`native::Failure::Device`]), which the recording does not hold: refused by name.
     Device { path: String, reason: String },
+    /// The caller's decoded-texel budget refused the file's extent before decoding
+    /// ([`stack_texture_within`], [`native::Failure::OverBudget`]); the game would load it.
+    OverBudget { path: String, reason: String },
 }
 
 impl NoTexture {
     /// Whether the game itself has no texture here (so drawing nothing is exact), as opposed to
     /// an outcome the file or the recording does not determine.
     pub fn native_failure(&self) -> bool {
-        !matches!(self, Self::Undefined { .. } | Self::Device { .. })
+        !matches!(
+            self,
+            Self::Undefined { .. } | Self::Device { .. } | Self::OverBudget { .. }
+        )
     }
 }
 
@@ -110,6 +116,9 @@ impl std::fmt::Display for NoTexture {
                 "texture {path} draws as the recording client's graphics device decides, which \
                  is not recorded: {reason}"
             ),
+            Self::OverBudget { path, reason } => {
+                write!(f, "texture {path} is not decoded here: {reason}")
+            }
         }
     }
 }
@@ -223,6 +232,17 @@ pub fn texture(
     read: &dyn Fn(&[u8]) -> io::Result<Vec<u8>>,
     decode: native::Decode,
 ) -> io::Result<Result<Texture, NoTexture>> {
+    texture_within(name, read, decode, None)
+}
+
+/// [`texture`], refusing an image past `max_texels` from its header
+/// ([`native::decode_texture_image_within`]).
+fn texture_within(
+    name: &[u8],
+    read: &dyn Fn(&[u8]) -> io::Result<Vec<u8>>,
+    decode: native::Decode,
+    max_texels: Option<u64>,
+) -> io::Result<Result<Texture, NoTexture>> {
     let name = crate::parser::c_string(name);
     if name.is_empty() {
         return Ok(Err(NoTexture::Empty));
@@ -254,7 +274,13 @@ pub fn texture(
                 bytes: bytes.len(),
             }));
         }
-        return Ok(match native::decode_texture_image(name, &bytes, decode) {
+        let decoded = match max_texels {
+            Some(max_texels) => {
+                native::decode_texture_image_within(name, &bytes, decode, max_texels)
+            }
+            None => native::decode_texture_image(name, &bytes, decode),
+        };
+        return Ok(match decoded {
             Ok(image) => Ok(Texture {
                 path,
                 width: image.width,
@@ -266,6 +292,7 @@ pub fn texture(
             }
             Err(native::Failure::Undefined(reason)) => Err(NoTexture::Undefined { path, reason }),
             Err(native::Failure::Device(reason)) => Err(NoTexture::Device { path, reason }),
+            Err(native::Failure::OverBudget(reason)) => Err(NoTexture::OverBudget { path, reason }),
         });
     }
     Ok(Err(NoTexture::Missing(tried)))
@@ -280,8 +307,21 @@ pub fn stack_texture(
     name: &[u8],
     decode: native::Decode,
 ) -> io::Result<Result<Texture, NoTexture>> {
+    stack_texture_within(layers, name, decode, None)
+}
+
+/// [`stack_texture`] for a caller that must bound memory: an image whose decoded texels would
+/// exceed `max_texels` is refused from its header, before it is decoded
+/// ([`NoTexture::OverBudget`]).
+pub fn stack_texture_within(
+    layers: &ResolvedLayers,
+    name: &[u8],
+    decode: native::Decode,
+    max_texels: Option<u64>,
+) -> io::Result<Result<Texture, NoTexture>> {
+    let read = |path: &[u8]| layers.read_uncovered_path(path);
     Ok(
-        texture(name, &|path| layers.read_uncovered_path(path), decode)?.and_then(|texture| {
+        texture_within(name, &read, decode, max_texels)?.and_then(|texture| {
             if texture.image.faces == 1 {
                 return Ok(texture);
             }

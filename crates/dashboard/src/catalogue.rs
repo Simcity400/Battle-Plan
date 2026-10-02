@@ -420,6 +420,12 @@ pub fn texture_frame_png(
     gui_texture_frame_png(layers, path.as_bytes(), decode, frames, frame, max_edge)
 }
 
+/// Decoded texels any one image reply may allocate, checked from the file's header before it is
+/// decoded. The largest sprite texture any installed stack's `.gfx` references (23 stacks,
+/// 2 Oct 2026) is 5472x3648, 8192x4096 once `force_pow2_textures` pads it: 32 Mi texels. Twice
+/// that keeps one decode under 256 MiB of RGBA where a 16384x16384 claim would take 1 GiB.
+const MAX_TEXELS: u64 = 64 << 20;
+
 /// Native GUI texture loading: `resources::stack_texture` (the resolver, its
 /// 16 MiB `load_file` limit, the client decode state and the cube-map refusal),
 /// then RGBA8. Sprite artwork, shields and resource icons all use this path;
@@ -429,17 +435,18 @@ pub(crate) fn gui_texture(
     name: &[u8],
     decode: Decode,
 ) -> io::Result<Rgba8Image> {
-    let texture = resources::stack_texture(layers, name, decode)?.map_err(|why| {
-        let extra = if why.native_failure() {
-            "; the game draws no texture either"
-        } else {
-            ""
-        };
-        invalid(format!(
-            "GUI texture {} is unavailable: {why}{extra}",
-            String::from_utf8_lossy(name)
-        ))
-    })?;
+    let texture = resources::stack_texture_within(layers, name, decode, Some(MAX_TEXELS))?
+        .map_err(|why| {
+            let extra = if why.native_failure() {
+                "; the game draws no texture either"
+            } else {
+                ""
+            };
+            invalid(format!(
+                "GUI texture {} is unavailable: {why}{extra}",
+                String::from_utf8_lossy(name)
+            ))
+        })?;
     installed_content::image::rgba::dds_base(texture.image)
 }
 
@@ -714,6 +721,8 @@ pub(crate) mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&root);
+        // A content folder must exist even when it holds no files.
+        std::fs::create_dir_all(&root).unwrap();
         for (path, text) in files {
             let file = root.join(path);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();

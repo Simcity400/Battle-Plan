@@ -23,6 +23,8 @@ pub(super) enum Stop {
     Undefined(String),
     /// The device decides ([`Failure::Device`]).
     Device(String),
+    /// The caller's budget refuses the extent ([`Failure::OverBudget`]).
+    OverBudget(String),
 }
 
 fn fatal<T>(why: impl Into<String>) -> Result<T, Stop> {
@@ -1809,6 +1811,7 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
     super::oversized(jpeg.width as u32, jpeg.height as u32).map_err(|failure| match failure {
         Failure::Undefined(why) | Failure::Undecodable(why) => Stop::Undefined(why),
         Failure::Device(why) => Stop::Device(why),
+        Failure::OverBudget(why) => Stop::OverBudget(why),
     })?;
     // jpeg_calc_output_dimensions without fancy upsampling: a subsampled component of a block
     // size of 4 or less is scaled up in its inverse DCT (by powers of 2, while the result stays
