@@ -44,6 +44,7 @@ pub mod parser;
 pub mod particles;
 pub mod pdxshader;
 pub mod positions;
+pub mod power_balance;
 pub mod province_geometry;
 pub mod province_graph;
 pub mod raids;

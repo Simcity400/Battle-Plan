@@ -76,6 +76,16 @@ Scripted text uses [scripted_text.rs](src/scripted_text.rs) and the shared [reco
 
 GetPowerBalanceModDesc renders the cached daily then weekly source values, with ordered static modifier keys localised through the recorded content stack. Its numeric and tree formatting is shared with the viewer in [modifier_text.rs](src/modifier_text.rs).
 
+Active-range modifier and changed-rule descriptions use authored balance ranges
+from [installed-content](../installed-content/src/power_balance.rs), recorded modifier definitions
+and the same value formatter. Wrappers and custom tooltips expand in a fresh
+country scope. Ambiguous range identities and unavailable feature flags remain
+named, counted refusals. Activation and deactivation descriptions render empty
+effects, ordinary custom tooltip keys and nested `effect_tooltip` blocks;
+hidden blocks still validate their children. Other effect classes, bound
+tooltip arguments and formatted tooltip tokens refuse by name and count.
+Neither effect entrypoint is called by the installed localisation corpus.
+
 MTTH evaluation tests obtain weight fields through the native tactic reader, so the modifier's own `factor` and `add` operands are read before its trigger conditions (140545820).
 
 Scripted entries restart ProcessString at depth zero and reject repeated effective contexts; growing histories and fresh-context nesting are refused at our 10,000-level backstop on a dedicated large-stack thread.

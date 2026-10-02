@@ -899,8 +899,6 @@ impl<'a> ScriptedText<'a> {
             text
         } else if is("GetFactionName") {
             self.faction_name(slot)?
-        } else if let Some(entry) = COUNTRY_UNPORTED.iter().find(|(entry, _)| is(entry)) {
-            return Err(format!("{}: {}", entry.0, entry.1));
         } else {
             return Ok(None);
         }))
@@ -1332,28 +1330,6 @@ const PRONOUNS: [&str; 10] = [
     "GetHersHisCap",
     "GetHerselfHimself",
     "GetHerselfHimselfCap",
-];
-
-/// Country functions of 141A7B350 (table 14309CA20) this port cannot answer,
-/// with what is missing. Their inputs are content or recorded; what they lack
-/// is the native description renderer.
-const COUNTRY_UNPORTED: [(&str, &str); 4] = [
-    (
-        "GetActiveRangeModDesc",
-        "140A04DA0 formats the active range's content modifier block (+0x28) through modifier_accumulator::FormatDescription (14054E050) under PROGRESS_SECTION_MODIFIER; that renderer is ported only in the viewer",
-    ),
-    (
-        "GetActiveRangeRuleDesc",
-        "140A05130 describes the active range's rules (+0x238, virtual +0x50) under PROGRESS_SECTION_RULE; rule descriptions are not ported",
-    ),
-    (
-        "GetActiveRangeActivationEffect",
-        "140A04500 runs the effect description (virtual +0x40) of the active range's activation effect (+0x630) under PROGRESS_SECTION_ACTIVATION_EFFECT; effect descriptions are not ported",
-    ),
-    (
-        "GetActiveRangeDeactivationEffect",
-        "140A047C0 runs the effect description of the active range's deactivation effect (+0x688); effect descriptions are not ported",
-    ),
 ];
 
 /// GetOld* (141A7B350 cases 5-9): the property, the suffix of the current
