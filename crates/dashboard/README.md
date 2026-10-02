@@ -23,13 +23,13 @@ Everything a widget needs natively: opened recordings, data products, the host/v
 
 ## Products
 
-A product turns a source plus typed parameters into one compact reply covering a whole branch, so frontend playback is a local lookup and never a per-hour request. To add one:
+A product turns a source plus typed parameters into a typed reply. History products cover a whole branch, so playback reads them locally. Hour-specific artwork and formula details use separate requests through the frontend's transient path, outside the history cache. To add one:
 
 1. Add `products/<name>.rs` implementing `Product` (a key, `Params`, `Reply`, optional `validate`, and `load`). Keep per-source caches in `source.state::<YourState>()`. Read localisation and sprites through `catalogue::catalogue`, never by parsing them again.
 2. Register it in the `PRODUCTS` list in `products/mod.rs`.
 3. Regenerate the contract and add the widget folder under `ui/src/widgets/`.
 
-The service, transport, host and frontend route by key and never name a product. Replies are serialized with the frontend's lease identity so they cannot be attributed to another recording. Products read verified recorded content only; missing localisation or artwork stays null.
+The service, transport and host route generic requests by key; widgets and their data helpers choose the product. Replies are serialized with the frontend's lease identity so they cannot be attributed to another recording. Products read verified recorded content only; missing localisation or artwork stays null.
 
 Current products: national focus order, research slot history, country flags, country styles (each country's engine-built name and recorded map colour at an hour), country groups (human players, recorded factions with their members and leaders (the member at order zero), and war pairs, as runs of consecutive recorded hours), country balances (political power or command power: exact balance runs and net drops per country), party history (popularity, ruling runs and elections per country, with content ideology colours), idea history (each idea a country held, joined to its content category, slot, effects and artwork, with how the game formats each effect's modifier (`idea_format.rs`: the recorded modifier definitions, else content's scripted ones); `politics_content.rs` reads the Politics content once per catalogue), country stability (displayed stability, war support and maximum command power computed from recorded inputs with the engine's arithmetic, plus an hour's formula terms, tree lines with their source identity or recorded text, and an explicit remainder), stability parts (each of those parts of one country over the branch, as runs, known only where recorded), resource balance (one country's recorded resource pools and trade deals as hourly runs, with content's resource names and icons), equipment stockpile (one country's recorded logistics surplus or shortage per equipment archetype with the stock the same record counted, the hours it was AI-controlled, and its recorded stock and weekly production per variant, grouped by content's archetypes), trade flows (every recorded resource trade deal, or the chosen countries', as seller-buyer-resource flows over the branch, with the hours their deals are known and those known only in part, where a read listed deals it could not attribute; bounded by a run budget that refuses rather than cuts), land ownership, country fuel (one country's tank level and capacity at each daily read, and the fuel gained and burned in the 24 hourly updates before it, each update counted once and only while the game updated it) and subjects (every overlord–subject relation as runs of consecutive recorded hours, with the engine's start hour and the subject's current autonomy level through each run, levels named and ordered by content's autonomy states). Their rules live beside their code and in the matching widget README. `metadata::LinkTags` names a scan's raw country links by tag hour by hour, rebuilt only when the country tables change.
 
@@ -63,7 +63,7 @@ Generation updates `ui/src/generated/dashboard.ts`; do not hand-edit it. Follow 
 
 ## Rules
 
-Preserve recorded values exactly and keep missing, unavailable and zero distinct. Never bridge a gap or carry a value across missing hours. A changed recording revision invalidates every reply.
+Preserve recorded values exactly and keep missing, unavailable and zero distinct. Never bridge a gap or carry a value across missing hours. Opening with an outdated expected revision is refused. A changed revision uses a separate source and caches; product replies identify the lease, revision and product key they answer.
 
 The initial country selection uses LocalPlayer at the first readable country catalogue (including an observer's selected country), joined through that frame's CountryLinks. The human roster does not determine the recording client.
 

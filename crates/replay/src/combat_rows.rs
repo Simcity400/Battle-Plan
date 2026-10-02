@@ -478,6 +478,7 @@ pub struct NavalCombatSideDetails {
     /// The side's task-force handles (`CCombatant+0x20`) in stored order:
     /// `CNavalCombatant::AddUnit@141608EC0` admits only navies, and
     /// `CNavalCombatant::Serialize@14160FF40` saves each as `unit`.
+    /// Engaged-flag derivation compares these handles hour over hour.
     pub units: Vec<u64>,
 }
 value_struct!(NavalCombatSideDetails { commander: u64, engaged: u8, retreating: u8, capital_screening: i64, carrier_screening: i64, positioning: i64, anti_air: i64, planes: Vec<NavalCombatPlane>, summary: NavalCombatSummaryInputs, commander_inputs: Option<NavalCommanderInputs>, units: Vec<u64> });
