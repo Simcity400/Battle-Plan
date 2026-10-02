@@ -17,6 +17,7 @@ mod acquisition_wars;
 mod advisor_changes;
 #[cfg(feature = "callback_profile")]
 mod callback_profile;
+mod construction_ic;
 mod country_scale;
 mod decode;
 mod division_census;
@@ -30,6 +31,8 @@ mod line_output;
 mod map_capture;
 mod map_spool;
 mod opinion_changes;
+mod output_hooks;
+mod output_log;
 mod portrait_changes;
 mod projection;
 mod raw;

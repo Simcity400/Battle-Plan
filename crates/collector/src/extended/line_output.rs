@@ -9,11 +9,9 @@
 //! which were created after the observation began. The table shares the
 //! census's daily slot: off it, the spool carries the last publication, until
 //! a tick goes unobserved.
-use crate::{
-    line_output::{Drained, Entry},
-    table_capture::{grow_capacity, grow_vec},
-};
-use engine::walk::Outcome;
+pub(crate) use super::output_continuity::holds_publication;
+use super::output_continuity::{self, Progress, Reasons, State};
+use crate::line_output::{Drained, Entry};
 use replay::{
     BranchId,
     frame::{TableInput, TableView},
@@ -29,75 +27,16 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub(crate) const ASSEMBLED_BY_SPOOL: &str =
     "assembled by the spool from the production ticks the line output hooks observed";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Capacities {
-    /// Log entries one drain can take, presized from the live equipment-line
-    /// population. Any remainder waits in the log for off-thread growth.
-    pub entries: usize,
-}
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { entries: 4096 }
+pub use super::output_continuity::Capacities;
+pub struct Observation;
+impl output_continuity::Observation for Observation {
+    type Entry = Entry;
+    const ASSEMBLED_BY_SPOOL: &'static str = ASSEMBLED_BY_SPOOL;
+    fn drain(entries: &mut [Entry]) -> Result<Drained, &'static str> {
+        crate::line_output::drain(entries)
     }
 }
-
-pub struct Captured {
-    entries: Vec<Entry>,
-    /// This hour's drain; `None` before a clocked callback drained.
-    drained: Option<Result<Drained, &'static str>>,
-}
-impl Captured {
-    pub fn with_capacities(capacity: &Capacities) -> Self {
-        Self {
-            entries: vec![Entry::default(); capacity.entries],
-            drained: None,
-        }
-    }
-    pub fn reset(&mut self) {
-        self.drained = None;
-    }
-    pub fn allocated_bytes(&self) -> usize {
-        self.entries.capacity() * size_of::<Entry>()
-    }
-    /// Off-thread: room for every entry the last drain found waiting.
-    pub fn grow(&mut self, capacity: &mut Capacities) {
-        if let Some(Ok(drained)) = self.drained {
-            grow_capacity(&mut capacity.entries, drained.pending);
-        }
-        grow_vec(&mut self.entries, capacity.entries);
-    }
-    pub fn outcomes(&self) -> [Outcome; N] {
-        [Outcome::Unavailable {
-            reason: ASSEMBLED_BY_SPOOL,
-        }]
-    }
-    pub fn tables(&self) -> [TableView; N] {
-        [TableView::Unavailable {
-            reason: ASSEMBLED_BY_SPOOL.into(),
-        }]
-    }
-    /// The clocked callback's hand-over of the hook log, copied without
-    /// allocating.
-    pub fn drain(&mut self) {
-        self.drained = Some(crate::line_output::drain(&mut self.entries));
-    }
-    /// The entries this hour's drain handed over.
-    fn handed_over(&self) -> &[Entry] {
-        match self.drained {
-            Some(Ok(drained)) => &self.entries[..drained.copied],
-            _ => &[],
-        }
-    }
-    #[cfg(test)]
-    pub(crate) fn set_drained_for_test(
-        &mut self,
-        drained: Result<Drained, &'static str>,
-        entries: &[Entry],
-    ) {
-        self.entries[..entries.len()].copy_from_slice(entries);
-        self.drained = Some(drained);
-    }
-}
+pub type Captured = output_continuity::Captured<Observation>;
 
 /// What a line produced under one (country, variant, organisation), in
 /// first-seen order: one row.
@@ -120,61 +59,10 @@ struct Line {
     ended: bool,
 }
 
-#[derive(Debug)]
-enum State {
-    Observing {
-        epoch: u64,
-        /// The first log index not yet accounted for.
-        next: u64,
-        /// The hour whose sample began the observation.
-        since_hour: i32,
-    },
-    /// Some ticks since the branch began went unobserved: nothing is published
-    /// until the next branch.
-    Withheld(String),
-}
-
 /// The branch's per-line totals, owned by the spool for one campaign.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Totals {
-    branch: Option<BranchId>,
-    state: State,
-    /// Whether every tick before this hour's sample has been accounted for.
-    complete: bool,
-    /// The hour and lines of the branch's first complete ProductionLines census.
-    census: Option<(i32, Vec<u64>)>,
-    lines: BTreeMap<u64, Line>,
-    /// A written frame held the last publication, published or carried
-    /// ([`Totals::written`]). Until one has, its ended lines are kept and
-    /// published again, so a failed write cannot drop their final totals.
-    publication_written: bool,
-}
-
-impl Default for Totals {
-    fn default() -> Self {
-        Self {
-            branch: None,
-            state: State::Withheld("no frame observed yet".into()),
-            complete: false,
-            census: None,
-            lines: BTreeMap::new(),
-            publication_written: false,
-        }
-    }
-}
-
-/// Whether a frame whose ProductionLineOutput input is `output` holds the
-/// branch's last publication: the publication itself, or a carry of it. An
-/// off-slot hour keeps the skip marker only when the encoder carries the rows
-/// it last wrote; otherwise the spool replaces it with its cached last sample.
-pub(crate) fn holds_publication(output: &TableInput) -> bool {
-    match output {
-        TableInput::Sampled(TableView::Complete(_)) | TableInput::SharedComplete(_) => true,
-        TableInput::Sampled(TableView::Unavailable { reason }) => {
-            reason == replay::cadence::SKIPPED_REASON
-        }
-        _ => false,
-    }
+    shared: output_continuity::Totals<Line>,
 }
 
 impl Totals {
@@ -196,59 +84,35 @@ impl Totals {
     /// After a frame of this campaign was written, with whether it held the
     /// last publication ([`holds_publication`], taken before the write).
     pub(crate) fn written(&mut self, held_publication: bool) {
-        self.publication_written |= held_publication;
+        self.shared.written(held_publication);
     }
 
     fn observe(&mut self, branch: BranchId, hour: i32, captured: &Captured) {
-        if self.branch != Some(branch) {
-            // A new branch counts from its first sample: the ticks drained now
-            // or later below this drain's cursor came before it.
-            *self = Self {
-                branch: Some(branch),
-                state: match captured.drained {
-                    Some(Ok(drained)) => State::Observing {
-                        epoch: drained.epoch,
-                        next: drained.cursor,
-                        since_hour: hour,
-                    },
-                    Some(Err(reason)) => State::Withheld(reason.into()),
-                    None => State::Withheld("the branch's first frame drained no ticks".into()),
-                },
-                complete: true,
-                ..Self::default()
-            };
-            return;
-        }
-        let State::Observing { epoch, next, .. } = &mut self.state else {
-            return;
-        };
-        let withheld = match captured.drained {
-            Some(Ok(drained)) if drained.epoch != *epoch => {
-                "the production line observation restarted"
-            }
-            // A frame dropped after its drain, or an overflowed log, lost ticks.
-            Some(Ok(drained)) if drained.first > *next => "production ticks were lost",
-            Some(Ok(drained)) => {
-                // Entries below `next` were accounted for, or came before the
-                // branch began.
-                let skip = (*next - drained.first) as usize;
-                let entries = captured.handed_over();
-                *next = (*next).max(drained.first + drained.copied as u64);
-                self.complete = *next >= drained.cursor;
-                for entry in entries.iter().skip(skip) {
-                    add(&mut self.lines, entry, hour);
+        let progress = self.shared.observe(
+            branch,
+            hour,
+            captured.drained,
+            &Reasons {
+                first: "the branch's first frame drained no ticks",
+                restarted: "the production line observation restarted",
+                lost: "production ticks were lost",
+                absent: "a frame drained no ticks",
+            },
+        );
+        match progress {
+            Progress::Restart => {}
+            Progress::Entries(range) => {
+                for entry in &captured.handed_over()[range] {
+                    add(&mut self.shared.lines, entry, hour);
                 }
-                return;
             }
-            Some(Err(reason)) => reason,
-            None => "a frame drained no ticks",
-        };
-        self.state = State::Withheld(withheld.into());
+            Progress::None => {}
+        }
     }
 
     fn publish(&mut self, hour: i32, lines: &TableInput) -> TableView {
         // A lost tick shows from the hour it is seen, not the next census.
-        let since_hour = match &self.state {
+        let since_hour = match &self.shared.state {
             State::Observing { since_hour, .. } => *since_hour,
             State::Withheld(reason) => return unavailable(reason),
         };
@@ -267,7 +131,7 @@ impl Totals {
             }
             _ => return unavailable("ProductionLines is incomplete at this hour"),
         };
-        if !self.complete {
+        if !self.shared.complete {
             return unavailable("production ticks before this hour's sample are still in the log");
         }
         TableView::Complete(TableRows::ProductionLineOutput(
@@ -286,17 +150,11 @@ impl Totals {
                 .binary_search_by_key(&handle, |row| row.handle)
                 .is_ok()
         };
-        let (census_hour, baseline) = self
-            .census
-            .get_or_insert_with(|| (hour, census.iter().map(|row| row.handle).collect()));
-        let census_hour = *census_hour;
-        // Lines published as ended have had their publication once a written
-        // frame held it; otherwise they are published as ended again.
-        if std::mem::take(&mut self.publication_written) {
-            self.lines.retain(|_, line| !line.ended);
-        }
+        self.shared
+            .prepare_publication(hour, census.iter().map(|row| row.handle), |line| line.ended);
+        let baseline = &self.shared.census;
         for row in census {
-            let line = self.lines.entry(row.handle).or_insert_with(|| Line {
+            let line = self.shared.lines.entry(row.handle).or_insert_with(|| Line {
                 first_hour: hour,
                 outputs: Vec::new(),
                 ended: false,
@@ -314,12 +172,11 @@ impl Totals {
             }
         }
         let mut rows = Vec::new();
-        for (&handle, line) in &mut self.lines {
+        for (&handle, line) in &mut self.shared.lines {
             line.ended = !live(handle);
             // Absent from the first census and first seen after it: created
             // after that census, so every tick of its life was observed.
-            let observed_since_creation =
-                baseline.binary_search(&handle).is_err() && line.first_hour > census_hour;
+            let observed_since_creation = baseline.observed_since_creation(handle, line.first_hour);
             rows.extend(line.outputs.iter().enumerate().map(|(ordinal, output)| {
                 ProductionLineOutputRow {
                     line: handle,
@@ -347,7 +204,9 @@ fn add(lines: &mut BTreeMap<u64, Line>, entry: &Entry, hour: i32) {
         ended: false,
     });
     let index = match line.outputs.iter().position(|output| {
-        output.country == entry.country && output.variant == entry.variant && output.mio == entry.mio
+        output.country == entry.country
+            && output.variant == entry.variant
+            && output.mio == entry.mio
     }) {
         Some(index) => index,
         None => {

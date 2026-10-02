@@ -1397,6 +1397,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             // daily pass runs on this thread, inside the hourly update this
             // callback precedes. The spool totals the log per branch.
             frame.extended.drain_line_output();
+            // Every construction line's daily output before this sample is in
+            // its log too: the same serial pass advances construction.
+            frame.extended.drain_construction_ic();
             crate::line_output::install_offered();
             frame.extended.prepare_hour(clock.hour, force_full);
             let state = clock.game_state as usize;

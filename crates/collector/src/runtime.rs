@@ -475,6 +475,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     let mut opinion_hooks = unsafe { crate::opinion_changes::Hooks::new(&memory, base) }?;
     let lines = crate::country_scale::observe_production_lines(&memory, base).unwrap_or(0);
     let mut line_hooks = unsafe { crate::line_output::Hooks::new(&memory, base, lines) };
+    let mut construction_hooks = unsafe { crate::construction_ic::Hooks::new(&memory, base) };
     // Size every country-proportional buffer from the live registry before
     // the hook exists. At the main menu the registry may still be empty; the
     // spool thread then raises capacities as soon as a save fills it.
@@ -589,6 +590,13 @@ fn run(module: HMODULE) -> Result<(), String> {
             })
             .and_then(|ready| {
                 if ready {
+                    construction_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
                     hook.set_enabled(true)
                 } else {
                     Ok(false)
@@ -645,6 +653,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     ranges.extend(history_hooks.executable_ranges());
     ranges.extend(opinion_hooks.executable_ranges());
     ranges.extend(line_hooks.executable_ranges());
+    ranges.extend(construction_hooks.executable_ranges());
     while spool_id.load(Ordering::Acquire) == 0 {
         std::thread::yield_now();
     }
@@ -673,6 +682,18 @@ fn run(module: HMODULE) -> Result<(), String> {
                 let _ = fs::write(
                     dll_path.with_file_name("collector.error.txt"),
                     format!("opinion hook detach pending: {result:?}"),
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    loop {
+        match construction_hooks.set_enabled(false) {
+            Ok(true) => break,
+            result => {
+                let _ = fs::write(
+                    dll_path.with_file_name("collector.error.txt"),
+                    format!("construction line hook detach pending: {result:?}"),
                 );
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -786,6 +807,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     drop(history_hooks);
     drop(opinion_hooks);
     drop(line_hooks);
+    drop(construction_hooks);
     drop(shared);
     if let Some(error) = installation_error {
         add_terminal_error(&mut spool_result, error);
@@ -910,6 +932,7 @@ fn add_decode_status(status: &mut Value) {
     status["history_changes"] = crate::history_changes::status();
     status["opinion_changes"] = crate::opinion_changes::status();
     status["line_output"] = crate::line_output::status();
+    status["construction_ic"] = crate::construction_ic::status();
     #[cfg(feature = "callback_profile")]
     {
         status["callback_profile"] = crate::callback_profile::status();
@@ -1048,6 +1071,7 @@ fn wait_quiet(
             || crate::history_changes::active() != 0
             || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
             || crate::line_output::ACTIVE.load(Ordering::SeqCst) != 0
+            || crate::construction_ic::ACTIVE.load(Ordering::SeqCst) != 0
         {
             Ok(false)
         } else {
@@ -1060,6 +1084,7 @@ fn wait_quiet(
                         || crate::history_changes::active() != 0
                         || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
                         || crate::line_output::ACTIVE.load(Ordering::SeqCst) != 0
+                        || crate::construction_ic::ACTIVE.load(Ordering::SeqCst) != 0
                     {
                         Ok(false)
                     } else {

@@ -291,6 +291,7 @@ pub mod coffer_military_access_relation;
 pub mod combat_modifier_entry;
 pub mod combat_registry;
 pub mod combat_sources;
+pub mod construction_ic_sites;
 pub mod convoy_reservation;
 pub mod coperation;
 pub mod coperation_instance;

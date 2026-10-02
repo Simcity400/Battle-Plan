@@ -292,6 +292,8 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     sliced_branch: Option<BranchId>,
     /// Each production line's output on the current branch.
     line_output: crate::extended::line_output::Totals,
+    /// Each construction line's output on the current branch.
+    construction_ic: crate::extended::construction_ic::Totals,
     variables_scratch: ScriptVariableComparison,
     character_shadow: CharacterShadow,
     intel_shadow: IntelShadow,
@@ -336,6 +338,7 @@ impl Campaign {
             sliced_reads: BTreeMap::new(),
             sliced_branch: None,
             line_output: Default::default(),
+            construction_ic: Default::default(),
             variables_scratch: ScriptVariableComparison::default(),
             character_shadow: CharacterShadow::default(),
             intel_shadow: IntelShadow::default(),
@@ -604,6 +607,18 @@ impl<B: SegmentBackend> Campaign<B> {
         );
     }
 
+    /// Add this frame's construction output to the branch's per-line totals and
+    /// publish ConstructionLineOutput beside the frame's construction queues.
+    /// Before the staggered carry, so an off-slot hour's skip is carried.
+    fn assemble_construction_ic(&mut self, source: &mut FrameInput, captured: &Captured) {
+        self.construction_ic.assemble(
+            source.branch,
+            source.hour,
+            captured.extended.construction_ic(),
+            &mut source.tables,
+        );
+    }
+
     // Spool-internal carry-forward keeps format-neutral byte-identical output.
     fn apply_staggered_inputs(&mut self, source: &mut FrameInput) -> [bool; TABLE_COUNT] {
         if self.staggered_branch != Some(source.branch) {
@@ -767,9 +782,13 @@ impl<B: SegmentBackend> Campaign<B> {
         let held_line_output = crate::extended::line_output::holds_publication(
             &source.tables[TableId::ProductionLineOutput.index()],
         );
+        let held_construction_ic = crate::extended::construction_ic::holds_publication(
+            &source.tables[TableId::ConstructionLineOutput.index()],
+        );
         let result = self.write_inner(source, qpc, signal, unknown, work);
         if result.is_ok() {
             self.line_output.written(held_line_output);
+            self.construction_ic.written(held_construction_ic);
         }
         if let Err(error) = &result {
             // Codec/validation errors are failures too. Closing also prevents a
@@ -1651,6 +1670,7 @@ impl Processor {
             },
         );
         campaign.assemble_line_output(&mut source, captured);
+        campaign.assemble_construction_ic(&mut source, captured);
         let retry_full = needs_retry(&source.tables) || sliced_retry;
         let skipped = campaign.apply_staggered_inputs(&mut source);
         if let Some(layout) = &captured.fixed_layout {
@@ -4070,6 +4090,7 @@ mod tests {
                 sliced_reads: BTreeMap::new(),
                 sliced_branch: None,
                 line_output: Default::default(),
+                construction_ic: Default::default(),
                 variables_scratch: ScriptVariableComparison::default(),
                 character_shadow: CharacterShadow::default(),
                 intel_shadow: IntelShadow::default(),
@@ -5180,6 +5201,94 @@ mod tests {
         // The first frame's ticks came before the observation began; hour 1
         // carries hour 0's publication; hour 2 publishes hour 1's two ticks.
         assert_eq!(published, [(0, 0, 0), (0, 0, 0), (4, 4, 0)]);
+    }
+
+    /// Each hour's drained construction output reaches the branch totals whether
+    /// or not the queues' slot is read; the table is published with the queues'
+    /// census, carried off its slot, and round-trips through the encoder.
+    #[test]
+    fn construction_output_publishes_with_the_queues_and_carries_off_their_slot() {
+        use crate::construction_ic::{Drained, Entry};
+        use replay::{
+            frame::FrameDecoder,
+            rows::{BuildingConstructionRow, RailwayConstructionRow, TableRows},
+        };
+        const LINE: u64 = 0x10_0000_003b;
+        const RAIL: u64 = 0x11_0000_1269;
+        let (mut campaign, _) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut captured = Captured::new();
+        let mut decoder = FrameDecoder::new();
+        let mut published = Vec::new();
+        for (hour, first, days, skip) in [(0, 10, 1, false), (1, 11, 2, true), (2, 13, 0, false)] {
+            let entries: Vec<Entry> = (0..days)
+                .map(|day| Entry {
+                    line: if day == 0 { LINE } else { RAIL },
+                    amount: 150_000,
+                    bank: 20_000,
+                    railway: day != 0,
+                    ..Entry::default()
+                })
+                .collect();
+            captured
+                .extended
+                .construction_ic_mut()
+                .set_drained_for_test(
+                    Ok(Drained {
+                        epoch: 1,
+                        first,
+                        cursor: first + days as u64,
+                        copied: days,
+                        pending: days,
+                    }),
+                    &entries,
+                );
+            let mut source: FrameInput = staggered_frame(branch, hour, skip).into();
+            if !skip {
+                source.tables[TableId::BuildingConstruction.index()] =
+                    TableInput::Sampled(TableView::Complete(TableRows::BuildingConstruction(
+                        vec![BuildingConstructionRow {
+                            id: LINE,
+                            country: 5001,
+                            ..Default::default()
+                        }],
+                    )));
+                source.tables[TableId::RailwayConstruction.index()] =
+                    TableInput::Sampled(TableView::Complete(TableRows::RailwayConstruction(vec![
+                        RailwayConstructionRow {
+                            id: RAIL,
+                            country: 5001,
+                            ..Default::default()
+                        },
+                    ])));
+            }
+            campaign.assemble_construction_ic(&mut source, &captured);
+            campaign.apply_staggered_inputs(&mut source);
+            let frame = campaign.encoder.encode_input(source, hour == 0).unwrap();
+            let decoded = decoder.apply(&frame).unwrap();
+            let rows = decoded
+                .complete::<tables::ConstructionLineOutput>()
+                .unwrap();
+            published.push(
+                rows.iter()
+                    .map(|row| (row.line, row.railway, row.construction_raw, row.bank_raw))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        // The first frame's output came before the observation began; hour 1
+        // carries hour 0's publication; hour 2 publishes hour 1's two days.
+        let zero = vec![(LINE, false, 0, 0), (RAIL, true, 0, 0)];
+        assert_eq!(
+            published,
+            [
+                zero.clone(),
+                zero,
+                vec![
+                    (LINE, false, 130_000, 20_000),
+                    (RAIL, true, 130_000, 20_000)
+                ]
+            ]
+        );
     }
 
     /// A line that ends in a publication whose write fails keeps its final

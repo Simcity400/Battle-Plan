@@ -1,6 +1,8 @@
 //! Coordinated extended acquisition. Public arrays use global TableId indices;
 //! individual packs keep compact local arrays. Allocation is off-thread.
 
+mod output_continuity;
+
 use crate::{
     division_census::UnitInputs,
     map_capture::{MapSources, Orders, ShipCensus},
@@ -361,6 +363,7 @@ packs!(
     country_factories,
     industrial_organisations,
     line_output,
+    construction_ic,
     country_stability,
     new_divisions,
     country_tactic_unlocks,
@@ -466,6 +469,22 @@ impl Captured {
     /// The production ticks this frame handed over, for the spool's totals.
     pub(crate) fn line_output(&self) -> &line_output::Captured {
         &self.line_output
+    }
+
+    /// Hand the construction line hook log over into this frame, from the
+    /// clocked callback (`construction_ic::drain`).
+    pub(crate) fn drain_construction_ic(&mut self) {
+        self.construction_ic.drain();
+    }
+
+    /// The construction output this frame handed over, for the spool's totals.
+    pub(crate) fn construction_ic(&self) -> &construction_ic::Captured {
+        &self.construction_ic
+    }
+
+    #[cfg(test)]
+    pub(crate) fn construction_ic_mut(&mut self) -> &mut construction_ic::Captured {
+        &mut self.construction_ic
     }
 
     #[cfg(test)]
