@@ -11,7 +11,7 @@ use std::{
 
 /// The claim fixtures supply their own read times through StateGarrisons' timing
 /// flag, including off-slot full reads; production cadence is checked separately.
-fn timed_scan(
+pub(crate) fn timed_scan(
     replay: &Replay,
     branch: u64,
     cancelled: &AtomicBool,
@@ -21,12 +21,14 @@ fn timed_scan(
     })
 }
 
-/// Lexer ids of the building types the construction fixtures use.
-const CIVILIAN: u32 = 20013;
-const INFRASTRUCTURE: u32 = 12203;
+/// Lexer ids of the building types the construction fixtures use; the reactor
+/// is a type only a mod declares.
+pub(crate) const CIVILIAN: u32 = 20013;
+pub(crate) const INFRASTRUCTURE: u32 = 12203;
+pub(crate) const MOD_REACTOR: u32 = 500;
 
 /// A building line of GER (raw link 11) at `state`.
-fn building_line(
+pub(crate) fn building_line(
     id: u64,
     state: u32,
     amount: i32,
@@ -55,7 +57,11 @@ fn building_line(
 }
 
 /// A building's (level, healthy level) at a location.
-fn building_at(location: u32, building_type: u32, levels: (i16, i16)) -> replay::rows::BuildingRow {
+pub(crate) fn building_at(
+    location: u32,
+    building_type: u32,
+    levels: (i16, i16),
+) -> replay::rows::BuildingRow {
     replay::rows::BuildingRow {
         location,
         building_type,
@@ -68,7 +74,7 @@ fn building_at(location: u32, building_type: u32, levels: (i16, i16)) -> replay:
 /// A frame of the construction fixtures: GER's queues, state buildings (`None`:
 /// the table is incomplete) and province buildings. `read` times a walk of
 /// another table of the construction slot, as a shared walk times only its anchor.
-fn construction_frame(
+pub(crate) fn construction_frame(
     hour: i32,
     read: bool,
     mut lines: Vec<replay::rows::BuildingConstructionRow>,
@@ -107,6 +113,7 @@ fn construction_frame(
     ));
     *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
         [
+            (MOD_REACTOR, "mod_reactor"),
             (INFRASTRUCTURE, "infrastructure"),
             (
                 engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN,
@@ -284,7 +291,11 @@ fn construction_projects_start_at_their_read_and_end_as_their_buildings_show() {
 }
 
 /// A railway line of GER along `route`, from level 1 to 2.
-fn railway_line(id: u64, route: &[u32], amount: i32) -> replay::rows::RailwayConstructionRow {
+pub(crate) fn railway_line(
+    id: u64,
+    route: &[u32],
+    amount: i32,
+) -> replay::rows::RailwayConstructionRow {
     replay::rows::RailwayConstructionRow {
         id,
         country: 11,
@@ -453,7 +464,7 @@ fn the_construction_log_lists_projects_by_token_without_content() {
 }
 
 /// Construction frames for hours 100..=`last` with reads at 100, 124 and 148.
-fn construction_frames(last: i32, frame: impl Fn(i32, bool) -> DecodedFrame) -> Replay {
+pub(crate) fn construction_frames(last: i32, frame: impl Fn(i32, bool) -> DecodedFrame) -> Replay {
     let frames = (100..=last)
         .map(|hour| frame(hour, [100, 124, 148].contains(&hour)))
         .collect();
@@ -1504,7 +1515,7 @@ fn a_repair_is_finished_only_when_its_building_is_fully_healthy_again() {
 
 /// Construction frames for hours 100..=`last`, read at `reads`, whose building
 /// queue read fails at `failed`.
-fn construction_frames_failing(
+pub(crate) fn construction_frames_failing(
     last: i32,
     reads: &[i32],
     failed: &[i32],
@@ -2108,4 +2119,56 @@ fn construction_queue_reads_follow_cadence_without_a_timed_slot_walk() {
     assert_eq!(log.projects[0].runs.len(), 1);
     assert_eq!(log.projects[0].runs[0].factories, 10);
     assert_eq!(log.projects[0].runs[0].last_hour, hour + 1);
+}
+
+/// A building line at state 20 with `amount` left, `produced` and cost 1000.
+pub(crate) fn spending_line(
+    id: u64,
+    amount: i32,
+    produced: i64,
+    created_hour: i32,
+) -> replay::rows::BuildingConstructionRow {
+    replay::rows::BuildingConstructionRow {
+        cost: 100_000_000,
+        produced,
+        created_hour,
+        building_type: CIVILIAN,
+        ..building_line(id, 20, amount, 0, 5)
+    }
+}
+
+#[test]
+fn concurrent_requests_for_a_cold_branch_share_one_scan() {
+    use crate::products::construction_log::{scanned, scans_run};
+    let replay = Arc::new(construction_frames(130, |hour, read| {
+        construction_frame(
+            hour,
+            read,
+            vec![spending_line(1, 1, 0, 90)],
+            Vec::new(),
+            Some(vec![building_at(20, CIVILIAN, (1, 1))]),
+            Vec::new(),
+        )
+    }));
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "coalesce".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let logs: Vec<_> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..4)
+            .map(|_| scope.spawn(|| scanned(&source, 1, &AtomicBool::new(false)).unwrap()))
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect()
+    });
+    assert_eq!(scans_run(&source), 1);
+    assert!(logs.iter().all(|log| Arc::ptr_eq(log, &logs[0])));
 }

@@ -15,9 +15,10 @@
 //!   60828749). It is when the project started, exact, even when the line was
 //!   first read days later.
 //! - `cost` is fixed5 per level (a whole route for a railway); `produced` is the
-//!   fixed5 progress toward the next level; `speed` is the sampled daily rate
-//!   (part M: `produced` grows by exactly `speed` between reads while factories
-//!   are assigned); `active_factories` the factories assigned.
+//!   fixed5 progress toward the next level; `speed` is the line's progress per
+//!   daily update as last computed (part M: `produced` grew by the next read's
+//!   `speed` in most stretches, but not all; `construction_spending` gives the
+//!   counts); `active_factories` the factories assigned.
 //! - `amount` is the levels still to build. `CBuildingProductionLine::AdvanceProduction@140f55590`
 //!   adds `speed` to `produced`, and for each whole `cost` it holds takes `cost`
 //!   off, calls `RemoveRemainingCount(1)` (`amount -= 1`) and raises the
@@ -26,7 +27,8 @@
 //! - `repair_levels` (`+0x78`) is the levels still to repair. A line with repair
 //!   work runs `CBuilding::AdvanceRepair` instead, keeps `produced` at zero and
 //!   sets `repair_levels` to level − healthy level afterwards. Its speed is
-//!   repair with no factories still progresses: part M's repairs all had none.
+//!   repair with no factories still progresses: 70 of part M's 73 repair lines
+//!   never had any at a read.
 //! - For a railway, `amount` is the route segments still to build (a route of n
 //!   provinces starts at n − 1), `cost` the whole route and `produced` =
 //!   `cost` − `remaining_cost`.
@@ -156,11 +158,16 @@
 //! the table's cadence or whose frame timed a walk of any table of its slot
 //! (`metadata::slot_read`).
 
-use super::{LoadContext, Product};
+use super::{
+    LoadContext, Product,
+    construction_spending::{
+        self as spending, Progress as SpendProgress, ProjectSpending, SpendingGap,
+    },
+};
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{link_slot, mapped_slot, slot_read, validate_campaign},
+    metadata::{branch_bounds, link_slot, mapped_slot, slot_read, validate_campaign},
 };
 use engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
 use installed_content::{ResolvedLayers, gfx::SpriteSet, gui::native};
@@ -190,7 +197,7 @@ const MAX_ENTRIES: usize = 4_000_000;
 /// Longest side of a returned building icon.
 const ICON_EDGE: u32 = 48;
 /// The fixed5 scale of `cost`.
-const COST_SCALE: u32 = 100_000;
+pub(crate) const COST_SCALE: u32 = 100_000;
 /// The construction queue's line entry, the element the game gives each
 /// building's `icon_frame` (`picture`) and the repair marker (`repair`). The exe
 /// binds these names: `CProductionLineBuildingItem::CProductionLineBuildingItem@141d347a0`
@@ -674,10 +681,27 @@ struct Open {
     carried: bool,
     remaining: i32,
     repair_levels: i32,
-    /// A building line at its last read: fixed5 progress toward the next level.
+    /// Its last read's fixed5 progress toward the next level and cost per level
+    /// (a railway: its route's progress and cost, for spending).
     produced: i64,
+    cost: i64,
+    /// Why its next stretch is not known whole: an hour since its last read was
+    /// not recorded, or a scheduled read of its queue failed (its cost could have
+    /// changed unseen). None while every hour and read since was recorded.
+    missed: Option<SpendingGap>,
     /// The building it is watched through (a railway: its route provinces).
     keys: Vec<Key>,
+}
+
+impl Open {
+    fn progress(&self) -> SpendProgress {
+        SpendProgress {
+            produced: self.produced,
+            cost: self.cost,
+            remaining: self.remaining,
+            repair_levels: self.repair_levels,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -685,6 +709,9 @@ struct Family {
     open: BTreeMap<u64, Open>,
     watch: Watch,
     reads: Vec<i32>,
+    /// Its last successful read, and whether an hour since was not recorded.
+    last_read: Option<i32>,
+    unrecorded: bool,
 }
 
 impl Family {
@@ -699,8 +726,13 @@ impl Family {
 #[derive(Clone, Debug, Default)]
 pub struct ScannedLog {
     pub projects: Vec<ConstructionProject>,
+    /// Each project's spending (`construction_spending`), by project index.
+    pub spending: Vec<ProjectSpending>,
     pub reads: Vec<i32>,
     pub railway_reads: Vec<i32>,
+    /// The branch's last hour, gaps recorded after its last frame included: a
+    /// project still open whose reads stop before it was not recorded for the rest.
+    pub last_hour: Option<i32>,
     /// Recorded lexer ids of the building types projects name, with their literal.
     pub types: Vec<(u32, Option<String>)>,
     /// Lines left out because the links do not resolve their country.
@@ -1242,6 +1274,12 @@ fn read_buildings(
     for line in scan.buildings.open.values() {
         *sharing.entry(line.keys[0]).or_default() += 1;
     }
+    // Lines without repair work per building at this read: a linked line shares its
+    // `produced` with its partner, so neither's progress is its own.
+    let mut building_now: BTreeMap<Key, usize> = BTreeMap::new();
+    for row in rows.iter().filter(|row| row.repair_levels <= 0) {
+        *building_now.entry(building_key(row)).or_default() += 1;
+    }
     // Lines first listed now at the same building: each may have repaired or built
     // there from the hour it was created (its recorded `created_hour`), never
     // before, whatever it shows at its first read.
@@ -1261,7 +1299,8 @@ fn read_buildings(
         let Some(line) = scan.buildings.open.get_mut(&id) else {
             continue;
         };
-        let project = &mut scan.log.projects[line.project];
+        let index = line.project;
+        let project = &mut scan.log.projects[index];
         let key = line.keys[0];
         let seen = match scan.buildings.watch.tracks.get(&key) {
             Some(track) if !track.lost => {
@@ -1274,10 +1313,60 @@ fn read_buildings(
             _ => Seen::Lost,
         };
         let row = present.get(&id).copied();
+        // For spending: every daily rise of new levels in the stretch, or why the
+        // record cannot settle them.
+        let spend_seen: Result<u32, SpendingGap> = match &seen {
+            Seen::Lost => Err(SpendingGap::NotRecorded),
+            Seen::Shared => Err(SpendingGap::SharedTarget),
+            Seen::Clear(track, newcomer) => {
+                let stretch = Stretch::of(&track.changes, *newcomer);
+                if stretch.doubtful {
+                    Err(SpendingGap::SharedTarget)
+                } else {
+                    Ok(stretch.levels.iter().map(|rise| rise.count).sum())
+                }
+            }
+        };
         let (added, end) = settle(project, line, row, seen, hour);
         entries += added;
         match row {
             Some(row) => {
+                // Spending, for a stretch with new levels to build: `produced`
+                // gained plus the cost of each new level it finished, levels added
+                // meanwhile included. Every daily rise of its building in the
+                // stretch must be settled: claimed as the line's (a completion, at
+                // the level's cost, dated by rise or read), or none at all; a rise
+                // the log leaves unclaimed may be a completion whose cost is
+                // unresolved.
+                if line.remaining > 0 || row.amount > 0 {
+                    let claimed: u32 = project
+                        .built
+                        .iter()
+                        .filter(|levels| levels.known_at == hour && !levels.repair)
+                        .map(|levels| levels.count)
+                        .sum();
+                    let finished = spend_seen.and_then(|rose| {
+                        if project
+                            .unaccounted
+                            .iter()
+                            .any(|levels| levels.known_at == hour && !levels.repair)
+                        {
+                            Err(SpendingGap::LevelsUnaccounted)
+                        } else if rose > claimed {
+                            Err(SpendingGap::UnclaimedRise)
+                        } else {
+                            Ok(claimed)
+                        }
+                    });
+                    let stretch = spending::building_stretch(
+                        line.progress(),
+                        building_progress(row),
+                        line.missed,
+                        building_now.get(&key).copied().unwrap_or(0) > 1,
+                        finished,
+                    );
+                    entries += scan.log.spending[index].record(hour, stretch);
+                }
                 entries += record_run(
                     project,
                     line,
@@ -1287,13 +1376,25 @@ fn read_buildings(
                     row.repair_levels,
                 );
                 line.produced = row.produced;
+                line.cost = row.cost;
+                line.missed = None;
             }
             None => {
+                // Spending: a line with new levels left may have progressed after
+                // its last read (a repair's effort is never measured).
+                if let Some(end) = &end
+                    && line.remaining > 0
+                {
+                    let gap = spending::ending(end.kind, line.missed);
+                    entries += scan.log.spending[index].record(hour, Err(gap));
+                }
                 project.end = end;
                 scan.buildings.open.remove(&id);
             }
         }
     }
+    let previous = scan.buildings.last_read;
+    let unrecorded = scan.buildings.unrecorded;
     for row in rows {
         if scan.buildings.open.contains_key(&row.id) {
             continue;
@@ -1308,6 +1409,39 @@ fn read_buildings(
         let key = building_key(row);
         let province = key.0.then_some(row.target_location);
         let building = scan.type_of(row.building_type);
+        let earlier_unknown = scan.changes.earlier_unknown(
+            &[key],
+            row.created_hour,
+            scan.buildings.reads.last().copied(),
+            false,
+        );
+        // A repair's effort is not measured (`construction_spending`); a new
+        // building's progress before this read counts when the read before shows
+        // it was not yet in the queue and its building's level held at every
+        // recorded hour since, with no repair or possible completion in its
+        // opening stretch (step 1 of the claim algorithm).
+        let mut spent = ProjectSpending::default();
+        if row.repair_levels <= 0 {
+            let first = match previous {
+                None => None,
+                Some(_) if unrecorded => Some(Err(SpendingGap::NotRecorded)),
+                Some(previous) if row.created_hour <= previous => {
+                    Some(Err(SpendingGap::ListedLate))
+                }
+                Some(_) if building_now.get(&key).copied().unwrap_or(0) > 1 => {
+                    Some(Err(SpendingGap::SharedTarget))
+                }
+                Some(_) => Some(spending::before_first_read(
+                    scan.changes.changed_since_read(key),
+                    earlier_unknown,
+                    row.produced,
+                )),
+            };
+            match first {
+                Some(first) => entries += spent.record(hour, first),
+                None => spent.before_first_read = true,
+            }
+        }
         let mut project = ConstructionProject {
             id: row.id.to_string(),
             kind: ProjectKind::Building,
@@ -1323,12 +1457,7 @@ fn read_buildings(
             cost_raw: row.cost.to_string(),
             created_hour: row.created_hour,
             first_read: hour,
-            earlier_unknown: scan.changes.earlier_unknown(
-                &[key],
-                row.created_hour,
-                scan.buildings.reads.last().copied(),
-                false,
-            ),
+            earlier_unknown,
             runs: Vec::new(),
             built: Vec::new(),
             unaccounted: Vec::new(),
@@ -1342,6 +1471,8 @@ fn read_buildings(
             remaining: row.amount,
             repair_levels: row.repair_levels,
             produced: row.produced,
+            cost: row.cost,
+            missed: None,
             keys: vec![key],
         };
         entries += record_run(
@@ -1353,14 +1484,26 @@ fn read_buildings(
             row.repair_levels,
         );
         scan.log.projects.push(project);
+        scan.log.spending.push(spent);
         scan.buildings.watch.watch(key, states, provinces);
         scan.buildings.open.insert(row.id, line);
     }
     let needed = scan.buildings.needed();
     scan.buildings.watch.reset(&needed);
     scan.buildings.reads.push(hour);
+    scan.buildings.last_read = Some(hour);
+    scan.buildings.unrecorded = false;
     scan.changes.reset(false);
     scan.count(entries)
+}
+
+fn building_progress(row: &BuildingConstructionRow) -> SpendProgress {
+    SpendProgress {
+        produced: row.produced,
+        cost: row.cost,
+        remaining: row.amount,
+        repair_levels: row.repair_levels,
+    }
 }
 
 /// One read of the railway queue at `hour`.
@@ -1406,7 +1549,8 @@ fn read_railways(
         let Some(line) = scan.railways.open.get_mut(&id) else {
             continue;
         };
-        let project = &mut scan.log.projects[line.project];
+        let index = line.project;
+        let project = &mut scan.log.projects[index];
         match present.get(&id) {
             Some(row) => {
                 let fell = line.remaining.saturating_sub(row.amount);
@@ -1414,8 +1558,13 @@ fn read_railways(
                     project.built.push(by_read(fell as u32, hour, false));
                     entries += 1;
                 }
+                let stretch =
+                    spending::railway_stretch(line.progress(), railway_progress(row), line.missed);
+                entries += scan.log.spending[index].record(hour, stretch);
                 entries += record_run(project, line, hour, row.active_factories, row.amount, 0);
                 line.produced = row.produced;
+                line.cost = row.cost;
+                line.missed = None;
             }
             None => {
                 let tracks: Vec<Option<&Track>> = line
@@ -1469,12 +1618,16 @@ fn read_railways(
                         _ => ended(EndKind::Unknown, None, hour, Some(UnknownEnd::RouteUnclear)),
                     }
                 };
+                let gap = spending::ending(end.kind, line.missed);
+                entries += scan.log.spending[index].record(hour, Err(gap));
                 entries += leave_unaccounted(project, &end, &[(false, line.remaining)], hour);
                 project.end = Some(end);
                 scan.railways.open.remove(&id);
             }
         }
     }
+    let previous = scan.railways.last_read;
+    let unrecorded = scan.railways.unrecorded;
     for row in rows {
         if scan.railways.open.contains_key(&row.id) {
             continue;
@@ -1534,6 +1687,8 @@ fn read_railways(
             remaining: row.amount,
             repair_levels: 0,
             produced: row.produced,
+            cost: row.cost,
+            missed: None,
             keys: keys.clone(),
         };
         entries += record_run(
@@ -1544,7 +1699,22 @@ fn read_railways(
             row.amount,
             0,
         );
+        // A railway's `produced` is its whole route's progress since it was
+        // created, so it all counts when the line was created after the read before.
+        let mut spent = ProjectSpending::default();
+        let first = match previous {
+            None => None,
+            Some(_) if unrecorded => Some(Err(SpendingGap::NotRecorded)),
+            Some(previous) if row.created_hour <= previous => Some(Err(SpendingGap::ListedLate)),
+            Some(_) if row.produced < 0 => Some(Err(SpendingGap::Unexplained)),
+            Some(_) => Some(Ok(row.produced)),
+        };
+        match first {
+            Some(first) => entries += spent.record(hour, first),
+            None => spent.before_first_read = true,
+        }
         scan.log.projects.push(project);
+        scan.log.spending.push(spent);
         for key in keys {
             scan.railways.watch.watch(key, states, provinces);
         }
@@ -1553,8 +1723,19 @@ fn read_railways(
     let needed = scan.railways.needed();
     scan.railways.watch.reset(&needed);
     scan.railways.reads.push(hour);
+    scan.railways.last_read = Some(hour);
+    scan.railways.unrecorded = false;
     scan.changes.reset(true);
     scan.count(entries)
+}
+
+fn railway_progress(row: &RailwayConstructionRow) -> SpendProgress {
+    SpendProgress {
+        produced: row.produced,
+        cost: row.cost,
+        remaining: row.amount,
+        repair_levels: 0,
+    }
 }
 
 /// Scans one branch for every construction project.
@@ -1618,8 +1799,10 @@ fn scan_with_reads(
                 scan.changes.lose();
                 for family in [&mut scan.buildings, &mut scan.railways] {
                     family.watch.lose();
+                    family.unrecorded = true;
                     for line in family.open.values_mut() {
                         line.carried = false;
+                        line.missed = Some(SpendingGap::NotRecorded);
                     }
                 }
             }
@@ -1632,22 +1815,21 @@ fn scan_with_reads(
             let read = read_queue(decoded, TableId::BuildingConstruction);
             match (read, decoded.complete::<tables::BuildingConstruction>()) {
                 (true, Ok(rows)) => read_buildings(&mut scan, decoded, rows, states, provinces)?,
-                // A read that failed: its values are unknown, so nothing is carried.
-                (true, Err(_)) => scan
-                    .buildings
-                    .open
-                    .values_mut()
-                    .for_each(|line| line.carried = false),
+                // A read that failed: its values are unknown, so nothing is carried,
+                // and the spending stretch across it is unknown.
+                (true, Err(_)) => scan.buildings.open.values_mut().for_each(|line| {
+                    line.carried = false;
+                    line.missed.get_or_insert(SpendingGap::ReadFailed);
+                }),
                 (false, _) => carry(&mut scan.log.projects, &scan.buildings.open, hour),
             }
             let read = read_queue(decoded, TableId::RailwayConstruction);
             match (read, decoded.complete::<tables::RailwayConstruction>()) {
                 (true, Ok(rows)) => read_railways(&mut scan, decoded, rows, states, provinces)?,
-                (true, Err(_)) => scan
-                    .railways
-                    .open
-                    .values_mut()
-                    .for_each(|line| line.carried = false),
+                (true, Err(_)) => scan.railways.open.values_mut().for_each(|line| {
+                    line.carried = false;
+                    line.missed.get_or_insert(SpendingGap::ReadFailed);
+                }),
                 (false, _) => carry(&mut scan.log.projects, &scan.railways.open, hour),
             }
         }
@@ -1655,6 +1837,13 @@ fn scan_with_reads(
     scan.log.unresolved = scan.unresolved.len();
     scan.log.reads = scan.buildings.reads;
     scan.log.railway_reads = scan.railways.reads;
+    // The branch's end: recorded gaps after its last frame are part of it.
+    scan.log.last_hour = replay
+        .branches
+        .iter()
+        .find(|start| start.id == branch)
+        .map(|start| branch_bounds(replay, start).1)
+        .or(last);
     Ok(scan.log)
 }
 
@@ -1978,13 +2167,218 @@ pub fn named(
 
 #[derive(Default)]
 struct Cache {
-    branches: Vec<(u64, Arc<ScannedLog>)>,
     /// Names for the catalogue they were read from, per branch.
     named: Vec<(u64, Arc<Catalogue>, Arc<Named>)>,
 }
 
+/// The branches' scans. Its lock is held through a cold scan, so concurrent
+/// requests for the branch (the log and spending widgets) share one scan
+/// instead of each decoding the whole branch; naming keeps its own lock.
+#[derive(Default)]
+struct Scans {
+    branches: Vec<(u64, Arc<ScannedLog>)>,
+    /// Scans run for this source.
+    run: usize,
+}
+
+/// How many scans this source has run (the coalescing test).
+#[cfg(test)]
+pub(crate) fn scans_run(source: &Source) -> usize {
+    source
+        .state::<Scans>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .run
+}
+
 /// Branches whose scans stay cached.
 const CACHED_BRANCHES: usize = 4;
+
+/// A branch's scan, cached per source and shared by every construction product,
+/// so the log and the spending read the queue once.
+pub(crate) fn scanned(
+    source: &Source,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Arc<ScannedLog>> {
+    let state = source.state::<Scans>();
+    let mut scans = state.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some((_, log)) = scans.branches.iter().find(|(cached, _)| *cached == branch) {
+        return Ok(Arc::clone(log));
+    }
+    scans.run += 1;
+    let log = Arc::new(scan(&source.replay(), branch, cancelled)?);
+    scans.branches.push((branch, Arc::clone(&log)));
+    if scans.branches.len() > CACHED_BRANCHES {
+        scans.branches.remove(0);
+    }
+    Ok(log)
+}
+
+/// Content's names and pictures for a branch's scan: every type its projects
+/// name (in the scan's order, so a project's `building` indexes it), the repair
+/// marker, and the names of `states`.
+pub(crate) struct ContentNames {
+    pub types: Vec<BuildingInfo>,
+    pub repair_icon: Option<String>,
+    names: Option<Arc<Named>>,
+}
+
+impl ContentNames {
+    /// Every type the scan names, in its order, named and pictured by `names`.
+    fn of(log: &ScannedLog, names: Option<Arc<Named>>) -> Self {
+        let types = log
+            .types
+            .iter()
+            .map(|(id, token)| {
+                let (name, icon) = names
+                    .as_ref()
+                    .and_then(|names| names.types.get(id).cloned())
+                    .unwrap_or((None, None));
+                BuildingInfo {
+                    id: *id,
+                    token: token.clone(),
+                    name,
+                    icon,
+                }
+            })
+            .collect();
+        Self {
+            types,
+            repair_icon: names.as_ref().and_then(|names| names.repair_icon.clone()),
+            names,
+        }
+    }
+
+    pub(crate) fn states(&self, states: &BTreeSet<u32>) -> Vec<StateName> {
+        states
+            .iter()
+            .map(|&id| StateName {
+                id,
+                name: self
+                    .names
+                    .as_ref()
+                    .and_then(|names| names.states.get(&id).cloned().flatten()),
+            })
+            .collect()
+    }
+}
+
+/// Every state a branch's projects name.
+fn project_states(log: &ScannedLog) -> BTreeSet<u32> {
+    log.projects
+        .iter()
+        .flat_map(|project| [project.state, project.to_state])
+        .flatten()
+        .collect()
+}
+
+/// Names and pictures from the recorded content, cached per branch and catalogue.
+/// Without the game folders every type and state stays unnamed, and `warnings` says why.
+pub(crate) fn content_names(
+    source: &Source,
+    context: &LoadContext,
+    branch: u64,
+    log: &ScannedLog,
+    cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
+) -> io::Result<ContentNames> {
+    let state = source.state::<Cache>();
+    let names = match context
+        .content()
+        .and_then(|content| catalogue::catalogue(source, content))
+    {
+        Ok(catalogue) => {
+            let cached = {
+                let cache = state.lock().unwrap_or_else(|error| error.into_inner());
+                cache
+                    .named
+                    .iter()
+                    .find(|(cached, from, _)| *cached == branch && Arc::ptr_eq(from, &catalogue))
+                    .map(|(_, _, named)| Arc::clone(named))
+            };
+            let named = match cached {
+                Some(named) => named,
+                None => {
+                    let localise = |key: &str| catalogue.localised(key, catalogue::View::Plain);
+                    let view = ContentView {
+                        layers: &catalogue.content.layers,
+                        sprites: &catalogue.sprites,
+                        guis: &catalogue.guis,
+                        gui_decode: &catalogue.gui_decode,
+                        localise: &localise,
+                    };
+                    let named =
+                        Arc::new(named(&view, &log.types, &project_states(log), cancelled)?);
+                    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+                    cache.named.retain(|(cached, _, _)| *cached != branch);
+                    cache
+                        .named
+                        .push((branch, Arc::clone(&catalogue), Arc::clone(&named)));
+                    if cache.named.len() > CACHED_BRANCHES {
+                        cache.named.remove(0);
+                    }
+                    named
+                }
+            };
+            warnings.extend(catalogue.verification.iter().cloned());
+            warnings.extend(catalogue.warnings.iter().cloned());
+            warnings.extend(named.warnings.iter().cloned());
+            if named.types.values().any(|(_, icon)| icon.is_some()) {
+                warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
+            }
+            Some(named)
+        }
+        Err(error) => {
+            warnings.push(format!("Building and state names are unavailable: {error}"));
+            None
+        }
+    };
+    Ok(ContentNames::of(log, names))
+}
+
+/// Names from one view of the content without the cache, as `content_names`
+/// reads them from a catalogue: for content fixtures.
+#[cfg(test)]
+pub(crate) fn names_in(
+    content: &ContentView<'_>,
+    log: &ScannedLog,
+    cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
+) -> io::Result<ContentNames> {
+    let named = named(content, &log.types, &project_states(log), cancelled)?;
+    warnings.extend(named.warnings.iter().cloned());
+    Ok(ContentNames::of(log, Some(Arc::new(named))))
+}
+
+/// What every construction product warns about a branch's scan.
+pub(crate) fn scan_warnings(log: &ScannedLog, warnings: &mut Vec<String>) {
+    if log.unresolved > 0 {
+        warnings.push(format!(
+            "{} construction lines name a country the recorded links do not resolve; they are left out.",
+            log.unresolved
+        ));
+    }
+    if log.empty_routes > 0 {
+        warnings.push(format!(
+            "{} railway lines were recorded without a route; whether they finished is not known.",
+            log.empty_routes
+        ));
+    }
+    if log.late_created > 0 {
+        warnings.push(format!(
+            "{} construction lines were created after the read that first lists them.",
+            log.late_created
+        ));
+    }
+    warnings.push(
+        "A project started and finished between two daily reads of the queue is not in the recording."
+            .to_owned(),
+    );
+    if log.reads.is_empty() && log.railway_reads.is_empty() {
+        warnings.push("No recorded construction queue in this branch.".to_owned());
+    }
+}
 
 impl Product for ConstructionLog {
     const KEY: &'static str = "construction-log";
@@ -2023,141 +2417,19 @@ impl Product for ConstructionLog {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = params.branch()?;
-        let state = source.state::<Cache>();
-        let cached = {
-            let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache
-                .branches
-                .iter()
-                .find(|(cached, _)| *cached == branch)
-                .map(|(_, log)| Arc::clone(log))
-        };
-        let log = match cached {
-            Some(log) => log,
-            None => {
-                let log = Arc::new(scan(&source.replay(), branch, cancelled)?);
-                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache.branches.retain(|(cached, _)| *cached != branch);
-                cache.branches.push((branch, Arc::clone(&log)));
-                if cache.branches.len() > CACHED_BRANCHES {
-                    cache.branches.remove(0);
-                }
-                log
-            }
-        };
+        let log = scanned(source, branch, cancelled)?;
         let mut warnings = Vec::new();
-        let states: BTreeSet<u32> = log
-            .projects
-            .iter()
-            .flat_map(|project| [project.state, project.to_state])
-            .flatten()
-            .collect();
         // Without the game folders the log still lists every project, by token and state id.
-        let names = match context
-            .content()
-            .and_then(|content| catalogue::catalogue(source, content))
-        {
-            Ok(catalogue) => {
-                let cached = {
-                    let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                    cache
-                        .named
-                        .iter()
-                        .find(|(cached, from, _)| {
-                            *cached == branch && Arc::ptr_eq(from, &catalogue)
-                        })
-                        .map(|(_, _, named)| Arc::clone(named))
-                };
-                let named = match cached {
-                    Some(named) => named,
-                    None => {
-                        let localise = |key: &str| catalogue.localised(key, catalogue::View::Plain);
-                        let view = ContentView {
-                            layers: &catalogue.content.layers,
-                            sprites: &catalogue.sprites,
-                            guis: &catalogue.guis,
-                            gui_decode: &catalogue.gui_decode,
-                            localise: &localise,
-                        };
-                        let named = Arc::new(named(&view, &log.types, &states, cancelled)?);
-                        let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                        cache.named.retain(|(cached, _, _)| *cached != branch);
-                        cache
-                            .named
-                            .push((branch, Arc::clone(&catalogue), Arc::clone(&named)));
-                        if cache.named.len() > CACHED_BRANCHES {
-                            cache.named.remove(0);
-                        }
-                        named
-                    }
-                };
-                warnings.extend(catalogue.verification.iter().cloned());
-                warnings.extend(catalogue.warnings.iter().cloned());
-                warnings.extend(named.warnings.iter().cloned());
-                if named.types.values().any(|(_, icon)| icon.is_some()) {
-                    warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
-                }
-                Some(named)
-            }
-            Err(error) => {
-                warnings.push(format!("Building and state names are unavailable: {error}"));
-                None
-            }
-        };
-        if log.unresolved > 0 {
-            warnings.push(format!(
-                "{} construction lines name a country the recorded links do not resolve; they are left out.",
-                log.unresolved
-            ));
-        }
-        if log.empty_routes > 0 {
-            warnings.push(format!(
-                "{} railway lines were recorded without a route; whether they finished is not known.",
-                log.empty_routes
-            ));
-        }
-        if log.late_created > 0 {
-            warnings.push(format!(
-                "{} construction lines were created after the read that first lists them.",
-                log.late_created
-            ));
-        }
-        warnings.push("A project started and finished between two daily reads of the queue is not in the recording.".to_owned());
-        if log.reads.is_empty() && log.railway_reads.is_empty() {
-            warnings.push("No recorded construction queue in this branch.".to_owned());
-        }
-        let types = log
-            .types
-            .iter()
-            .map(|(id, token)| {
-                let (name, icon) = names
-                    .as_ref()
-                    .and_then(|names| names.types.get(id).cloned())
-                    .unwrap_or((None, None));
-                BuildingInfo {
-                    id: *id,
-                    token: token.clone(),
-                    name,
-                    icon,
-                }
-            })
-            .collect();
+        let names = content_names(source, context, branch, &log, cancelled, &mut warnings)?;
+        scan_warnings(&log, &mut warnings);
         Ok(ConstructionLogReply {
             branch_id: params.branch_id.clone(),
             cost_scale: COST_SCALE,
             reads: log.reads.clone(),
             railway_reads: log.railway_reads.clone(),
-            types,
-            repair_icon: names.as_ref().and_then(|names| names.repair_icon.clone()),
-            states: states
-                .iter()
-                .map(|&id| StateName {
-                    id,
-                    name: names
-                        .as_ref()
-                        .and_then(|names| names.states.get(&id).cloned().flatten()),
-                })
-                .collect(),
+            states: names.states(&project_states(&log)),
+            types: names.types,
+            repair_icon: names.repair_icon,
             projects: log.projects.clone(),
             warnings,
         })
@@ -2165,4 +2437,4 @@ impl Product for ConstructionLog {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

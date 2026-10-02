@@ -1581,6 +1581,96 @@ states: Array<StateName>,
  * In order of first read, then handle.
  */
 projects: Array<ConstructionProject>, warnings: Array<string>, };
+export type SpendingGap = "notRecorded" | "readFailed" | "listedLate" | "builtBeforeRead" | "sharedTarget" | "levelsUnaccounted" | "unclaimedRise" | "costChanged" | "repairing" | "unexplained" | "leftUnfinished" | "endUnknown" | "finishedAfterRead";
+export type SpentStep = { knownAt: number,
+/**
+ * Fixed5 (`cost_scale` per point of output), as a decimal string.
+ */
+totalRaw: string, };
+export type LeafProject = {
+/**
+ * The project's native handle, as in the construction log.
+ */
+project: string, firstRead: number,
+/**
+ * The read that establishes an inferred interval; none when its first read does.
+ */
+knownAt: number | null, until: number | null,
+/**
+ * The interval ended at a break in its reads (hours not recorded, or a read
+ * that failed), at `until`: what it did from then is not known, not nothing.
+ */
+unread: boolean,
+/**
+ * When `unread`, the hour its reads resume (the read that showed it gone, for
+ * one that left); none when they never do before the branch ends (the rest of
+ * the branch is not recorded for it).
+ */
+resumes: number | null, };
+export type SpendingUnknown = {
+/**
+ * The read that ends it: nothing about it shows before.
+ */
+knownAt: number, reason: SpendingGap,
+/**
+ * The project's native handle, as in the construction log.
+ */
+project: string, };
+export type SpendingLeaf = {
+/**
+ * Repair projects: their effort is not measured, so `spent` is empty.
+ */
+repair: boolean, kind: ProjectKind,
+/**
+ * Index into [`ConstructionSpendingReply::types`].
+ */
+building: number,
+/**
+ * The target state (a railway: its route's first province's).
+ */
+state: number | null,
+/**
+ * A railway: the state of its route's last province.
+ */
+toState: number | null,
+/**
+ * Running total at each read that adds to it, in hour order.
+ */
+spent: Array<SpentStep>,
+/**
+ * In hour order.
+ */
+unknown: Array<SpendingUnknown>,
+/**
+ * Its projects, by first read.
+ */
+projects: Array<LeafProject>, };
+export type ConstructionSpendingReply = { branchId: string, tag: string,
+/**
+ * Units per point of civilian-factory output in `total_raw`.
+ */
+costScale: number,
+/**
+ * Hours the building and railway queues were read, ascending.
+ */
+reads: Array<number>, railwayReads: Array<number>,
+/**
+ * Every building type the branch's projects name (a leaf's `building` indexes it).
+ */
+types: Array<BuildingInfo>, repairIcon: string | null,
+/**
+ * Names of the states the leaves name.
+ */
+states: Array<StateName>,
+/**
+ * By repair, kind, building type and state.
+ */
+leaves: Array<SpendingLeaf>,
+/**
+ * Projects already in the queue at its first read in the branch: their
+ * progress before that read is not counted.
+ */
+beforeFirstRead: number, warnings: Array<string>, };
 /** Refusals for want of room: a message starting with one may be tried again. */
 export const CAPACITY_REACHED = "Dashboard request capacity reached";
 export const TOO_MANY_SOURCES = "Too many open dashboard source bindings";
@@ -1590,4 +1680,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "subjects", "autonomy", "construction-log"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "subjects", "autonomy", "construction-log", "construction-spending"] as const;

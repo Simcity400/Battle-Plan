@@ -1,13 +1,13 @@
-import type { BuildingInfo, ConstructionLogReply, ConstructionProject, EndKind, LevelsBuilt, ProjectRun, UnknownEnd } from '../../generated/dashboard';
+import type { ConstructionLogReply, ConstructionProject, EndKind, LevelsBuilt, ProjectRun, UnknownEnd } from '../../generated/dashboard';
 import { formatDateTime } from '../../dashboard/calendar.ts';
+import { CONSTRUCTION_CADENCE, isBuildingInfo, isStateName, placeName, stateName as stateNameIn, typeName } from '../../dashboard/construction.ts';
 import { readAt, readNote } from '../../dashboard/reads.ts';
 import type { LogRow } from '../../charts/log/logData';
 import { newestFirst } from '../../charts/log/logData.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
 
-/** How often the queue is read, for a carried value's note. */
-export const CADENCE = 'the construction queue is read once a day.';
+export { typeName };
 const RAW = /^-?\d{1,20}$/;
 const END_KINDS: readonly EndKind[] = ['finished', 'removed', 'unknown'];
 /** Why an ending is not known, as the tooltip says it. */
@@ -37,17 +37,15 @@ const isProject = (project: ConstructionProject, types: number) => typeof projec
   && (project.end == null || (typeof project.end === 'object' && END_KINDS.includes(project.end.kind) && optionalInt(project.end.hour)
     && int(project.end.knownAt) && project.end.knownAt > project.firstRead
     && (project.end.unknown == null || Object.hasOwn(UNKNOWN_END, project.end.unknown))));
-const isType = (type: BuildingInfo) => typeof type === 'object' && type != null && int(type.id)
-  && [type.token, type.name, type.icon].every(value => value == null || typeof value === 'string');
 
 /** Checks the reply's shape; each project names a listed type and its runs are in hour order. */
 export function validateConstructionLogReply(data: unknown): ConstructionLogReply {
   const reply = data as ConstructionLogReply;
   const hours = (list: unknown) => Array.isArray(list) && list.every(int) && list.every((hour, index) => index === 0 || list[index - 1] < hour);
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && int(reply.costScale) && reply.costScale > 0
-    && hours(reply.reads) && hours(reply.railwayReads) && Array.isArray(reply.types) && reply.types.every(isType)
+    && hours(reply.reads) && hours(reply.railwayReads) && Array.isArray(reply.types) && reply.types.every(isBuildingInfo)
     && (reply.repairIcon == null || typeof reply.repairIcon === 'string')
-    && Array.isArray(reply.states) && reply.states.every(state => typeof state === 'object' && state != null && int(state.id) && (state.name == null || typeof state.name === 'string'))
+    && Array.isArray(reply.states) && reply.states.every(isStateName)
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.projects) && reply.projects.every(project => isProject(project, reply.types.length));
   if (!ok) throw new Error('The construction log reply is malformed.');
@@ -135,11 +133,6 @@ export function projectAt(project: ConstructionProject, hour: number): ProjectAt
 /** A project's building type in the reply. */
 export const projectType = (reply: ConstructionLogReply, project: ConstructionProject) => reply.types[project.building];
 
-/** A type's name as the game gives it, else its script name. */
-export function typeName(type: BuildingInfo | undefined): string {
-  return type?.name ?? type?.token ?? (type ? `Building type ${type.id}` : 'Unknown building');
-}
-
 /** The building types this campaign's projects name, as the game names and pictures
  * them, by name: the choices of the Building types setting and chips. */
 export function buildingChoices(data: ConstructionLogReply | undefined): { value: string; label: string; icon?: string | null }[] {
@@ -148,10 +141,7 @@ export function buildingChoices(data: ConstructionLogReply | undefined): { value
 }
 
 /** A state's name as the game gives it, else its number. */
-export function stateName(reply: ConstructionLogReply, state: number | null): string | null {
-  if (state == null) return null;
-  return reply.states.find(item => item.id === state)?.name ?? `State ${state}`;
-}
+export const stateName = (reply: ConstructionLogReply, state: number | null) => stateNameIn(reply.states, state);
 
 export interface LogFilter {
   /** Building type tokens to show; empty shows every type. */
@@ -211,14 +201,8 @@ export function levelsLabel(at: ProjectAt): string | null {
 }
 
 /** Where the project is: its state (a railway: from one state to another). */
-export function placeLabel(reply: ConstructionLogReply, project: ConstructionProject): string {
-  const from = stateName(reply, project.state);
-  if (project.kind === 'railway') {
-    const to = stateName(reply, project.toState);
-    return from && to && from !== to ? `${from} to ${to}` : from ?? to ?? 'an unrecorded route';
-  }
-  return from ?? (project.province != null ? `province ${project.province}` : 'an unrecorded place');
-}
+export const placeLabel = (reply: ConstructionLogReply, project: ConstructionProject) =>
+  placeName(reply.states, { state: project.state, toState: project.toState, province: project.province, railway: project.kind === 'railway' });
 
 /** The row read out as one sentence. */
 export function describeRow(reply: ConstructionLogReply, row: LogRow<ProjectAt>, country: string): string {
@@ -305,7 +289,7 @@ export function projectTooltip(reply: ConstructionLogReply, at: ProjectAt, hour:
   const notes = [end?.unknown ? UNKNOWN_END[end.unknown] : null, end?.kind === 'removed' ? 'It left the queue unfinished: cancelled, or its builder lost the place. The recording does not say which.' : null,
     at.earlierUnknown ? 'Work before its first read was not recorded.' : null,
     at.possible ? 'Extra possible completions may have been built with more levels added, or supplied by a focus, decision, event or effect.' : null,
-    readNote(valuesRead(reply, at, hour), hour, CADENCE)].filter(Boolean).join(' ');
+    readNote(valuesRead(reply, at, hour), hour, CONSTRUCTION_CADENCE)].filter(Boolean).join(' ');
   const base = { title: typeName(type), icon: type?.icon ?? undefined, subtitle: `${country} · ${placeLabel(reply, project)}${at.kind === 'new' ? '' : ` · ${kindLabel(at.kind).toLowerCase()}`}`, note: notes || undefined };
   return [{ ...base, rows: [...rows, ...detail] }, { ...base, rows }];
 }
