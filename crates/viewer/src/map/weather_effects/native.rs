@@ -134,23 +134,25 @@ impl DrawPacket {
 ///Viewer-owned presentation histories. A newly observed event starts empty;
 ///its historical RNG, actor enqueue order and pre-observation motion are not recorded.
 #[derive(Default)]
-pub(super) struct EntitySimulations(BTreeMap<(String, u32, usize), Simulation>);
+pub(super) struct EntitySimulations(
+    BTreeMap<(String, crate::map::entity_animation::EventKey, usize), Simulation>,
+);
 
 impl EntitySimulations {
     pub fn clear(&mut self) {
         self.0.clear();
     }
 
-    pub fn packets(
+    /// Advance once before scene lights and draws, through the same path for
+    /// every entity producer. 14226EB10 retains a kept event's light only
+    /// until its finished particle runtime has no living subsystem.
+    pub fn prepare(
         &mut self,
         assets: &super::Assets,
         events: &[crate::map::entity_animation::Event],
-        camera: Camera,
-        size: [u32; 2],
-        packets: &mut Vec<DrawPacket>,
     ) -> io::Result<()> {
         let mut seen = std::collections::BTreeSet::new();
-        for (actor, event) in events.iter().enumerate() {
+        for event in events {
             let Some(name) = &event.definition.particle else {
                 continue;
             };
@@ -158,11 +160,11 @@ impl EntitySimulations {
                 continue;
             };
             for (ordinal, emitter) in emitters.iter().enumerate() {
-                let key = (name.clone(), event.seed, ordinal);
+                let key = (name.clone(), event.key, ordinal);
                 if !seen.insert(key.clone()) {
                     return Err(io::Error::other(format!(
-                        "Map shader particles: 1 refused actor {name}: duplicate presentation identity {}",
-                        event.seed
+                        "Map shader particles: 1 refused actor {name}: duplicate presentation identity {:?}",
+                        event.key
                     )));
                 }
                 let sim = self.0.entry(key).or_insert_with(|| {
@@ -173,17 +175,49 @@ impl EntitySimulations {
                         event.age,
                     )
                 });
-                sim.advance_space(
-                    emitter,
-                    event.age,
-                    1.,
-                    Some(super::motion::Space::new(
-                        emitter.local_space,
-                        emitter.system_local_space,
-                        *scale,
-                        event.transform,
-                    )),
-                );
+                let space = Some(super::motion::Space::new(
+                    emitter.local_space,
+                    emitter.system_local_space,
+                    *scale,
+                    event.transform,
+                ));
+                sim.advance_event(emitter, event.age, event.emission_end, space);
+            }
+        }
+        self.0
+            .retain(|key, sim| seen.contains(key) && (sim.emitting || !sim.particles.is_empty()));
+        Ok(())
+    }
+
+    pub fn living(&self, event: &crate::map::entity_animation::Event) -> bool {
+        let Some(name) = &event.definition.particle else {
+            return false;
+        };
+        self.0
+            .range((name.clone(), event.key, 0)..=(name.clone(), event.key, usize::MAX))
+            .any(|(_, sim)| !sim.particles.is_empty())
+    }
+
+    pub fn packets(
+        &mut self,
+        assets: &super::Assets,
+        events: &[crate::map::entity_animation::Event],
+        camera: Camera,
+        size: [u32; 2],
+        packets: &mut Vec<DrawPacket>,
+    ) -> io::Result<()> {
+        for (actor, event) in events.iter().enumerate() {
+            let Some(name) = &event.definition.particle else {
+                continue;
+            };
+            let Some((scale, emitters)) = assets.entities.get(name) else {
+                continue;
+            };
+            for (ordinal, emitter) in emitters.iter().enumerate() {
+                let key = (name.clone(), event.key, ordinal);
+                let Some(sim) = self.0.get(&key) else {
+                    continue;
+                };
                 let mut packet = DrawPacket::entity(emitter, *scale, event, camera, size);
                 packet.actor = [1, actor, 0];
                 packet.constants.time = sim.age;
@@ -216,7 +250,6 @@ impl EntitySimulations {
                 }
             }
         }
-        self.0.retain(|key, _| seen.contains(key));
         Ok(())
     }
 }

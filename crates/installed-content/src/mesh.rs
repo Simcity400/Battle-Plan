@@ -1694,6 +1694,8 @@ pub struct EntityState {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityEvent {
+    /// Native callback name (`14233BB30`, dispatched by `14123ACB0`).
+    pub id: Option<String>,
     pub time: f32,
     pub node: String,
     pub light: Option<String>,
@@ -2572,6 +2574,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                     .filter(|i| i.key.as_deref() == Some(b"event"))
                     .filter_map(|i| i.value.items())
                     .map(|event| EntityEvent {
+                        id: last_text(event, "id"),
                         time: number(event, b"time", 0.0),
                         node: text(event, b"node").map(unquote).unwrap_or_default(),
                         light: text(event, b"light").map(unquote),
@@ -4168,5 +4171,30 @@ mod tests {
         let mesh = read(&bytes).unwrap();
         let palette = mesh.palette(&Animation::default(), FIRST_FRAME);
         assert_eq!(palette, vec![Transform::IDENTITY; 2]);
+    }
+}
+
+#[cfg(test)]
+mod callback_id_tests {
+    use super::*;
+
+    #[test]
+    fn event_ids_survive_reading_and_clone_inheritance() {
+        let descriptors = parse_descriptors(
+            br#"
+            entity = { name = scenario state = { name = default
+                event = { time = 3.7 id = a_supply }
+                event = { time = 4 id = "a_1_idle" }
+            } }
+            entity = { name = copy clone = scenario }
+        "#,
+            "fixture.asset",
+        )
+        .unwrap();
+        let entity = descriptors.inherit("copy").unwrap();
+        let events = &entity.states["default"][0].events;
+        assert_eq!(events[0].id.as_deref(), Some("a_supply"));
+        assert_eq!(events[0].time, 3.7);
+        assert_eq!(events[1].id.as_deref(), Some("a_1_idle"));
     }
 }
