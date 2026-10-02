@@ -83,8 +83,9 @@ GetPowerBalanceModDesc renders the cached daily then weekly source values, with 
 Active-range modifier and changed-rule descriptions use authored balance ranges
 from [installed-content](../installed-content/src/power_balance.rs), recorded modifier definitions
 and the same value formatter. Wrappers and custom tooltips expand in a fresh
-country scope. Ambiguous range identities and unavailable feature flags remain
-named, counted refusals. Activation and deactivation descriptions render empty
+country scope. Feature gates use the recorded simulation mask; missing masks and
+ambiguous range identities remain named, counted refusals.
+Activation and deactivation descriptions render empty
 effects, ordinary custom tooltip keys and nested `effect_tooltip` blocks;
 hidden blocks still validate their children. Other effect classes, bound
 tooltip arguments and formatted tooltip tokens refuse by name and count.
