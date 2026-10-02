@@ -13,6 +13,15 @@ export type RaceView = 'race' | 'lines' | 'mix';
  * every hour. */
 export const TOP_COUNTRIES: CountrySelection = { kind: 'group', group: { type: 'top', count: DEFAULT_TOP }, membership: 'hour', aggregate: false };
 
+/** The country one country's mix shows: the first chosen, the dashboard's, or for a
+ * group the member ranked first at the moment shown; never one outside the group
+ * then, so null when none of it was recorded. */
+export function mixCountry(countries: CountrySelection, fallback: string | null, ranked: readonly { tag: string }[]): string | null {
+  if (countries.kind === 'tags') return countries.tags[0] ?? null;
+  if (countries.kind === 'selected') return fallback;
+  return ranked[0]?.tag ?? null;
+}
+
 /** The view: `mix` names what one country's mix is split by (such as "type"). */
 export function raceViewOption(mixLabel: string): OptionField {
   return { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race',

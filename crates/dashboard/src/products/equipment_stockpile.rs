@@ -78,8 +78,7 @@ use super::{
     equipment::{self, Domain, Texts, VariantCatalogue},
 };
 use crate::{
-    Source,
-    catalogue::{self, Catalogue},
+    Source, catalogue,
     metadata::{link_slot, slot_read, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
     read_runs::{AmountRun, OverBudget, ReadRuns},
@@ -108,24 +107,7 @@ pub struct EquipmentStockpile;
 const MAX_RUNS: usize = 1_000_000;
 const CACHED_COUNTRIES: usize = 8;
 
-/// A variant's names as recorded at a read of the variant table; a new entry
-/// wherever a read changes them.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct StockVariantName {
-    /// The read these names are from; they hold until the next entry.
-    pub first_hour: i32,
-    /// `GetDisplayName`; null when content does not name it, or when not known.
-    pub name: Option<String>,
-    /// False from an hour the variant's names stopped being known (a gap, or a due
-    /// read of the variant table that did not land) until the next entry.
-    pub known: bool,
-    /// The design's fingerprint as read then (`equipment::design_fingerprint`: its
-    /// name, modules and upgrade levels); null where not known. A saved variant
-    /// choice carries it, so a later branch's other design under the same handle
-    /// is never taken for it.
-    pub design: Option<String>,
-}
+pub use super::equipment::StockVariantName;
 
 /// One variant the country held or produced in the branch.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -159,10 +141,7 @@ pub struct StockType {
     pub need_note: Option<String>,
 }
 
-/// Starts the key of an archetype content does not resolve, before the recorded
-/// token's spelling. Settings can store it (a content-set token), so such a type
-/// can be included and chosen. A content type key starting with it is warned about.
-pub const UNRESOLVED_MARK: &str = ":";
+pub use super::equipment::UNRESOLVED_MARK;
 
 /// One archetype's logistics record: the balance (surplus positive, deficit
 /// negative) and the stock the same daily update counted, fixed5. No run inside
@@ -433,33 +412,9 @@ pub fn scan(
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<((u64, String), Arc<ScannedStockpile>)>,
-    content: Option<ContentCache>,
 }
 
-/// The authored equipment types, for the catalogue they were read from.
-struct ContentCache {
-    catalogue: Arc<Catalogue>,
-    equipment_types: Result<Arc<Database>, String>,
-}
-
-/// A variant's type resolved through content: its archetype key, database place and domain.
-fn archetype_of(types: &Database, token: &str) -> Result<(String, usize, Domain), String> {
-    let kind = types
-        .named(token)
-        .ok_or_else(|| format!("{token} is not authored equipment"))?;
-    let ordinal = kind
-        .archetype
-        .ok_or_else(|| format!("equipment {token} has no known archetype"))?;
-    let archetype = &types.equipment[ordinal];
-    Ok((
-        archetype
-            .name_str()
-            .map_err(|error| error.to_string())?
-            .to_owned(),
-        ordinal,
-        Domain::of(types.category(archetype)),
-    ))
-}
+use super::equipment::{archetype_of, equipment_warnings};
 
 /// Why an archetype's need cannot be derived from its logistics record, when its
 /// available stock holds terms the recording lacks (`Logistics_GetAvailable
@@ -478,19 +433,6 @@ fn need_note(types: &Database, archetype: &str) -> Result<Option<String>, String
     } else {
         None
     })
-}
-
-/// Native-reader diagnostics, with their file and definition names.
-fn equipment_warnings(types: &Database) -> Vec<String> {
-    const SHOWN: usize = 8;
-    let mut warnings: Vec<String> = types.misreads.iter().take(SHOWN).cloned().collect();
-    if types.misreads.len() > SHOWN {
-        warnings.push(format!(
-            "{} more equipment content notes are not listed",
-            types.misreads.len() - SHOWN
-        ));
-    }
-    warnings
 }
 
 impl Product for EquipmentStockpile {
@@ -558,25 +500,10 @@ impl Product for EquipmentStockpile {
             Ok(catalogue) => {
                 warnings.extend(catalogue.verification.iter().cloned());
                 warnings.extend(catalogue.warnings.iter().cloned());
-                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                if !cache
-                    .content
-                    .as_ref()
-                    .is_some_and(|cached| Arc::ptr_eq(&cached.catalogue, &catalogue))
-                {
-                    let equipment_types = Database::load_complete(&catalogue.content.layers)
-                        .map(Arc::new)
-                        .map_err(|error| error.to_string());
-                    cache.content = Some(ContentCache {
-                        catalogue: Arc::clone(&catalogue),
-                        equipment_types,
-                    });
-                }
-                let cached = cache.content.as_ref().expect("content cached");
-                match &cached.equipment_types {
+                match equipment::units(source, &catalogue) {
                     Ok(types) => {
-                        warnings.extend(equipment_warnings(types));
-                        Some((catalogue, Arc::clone(types)))
+                        warnings.extend(equipment_warnings(&types));
+                        Some((catalogue, types))
                     }
                     Err(error) => {
                         warnings.push(format!("Equipment types are unavailable: {error}"));
@@ -603,13 +530,7 @@ impl Product for EquipmentStockpile {
         // Types content does not resolve: refused by name and counted, never assumed.
         let (mut unnamed, mut untyped, mut untyped_count) = (0, BTreeSet::new(), 0usize);
         for id in &used {
-            let versions = scanned
-                .variants
-                .versions
-                .get(id)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            if versions.is_empty() {
+            if !scanned.variants.versions.contains_key(id) {
                 unnamed += 1;
             }
             // A variant's type never changes; its latest spelling names it.
@@ -631,33 +552,11 @@ impl Product for EquipmentStockpile {
             let texts = content
                 .as_ref()
                 .map(|(catalogue, _)| &**catalogue as &dyn Texts);
-            let mut names: Vec<StockVariantName> = Vec::new();
-            for version in versions {
-                let (name, known, design) = match &version.raw {
-                    Some(raw) => (
-                        equipment::variant_names(raw, texts).0,
-                        true,
-                        raw.design.clone(),
-                    ),
-                    None => (None, false, None),
-                };
-                if names.last().is_some_and(|last| {
-                    last.name == name && last.known == known && last.design == design
-                }) {
-                    continue;
-                }
-                names.push(StockVariantName {
-                    first_hour: version.first_hour,
-                    name,
-                    known,
-                    design,
-                });
-            }
             variants.push(StockVariant {
                 id: id.to_string(),
                 token: token.to_owned(),
                 archetype,
-                names,
+                names: scanned.variants.names(*id, texts),
                 stock: scanned.stock.runs.get(id).cloned().unwrap_or_default(),
                 weekly: scanned.weekly.runs.get(id).cloned().unwrap_or_default(),
             });

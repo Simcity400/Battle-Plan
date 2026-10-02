@@ -4,6 +4,7 @@ import { registerWidgets } from '../dashboard/definitions';
 import type { WidgetRenderer } from '../dashboard/definitions';
 import { widgetMetas } from './definitions';
 import commandPower from './command-power';
+import equipmentProduced from './equipment-produced';
 import factories from './factories';
 import equipmentStockpile from './equipment-stockpile';
 import factions from './factions';
@@ -24,6 +25,6 @@ import spiritHistory from './spirit-history';
 import subjects from './subjects';
 import tradeFlows from './trade-flows';
 
-const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, 'equipment-stockpile': equipmentStockpile, fuel, factories, 'occupied-states': occupiedStates, experience, factions, subjects, 'trade-flows': tradeFlows, placeholder };
+const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, 'equipment-stockpile': equipmentStockpile, fuel, factories, 'equipment-produced': equipmentProduced, 'occupied-states': occupiedStates, experience, factions, subjects, 'trade-flows': tradeFlows, placeholder };
 
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

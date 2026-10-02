@@ -6,7 +6,7 @@ import { fixedNumber, formatAmount, formatSigned } from '../../charts/valueAxis.
 import { campaignToken } from '../../dashboard/chosen.ts';
 import type { ChoiceSource } from '../../dashboard/chosen';
 import { contentKey, setToken } from '../../dashboard/options.ts';
-import { entryAt } from '../../dashboard/reads.ts';
+import { DOMAINS, UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import type { AmountRun, Domain, EquipmentStockpileReply, StockVariant } from '../../generated/dashboard';
 
 /** A country's equipment stockpile, from the recorded `Stockpiles` and production
@@ -19,7 +19,6 @@ import type { AmountRun, Domain, EquipmentStockpileReply, StockVariant } from '.
 
 const RAW = /^-?\d{1,20}$/;
 const HOUR = (value: unknown) => Number.isInteger(value);
-const DOMAINS: readonly Domain[] = ['land', 'air', 'naval'];
 
 const ordered = <T extends { firstHour: number; lastHour: number }>(runs: readonly T[]) =>
   runs.every((run, index) => run.firstHour <= run.lastHour && (index === 0 || runs[index - 1].lastHour < run.firstHour));
@@ -105,15 +104,6 @@ export interface StockGroup {
   scope: readonly string[];
 }
 
-export const DOMAIN_NAMES: Record<Domain, string> = { land: 'Land', air: 'Air', naval: 'Naval' };
-
-/** Starts the key of a type content does not resolve, before its recorded token (the
- * product's `UNRESOLVED_MARK`): a mark a setting can store (`storableToken`), so such a
- * type can be included and chosen like any other. */
-export const UNRESOLVED_MARK = ':';
-/** The arm of the types content does not resolve, whose arm cannot be told. */
-export const UNRESOLVED_ARM = 'unresolved';
-
 /** A group's label at an hour: a variant is named as recorded then (it can be renamed);
  * a type or an arm keeps its name. */
 export const labelAt = (group: StockGroup, grouping: Grouping, hour: number) =>
@@ -125,15 +115,9 @@ export const labelAt = (group: StockGroup, grouping: Grouping, hour: number) =>
 export const hasRecords = (reply: EquipmentStockpileReply) =>
   reply.reads.length > 0 || reply.lineReads.length > 0 || reply.logisticsReads.length > 0 || reply.aiHours.length > 0;
 
-/** A variant's name as recorded at an hour: the latest read at or before it, else
- * its first (a stockpile can list a variant before its definition is read). */
-export function variantName(variant: StockVariant, hour: number): string {
-  // The entry recorded by the hour (the kit's `entryAt`); before the first there is
-  // none, so no later name is backfilled. Its name, else (not named yet, not named by
-  // content, or no definition recorded) the equipment token, else the handle.
-  const entry = entryAt(variant.names, hour);
-  return (entry?.known ? entry.name : null) || variant.token || `Variant ${variant.id}`;
-}
+/** A variant's name as recorded at an hour, else its token or handle. */
+export const variantName = (variant: StockVariant, hour: number) =>
+  variantNameAt(variant.names, hour, variant.token || `Variant ${variant.id}`);
 
 /** A variant row's key, as chips store it: its campaign (the kit's `campaignToken`),
  * handle and equipment token. A handle is the game's equipment id, so it names one
@@ -151,7 +135,7 @@ const typeKey = (variant: StockVariant) => variant.archetype ?? `${UNRESOLVED_MA
 export function typeName(reply: EquipmentStockpileReply, key: string): string {
   const type = indexOf(reply).types.get(key);
   if (type) return type.name ?? type.key;
-  return key.startsWith(UNRESOLVED_MARK) ? key.slice(UNRESOLVED_MARK.length) : key;
+  return unresolvedTypeName(key);
 }
 
 /** The groups of the reply, in the game's order: types in the equipment database's
@@ -171,7 +155,7 @@ export function stockGroups(reply: EquipmentStockpileReply, grouping: Grouping, 
   const groups = new Map<string, StockGroup & { variants: StockVariant[]; types: string[] }>();
   const groupOf = (type: string, domain: Domain | null) => {
     const key = grouping === 'domain' ? domain ?? UNRESOLVED_ARM : type;
-    const label = grouping === 'domain' ? (domain ? DOMAIN_NAMES[domain] : 'Type not resolved') : typeName(reply, key);
+    const label = grouping === 'domain' ? domainName(key) : typeName(reply, key);
     const group = groups.get(key) ?? { key, label, domain, variants: [], types: [], kind: grouping, scope: included };
     groups.set(key, group);
     return group;

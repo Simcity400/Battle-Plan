@@ -1027,6 +1027,107 @@ aiHours: Array<HourSpan>,
  * at it is not a real sum.
  */
 needBoundRaw: string, warnings: Array<string>, };
+export type ProducedParams = { branchId: string, tags: Array<string>, top: number | null, measure: ProducedMeasure, grouping: ProducedGrouping,
+/**
+ * The type keys counted (`types` keys); none counts every type.
+ */
+included: Array<string>,
+/**
+ * Count ships refit lines deliver.
+ */
+refits: boolean, };
+export type ProducedMeasure = "total" | "week" | "month";
+export type ProducedGrouping = "type" | "variant" | "domain";
+export type ProducedType = {
+/**
+ * The archetype key, or `equipment::UNRESOLVED_MARK` and the recorded token when content does not
+ * resolve it.
+ */
+key: string,
+/**
+ * The localised key; null when content does not name it.
+ */
+name: string | null,
+/**
+ * Null when content does not resolve the type.
+ */
+domain: Domain | null, };
+export type ProducedKey = {
+/**
+ * A type key, a variant's native handle as a decimal string, or a domain
+ * (`land`, `air`, `naval`, or `equipment::UNRESOLVED_ARM` for types content does not resolve).
+ */
+key: string,
+/**
+ * A type's localised name; null for variants and domains, or when content
+ * does not name it.
+ */
+name: string | null,
+/**
+ * The type key a variant belongs to; null for types and domains.
+ */
+typeKey: string | null, domain: Domain | null,
+/**
+ * A variant's names as each read of the variant table recorded them.
+ */
+names: Array<StockVariantName>, };
+export type ProducedCoded = { from: number, deltas: Array<number>, unknown: Array<number>, };
+export type ProducedValues = {
+/**
+ * Its position in the reply's `keys`.
+ */
+key: number, values: ProducedCoded, };
+export type ProducedSeries = { tag: string, firstHours: Array<number>, lastHours: Array<number>,
+/**
+ * Samples that start a new line: after a gap, an hour the tables could not
+ * tell or another country identity.
+ */
+breaks: Array<number>,
+/**
+ * Each group's values. A type's or an arm's is unknown wherever a variant whose
+ * type content does not resolve holds a nonzero or unknown value (it could belong
+ * to any of them); the group of unresolved types itself stays exact.
+ */
+values: Array<ProducedValues>,
+/**
+ * The country's total of every included type: the sum of what its counted
+ * variants delivered, exact however they split into groups. Unknown where a
+ * count is, or where a variant left out of the included types could belong to an
+ * included one. Null when it is 0 at every sample.
+ */
+total: ProducedCoded | null,
+/**
+ * For a top-N reply, the hours the country was among the top N, in order;
+ * its samples are cut to them. Null for chosen countries.
+ */
+membership: Array<HourSpan> | null, };
+export type EquipmentProducedReply = { branchId: string, measure: ProducedMeasure, grouping: ProducedGrouping,
+/**
+ * Every type produced in the branch, in the equipment database's order,
+ * unresolved ones last.
+ */
+types: Array<ProducedType>,
+/**
+ * The groups the series hold, in the game's order.
+ */
+keys: Array<ProducedKey>, series: Array<ProducedSeries>,
+/**
+ * Hours where at least one requested country's included total is exact
+ * (including zero) and no requested country with a piece covering the hour
+ * has an unknown total. Top N considers all scanned countries before
+ * filtering; explicit tags consider only those tags. Week/month totals need
+ * a complete window.
+ */
+known: Array<HourSpan>,
+/**
+ * Hours the output was read, ascending: a value shown later is as of the
+ * latest read before it.
+ */
+reads: Array<number>,
+/**
+ * The hour each observation began: running totals count from it.
+ */
+observations: Array<number>, warnings: Array<string>, };
 export type TradeFlowParams = { branchId: string,
 /**
  * Only flows with one of these countries as seller or buyer; every flow when null.
@@ -1139,4 +1240,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "trade-flows", "subjects"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "subjects"] as const;

@@ -5,12 +5,13 @@ import { rankedCandidates, resolveCountries } from '../../dashboard/groups.ts';
 import type { CountryFactoriesReply, FactoryField, FactoryGroupKey, FactoryPart } from '../../generated/dashboard';
 import { lookPlan } from '../../dashboard/countryLooks.ts';
 import { lineLabelHours } from '../../charts/series.ts';
-import { DATE_OVERLAY_OPTION } from '../../charts/race/options.ts';
+import { DATE_OVERLAY_OPTION, mixCountry } from '../../charts/race/options.ts';
+import { linesAt, linesTooltip } from '../../charts/race/lines.ts';
 import { barExtent, stepRace } from '../../charts/race/race.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import '../definitions.ts';
 import { OPTIONS } from './definition.ts';
-import { chosenGroups, countRuns, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupCount, groupName, lineRuns, linesAt, linesTooltip, mixBands, mixCountry, raceEntries, rankFactories, typeChoices, typeColours, validateFactoriesReply, withheld } from './factoriesData.ts';
+import { chosenGroups, countRuns, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupCount, groupName, lineRuns, mixBands, raceEntries, rankFactories, typeChoices, typeColours, validateFactoriesReply, withheld } from './factoriesData.ts';
 import type { CountMode } from './factoriesData';
 
 const GROUP_PARTS: FactoryPart[] = ['total', 'controlled', 'owned', 'damaged', 'fromSubjects', 'toOverlord', 'fromOthers', 'toOthers'];
@@ -298,13 +299,13 @@ test('the lines’ tooltip names each country as recorded at the hour hovered', 
       ? (hour < 140 ? { name: 'German Reich', flag: 'data:reich' } : { name: 'Germany' })
       : { name: 'Italy' };
   };
-  const early = linesTooltip(120, lines, labelAt, () => '#123456', '1 Jan', 'Built');
+  const early = linesTooltip(120, lines, labelAt, () => '#123456', '1 Jan', 'Built', formatCount);
   assert.deepEqual(early.rows.map(row => [row.label, row.value, row.icon]), [['German Reich', '30', 'data:reich'], ['Italy', '30', undefined]]);
-  const late = linesTooltip(180, lines, labelAt, () => '#123456', '1 Mar', 'Built');
+  const late = linesTooltip(180, lines, labelAt, () => '#123456', '1 Mar', 'Built', formatCount);
   assert.deepEqual(late.rows.map(row => row.label), ['Germany']);
   assert.deepEqual(asked, [120, 180]);
   assert.deepEqual(linesAt(180, lines), ['GER']);
-  assert.deepEqual(linesTooltip(300, lines, labelAt, () => '', 'x', 'Built').rows.map(row => row.label), ['Not recorded']);
+  assert.deepEqual(linesTooltip(300, lines, labelAt, () => '', 'x', 'Built', formatCount).rows.map(row => row.label), ['Not recorded']);
 });
 
 test('a race bar glides within an unbroken stretch and jumps across a gap or a change of country', () => {

@@ -608,66 +608,25 @@ pub fn top_membership(
     top: &FactoryTop,
     cancelled: &AtomicBool,
 ) -> io::Result<BTreeMap<String, Vec<HourSpan>>> {
-    let count = top.count as usize;
     let groups: &[FactoryGroupKey] = if top.groups.is_empty() {
         &FactoryGroupKey::ALL
     } else {
         &top.groups
     };
-    let tags: Vec<(&String, &Vec<FactoryRun>)> = series.iter().collect();
-    let mut bounds: Vec<i32> = tags
-        .iter()
-        .flat_map(|(_, runs)| runs.iter())
-        .flat_map(|run| [run.first_hour, run.last_hour.saturating_add(1)])
-        .collect();
-    bounds.sort_unstable();
-    bounds.dedup();
-    let mut cursors = vec![0usize; tags.len()];
-    let mut spans: Vec<Vec<HourSpan>> = vec![Vec::new(); tags.len()];
-    let mut present: Vec<(i64, usize)> = Vec::with_capacity(tags.len());
-    for (step, window) in bounds.windows(2).enumerate() {
-        if step.is_multiple_of(CANCEL_EVERY) && cancelled.load(Ordering::Acquire) {
-            return Err(cancelled_error());
-        }
-        let (start, end) = (window[0], window[1] - 1);
-        present.clear();
-        for (index, (_, runs)) in tags.iter().enumerate() {
-            let cursor = &mut cursors[index];
-            while runs.get(*cursor).is_some_and(|run| run.last_hour < start) {
-                *cursor += 1;
-            }
-            // Every run starts at a bound, so one holding `start` holds to `end`.
-            if let Some(run) = runs.get(*cursor).filter(|run| run.first_hour <= start) {
-                let value = groups
+    crate::ranking::top_membership(
+        series,
+        top.count as usize,
+        |run| (run.first_hour, run.last_hour),
+        |run| {
+            Some(
+                groups
                     .iter()
                     .map(|group| group_count(&run.values, *group, top.mode))
-                    .sum();
-                present.push((value, index));
-            }
-        }
-        // Highest first; tags are in order, so the index breaks ties by tag.
-        let order = |a: &(i64, usize), b: &(i64, usize)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
-        if present.len() > count {
-            present.select_nth_unstable_by(count - 1, order);
-            present.truncate(count);
-        }
-        for (_, index) in &present {
-            let list = &mut spans[*index];
-            match list.last_mut() {
-                Some(span) if span.last_hour.checked_add(1) == Some(start) => span.last_hour = end,
-                _ => list.push(HourSpan {
-                    first_hour: start,
-                    last_hour: end,
-                }),
-            }
-        }
-    }
-    Ok(tags
-        .into_iter()
-        .zip(spans)
-        .filter(|(_, spans)| !spans.is_empty())
-        .map(|((tag, _), spans)| (tag.clone(), spans))
-        .collect())
+                    .sum(),
+            )
+        },
+        cancelled,
+    )
 }
 
 /// Steps between two checks of the cancellation flag in a long loop.

@@ -4,8 +4,8 @@
  * engine's fixed5 totals as the game does); the counts are the formulas below. */
 import type { RaceItem, RaceSegment } from '../../charts/race/race';
 import type { Run } from '../../charts/series';
-import { clipToSpans, runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
-import type { CountrySelection } from '../../dashboard/model';
+import { runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
+import { shownRuns } from '../../charts/race/lines.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { CountryFactoriesReply, FactoriesParams, FactoryCount, FactoryGroupInfo, FactoryGroupKey, FactoryPart, FactoryRun, HourSpan } from '../../generated/dashboard';
@@ -176,23 +176,6 @@ export function countRuns(model: FactoryModel, tag: string, groups: readonly Fac
   return runs;
 }
 
-/** The country one country's mix shows: the first chosen, the dashboard's, or for a
- * group the member ranked first at the moment shown; never one outside the group
- * then, so null when none of it was recorded. */
-export function mixCountry(countries: CountrySelection, fallback: string | null, ranked: readonly { tag: string }[]): string | null {
-  if (countries.kind === 'tags') return countries.tags[0] ?? null;
-  if (countries.kind === 'selected') return fallback;
-  return ranked[0]?.tag ?? null;
-}
-
-/** Runs cut to the hours a country is shown (`membership`: a group's hours to cut
- * to; null: whenever recorded) and to the hours the widget shows (`range`: a date
- * range or the branch), so nothing outside them is drawn, fitted or hovered, even
- * when an axis is dragged past the range. */
-export function shownRuns(runs: readonly Run[], membership: readonly HourSpan[] | null, range: HourSpan): Run[] {
-  return clipToSpans(membership ? clipToSpans(runs, membership) : runs, [range]);
-}
-
 /** One country's count over time as a line, cut as `shownRuns` cuts. */
 export function lineRuns(model: FactoryModel, tag: string, groups: readonly FactoryGroupKey[], mode: CountMode, membership: readonly HourSpan[] | null, range: HourSpan): Run[] {
   return shownRuns(countRuns(model, tag, groups, mode), membership, range);
@@ -201,28 +184,6 @@ export function lineRuns(model: FactoryModel, tag: string, groups: readonly Fact
 /** One country's types as signed runs to stack, each cut as `shownRuns` cuts. */
 export function mixBands(model: FactoryModel, tag: string, groups: readonly FactoryGroupKey[], mode: CountMode, membership: readonly HourSpan[] | null, range: HourSpan): Run[][] {
   return groups.map(group => shownRuns(countRuns(model, tag, groups, mode, group), membership, range));
-}
-
-/** A country as a tooltip names it: as recorded at the hour hovered. */
-export type LabelAt = (hour: number) => (tag: string) => { name: string; flag?: string };
-
-/** The lines' tooltip at an hour: each line recorded then, highest first (ties in the
- * product's tag order), named and flagged as recorded at that hour. */
-export function linesTooltip(hour: number, lines: readonly { tag: string; runs: readonly Run[] }[], labelAt: LabelAt, colour: (tag: string) => string,
-  date: string, countName: string): TooltipContent {
-  const label = labelAt(hour);
-  const values = lines.flatMap(line => { const run = runAt(line.runs, hour); return run ? [{ tag: line.tag, value: run.value }] : []; })
-    .sort((a, b) => b.value - a.value || compareTags(a.tag, b.tag));
-  const rows: TooltipRow[] = values.map(entry => {
-    const { name, flag } = label(entry.tag);
-    return { label: name, value: formatCount(entry.value), swatch: colour(entry.tag), short: true, ...(flag ? { icon: flag } : {}) };
-  });
-  return { title: date, subtitle: countName, rows: rows.length ? rows : [{ label: 'Not recorded', tone: 'muted' }] };
-}
-
-/** The countries a lines tooltip at `hour` names: those with a line recorded then. */
-export function linesAt(hour: number, lines: readonly { tag: string; runs: readonly Run[] }[]): string[] {
-  return lines.filter(line => runAt(line.runs, hour) != null).map(line => line.tag);
 }
 
 /** Every hour a country's shown count may change, for the keyboard's stops. */

@@ -1,13 +1,15 @@
+import { useCountryColours } from '../../charts/race/countryColours';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel, drawBands, drawLine, placeEndLabels } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
-import { categoricalPalette, nudgeApart } from '../../charts/palette';
 import type { RaceItem } from '../../charts/race/race';
 import RaceChart from '../../charts/race/RaceChart';
 import type { RaceView } from '../../charts/race/options';
+import { mixCountry } from '../../charts/race/options';
+import { linesAt, linesTooltip } from '../../charts/race/lines';
 import { extentOfAll, lineLabelHours, runAt } from '../../charts/series';
 import type { Span } from '../../charts/series';
 import { buildStack, stackedSegments, stackExtent } from '../../charts/stack';
@@ -20,7 +22,6 @@ import type { PlaybackMode } from '../../charts/view';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { NameAt } from '../../dashboard/countryFacts';
-import { compareTags } from '../../dashboard/tagOrder';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/groups';
@@ -30,9 +31,8 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { CountryFactoriesReply } from '../../generated/dashboard';
-import { parseColor, toHex } from '../../shell/appearance/color';
 import { MAX_COUNTRIES, OPTIONS } from './definition';
-import { changeHours, chosenGroups, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupName, lineRuns, linesAt, linesTooltip, mixBands, mixCountry, raceEntries, rankFactories, typeColours,
+import { changeHours, chosenGroups, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupName, lineRuns, mixBands, raceEntries, rankFactories, typeColours,
   validateFactoriesReply } from './factoriesData';
 import type { CountMode } from './factoriesData';
 import './factories.css';
@@ -126,20 +126,7 @@ export default function FactoriesWidget({ widget, runtime, active, onDiagnostics
   }, [model]);
   const looks = useCountryLooks(runtime.client, track, shownTags, moment, active, lookSegment, view === 'lines' ? labelHours : undefined);
   const typeColors = useMemo(() => typeColours(model?.reply.groups ?? [], tokens.categories), [model, tokens]);
-  // Tags are opaque (any characters, spaces included), so a list of them is keyed as JSON.
-  const shownKey = JSON.stringify(shownTags);
-  // Country colours as recorded, nudged apart in a fixed order (by tag) when the app
-  // asks for fixed colours, so a country keeps its colour as ranks change.
-  const colorOf = useMemo(() => {
-    const palette = categoricalPalette(tokens.surface);
-    const tags = [...shownTags].sort(compareTags);
-    const fallbackColors = new Map(tags.map((tag, index) => [tag, palette[index % palette.length]]));
-    const raw = tags.map((tag, index) => { const color = looks.color(tag); return color ? { r: color[0], g: color[1], b: color[2] } : parseColor(palette[index % palette.length])!; });
-    const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw, parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw;
-    const colors = new Map(tags.map((tag, index) => [tag, toHex(adjusted[index])]));
-    return (tag: string, hour?: number) => hour !== undefined && looks.matches?.(tag, hour) === false
-      ? fallbackColors.get(tag) ?? tokens.muted : colors.get(tag) ?? tokens.muted;
-  }, [shownKey, looks, tokens]); // eslint-disable-line react-hooks/exhaustive-deps
+  const colorOf = useCountryColours(shownTags, looks.color, tokens, looks);
 
   const items = useMemo<RaceItem[]>(() => raceEntries(ranked, { mode, split, country: colorOf, type: key => typeColors.get(key) ?? tokens.muted }),
     [ranked, mode, split, typeColors, colorOf, tokens.muted]);
@@ -235,7 +222,7 @@ export default function FactoriesWidget({ widget, runtime, active, onDiagnostics
           tooltip={hour => {
             if (hour < extent[0] || hour > extent[1]) { showTip(null); return null; }
             showTip(hour, linesAt(hour, lines));
-            return fitTooltip([linesTooltip(hour, lines, labels.labelAt, colorOf, dayLabel(hour), countName)], viewport);
+            return fitTooltip([linesTooltip(hour, lines, labels.labelAt, colorOf, dayLabel(hour), countName, formatCount)], viewport);
           }}
           overlay={(ctx, frame, chartTokens) => {
             if (!endLabels) return;
