@@ -22,7 +22,7 @@ use std::mem::size_of;
 #[cfg(test)]
 use replay::rows::TableRows;
 
-pub const N: usize = 22;
+pub const N: usize = 23;
 
 pub const TABLES: [TableId; N] = [
     TableId::Focus,
@@ -47,6 +47,7 @@ pub const TABLES: [TableId; N] = [
     TableId::ResearchAppliedBonuses,
     TableId::ResearchModifiers,
     TableId::PartyLeaders,
+    TableId::PowerBalanceModifierBreakdowns,
 ];
 /// Name, local cost anchor and local members. Reports sum member ticks;
 /// physically shared walks charge their anchor once and leave followers zero.
@@ -64,7 +65,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("Dynamic modifiers", 10, &[10]),
     ("Preferred tactic", 11, &[11]),
     ("Technology sharing", 12, &[12, 13]),
-    ("Power balance and children", 14, &[14, 15, 16, 17]),
+    ("Power balance and children", 14, &[14, 15, 16, 17, 22]),
     ("Sliced research inputs, bonuses and modifiers", 18, &[18, 19, 20]),
 ];
 
@@ -106,7 +107,7 @@ impl Default for Capacities {
         Self {
             rows: [
                 512, 8192, 32768, 2048, 4096, 512, 2048, 16384, 512, 8192, 4096, 512, 128,
-                1024, 128, 512, 1024, 512, 2048, 4096, 16384, 2048,
+                1024, 128, 512, 1024, 512, 2048, 4096, 16384, 2048, 0,
             ],
             focus_text: 131072,
             definition_text: 262144,
@@ -162,6 +163,8 @@ struct TacticRow {
 }
 
 pub struct Captured {
+    breakdowns: Vec<rows::PowerBalanceModifierBreakdownRow>,
+    breakdown_outcome: Outcome,
     focus: CaptureRows<cnational_focus_progress::Row>,
     completed: CaptureRows<cnational_focus_progress::CompletedRow>,
     technologies: CaptureRows<ctechnology::Row>,
@@ -465,6 +468,8 @@ impl Captured {
             sharing: CaptureRows::new(capacity.rows[12]),
             sharing_members: CaptureRows::new(capacity.rows[13]),
             balances: CaptureRows::new(capacity.rows[14]),
+            breakdowns: Vec::new(),
+            breakdown_outcome: Outcome::Rows { len: 0 },
             balance_members: CaptureRows::new(capacity.rows[15]),
             ranges: CaptureRows::new(capacity.rows[16]),
             research_inputs: CaptureRows::new(capacity.rows[18]),
@@ -560,6 +565,7 @@ impl Captured {
             research_inputs = 18,
             party_leaders = 21,
         );
+        self.breakdown_outcome = Outcome::Unavailable { reason };
         CaptureReport::default()
     }
 
@@ -579,6 +585,8 @@ impl Captured {
         self.sharing.reset();
         self.sharing_members.reset();
         self.balances.reset();
+        self.breakdowns.clear();
+        self.breakdown_outcome = Outcome::Rows { len: 0 };
         self.balance_members.reset();
         self.ranges.reset();
         self.overrides.reset();
@@ -617,6 +625,8 @@ impl Captured {
             + self.sharing.allocated_bytes()
             + self.sharing_members.allocated_bytes()
             + self.balances.allocated_bytes()
+            + self.breakdowns.capacity() * size_of::<rows::PowerBalanceModifierBreakdownRow>()
+            + self.breakdowns.iter().map(|r| r.sources.capacity() * size_of::<Vec<u8>>() + r.sources.iter().map(Vec::capacity).sum::<usize>() + [&r.daily, &r.weekly].into_iter().map(|nodes| nodes.capacity() * size_of::<engine::modifier_breakdown::Node>() + nodes.iter().map(|n| n.name.capacity()).sum::<usize>()).sum::<usize>()).sum::<usize>()
             + self.balance_members.allocated_bytes()
             + self.ranges.allocated_bytes()
             + self.overrides.allocated_bytes()
@@ -707,6 +717,7 @@ impl Captured {
             self.research_bonuses.outcome,
             self.research_modifiers.outcome,
             self.party_leaders.outcome,
+            self.breakdown_outcome,
         ]
     }
 
@@ -843,7 +854,50 @@ impl Captured {
         self.decision_countries.len = first.lens[11];
         self.decision_countries.required = first.required[11];
         self.dictionary_required = first.dictionary_required;
-        first.ticks
+        let mut ticks = first.ticks;
+        let started = qpc();
+        let _reads = read_accounting::table(TABLES[22]);
+        self.capture_breakdowns(memory, base, game_state);
+        ticks[22] = elapsed(started);
+        ticks
+    }
+    fn capture_breakdowns(&mut self, memory: &impl Memory, base: usize, state: usize) {
+        let result = (|| {
+            if !matches!(self.balances.outcome, Outcome::Rows { .. }) {
+                return Err("power balance modifier breakdown record census incomplete");
+            }
+            let manager = state
+                .checked_add(engine::cgame_state::POWER_BALANCE_MANAGER)
+                .and_then(|p| engine::read::<u64>(memory, p))
+                .filter(|&p| p != 0)
+                .ok_or("power balance modifier breakdown manager unreadable or null")? as usize;
+            let roster = manager
+                .checked_add(power_balance_manager::RECORDS)
+                .and_then(|p| engine::cpdx_array::Array::read(memory, p, power_balance_record::STRIDE))
+                .ok_or("power balance modifier breakdown roster unreadable or invalid")?;
+            if roster.count as usize != self.balances.outcome.len() {
+                return Err("power balance modifier breakdown roster count mismatch");
+            }
+            for record in 0..roster.count {
+                let address = roster
+                    .element(record, power_balance_record::STRIDE)
+                    .ok_or("power balance modifier breakdown record address overflow")?;
+                let tree = engine::modifier_breakdown::balance(memory, base, address)?;
+                self.breakdowns.push(rows::PowerBalanceModifierBreakdownRow {
+                    record,
+                    sources: tree.sources,
+                    daily: tree.daily,
+                    weekly: tree.weekly,
+                });
+            }
+            Ok(())
+        })();
+        self.breakdown_outcome = match result {
+            Ok(()) => Outcome::Rows {
+                len: self.breakdowns.len(),
+            },
+            Err(reason) => Outcome::Unavailable { reason },
+        };
     }
 }
 
@@ -2032,6 +2086,7 @@ impl Captured {
                 leader_id: r.leader_id,
                 role: r.role,
             })),
+            wrap(crate::spooling::table::<tables::PowerBalanceModifierBreakdowns, _>(self.breakdown_outcome, &self.breakdowns, Clone::clone)),
         ]
     }
 }

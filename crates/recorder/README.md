@@ -29,6 +29,8 @@ The oracle compares the selected branch/hour with a fresh **text** save. Naval c
 
 The oracle compares only sessions whose content the collector verified. Modded sessions are verified by the same live checks as vanilla ones ([content identity](../installed-content/README.md)); there is no override.
 
+The [modifier breakdown oracle](src/oracle/modifier_breakdowns.rs) checks reserve trees against the recorded combat source joins and balance trees against the save's ordered static modifier names, including duplicates. Cached structure, display bytes and getter values are runtime-only limitations. Fresh-save comparison, smoke, live hover text and capture cost remain unverified.
+
 The country writer saves neither colour object, so CountryAppearance's UI colour has no save counterpart: the oracle states it as a limitation ([map_inputs.rs](src/oracle/map_inputs.rs)), and validating it needs a matched-hour screenshot of a counter plate in country-colour mode.
 
 The [naval input comparisons](src/oracle/pass_inputs.rs) check each TaskForceMapMotion row against its saved task force's `path`, `support_attack` target and `full_path` alternate route, and its combat role against the saved naval-combat side that lists it (0 when none does). `CNavalCombat::TryJoinUnit@1415B2EF0` admits a unit only while it is in no combat, so a save listing one twice is refused as inconsistent. The task-force writer does not save TaskForceCounterInputs' received-supply ratio; it is a reported limitation, and validating it needs the game paused at the sampled hour and the ratio read from memory.

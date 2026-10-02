@@ -573,6 +573,7 @@ pub mod model_geometry_object_layout;
 #[cfg(test)]
 mod model_input_cost;
 pub mod modifier_accumulator;
+pub mod modifier_breakdown;
 pub mod modifier_definition;
 pub mod modifier_entry;
 pub mod modifier_keys;

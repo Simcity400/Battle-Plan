@@ -1116,11 +1116,7 @@ const PRONOUNS: [&str; 10] = [
 /// Country functions of 141A7B350 (table 14309CA20) this port cannot answer,
 /// with what is missing. Their inputs are content or recorded; what they lack
 /// is the native description renderer.
-const COUNTRY_UNPORTED: [(&str, &str); 5] = [
-    (
-        "GetPowerBalanceModDesc",
-        "140E422E0 prints FormatModifierBreakdown (14054D0F0) of the record's power-balance modifiers (+0xC8, keys 0x98 and 0x99), whose per-source lines are neither recorded nor rendered (the planned modifier-source breakdown layer)",
-    ),
+const COUNTRY_UNPORTED: [(&str, &str); 4] = [
     (
         "GetActiveRangeModDesc",
         "140A04DA0 formats the active range's content modifier block (+0x28) through modifier_accumulator::FormatDescription (14054E050) under PROGRESS_SECTION_MODIFIER; that renderer is ported only in the viewer",

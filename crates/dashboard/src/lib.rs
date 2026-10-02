@@ -9,6 +9,7 @@ pub mod content;
 mod dto;
 pub mod map_settings;
 pub mod metadata;
+pub mod modifier_text;
 pub mod products;
 pub mod protocol;
 pub mod scope;

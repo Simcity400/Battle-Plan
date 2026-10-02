@@ -10,7 +10,6 @@ use super::{
 };
 use crate::table_access::{Available, rows};
 use installed_content::{
-    fixed5::{fixed5_percent, fixed5_to_string},
     localisation::{Argument, Localisation},
     modifiers::TooltipTable,
 };
@@ -23,15 +22,8 @@ use std::{
     io,
 };
 
-/// 14054FE50's flags word (+0x60).
-const PERCENT_TIMES_HUNDRED: u32 = 1 << 0;
-const POSITIVE_IS_GOOD: u32 = 1 << 1;
-const NEUTRAL: u32 = 1 << 2;
-const NO_PLUS: u32 = 1 << 3;
 /// 140551820's clamp of the getter to [0, 1].
 const CLAMP: u32 = 1 << 4;
-const BOOLEAN: u32 = 1 << 5;
-const PERCENT: u32 = 1 << 7;
 /// 14054F6D0 prints the entry even when its value is zero.
 const SHOW_ZERO: u32 = 1 << 8;
 
@@ -425,57 +417,25 @@ pub(super) fn value_text(
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) -> Result<String, Refusal> {
-    let flags = row.flags;
-    let mut number = String::new();
-    if flags & BOOLEAN == 0 {
-        if value > 0 && (plus || flags & NO_PLUS == 0) {
-            number.push('+');
-        }
-        let precision = precision.min(row.precision);
-        // 14054FE50: FormatFixed5Percent (142259590) times 100 for bit 0 and
-        // as it is for bit 7, else Fixed5ToString (1424B6200).
-        number.push_str(&if flags & PERCENT_TIMES_HUNDRED != 0 {
-            fixed5_percent(value, precision, true)
-        } else if flags & PERCENT != 0 {
-            fixed5_percent(value, precision, false)
+    dashboard::modifier_text::value_text(row, value, precision, plus, invert, |key, required| {
+        if required {
+            let key = std::str::from_utf8(key)
+                .map_err(|_| "modifier value key is not UTF-8".to_owned())?;
+            builtin(icons, loc, key, &[])
         } else {
-            fixed5_to_string(value, precision)
-        });
-    } else {
-        // Executable-named keys: missing ones are refused, not shown as text.
-        let key = if value == 0 { "NO" } else { "YES" };
-        number.push_str(&builtin(icons, loc, key, &[]).map_err(Refusal::Localisation)?);
-    }
-    let colour = if flags & NEUTRAL != 0 {
-        'Y'
-    } else if (flags & POSITIVE_IS_GOOD != 0) != invert {
-        match value.signum() {
-            1 => 'G',
-            -1 => 'R',
-            _ => 'Y',
+            token(icons, loc, key)
         }
-    } else {
-        match value.signum() {
-            1 => 'R',
-            -1 => 'G',
-            _ => 'Y',
-        }
-    };
-    // 14054FE50 appends the control byte, colour and number to an unbounded
-    // string (append_bytes 140129700), outside the localiser's buffer.
-    let mut result = format!("\u{11}{colour}{number}\u{11}!");
-    if !row.postfix_key.is_empty() {
-        let key = text(row, "postfix key", &row.postfix_key)?;
-        result.push(' ');
-        result.push_str(&token(icons, loc, key.as_bytes()).map_err(Refusal::Localisation)?);
-    }
-    Ok(result)
+    })
+    .map_err(Refusal::Localisation)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::combat::binding::NoIcons;
+    use dashboard::modifier_text::{
+        BOOLEAN, NEUTRAL, NO_PLUS, PERCENT, PERCENT_TIMES_HUNDRED, POSITIVE_IS_GOOD,
+    };
 
     fn loc(entries: &[(&str, &str)]) -> Localisation {
         entries

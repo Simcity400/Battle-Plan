@@ -145,6 +145,7 @@ impl Destination<'_> {
                                     memory,
                                     base,
                                     Placement {
+                                        pointer,
                                         combat: source.id,
                                         side,
                                         ordinal,

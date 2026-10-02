@@ -1,4 +1,4 @@
-//! Hourly combat-window and marker operands. One bounded census feeds four
+//! Hourly combat-window and marker operands. One bounded census feeds the
 //! independent tables. Division destinations grow from their original counts on the
 //! acquisition worker; projection and other capacity growth stay on the spool.
 //!
@@ -41,17 +41,18 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 4;
+pub const N: usize = 5;
 pub const TABLES: [TableId; N] = [
     TableId::LandCombatDetails,
     TableId::LandCombatDivisions,
     TableId::LandCombatModifiers,
     TableId::LandCombatSides,
+    TableId::ReserveModifierBreakdowns,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
     "land combat detail census and member authentication",
     0,
-    &[0, 1, 2, 3],
+    &[0, 1, 2, 3, 4],
 )];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -142,6 +143,7 @@ struct Detail {
 }
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct Division {
+    pointer: usize,
     combat: u64,
     side: u8,
     ordinal: u32,
@@ -212,6 +214,7 @@ impl Progress {
 /// Where one division sits in its combat, and where its exile tags start.
 #[derive(Clone, Copy)]
 struct Placement {
+    pointer: usize,
     combat: u64,
     side: u8,
     ordinal: u32,
@@ -518,6 +521,7 @@ impl Destination<'_> {
         debug_assert!(naming.custom.1 == 0 || naming.custom.0 == self.names.len);
         self.names.len += naming.custom.1;
         self.divisions[self.progress[1].len] = Division {
+            pointer: at.pointer,
             combat: at.combat,
             side: at.side,
             ordinal: at.ordinal,
@@ -663,6 +667,7 @@ impl Destination<'_> {
                                     memory,
                                     base,
                                     Placement {
+                                        pointer,
                                         combat: source.id,
                                         side,
                                         ordinal,
@@ -921,6 +926,8 @@ impl Destination<'_> {
 }
 
 pub struct Captured {
+    breakdowns: Vec<replay::rows::ReserveModifierBreakdownRow>,
+    breakdown_outcome: Outcome,
     division_commanders: Arena<engine::naval_commander_inputs::DivisionCommanderRow>,
     commander_names: Arena<u8>,
     commander_keys: Vec<CommanderKey>,
@@ -1001,6 +1008,8 @@ impl Captured {
 
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
+            breakdowns: Vec::new(),
+            breakdown_outcome: Outcome::Rows { len: 0 },
             division_commanders: Arena::new(c.division_commanders),
             commander_names: Arena::new(c.commander_names),
             commander_keys: vec![
@@ -1054,6 +1063,8 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
+        self.breakdowns.clear();
+        self.breakdown_outcome = Outcome::Rows { len: 0 };
         self.division_commanders.reset();
         self.commander_names.reset();
         self.required_commander_keys = 0;
@@ -1087,9 +1098,12 @@ impl Captured {
         self.divisions.outcome = outcome;
         self.sides.outcome = outcome;
         self.combat_sides.outcome = outcome;
+        self.breakdown_outcome = outcome;
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.details.allocated_bytes()
+        self.breakdowns.capacity() * size_of::<replay::rows::ReserveModifierBreakdownRow>()
+            + self.breakdowns.iter().map(|r| r.nodes.capacity() * size_of::<engine::modifier_breakdown::Node>() + r.nodes.iter().map(|n| n.name.capacity()).sum::<usize>()).sum::<usize>()
+            + self.details.allocated_bytes()
             + self.division_commanders.allocated_bytes()
             + self.commander_names.allocated_bytes()
             + self.commander_keys.capacity() * size_of::<CommanderKey>()
@@ -1260,7 +1274,7 @@ impl Captured {
             reinforcement_progress: [Progress::default(); 4],
             progress: [Progress::default(); N],
             arenas: [Progress::default(); N],
-            ticks: [0, commander_ticks, 0, 0],
+            ticks: [0, commander_ticks, 0, 0, 0],
         };
         let census = cland_combat::walk_members(
             memory,
@@ -1347,6 +1361,10 @@ impl Captured {
         self.divisions.outcome = outcomes[1];
         self.sides.outcome = outcomes[2];
         self.combat_sides.outcome = outcomes[3];
+        let started_breakdowns = qpc();
+        let _reads = crate::read_accounting::table(TABLES[4]);
+        self.capture_breakdowns(memory, base, state);
+        ticks[4] = elapsed(started_breakdowns);
         ticks[0] += elapsed(started).saturating_sub(ticks.iter().sum::<u64>());
         ticks
     }
@@ -1356,7 +1374,82 @@ impl Captured {
             self.divisions.outcome,
             self.sides.outcome,
             self.combat_sides.outcome,
+            self.breakdown_outcome,
         ]
+    }
+    fn capture_breakdowns(&mut self, memory: &impl Memory, base: usize, state: usize) {
+        self.breakdowns.clear();
+        let result = (|| {
+            if !matches!(self.divisions.outcome, Outcome::Rows { .. }) {
+                return Err("reserve modifier breakdown division census incomplete");
+            }
+            if !self.divisions.rows[..self.divisions.outcome.len()]
+                .iter()
+                .any(|r| r.role == 2)
+            {
+                return Ok(());
+            }
+            let countries = engine::ccountry::Reader::new(memory, base, state)?;
+            let mut sources = std::collections::BTreeMap::new();
+            for row in &self.divisions.rows[..self.divisions.outcome.len()] {
+                if row.role != 2 {
+                    continue;
+                }
+                let owners = row
+                    .pointer
+                    .checked_add(engine::cunit::ROSTER_OWNER)
+                    .and_then(|p| engine::read::<[u8; 8]>(memory, p))
+                    .ok_or("reserve modifier breakdown owner unreadable")?;
+                let own = u32::from_le_bytes(owners[..4].try_into().unwrap());
+                let expeditionary = u32::from_le_bytes(owners[4..].try_into().unwrap());
+                let owner = if expeditionary as i32 > 0 {
+                    expeditionary
+                } else {
+                    own
+                };
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    sources.entry((0, owner as u64))
+                {
+                    let country = countries.resolve(owner)?;
+                    entry.insert(
+                        country
+                            .pointer
+                            .checked_add(engine::ccountry::MODIFIER_ACCUMULATOR)
+                            .ok_or("reserve modifier breakdown country address overflow")?,
+                    );
+                }
+                let kind = row.context.leader_modifier_kind;
+                if kind != 0
+                    && let std::collections::btree_map::Entry::Vacant(entry) =
+                        sources.entry((kind, row.stats.commander))
+                {
+                    let accumulator =
+                        engine::carmy_leader::movement_accumulator(memory, base, row.pointer)?
+                            .ok_or("reserve modifier breakdown selected commander missing")?;
+                    entry.insert(accumulator);
+                }
+            }
+            for ((kind, owner), address) in sources {
+                self.breakdowns
+                    .push(replay::rows::ReserveModifierBreakdownRow {
+                        kind,
+                        owner,
+                        nodes: engine::modifier_breakdown::tree(
+                            memory,
+                            base,
+                            address,
+                            engine::modifier_keys::LAND_REINFORCE_RATE,
+                        )?,
+                    });
+            }
+            Ok(())
+        })();
+        self.breakdown_outcome = match result {
+            Ok(()) => Outcome::Rows {
+                len: self.breakdowns.len(),
+            },
+            Err(reason) => Outcome::Unavailable { reason },
+        };
     }
     fn tactic_inputs(context: &land_tactic_inputs::ContextRow) -> LandCombatTacticInputs {
         LandCombatTacticInputs {
@@ -1643,6 +1736,7 @@ impl Captured {
                     defender_secondary: set(3),
                 }
             }),
+            table::<tables::ReserveModifierBreakdowns, _>(outcomes[4], &self.breakdowns, Clone::clone),
         ]
     }
 }
@@ -2034,6 +2128,7 @@ mod tests {
             _,
             _,
             _,
+            ..,
         ] = captured.tables()
         else {
             panic!("complete land details were not projected")
@@ -2137,6 +2232,7 @@ mod tests {
             reinforcement: Default::default(),
         };
         let place = |ordinal, exile_start| Placement {
+            pointer: 0,
             combat,
             side: 0,
             ordinal,
@@ -2206,6 +2302,7 @@ mod tests {
             TableView::Complete(replay::rows::TableRows::LandCombatDivisions(rows)),
             _,
             _,
+            ..,
         ] = captured.tables()
         else {
             panic!("complete land divisions were not projected")
@@ -2318,6 +2415,7 @@ mod tests {
             TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)),
             _,
             _,
+            ..,
         ] = captured.tables()
         else {
             panic!("complete land divisions were not projected")
@@ -2415,6 +2513,7 @@ mod tests {
             TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)),
             _,
             _,
+            ..,
         ] = captured.tables()
         else {
             panic!("complete land divisions were not projected")
@@ -2552,6 +2651,7 @@ mod tests {
             _,
             _,
             TableView::Complete(replay::rows::TableRows::LandCombatSides(sides)),
+            ..,
         ] = captured.tables()
         else {
             panic!("the side table was not projected independently")
@@ -2679,6 +2779,7 @@ mod family {
                 self.u64(data + index * 16 + 8, *value as u64);
             }
             self.array(at, data, entries.len() as u32);
+            self.text(at + 0x48, b"");
         }
         fn poison(&mut self, at: usize, len: usize) {
             self.poisoned.push((at, len));
@@ -3452,6 +3553,12 @@ mod family {
             );
             // An empty inline description token.
             w.u64(leader + cunit_leader::DESCRIPTION_TOKEN + 24, 15);
+            for offset in [
+                carmy_leader::MOVEMENT_MODIFIER,
+                carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER,
+            ] {
+                w.accumulator(leader + offset + 0x10, &[]);
+            }
             for offset in [0xc0, 0xe0, 0x100] {
                 w.text(leader + offset, b"fallback");
             }

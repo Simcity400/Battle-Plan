@@ -2,7 +2,7 @@
 use super::*;
 use installed_content::localisation::Argument;
 
-const PROPERTIES: [&str; 8] = [
+const PROPERTIES: [&str; 9] = [
     "GetPowerBalanceName",
     "GetLeftSideName",
     "GetRightSideName",
@@ -11,6 +11,7 @@ const PROPERTIES: [&str; 8] = [
     "GetActiveRangeName",
     "GetChangeRateDesc",
     "GetBopTrendTextIcon",
+    "GetPowerBalanceModDesc",
 ];
 
 impl ScriptedText<'_> {
@@ -76,6 +77,89 @@ impl ScriptedText<'_> {
                 ));
             }
             return Ok(Some(text));
+        }
+        if which == 8 {
+            let Some(record) = record else {
+                return Ok(Some(String::new()));
+            };
+            let sources = self
+                .frame
+                .complete::<tables::PowerBalanceModifierBreakdowns>()
+                .map_err(|e| format!("{name}: {e}"))?;
+            let sources = sources
+                .iter()
+                .find(|r| r.record == record.ordinal)
+                .ok_or_else(|| {
+                    format!(
+                        "{name}: balance record {} has no modifier breakdown",
+                        record.ordinal
+                    )
+                })?;
+            let definitions = self
+                .frame
+                .complete::<tables::ModifierDefinitions>()
+                .map_err(|e| format!("{name}: {e}"))?;
+            let mut output = String::new();
+            for (key, nodes) in [
+                (engine::modifier_keys::POWER_BALANCE_DAILY, &sources.daily),
+                (engine::modifier_keys::POWER_BALANCE_WEEKLY, &sources.weekly),
+            ] {
+                let definition = definitions
+                    .iter()
+                    .find(|r| r.index == key)
+                    .ok_or_else(|| format!("{name}: modifier definition {key} is missing"))?;
+                let text = crate::modifier_text::breakdown(
+                    nodes,
+                    crate::modifier_text::Breakdown {
+                        depth: -1,
+                        prefix: "",
+                        suffix: "",
+                    },
+                    |node| {
+                        let mut text = if node.name.is_empty() {
+                            String::new()
+                        } else {
+                            self.localisation
+                                .localise(&node.name)
+                                .map_err(|e| e.to_string())?
+                        };
+                        if !text.is_empty() {
+                            text.push_str(": ");
+                        }
+                        text.push_str(&crate::modifier_text::value_text(
+                            definition,
+                            node.value,
+                            2,
+                            false,
+                            false,
+                            |key, required| {
+                                if required
+                                    && self
+                                        .localisation
+                                        .get(std::str::from_utf8(key).map_err(|_| {
+                                            "modifier value key is not UTF-8".to_owned()
+                                        })?)
+                                        .is_none()
+                                {
+                                    return Err(format!(
+                                        "{name}: modifier value localisation {} is missing",
+                                        String::from_utf8_lossy(key)
+                                    ));
+                                }
+                                self.localisation.localise(key).map_err(|e| e.to_string())
+                            },
+                        )?);
+                        Ok(text)
+                    },
+                )?;
+                // 140E422E0 adds a separator after nonempty daily text only
+                // when the breakdown has not already ended with a newline.
+                if !output.is_empty() && !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                output.push_str(&text);
+            }
+            return Ok(Some(output));
         }
         let (mut daily, mut weekly) = (0_i64, 0_i64);
         if let Some(record) = record {

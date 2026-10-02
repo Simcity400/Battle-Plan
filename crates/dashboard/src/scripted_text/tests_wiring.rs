@@ -722,6 +722,87 @@ fn balance_names_selection_change_binding_and_icon_direction() {
 }
 
 #[test]
+fn balance_modifier_description_uses_recorded_values_and_localised_static_keys() {
+    let (catalogue, _folder) = tests::catalogue(
+        "",
+        " SOURCE:0 \"Source\"\n TEST:0 \"[ROOT.GetPowerBalanceModDesc]\"\n",
+    );
+    let mut f = frame();
+    set::<tables::PowerBalances>(
+        &mut f,
+        vec![PowerBalanceRow {
+            ordinal: 0,
+            ..Default::default()
+        }],
+    );
+    set::<tables::PowerBalanceMembers>(
+        &mut f,
+        vec![PowerBalanceMemberRow {
+            country: 100,
+            ..Default::default()
+        }],
+    );
+    set::<tables::ModifierDefinitions>(
+        &mut f,
+        [
+            engine::modifier_keys::POWER_BALANCE_DAILY,
+            engine::modifier_keys::POWER_BALANCE_WEEKLY,
+        ]
+        .into_iter()
+        .map(|index| ModifierDefinitionRow {
+            index,
+            flags: 3,
+            precision: 2,
+            ..Default::default()
+        })
+        .collect(),
+    );
+    let nodes = |value| {
+        vec![
+            ModifierBreakdownNode {
+                children: 2,
+                value: 999_000,
+                name: Vec::new(),
+            },
+            ModifierBreakdownNode {
+                children: 0,
+                value,
+                name: b"SOURCE".to_vec(),
+            },
+            ModifierBreakdownNode {
+                children: 0,
+                value: 0,
+                name: b"ZERO".to_vec(),
+            },
+        ]
+    };
+    set::<tables::PowerBalanceModifierBreakdowns>(
+        &mut f,
+        vec![PowerBalanceModifierBreakdownRow {
+            record: 0,
+            sources: vec![b"SOURCE".to_vec(), b"ZERO".to_vec()],
+            daily: nodes(1_234),
+            weekly: nodes(-2_345),
+        }],
+    );
+    assert_eq!(
+        rendered(&catalogue, &f, "TEST").unwrap(),
+        "Source: +1.23%\nSource: -2.34%\n"
+    );
+    f.tables[TableId::PowerBalanceModifierBreakdowns.index()] = TableView::Unavailable {
+        reason: "missing source capture".into(),
+    }
+    .into();
+    assert!(
+        rendered(&catalogue, &f, "TEST")
+            .unwrap_err()
+            .contains("PowerBalanceModifierBreakdowns")
+    );
+    set::<tables::PowerBalanceMembers>(&mut f, Vec::new());
+    assert_eq!(rendered(&catalogue, &f, "TEST").unwrap(), "");
+}
+
+#[test]
 fn character_pronouns_and_literal_names_differ_from_party_display_names() {
     let (catalogue, _folder) = tests::catalogue(
         "",

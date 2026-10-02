@@ -66,7 +66,10 @@ pub const LAND_COMBAT_DIVISIONS: Family = Family {
         keys::INITIATIVE_FACTOR,
     ],
     tokens: &[],
-    tables: &[TableId::LandCombatDivisions],
+    tables: &[
+        TableId::LandCombatDivisions,
+        TableId::ReserveModifierBreakdowns,
+    ],
 };
 
 pub const DIVISION_STATUS: Family = Family {
@@ -211,7 +214,10 @@ pub const POWER_BALANCE: Family = Family {
     name: "power balance modifiers",
     keys: &[keys::POWER_BALANCE_DAILY, keys::POWER_BALANCE_WEEKLY],
     tokens: &[],
-    tables: &[TableId::PowerBalanceMembers],
+    tables: &[
+        TableId::PowerBalanceMembers,
+        TableId::PowerBalanceModifierBreakdowns,
+    ],
 };
 
 pub const STATE_RESOURCES: Family = Family {

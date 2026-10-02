@@ -931,10 +931,124 @@ fn reinforcement(
     })
 }
 
+fn reserve_tree(
+    nodes: &[replay::rows::ModifierBreakdownNode],
+    definition: &replay::rows::ModifierDefinitionRow,
+    recorded: &str,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+) -> Result<String, String> {
+    dashboard::modifier_text::breakdown(
+        nodes,
+        dashboard::modifier_text::Breakdown {
+            depth: -1,
+            prefix: "",
+            suffix: "",
+        },
+        |node| {
+            let mut text = dashboard::scripted_text::stored_text(
+                loc,
+                recorded,
+                &node.name,
+                "reserve reinforcement modifier source",
+            )?;
+            super::binding::validate(icons, &text).map_err(|reason| {
+                format!("reserve reinforcement modifier source holds {reason}")
+            })?;
+            if !text.is_empty() {
+                text.push_str(": ");
+            }
+            text.push_str(
+                &super::modifier_text::value_text(
+                    definition, node.value, 2, false, false, icons, loc,
+                )
+                .map_err(|e| e.to_string())?,
+            );
+            Ok(text)
+        },
+    )
+}
+
+type ReserveSources = (String, Option<(String, String)>);
+fn reserve_sources(
+    frame: &DecodedFrame,
+    document: &Document,
+    row: &LandCombatDivisionRow,
+    divisions: &Available<'_, tables::Divisions>,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+) -> Result<ReserveSources, String> {
+    let sources = rows::<tables::ReserveModifierBreakdowns>(frame).map_err(|e| e.to_string())?;
+    let Available::Complete(sources) = sources else {
+        return Err("reserve reinforcement: ReserveModifierBreakdowns is incomplete".into());
+    };
+    let definitions = rows::<tables::ModifierDefinitions>(frame).map_err(|e| e.to_string())?;
+    if !definitions.is_complete() {
+        return Err("reserve reinforcement: ModifierDefinitions is incomplete".into());
+    }
+    let definition = definitions
+        .rows()
+        .iter()
+        .find(|r| r.index == engine::modifier_keys::LAND_REINFORCE_RATE)
+        .ok_or("reserve reinforcement: land_reinforce_rate definition is missing")?;
+    let unit = divisions
+        .rows()
+        .iter()
+        .find(|r| r.id == row.division)
+        .ok_or_else(|| {
+            format!(
+                "reserve reinforcement: division {} has no Divisions row",
+                row.division
+            )
+        })?;
+    // 140C6D610: positive expeditionary owner, otherwise the roster owner.
+    let country = if unit.expeditionary_owner as i32 > 0 {
+        unit.expeditionary_owner
+    } else {
+        unit.roster_owner
+    };
+    let describe = |kind, owner| {
+        let source = sources
+            .iter()
+            .find(|r| r.kind == kind && r.owner == owner)
+            .ok_or_else(|| {
+                format!(
+                    "reserve reinforcement: modifier source kind {kind} owner {owner} is missing"
+                )
+            })?;
+        reserve_tree(
+            &source.nodes,
+            definition,
+            &document.recorded_language,
+            icons,
+            loc,
+        )
+    };
+    let country = describe(0, country as u64)?;
+    // 140C6D610 emits the commander only when its getter is nonzero.
+    let commander = if modifier(&row.context, 0, true)
+        .ok_or("reserve reinforcement: commander eligibility callback is unsupported")?
+        != 0
+    {
+        let inputs = row
+            .commander_inputs
+            .as_ref()
+            .ok_or("reserve reinforcement: commander name is missing")?;
+        Some((
+            token(icons, loc, &inputs.name_token)?,
+            describe(row.context.leader_modifier_kind, row.commander)?,
+        ))
+    } else {
+        None
+    };
+    Ok((country, commander))
+}
+
 fn reinforcement_text(
     icons: &dyn TextIcons,
     loc: &Localisation,
     result: &Reinforcement,
+    sources: Result<&ReserveSources, String>,
 ) -> Result<String, String> {
     let chance = match result {
         Reinforcement::Rejected(_) => 0,
@@ -954,16 +1068,7 @@ fn reinforcement_text(
             speed,
             ..
         } => {
-            // 140C6D610's order: base, the country's 0xFB breakdown
-            // (FormatModifierBreakdown 14054D0F0 over CCountry+0x5B8), the
-            // initiative line, speed, then the commander's name and breakdown
-            // (leader block from 140C0AB20, +0x10). Each breakdown line is a
-            // tree leaf's stored CModifier display name (+0x58, read by
-            // 14054C770): AddFilteredModifierBlock (14054AD00) copies it,
-            // already localised (e.g. MODIFIER_POLITICS_PREFIX + the idea's
-            // name, 140BA0DE0), into a node (1405FFDE0) that keeps no source
-            // identity. Those lines are refused and counted; recording each source's
-            // identity and value is a planned follow-up layer (viewer README).
+            let (country, commander) = sources?;
             text.push_str(&builtin(
                 icons,
                 loc,
@@ -971,6 +1076,7 @@ fn reinforcement_text(
                 &[("VALUE", Argument::Fixed5(*base))],
             )?);
             text.push('\n');
+            text.push_str(country);
             if *initiative != 0 {
                 text.push_str(&builtin(icons, loc, "STAT_ARMY_INITIATIVE", &[])?);
                 text.push_str(&builtin(
@@ -989,6 +1095,11 @@ fn reinforcement_text(
                     &[("VAL", Argument::Fixed5(*speed))],
                 )?);
                 text.push('\n');
+            }
+            if let Some((name, sources)) = commander {
+                text.push_str(name);
+                text.push_str(": ");
+                text.push_str(sources);
             }
             return Ok(text);
         }
@@ -1153,8 +1264,6 @@ pub(super) fn bind(
     });
     // Shown default hovers without the piercing table, counted.
     let mut unpierced = 0_usize;
-    // Reserve hovers whose per-source rate lines are refused, counted.
-    let mut refused_rates = 0_usize;
     for (index, entries) in out.entries.iter_mut().enumerate() {
         let side = (index % 2) as u8;
         let used = detail.sides[side as usize]
@@ -1213,10 +1322,17 @@ pub(super) fn bind(
                 }
                 let text = match reinforcement(row, condition, widths, land_defines) {
                     Ok(result) => {
-                        if matches!(result, Reinforcement::Chance { .. }) {
-                            refused_rates += 1;
-                        }
-                        match reinforcement_text(icons, loc, &result) {
+                        let sources = if matches!(result, Reinforcement::Chance { .. }) {
+                            reserve_sources(frame, document, row, &all_divisions, icons, loc)
+                        } else {
+                            Ok((String::new(), None))
+                        };
+                        match reinforcement_text(
+                            icons,
+                            loc,
+                            &result,
+                            sources.as_ref().map_err(Clone::clone),
+                        ) {
                             Ok(text) => hover_text(&text),
                             Err(reason) => {
                                 *refused.entry(reason).or_default() += 1;
@@ -1485,9 +1601,6 @@ pub(super) fn bind(
             }
         }
     }
-    if refused_rates != 0 {
-        out.warnings.push(format!("Land combat {id}: {refused_rates} reserve reinforcement hovers derive chance, base, initiative and speed exactly but refuse the country's and the commander's per-source reinforce-rate lines: the game labels them with the localised display names its modifier trees store, which name no source the content could localise instead."));
-    }
     if let Err(reason) = land_defines
         && unpierced != 0
     {
@@ -1506,6 +1619,63 @@ pub(super) fn bind(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reserve_hover_prints_cached_sources_in_native_order_and_refuses_other_languages() {
+        use replay::rows::{ModifierBreakdownNode as Node, ModifierDefinitionRow};
+        let mut loc: Localisation = [
+            ("BATTLE_REINFORCE_CHANCE2", "Chance $VALUE$"),
+            ("MODIFIER_BASE_VALUE_PERCENTAGE", "Base"),
+            ("STAT_ARMY_INITIATIVE", "Initiative"),
+            ("STAT_ARMY_INITIATIVE_DIFF", "$VALUE$"),
+            ("SPEED_REINFORCEMENT_BONUS", "Speed $VAL$"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+        loc.language = "english".into();
+        let node = |children, value, name: &[u8]| Node {
+            children,
+            value,
+            name: name.to_vec(),
+        };
+        let nodes = [
+            node(3, 99_000, b"aggregate"),
+            node(0, 5_000, b"First"),
+            node(0, 0, b"Zero"),
+            node(1, 25_000, b"Nested aggregate"),
+            node(0, -1_000, b"Last"),
+        ];
+        let definition = ModifierDefinitionRow {
+            flags: 3,
+            precision: 2,
+            ..Default::default()
+        };
+        let sources = reserve_tree(&nodes, &definition, "english", &NoIcons, &loc).unwrap();
+        let text = reinforcement_text(
+            &NoIcons,
+            &loc,
+            &Reinforcement::Chance {
+                value: 10_000,
+                base: 1,
+                initiative: 2_000,
+                speed: 3_000,
+            },
+            Ok(&(
+                sources,
+                Some(("Commander".into(), "Leader source\n".into())),
+            )),
+        )
+        .unwrap();
+        assert_eq!(
+            text,
+            "Chance 0.10Base\nFirst: \u{11}G+5.00%\u{11}!\nLast: \u{11}R-1.00%\u{11}!\nInitiative0.02\nSpeed 0.03\nCommander: Leader source\n"
+        );
+        loc.language = "french".into();
+        let reason = reserve_tree(&nodes, &definition, "english", &NoIcons, &loc).unwrap_err();
+        assert!(
+            reason.contains("reserve reinforcement modifier source") && reason.contains("french")
+        );
+    }
     use crate::combat::binding::NoIcons;
 
     /// Each refused hover part names the key it could not localise, so the
@@ -1549,7 +1719,8 @@ Total 0.00
                     base: 1,
                     initiative: 0,
                     speed: 0
-                }
+                },
+                Ok(&(String::new(), None)),
             ),
             Ok("Chance 0.00MODIFIER_BASE_VALUE_PERCENTAGE
 "
@@ -1560,7 +1731,7 @@ Total 0.00
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
         assert_eq!(
-            reinforcement_text(&NoIcons, &flagged, &Reinforcement::Rejected("X")),
+            reinforcement_text(&NoIcons, &flagged, &Reinforcement::Rejected("X"), Ok(&(String::new(), None))),
             Err(
                 "localisation BATTLE_REINFORCE_CHANCE2 holds the inline flag 0x12 \"GER\" (an authored `@`), which the viewer does not draw"
                     .into()

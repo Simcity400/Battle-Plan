@@ -289,6 +289,49 @@ fixture!(OperativeMembershipRow, |key| {id: (key >> 40) as u64, roster_country: 
 fixture!(CryptologyRow, |key| {owner_country: (key >> 32) as u32, target_country: key as u32}, {amount_raw: i64, bonus_days: i32, bonus_active: u8, decrypting: u8});
 fixture!(IntelNetworkRow, |key| {owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32}, {strength_raw: Option<i64>, subnetwork_selector: i32, local_strength_raw: i64});
 fixture!(ScriptFlagRow, |key| {scope_kind: (key >> 64) as u8, scope_id: (key >> 32) as u32, token: key as u32}, {set_hour: i32, value: i16, remaining_days: i16});
+impl Fixture for ReserveModifierBreakdownRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            kind: (key >> 64) as u8,
+            owner: key as u64,
+            nodes: vec![
+                ModifierBreakdownNode {
+                    children: 2,
+                    value: tick as i64,
+                    name: Vec::new(),
+                },
+                ModifierBreakdownNode {
+                    children: 0,
+                    value: i64::MIN + tick as i64,
+                    name: vec![0, 255, tick as u8],
+                },
+                ModifierBreakdownNode {
+                    children: 0,
+                    value: i64::MAX - tick as i64,
+                    name: b"source".to_vec(),
+                },
+            ],
+        }
+    }
+    fn largest_key() -> u128 {
+        (2_u128 << 64) | u64::MAX as u128
+    }
+}
+impl Fixture for PowerBalanceModifierBreakdownRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let nodes = ReserveModifierBreakdownRow::fixture((1_u128 << 64) | 1, tick).nodes;
+        let source = format!("source_{tick}").into_bytes();
+        Self {
+            record: key as u32,
+            sources: vec![source.clone(), source],
+            daily: nodes.clone(),
+            weekly: nodes,
+        }
+    }
+    fn largest_key() -> u128 {
+        u32::MAX as u128
+    }
+}
 impl Fixture for GlobalSavedEventTargetRow {
     fn fixture(key: u128, tick: usize) -> Self {
         Self {
@@ -1321,6 +1364,12 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         TableId::RelationOpinions => TableRows::RelationOpinions(rows::<RelationOpinionRow>(tick)),
         TableId::RelationTuples => TableRows::RelationTuples(rows::<RelationTupleRow>(tick)),
         TableId::CountryIntel => TableRows::CountryIntel(rows::<CountryIntelRow>(tick)),
+        TableId::ReserveModifierBreakdowns => {
+            TableRows::ReserveModifierBreakdowns(rows::<ReserveModifierBreakdownRow>(tick))
+        }
+        TableId::PowerBalanceModifierBreakdowns => TableRows::PowerBalanceModifierBreakdowns(
+            rows::<PowerBalanceModifierBreakdownRow>(tick),
+        ),
         _ => return None,
     })
 }
@@ -2297,6 +2346,8 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<ScriptFlagRow>(TableId::ScriptFlags);
     check_table::<ScriptVariablesRow>(TableId::ScriptVariables);
     check_table::<GlobalSavedEventTargetRow>(TableId::GlobalSavedEventTargets);
+    check_table::<ReserveModifierBreakdownRow>(TableId::ReserveModifierBreakdowns);
+    check_table::<PowerBalanceModifierBreakdownRow>(TableId::PowerBalanceModifierBreakdowns);
     check_table::<OperationRow>(TableId::Operations);
     check_table::<OperationAssignmentRow>(TableId::OperationAssignments);
     check_table::<WingEquipmentRow>(TableId::WingEquipment);

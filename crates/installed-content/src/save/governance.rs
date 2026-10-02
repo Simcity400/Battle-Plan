@@ -165,6 +165,8 @@ pub struct PowerBalance {
     pub trending: Vec<u8>,
     pub countries: Vec<Vec<u8>>,
     pub overrides: Vec<PowerBalanceOverride>,
+    /// 140E44350 writes each +0x50 source's +0x1A8 name, in order.
+    pub modifiers: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -493,6 +495,11 @@ fn parse_power_balance(items: &[Item]) -> io::Result<PowerBalance> {
             .ok_or_else(|| invalid("missing trending side"))?,
         countries: list(items, b"countries")?,
         overrides,
+        modifiers: items
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(b"modifier")) // token 0x2965
+            .map(|item| scalar(&item.value).map(<[u8]>::to_vec))
+            .collect::<io::Result<_>>()?,
     })
 }
 
@@ -604,6 +611,25 @@ mod tests {
 
     fn parse_text(text: &[u8]) -> io::Result<Pack> {
         parse(&crate::parser::parse(text)?.items)
+    }
+
+    #[test]
+    fn balance_modifier_sources_keep_order_duplicates_and_omission() {
+        let pack = parse_text(
+            br#"countries={} power_balance={power_balances={
+            {template=x value=0 left_side=l right_side=r trending_side=r
+             modifier=second modifier=first modifier=second}
+            {template=y value=0 left_side=l right_side=r trending_side=r}
+        }}"#,
+        )
+        .unwrap();
+        let rows = pack.power_balances.unwrap();
+        assert_eq!(
+            rows[0].modifiers,
+            [b"second".to_vec(), b"first".to_vec(), b"second".to_vec()]
+        );
+        assert!(rows[1].modifiers.is_empty());
+        assert!(parse_text(b"countries={} power_balance={power_balances={{template=x value=0 left_side=l right_side=r trending_side=r modifier={x}}}}").is_err());
     }
 
     #[test]
