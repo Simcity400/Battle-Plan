@@ -63,11 +63,11 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         out.line(
             false,
             0,
-            "tooltip_raid_result",
+            TOOLTIP_RAID_RESULT,
             (|| {
                 localise(
                     loc,
-                    "tooltip_raid_result",
+                    TOOLTIP_RAID_RESULT,
                     &[
                         ("RAID_DESC", Arg::Text(&input.description?)),
                         (
@@ -81,14 +81,14 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         out.line(
             true,
             0,
-            "tooltip_raid_view_details_prompt",
-            plain("tooltip_raid_view_details_prompt"),
+            TOOLTIP_RAID_VIEW_DETAILS_PROMPT,
+            plain(TOOLTIP_RAID_VIEW_DETAILS_PROMPT),
         );
         out.line(
             true,
             1,
-            "tooltip_raid_close_report_prompt",
-            plain("tooltip_raid_close_report_prompt"),
+            TOOLTIP_RAID_CLOSE_REPORT_PROMPT,
+            plain(TOOLTIP_RAID_CLOSE_REPORT_PROMPT),
         );
         return out;
     }
@@ -97,17 +97,17 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         out.line(
             false,
             0,
-            "tooltip_raid_warning_header",
-            plain("tooltip_raid_warning_header"),
+            TOOLTIP_RAID_WARNING_HEADER,
+            plain(TOOLTIP_RAID_WARNING_HEADER),
         );
         out.line(
             false,
             1,
-            "tooltip_raid_warning_description",
+            TOOLTIP_RAID_WARNING_DESCRIPTION,
             (|| {
                 localise(
                     loc,
-                    "tooltip_raid_warning_description",
+                    TOOLTIP_RAID_WARNING_DESCRIPTION,
                     &[
                         ("COUNTRY", Arg::Text(&input.owner?)),
                         ("RAID", Arg::Text(&input.description?)),
@@ -118,11 +118,11 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         out.line(
             false,
             2,
-            "tooltip_raid_warning_success_chance_header",
+            TOOLTIP_RAID_WARNING_SUCCESS_CHANCE_HEADER,
             input.success.and_then(|chance| {
                 localise(
                     loc,
-                    "tooltip_raid_warning_success_chance_header",
+                    TOOLTIP_RAID_WARNING_SUCCESS_CHANCE_HEADER,
                     &[("VALUE", Arg::Fixed5(chance))],
                 )
             }),
@@ -132,8 +132,8 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                 out.line(
                     false,
                     2,
-                    "tooltip_raid_warning_counterplay_header",
-                    plain("tooltip_raid_warning_counterplay_header"),
+                    TOOLTIP_RAID_WARNING_COUNTERPLAY_HEADER,
+                    plain(TOOLTIP_RAID_WARNING_COUNTERPLAY_HEADER),
                 );
                 for line in lines {
                     out.line(false, 1, "tooltip_raid_warning_counterplay", line);
@@ -148,20 +148,20 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
     out.line(
         true,
         0,
-        "tooltip_raid_view_details_prompt",
-        plain("tooltip_raid_view_details_prompt"),
+        TOOLTIP_RAID_VIEW_DETAILS_PROMPT,
+        plain(TOOLTIP_RAID_VIEW_DETAILS_PROMPT),
     );
-    out.line(false, 1, "raid_inst_item_desc", input.description);
+    out.line(false, 1, RAID_INST_ITEM_DESC, input.description);
     out.line(
         false,
         2,
-        "raid_inst_progress_desc",
+        RAID_INST_PROGRESS_DESC,
         input.progress.and_then(|progress| {
             let phase = plain(enum_key(&PHASES, input.phase))?;
             match progress {
                 Some(value) => localise(
                     loc,
-                    "raid_inst_progress_desc",
+                    RAID_INST_PROGRESS_DESC,
                     &[
                         ("PHASE", Arg::Text(&phase)),
                         ("PROGRESS", Arg::Fixed5(value)),
@@ -180,8 +180,8 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                     out.line(
                         false,
                         2,
-                        "tooltip_launch_button_disabled",
-                        plain("tooltip_launch_button_disabled"),
+                        TOOLTIP_LAUNCH_BUTTON_DISABLED,
+                        plain(TOOLTIP_LAUNCH_BUTTON_DISABLED),
                     );
                 }
                 lines(&mut out, if input.phase == 3 { 1 } else { 2 }, reasons);
@@ -194,17 +194,17 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         Ok(Some(name)) => out.line(
             true,
             1,
-            "tooltip_launch_button_right_click",
+            TOOLTIP_LAUNCH_BUTTON_RIGHT_CLICK,
             name.and_then(|name| {
                 localise(
                     loc,
-                    "tooltip_launch_button_right_click",
+                    TOOLTIP_LAUNCH_BUTTON_RIGHT_CLICK,
                     &[("NAME", Arg::Text(&name))],
                 )
             }),
         ),
         Ok(None) => {}
-        Err(reason) => out.refuse("tooltip_launch_button_right_click", reason),
+        Err(reason) => out.refuse(TOOLTIP_LAUNCH_BUTTON_RIGHT_CLICK, reason),
     }
     out
 }
@@ -242,7 +242,7 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
     let mut out = Tooltip::default();
     let plain = |key| localise(loc, key, &[]);
     for target in targets {
-        let header = "TOOLTIP_POTENTIAL_TARGET_ENTRY";
+        let header = TOOLTIP_POTENTIAL_TARGET_ENTRY;
         out.line(
             false,
             2,
@@ -251,7 +251,7 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                 let key = if target.allowed? {
                     header
                 } else {
-                    "TOOLTIP_POTENTIAL_TARGET_ENTRY_NOT_ALLOWED"
+                    TOOLTIP_POTENTIAL_TARGET_ENTRY_NOT_ALLOWED
                 };
                 localise(
                     loc,
@@ -269,10 +269,10 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
             Ok(Facility::Unknown { current, required }) => out.line(
                 false,
                 1,
-                "TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC",
+                TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC,
                 localise(
                     loc,
-                    "TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC",
+                    TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC,
                     &[
                         ("CURRENT", Arg::Fixed5(current)),
                         ("REQUIRED", Arg::Fixed5(required)),
@@ -282,11 +282,11 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
             Ok(Facility::Project(name)) => out.line(
                 false,
                 1,
-                "TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC",
+                TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC,
                 name.and_then(|name| {
                     localise(
                         loc,
-                        "TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC",
+                        TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC,
                         &[("PROJECT_NAME", Arg::Text(&name))],
                     )
                 }),
@@ -294,8 +294,8 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
             Ok(Facility::Idle) => out.line(
                 false,
                 1,
-                "TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC",
-                plain("TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC"),
+                TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC,
+                plain(TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC),
             ),
             Err(reason) => out.refuse("TOOLTIP_TARGET_FACILITY_PROJECT", reason),
         }
@@ -304,23 +304,23 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                 Ok(Some(current)) => out.line(
                     false,
                     1,
-                    "TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL",
+                    TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL,
                     localise(
                         loc,
-                        "TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL",
+                        TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL,
                         &[("CURRENT", Arg::Fixed5(current))],
                     ),
                 ),
                 Ok(None) => {}
-                Err(reason) => out.refuse("TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL", reason),
+                Err(reason) => out.refuse(TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL, reason),
             }
         }
         if target.types.len() > 1 {
             out.line(
                 false,
                 2,
-                "TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS",
-                plain("TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS"),
+                TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS,
+                plain(TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS),
             );
         }
         for kind in target.types {
@@ -330,9 +330,9 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                 "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER",
                 (|| {
                     let key = if kind.allowed.clone()? {
-                        "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_ALLOWED"
+                        TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_ALLOWED
                     } else {
-                        "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_NOT_ALLOWED"
+                        TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_NOT_ALLOWED
                     };
                     localise(loc, key, &[("RAID", Arg::Text(&kind.name?))])
                 })(),
@@ -341,31 +341,31 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                 Ok(Some(name)) => out.line(
                     false,
                     1,
-                    "raid_type_rescue_captured_general_captive_line",
+                    RAID_TYPE_RESCUE_CAPTURED_GENERAL_CAPTIVE_LINE,
                     localise(
                         loc,
-                        "raid_type_rescue_captured_general_captive_line",
+                        RAID_TYPE_RESCUE_CAPTURED_GENERAL_CAPTIVE_LINE,
                         &[("NAME", Arg::Text(&name))],
                     ),
                 ),
                 Ok(None) => {}
-                Err(reason) => out.refuse("raid_type_rescue_captured_general_captive_line", reason),
+                Err(reason) => out.refuse(RAID_TYPE_RESCUE_CAPTURED_GENERAL_CAPTIVE_LINE, reason),
             }
             if !compact {
                 match kind.description {
                     Ok(Some(desc)) => out.line(
                         false,
                         1,
-                        "TOOLTIP_POTENTIAL_TARGET_RAID_DESC",
+                        TOOLTIP_POTENTIAL_TARGET_RAID_DESC,
                         localise(
                             loc,
-                            "TOOLTIP_POTENTIAL_TARGET_RAID_DESC",
+                            TOOLTIP_POTENTIAL_TARGET_RAID_DESC,
                             // 141612FC0: TEXT, literal at 14292F680.
                             &[("TEXT", Arg::Text(&desc))],
                         ),
                     ),
                     Ok(None) => {}
-                    Err(reason) => out.refuse("TOOLTIP_POTENTIAL_TARGET_RAID_DESC", reason),
+                    Err(reason) => out.refuse(TOOLTIP_POTENTIAL_TARGET_RAID_DESC, reason),
                 }
             }
             match kind.allowed {
@@ -375,13 +375,13 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                         out.line(
                             false,
                             2,
-                            "TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION",
-                            plain("TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION"),
+                            TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION,
+                            plain(TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION),
                         );
                         lines(&mut out, 1, reasons);
                     }
                     Ok(None) => {}
-                    Err(reason) => out.refuse("TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION", reason),
+                    Err(reason) => out.refuse(TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION, reason),
                 },
                 _ => {}
             }
@@ -389,10 +389,10 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                 out.line(
                     false,
                     2,
-                    "RAID_RANGE_FACTOR_TOOLTIP",
+                    RAID_RANGE_FACTOR_TOOLTIP,
                     localise(
                         loc,
-                        "RAID_RANGE_FACTOR_TOOLTIP",
+                        RAID_RANGE_FACTOR_TOOLTIP,
                         &[("RANGE_FACTOR", Arg::Fixed5(kind.range))],
                     ),
                 );
@@ -401,8 +401,8 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                 out.line(
                     false,
                     2,
-                    "tooltip_raid_only_launch_once",
-                    plain("tooltip_raid_only_launch_once"),
+                    TOOLTIP_RAID_ONLY_LAUNCH_ONCE,
+                    plain(TOOLTIP_RAID_ONLY_LAUNCH_ONCE),
                 );
             }
         }
@@ -411,11 +411,45 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
         Ok(true) => out.line(
             false,
             2,
-            "RAID_SHIFT_CLICK_QUICK_START",
-            plain("RAID_SHIFT_CLICK_QUICK_START"),
+            RAID_SHIFT_CLICK_QUICK_START,
+            plain(RAID_SHIFT_CLICK_QUICK_START),
         ),
         Ok(false) => {}
-        Err(reason) => out.refuse("RAID_SHIFT_CLICK_QUICK_START", reason),
+        Err(reason) => out.refuse(RAID_SHIFT_CLICK_QUICK_START, reason),
     }
     out
+}
+
+crate::combat::text::tooltip_keys! {
+    TOOLTIP_RAID_RESULT = "tooltip_raid_result",
+    TOOLTIP_RAID_VIEW_DETAILS_PROMPT = "tooltip_raid_view_details_prompt",
+    TOOLTIP_RAID_CLOSE_REPORT_PROMPT = "tooltip_raid_close_report_prompt",
+    TOOLTIP_RAID_WARNING_HEADER = "tooltip_raid_warning_header",
+    TOOLTIP_RAID_WARNING_DESCRIPTION = "tooltip_raid_warning_description",
+    TOOLTIP_RAID_WARNING_SUCCESS_CHANCE_HEADER = "tooltip_raid_warning_success_chance_header",
+    TOOLTIP_RAID_WARNING_COUNTERPLAY_HEADER = "tooltip_raid_warning_counterplay_header",
+    RAID_INST_ITEM_DESC = "raid_inst_item_desc",
+    RAID_INST_PROGRESS_DESC = "raid_inst_progress_desc",
+    TOOLTIP_LAUNCH_BUTTON_DISABLED = "tooltip_launch_button_disabled",
+    TOOLTIP_LAUNCH_BUTTON_RIGHT_CLICK = "tooltip_launch_button_right_click",
+    TOOLTIP_POTENTIAL_TARGET_ENTRY = "TOOLTIP_POTENTIAL_TARGET_ENTRY",
+    TOOLTIP_POTENTIAL_TARGET_ENTRY_NOT_ALLOWED = "TOOLTIP_POTENTIAL_TARGET_ENTRY_NOT_ALLOWED",
+    TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC = "TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC",
+    TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC = "TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC",
+    TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC = "TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC",
+    TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL = "TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL",
+    TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS = "TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS",
+    TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_ALLOWED = "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_ALLOWED",
+    TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_NOT_ALLOWED = "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_NOT_ALLOWED",
+    RAID_TYPE_RESCUE_CAPTURED_GENERAL_CAPTIVE_LINE = "raid_type_rescue_captured_general_captive_line",
+    TOOLTIP_POTENTIAL_TARGET_RAID_DESC = "TOOLTIP_POTENTIAL_TARGET_RAID_DESC",
+    TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION = "TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION",
+    RAID_RANGE_FACTOR_TOOLTIP = "RAID_RANGE_FACTOR_TOOLTIP",
+    TOOLTIP_RAID_ONLY_LAUNCH_ONCE = "tooltip_raid_only_launch_once",
+    RAID_SHIFT_CLICK_QUICK_START = "RAID_SHIFT_CLICK_QUICK_START",
+}
+
+/// The raid rules' literal keys (141E72380, 141617380, 141612FC0).
+pub(crate) fn keys() -> impl Iterator<Item = &'static str> {
+    TOOLTIP_KEYS.iter().copied().chain(PHASES).chain(OUTCOMES)
 }

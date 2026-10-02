@@ -503,7 +503,7 @@ pub struct Viewer {
     /// The raid offer cycle, advanced off the frame path.
     raid_lane: crate::raid_lane::RaidLane,
     raid_tooltips: map::raids::tooltips::lane::Lane,
-    raid_tooltip_view: map::raids::tooltips::view::View,
+    tooltip_refused: BTreeMap<String, usize>,
     // counters
     counter_report: CounterReport,
     /// The last icon layer built, and the frame, camera and viewport it was
@@ -830,7 +830,7 @@ impl Viewer {
             label_report: LabelReport::default(),
             raid_lane: Default::default(),
             raid_tooltips: Default::default(),
-            raid_tooltip_view: Default::default(),
+            tooltip_refused: Default::default(),
             // counters
             counter_report: CounterReport::default(),
             overlay: None,
@@ -937,7 +937,7 @@ impl Viewer {
         }
         self.options.replay = None;
         self.raid_tooltips = Default::default();
-        self.raid_tooltip_view = Default::default();
+        self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
         self.loaded_config = None;
@@ -1107,6 +1107,11 @@ impl Viewer {
             warnings.extend(overlay.raid_report().warnings());
         }
         warnings.extend(self.counter_report.warnings());
+        warnings.extend(
+            self.tooltip_refused
+                .iter()
+                .map(|(reason, count)| format!("Tooltip: {count} × {reason}")),
+        );
         if let Some(scene) = &self.scene {
             warnings.extend(scene.pass_warnings());
             warnings.extend(
@@ -1349,7 +1354,7 @@ impl Viewer {
         self.combat.close();
         self.document = None;
         self.raid_tooltips = Default::default();
-        self.raid_tooltip_view = Default::default();
+        self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
         self.loaded_config = None;
@@ -2542,6 +2547,66 @@ impl Viewer {
         }
     }
 
+    fn map_tooltip(
+        &mut self,
+        document: &Document,
+        point: Option<[f32; 2]>,
+        extent: [f32; 2],
+        ctx: &egui::Context,
+    ) -> Option<(Arc<map::raids::tooltips::Tooltip>, [f32; 4])> {
+        let point = point?;
+        if let Some(hit) = self
+            .prepared_overlay
+            .as_ref()
+            .and_then(|map| map.raid_at(point))
+        {
+            let crate::playback::Current::Frame(frame) = document.playback.current() else {
+                return None;
+            };
+            let ours = self.overlay_tables.as_ref()?.3.ours();
+            let text = self.raid_tooltips.request(
+                Arc::clone(&document.content),
+                Arc::clone(frame),
+                ours,
+                hit.key.clone(),
+                ctx,
+            )?;
+            return Some((
+                text,
+                [hit.origin[0], hit.origin[1], hit.size[0], hit.size[1]],
+            ));
+        }
+        if let Some(hit) = self
+            .counter_report
+            .arrivals
+            .iter()
+            .rev()
+            .find(|hit| hit.contains(point))
+            && let Some(arrival) =
+                map::counter_eta::arrival(document.playback.hour(), hit.remaining)
+        {
+            let mut text = map::raids::tooltips::Tooltip::default();
+            text.title = map::counter_eta::sentence(
+                &document.names.localisation,
+                &arrival,
+                hit.ours,
+                &date(arrival.hour),
+            )
+            .unwrap_or_else(|reason| {
+                text.refused.insert(format!("arrival line: {reason}"), 1);
+                format!("Arrival line refused: {reason}.")
+            });
+            return Some((Arc::new(text), hit.rect));
+        }
+        Some((
+            Arc::new(map::raids::tooltips::Tooltip {
+                title: "Drag to pan · Scroll to zoom".into(),
+                ..Default::default()
+            }),
+            [0.0, 0.0, extent[0], extent[1]],
+        ))
+    }
+
     fn map(
         &mut self,
         ui: &mut egui::Ui,
@@ -3063,14 +3128,13 @@ impl Viewer {
         }
         let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
         laps.lap("overlay_draw");
-        let mut combat_batch;
         let engaged = self
             .hours
             .as_ref()
             .map(|hours| hours.engaged(&self.perspective.country))
             .transpose()
             .map_err(|error| error.to_string())?;
-        let label_batch = if let Some(mut drawn) = self
+        let drawn = self
             .combat
             .draw(
                 document,
@@ -3079,22 +3143,49 @@ impl Viewer {
                 engaged.as_deref(),
                 true,
             )
-            .map_err(|error| error.to_string())?
-        {
-            self.combat
-                .draw_tooltip(&mut drawn, &document.icons.combat, point, extent)
+            .map_err(|error| error.to_string())?;
+        if build_warnings {
+            warnings.extend(self.combat.warnings(document));
+        }
+        let map_hit = self.map_tooltip(document, point.filter(|_| !over_combat), extent, ui.ctx());
+        let mut tooltip_refused = map_hit
+            .as_ref()
+            .map(|(text, _)| text.refused.clone())
+            .unwrap_or_default();
+        let mut additions = Batch::default();
+        if let Some((text, anchor)) = self.combat.tooltip(
+            drawn.as_ref(),
+            &document.icons.combat,
+            point,
+            map_hit
+                .as_ref()
+                .map(|(text, rect)| (text.title.as_str(), Some(text.body.as_str()), *rect)),
+        ) {
+            let refused = self
+                .prepared_overlay
+                .as_ref()
+                .expect("built above")
+                .draw_tooltip(&now, &mut additions, text, anchor, extent, animation_time)
                 .map_err(|error| error.to_string())?;
-            if let Some(delay) = self.combat.tooltip_repaint_after(&document.icons.combat) {
-                ui.ctx().request_repaint_after(delay);
+            for (reason, count) in refused {
+                *tooltip_refused.entry(reason).or_default() += count;
             }
-            if build_warnings {
-                warnings.extend(self.combat.warnings(document));
-            }
-            combat_batch = self.overlay.as_ref().expect("built above").clone();
-            combat_batch.quads.extend(drawn.batch.quads);
-            &combat_batch
+        }
+        self.tooltip_refused = tooltip_refused;
+        if let Some(delay) = self.combat.tooltip_repaint_after(&document.icons.combat) {
+            ui.ctx().request_repaint_after(delay);
+        }
+        if let Some(drawn) = drawn {
+            additions.quads.extend(drawn.batch.quads);
+        }
+        let overlay = self.overlay.as_ref().expect("built above");
+        let mut combined;
+        let label_batch = if additions.is_empty() {
+            overlay
         } else {
-            self.overlay.as_ref().expect("built above")
+            combined = overlay.clone();
+            combined.quads.extend(additions.quads);
+            &combined
         };
         // capture: at a fixed clock `Scene::render` takes the luminance
         // adaptation instantaneously, because the clock did not advance, which
@@ -3232,63 +3323,6 @@ impl Viewer {
         }
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
-        // The map's tooltip is part of its interface, so it is sized like the
-        // sprites: egui's default text size, padding, gap and wrap width taken
-        // as interface pixels, times the UI scale, in device pixels. egui lays
-        // it out at that size, so its text is rasterised there, not stretched.
-        let points = |interface: f32| map::ui_scale::points(interface, ui_scale, scale);
-        let style = ui.style().clone();
-        let mut tooltip = egui::Tooltip::for_enabled(&response);
-        tooltip.popup = tooltip
-            .popup
-            .frame(egui::Frame::popup(&style).inner_margin(style.spacing.menu_margin * points(1.0)))
-            .gap(points(4.0))
-            .width(points(style.spacing.tooltip_width));
-        tooltip.show(|ui| {
-            let raid = point
-                .filter(|_| !over_combat)
-                .and_then(|point| self.prepared_overlay.as_ref()?.raid_at(point).cloned());
-            if let Some(key) = raid {
-                if let crate::playback::Current::Frame(frame) = document.playback.current()
-                    && let Some(ours) = self.overlay_tables.as_ref().map(|t| t.3.ours())
-                    && let Some(prepared) = self.raid_tooltips.request(
-                        Arc::clone(&document.content),
-                        Arc::clone(frame),
-                        ours,
-                        key,
-                        ui.ctx(),
-                    )
-                {
-                    self.raid_tooltip_view
-                        .show(ui, &prepared, points(1.0), self.diagnostics);
-                }
-                return;
-            }
-            // The game shows a moving division's arrival in its counter's
-            // tooltip, so the hovered counter's line replaces the map's hint.
-            let arrival = point.filter(|_| !over_combat).and_then(|point| {
-                let hit = self
-                    .counter_report
-                    .arrivals
-                    .iter()
-                    .rev()
-                    .find(|hit| hit.contains(point))?;
-                let arrival = map::counter_eta::arrival(document.playback.hour(), hit.remaining)?;
-                Some(
-                    map::counter_eta::sentence(
-                        &document.names.localisation,
-                        &arrival,
-                        hit.ours,
-                        &date(arrival.hour),
-                    )
-                    .unwrap_or_else(|reason| format!("Arrival line refused: {reason}.")),
-                )
-            });
-            let text = arrival.unwrap_or_else(|| "Drag to pan · Scroll to zoom".into());
-            ui.set_max_width(points(style.spacing.tooltip_width));
-            let size = points(egui::TextStyle::Body.resolve(&style).size);
-            ui.label(egui::RichText::new(text).size(size));
-        });
         self.rendered = Some(Playhead {
             branch: document.playback.branch(),
             hour: document.playback.hour(),

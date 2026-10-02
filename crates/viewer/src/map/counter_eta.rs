@@ -62,10 +62,10 @@ pub fn sentence(
 ) -> Result<String, String> {
     use installed_content::localisation::Argument;
     let key = match (arrival.days == 0, ours) {
-        (true, true) => "UNIT_MOVING_HOURS",
-        (false, true) => "UNIT_MOVING_DAYS_HOURS",
-        (true, false) => "UNIT_MOVING_HOURS_NONPLAYER",
-        (false, false) => "UNIT_MOVING_DAYS_HOURS_NONPLAYER",
+        (true, true) => UNIT_MOVING_HOURS,
+        (false, true) => UNIT_MOVING_DAYS_HOURS,
+        (true, false) => UNIT_MOVING_HOURS_NONPLAYER,
+        (false, false) => UNIT_MOVING_DAYS_HOURS_NONPLAYER,
     };
     let hours = ("HOURS", Argument::Int32(arrival.hours));
     let days = ("DAYS", Argument::Int32(arrival.days));
@@ -83,6 +83,13 @@ pub fn sentence(
         ));
     }
     Ok(format!("{} ({at})", super::text::strip_color_codes(&text)))
+}
+
+crate::combat::text::tooltip_keys! {
+    UNIT_MOVING_HOURS = "UNIT_MOVING_HOURS",
+    UNIT_MOVING_DAYS_HOURS = "UNIT_MOVING_DAYS_HOURS",
+    UNIT_MOVING_HOURS_NONPLAYER = "UNIT_MOVING_HOURS_NONPLAYER",
+    UNIT_MOVING_DAYS_HOURS_NONPLAYER = "UNIT_MOVING_DAYS_HOURS_NONPLAYER",
 }
 
 #[cfg(test)]

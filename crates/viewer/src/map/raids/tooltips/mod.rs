@@ -13,11 +13,11 @@ mod recorded;
 pub(super) mod requirements;
 mod rules;
 mod success;
-pub mod view;
 
 use super::offers::TooltipTarget;
 use crate::combat::text::ensure_newlines;
 pub use recorded::build;
+pub(crate) use rules::keys;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

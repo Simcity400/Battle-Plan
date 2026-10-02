@@ -1,15 +1,5 @@
-//! Native combat tooltip presentation; no tooltip text or layout is recorded.
-//!
-//! `1402A4080` wraps through `1422861E0`, then gives `CTextBox` its text with
-//! the final argument set. `14228EF60` supplies zero height to `CTextSprite`,
-//! so the authored `maxHeight` does not truncate tooltips. The first wrapping
-//! pass subtracts the horizontal border twice before `142285B10` subtracts
-//! it twice again (instructions `1422862D4..142286317`, `142285B58..61`).
-//! `14228C8D0` then measures the resulting lines and adds a border on every
-//! side. For the shipped ToolTip this means wrapping at 328 pixels, an
-//! 18-pixel text inset, and a background fitted to the resulting text.
-use super::{Assets, Chunk, Drawn, Painter, invalid, layout};
-use crate::map::{names::GlyphMetrics, text};
+//! Shared ToolTip painter, clocks and placement (tooltip_controller::update@1402A4080).
+use crate::map::{counters::gui_windows, native_gui, sprites::Batch};
 use installed_content::defines::Defines;
 use std::{
     io,
@@ -219,107 +209,6 @@ fn shows(deadline: f32, now: f32) -> bool {
         && !matches!(now.partial_cmp(&deadline), Some(Less | Equal))
 }
 
-struct Atom {
-    chunk: Chunk,
-    advance: f32,
-    kerning: f32,
-    height: f32,
-    ends_word: bool,
-}
-impl Atom {
-    fn step(&self) -> f32 {
-        self.advance + self.kerning
-    }
-
-    fn is_space(&self) -> bool {
-        matches!(&self.chunk, Chunk::Text(value, _) if value == " ")
-    }
-}
-
-struct Line {
-    atoms: Vec<Atom>,
-    width: f32,
-    height: f32,
-}
-impl Line {
-    fn new(mut atoms: Vec<Atom>, line_height: f32) -> Self {
-        // The later draw pass sees the inserted newline and starts a new
-        // glyph run even when the first pass split an overlong word.
-        if let Some(first) = atoms.first_mut() {
-            first.kerning = 0.0;
-        }
-        let width = atoms.iter().map(Atom::step).sum::<f32>()
-            - atoms
-                .last()
-                .filter(|atom| atom.ends_word)
-                .map_or(0.0, Atom::step);
-        let height = atoms
-            .iter()
-            .fold(line_height, |height, atom| height.max(atom.height));
-        Self {
-            atoms,
-            width,
-            height,
-        }
-    }
-}
-
-/// `142285B10` wraps when a glyph reaches the width, moves the unfinished
-/// word to the next line, and breaks an overlong word at the current glyph.
-/// `142287190` carries leading spaces onto automatically wrapped lines.
-fn wrap(atoms: Vec<Atom>, width: f32, line_height: f32) -> Vec<Line> {
-    let indent: Vec<_> = atoms.iter().take_while(|atom| atom.is_space()).collect();
-    let indent_width: f32 = indent.iter().map(|atom| atom.step()).sum();
-    let indent = if indent_width < width {
-        indent
-            .iter()
-            .map(|atom| match &atom.chunk {
-                Chunk::Text(_, color) => (*color, atom.advance, atom.height),
-                _ => unreachable!("leading spaces are text"),
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let mut lines = Vec::new();
-    let mut finished = Vec::new();
-    let mut word = Vec::new();
-    let (mut line_width, mut word_width) = (0.0_f32, 0.0_f32);
-    for atom in atoms {
-        let step = atom.step();
-        if (!atom.ends_word || word_width == 0.0) && width <= line_width + step {
-            if line_width == word_width {
-                finished.append(&mut word);
-                word_width = 0.0;
-            }
-            lines.push(Line::new(std::mem::take(&mut finished), line_height));
-            for &(color, advance, height) in &indent {
-                finished.push(Atom {
-                    chunk: Chunk::Text(" ".into(), color),
-                    advance,
-                    kerning: 0.0,
-                    height,
-                    ends_word: true,
-                });
-                word_width += advance;
-            }
-            finished.append(&mut word);
-            line_width = word_width;
-        }
-        line_width += step;
-        word_width += step;
-        let ends_word = atom.ends_word;
-        word.push(atom);
-        if ends_word {
-            finished.append(&mut word);
-            word_width = 0.0;
-        }
-    }
-    finished.append(&mut word);
-    lines.push(Line::new(finished, line_height));
-    lines
-}
-
 /// Default, unanchored tooltip placement from `1402A4080`, in interface
 /// pixels. Producer-specific relative anchors and its above-pointer flag are
 /// not used by the land window.
@@ -336,195 +225,41 @@ fn position(point: [f32; 2], size: [f32; 2], extent: [f32; 2], offsets: [i32; 4]
     [x.max(0.0), y.max(0.0)]
 }
 
-pub(super) fn draw(
-    assets: &Assets,
-    drawn: &mut Drawn,
+pub(crate) fn draw<R: native_gui::Resources + native_gui::Sheets>(
+    resources: &R,
+    batch: &mut Batch,
     value: &str,
     point: [f32; 2],
     extent: [f32; 2],
-) -> io::Result<()> {
-    if value.is_empty() {
-        return Ok(());
-    }
-    let Ok(defines) = &assets.tooltip_defines else {
-        // The asset loader reports the unsupported definitions.
-        return Ok(());
-    };
-    let node = assets
-        .windows
-        .get("ToolTip")
-        .ok_or_else(|| invalid("missing ToolTip declaration"))?;
-    let font = installed_content::gui::font(&node.items)
-        .and_then(|name| assets.fonts.get(name))
-        .ok_or_else(|| invalid("missing ToolTip font"))?;
-    let sprite = assets
-        .sprite("ToolTip")
-        .ok_or_else(|| invalid("missing ToolTip background"))?;
-    let border = sprite
-        .border
-        .ok_or_else(|| invalid("missing ToolTip borderSize"))?;
-    let max_width = installed_content::gui::number(&node.items, "maxWidth")?
-        .ok_or_else(|| invalid("missing ToolTip maxWidth"))? as f32;
-    let width = max_width - 4.0 * border[0];
-    if !width.is_finite() || width <= 0.0 || border.iter().any(|v| !v.is_finite() || *v < 0.0) {
-        return Err(invalid("invalid ToolTip dimensions"));
-    }
-    if layout::boolean(&node.items, "fixedsize").map_err(invalid)? == Some(true) {
-        return Err(invalid("fixed-size ToolTip content is unsupported"));
-    }
-    let mut painter = Painter {
-        assets,
-        drawn,
-        hovers: false,
-        layer_base: 0,
-    };
-    let mut color = super::text::Colours::new(font.color());
-    let mut lines = Vec::new();
-    for paragraph in value.split('\n') {
-        let mut atoms = Vec::new();
-        for chunk in painter.chunks(paragraph, &mut color) {
-            // Even a zero-width colour marker resets the previous glyph in
-            // 142285B10 after 1422894D0 consumes the formatting code.
-            let mut previous = None;
-            match chunk {
-                Chunk::Text(run, color) => {
-                    for ch in run.chars() {
-                        let glyph = GlyphMetrics::glyph(font, ch);
-                        let kerning = glyph
-                            .as_ref()
-                            .and(previous)
-                            .map_or(0.0, |p| GlyphMetrics::kerning(font, p, ch));
-                        atoms.push(Atom {
-                            chunk: Chunk::Text(ch.to_string(), color),
-                            advance: glyph.as_ref().map_or(0.0, |glyph| glyph.xadvance),
-                            kerning,
-                            height: font.line_height(),
-                            ends_word: ch == ' '
-                                || glyph.as_ref().is_some_and(|glyph| glyph.height == 0.0),
-                        });
-                        previous = glyph.map(|_| ch);
-                    }
-                }
-                chunk => {
-                    let height = match &chunk {
-                        Chunk::Icon(sprite, _) => sprite.size[1],
-                        _ => font.line_height(),
-                    };
-                    atoms.push(Atom {
-                        advance: painter.length(font, &chunk),
-                        chunk,
-                        kerning: 0.0,
-                        height,
-                        ends_word: false,
-                    });
-                }
-            }
+    defines: &TooltipDefines,
+    time: f32,
+) -> std::collections::BTreeMap<String, usize> {
+    let mut refused = std::collections::BTreeMap::new();
+    let layout = match native_gui::text_sprites::tooltip(resources, value, time) {
+        Ok(layout) => layout,
+        Err(why) => {
+            gui_windows::count_refused(&mut refused, "ToolTip", &why);
+            return refused;
         }
-        lines.extend(wrap(atoms, width, font.line_height()));
+    };
+    gui_windows::count_noted(&mut refused, "ToolTip", &layout.diagnostics);
+    let at = position(
+        point,
+        layout.size.map(|v| v as f32),
+        extent,
+        defines.offsets,
+    )
+    .map(|v| v as i32);
+    batch.at_layer(crate::map::sprites::TOOLTIP_LAYER);
+    if let Err(why) = native_gui::draw(&layout, at, resources, batch) {
+        gui_windows::count_refused(&mut refused, "ToolTip", &[why]);
     }
-    let size = [
-        lines
-            .iter()
-            .fold(0.0_f32, |width, line| width.max(line.width))
-            + 2.0 * border[0],
-        lines.iter().map(|line| line.height).sum::<f32>() + 2.0 * border[1],
-    ];
-    let at = position(point, size, extent, defines.offsets);
-    painter.drawn.batch.at_layer(painter.next_layer());
-    painter.cornered(&sprite, 0, at, size, border, [1.0; 4]);
-    let mut y = at[1] + border[1];
-    for line in lines {
-        let mut x = at[0] + border[0];
-        for atom in line.atoms {
-            x += atom.kerning;
-            let top = y + (line.height - atom.height) * 0.5;
-            painter.drawn.batch.at_layer(painter.next_layer());
-            match atom.chunk {
-                Chunk::Text(value, color) => painter.drawn.batch.text(
-                    &text::layout(font, &value, [x, top], text::Align::Left, None),
-                    color,
-                ),
-                Chunk::Icon(sprite, frame) => {
-                    painter.drawn.batch.scaled(
-                        &sprite.sheet,
-                        frame,
-                        [x, top],
-                        sprite.size,
-                        [1.0; 4],
-                    );
-                }
-                Chunk::Flag(key) => {
-                    if let Some((texture, uv)) = assets.inline_flag(&key) {
-                        painter.drawn.batch.cell(
-                            texture,
-                            [x, top + 5.0],
-                            assets.inline_flag_size,
-                            uv,
-                            [1.0; 4],
-                        );
-                    }
-                }
-            }
-            x += atom.advance;
-        }
-        y += line.height;
-    }
-    Ok(())
+    refused
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn text_atoms(value: &str) -> Vec<Atom> {
-        value
-            .chars()
-            .map(|ch| Atom {
-                chunk: Chunk::Text(ch.to_string(), [1.0; 4]),
-                advance: 1.0,
-                kerning: 0.0,
-                height: 2.0,
-                ends_word: ch == ' ',
-            })
-            .collect()
-    }
-
-    fn line_text(line: &Line) -> String {
-        line.atoms
-            .iter()
-            .filter_map(|atom| match &atom.chunk {
-                Chunk::Text(value, _) => Some(value.as_str()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn wraps_at_reaching_width_and_carries_a_pending_word() {
-        let lines = wrap(text_atoms("aa bbb"), 6.0, 2.0);
-        assert_eq!(
-            lines.iter().map(line_text).collect::<Vec<_>>(),
-            ["aa ", "bbb"]
-        );
-        assert_eq!(
-            lines.iter().map(|line| line.width).collect::<Vec<_>>(),
-            [2.0, 3.0]
-        );
-        let lines = wrap(text_atoms("aaaaa"), 4.0, 2.0);
-        assert_eq!(
-            lines.iter().map(line_text).collect::<Vec<_>>(),
-            ["aaa", "aa"]
-        );
-    }
-
-    #[test]
-    fn wrapped_lines_preserve_paragraph_indentation() {
-        let lines = wrap(text_atoms("  aa bb"), 6.0, 2.0);
-        assert_eq!(
-            lines.iter().map(line_text).collect::<Vec<_>>(),
-            ["  aa ", "  bb"]
-        );
-    }
 
     #[test]
     fn tooltip_edge_reversal_uses_the_pointer_and_twenty_pixel_gap() {

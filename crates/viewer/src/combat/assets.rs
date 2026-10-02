@@ -1,5 +1,5 @@
 //! Only combat-window assets; all interface bytes pass through the resolved layers.
-use super::layout::{Node, boolean, number, string, value};
+use super::layout::Node;
 use crate::map::{
     counters::FlagAtlas,
     lazy_icons::{LazyImages, LazyTextures, Lookup},
@@ -91,7 +91,7 @@ pub struct Assets {
     /// pictures.
     pub(crate) tactics: super::tactics::Content,
     /// Tooltip delays and screen offsets, or why the content lacks them.
-    pub(super) tooltip_defines: Result<super::tooltip_painter::TooltipDefines, String>,
+    pub(crate) tooltip_defines: Result<super::tooltip_painter::TooltipDefines, String>,
     pub warnings: Vec<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -193,8 +193,7 @@ struct Flags {
     tiling_center: bool,
 }
 
-/// What a combat widget draws from a declaration: a sprite's fields as the game reads them, the
-/// `core.gui` tooltip box's own, or a bare texture.
+/// A combat sprite declaration or a bare texture.
 #[derive(Clone, Debug)]
 struct Declaration {
     /// The kind's texture, else its `textureFile1`.
@@ -286,33 +285,6 @@ impl Declaration {
                 vertical: false,
                 tiling_center: false,
             }),
-        }
-    }
-
-    /// `core.gui`'s `ToolTip` text box as a cornered tile: CTextBox forwards its authored
-    /// border and texture to CTextSprite (14228E580/14228EE80).
-    fn tooltip(items: &[installed_content::parser::Item], texture: &str) -> Self {
-        Self {
-            first: Some(path(texture)),
-            second: string(items, "textureFile2").map(path),
-            frames: 1,
-            progress: false,
-            size: value(items, "size").and_then(|v| v.items()).map(|items| {
-                ["x", "y"].map(|axis| string(items, axis).and_then(|s| s.parse().ok()))
-            }),
-            start_end: string(items, "effectFile")
-                .is_some_and(|file| file.ends_with("progress_startend.lua")),
-            border: value(items, "borderSize")
-                .and_then(|v| v.items())
-                .map(|items| [number(items, "x", 0.0), number(items, "y", 0.0)]),
-            // The boolean fields, or which one is a block, which the game's reader takes as
-            // the declaration's own fields ([`boolean`]).
-            flags: (|| {
-                Ok(Flags {
-                    vertical: boolean(items, "horizontal")? == Some(false),
-                    tiling_center: boolean(items, "tilingCenter")? == Some(true),
-                })
-            })(),
         }
     }
 }
@@ -652,23 +624,12 @@ impl Assets {
             }
         }
         let core = gui::read(layers, "interface/core.gui")?;
-        // core.gfx's ToolTip sprite has no textbox border, so the GUI definition is the
-        // drawable.
-        let tooltip = gui::find(&core, "textBoxType", "ToolTip")
-            .ok_or_else(|| super::invalid("core.gui has no ToolTip"))?;
-        let tooltip_texture = string(tooltip, "textureFile")
-            .ok_or_else(|| super::invalid("core.gui ToolTip has no textureFile"))?;
-        declarations.insert(
-            "ToolTip".into(),
-            Declaration::tooltip(tooltip, tooltip_texture),
-        );
-        windows.insert("ToolTip".into(), Node::new("textBoxType", tooltip));
         for name in ["left_vertical_slider", "right_vertical_slider"] {
             let items = gui::find(&core, "extendedScrollbarType", name)
                 .ok_or_else(|| super::invalid(format!("core.gui has no {name}")))?;
             windows.insert(name.into(), Node::new("extendedScrollbarType", items));
         }
-        let mut wanted = BTreeSet::from(["ToolTip".to_owned()]);
+        let mut wanted = BTreeSet::new();
         let mut wanted_fonts = BTreeSet::new();
         for node in windows.values() {
             collect(node, &mut wanted, &mut wanted_fonts);

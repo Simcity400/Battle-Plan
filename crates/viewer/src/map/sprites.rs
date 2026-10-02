@@ -224,9 +224,12 @@ impl MapIcons {
         layers: &ResolvedLayers,
         localisation: &installed_content::localisation::Localisation,
     ) -> io::Result<Vec<String>> {
-        let warnings = self
-            .counters
-            .load_gui(layers, localisation, &mut self.images)?;
+        let warnings = self.counters.load_gui(
+            layers,
+            localisation,
+            crate::combat::tooltip_assets(&self.combat.windows, localisation),
+            &mut self.images,
+        )?;
         if self.images.len() >= DYNAMIC_BASE {
             return Err(invalid("more static icon pages than texture ids"));
         }
@@ -394,6 +397,9 @@ const PRIORITY_STRIDE: u64 = 1 << 40;
 const _: () = assert!((u32::MAX as u64 + 1) * CHILD_SLOTS as u64 <= PRIORITY_STRIDE);
 /// The band [`gui_layer`] keys, above the 256 map-icon priorities.
 const GUI_BAND: u64 = 256;
+
+/// ToolTip uses the final GUI pass (1402A2150 → 14228F460; 142228970).
+pub const TOOLTIP_LAYER: u64 = band_layer(GUI_BAND + 1, 0, 0);
 
 /// The priority a [`layer`] key was built with.
 #[cfg(test)]
@@ -2382,6 +2388,7 @@ mod tests {
         assert!(layer(-128, u32::MAX, CHILD_SLOTS - 1) < layer(-127, 0, 0));
         assert!(layer(-1, u32::MAX, CHILD_SLOTS - 1) < layer(0, 0, 0));
         assert!(layer(i8::MAX, u32::MAX, CHILD_SLOTS - 1) < gui_layer(0, 0));
+        assert!(gui_layer(u32::MAX, CHILD_SLOTS - 1) < TOOLTIP_LAYER);
         assert_eq!(layer_priority(layer(-56, 3, 0)), -56);
     }
 

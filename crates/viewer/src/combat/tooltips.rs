@@ -142,6 +142,41 @@ pub(super) fn refuse_hovers<K: Into<String>>(
     }
 }
 
+/// Fixed widget tooltip keys from their producers (1415C1A60, 1415BC770).
+pub(crate) fn keys() -> impl Iterator<Item = std::borrow::Cow<'static, str>> {
+    TOOLTIP_KEYS
+        .iter()
+        .chain(super::division_tooltips::TOOLTIP_KEYS)
+        .chain(super::commander_tooltips::TOOLTIP_KEYS)
+        .chain(super::details::TOOLTIP_KEYS)
+        .copied()
+        .chain([NULL_TACTIC_NAME, HEADER])
+        .map(std::borrow::Cow::Borrowed)
+        .chain(super::division_tooltips::description_keys().map(std::borrow::Cow::Owned))
+}
+
+/// Authored hovers from the same nodes the combat binder uses.
+pub(crate) fn authored_assets(
+    windows: &BTreeMap<String, Node>,
+    localisation: &Localisation,
+) -> crate::map::native_gui::Assets {
+    fn collect(node: &Node, loc: &Localisation, assets: &mut crate::map::native_gui::Assets) {
+        for child in &node.children {
+            for field in ["pdx_tooltip", "pdx_tooltip_delayed"] {
+                if let Some(key) = string(&child.items, field) {
+                    assets.add_localised(loc, key.as_bytes());
+                }
+            }
+            collect(child, loc, assets);
+        }
+    }
+    let mut assets = crate::map::native_gui::Assets::default();
+    for window in windows.values() {
+        collect(window, localisation, &mut assets);
+    }
+    assets
+}
+
 /// The land hovers 1415C1A60 sets on every update of one side.
 fn side_hovers(prefix: &str) -> [String; 9] {
     [
@@ -241,6 +276,7 @@ type Hover = (String, Option<Result<String, String>>);
 /// localisation lacks is copied as its own text (142230940), so the game
 /// then shows `nullCombatTactic`; the bind reports the missing key.
 const NULL_TACTIC_NAME: &str = "nullCombatTactic";
+pub(super) const HEADER: &str = "HEADER";
 
 /// The tactic a side's hover describes.
 #[derive(Clone, Copy, Debug)]
@@ -265,7 +301,7 @@ fn tactic_tooltip(
     attacker: bool,
 ) -> Result<Hover, String> {
     let described = match side.tactic_kind {
-        0 => return Ok((builtin(icons, loc, "NO_TACTIC", &[])?, None)),
+        0 => return Ok((builtin(icons, loc, NO_TACTIC, &[])?, None)),
         1 => Described::Null,
         2 => Described::Content {
             id: side.tactic_id,
@@ -300,9 +336,9 @@ pub(super) fn tactic_description(
         Described::Content { token: tactic, .. } => token(icons, loc, tactic)?,
         Described::Null => token(icons, loc, NULL_TACTIC_NAME.as_bytes())?,
     };
-    let mut text = builtin(icons, loc, "HEADER", &[("KEY", Argument::Text(&name))])?;
+    let mut text = builtin(icons, loc, HEADER, &[("KEY", Argument::Text(&name))])?;
     if countered {
-        text.push_str(&builtin(icons, loc, "TACTIC_CURRENTLY_COUNTERED", &[])?);
+        text.push_str(&builtin(icons, loc, TACTIC_CURRENTLY_COUNTERED, &[])?);
     } else {
         // CNullCombatTactic's six values are 0 (1406B0A70).
         let tactic = match described {
@@ -310,25 +346,25 @@ pub(super) fn tactic_description(
             Described::Null => Effects::default(),
         };
         for (value, label, favorable_side, width) in [
-            (tactic.width, "TACTICS_COMBATWIDTH", true, true),
+            (tactic.width, TACTICS_COMBATWIDTH, true, true),
             (
                 tactic.movement,
-                "TACTICS_MOVEMENTSPEED_ATTACKER",
+                TACTICS_MOVEMENTSPEED_ATTACKER,
                 attacker,
                 false,
             ),
-            (tactic.attacker, "TACTICS_DAMAGE_ATTACKER", attacker, false),
+            (tactic.attacker, TACTICS_DAMAGE_ATTACKER, attacker, false),
             (
                 tactic.attacker_org,
-                "TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER",
+                TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER,
                 attacker,
                 false,
             ),
-            (tactic.defender, "TACTICS_DAMAGE_DEFENDER", !attacker, false),
+            (tactic.defender, TACTICS_DAMAGE_DEFENDER, !attacker, false),
             // 1406B12D0 deliberately tests param3 for +160, unlike +148.
             (
                 tactic.defender_org,
-                "TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER",
+                TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER,
                 attacker,
                 false,
             ),
@@ -337,11 +373,11 @@ pub(super) fn tactic_description(
                 continue;
             }
             let format = if width {
-                "TACTICS_WIDTH_VALUE"
+                TACTICS_WIDTH_VALUE
             } else if (value > 0) == favorable_side {
-                "TACTICS_VALUE_POSITIVE"
+                TACTICS_VALUE_POSITIVE
             } else {
-                "TACTICS_VALUE_NEGATIVE"
+                TACTICS_VALUE_NEGATIVE
             };
             text.push_str(&builtin(icons, loc, label, &[])?);
             text.push(' ');
@@ -354,7 +390,7 @@ pub(super) fn tactic_description(
             text.push('\n');
         }
     }
-    Ok((text, builtin(icons, loc, "TACTIC_DESC", &[])))
+    Ok((text, builtin(icons, loc, TACTIC_DESC, &[])))
 }
 
 /// The leader skill hover. `levels` is whether the content's skill levels
@@ -373,7 +409,7 @@ fn skill_tooltip(
         return builtin(
             icons,
             loc,
-            "LEADER_SKILL_DESC",
+            LEADER_SKILL_DESC,
             &[("S", Argument::Int32(skill))],
         );
     }
@@ -385,7 +421,7 @@ fn skill_tooltip(
         return builtin(
             icons,
             loc,
-            "LEADER_SKILL_AT_CAP",
+            LEADER_SKILL_AT_CAP,
             &[("SKILL", Argument::Int32(skill))],
         );
     };
@@ -397,7 +433,7 @@ fn skill_tooltip(
     builtin(
         icons,
         loc,
-        "LEADER_SKILL_WITH_PROGRESS",
+        LEADER_SKILL_WITH_PROGRESS,
         &[
             ("SKILL", Argument::Int32(skill)),
             ("PROGRESS", Argument::Fixed5(ratio)),
@@ -456,17 +492,13 @@ fn cas_tooltip(
     let side = builtin(
         icons,
         loc,
-        if cas.attacking {
-            "ATTACKING"
-        } else {
-            "DEFENDING"
-        },
+        if cas.attacking { ATTACKING } else { DEFENDING },
         &[],
     )?;
     let text = builtin(
         icons,
         loc,
-        "LAND_COMBAT_CAS_INFO_TOOLTIP",
+        LAND_COMBAT_CAS_INFO_TOOLTIP,
         &[
             ("NUM", Argument::Int32(planes)),
             ("SIDE", Argument::Text(&side)),
@@ -485,7 +517,7 @@ fn cas_tooltip(
         builtin(
             icons,
             loc,
-            "LAND_COMBAT_CAS_INFO_TOOLTIP_DETAIL",
+            LAND_COMBAT_CAS_INFO_TOOLTIP_DETAIL,
             &[(
                 "MAX_PLANES",
                 Argument::Int32(super::fixed::round(super::fixed::mul(
@@ -511,26 +543,26 @@ fn width_tooltip(document: &Document, province: u32) -> Result<String, String> {
         .counters
         .combat_widths(terrain)
         .ok_or_else(|| format!("terrain {terrain} is not a content terrain category"))?;
-    let mut text = builtin(icons, loc, "COMBAT_COMBAT_WIDTH_DESC", &[])?;
+    let mut text = builtin(icons, loc, COMBAT_COMBAT_WIDTH_DESC, &[])?;
     text.push_str("\n\n");
     let terrain_name = token(icons, loc, terrain.as_bytes())?;
     text.push_str(&builtin(
         icons,
         loc,
-        "HEADER",
+        HEADER,
         &[("KEY", Argument::Text(&terrain_name))],
     )?);
     text.push_str(&builtin(
         icons,
         loc,
-        "TERRAIN_COMBAT_WIDTH",
+        TERRAIN_COMBAT_WIDTH,
         &[("VALUE", Argument::Fixed5(*width))],
     )?);
     text.push('\n');
     text.push_str(&builtin(
         icons,
         loc,
-        "TERRAIN_ADDITIONAL_WIDTH",
+        TERRAIN_ADDITIONAL_WIDTH,
         &[("VALUE", Argument::Fixed5(*support))],
     )?);
     Ok(text)
@@ -595,7 +627,7 @@ pub(super) fn bind(
         return Ok(());
     };
     let (icons, loc) = (assets, &document.names.localisation);
-    let list = counted_hover(builtin(icons, loc, "TACTICS_LIST_DESC", &[]), &mut refused);
+    let list = counted_hover(builtin(icons, loc, TACTICS_LIST_DESC, &[]), &mut refused);
     set_hover(&mut out.values, "tactics_list_button", list, None);
     let width = match width_tooltip(document, detail.province) {
         Ok(text) => hover_text(&text),
@@ -725,7 +757,7 @@ pub(super) fn bind(
                     builtin(
                         icons,
                         loc,
-                        "ARMY_HQ_BADGE_TOOLTIP",
+                        ARMY_HQ_BADGE_TOOLTIP,
                         &[("NAME", Argument::Text(&name))],
                     )
                 });
@@ -740,7 +772,7 @@ pub(super) fn bind(
         let glow = format!("{prefix}_leader_initiative_overlay_glow");
         let text = if out.values.get(&glow).is_some_and(|widget| !widget.hidden) {
             counted_hover(
-                builtin(icons, loc, "LEADER_HAS_INITIATIVE", &[]),
+                builtin(icons, loc, LEADER_HAS_INITIATIVE, &[]),
                 &mut refused,
             )
         } else {
@@ -821,10 +853,60 @@ pub(super) fn bind(
     Ok(())
 }
 
+crate::combat::text::tooltip_keys! {
+    NO_TACTIC = "NO_TACTIC",
+    TACTIC_CURRENTLY_COUNTERED = "TACTIC_CURRENTLY_COUNTERED",
+    TACTICS_COMBATWIDTH = "TACTICS_COMBATWIDTH",
+    TACTICS_MOVEMENTSPEED_ATTACKER = "TACTICS_MOVEMENTSPEED_ATTACKER",
+    TACTICS_DAMAGE_ATTACKER = "TACTICS_DAMAGE_ATTACKER",
+    TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER = "TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER",
+    TACTICS_DAMAGE_DEFENDER = "TACTICS_DAMAGE_DEFENDER",
+    TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER = "TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER",
+    TACTICS_WIDTH_VALUE = "TACTICS_WIDTH_VALUE",
+    TACTICS_VALUE_POSITIVE = "TACTICS_VALUE_POSITIVE",
+    TACTICS_VALUE_NEGATIVE = "TACTICS_VALUE_NEGATIVE",
+    TACTIC_DESC = "TACTIC_DESC",
+    LEADER_SKILL_DESC = "LEADER_SKILL_DESC",
+    LEADER_SKILL_AT_CAP = "LEADER_SKILL_AT_CAP",
+    LEADER_SKILL_WITH_PROGRESS = "LEADER_SKILL_WITH_PROGRESS",
+    ATTACKING = "ATTACKING",
+    DEFENDING = "DEFENDING",
+    LAND_COMBAT_CAS_INFO_TOOLTIP = "LAND_COMBAT_CAS_INFO_TOOLTIP",
+    LAND_COMBAT_CAS_INFO_TOOLTIP_DETAIL = "LAND_COMBAT_CAS_INFO_TOOLTIP_DETAIL",
+    COMBAT_COMBAT_WIDTH_DESC = "COMBAT_COMBAT_WIDTH_DESC",
+    TERRAIN_COMBAT_WIDTH = "TERRAIN_COMBAT_WIDTH",
+    TERRAIN_ADDITIONAL_WIDTH = "TERRAIN_ADDITIONAL_WIDTH",
+    TACTICS_LIST_DESC = "TACTICS_LIST_DESC",
+    ARMY_HQ_BADGE_TOOLTIP = "ARMY_HQ_BADGE_TOOLTIP",
+    LEADER_HAS_INITIATIVE = "LEADER_HAS_INITIATIVE",
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::combat::binding::NoIcons;
+
+    #[test]
+    fn authored_tooltip_icons_follow_the_bound_nodes() {
+        let items = installed_content::parser::parse(
+            br#"name = w pdx_tooltip = OTHER
+                buttonType = { name = b pdx_tooltip = MAIN pdx_tooltip_delayed = DELAYED }"#,
+        )
+        .unwrap()
+        .items;
+        let windows = [("w".into(), Node::new("containerWindowType", &items))]
+            .into_iter()
+            .collect();
+        let localisation = loc(&[
+            ("MAIN", "£main"),
+            ("DELAYED", "£delayed"),
+            ("OTHER", "£unused"),
+        ]);
+        let assets = authored_assets(&windows, &localisation);
+        assert!(assets.sprites.contains(b"GFX_main".as_slice()));
+        assert!(assets.sprites.contains(b"GFX_delayed".as_slice()));
+        assert!(!assets.sprites.contains(b"GFX_unused".as_slice()));
+    }
 
     /// The tactic registry read through the real parse
     /// (installed_content::combat_tactics), as the land hovers use it.

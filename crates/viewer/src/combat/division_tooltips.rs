@@ -55,36 +55,36 @@ fn one_decimal(value: i64) -> String {
 
 /// The complete modifier-name dispatch141440750, in the recorded native order.
 const MODIFIER_NAMES: [&str; 30] = [
-    "BM_LEADER_BONUS",
-    "BM_COUNTRY_BONUS",
-    "BM_ENCIRCLEMENT_PENALTY",
-    "BM_EXPERIENCE",
-    "BM_PLANNING",
-    "BM_STACKING",
-    "BM_WIDTH",
-    "BM_DUGIN_MODIFIER",
-    "BM_AMPH_PENALTY",
-    "BM_FORT_MODIFIER",
-    "BM_RIVER_PENALTY",
-    "BM_SHORE_BOMBARD",
-    "BM_RAILWAY_GUN_BOMBARD",
-    "BM_MULTIPLE",
-    "BM_ENEMY_AIR_SUPERIORITY",
-    "BM_AIR_SUPPORT",
-    "BM_PARADROP",
-    "BM_SUPPLY",
-    "BM_DECRYPTION",
-    "BM_HATES_COUNTRY",
-    "BM_HATES_COUNTRY_ON_CORE",
-    "BM_BORDER_WAR_MODIFIER",
-    "BM_EXILE_LEADER_DIVISION",
-    "BM_ACTIVE_CODE_CRACKING_BONUSES",
-    "BM_LOCAL_BONUS",
-    "BM_BASE_PROXIMITY",
-    "BM_POOR_SCREEN_PENALTY",
-    "BM_TERRAIN",
-    "BM_WEATHER",
-    "BM_NIGHT_MODIFIER",
+    BM_LEADER_BONUS,
+    BM_COUNTRY_BONUS,
+    BM_ENCIRCLEMENT_PENALTY,
+    BM_EXPERIENCE,
+    BM_PLANNING,
+    BM_STACKING,
+    BM_WIDTH,
+    BM_DUGIN_MODIFIER,
+    BM_AMPH_PENALTY,
+    BM_FORT_MODIFIER,
+    BM_RIVER_PENALTY,
+    BM_SHORE_BOMBARD,
+    BM_RAILWAY_GUN_BOMBARD,
+    BM_MULTIPLE,
+    BM_ENEMY_AIR_SUPERIORITY,
+    BM_AIR_SUPPORT,
+    BM_PARADROP,
+    BM_SUPPLY,
+    BM_DECRYPTION,
+    BM_HATES_COUNTRY,
+    BM_HATES_COUNTRY_ON_CORE,
+    BM_BORDER_WAR_MODIFIER,
+    BM_EXILE_LEADER_DIVISION,
+    BM_ACTIVE_CODE_CRACKING_BONUSES,
+    BM_LOCAL_BONUS,
+    BM_BASE_PROXIMITY,
+    BM_POOR_SCREEN_PENALTY,
+    BM_TERRAIN,
+    BM_WEATHER,
+    BM_NIGHT_MODIFIER,
 ];
 
 fn tactic_effects(
@@ -98,16 +98,16 @@ fn tactic_effects(
     let organisation = organisation_effects(tactics, detail, sides)?;
     let (damage_key, damage, org_key, org_gate) = if side == 0 {
         (
-            "TACTICS_DAMAGE_ATTACKER",
+            TACTICS_DAMAGE_ATTACKER,
             detail.attacker_bonus,
-            "TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER",
+            TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER,
             organisation[0],
         )
     } else {
         (
-            "TACTICS_DAMAGE_DEFENDER",
+            TACTICS_DAMAGE_DEFENDER,
             detail.defender_bonus,
-            "TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER",
+            TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER,
             organisation[1],
         )
     };
@@ -127,9 +127,9 @@ fn tactic_effects(
             icons,
             loc,
             if gate > 0 {
-                "TACTICS_VALUE_POSITIVE"
+                TACTICS_VALUE_POSITIVE
             } else {
-                "TACTICS_VALUE_NEGATIVE"
+                TACTICS_VALUE_NEGATIVE
             },
             &[("VALUE", Argument::Fixed5(value))],
         )?);
@@ -159,7 +159,7 @@ fn combat_stat(
     let mut text = builtin(
         icons,
         loc,
-        "COMBAT_STAT",
+        COMBAT_STAT,
         &[
             ("STAT_NAME", Argument::Text(&name)),
             ("VALUE", Argument::Text(&value)),
@@ -169,14 +169,14 @@ fn combat_stat(
     text.push_str(&builtin(
         icons,
         loc,
-        "BASE_VALUE",
+        BASE_VALUE,
         &[("VALUE", Argument::Fixed5(base))],
     )?);
     text.push('\n');
     text.push_str(&builtin(
         icons,
         loc,
-        "TOTAL_MODIFIER_IS",
+        TOTAL_MODIFIER_IS,
         &[("VALUE", Argument::Fixed5(scale))],
     )?);
     text.push('\n');
@@ -196,7 +196,7 @@ fn combat_stat(
         text.push_str(&builtin(
             icons,
             loc,
-            "SINGLE_COMBAT_VALUE",
+            SINGLE_COMBAT_VALUE,
             &[
                 ("NAME", Argument::Text(&name)),
                 ("VALUE1", Argument::Fixed5(value)),
@@ -237,7 +237,7 @@ fn armour_description(
     let mut text = builtin(
         icons,
         loc,
-        "GOOD_ARMOR_DEFENSE_DESC",
+        GOOD_ARMOR_DEFENSE_DESC,
         &[
             (
                 "ORG",
@@ -251,12 +251,12 @@ fn armour_description(
     )?;
     for (key, numerator, denominator) in [
         (
-            "GOOD_ARMOR_ATTACK_DESC_STR",
+            GOOD_ARMOR_ATTACK_DESC_STR,
             defines.strength_armour_dice,
             defines.strength_die,
         ),
         (
-            "GOOD_ARMOR_ATTACK_DESC_ORG",
+            GOOD_ARMOR_ATTACK_DESC_ORG,
             defines.organisation_armour_dice,
             defines.organisation_die,
         ),
@@ -290,7 +290,7 @@ fn base_stat(
     let mut text = builtin(
         icons,
         loc,
-        "COMBAT_STAT",
+        COMBAT_STAT,
         &[
             ("STAT_NAME", Argument::Text(&name)),
             ("VALUE", Argument::Text(&number)),
@@ -300,7 +300,7 @@ fn base_stat(
     text.push_str(&builtin(
         icons,
         loc,
-        "BASE_VALUE",
+        BASE_VALUE,
         &[("VALUE", Argument::Fixed5(value))],
     )?);
     Ok(text)
@@ -323,22 +323,22 @@ fn division_summary(
         icons,
         loc,
         if row.side == 0 {
-            "COMBAT_DIVISION_ATTACKER"
+            COMBAT_DIVISION_ATTACKER
         } else {
-            "COMBAT_DIVISION_DEFENDER"
+            COMBAT_DIVISION_DEFENDER
         },
         &[("NAME", Argument::Text(name))],
     )?;
     if let Some(progress) = invasion {
         text.push_str(&invasion_section(icons, loc, progress, row.scales)?);
     }
-    text.push_str(&base_stat(icons, loc, "STAT_COMMON_ARMOR", row.armour)?);
+    text.push_str(&base_stat(icons, loc, STAT_COMMON_ARMOR, row.armour)?);
     text.push_str("\n\n");
     let hardness = row.stat_values[2];
     text.push_str(&builtin(
         icons,
         loc,
-        "HARDNESS_COMBAT_DESC",
+        HARDNESS_COMBAT_DESC,
         &[
             ("HARDNESS", Argument::Fixed5(hardness)),
             (
@@ -348,16 +348,11 @@ fn division_summary(
         ],
     )?);
     text.push('\n');
-    text.push_str(&builtin(icons, loc, "COMBAT_TOOLTIP_SEPARATOR", &[])?);
+    text.push_str(&builtin(icons, loc, COMBAT_TOOLTIP_SEPARATOR, &[])?);
     text.push('\n');
-    text.push_str(&base_stat(
-        icons,
-        loc,
-        "STAT_COMMON_PIERCING",
-        row.piercing,
-    )?);
+    text.push_str(&base_stat(icons, loc, STAT_COMMON_PIERCING, row.piercing)?);
     text.push('\n');
-    text.push_str(&builtin(icons, loc, "PIERCING_COMBAT_DESC", &[])?);
+    text.push_str(&builtin(icons, loc, PIERCING_COMBAT_DESC, &[])?);
     if let Some(defines) = defines {
         for (index, damage) in defines.piercing_damage.iter().enumerate() {
             if !text.ends_with('\n') {
@@ -368,9 +363,9 @@ fn division_summary(
                 icons,
                 loc,
                 if last {
-                    "PIERCING_THRESHOLD_TO_DAMAGE_LOWEST"
+                    PIERCING_THRESHOLD_TO_DAMAGE_LOWEST
                 } else {
-                    "PIERCING_THRESHOLD_TO_DAMAGE"
+                    PIERCING_THRESHOLD_TO_DAMAGE
                 },
                 &[
                     (
@@ -384,7 +379,7 @@ fn division_summary(
             )?);
         }
         text.push('\n');
-        text.push_str(&builtin(icons, loc, "COMBAT_TOOLTIP_SEPARATOR", &[])?);
+        text.push_str(&builtin(icons, loc, COMBAT_TOOLTIP_SEPARATOR, &[])?);
     }
     Ok(text)
 }
@@ -399,23 +394,23 @@ fn invasion_section(
     progress: i64,
     scales: [i64; 4],
 ) -> Result<String, String> {
-    let mut text = builtin(icons, loc, "NAVAL_INVASION_COMBAT_PROGRESS_DESC", &[])?;
+    let mut text = builtin(icons, loc, NAVAL_INVASION_COMBAT_PROGRESS_DESC, &[])?;
     text.push_str("\n\n");
     text.push_str(&builtin(
         icons,
         loc,
         if progress < 100_000 {
-            "NAVAL_INVASION_PROGRESS"
+            NAVAL_INVASION_PROGRESS
         } else {
-            "NAVAL_INVASION_PROGRESS_COMPLETE"
+            NAVAL_INVASION_PROGRESS_COMPLETE
         },
         &[("VALUE", Argument::Fixed5(progress))],
     )?);
     let [attack, defend] = [scales[2], scales[3]].map(|scale| scale.wrapping_sub(100_000));
     if attack != 0 || defend != 0 {
         for (key, value) in [
-            ("NAVAL_INVASION_ATTACK_SCALE", attack),
-            ("NAVAL_INVASION_DEFEND_SCALE", defend),
+            (NAVAL_INVASION_ATTACK_SCALE, attack),
+            (NAVAL_INVASION_DEFEND_SCALE, defend),
         ] {
             text.push('\n');
             text.push_str(&builtin(
@@ -568,15 +563,29 @@ fn naval_invasion(
 /// first matching modifier entry; armor/piercing frames count the complete
 /// opposing committed roster into the same native buckets as their icon law.
 const ICON_MODIFIERS: [(u32, &str); 8] = [
-    (2, "BM_ENCIRCLEMENT_PENALTY"),
-    (7, "BM_DUGIN_MODIFIER"),
-    (10, "BM_RIVER_PENALTY"),
-    (13, "BM_MULTIPLE"),
-    (27, "BM_TERRAIN"),
-    (8, "BM_AMPH_PENALTY"),
-    (17, "BM_SUPPLY"),
-    (16, "BM_PARADROP"),
+    (2, BM_ENCIRCLEMENT_PENALTY),
+    (7, BM_DUGIN_MODIFIER),
+    (10, BM_RIVER_PENALTY),
+    (13, BM_MULTIPLE),
+    (27, BM_TERRAIN),
+    (8, BM_AMPH_PENALTY),
+    (17, BM_SUPPLY),
+    (16, BM_PARADROP),
 ];
+
+/// Description keys made from the same modifier/stat keys (1415C3AA0, 1415BF4B0).
+pub(super) fn description_keys() -> impl Iterator<Item = String> {
+    ICON_MODIFIERS
+        .iter()
+        .map(|(_, key)| *key)
+        .chain([
+            STAT_ARMY_SOFT_ATTACK,
+            STAT_ARMY_HARD_ATTACK,
+            STAT_ARMY_BREAKTHROUGH,
+            STAT_ARMY_DEFENSE,
+        ])
+        .map(|key| format!("{key}_DESC"))
+}
 
 struct ModifierIconContext<'context, 'frame> {
     icons: &'context dyn TextIcons,
@@ -610,7 +619,12 @@ fn modifier_icon_tooltip(
     let template_inputs = context.template_inputs;
     if let Some((id, key)) = ICON_MODIFIERS.get(frame as usize) {
         let name = builtin(icons, loc, key, &[])?;
-        let mut text = builtin(icons, loc, "HEADER", &[("KEY", Argument::Text(&name))])?;
+        let mut text = builtin(
+            icons,
+            loc,
+            super::tooltips::HEADER,
+            &[("KEY", Argument::Text(&name))],
+        )?;
         if let Some(entry) =
             modifiers.and_then(|modifiers| modifiers.entries.iter().find(|entry| entry.id == *id))
         {
@@ -618,7 +632,7 @@ fn modifier_icon_tooltip(
                 text.push_str(&builtin(
                     icons,
                     loc,
-                    "BM_ATTACK_VALUE",
+                    BM_ATTACK_VALUE,
                     &[("VALUE", Argument::Fixed5(entry.value_a))],
                 )?);
                 text.push('\n');
@@ -628,9 +642,9 @@ fn modifier_icon_tooltip(
                     icons,
                     loc,
                     if side == 0 {
-                        "BM_BREAKTHROUGH_VALUE"
+                        BM_BREAKTHROUGH_VALUE
                     } else {
-                        "BM_DEFEND_VALUE"
+                        BM_DEFEND_VALUE
                     },
                     &[("VALUE", Argument::Fixed5(entry.value_b))],
                 )?);
@@ -652,17 +666,17 @@ fn modifier_icon_tooltip(
         let mut text = builtin(
             icons,
             loc,
-            "COMBAT_OTHER_COMMANDER_DESC",
+            COMBAT_OTHER_COMMANDER_DESC,
             &[
                 ("NAME", Argument::Text(&name)),
                 ("SKILL", Argument::Int32(commander.skill)),
             ],
         )?;
         if !commander.traits.is_empty() {
-            text.push_str(&builtin(icons, loc, "COMBAT_TRAIT_LIST_HEADER", &[])?);
+            text.push_str(&builtin(icons, loc, COMBAT_TRAIT_LIST_HEADER, &[])?);
             for (index, trait_row) in commander.traits.iter().enumerate() {
                 if index != 0 {
-                    text.push_str(&builtin(icons, loc, "COMBAT_DETAIL_TRAIT_SEPARATOR", &[])?);
+                    text.push_str(&builtin(icons, loc, COMBAT_DETAIL_TRAIT_SEPARATOR, &[])?);
                 }
                 let token = std::str::from_utf8(&trait_row.token).map_err(|_| {
                     format!(
@@ -675,14 +689,14 @@ fn modifier_icon_tooltip(
                 text.push_str(&builtin(
                     icons,
                     loc,
-                    "COMBAT_DETAIL_TRAIT_NAME",
+                    COMBAT_DETAIL_TRAIT_NAME,
                     &[("NAME", Argument::Text(&name))],
                 )?);
             }
         }
         return Ok((
             text,
-            Some(builtin(icons, loc, "DIFFERENT_COMMANDER_DESC", &[])),
+            Some(builtin(icons, loc, DIFFERENT_COMMANDER_DESC, &[])),
         ));
     }
     if frame == 13 {
@@ -693,12 +707,12 @@ fn modifier_icon_tooltip(
             defines.air_superiority[1],
         )
         .map_err(|_| "the air-defence arithmetic overflows".to_owned())?;
-        let name = builtin(icons, loc, "BM_ENEMY_AIR_SUPERIORITY_COUNTER", &[])?;
+        let name = builtin(icons, loc, BM_ENEMY_AIR_SUPERIORITY_COUNTER, &[])?;
         return Ok((
             builtin(
                 icons,
                 loc,
-                "SINGLE_COMBAT_VALUE",
+                SINGLE_COMBAT_VALUE,
                 &[
                     ("NAME", Argument::Text(&name)),
                     ("VALUE1", Argument::Fixed5(amount)),
@@ -707,7 +721,7 @@ fn modifier_icon_tooltip(
             Some(builtin(
                 icons,
                 loc,
-                "BM_ENEMY_AIR_SUPERIORITY_COUNTER_DESC",
+                BM_ENEMY_AIR_SUPERIORITY_COUNTER_DESC,
                 &[],
             )),
         ));
@@ -722,7 +736,7 @@ fn modifier_icon_tooltip(
             builtin(
                 icons,
                 loc,
-                "COMBAT_EXILES_DESC",
+                COMBAT_EXILES_DESC,
                 &[
                     (
                         "AMOUNT",
@@ -743,7 +757,7 @@ fn modifier_icon_tooltip(
             Some(builtin(
                 icons,
                 loc,
-                "COMBAT_EXILES_DESC_DELAYED",
+                COMBAT_EXILES_DESC_DELAYED,
                 &[
                     ("ATK_VS_OCCUPIER", Argument::Fixed5(bonuses[0])),
                     ("DEF_VS_OCCUPIER", Argument::Fixed5(bonuses[1])),
@@ -757,7 +771,7 @@ fn modifier_icon_tooltip(
             builtin(
                 icons,
                 loc,
-                "COMBAT_EXILES_ON_CORES_DESC",
+                COMBAT_EXILES_ON_CORES_DESC,
                 &[
                     ("ATK_ON_CORE", Argument::Fixed5(bonuses[0])),
                     ("DEF_ON_CORE", Argument::Fixed5(bonuses[1])),
@@ -776,10 +790,10 @@ fn modifier_icon_tooltip(
             builtin(
                 icons,
                 loc,
-                "LACK_OF_FUEL",
+                LACK_OF_FUEL,
                 &[("VAL", Argument::Fixed5(ratio))],
             )?,
-            Some(builtin(icons, loc, "LACK_OF_FUEL_DESC", &[])),
+            Some(builtin(icons, loc, LACK_OF_FUEL_DESC, &[])),
         ));
     }
     if !(8..=11).contains(&frame) {
@@ -815,11 +829,11 @@ fn modifier_icon_tooltip(
             text.push('\n');
         }
         let key = if frame >= 10 {
-            "PIERCING_ENEMIES_THRESHOLD_ENTRY"
+            PIERCING_ENEMIES_THRESHOLD_ENTRY
         } else if index + 1 == counts.len() {
-            "NON_PIERCING_THRESHOLD_ENTRY"
+            NON_PIERCING_THRESHOLD_ENTRY
         } else {
-            "PIERCING_THRESHOLD_ENTRY"
+            PIERCING_THRESHOLD_ENTRY
         };
         text.push_str(&builtin(
             icons,
@@ -835,7 +849,7 @@ fn modifier_icon_tooltip(
         )?);
     }
     let delayed = if frame >= 10 {
-        builtin(icons, loc, "PIERCING_GOOD_DESC", &[])
+        builtin(icons, loc, PIERCING_GOOD_DESC, &[])
     } else {
         armour_description(icons, loc, &defines.armour_hover)
     };
@@ -865,7 +879,7 @@ fn reinforcement(
     content: Result<&LandDefines, &str>,
 ) -> Result<Reinforcement, String> {
     if condition.strength < ADVANCE_STRENGTH || condition.organisation < ADVANCE_ORGANISATION {
-        return Ok(Reinforcement::Rejected("COMREIC_NOT_FIGHT"));
+        return Ok(Reinforcement::Rejected(COMREIC_NOT_FIGHT));
     }
     let defines = content
         .map_err(|reason| format!("the land combat defines are unavailable ({reason})"))?
@@ -887,7 +901,7 @@ fn reinforcement(
         let share = fraction(excess, width)
             .ok_or_else(|| format!("the excess width share: {}", super::fixed::TRAP))?;
         if mul(share, defines.over_width_penalty) < defines.over_width_penalty_max {
-            return Ok(Reinforcement::Rejected("COMREIC_TOO_MUCH_WIDTH"));
+            return Ok(Reinforcement::Rejected(COMREIC_TOO_MUCH_WIDTH));
         }
     }
     let country = modifier(&row.context, 0, false).ok_or_else(|| callback("reinforce rate"))?;
@@ -1057,7 +1071,7 @@ fn reinforcement_text(
     let mut text = builtin(
         icons,
         loc,
-        "BATTLE_REINFORCE_CHANCE2",
+        BATTLE_REINFORCE_CHANCE2,
         &[("VALUE", Argument::Fixed5(chance))],
     )?;
     match result {
@@ -1072,17 +1086,17 @@ fn reinforcement_text(
             text.push_str(&builtin(
                 icons,
                 loc,
-                "MODIFIER_BASE_VALUE_PERCENTAGE",
+                MODIFIER_BASE_VALUE_PERCENTAGE,
                 &[("VALUE", Argument::Fixed5(*base))],
             )?);
             text.push('\n');
             text.push_str(country);
             if *initiative != 0 {
-                text.push_str(&builtin(icons, loc, "STAT_ARMY_INITIATIVE", &[])?);
+                text.push_str(&builtin(icons, loc, STAT_ARMY_INITIATIVE, &[])?);
                 text.push_str(&builtin(
                     icons,
                     loc,
-                    "STAT_ARMY_INITIATIVE_DIFF",
+                    STAT_ARMY_INITIATIVE_DIFF,
                     &[("VALUE", Argument::Fixed5(*initiative))],
                 )?);
                 text.push('\n');
@@ -1091,7 +1105,7 @@ fn reinforcement_text(
                 text.push_str(&builtin(
                     icons,
                     loc,
-                    "SPEED_REINFORCEMENT_BONUS",
+                    SPEED_REINFORCEMENT_BONUS,
                     &[("VAL", Argument::Fixed5(*speed))],
                 )?);
                 text.push('\n');
@@ -1372,7 +1386,7 @@ pub(super) fn bind(
                     builtin(
                         icons,
                         loc,
-                        "CURR_COMB_STR",
+                        CURR_COMB_STR,
                         &[("VALUE", Argument::Fixed5(strength))],
                     )
                 });
@@ -1391,7 +1405,7 @@ pub(super) fn bind(
                     builtin(
                         icons,
                         loc,
-                        "CURRENT_ORGANIZATION",
+                        CURRENT_ORGANIZATION,
                         &[
                             ("CUR", Argument::Text(&one_decimal(condition.organisation))),
                             ("MAX", Argument::Text(&one_decimal(maximum.max(100)))),
@@ -1474,14 +1488,14 @@ pub(super) fn bind(
                 for (widget, key, base, scale, attacking) in [
                     (
                         "soft_attack",
-                        "STAT_ARMY_SOFT_ATTACK",
+                        STAT_ARMY_SOFT_ATTACK,
                         row.stat_values[3],
                         attack,
                         true,
                     ),
                     (
                         "hard_attack",
-                        "STAT_ARMY_HARD_ATTACK",
+                        STAT_ARMY_HARD_ATTACK,
                         row.stat_values[4],
                         attack,
                         true,
@@ -1489,9 +1503,9 @@ pub(super) fn bind(
                     (
                         "defense",
                         if side == 0 {
-                            "STAT_ARMY_BREAKTHROUGH"
+                            STAT_ARMY_BREAKTHROUGH
                         } else {
-                            "STAT_ARMY_DEFENSE"
+                            STAT_ARMY_DEFENSE
                         },
                         row.stat_values[usize::from(side == 0)],
                         mul(row.scales[3], row.scales[1]),
@@ -1614,6 +1628,98 @@ pub(super) fn bind(
     out.warnings.sort();
     out.warnings.dedup();
     Ok(())
+}
+
+crate::combat::text::tooltip_keys! {
+    BASE_VALUE = "BASE_VALUE",
+    TOTAL_MODIFIER_IS = "TOTAL_MODIFIER_IS",
+    SINGLE_COMBAT_VALUE = "SINGLE_COMBAT_VALUE",
+    BM_LEADER_BONUS = "BM_LEADER_BONUS",
+    BM_COUNTRY_BONUS = "BM_COUNTRY_BONUS",
+    BM_ENCIRCLEMENT_PENALTY = "BM_ENCIRCLEMENT_PENALTY",
+    BM_EXPERIENCE = "BM_EXPERIENCE",
+    BM_PLANNING = "BM_PLANNING",
+    BM_STACKING = "BM_STACKING",
+    BM_WIDTH = "BM_WIDTH",
+    BM_DUGIN_MODIFIER = "BM_DUGIN_MODIFIER",
+    BM_AMPH_PENALTY = "BM_AMPH_PENALTY",
+    BM_FORT_MODIFIER = "BM_FORT_MODIFIER",
+    BM_RIVER_PENALTY = "BM_RIVER_PENALTY",
+    BM_SHORE_BOMBARD = "BM_SHORE_BOMBARD",
+    BM_RAILWAY_GUN_BOMBARD = "BM_RAILWAY_GUN_BOMBARD",
+    BM_MULTIPLE = "BM_MULTIPLE",
+    BM_ENEMY_AIR_SUPERIORITY = "BM_ENEMY_AIR_SUPERIORITY",
+    BM_AIR_SUPPORT = "BM_AIR_SUPPORT",
+    BM_PARADROP = "BM_PARADROP",
+    BM_SUPPLY = "BM_SUPPLY",
+    BM_DECRYPTION = "BM_DECRYPTION",
+    BM_HATES_COUNTRY = "BM_HATES_COUNTRY",
+    BM_HATES_COUNTRY_ON_CORE = "BM_HATES_COUNTRY_ON_CORE",
+    BM_BORDER_WAR_MODIFIER = "BM_BORDER_WAR_MODIFIER",
+    BM_EXILE_LEADER_DIVISION = "BM_EXILE_LEADER_DIVISION",
+    BM_ACTIVE_CODE_CRACKING_BONUSES = "BM_ACTIVE_CODE_CRACKING_BONUSES",
+    BM_LOCAL_BONUS = "BM_LOCAL_BONUS",
+    BM_BASE_PROXIMITY = "BM_BASE_PROXIMITY",
+    BM_POOR_SCREEN_PENALTY = "BM_POOR_SCREEN_PENALTY",
+    BM_TERRAIN = "BM_TERRAIN",
+    BM_WEATHER = "BM_WEATHER",
+    BM_NIGHT_MODIFIER = "BM_NIGHT_MODIFIER",
+    TACTICS_DAMAGE_ATTACKER = "TACTICS_DAMAGE_ATTACKER",
+    TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER = "TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER",
+    TACTICS_DAMAGE_DEFENDER = "TACTICS_DAMAGE_DEFENDER",
+    TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER = "TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER",
+    TACTICS_VALUE_POSITIVE = "TACTICS_VALUE_POSITIVE",
+    TACTICS_VALUE_NEGATIVE = "TACTICS_VALUE_NEGATIVE",
+    COMBAT_STAT = "COMBAT_STAT",
+    GOOD_ARMOR_DEFENSE_DESC = "GOOD_ARMOR_DEFENSE_DESC",
+    GOOD_ARMOR_ATTACK_DESC_STR = "GOOD_ARMOR_ATTACK_DESC_STR",
+    GOOD_ARMOR_ATTACK_DESC_ORG = "GOOD_ARMOR_ATTACK_DESC_ORG",
+    COMBAT_DIVISION_ATTACKER = "COMBAT_DIVISION_ATTACKER",
+    COMBAT_DIVISION_DEFENDER = "COMBAT_DIVISION_DEFENDER",
+    STAT_COMMON_ARMOR = "STAT_COMMON_ARMOR",
+    HARDNESS_COMBAT_DESC = "HARDNESS_COMBAT_DESC",
+    COMBAT_TOOLTIP_SEPARATOR = "COMBAT_TOOLTIP_SEPARATOR",
+    STAT_COMMON_PIERCING = "STAT_COMMON_PIERCING",
+    PIERCING_COMBAT_DESC = "PIERCING_COMBAT_DESC",
+    PIERCING_THRESHOLD_TO_DAMAGE_LOWEST = "PIERCING_THRESHOLD_TO_DAMAGE_LOWEST",
+    PIERCING_THRESHOLD_TO_DAMAGE = "PIERCING_THRESHOLD_TO_DAMAGE",
+    NAVAL_INVASION_COMBAT_PROGRESS_DESC = "NAVAL_INVASION_COMBAT_PROGRESS_DESC",
+    NAVAL_INVASION_PROGRESS = "NAVAL_INVASION_PROGRESS",
+    NAVAL_INVASION_PROGRESS_COMPLETE = "NAVAL_INVASION_PROGRESS_COMPLETE",
+    NAVAL_INVASION_ATTACK_SCALE = "NAVAL_INVASION_ATTACK_SCALE",
+    NAVAL_INVASION_DEFEND_SCALE = "NAVAL_INVASION_DEFEND_SCALE",
+    BM_ATTACK_VALUE = "BM_ATTACK_VALUE",
+    BM_BREAKTHROUGH_VALUE = "BM_BREAKTHROUGH_VALUE",
+    BM_DEFEND_VALUE = "BM_DEFEND_VALUE",
+    COMBAT_OTHER_COMMANDER_DESC = "COMBAT_OTHER_COMMANDER_DESC",
+    COMBAT_TRAIT_LIST_HEADER = "COMBAT_TRAIT_LIST_HEADER",
+    COMBAT_DETAIL_TRAIT_SEPARATOR = "COMBAT_DETAIL_TRAIT_SEPARATOR",
+    COMBAT_DETAIL_TRAIT_NAME = "COMBAT_DETAIL_TRAIT_NAME",
+    DIFFERENT_COMMANDER_DESC = "DIFFERENT_COMMANDER_DESC",
+    BM_ENEMY_AIR_SUPERIORITY_COUNTER = "BM_ENEMY_AIR_SUPERIORITY_COUNTER",
+    BM_ENEMY_AIR_SUPERIORITY_COUNTER_DESC = "BM_ENEMY_AIR_SUPERIORITY_COUNTER_DESC",
+    COMBAT_EXILES_DESC = "COMBAT_EXILES_DESC",
+    COMBAT_EXILES_DESC_DELAYED = "COMBAT_EXILES_DESC_DELAYED",
+    COMBAT_EXILES_ON_CORES_DESC = "COMBAT_EXILES_ON_CORES_DESC",
+    LACK_OF_FUEL = "LACK_OF_FUEL",
+    LACK_OF_FUEL_DESC = "LACK_OF_FUEL_DESC",
+    PIERCING_ENEMIES_THRESHOLD_ENTRY = "PIERCING_ENEMIES_THRESHOLD_ENTRY",
+    NON_PIERCING_THRESHOLD_ENTRY = "NON_PIERCING_THRESHOLD_ENTRY",
+    PIERCING_THRESHOLD_ENTRY = "PIERCING_THRESHOLD_ENTRY",
+    PIERCING_GOOD_DESC = "PIERCING_GOOD_DESC",
+    COMREIC_NOT_FIGHT = "COMREIC_NOT_FIGHT",
+    COMREIC_TOO_MUCH_WIDTH = "COMREIC_TOO_MUCH_WIDTH",
+    BATTLE_REINFORCE_CHANCE2 = "BATTLE_REINFORCE_CHANCE2",
+    MODIFIER_BASE_VALUE_PERCENTAGE = "MODIFIER_BASE_VALUE_PERCENTAGE",
+    STAT_ARMY_INITIATIVE = "STAT_ARMY_INITIATIVE",
+    STAT_ARMY_INITIATIVE_DIFF = "STAT_ARMY_INITIATIVE_DIFF",
+    SPEED_REINFORCEMENT_BONUS = "SPEED_REINFORCEMENT_BONUS",
+    CURR_COMB_STR = "CURR_COMB_STR",
+    CURRENT_ORGANIZATION = "CURRENT_ORGANIZATION",
+    STAT_ARMY_SOFT_ATTACK = "STAT_ARMY_SOFT_ATTACK",
+    STAT_ARMY_HARD_ATTACK = "STAT_ARMY_HARD_ATTACK",
+    STAT_ARMY_BREAKTHROUGH = "STAT_ARMY_BREAKTHROUGH",
+    STAT_ARMY_DEFENSE = "STAT_ARMY_DEFENSE",
 }
 
 #[cfg(test)]

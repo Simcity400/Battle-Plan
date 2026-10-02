@@ -403,7 +403,7 @@ fn global_modifier_tooltip(
             match builtin(
                 icons,
                 loc,
-                "BORDER_CONFLICT_MODIFIER",
+                BORDER_CONFLICT_MODIFIER,
                 &[("VAL", Argument::Fixed5(modifier))],
             ) {
                 Ok(line) => main.push_str(&line),
@@ -411,8 +411,8 @@ fn global_modifier_tooltip(
             }
         }
         for (value, key) in [
-            (terrain, "BORDER_CONFLICT_TERRAIN_FACTOR"),
-            (dig_in, "BORDER_CONFLICT_DIG_IN_FACTOR"),
+            (terrain, BORDER_CONFLICT_TERRAIN_FACTOR),
+            (dig_in, BORDER_CONFLICT_DIG_IN_FACTOR),
         ] {
             if value == 100_000 {
                 continue;
@@ -420,7 +420,7 @@ fn global_modifier_tooltip(
             let entry = match builtin(
                 icons,
                 loc,
-                "BORDER_CONFLICT_FACTOR_ENTRY",
+                BORDER_CONFLICT_FACTOR_ENTRY,
                 &[("VAL", Argument::Fixed5(value))],
             ) {
                 Ok(entry) => entry,
@@ -442,36 +442,30 @@ fn global_modifier_tooltip(
     }
     let (key, description) = match frame {
         0 => (
-            "BM_FORT_MODIFIER",
+            BM_FORT_MODIFIER,
             dlc_mask.map(|mask| {
                 // 1401AE640's feature ID 0x23 maps to the saved DLC mask's
                 // bit 7, not to a bit numbered 0x23.
                 if mask & (1 << 7) != 0 {
-                    "BM_FORT_MODIFIER_DESC_WITH_RAILWAY_GUN"
+                    BM_FORT_MODIFIER_DESC_WITH_RAILWAY_GUN
                 } else {
-                    "BM_FORT_MODIFIER_DESC"
+                    BM_FORT_MODIFIER_DESC
                 }
             }),
         ),
         1 => (
-            "BM_ENEMY_AIR_SUPERIORITY",
-            Some("BM_ENEMY_AIR_SUPERIORITY_DESC"),
+            BM_ENEMY_AIR_SUPERIORITY,
+            Some(BM_ENEMY_AIR_SUPERIORITY_DESC),
         ),
-        2 => ("BM_AIR_SUPPORT", Some("BM_AIR_SUPPORT_DESC")),
-        3 => ("BM_SHORE_BOMBARD", Some("BM_SHORE_BOMBARD_DESC")),
-        4 => (
-            "BM_RAILWAY_GUN_BOMBARD",
-            Some("BM_RAILWAY_GUN_BOMBARD_DESC"),
-        ),
-        5 => ("BM_STACKING", Some("BM_STACKING_DESC")),
-        6 => (
-            "BM_MULTIPLE_DIRECTIONS",
-            Some("BM_MULTIPLE_DIRECTIONS_DESC"),
-        ),
-        7 => ("BM_DECRYPTION", Some("BM_DECRYPTION_DESC")),
+        2 => (BM_AIR_SUPPORT, Some(BM_AIR_SUPPORT_DESC)),
+        3 => (BM_SHORE_BOMBARD, Some(BM_SHORE_BOMBARD_DESC)),
+        4 => (BM_RAILWAY_GUN_BOMBARD, Some(BM_RAILWAY_GUN_BOMBARD_DESC)),
+        5 => (BM_STACKING, Some(BM_STACKING_DESC)),
+        6 => (BM_MULTIPLE_DIRECTIONS, Some(BM_MULTIPLE_DIRECTIONS_DESC)),
+        7 => (BM_DECRYPTION, Some(BM_DECRYPTION_DESC)),
         9 => (
-            "BM_ACTIVE_CODE_CRACKING_BONUSES",
-            Some("BM_ACTIVE_CODE_CRACKING_BONUSES_DESC"),
+            BM_ACTIVE_CODE_CRACKING_BONUSES,
+            Some(BM_ACTIVE_CODE_CRACKING_BONUSES_DESC),
         ),
         _ => return (Ok(None), None),
     };
@@ -479,7 +473,14 @@ fn global_modifier_tooltip(
     // and a missing or unsupported one is refused by name, never shown as
     // its own text.
     let main = builtin(icons, loc, key, &[])
-        .and_then(|name| builtin(icons, loc, "HEADER", &[("KEY", Argument::Text(&name))]))
+        .and_then(|name| {
+            builtin(
+                icons,
+                loc,
+                super::tooltips::HEADER,
+                &[("KEY", Argument::Text(&name))],
+            )
+        })
         .map(Some);
     let delayed = description.map(|key| builtin(icons, loc, key, &[]));
     (main, delayed)
@@ -1235,6 +1236,33 @@ fn naval(
     }
     Ok(())
 }
+
+crate::combat::text::tooltip_keys! {
+    BORDER_CONFLICT_MODIFIER = "BORDER_CONFLICT_MODIFIER",
+    BORDER_CONFLICT_TERRAIN_FACTOR = "BORDER_CONFLICT_TERRAIN_FACTOR",
+    BORDER_CONFLICT_DIG_IN_FACTOR = "BORDER_CONFLICT_DIG_IN_FACTOR",
+    BORDER_CONFLICT_FACTOR_ENTRY = "BORDER_CONFLICT_FACTOR_ENTRY",
+    BM_FORT_MODIFIER = "BM_FORT_MODIFIER",
+    BM_FORT_MODIFIER_DESC_WITH_RAILWAY_GUN = "BM_FORT_MODIFIER_DESC_WITH_RAILWAY_GUN",
+    BM_FORT_MODIFIER_DESC = "BM_FORT_MODIFIER_DESC",
+    BM_ENEMY_AIR_SUPERIORITY = "BM_ENEMY_AIR_SUPERIORITY",
+    BM_ENEMY_AIR_SUPERIORITY_DESC = "BM_ENEMY_AIR_SUPERIORITY_DESC",
+    BM_AIR_SUPPORT = "BM_AIR_SUPPORT",
+    BM_AIR_SUPPORT_DESC = "BM_AIR_SUPPORT_DESC",
+    BM_SHORE_BOMBARD = "BM_SHORE_BOMBARD",
+    BM_SHORE_BOMBARD_DESC = "BM_SHORE_BOMBARD_DESC",
+    BM_RAILWAY_GUN_BOMBARD = "BM_RAILWAY_GUN_BOMBARD",
+    BM_RAILWAY_GUN_BOMBARD_DESC = "BM_RAILWAY_GUN_BOMBARD_DESC",
+    BM_STACKING = "BM_STACKING",
+    BM_STACKING_DESC = "BM_STACKING_DESC",
+    BM_MULTIPLE_DIRECTIONS = "BM_MULTIPLE_DIRECTIONS",
+    BM_MULTIPLE_DIRECTIONS_DESC = "BM_MULTIPLE_DIRECTIONS_DESC",
+    BM_DECRYPTION = "BM_DECRYPTION",
+    BM_DECRYPTION_DESC = "BM_DECRYPTION_DESC",
+    BM_ACTIVE_CODE_CRACKING_BONUSES = "BM_ACTIVE_CODE_CRACKING_BONUSES",
+    BM_ACTIVE_CODE_CRACKING_BONUSES_DESC = "BM_ACTIVE_CODE_CRACKING_BONUSES_DESC",
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

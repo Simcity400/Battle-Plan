@@ -2,8 +2,8 @@
 
 Only the three icons produced by ordinary map mode are covered. The unit icon
 belongs to raid planning, whose client selection is outside the recording.
-Hover uses the map counter popup and hit rectangles in reverse submission order.
-A coalescing worker builds text and decodes inline assets for one requested hour,
+Hover uses the native ToolTip painter and hit rectangles in reverse submission order.
+A coalescing worker builds text for one requested hour,
 perspective and content object; the same icon keeps its last text while the next
 hour's builds. No simulation or localisation work runs per frame.
 
@@ -113,7 +113,7 @@ ship +730, including the null case.
 ## Refusals and shared text
 
 Every refused occurrence is stored as a line name plus reason and counted;
-independent lines remain visible. The diagnostic popup exposes these counts. A
+independent lines remain visible. The viewer diagnostics expose these counts. A
 raid whose operands were unreadable when recorded has a single `UNREADABLE`
 row; its operand and naming lines are refused, and other raids keep theirs.
 Irrecoverable cases include generated wing names with no retained original key
@@ -140,10 +140,12 @@ No refusal changes the ordinary-map icon eligibility.
 Text goes through the shared code: the game's localiser with typed arguments
 (`installed_content::localisation`), `crate::combat::text` for `ensure_newlines`
 (`EnsureTrailingNewlines@1424B6660`), `country_localised` (`140BBA780`),
-`value_limit` (`141580360`), stored state names and the rich-text chunks the
-hover draws, which refuse what the viewer does not draw as combat bindings do;
-colour codes nest as the font draws them, `§!` returning to the previous colour,
-and a withheld line still sets the colour of the lines after it (`142287650`).
+`value_limit` (`141580360`) and stored state names. The shared native ToolTip
+textbox (`1402A2150`, `142247010`) and resource resolver supply its font,
+background, integer wrapping and text-sprite bake (`1422861E0`, `14228EE80`).
+The controller delays the secondary body (`1402A4080`); colour codes nest in
+the native font, and inline flags use the recorded hour's small atlas
+(`1402EEFF0`). Unsupported draws are named and counted.
 Custom trigger tooltips expand scripted text in the raid's event scopes
 (`1413931A0` → `SScopeLocalizer` `1402F5F40`) through
 `dashboard::scripted_text`. The condition chain's scope and its FROM, a default

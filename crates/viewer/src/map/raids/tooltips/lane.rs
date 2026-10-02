@@ -1,6 +1,6 @@
 //! One coalescing hover worker. It retains only the latest request/result;
 //! content and frame Arc identity bind results to their complete inputs.
-use super::{Key, view::Prepared};
+use super::{Key, Tooltip};
 use crate::document::Content;
 use eframe::egui;
 use replay::frame::DecodedFrame;
@@ -29,7 +29,7 @@ impl Request {
 struct State {
     wanted: Option<Request>,
     pending: bool,
-    result: Option<Arc<Prepared>>,
+    result: Option<Arc<Tooltip>>,
     stop: bool,
 }
 type Shared = Arc<(Mutex<State>, Condvar)>;
@@ -47,7 +47,7 @@ impl Lane {
         ours: u32,
         key: Key,
         ctx: &egui::Context,
-    ) -> Option<Arc<Prepared>> {
+    ) -> Option<Arc<Tooltip>> {
         let shared = self
             .shared
             .get_or_insert_with(|| Arc::new((Mutex::new(State::default()), Condvar::new())));
@@ -104,7 +104,6 @@ fn run(shared: Shared, ctx: egui::Context) {
         };
         let request = held.insert(next);
         let result = super::build(&request.content, &request.frame, request.ours, &request.key);
-        let result = super::view::prepare(result, &request.content.icons);
         let mut state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
         if state
             .wanted

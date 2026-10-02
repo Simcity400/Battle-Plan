@@ -4,6 +4,15 @@ use dashboard::scripted_text::stored_text;
 use installed_content::gui::native::fonts::TextColors;
 use installed_content::localisation::{Argument as Arg, Localisation, Piece, pieces};
 
+// One declaration supplies the producer's keys and the preload inventory.
+macro_rules! tooltip_keys {
+    ($($key:ident = $text:literal),* $(,)?) => {
+        $(const $key: &str = $text;)*
+        pub(super) const TOOLTIP_KEYS: &[&str] = &[$($key),*];
+    };
+}
+pub(crate) use tooltip_keys;
+
 /// CState::display_name (1409CC380): the custom name (+0x38), else the owner
 /// name (+0xE8), else the template's. set_state_name (140310B50) stores the
 /// localised text of its argument as the custom name; SetOwner (1409D1710,
@@ -135,33 +144,6 @@ impl Colours {
     }
 }
 
-/// [`chunks`] after [`super::binding::validate`]: a line holding what the
-/// viewer does not draw is refused by name, as a combat binding is.
-pub(crate) fn checked_chunks(
-    assets: &super::Assets,
-    raw: &str,
-    colours: &mut Colours,
-) -> Result<Vec<Chunk>, String> {
-    checked_runs(assets, raw, &assets.text_colors, colours, |name| {
-        text_icon(assets, name).map(|(sprite, frame)| (Box::new(sprite.into_owned()), frame))
-    })
-}
-
-fn checked_runs(
-    icons: &(impl super::binding::TextIcons + ?Sized),
-    raw: &str,
-    colors: &TextColors,
-    colours: &mut Colours,
-    icon: impl FnMut(&str) -> Option<(Box<super::Sprite>, i64)>,
-) -> Result<Vec<Chunk>, String> {
-    // The game draws the whole text, so a colour set on a line the viewer
-    // withholds still colours what follows (CBitmapFont::ApplyTextColorCode
-    // 142287650 keeps its state until the next code).
-    let chunks = chunk_runs(raw, colors, colours, icon);
-    super::binding::validate(icons, raw)?;
-    Ok(chunks)
-}
-
 /// One line of rich text as the game's text layout reads it (1422894D0,
 /// through [`pieces`]): colour codes through `colours`, text icons and the
 /// viewer's resolved inline flags ([`INLINE_FLAG`]).
@@ -291,18 +273,6 @@ mod tests {
                 run("d", yellow)
             ]
         );
-    }
-
-    #[test]
-    fn a_withheld_line_still_sets_the_colour_of_the_lines_after_it() {
-        let colors = [(b'Y', [1., 1., 0., 1.])].into_iter().collect();
-        let (base, yellow) = ([1.; 4], [1., 1., 0., 1.]);
-        let mut color = Colours::new(base);
-        let icons = &super::super::binding::NoIcons;
-        let withheld = checked_runs(icons, "\u{11}Yset \u{14}", &colors, &mut color, |_| None);
-        assert!(withheld.err().is_some_and(|reason| reason.contains("0x14")));
-        let next = checked_runs(icons, "after", &colors, &mut color, |_| None).unwrap();
-        assert!(matches!(&next[..], [Chunk::Text(s, c)] if s == "after" && *c == yellow));
     }
 
     #[test]

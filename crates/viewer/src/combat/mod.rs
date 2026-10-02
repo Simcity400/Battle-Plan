@@ -31,7 +31,7 @@ mod tactics;
 mod template_icons;
 pub(crate) mod text;
 pub(crate) mod texture;
-mod tooltip_painter;
+pub(crate) mod tooltip_painter;
 mod tooltips;
 
 use crate::{
@@ -47,6 +47,7 @@ use binding::Bindings;
 pub(crate) use layout::contains;
 use layout::{Node, boolean, number, string};
 use std::{borrow::Cow, collections::BTreeMap, io};
+pub(crate) use tooltips::{authored_assets as tooltip_assets, keys as tooltip_keys};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -389,22 +390,18 @@ impl Window {
             *position += movement;
         }
     }
-    /// Draws the hovered widget's tooltip over `drawn` once its delays pass,
-    /// at the pointer (interface pixels) within `extent`. Call every frame,
-    /// with `None` when the pointer is elsewhere, so hiding can finish.
-    pub fn draw_tooltip(
+    /// The topmost combat hover, otherwise the map's, on the native tooltip clock.
+    pub fn tooltip(
         &mut self,
-        drawn: &mut Drawn,
+        drawn: Option<&Drawn>,
         assets: &Assets,
         point: Option<[f32; 2]>,
-        extent: [f32; 2],
-    ) -> io::Result<()> {
-        let Ok(defines) = &assets.tooltip_defines else {
-            return Ok(());
-        };
+        map: Option<(&str, Option<&str>, [f32; 4])>,
+    ) -> Option<(&str, [f32; 2])> {
+        let defines = assets.tooltip_defines.as_ref().ok()?;
         let hit = point
             .and_then(|point| {
-                drawn
+                drawn?
                     .tooltips
                     .iter()
                     .rev()
@@ -416,14 +413,10 @@ impl Window {
                     hit.description.as_deref(),
                     hit.rect,
                 )
-            });
-        if let Some((text, anchor)) =
-            self.hover
-                .shown(hit, point, std::time::Instant::now(), defines.timing)
-        {
-            tooltip_painter::draw(assets, drawn, text, anchor, extent)?;
-        }
-        Ok(())
+            })
+            .or(map);
+        self.hover
+            .shown(hit, point, std::time::Instant::now(), defines.timing)
     }
     /// When the tooltip next changes with a still pointer, for a repaint.
     pub fn tooltip_repaint_after(&self, assets: &Assets) -> Option<std::time::Duration> {
@@ -436,7 +429,7 @@ impl Window {
     /// ([`crate::map::ui_scale`]). `engaged` is the window's engaged-flag
     /// index; without it (a dump) the flag is what a load at this hour
     /// rebuilds. Only a draw with `hovers` collects the hover regions
-    /// [`Self::draw_tooltip`] needs, so a frame that lays the window out
+    /// [`Self::tooltip`] needs, so a frame that lays the window out
     /// twice (once for its hit tests) does the hover work once.
     pub(crate) fn draw(
         &mut self,
