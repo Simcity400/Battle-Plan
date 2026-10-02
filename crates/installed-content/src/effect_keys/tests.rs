@@ -220,7 +220,7 @@ fn coded_effect_precedes_scope_and_scripted_name() {
 
 #[test]
 fn deferred_readers_keep_by_key_bodies_and_count_named_gaps() {
-    let read = read(b"body = { set_capital = { @seen = 1 state = @seen } set_capital = { state = 2 } set_country_flag = { @flag = 2 flag = test } } final = @flag", &KeyNames::default());
+    let read = read(b"body = { set_capital = { @seen = 1 state = @seen } set_capital = { state = 2 } activate_advisor = { @flag = 2 advisor = test } } final = @flag", &KeyNames::default());
     assert!(read.unsettled.is_none(), "{read:?}");
     assert_eq!(scalar(&read.items, "final"), b"2");
     let gaps: Vec<_> = read
@@ -233,7 +233,7 @@ fn deferred_readers_keep_by_key_bodies_and_count_named_gaps() {
     assert!(gaps[0].what.contains("0x140534280"));
     assert!(gaps[0].what.contains("0x1403B4F40"));
     assert_eq!(gaps[0].count, Some(2));
-    assert!(gaps[1].what.contains("`set_country_flag`"));
-    assert!(gaps[1].what.contains("0x141384F80"));
+    assert!(gaps[1].what.contains("`activate_advisor`"));
+    assert!(gaps[1].what.contains("0x1403A91F0"));
     assert_eq!(gaps[1].count, Some(1));
 }

@@ -14,12 +14,12 @@ use crate::{
 pub(crate) mod key_readers;
 #[cfg(test)]
 mod tests;
+pub(crate) mod value_readers;
 
 // Native virtual readers; value slot 3, key slot 4.
 pub(crate) const READ_SCRIPT: u64 = 0x140534280;
 pub(crate) const READ_EFFECT: u64 = 0x1405345D0;
 pub(crate) const READ_VALUE: u64 = 0x141385570;
-pub(crate) const READ_IF_KEY: u64 = 0x141385BA0;
 const IF_TOKEN: u32 = 0x27C3;
 
 /// Static keyword IDs registered by RegisterEffectEntry@140534C90, with
@@ -1173,20 +1173,16 @@ fn class_shape(readers: (u64, u64), field: &Field<'_>) -> Shape<()> {
         (READ_SCRIPT, key_reader) => key_readers::shape(key_reader, field),
         (READ_VALUE, _) => Shape::One,
         _ => {
-            let read = if value_reader == READ_SCRIPT {
-                Shape::EffectByKey {
-                    trigger_limits: key_reader == READ_IF_KEY,
-                }
-            } else {
-                Shape::ByKey
-            };
+            if let Some(read) = value_readers::shape(value_reader, key_reader, field) {
+                return read;
+            }
             let name = field.keyword().unwrap_or_default();
             Shape::Reported {
                 report: format!(
                     "Deferred effect `{}`: value reader {value_reader:#X}, key reader {key_reader:#X}; by-key reading retained",
                     String::from_utf8_lossy(&name)
                 ),
-                read: Box::new(read),
+                read: Box::new(Shape::ByKey),
             }
         }
     }
