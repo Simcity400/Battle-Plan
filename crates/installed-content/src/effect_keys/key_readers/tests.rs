@@ -161,13 +161,118 @@ fn effect_key_conditionals_reject_else_and_repeated_nonempty_limits() {
 }
 
 #[test]
-fn effect_key_table_is_sorted_and_only_selects_readscript_classes() {
+fn effect_key_table_is_sorted_and_selects_ported_value_loops() {
     use super::*;
     assert!(KEY_READERS.windows(2).all(|pair| pair[0].0 < pair[1].0));
     for &(token, _) in KEY_READERS {
         if matches!(token, 0x36D3 | 0x38ED) {
             continue;
         }
-        assert_eq!(crate::effect_keys::class(token).unwrap().0, READ_SCRIPT);
+        assert!(matches!(
+            crate::effect_keys::class(token).unwrap().0,
+            READ_SCRIPT | 0x14051BBB0
+        ));
+    }
+}
+
+#[test]
+fn state_setup_effects_read_their_own_keys_without_deferred_notes() {
+    let result = read(b"body = { @province = 2 @level = 3 remove_building = { type = authored_building state = var:state province = @province level = @level tags = authored_tag } add_victory_points = { province = @province value = @level } set_victory_points = { province = 2 value = var:points } strategic_province_location = { authored_location = @province } strategic_state_location = { authored_location = @province } }", &KeyNames::default());
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert!(result.misreads.is_empty(), "{result:?}");
+    let body = block(&result.items, "body");
+    assert_eq!(scalar(block(body, "remove_building"), "level"), b"3");
+    assert_eq!(scalar(block(body, "add_victory_points"), "province"), b"2");
+    assert_eq!(
+        scalar(block(body, "strategic_state_location"), "authored_location"),
+        b"2"
+    );
+}
+
+#[test]
+fn building_and_victory_point_effects_skip_unknown_blocks() {
+    for effect in [
+        "remove_building",
+        "add_victory_points",
+        "set_victory_points",
+    ] {
+        let text = format!(
+            "body = {{ {effect} = {{ unknown = {{ @hidden = 9 }} @seen = 3 province = @seen }} }} final = @seen hidden = @hidden"
+        );
+        let result = read(text.as_bytes(), &KeyNames::default());
+        assert!(result.unsettled.is_none(), "{result:?}");
+        assert_eq!(scalar(&result.items, "final"), b"3");
+        assert_eq!(scalar(&result.items, "hidden"), b"@hidden");
+        assert!(result.misreads.iter().all(|note| note.count.is_none()));
+    }
+}
+
+#[test]
+fn building_tags_are_raw_values_and_register_no_definitions() {
+    let result = read(b"body = { @tag = authored_tag remove_building = { tags = { @tag @hidden = 9 } level = 1 } } hidden = @hidden", &KeyNames::default());
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert!(result.misreads.is_empty(), "{result:?}");
+    assert_eq!(scalar(&result.items, "hidden"), b"@hidden");
+    let tags = block(
+        block(block(&result.items, "body"), "remove_building"),
+        "tags",
+    );
+    assert_eq!(tags.len(), 4);
+    assert!(tags.iter().all(|item| item.key.is_none()));
+    assert_eq!(tags[0].value.scalar(), Some(b"authored_tag".as_slice()));
+}
+
+#[test]
+fn setup_effect_scalar_readers_leave_opening_values_to_the_key_loop() {
+    for (effect, key) in [
+        ("remove_building", "level"),
+        ("add_victory_points", "value"),
+        ("strategic_province_location", "authored_location"),
+        ("strategic_state_location", "authored_location"),
+    ] {
+        let text = format!(
+            "body = {{ {effect} = {{ {key} = {{ @seen = 3 province = 2 }} }} final = @seen"
+        );
+        let result = read(text.as_bytes(), &KeyNames::default());
+        assert!(result.unsettled.is_none(), "{effect}: {result:?}");
+        assert_eq!(scalar(&result.items, "final"), b"3", "{effect}");
+        assert_eq!(
+            scalar(block(block(&result.items, "body"), effect), key),
+            b"{"
+        );
+        assert!(result.misreads.iter().all(|note| note.count.is_none()));
+        assert!(!result.misreads.is_empty(), "{effect}: {result:?}");
+    }
+}
+
+#[test]
+fn strategic_state_location_reads_its_inline_loop_after_a_scalar_value() {
+    let result = read(b"body = { strategic_state_location = no @seen = 3 authored_location = @seen } } final = @seen", &KeyNames::default());
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert!(result.misreads.is_empty(), "{result:?}");
+    assert_eq!(scalar(&result.items, "final"), b"3");
+    assert_eq!(
+        scalar(
+            block(block(&result.items, "body"), "strategic_state_location"),
+            "authored_location"
+        ),
+        b"3"
+    );
+}
+
+#[test]
+fn setup_effect_missing_operators_follow_the_native_stale_value() {
+    for effect in [
+        "remove_building",
+        "add_victory_points",
+        "strategic_province_location",
+        "strategic_state_location",
+    ] {
+        let text = format!("body = {{ {effect} {{ @seen = 3 province = @seen }} }} final = @seen");
+        let result = read(text.as_bytes(), &KeyNames::default());
+        assert!(result.unsettled.is_none(), "{effect}: {result:?}");
+        assert_eq!(scalar(&result.items, "final"), b"3", "{effect}");
+        assert!(!result.misreads.is_empty(), "{effect}: {result:?}");
+        assert!(result.misreads.iter().all(|note| note.count.is_none()));
     }
 }

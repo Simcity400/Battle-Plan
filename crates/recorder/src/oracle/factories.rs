@@ -229,6 +229,22 @@ provinces={{}}
         content: &Buildings,
         rows: Vec<CountryFactoriesRow>,
     ) -> io::Result<Report> {
+        run_with_membership(
+            saved,
+            content,
+            rows,
+            &installed_content::save::MapMembership {
+                provinces: BTreeMap::from([(1, Some(1)), (2, Some(2)), (3, Some(3))]),
+            },
+        )
+    }
+
+    fn run_with_membership(
+        saved: &Save,
+        content: &Buildings,
+        rows: Vec<CountryFactoriesRow>,
+        membership: &installed_content::save::MapMembership,
+    ) -> io::Result<Report> {
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 2,
@@ -251,15 +267,31 @@ provinces={{}}
             ..Default::default()
         };
         let links = BTreeMap::from([(5, &germany), (6, &italy)]);
-        let control = [(1, "GER"), (2, "GER"), (3, "ITA")].map(|(id, tag)| StateControl {
-            id,
-            owner: b"GER".to_vec(),
-            controller: tag.as_bytes().to_vec(),
-            controller_explicit: false,
-        });
+        let control = saved.state_control(membership)?;
         let mut report = Report::default();
         compare(&frame, saved, &control, content, &links, &mut report)?;
         Ok(report)
+    }
+
+    #[test]
+    fn history_building_effects_compare_saved_levels_without_waiving_a_difference() {
+        let membership = super::super::state_history_tests::membership(
+            "state={id=1 provinces={1} history={buildings={civ=99} \
+             1936.1.1={IF={limit={} remove_building={type=civ level=2} \
+             strategic_state_location={authored_location=1} \
+             strategic_province_location={authored_location=1}}}}} \
+             state={id=2 provinces={2}} state={id=3 provinces={3}}",
+            3,
+        );
+        let saved = save(CLEAN, CLEAN);
+        let mut rows = vec![row(5, [3, 3, 7]), row(6, [1, 0, 1])];
+        let report = run_with_membership(&saved, &content(""), rows.clone(), &membership).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CountryFactories"], 2);
+        rows[0].civilian_levels -= 1;
+        let report = run_with_membership(&saved, &content(""), rows, &membership).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("GER.factories.civilian_levels"));
     }
 
     #[test]

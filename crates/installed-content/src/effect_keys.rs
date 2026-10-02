@@ -1,6 +1,16 @@
 //! CEffect::ReadEffect (1405345D0): conditional, registry, scope,
 //! scripted-effect token hash and +0x58 flag, then Invalid effect and
 //! RecordError (1424ACF90). One dispatch in the token reader replay.
+//!
+//! Reading effects does not execute them. `remove_building` executes at
+//! 14030EBC0, resolving a state/province building (1403126C0) and reducing
+//! CBuilding +0x40 through 1410C71A0. `add_victory_points` (140347230)
+//! adds to CProvince +0x38 through 140E6C7F0. Strategic-location effects
+//! (14051AE50, 14051B060) apply their content template's maximum-level bonuses:
+//! 140E65050 -> 140E6C990 for provinces, 1409C4A60 -> 1409D3A60 for states.
+//! They add to CBuilding +0x1E8, not the saved level +0x40 that factory sums
+//! (140E4FC10) read. Consumers of levels and victory points need saved results;
+//! a maximum-level bonus needs its own runtime evidence.
 
 use crate::{
     key_names::KeyNames,
@@ -1169,6 +1179,9 @@ pub(crate) fn body_error(key: &str, value: &str) -> String {
 
 fn class_shape(readers: (u64, u64), field: &Field<'_>) -> Shape<()> {
     let (value_reader, key_reader) = readers;
+    if let Some(shape) = key_readers::value_shape(value_reader, field) {
+        return shape;
+    }
     match readers {
         (READ_SCRIPT, key_reader) => key_readers::shape(key_reader, field),
         (READ_VALUE, _) => Shape::One,

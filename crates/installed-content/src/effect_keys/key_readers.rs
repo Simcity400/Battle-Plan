@@ -24,6 +24,7 @@ use crate::{
 enum ValueReader {
     One,
     ValueList,
+    ValueListIfOpen,
     Localization,
     Limit,
     Province,
@@ -46,6 +47,29 @@ enum KeyReader {
     DivideVariable,
     Conditional,
 }
+
+// CRemoveBuildingEffect@14031BFE0 delegates level to CScopedVariable
+// (140539440), which consumes one token, and tags to 140309360's raw
+// resolved array only on `{`. Unknown keys use ReportUnexpectedToken.
+const READER_14031BFE0: KeyReader = KeyReader::Keys(
+    &[
+        ("type", ValueReader::One),
+        ("state", ValueReader::One),
+        ("province", ValueReader::One),
+        ("level", ValueReader::One),
+        ("tags", ValueReader::ValueListIfOpen),
+    ],
+    Fallback::Only,
+);
+// CSetOrAddVictoryPointsEffect@1403AE5F0: both operands call the embedded
+// CScopedVariable::Read (140539440); unknown keys are reported and skipped.
+const READER_1403AE5F0: KeyReader = KeyReader::Keys(
+    &[("province", ValueReader::One), ("value", ValueReader::One)],
+    Fallback::Only,
+);
+// 14051BEC0 and 14051BBB0 accept every key as a strategic-location name
+// and read its one ParseTokenInt32 value (1424B0080), without error skip.
+const STRATEGIC_LOCATIONS: KeyReader = KeyReader::Keys(&[], Fallback::One);
 
 // BEGIN EXTRACTED TABLE
 const READER_1403ADCF0: KeyReader = KeyReader::Keys(
@@ -148,12 +172,15 @@ const READER_1403AD9F0: KeyReader = KeyReader::Keys(
     Fallback::Only,
 );
 const KEY_READERS: &[(u32, KeyReader)] = &[
+    (0x274E, READER_14031BFE0),              // remove_building, 14031BFE0
     (0x275C, READER_1403ADCF0),              // every_country, 1403ADCF0
     (0x2769, READER_1403ADCF0),              // every_neighbor_country, 1403ADCF0
     (0x277C, READER_1403ADCF0),              // every_enemy_country, 1403ADCF0
     (0x27B3, KeyReader::Variable),           // set_variable, 1403B6640
     (0x27C3, KeyReader::Conditional),        // if, 141385BA0
     (0x27C8, READER_1403AEEE0),              // add_opinion_modifier, 1403AEEE0
+    (0x27F6, STRATEGIC_LOCATIONS),           // strategic_province_location, 14051BEC0
+    (0x2803, STRATEGIC_LOCATIONS),           // strategic_state_location, 14051BBB0
     (0x28DB, READER_1403ADCF0),              // every_subject_country, 1403ADCF0
     (0x292A, READER_1403ADCF0),              // every_faction_member, 1403ADCF0
     (0x3028, READER_140323D80),              // set_technology, 140323D80
@@ -193,6 +220,8 @@ const KEY_READERS: &[(u32, KeyReader)] = &[
     (0x3BA8, READER_1403B04D0),              // remove_from_temp_array, 1403B04D0
     (0x3C02, READER_1403AD9F0),              // remove_dynamic_modifier, 1403AD9F0
     (0x3C03, READER_1403AD9F0),              // add_dynamic_modifier, 1403AD9F0
+    (0x3C3C, READER_1403AE5F0),              // add_victory_points, 1403AE5F0
+    (0x3C3D, READER_1403AE5F0),              // set_victory_points, 1403AE5F0
     (0x4094, READER_1403ADCF0),              // every_allied_country, 1403ADCF0
     (0x4A61, READER_1403ADCF0),              // every_controlled_state, 14031B220
     (0x4A8E, READER_1403ADCF0),              // every_occupied_country, 1403ADCF0
@@ -208,6 +237,23 @@ fn reader(token: u32) -> Option<KeyReader> {
         .binary_search_by_key(&token, |(id, _)| *id)
         .ok()
         .map(|index| KEY_READERS[index].1)
+}
+
+/// The inline loop at 14051BBB0 reads on after any value; ReadScript
+/// (140534280) instead requires the value slot to hold `{`.
+pub(crate) fn requires_block(token: u32) -> bool {
+    super::class(token).is_none_or(|(value, _)| value == READ_SCRIPT)
+}
+
+pub(super) fn value_shape(address: u64, field: &Field<'_>) -> Option<Shape<()>> {
+    if address != 0x14051BBB0 {
+        return None;
+    }
+    field
+        .keyword()
+        .as_deref()
+        .and_then(super::registered)
+        .map(Shape::EffectKeys)
 }
 
 pub(super) fn shape(address: u64, field: &Field<'_>) -> Shape<()> {
@@ -352,6 +398,8 @@ impl<'n> Shaper<'n> {
                         return match value {
                             ValueReader::One => Shape::One,
                             ValueReader::ValueList => Shape::ValueList,
+                            ValueReader::ValueListIfOpen if field.opens() => Shape::ValueList,
+                            ValueReader::ValueListIfOpen => Shape::One,
                             ValueReader::Localization => Shape::ObjectIfOpen(Node::Trigger(
                                 combat_tactics::Node::BoundLocalization,
                             )),

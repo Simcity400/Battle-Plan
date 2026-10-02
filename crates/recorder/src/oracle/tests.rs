@@ -1626,7 +1626,10 @@ fn faction_templates_colours_and_overrides_compare_as_the_save_writes_them() {
 #[test]
 fn a_colour_is_written_as_the_native_float_conversion_does() {
     let bits = |values: [f32; 4]| values.map(f32::to_bits);
-    assert_eq!(relations::saved_colour(bits([0.5, 0.25, 1.0, 1.0])), [127, 63, 255]);
+    assert_eq!(
+        relations::saved_colour(bits([0.5, 0.25, 1.0, 1.0])),
+        [127, 63, 255]
+    );
     assert_eq!(
         relations::saved_colour(bits([0.0, 1.0, 0.999, 0.5])),
         [0, 255, 254, 127]
@@ -1636,7 +1639,10 @@ fn a_colour_is_written_as_the_native_float_conversion_does() {
         relations::saved_colour(bits([f32::NAN, 1e30, -1e30, 1.0])),
         [i64::from(i32::MIN); 3]
     );
-    assert_eq!(relations::saved_colour(bits([-0.5, 0.0, 0.0, 1.0])), [-127, 0, 0]);
+    assert_eq!(
+        relations::saved_colour(bits([-0.5, 0.0, 0.0, 1.0])),
+        [-127, 0, 0]
+    );
 }
 
 #[test]
