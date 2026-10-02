@@ -123,7 +123,7 @@ impl MapIcons {
         // elements exist); every read a view lays out and draws is at its own viewport
         // (`CounterAssets::windows_at`).
         let windows = super::counters::NativeWindows::load_at(layers, gui_viewport)?;
-        let layouts = super::counters::Layouts::read(layers)?;
+        let layouts = super::counters::Layouts::read(&windows);
         let mut font_warnings = Vec::new();
         // The battle-plan label font is named by `maparrows.txt`'s `arrowText`.
         let arrow_font = super::orders::arrow_text_font(layers)?;
@@ -139,7 +139,11 @@ impl MapIcons {
             &interface,
             language,
             &text::DeclaredFonts {
-                counter: layouts.land.count.font.as_deref(),
+                counter: layouts
+                    .land
+                    .as_ref()
+                    .ok()
+                    .and_then(|land| land.count.font.as_deref()),
                 arrow: arrow_font.as_deref(),
             },
             &mut images,
