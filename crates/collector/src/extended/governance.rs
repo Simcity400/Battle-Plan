@@ -14,13 +14,13 @@ use engine::{
     power_balance_gfx_override, power_balance_manager, power_balance_range, power_balance_record,
     walk::Outcome,
 };
+#[cfg(test)]
+use replay::rows::TableRows;
 use replay::{
     frame::{TableInput, TableView},
     rows::{self, TableId, TableSchema, tables},
 };
 use std::mem::size_of;
-#[cfg(test)]
-use replay::rows::TableRows;
 
 pub const N: usize = 23;
 
@@ -66,7 +66,11 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("Preferred tactic", 11, &[11]),
     ("Technology sharing", 12, &[12, 13]),
     ("Power balance and children", 14, &[14, 15, 16, 17, 22]),
-    ("Sliced research inputs, bonuses and modifiers", 18, &[18, 19, 20]),
+    (
+        "Sliced research inputs, bonuses and modifiers",
+        18,
+        &[18, 19, 20],
+    ),
 ];
 
 /// Callback-local inputs for an exclusively owned governance acquisition.
@@ -106,8 +110,8 @@ impl Default for Capacities {
     fn default() -> Self {
         Self {
             rows: [
-                512, 8192, 32768, 2048, 4096, 512, 2048, 16384, 512, 8192, 4096, 512, 128,
-                1024, 128, 512, 1024, 512, 2048, 4096, 16384, 2048, 0,
+                512, 8192, 32768, 2048, 4096, 512, 2048, 16384, 512, 8192, 4096, 512, 128, 1024,
+                128, 512, 1024, 512, 2048, 4096, 16384, 2048, 0,
             ],
             focus_text: 131072,
             definition_text: 262144,
@@ -363,7 +367,8 @@ impl ResearchPart {
     /// cannot become publishable, cadence skips stay skips, and nothing is read.
     pub(crate) fn fail(&mut self, context: CaptureContext, reason: &'static str) {
         let [inputs, bonuses, modifiers] = RESEARCH.map(|index| {
-            let active = replay::cadence::should_walk(TABLES[index], context.hour, context.force_full);
+            let active =
+                replay::cadence::should_walk(TABLES[index], context.hour, context.force_full);
             Outcome::Unavailable {
                 reason: if active {
                     reason
@@ -626,7 +631,21 @@ impl Captured {
             + self.sharing_members.allocated_bytes()
             + self.balances.allocated_bytes()
             + self.breakdowns.capacity() * size_of::<rows::PowerBalanceModifierBreakdownRow>()
-            + self.breakdowns.iter().map(|r| r.sources.capacity() * size_of::<Vec<u8>>() + r.sources.iter().map(Vec::capacity).sum::<usize>() + [&r.daily, &r.weekly].into_iter().map(|nodes| nodes.capacity() * size_of::<engine::modifier_breakdown::Node>() + nodes.iter().map(|n| n.name.capacity()).sum::<usize>()).sum::<usize>()).sum::<usize>()
+            + self
+                .breakdowns
+                .iter()
+                .map(|r| {
+                    r.sources.capacity() * size_of::<Vec<u8>>()
+                        + r.sources.iter().map(Vec::capacity).sum::<usize>()
+                        + [&r.daily, &r.weekly]
+                            .into_iter()
+                            .map(|nodes| {
+                                nodes.capacity() * size_of::<engine::modifier_breakdown::Node>()
+                                    + nodes.iter().map(|n| n.name.capacity()).sum::<usize>()
+                            })
+                            .sum::<usize>()
+                })
+                .sum::<usize>()
             + self.balance_members.allocated_bytes()
             + self.ranges.allocated_bytes()
             + self.overrides.allocated_bytes()
@@ -771,7 +790,14 @@ impl Captured {
         force_full: bool,
     ) -> [u64; N] {
         let mut fingerprints = SliceFingerprints::new();
-        self.capture_sliced(memory, base, game_state, hour, force_full, &mut fingerprints)
+        self.capture_sliced(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            &mut fingerprints,
+        )
     }
 
     /// Read the family. ResearchTechnologies reads this hour's country slice,
@@ -870,10 +896,13 @@ impl Captured {
                 .checked_add(engine::cgame_state::POWER_BALANCE_MANAGER)
                 .and_then(|p| engine::read::<u64>(memory, p))
                 .filter(|&p| p != 0)
-                .ok_or("power balance modifier breakdown manager unreadable or null")? as usize;
+                .ok_or("power balance modifier breakdown manager unreadable or null")?
+                as usize;
             let roster = manager
                 .checked_add(power_balance_manager::RECORDS)
-                .and_then(|p| engine::cpdx_array::Array::read(memory, p, power_balance_record::STRIDE))
+                .and_then(|p| {
+                    engine::cpdx_array::Array::read(memory, p, power_balance_record::STRIDE)
+                })
                 .ok_or("power balance modifier breakdown roster unreadable or invalid")?;
             if roster.count as usize != self.balances.outcome.len() {
                 return Err("power balance modifier breakdown roster count mismatch");
@@ -883,12 +912,13 @@ impl Captured {
                     .element(record, power_balance_record::STRIDE)
                     .ok_or("power balance modifier breakdown record address overflow")?;
                 let tree = engine::modifier_breakdown::balance(memory, base, address)?;
-                self.breakdowns.push(rows::PowerBalanceModifierBreakdownRow {
-                    record,
-                    sources: tree.sources,
-                    daily: tree.daily,
-                    weekly: tree.weekly,
-                });
+                self.breakdowns
+                    .push(rows::PowerBalanceModifierBreakdownRow {
+                        record,
+                        sources: tree.sources,
+                        daily: tree.daily,
+                        weekly: tree.weekly,
+                    });
             }
             Ok(())
         })();
@@ -1058,7 +1088,11 @@ fn acquire(
         match countries {
             Err(reason) => {
                 census = false;
-                for (outcome, _) in o.outcomes[..12].iter_mut().zip(&enabled[..12]).filter(|(_, active)| **active) {
+                for (outcome, _) in o.outcomes[..12]
+                    .iter_mut()
+                    .zip(&enabled[..12])
+                    .filter(|(_, active)| **active)
+                {
                     *outcome = Outcome::Unavailable { reason };
                 }
                 if enabled[21] {
@@ -1075,7 +1109,11 @@ fn acquire(
                         Ok(None) => continue,
                         Err(reason) => {
                             census = false;
-                            for (outcome, _) in o.outcomes[..12].iter_mut().zip(&enabled[..12]).filter(|(_, active)| **active) {
+                            for (outcome, _) in o.outcomes[..12]
+                                .iter_mut()
+                                .zip(&enabled[..12])
+                                .filter(|(_, active)| **active)
+                            {
                                 *outcome = Outcome::Unavailable { reason };
                             }
                             if enabled[21] {
@@ -1327,7 +1365,8 @@ fn acquire(
     if enabled[2] {
         if census {
             technology_fingerprints.finish_scan();
-            b.technology_selection.finish_census(technology_fingerprints);
+            b.technology_selection
+                .finish_census(technology_fingerprints);
         }
         let started = qpc();
         o.lens[1] = definitions.bytes_len;
@@ -1427,301 +1466,11 @@ fn required_rows(outcome: Outcome) -> usize {
 #[cfg(test)]
 pub(crate) use tests::focus_test_kit;
 
-// ===========================================================================
-// Scheduled Focus and CompletedFocuses owned native acquisition.
-//
-// The callback-bounded World job runs the existing native walker once per pass.
-// Rows and referenced token bytes are owned here; the decode worker only installs
-// admitted prefixes. No raw index, mirrored census or replayed walker remains.
-// Exact frame grants are checked before any source read, so storage refusal
-// can use the typed fallback without retrying a consumed read fault.
-// ===========================================================================
+mod focus;
 
-#[derive(Debug, Default)]
-pub(crate) struct FocusJob {
-    pub active: bool,
-    rows: Vec<cnational_focus_progress::Row>,
-    completed: Vec<cnational_focus_progress::CompletedRow>,
-    bytes: Vec<u8>,
-    outcomes: [Option<Outcome>; 2],
-    bytes_len: usize,
-    required_bytes: usize,
-    row_grants: [usize; 2],
-    byte_grant: usize,
-    provisioned: bool,
-    capacity_charge: crate::raw_memory::Charge,
-}
-
-impl FocusJob {
-    pub fn new() -> Self {
-        let capacities = Capacities::default();
-        let mut job = Self {
-            rows: vec![Default::default(); capacities.rows[0]],
-            completed: vec![Default::default(); capacities.rows[1]],
-            bytes: vec![0; capacities.focus_text],
-            row_grants: [capacities.rows[0], capacities.rows[1]],
-            byte_grant: capacities.focus_text,
-            provisioned: true,
-            ..Default::default()
-        };
-        job.update_capacity_charge();
-        job
-    }
-
-    pub fn is_provisioned(&self) -> bool {
-        self.provisioned
-    }
-
-    #[cfg(test)]
-    pub(crate) fn capacities(&self) -> ([usize; 2], usize) {
-        ([self.rows.len(), self.completed.len()], self.bytes.len())
-    }
-
-    pub fn clear(&mut self) {
-        self.active = false;
-        self.outcomes = [None; 2];
-        self.bytes_len = 0;
-        self.required_bytes = 0;
-        self.row_grants = [0; 2];
-        self.byte_grant = 0;
-    }
-
-    fn prepare(&mut self, rows: [usize; 2], bytes: usize) -> bool {
-        self.clear();
-        self.active = true;
-        self.row_grants = rows;
-        self.byte_grant = bytes;
-        self.provisioned && !self.grow_for_next()
-    }
-
-    pub fn grow_for_next(&self) -> bool {
-        self.rows.len() < self.row_grants[0]
-            || self.completed.len() < self.row_grants[1]
-            || self.bytes.len() < self.byte_grant
-    }
-
-    /// Called only after callback ownership ends, on the decode side.
-    pub fn grow(&mut self) {
-        grow_vec(&mut self.rows, self.row_grants[0]);
-        grow_vec(&mut self.completed, self.row_grants[1]);
-        grow_vec(&mut self.bytes, self.byte_grant);
-        self.update_capacity_charge();
-    }
-
-    fn update_capacity_charge(&mut self) {
-        use crate::raw_memory::{Capacity, vector_bytes};
-        self.capacity_charge.set(Capacity {
-            payload_vectors: vector_bytes(&self.rows)
-                + vector_bytes(&self.completed)
-                + vector_bytes(&self.bytes),
-            ..Default::default()
-        });
-    }
-
-    fn outcome(&self, slot: usize) -> Outcome {
-        self.outcomes[slot].unwrap_or(Outcome::Unavailable {
-            reason: "focus acquisition not supplied",
-        })
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct FocusCopyReport {
-    /// False only for a preflight refusal, before any live source read.
-    pub raw_ok: bool,
-    /// Shared native traversal is charged once to Focus.
-    pub copy_ticks: [u64; 2],
-    /// Indexed raw payload bytes only. Owned rows/tokens are charged by capacity.
-    pub raw_bytes: [u64; 2],
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FocusCopyContext {
-    pub base: usize,
-    pub game_state: usize,
-    pub active: bool,
-    pub rows: [usize; 2],
-    pub bytes: usize,
-}
-
-fn copy_focus_pass(
-    job: &mut FocusJob,
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    ticks: &mut [u64; 2],
-) {
-    let _reads = read_accounting::table(TABLES[0]);
-    let started = qpc();
-    let mut focus_total = Outcome::Rows { len: 0 };
-    let mut completed_total = Outcome::Rows { len: 0 };
-    let mut text_len = 0usize;
-    let mut text_required = 0usize;
-    match ccountry::Reader::new(memory, base, game_state) {
-        Err(reason) => {
-            focus_total = Outcome::Unavailable { reason };
-            completed_total = Outcome::Unavailable { reason };
-        }
-        Ok(countries) => {
-            for slot in 1..countries.count() {
-                let country = match countries.at(slot) {
-                    Ok(Some(country)) => country,
-                    Ok(None) => continue,
-                    Err(reason) => {
-                        focus_total = Outcome::Unavailable { reason };
-                        completed_total = Outcome::Unavailable { reason };
-                        break;
-                    }
-                };
-                let first = focus_total.len();
-                let completed = completed_total.len();
-                let text = text_len;
-                let result = cnational_focus_progress::walk(
-                    memory,
-                    base,
-                    country.pointer,
-                    country.id,
-                    &mut job.rows[first..job.row_grants[0]],
-                    &mut job.completed[completed..job.row_grants[1]],
-                    &mut job.bytes[text..job.byte_grant],
-                );
-                for row in &mut job.rows[first..first + result.outcome.len()] {
-                    for span in [&mut row.tree, &mut row.current, &mut row.continuous]
-                        .into_iter()
-                        .flatten()
-                    {
-                        span.start += text;
-                    }
-                }
-                for row in &mut job.completed[completed..completed + result.completed_outcome.len()]
-                {
-                    row.token.start += text;
-                }
-                append(&mut focus_total, result.outcome);
-                append(&mut completed_total, result.completed_outcome);
-                text_len += result.bytes_len;
-                text_required = text_required.saturating_add(result.required_bytes);
-            }
-        }
-    }
-    job.outcomes = [Some(focus_total), Some(completed_total)];
-    job.bytes_len = text_len;
-    job.required_bytes = text_required;
-    ticks[0] += elapsed(started);
-}
-
-pub(crate) fn copy_focus_refresh(
-    memory: &impl Memory,
-    ctx: FocusCopyContext,
-    job: &mut FocusJob,
-) -> FocusCopyReport {
-    if !ctx.active {
-        job.clear();
-        return FocusCopyReport {
-            raw_ok: true,
-            ..Default::default()
-        };
-    }
-    if !job.prepare(ctx.rows, ctx.bytes) {
-        return FocusCopyReport::default();
-    }
-    let mut report = FocusCopyReport {
-        raw_ok: true,
-        ..Default::default()
-    };
-    copy_focus_pass(
-        job,
-        memory,
-        ctx.base,
-        ctx.game_state,
-        &mut report.copy_ticks,
-    );
-    report
-}
-
-impl Captured {
-    pub(crate) fn focus_copy_context(
-        &self,
-        base: usize,
-        game_state: usize,
-        active: bool,
-    ) -> FocusCopyContext {
-        FocusCopyContext {
-            base,
-            game_state,
-            active,
-            rows: [self.focus.rows.len(), self.completed.rows.len()],
-            bytes: self.focus_text.first.len(),
-        }
-    }
-
-    /// Finish an accepted acquisition failure without retrying live memory.
-    pub(crate) fn fail_focus_capture(&mut self, active: bool, reason: &'static str) {
-        let reason = if active {
-            reason
-        } else {
-            replay::cadence::SKIPPED_REASON
-        };
-        self.focus.outcome = Outcome::Unavailable { reason };
-        self.completed.outcome = Outcome::Unavailable { reason };
-        self.focus_text.reset();
-        self.focus_raw_mode = false;
-    }
-
-    /// Installs only already-owned admitted prefixes. A changed frame grant is
-    /// an ownership error, never a reason to touch the live source again.
-    pub(crate) fn decode_focus_payload(
-        &mut self,
-        _base: usize,
-        job: &FocusJob,
-        decode_ticks: &mut [u64; 2],
-    ) {
-        if !job.active {
-            self.fail_focus_capture(false, replay::cadence::SKIPPED_REASON);
-            return;
-        }
-        let started = qpc();
-        let arena_ok = self.focus_text.first.len() == job.byte_grant
-            && job.bytes_len <= job.byte_grant
-            && job.bytes_len <= job.bytes.len();
-        self.focus.outcome = job.outcome(0);
-        if !arena_ok
-            || self.focus.rows.len() != job.row_grants[0]
-            || self.focus.outcome.len() > job.row_grants[0]
-        {
-            self.focus.outcome = Outcome::Unavailable {
-                reason: "focus owned payload capacity mismatch",
-            };
-        } else {
-            let len = self.focus.outcome.len();
-            self.focus.rows[..len].copy_from_slice(&job.rows[..len]);
-        }
-        if arena_ok {
-            self.focus_text.first[..job.bytes_len].copy_from_slice(&job.bytes[..job.bytes_len]);
-            self.focus_text.len = job.bytes_len;
-            self.focus_text.required = job.required_bytes;
-        } else {
-            self.focus_text.len = 0;
-            self.focus_text.required = job.required_bytes.max(job.byte_grant);
-        }
-        decode_ticks[0] += elapsed(started);
-        let started = qpc();
-        self.completed.outcome = job.outcome(1);
-        if !arena_ok
-            || self.completed.rows.len() != job.row_grants[1]
-            || self.completed.outcome.len() > job.row_grants[1]
-        {
-            self.completed.outcome = Outcome::Unavailable {
-                reason: "completed focus owned payload capacity mismatch",
-            };
-        } else {
-            let len = self.completed.outcome.len();
-            self.completed.rows[..len].copy_from_slice(&job.completed[..len]);
-        }
-        decode_ticks[1] += elapsed(started);
-        self.focus_raw_mode = false;
-    }
-}
+#[cfg(test)]
+use focus::copy_focus_pass;
+pub(crate) use focus::{FocusCopyContext, FocusCopyReport, FocusJob, copy_focus_refresh};
 
 fn valid<T>(arena: &[T], start: usize, len: usize) -> bool {
     start.checked_add(len).is_some_and(|end| end <= arena.len())
@@ -2042,1316 +1791,159 @@ impl Captured {
                     gfx: balance_copy(r.gfx),
                 },
             )),
-            wrap(view::<tables::ResearchInputs, _>(&self.research_inputs, |_| true, |r| rows::ResearchInputRow {
-                country: r.slot.country,
-                index: r.slot.index,
-                technology_handle: r.slot.technology_handle,
-                technology_present: r.slot.technology_present,
-                token: r.token.as_bytes().to_vec(),
-                classifier: r.classifier,
-                level: r.level,
-                progress_raw: r.progress_raw,
-                cost_raw: r.cost_raw,
-                cost_scale_raw: r.cost_scale_raw,
-                cost_debug: r.cost_debug,
-                research_speed_raw: r.slot.research_speed_raw,
-                banked_days_raw: r.slot.banked_days_raw,
-                applied_days_raw: r.slot.applied_days_raw,
-                ahead_reduction_raw: r.ahead_reduction_raw,
-                speed_bonus_raw: r.speed_bonus_raw,
-                bonus_count: r.bonus_count,
-            })),
-
-            wrap(view::<tables::ResearchAppliedBonuses, _>(&self.research_bonuses, |_| true, |r| rows::ResearchAppliedBonusRow {
-                country: r.country,
-                index: r.index,
-                ordinal: r.ordinal,
-                technology_handle: r.technology_handle,
-                id: r.value.id,
-                resolved: r.resolved,
-                name: r.value.name.as_bytes().to_vec(),
-                ahead_reduction_raw: r.value.ahead_reduction_raw,
-                speed_bonus_raw: r.value.speed_bonus_raw,
-                cost_reduction_raw: r.cost_reduction_raw,
-            })),
-            wrap(view::<tables::ResearchModifiers, _>(&self.research_modifiers, |_| true, |r| rows::ResearchModifierRow {
-                country: r.country, index: r.index, ordinal: r.ordinal, technology_handle: r.technology_handle,
-                kind: match r.kind { engine::research_modifiers::Kind::Technology => rows::ResearchModifierRow::TECHNOLOGY, engine::research_modifiers::Kind::CountrySpeed => rows::ResearchModifierRow::COUNTRY_SPEED, engine::research_modifiers::Kind::CategorySpeed => rows::ResearchModifierRow::CATEGORY_SPEED, engine::research_modifiers::Kind::DesignTeam => rows::ResearchModifierRow::DESIGN_TEAM, engine::research_modifiers::Kind::Experience => rows::ResearchModifierRow::EXPERIENCE, engine::research_modifiers::Kind::Sharing => rows::ResearchModifierRow::SHARING, engine::research_modifiers::Kind::License => rows::ResearchModifierRow::LICENSE, engine::research_modifiers::Kind::Scientist => rows::ResearchModifierRow::SCIENTIST, engine::research_modifiers::Kind::Year => rows::ResearchModifierRow::YEAR, engine::research_modifiers::Kind::AheadFactor => rows::ResearchModifierRow::AHEAD_FACTOR, engine::research_modifiers::Kind::MinimumSpeed => rows::ResearchModifierRow::MINIMUM_SPEED, engine::research_modifiers::Kind::CountrySource => rows::ResearchModifierRow::COUNTRY_SOURCE, engine::research_modifiers::Kind::IdeaSource => rows::ResearchModifierRow::IDEA_SOURCE, engine::research_modifiers::Kind::ScriptSource => rows::ResearchModifierRow::SCRIPT_SOURCE, engine::research_modifiers::Kind::ScientistSource => rows::ResearchModifierRow::SCIENTIST_SOURCE, engine::research_modifiers::Kind::SharingMultiplier => rows::ResearchModifierRow::SHARING_MULTIPLIER, engine::research_modifiers::Kind::SharingMaximum => rows::ResearchModifierRow::SHARING_MAXIMUM, engine::research_modifiers::Kind::ModifierMetadata => rows::ResearchModifierRow::MODIFIER_METADATA, engine::research_modifiers::Kind::ScientistCategory => rows::ResearchModifierRow::SCIENTIST_CATEGORY, engine::research_modifiers::Kind::SharingMember => rows::ResearchModifierRow::SHARING_MEMBER, engine::research_modifiers::Kind::SharingPredecessor => rows::ResearchModifierRow::SHARING_PREDECESSOR, engine::research_modifiers::Kind::SharingFilter => rows::ResearchModifierRow::SHARING_FILTER, engine::research_modifiers::Kind::SharingCategory => rows::ResearchModifierRow::SHARING_CATEGORY, engine::research_modifiers::Kind::SharingDoctrine => rows::ResearchModifierRow::SHARING_DOCTRINE, engine::research_modifiers::Kind::SharingMissingMember => rows::ResearchModifierRow::SHARING_MISSING_MEMBER }, raw: r.raw, auxiliary: r.auxiliary, count: r.count, source_id: r.source_id, name: r.name.as_bytes().to_vec(),
-            })),
-            wrap(view::<tables::PartyLeaders, _>(&self.party_leaders, |_| true, |r| rows::PartyLeaderRow {
-                country: r.country,
-                party: r.party,
-                ordinal: r.ordinal,
-                character: r.character,
-                leader_id: r.leader_id,
-                role: r.role,
-            })),
-            wrap(crate::spooling::table::<tables::PowerBalanceModifierBreakdowns, _>(self.breakdown_outcome, &self.breakdowns, Clone::clone)),
+            wrap(view::<tables::ResearchInputs, _>(
+                &self.research_inputs,
+                |_| true,
+                |r| rows::ResearchInputRow {
+                    country: r.slot.country,
+                    index: r.slot.index,
+                    technology_handle: r.slot.technology_handle,
+                    technology_present: r.slot.technology_present,
+                    token: r.token.as_bytes().to_vec(),
+                    classifier: r.classifier,
+                    level: r.level,
+                    progress_raw: r.progress_raw,
+                    cost_raw: r.cost_raw,
+                    cost_scale_raw: r.cost_scale_raw,
+                    cost_debug: r.cost_debug,
+                    research_speed_raw: r.slot.research_speed_raw,
+                    banked_days_raw: r.slot.banked_days_raw,
+                    applied_days_raw: r.slot.applied_days_raw,
+                    ahead_reduction_raw: r.ahead_reduction_raw,
+                    speed_bonus_raw: r.speed_bonus_raw,
+                    bonus_count: r.bonus_count,
+                },
+            )),
+            wrap(view::<tables::ResearchAppliedBonuses, _>(
+                &self.research_bonuses,
+                |_| true,
+                |r| rows::ResearchAppliedBonusRow {
+                    country: r.country,
+                    index: r.index,
+                    ordinal: r.ordinal,
+                    technology_handle: r.technology_handle,
+                    id: r.value.id,
+                    resolved: r.resolved,
+                    name: r.value.name.as_bytes().to_vec(),
+                    ahead_reduction_raw: r.value.ahead_reduction_raw,
+                    speed_bonus_raw: r.value.speed_bonus_raw,
+                    cost_reduction_raw: r.cost_reduction_raw,
+                },
+            )),
+            wrap(view::<tables::ResearchModifiers, _>(
+                &self.research_modifiers,
+                |_| true,
+                |r| rows::ResearchModifierRow {
+                    country: r.country,
+                    index: r.index,
+                    ordinal: r.ordinal,
+                    technology_handle: r.technology_handle,
+                    kind: match r.kind {
+                        engine::research_modifiers::Kind::Technology => {
+                            rows::ResearchModifierRow::TECHNOLOGY
+                        }
+                        engine::research_modifiers::Kind::CountrySpeed => {
+                            rows::ResearchModifierRow::COUNTRY_SPEED
+                        }
+                        engine::research_modifiers::Kind::CategorySpeed => {
+                            rows::ResearchModifierRow::CATEGORY_SPEED
+                        }
+                        engine::research_modifiers::Kind::DesignTeam => {
+                            rows::ResearchModifierRow::DESIGN_TEAM
+                        }
+                        engine::research_modifiers::Kind::Experience => {
+                            rows::ResearchModifierRow::EXPERIENCE
+                        }
+                        engine::research_modifiers::Kind::Sharing => {
+                            rows::ResearchModifierRow::SHARING
+                        }
+                        engine::research_modifiers::Kind::License => {
+                            rows::ResearchModifierRow::LICENSE
+                        }
+                        engine::research_modifiers::Kind::Scientist => {
+                            rows::ResearchModifierRow::SCIENTIST
+                        }
+                        engine::research_modifiers::Kind::Year => rows::ResearchModifierRow::YEAR,
+                        engine::research_modifiers::Kind::AheadFactor => {
+                            rows::ResearchModifierRow::AHEAD_FACTOR
+                        }
+                        engine::research_modifiers::Kind::MinimumSpeed => {
+                            rows::ResearchModifierRow::MINIMUM_SPEED
+                        }
+                        engine::research_modifiers::Kind::CountrySource => {
+                            rows::ResearchModifierRow::COUNTRY_SOURCE
+                        }
+                        engine::research_modifiers::Kind::IdeaSource => {
+                            rows::ResearchModifierRow::IDEA_SOURCE
+                        }
+                        engine::research_modifiers::Kind::ScriptSource => {
+                            rows::ResearchModifierRow::SCRIPT_SOURCE
+                        }
+                        engine::research_modifiers::Kind::ScientistSource => {
+                            rows::ResearchModifierRow::SCIENTIST_SOURCE
+                        }
+                        engine::research_modifiers::Kind::SharingMultiplier => {
+                            rows::ResearchModifierRow::SHARING_MULTIPLIER
+                        }
+                        engine::research_modifiers::Kind::SharingMaximum => {
+                            rows::ResearchModifierRow::SHARING_MAXIMUM
+                        }
+                        engine::research_modifiers::Kind::ModifierMetadata => {
+                            rows::ResearchModifierRow::MODIFIER_METADATA
+                        }
+                        engine::research_modifiers::Kind::ScientistCategory => {
+                            rows::ResearchModifierRow::SCIENTIST_CATEGORY
+                        }
+                        engine::research_modifiers::Kind::SharingMember => {
+                            rows::ResearchModifierRow::SHARING_MEMBER
+                        }
+                        engine::research_modifiers::Kind::SharingPredecessor => {
+                            rows::ResearchModifierRow::SHARING_PREDECESSOR
+                        }
+                        engine::research_modifiers::Kind::SharingFilter => {
+                            rows::ResearchModifierRow::SHARING_FILTER
+                        }
+                        engine::research_modifiers::Kind::SharingCategory => {
+                            rows::ResearchModifierRow::SHARING_CATEGORY
+                        }
+                        engine::research_modifiers::Kind::SharingDoctrine => {
+                            rows::ResearchModifierRow::SHARING_DOCTRINE
+                        }
+                        engine::research_modifiers::Kind::SharingMissingMember => {
+                            rows::ResearchModifierRow::SHARING_MISSING_MEMBER
+                        }
+                    },
+                    raw: r.raw,
+                    auxiliary: r.auxiliary,
+                    count: r.count,
+                    source_id: r.source_id,
+                    name: r.name.as_bytes().to_vec(),
+                },
+            )),
+            wrap(view::<tables::PartyLeaders, _>(
+                &self.party_leaders,
+                |_| true,
+                |r| rows::PartyLeaderRow {
+                    country: r.country,
+                    party: r.party,
+                    ordinal: r.ordinal,
+                    character: r.character,
+                    leader_id: r.leader_id,
+                    role: r.role,
+                },
+            )),
+            wrap(crate::spooling::table::<
+                tables::PowerBalanceModifierBreakdowns,
+                _,
+            >(
+                self.breakdown_outcome, &self.breakdowns, Clone::clone
+            )),
         ]
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use engine::cnational_focus;
-
-    #[test]
-    fn party_leader_role_identity_survives_capture_at_country_scale() {
-        use engine::{ccharacter, ccountry, ccountry_leader, cideology_group, memory::SliceMemory};
-        let mut bytes = vec![0_u8; 0x3000];
-        let mut word = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-        word(0x100, ccountry::VTABLE_RVA as u64);
-        word(0x100 + ccountry::POLITICAL_STATUS, 0x1200);
-        word(0x1200, cpolitical_status::VTABLE_RVA as u64);
-        word(0x1200 + cpolitical_status::COUNTRY, 0x100);
-        word(0x1200 + cpolitical_status::PARTIES, 0x1400);
-        word(0x1200 + cpolitical_status::PARTIES + 8, (1 << 32) | 1);
-        word(0x1400, 0x1500);
-        word(0x1500, cpolitical_party::VTABLE_RVA as u64);
-        word(0x1500 + cpolitical_party::ID, 7);
-        word(0x1500 + cpolitical_party::IDEOLOGY_GROUP, 0x1600);
-        word(0x1600, cideology_group::VTABLE_RVA as u64);
-        word(0x1600 + cideology_group::ID, 7);
-        word(0x1500 + cpolitical_party::COUNTRY_LEADERS, 0x1700);
-        word(0x1500 + cpolitical_party::COUNTRY_LEADERS + 8, (1 << 32) | 1);
-        word(0x1700, 0x1800);
-        word(0x1800, ccountry_leader::VTABLE_RVA as u64);
-        word(0x1800 + ccountry_leader::CHARACTER, 0x1a00);
-        word(0x1800 + ccountry_leader::LEADER_ID, 12);
-        word(0x1800 + 0x140, 0x2500); // Changed ideology; the role key is still -7.
-        word(0x1a00, ccharacter::VTABLE_RVA as u64);
-        word(0x1a00 + ccharacter::TYPE, (91_u64 << 32) | u64::from(ccharacter::REFERENCE_TYPE));
-        word(0x1a00 + ccharacter::LEADER_MAP_HEAD, 0x1c00);
-        word(0x1a00 + ccharacter::LEADER_MAP_SIZE, 1);
-        for offset in [0, 8, 16] {
-            word(0x1c00 + offset, 0x1c40);
-            word(0x1c40 + offset, 0x1c00);
-        }
-        word(0x1c00 + 0x18, 1 << 8);
-        word(0x1c40 + 0x20, u64::from((-7_i32) as u32));
-        word(0x1c40 + 0x28, 0x1800);
-        let memory = SliceMemory { base: 0, bytes: &bytes };
-        let reader = cpolitical_status::Reader::new(&memory, 0, 0x100).unwrap();
-        let mut captured = Captured::vacant();
-        captured.party_leaders = CaptureRows::new(5_000);
-        for (index, destination) in captured.party_leaders.rows.iter_mut().enumerate() {
-            assert_eq!(reader.party_leaders(index as u32 + 1, std::slice::from_mut(destination)), Outcome::Rows { len: 1 });
-        }
-        captured.party_leaders.outcome = Outcome::Rows { len: 5_000 };
-        let tables = captured.tables();
-        let TableView::Complete(TableRows::PartyLeaders(rows)) = &tables[21] else { panic!("leaders missing") };
-        assert_eq!(rows.len(), 5_000);
-        for (index, row) in rows.iter().enumerate() {
-            assert_eq!((row.country, row.character, row.role, row.leader_id), (index as u32 + 1, Some(91), Some(-7), 12));
-        }
-    }
-
-    #[test]
-    fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
-        let mut captured = Captured::vacant();
-        let mut input = engine::research_inputs::Row::default();
-        input.slot.country = 11;
-        input.slot.index = 2;
-        input.slot.technology_present = 1;
-        input.slot.technology_handle = 77;
-        input.token.bytes[..3].copy_from_slice(b"abc");
-        input.token.len = 3;
-        input.progress_raw = i64::MAX;
-        input.speed_bonus_raw = i64::MIN;
-        captured.research_inputs.rows.push(input);
-        captured.research_inputs.outcome = Outcome::Rows { len: 1 };
-        captured.research_bonuses.outcome = Outcome::Unavailable { reason: "bonus read failed" };
-        let tables = captured.tables();
-        let TableView::Complete(TableRows::ResearchInputs(rows)) = &tables[18] else { panic!("inputs missing") };
-        assert_eq!(rows[0].index, 2);
-        assert_eq!(rows[0].token, b"abc");
-        assert_eq!(rows[0].progress_raw, i64::MAX);
-        assert_eq!(rows[0].speed_bonus_raw, i64::MIN);
-        assert!(matches!(&tables[19], TableView::Unavailable { .. }));
-        for table in [TableId::ResearchInputs, TableId::ResearchAppliedBonuses, TableId::ResearchModifiers] {
-            for hour in 0..8 { assert!(replay::cadence::should_walk(table, hour, false)); }
-        }
-    }
-
-    #[test]
-    fn hourly_modifier_conversion_preserves_identity_signed_operands_and_source_text() {
-        let mut captured = Captured::vacant();
-        let mut row = engine::research_modifiers::Row {
-            country: 11, index: u32::MAX, ordinal: 7,
-            kind: engine::research_modifiers::Kind::CountrySource,
-            raw: i64::MIN, auxiliary: i64::MAX, count: u32::MAX, source_id: 91,
-            ..Default::default()
-        };
-        row.name.bytes[..4].copy_from_slice(b"idea"); row.name.len = 4;
-        captured.research_modifiers.rows.push(row);
-        captured.research_modifiers.outcome = Outcome::Rows { len: 1 };
-        let tables = captured.tables();
-        let TableView::Complete(TableRows::ResearchModifiers(rows)) = &tables[20] else { panic!("modifiers missing") };
-        assert_eq!((rows[0].country, rows[0].index, rows[0].ordinal), (11, u32::MAX, 7));
-        assert_eq!((rows[0].raw, rows[0].auxiliary, rows[0].count), (i64::MIN, i64::MAX, u32::MAX));
-        assert_eq!(rows[0].kind, rows::ResearchModifierRow::COUNTRY_SOURCE);
-        assert_eq!(rows[0].name, b"idea");
-    }
-
-    #[test]
-    fn owned_governance_vacancy_has_no_buffer_allocation() {
-        fn assert_send<T: Send>() {}
-        assert_send::<Captured>();
-        let captured = Captured::vacant();
-        assert_eq!(captured.allocated_bytes(), 0);
-        assert!(captured.dictionary.is_empty());
-        assert!(captured.technology_pointers.is_empty());
-        assert_eq!(captured.technology_pointers.capacity(), 0);
-        assert!(!captured.focus_raw_mode);
-    }
-
-    #[test]
-    fn owned_governance_failure_preserves_cadence_and_focus_delegation() {
-        for force_full in [false, true] {
-            for delegated_focus in [false, true] {
-                let mut captured = Captured::vacant();
-                captured.focus_raw_mode = delegated_focus;
-                captured.definition_text.first = vec![1, 2, 3];
-                captured.definition_text.len = 3;
-                captured.definition_text.required = 7;
-                captured.modifier_values.first = vec![11, 12];
-                captured.modifier_values.len = 2;
-                captured.modifier_values.required = 4;
-                captured.dictionary_required = 9;
-                let context = CaptureContext {
-                    base: 0,
-                    game_state: 0,
-                    hour: 1,
-                    force_full,
-                };
-                let report = captured.fail_owned_capture(context, "worker stopped");
-                assert_eq!(report.ticks, [0; N]);
-                assert_eq!(captured.focus_raw_mode, delegated_focus);
-                assert_eq!(captured.definition_text.len, 0);
-                assert_eq!(captured.definition_text.required, 0);
-                assert_eq!(captured.modifier_values.len, 0);
-                assert_eq!(captured.modifier_values.required, 0);
-                assert_eq!(captured.dictionary_required, 0);
-                for (index, outcome) in captured.outcomes().into_iter().enumerate() {
-                    let delegated = delegated_focus && index < 2;
-                    let skipped =
-                        !replay::cadence::should_walk(TABLES[index], context.hour, force_full);
-                    assert_eq!(
-                        outcome,
-                        Outcome::Unavailable {
-                            reason: if delegated {
-                                "clock unavailable"
-                            } else if skipped {
-                                replay::cadence::SKIPPED_REASON
-                            } else {
-                                "worker stopped"
-                            },
-                        },
-                        "{index}",
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn focus_failure_preserves_other_governance_tables() {
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.focus_raw_mode = true;
-        captured.focus.outcome = Outcome::Rows { len: 1 };
-        captured.completed.outcome = Outcome::Rows { len: 1 };
-        captured.technologies.outcome = Outcome::Rows { len: 1 };
-        let reason = "accepted acquisition worker stopped";
-        captured.fail_focus_capture(true, reason);
-        assert_eq!(captured.focus.outcome, Outcome::Unavailable { reason });
-        assert_eq!(captured.completed.outcome, Outcome::Unavailable { reason });
-        assert!(!captured.focus_raw_mode);
-        assert_eq!(captured.technologies.outcome, Outcome::Rows { len: 1 });
-    }
-
-    #[test]
-    fn focus_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
-        use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
-        static LOCAL: Tracker = Tracker::new();
-        let mut job = FocusJob {
-            rows: vec![Default::default(); 2],
-            completed: vec![Default::default(); 3],
-            bytes: vec![0; 10],
-            provisioned: true,
-            ..Default::default()
-        };
-        job.capacity_charge = Charge::empty_on(&LOCAL);
-        job.update_capacity_charge();
-        let expected = |job: &FocusJob| {
-            vector_bytes(&job.rows) + vector_bytes(&job.completed) + vector_bytes(&job.bytes)
-        };
-        let initial = LOCAL.snapshot().current.payload_vectors;
-        assert_eq!(initial, expected(&job));
-        assert!(!job.prepare([4, 6], 20));
-        job.grow();
-        let grown = LOCAL.snapshot().current.payload_vectors;
-        assert!(grown > initial);
-        assert_eq!(grown, expected(&job));
-        job.clear();
-        assert_eq!(LOCAL.snapshot().current.payload_vectors, grown);
-        drop(job);
-        assert_eq!(LOCAL.snapshot().current, Capacity::default());
-    }
-
-    #[test]
-    fn large_census_growth_leaves_quarter_capacity_free_without_power_of_two_inflation() {
-        let mut capacity = Capacities::default();
-        capacity.rows[2] = 4;
-        let mut captured = Captured::with_capacities(&capacity);
-        assert_eq!(
-            captured.technology_pointers.len(),
-            captured.technologies.rows.len()
-        );
-        let research_bytes = |captured: &Captured| {
-            captured.technologies.allocated_bytes()
-                + captured.technology_pointers.capacity() * size_of::<usize>()
-        };
-        let other_bytes = captured.allocated_bytes() - research_bytes(&captured);
-        captured.technology_pointers[0] = 0x1234;
-        captured.technologies.outcome = Outcome::Truncated {
-            len: 4,
-            unread_rows: 246_996,
-        };
-        captured.grow(&mut capacity);
-        assert_eq!(capacity.rows[2], 329_334);
-        assert!(247_000 <= capacity.rows[2] - capacity.rows[2] / 4);
-        assert_eq!(captured.technology_pointers.len(), capacity.rows[2]);
-        assert_eq!(
-            captured.technology_pointers.len(),
-            captured.technologies.rows.len()
-        );
-        assert_eq!(captured.technology_pointers[0], 0x1234);
-        assert_eq!(
-            captured.allocated_bytes(),
-            other_bytes + research_bytes(&captured)
-        );
-        let pointers = captured.technology_pointers.as_ptr();
-        let allocated = captured.allocated_bytes();
-        captured.technologies.outcome = Outcome::Rows { len: 247_000 };
-        captured.grow(&mut capacity);
-        assert_eq!(capacity.rows[2], 329_334);
-        captured.reset();
-        assert_eq!(captured.technology_pointers.as_ptr(), pointers);
-        assert_eq!(captured.technology_pointers[0], 0x1234);
-        assert_eq!(captured.allocated_bytes(), allocated);
-    }
-    #[test]
-    fn prior_failure_and_unread_count_survive_later_empty_country() {
-        let mut outcome = Outcome::Truncated {
-            len: 2,
-            unread_rows: 3,
-        };
-        append(&mut outcome, Outcome::Rows { len: 0 });
-        assert_eq!(
-            outcome,
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: 3
-            }
-        );
-        append(
-            &mut outcome,
-            Outcome::Unavailable {
-                reason: "invalid country",
-            },
-        );
-        append(&mut outcome, Outcome::Rows { len: 4 });
-        assert_eq!(
-            outcome,
-            Outcome::Unavailable {
-                reason: "invalid country"
-            }
-        );
-    }
-    #[test]
-    fn native_decision_source_keys_and_non_utf8_literals_survive_conversion() {
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.decisions.rows[0] = cdecision_status::Row {
-            container: cdecision_status::Container::Targeted,
-            token_len: 2,
-            days: i32::MIN,
-            country_target: u32::MAX,
-            ..Default::default()
-        };
-        captured.decisions.outcome = Outcome::Rows { len: 1 };
-        captured.decision_text.first[..2].copy_from_slice(&[0xff, b'x']);
-        captured.decision_text.len = 2;
-        captured.decision_countries.first[0] = 17;
-        captured.decision_countries.len = 1;
-        let tables = captured.tables();
-        let TableView::Complete(rows::TableRows::Decisions(rows)) = &tables[9] else {
-            panic!()
-        };
-        assert_eq!(rows[0].country, 17);
-        assert_eq!(rows[0].container, 3);
-        assert_eq!(rows[0].token, [0xff, b'x']);
-        assert_eq!(rows[0].days, i32::MIN);
-        assert_eq!(rows[0].country_target, u32::MAX);
-        captured.decisions.rows[0].token_len = 3;
-        assert!(matches!(
-            captured.tables()[9],
-            TableView::Unavailable { .. }
-        ));
-    }
-
-    /// Shared synthetic address space for the copy/decode split harness.
-    /// Two countries share one template object; rosters hold native holes and
-    /// unsorted acquisition order; ids cover heap and inline storage.
-    #[cfg(test)]
-    /// Shared synthetic address space for the scheduled focus copy/decode split
-    /// harness: two authenticated countries with inline, absent and heap focus
-    /// tokens plus one- and two-entry completed rosters.
-    pub(crate) mod focus_test_kit {
-        use super::{Capacities, Captured, FocusJob};
-        use crate::extended::governance::copy_focus_refresh;
-        use engine::memory::SliceMemory;
-        use engine::{
-            ccontinuous_national_focus, ccountry, cgame_state, cnational_focus,
-            cnational_focus_progress, cnational_focus_tree,
-        };
-
-        pub(crate) const BASE: usize = 0x1400_0000;
-        const MEM: usize = 0x1_0000;
-        const GS: usize = 0x1_0000;
-        const CTAB: usize = 0x1_1000;
-        const LTAB: usize = 0x1_1200;
-        const C1: usize = 0x1_2000;
-        const C2: usize = 0x1_4000;
-        const R1: usize = 0x1_6000;
-        const R2: usize = 0x1_7000;
-        const TT1: usize = 0x1_8000;
-        const FC1: usize = 0x1_8200;
-        const FC2: usize = 0x1_8300;
-        const CC1: usize = 0x1_8400;
-        const FA: usize = 0x1_8500;
-        const FB: usize = 0x1_8600;
-        const FC: usize = 0x1_8700;
-        const RS1: usize = 0x1_8800;
-        const RS2: usize = 0x1_8900;
-        const HB: usize = 0x1_8a00;
-        const HEAP_TOKEN: &[u8] = b"completed_heap_token_longer_than_fifteen";
-
-        pub(crate) struct Fixture {
-            pub bytes: Vec<u8>,
-        }
-
-        impl Fixture {
-            pub(crate) fn w64(&mut self, addr: usize, value: u64) {
-                let at = addr - MEM;
-                self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-            }
-
-            pub(crate) fn w32(&mut self, addr: usize, value: u32) {
-                let at = addr - MEM;
-                self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-            }
-
-            fn inline(&mut self, addr: usize, value: &[u8]) {
-                assert!(value.len() <= 15);
-                let at = addr - MEM;
-                self.bytes[at..at + 32].fill(0);
-                self.bytes[at..at + value.len()].copy_from_slice(value);
-                self.w64(addr + 16, value.len() as u64);
-                self.w64(addr + 24, 15);
-            }
-
-            fn heap_token(&mut self, addr: usize, value: &[u8]) {
-                let at = addr - MEM;
-                self.bytes[at..at + 32].fill(0);
-                self.w64(addr, HB as u64);
-                self.w64(addr + 16, value.len() as u64);
-                self.w64(addr + 24, value.len() as u64);
-                let heap = HB - MEM;
-                self.bytes[heap..heap + value.len()].copy_from_slice(value);
-                self.bytes[heap + value.len()] = 0;
-            }
-
-            fn country(&mut self, country: usize, id: u32, tree: usize, root: usize) {
-                self.w64(country, (BASE + ccountry::VTABLE_RVA) as u64);
-                self.w32(country + ccountry::ID, id);
-                self.w64(country + ccountry::FOCUS_TREE, tree as u64);
-                self.w64(country + ccountry::FOCUS_PROGRESS, root as u64);
-            }
-
-            #[allow(clippy::too_many_arguments)]
-            fn root(
-                &mut self,
-                root: usize,
-                current: usize,
-                continuous: usize,
-                progress: i64,
-                paused: u8,
-                count: i32,
-                roster: usize,
-                roster_count: u32,
-            ) {
-                self.w64(root, (BASE + cnational_focus_progress::VTABLE_RVA) as u64);
-                self.w64(root + cnational_focus_progress::CURRENT, current as u64);
-                self.w64(
-                    root + cnational_focus_progress::CURRENT + 8,
-                    continuous as u64,
-                );
-                self.w64(root + cnational_focus_progress::PROGRESS, progress as u64);
-                self.bytes[root - MEM + cnational_focus_progress::PAUSED] = paused;
-                self.w32(
-                    root + cnational_focus_progress::COMPLETED_COUNT,
-                    count as u32,
-                );
-                self.w64(
-                    root + cnational_focus_progress::COMPLETED_DATA,
-                    roster as u64,
-                );
-                self.w32(
-                    root + cnational_focus_progress::COMPLETED_DATA + 8,
-                    roster_count,
-                );
-                self.w32(
-                    root + cnational_focus_progress::COMPLETED_DATA + 12,
-                    roster_count,
-                );
-            }
-
-            pub(crate) fn world() -> Self {
-                let mut fixture = Self {
-                    bytes: vec![0; 0x1_0000],
-                };
-                fixture.w64(GS + cgame_state::COUNTRIES, CTAB as u64);
-                fixture.w32(GS + cgame_state::COUNTRIES + 8, 4);
-                fixture.w32(GS + cgame_state::COUNTRIES + 12, 3);
-                fixture.w64(GS + cgame_state::COUNTRY_LINKS, LTAB as u64);
-                fixture.w32(GS + cgame_state::COUNTRY_LINKS + 8, 4);
-                fixture.w32(GS + cgame_state::COUNTRY_LINKS + 12, 3);
-                fixture.w64(CTAB, 0);
-                fixture.w64(CTAB + 8, C1 as u64);
-                fixture.w64(CTAB + 16, C2 as u64);
-                fixture.w32(LTAB, 0);
-                fixture.w32(LTAB + 4, 1);
-                fixture.w32(LTAB + 8, 2);
-                fixture.country(C1, 1, TT1, R1);
-                fixture.country(C2, 2, 0, R2);
-                fixture.inline(TT1 + cnational_focus_tree::TOKEN, b"tree_one");
-                fixture.root(R1, FC1, CC1, 12_345, 1, 1, RS1, 1);
-                fixture.inline(FC1 + cnational_focus::TOKEN, b"active_one");
-                fixture.inline(CC1 + ccontinuous_national_focus::TOKEN, b"cont_one");
-                fixture.inline(FA + cnational_focus::TOKEN, b"done_a");
-                fixture.w64(RS1, FA as u64);
-                fixture.root(R2, FC2, 0, -7, 0, 2, RS2, 2);
-                fixture.inline(FC2 + cnational_focus::TOKEN, b"active_two");
-                fixture.heap_token(FB + cnational_focus::TOKEN, HEAP_TOKEN);
-                fixture.inline(FC + cnational_focus::TOKEN, b"done_c");
-                fixture.w64(RS2, FB as u64);
-                fixture.w64(RS2 + 8, FC as u64);
-                fixture
-            }
-
-            pub(crate) fn memory(&self) -> SliceMemory<'_> {
-                SliceMemory {
-                    base: MEM,
-                    bytes: &self.bytes,
-                }
-            }
-
-            pub(crate) fn captured() -> Captured {
-                Captured::with_capacities(&Capacities::default())
-            }
-
-            pub(crate) fn copy_first(
-                captured: &mut Captured,
-                memory: &impl engine::Memory,
-            ) -> (super::FocusCopyReport, FocusJob) {
-                let mut job = FocusJob::new();
-                let ctx = captured.focus_copy_context(BASE, GS, true);
-                let report = copy_focus_refresh(memory, ctx, &mut job);
-                (report, job)
-            }
-
-            /// Byte-identity assertion for the decode worker tests: typed
-            /// rows, outcomes and arena bytes match exactly.
-            pub(crate) fn assert_matches_typed(decoded: &Captured, typed: &Captured) {
-                assert_eq!(decoded.focus.outcome, typed.focus.outcome);
-                assert_eq!(decoded.completed.outcome, typed.completed.outcome);
-                let focus_len = typed.focus.outcome.len();
-                assert_eq!(
-                    &decoded.focus.rows[..focus_len],
-                    &typed.focus.rows[..focus_len]
-                );
-                let completed_len = typed.completed.outcome.len();
-                assert_eq!(
-                    &decoded.completed.rows[..completed_len],
-                    &typed.completed.rows[..completed_len]
-                );
-                assert_eq!(decoded.focus_text.len, typed.focus_text.len);
-                assert_eq!(decoded.focus_text.required, typed.focus_text.required);
-                assert_eq!(
-                    &decoded.focus_text.first[..decoded.focus_text.len],
-                    &typed.focus_text.first[..typed.focus_text.len]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn focus_copy_decode_is_byte_identical_with_truncation() {
-        use focus_test_kit::Fixture;
-        let fixture = Fixture::world();
-        let memory = fixture.memory();
-        let mut typed = Fixture::captured();
-        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
-        assert_eq!(typed.focus_text.len, 88);
-        assert_eq!(typed.focus_text.required, 88);
-        // Heap token bytes survive exactly, including the long payload.
-        let heap = b"completed_heap_token_longer_than_fifteen";
-        assert!(
-            typed.focus_text.first[..88]
-                .windows(heap.len())
-                .any(|window| window == heap)
-        );
-
-        let mut replayed = Fixture::captured();
-        replayed.focus_raw_mode = true;
-        let (report, first) = Fixture::copy_first(&mut replayed, &memory);
-        assert!(report.raw_ok);
-        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut ticks = [0; 2];
-        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-        assert!(!replayed.focus_raw_mode);
-        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-        let focus_len = typed.focus.outcome.len();
-        assert_eq!(
-            &typed.focus.rows[..focus_len],
-            &replayed.focus.rows[..focus_len]
-        );
-        let completed_len = typed.completed.outcome.len();
-        assert_eq!(
-            &typed.completed.rows[..completed_len],
-            &replayed.completed.rows[..completed_len]
-        );
-        assert_eq!(replayed.focus_text.len, typed.focus_text.len);
-        assert_eq!(replayed.focus_text.required, typed.focus_text.required);
-        assert_eq!(
-            &replayed.focus_text.first[..replayed.focus_text.len],
-            &typed.focus_text.first[..typed.focus_text.len]
-        );
-
-        // Truncated pooled buffers truncate identically with exact demand.
-        let mut small = Capacities::default();
-        small.rows[0] = 1;
-        small.rows[1] = 1;
-        small.focus_text = 20;
-        let mut typed_small = Captured::with_capacities(&small);
-        typed_small.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut replayed_small = Captured::with_capacities(&small);
-        replayed_small.focus_raw_mode = true;
-        let (_, small_first) = Fixture::copy_first(&mut replayed_small, &memory);
-        replayed_small.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut small_ticks = [0; 2];
-        replayed_small.decode_focus_payload(focus_test_kit::BASE, &small_first, &mut small_ticks);
-        assert_eq!(replayed_small.focus.outcome, typed_small.focus.outcome);
-        assert_eq!(
-            replayed_small.completed.outcome,
-            typed_small.completed.outcome
-        );
-        assert!(matches!(
-            replayed_small.focus.outcome,
-            Outcome::Truncated { .. }
-        ));
-        assert_eq!(
-            replayed_small.focus_text.required,
-            typed_small.focus_text.required
-        );
-        assert_eq!(replayed_small.focus_text.len, typed_small.focus_text.len);
-    }
-
-    #[test]
-    fn focus_truncation_matrix_matches_direct_with_same_caps() {
-        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-        // copy→decode against the SAME memory with the SAME pooled caps,
-        // asserting identical outcome (incl. len/unread) and identical rows.
-        // Fixture holds 2 focus rows and 3 completed rows; focus cap 1 is
-        // the overflow-by-one arm (total 2 == cap+1), completed cap 2 the
-        // overflow arm (total 3 == cap+1), cap 0 the zero/massive arm.
-        // u32 unread saturation is not reachable and is covered by the
-        // walk's own saturating arithmetic.
-        use focus_test_kit::Fixture;
-        let fixture = Fixture::world();
-        let memory = fixture.memory();
-        for (focus_rows, completed_rows, text) in [
-            (0, 0, 0),
-            (1, 1, 20),
-            (1, 2, 20),
-            (2, 3, 88),
-            (3, 4, 128),
-            (64, 64, 8192),
-        ] {
-            let mut caps = Capacities::default();
-            caps.rows[0] = focus_rows;
-            caps.rows[1] = completed_rows;
-            caps.focus_text = text;
-            let mut typed = Captured::with_capacities(&caps);
-            typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-            let mut replayed = Captured::with_capacities(&caps);
-            replayed.focus_raw_mode = true;
-            let (report, first) = Fixture::copy_first(&mut replayed, &memory);
-            assert!(
-                report.raw_ok,
-                "focus={focus_rows} completed={completed_rows}"
-            );
-            replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-            let mut ticks = [0; 2];
-            replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-            Fixture::assert_matches_typed(&replayed, &typed);
-        }
-        // Exact-fit arm pins Rows on both tables.
-        let mut caps = Capacities::default();
-        caps.rows[0] = 2;
-        caps.rows[1] = 3;
-        caps.focus_text = 88;
-        let mut typed = Captured::with_capacities(&caps);
-        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
-    }
-
-    #[test]
-    fn focus_copy_decode_matches_faults_with_identical_reasons() {
-        use focus_test_kit::Fixture;
-        // Null status root fails both tables with the same reason.
-        let mut broken = Fixture::world();
-        broken.w64(0x1_2000 + ccountry::FOCUS_PROGRESS, 0);
-        let memory = broken.memory();
-        let mut typed = Fixture::captured();
-        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        assert!(matches!(typed.focus.outcome, Outcome::Unavailable { .. }));
-        let mut replayed = Fixture::captured();
-        replayed.focus_raw_mode = true;
-        let (report, first) = Fixture::copy_first(&mut replayed, &memory);
-        assert!(report.raw_ok);
-        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut ticks = [0; 2];
-        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-
-        // Vtable mismatch fails both tables together.
-        let mut broken = Fixture::world();
-        broken.w64(0x1_6000, 0);
-        let memory = broken.memory();
-        let mut typed = Fixture::captured();
-        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut replayed = Fixture::captured();
-        replayed.focus_raw_mode = true;
-        let (_, first) = Fixture::copy_first(&mut replayed, &memory);
-        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut ticks = [0; 2];
-        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-        assert!(matches!(
-            typed.focus.outcome,
-            Outcome::Unavailable {
-                reason: "focus status vtable mismatch"
-            }
-        ));
-
-        // A bad summary token fails only the summary; completions survive.
-        let mut broken = Fixture::world();
-        broken.w64(0x1_8200 + cnational_focus::TOKEN + 16, 99);
-        let memory = broken.memory();
-        let mut typed = Fixture::captured();
-        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        assert!(matches!(typed.focus.outcome, Outcome::Unavailable { .. }));
-        let mut replayed = Fixture::captured();
-        replayed.focus_raw_mode = true;
-        let (_, first) = Fixture::copy_first(&mut replayed, &memory);
-        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut ticks = [0; 2];
-        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-        assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
-
-        // A null completed entry fails only the roster; the summary survives.
-        let mut broken = Fixture::world();
-        broken.w64(0x1_8800, 0);
-        let memory = broken.memory();
-        let mut typed = Fixture::captured();
-        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
-        assert!(matches!(
-            typed.completed.outcome,
-            Outcome::Unavailable { .. }
-        ));
-        let mut replayed = Fixture::captured();
-        replayed.focus_raw_mode = true;
-        let (_, first) = Fixture::copy_first(&mut replayed, &memory);
-        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut ticks = [0; 2];
-        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-    }
-
-    struct FocusReads<'a> {
-        memory: engine::memory::SliceMemory<'a>,
-        reads: std::cell::Cell<usize>,
-        fault: Option<usize>,
-        failed: std::cell::Cell<usize>,
-    }
-
-    impl Memory for FocusReads<'_> {
-        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            self.reads.set(self.reads.get() + 1);
-            if self.fault == Some(address) && self.failed.get() == 0 {
-                self.failed.set(1);
-                return false;
-            }
-            self.memory.copy(address, destination)
-        }
-    }
-
-    #[test]
-    fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
-        use focus_test_kit::{BASE, Fixture};
-        struct Sources<'a> {
-            memory: engine::memory::SliceMemory<'a>,
-            ideas: std::cell::Cell<usize>,
-            fail_ideas: bool,
-        }
-        impl Memory for Sources<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                let private = [
-                    0x1_9000 + cpolitical_status::IDEAS,
-                    0x1_a000 + cpolitical_status::IDEAS,
-                ];
-                if private
-                    .iter()
-                    .any(|&at| address <= at && at < address.saturating_add(output.len()))
-                {
-                    self.ideas.set(self.ideas.get() + 1);
-                    if self.fail_ideas {
-                        return false;
-                    }
-                }
-                self.memory.copy(address, output)
-            }
-        }
-        let mut fixture = Fixture::world();
-        for (country, politics) in [(0x1_2000, 0x1_9000), (0x1_4000, 0x1_a000)] {
-            fixture.w64(country + ccountry::POLITICAL_STATUS, politics as u64);
-            fixture.w64(politics, (BASE + cpolitical_status::VTABLE_RVA) as u64);
-            fixture.w64(politics + cpolitical_status::COUNTRY, country as u64);
-        }
-        for fail_ideas in [false, true] {
-            for hour in 0..24 {
-                let memory = engine::memory::CountedMemory::new(Sources {
-                    memory: fixture.memory(),
-                    ideas: Default::default(),
-                    fail_ideas,
-                });
-                let mut captured = Fixture::captured();
-                let accounting = read_accounting::Capture::new();
-                captured.capture(&memory, BASE, 0x1_0000, hour, false);
-                let counts = accounting.finish();
-                assert_eq!(captured.politics.outcome, Outcome::Rows { len: 2 });
-                assert_eq!(captured.parties.outcome, Outcome::Rows { len: 0 });
-                // Ideas are hourly (replay::cadence).
-                assert!(memory.0.ideas.get() > 0, "hour={hour}");
-                for (index, slot) in [(0, 19), (3, 11)] {
-                    assert_eq!(
-                        counts[TABLES[index].index()].spans > 0,
-                        hour == slot,
-                        "table={:?} hour={hour}",
-                        TABLES[index]
-                    );
-                }
-                // Technologies are sliced; a new store reads every country at once.
-                assert!(counts[TABLES[2].index()].spans > 0, "hour={hour}");
-                for (index, outcome) in captured.outcomes().into_iter().enumerate() {
-                    if !replay::cadence::should_walk(TABLES[index], hour, false) {
-                        assert_eq!(
-                            outcome,
-                            Outcome::Unavailable {
-                                reason: replay::cadence::SKIPPED_REASON
-                            }
-                        );
-                        assert_eq!(counts[TABLES[index].index()].spans, 0);
-                    }
-                }
-                if fail_ideas {
-                    assert!(matches!(
-                        captured.ideas.outcome,
-                        Outcome::Unavailable { .. }
-                    ));
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn failed_native_technology_name_does_not_request_deferred_arena_growth() {
-        use focus_test_kit::{BASE, Fixture};
-        const TEMPLATE: usize = 0x1_c000;
-        const HEAP: usize = 0x9000_0000;
-        const LENGTH: usize = 32768;
-        let mut fixture = Fixture::world();
-        for (owner, country) in [0x1_2000, 0x1_4000].into_iter().enumerate() {
-            let status = 0x1_a000 + owner * 0x200;
-            let roster = 0x1_a400 + owner * 0x20;
-            let technology = 0x1_b000 + owner * 0x200;
-            fixture.w64(country + ccountry::TECHNOLOGY_STATUS, status as u64);
-            fixture.w64(status, (BASE + ctechnology_status::VTABLE_RVA) as u64);
-            fixture.w64(status + ctechnology_status::COUNTRY, country as u64);
-            fixture.w64(status + ctechnology_status::TECHNOLOGIES_DATA, roster as u64);
-            for offset in [8, 12] {
-                fixture.w32(status + ctechnology_status::TECHNOLOGIES_DATA + offset, 1);
-            }
-            fixture.w64(roster, technology as u64);
-            fixture.w64(technology, (BASE + ctechnology::VTABLE_RVA) as u64);
-            fixture.w32(technology + ctechnology::DEFINITION_INDEX, 3);
-            fixture.w64(technology + ctechnology::STATUS, status as u64);
-            fixture.w64(technology + ctechnology::TEMPLATE, TEMPLATE as u64);
-        }
-        fixture.w64(TEMPLATE + ctechnology_template::ID, HEAP as u64);
-        fixture.w64(TEMPLATE + ctechnology_template::ID + 16, LENGTH as u64);
-        fixture.w64(TEMPLATE + ctechnology_template::ID + 24, LENGTH as u64);
-        fixture.w32(TEMPLATE + ctechnology_template::DATABASE_INDEX, 1);
-        fixture.w32(TEMPLATE + ctechnology_template::TECHNOLOGY_HANDLE, 3);
-        struct Fault<'a>(engine::memory::SliceMemory<'a>);
-        impl Memory for Fault<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == HEAP + LENGTH && output.len() == 1 {
-                    output[0] = 0;
-                    return true;
-                }
-                self.0.copy(address, output)
-            }
-        }
-        let mut capacity = Capacities { definition_text: 0, ..Default::default() };
-        let mut captured = Captured::with_capacities(&capacity);
-        captured.capture(&Fault(fixture.memory()), BASE, 0x1_0000, 0, true);
-        assert_eq!(captured.technologies.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(captured.definitions.outcome, Outcome::Unavailable {
-            reason: "technology id bytes unreadable",
-        });
-        assert_eq!(captured.definition_text.required, 0);
-        captured.grow(&mut capacity);
-        assert_eq!(capacity.definition_text, 0);
-        assert_eq!(captured.definition_text.first.capacity(), 0);
-    }
-
-    #[test]
-    fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_order() {
-        use focus_test_kit::{BASE, Fixture};
-        let mut fixture = Fixture::world();
-        for (owner, country) in [0x1_2000, 0x1_4000].into_iter().enumerate() {
-            let status = 0x1_a000 + owner * 0x200;
-            let roster = 0x1_a400 + owner * 0x20;
-            fixture.w64(country + ccountry::TECHNOLOGY_STATUS, status as u64);
-            fixture.w64(status, (BASE + ctechnology_status::VTABLE_RVA) as u64);
-            fixture.w64(status + ctechnology_status::COUNTRY, country as u64);
-            fixture.w64(
-                status + ctechnology_status::TECHNOLOGIES_DATA,
-                roster as u64,
-            );
-            for offset in [8, 12] {
-                fixture.w32(status + ctechnology_status::TECHNOLOGIES_DATA + offset, 2);
-            }
-            for index in 0..2 {
-                let technology = 0x1_b000 + (owner * 2 + index) * 0x200;
-                let definition = (owner + index) % 2;
-                let template = 0x1_c000 + definition * 0x600;
-                fixture.w64(roster + index * 8, technology as u64);
-                fixture.w64(technology, (BASE + ctechnology::VTABLE_RVA) as u64);
-                fixture.w32(
-                    technology + ctechnology::DEFINITION_INDEX,
-                    [0x8000_0001, 3][definition],
-                );
-                fixture.w64(technology + ctechnology::STATUS, status as u64);
-                fixture.w64(technology + ctechnology::TEMPLATE, template as u64);
-            }
-        }
-        for (index, handle) in [0x8000_0001, 3].into_iter().enumerate() {
-            let template = 0x1_c000 + index * 0x600;
-            fixture.w64(
-                template + ctechnology_template::ID,
-                u32::from_le_bytes(*b"tech") as u64,
-            );
-            fixture.w64(template + ctechnology_template::ID + 16, 4);
-            fixture.w64(template + ctechnology_template::ID + 24, 15);
-            fixture.w32(
-                template + ctechnology_template::DATABASE_INDEX,
-                index as u32 + 1,
-            );
-            fixture.w32(template + ctechnology_template::TECHNOLOGY_HANDLE, handle);
-        }
-        struct Reads<'a> {
-            memory: engine::memory::SliceMemory<'a>,
-            spans: std::cell::RefCell<Vec<(usize, usize)>>,
-        }
-        impl Memory for Reads<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                self.spans.borrow_mut().push((address, destination.len()));
-                self.memory.copy(address, destination)
-            }
-        }
-        let memory = Reads {
-            memory: fixture.memory(),
-            spans: Default::default(),
-        };
-        let mut captured = Captured::vacant();
-        assert_eq!(captured.allocated_bytes(), 0);
-        let mut enabled = [false; N];
-        enabled[2] = true;
-        enabled[4] = true;
-        captured.technology_selection = SliceSelection::new(true);
-        captured.technology_selection.reset(0, true);
-        let mut store = SliceFingerprints::new();
-        let result = acquire(
-            &memory,
-            BASE,
-            0x1_0000,
-            captured.buffers(),
-            &enabled,
-            &mut store,
-        );
-        assert_eq!(result.outcomes[2], Outcome::Rows { len: 4 });
-        assert_eq!(result.outcomes[4], Outcome::Rows { len: 2 });
-        assert_eq!(result.lens[1], 8);
-        assert_eq!(
-            captured.technologies.rows[..4]
-                .iter()
-                .map(|row| (row.country, row.technology_handle))
-                .collect::<Vec<_>>(),
-            [(1, 0x8000_0001), (1, 3), (2, 3), (2, 0x8000_0001)]
-        );
-        assert_eq!(
-            captured
-                .definitions
-                .rows
-                .iter()
-                .map(|row| row.technology_handle)
-                .collect::<Vec<_>>(),
-            [3, 0x8000_0001]
-        );
-        assert_eq!(
-            captured.allocated_bytes(),
-            captured.technologies.rows.capacity() * size_of::<ctechnology::Row>()
-                + captured.technology_pointers.capacity() * size_of::<usize>()
-                + captured.definitions.rows.capacity() * size_of::<ctechnology_template::Row>()
-                + captured.definition_text.first.capacity()
-                + captured.dictionary.capacity() * size_of::<ctechnology_template::Entry>()
-        );
-        let spans = memory.spans.borrow();
-        for owner in 0..2 {
-            assert_eq!(
-                spans
-                    .iter()
-                    .filter(|&&span| span
-                        == (
-                            0x1_a000 + owner * 0x200 + ctechnology_status::TECHNOLOGIES_DATA,
-                            16
-                        ))
-                    .count(),
-                1
-            );
-            assert_eq!(
-                spans
-                    .iter()
-                    .filter(
-                        |&&span| span == (0x1_c000 + owner * 0x600 + ctechnology_template::ID, 32)
-                    )
-                    .count(),
-                1
-            );
-        }
-        drop(spans);
-        // Later hours read only their slice, new owners and unpublished reads;
-        // every roster read reaches both templates.
-        fn read(
-            captured: &mut Captured,
-            memory: &impl Memory,
-            enabled: &[bool; N],
-            (hour, force_full): (i32, bool),
-            store: &mut SliceFingerprints,
-        ) -> (Vec<u32>, usize) {
-            captured.technology_selection.reset(hour, force_full);
-            let result = acquire(memory, BASE, 0x1_0000, captured.buffers(), enabled, store);
-            let owners = captured.technologies.rows[..result.outcomes[2].len()]
-                .iter()
-                .map(|row| row.country)
-                .collect();
-            (owners, result.outcomes[4].len())
-        }
-        let mut at = |hour, force_full, store: &mut SliceFingerprints| {
-            read(&mut captured, &memory, &enabled, (hour, force_full), store)
-        };
-        assert_eq!(at(1, false, &mut store), (vec![1, 1], 2));
-        assert_eq!(at(3, false, &mut store), (vec![], 0));
-        // An unpublished full hour is read again at the next hour.
-        assert_eq!(at(4, true, &mut store), (vec![1, 1, 2, 2], 2));
-        // The complete census saw only countries 1 and 2.
-        let selection = &captured.technology_selection;
-        assert!(selection.live(1) && selection.live(2) && !selection.live(3));
-        selection.invalidate(&mut store);
-        let mut at = |hour, force_full, store: &mut SliceFingerprints| {
-            read(&mut captured, &memory, &enabled, (hour, force_full), store).0
-        };
-        assert_eq!(at(5, false, &mut store), [1, 1, 2, 2]);
-        assert!(at(6, false, &mut store).is_empty());
-        // A forgotten store makes every country new: read at once.
-        store.forget();
-        assert_eq!(at(7, false, &mut store), [1, 1, 2, 2]);
-    }
-
-    #[test]
-    fn inactive_focus_bypasses_owned_capacity_and_decode_preflights() {
-        use focus_test_kit::{BASE, Fixture};
-        let fixture = Fixture::world();
-        let memory = FocusReads {
-            memory: fixture.memory(),
-            reads: Default::default(),
-            fault: Some(0x1_6000),
-            failed: Default::default(),
-        };
-        for hour in 0..24 {
-            if replay::cadence::should_walk(TableId::Focus, hour, false) {
-                continue;
-            }
-            let mut job = FocusJob::default();
-            let report = copy_focus_refresh(
-                &memory,
-                FocusCopyContext {
-                    base: BASE,
-                    game_state: 0x1_0000,
-                    active: false,
-                    rows: [usize::MAX; 2],
-                    bytes: usize::MAX,
-                },
-                &mut job,
-            );
-            assert!(report.raw_ok);
-            assert_eq!(report.copy_ticks, [0; 2]);
-            assert_eq!(memory.reads.get(), 0);
-            let mut captured = Fixture::captured();
-            captured.politics.outcome = Outcome::Rows { len: 1 };
-            let mut ticks = [0; 2];
-            captured.decode_focus_payload(BASE, &job, &mut ticks);
-            assert_eq!(ticks, [0; 2]);
-            assert_eq!(
-                captured.focus.outcome,
-                Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON
-                }
-            );
-            assert_eq!(captured.completed.outcome, captured.focus.outcome);
-            assert_eq!(captured.politics.outcome, Outcome::Rows { len: 1 });
-        }
-    }
-
-    #[test]
-    fn focus_preflights_primary_grants_before_any_source_read() {
-        use focus_test_kit::{BASE, Fixture};
-        let fixture = Fixture::world();
-        for storage in 0..3 {
-            let memory = engine::memory::CountedMemory::new(FocusReads {
-                memory: fixture.memory(),
-                reads: Default::default(),
-                fault: Some(0x1_6000),
-                failed: Default::default(),
-            });
-            let mut captured = Fixture::captured();
-            let ctx = captured.focus_copy_context(BASE, 0x1_0000, true);
-            let mut job = FocusJob::new();
-            match storage {
-                0 => job.rows.truncate(ctx.rows[0] - 1),
-                1 => job.completed.truncate(ctx.rows[1] - 1),
-                _ => job.bytes.truncate(ctx.bytes - 1),
-            }
-            let native = read_accounting::Capture::new();
-            let report = copy_focus_refresh(&memory, ctx, &mut job);
-            assert!(!report.raw_ok, "storage={storage}");
-            assert_eq!(native.finish(), read_accounting::ZERO);
-            assert_eq!(memory.0.reads.get(), 0);
-            assert_eq!(memory.0.failed.get(), 0);
-            assert!(job.outcomes.iter().all(Option::is_none));
-            let native = read_accounting::Capture::new();
-            captured.capture(&memory, BASE, 0x1_0000, 0, true);
-            assert!(native.finish()[TABLES[0].index()].spans > 0);
-            assert_eq!(memory.0.failed.get(), 1);
-            assert!(matches!(
-                captured.focus.outcome,
-                Outcome::Unavailable { .. }
-            ));
-            assert!(job.grow_for_next());
-            job.grow();
-            assert!(!job.grow_for_next());
-            job.clear();
-            assert!(job.is_provisioned());
-            assert_eq!(job.outcomes, [None; 2]);
-        }
-        let memory = FocusReads {
-            memory: fixture.memory(),
-            reads: Default::default(),
-            fault: None,
-            failed: Default::default(),
-        };
-        let captured = Fixture::captured();
-        let ctx = captured.focus_copy_context(BASE, 0x1_0000, true);
-        let report = copy_focus_refresh(&memory, ctx, &mut FocusJob::default());
-        assert!(!report.raw_ok);
-        assert_eq!(memory.reads.get(), 0);
-    }
-
-    #[test]
-    fn focus_refresh_reads_one_pass_and_owned_decode_never_reads_live_memory() {
-        use focus_test_kit::{BASE, Fixture};
-        let fixture = Fixture::world();
-        let source = engine::memory::CountedMemory::new(FocusReads {
-            memory: fixture.memory(),
-            reads: Default::default(),
-            fault: None,
-            failed: Default::default(),
-        });
-        let reference = engine::memory::CountedMemory::new(FocusReads {
-            memory: fixture.memory(),
-            reads: Default::default(),
-            fault: None,
-            failed: Default::default(),
-        });
-        let mut captured = Fixture::captured();
-        let ctx = captured.focus_copy_context(BASE, 0x1_0000, true);
-        let mut expected = FocusJob::new();
-        assert!(expected.prepare(ctx.rows, ctx.bytes));
-        let native = read_accounting::Capture::new();
-        copy_focus_pass(&mut expected, &reference, BASE, 0x1_0000, &mut [0; 2]);
-        let expected_counts = native.finish();
-        let mut job = FocusJob::new();
-        let native = read_accounting::Capture::new();
-        let report = copy_focus_refresh(&source, ctx, &mut job);
-        assert!(report.raw_ok);
-        assert!(source.0.reads.get() > 0);
-        assert_eq!(source.0.reads.get(), reference.0.reads.get());
-        assert_eq!(read_accounting::snapshot(), expected_counts);
-        let mut anchored = read_accounting::ZERO;
-        anchored[TABLES[0].index()] = expected_counts[TABLES[0].index()];
-        assert!(anchored[TABLES[0].index()].spans > 0);
-        assert_eq!(expected_counts, anchored);
-        assert_eq!(job.outcomes, expected.outcomes);
-        assert_eq!(&job.rows[..2], &expected.rows[..2]);
-        assert_eq!(&job.completed[..3], &expected.completed[..3]);
-        assert_eq!(
-            &job.bytes[..job.bytes_len],
-            &expected.bytes[..expected.bytes_len]
-        );
-        let reads = source.0.reads.get();
-        captured.decode_focus_payload(BASE, &job, &mut [0; 2]);
-        assert_eq!(source.0.reads.get(), reads);
-        assert_eq!(native.finish(), expected_counts);
-        assert_eq!(captured.focus.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(captured.completed.outcome, Outcome::Rows { len: 3 });
-        assert_eq!(&captured.focus.rows[..2], &job.rows[..2]);
-        assert_eq!(&captured.completed.rows[..3], &job.completed[..3]);
-    }
-
-    #[test]
-    fn focus_native_faults_are_terminal_and_decode_cannot_retry_sources() {
-        use focus_test_kit::{BASE, Fixture};
-        let fixture = Fixture::world();
-        for (fault, unavailable) in [
-            (0x1_0000 + engine::cgame_state::COUNTRIES, [true, true]),
-            (0x1_6000, [true, true]),
-            (0x1_6000 + cnational_focus_progress::PROGRESS, [true, false]),
-            (0x1_8800, [false, true]),
-            (0x1_8a00, [false, true]),
-        ] {
-            let memory = FocusReads {
-                memory: fixture.memory(),
-                reads: Default::default(),
-                fault: Some(fault),
-                failed: Default::default(),
-            };
-            let mut captured = Fixture::captured();
-            let (report, first) = Fixture::copy_first(&mut captured, &memory);
-            assert!(report.raw_ok);
-            assert_eq!(memory.failed.get(), 1);
-            let reads = memory.reads.get();
-            captured.focus_raw_mode = true;
-            captured.decode_focus_payload(BASE, &first, &mut [0; 2]);
-            assert_eq!(memory.reads.get(), reads);
-            assert!(!captured.focus_raw_mode);
-            for (slot, outcome) in [captured.focus.outcome, captured.completed.outcome]
-                .into_iter()
-                .enumerate()
-            {
-                assert_eq!(
-                    matches!(outcome, Outcome::Unavailable { .. }),
-                    unavailable[slot]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn focus_install_checks_original_grants_and_keeps_unaffected_table() {
-        use focus_test_kit::{BASE, Fixture};
-        let fixture = Fixture::world();
-        for changed in 0..3 {
-            let mut captured = Fixture::captured();
-            let (_, first) = Fixture::copy_first(&mut captured, &fixture.memory());
-            match changed {
-                0 => {
-                    captured.focus.rows.pop();
-                }
-                1 => {
-                    captured.completed.rows.pop();
-                }
-                _ => {
-                    captured.focus_text.first.pop();
-                }
-            }
-            captured.decode_focus_payload(BASE, &first, &mut [0; 2]);
-            assert_eq!(
-                matches!(captured.focus.outcome, Outcome::Unavailable { .. }),
-                changed != 1
-            );
-            assert_eq!(
-                matches!(captured.completed.outcome, Outcome::Unavailable { .. }),
-                changed != 0
-            );
-        }
-    }
-
-    #[test]
-    fn focus_pair_uses_daily_slot_nineteen() {
-        for hour in -24_i32..48 {
-            assert_eq!(
-                replay::cadence::should_walk(TableId::Focus, hour, false),
-                hour.rem_euclid(24) == 19,
-                "hour {hour}"
-            );
-            assert_eq!(
-                replay::cadence::should_walk(TableId::CompletedFocuses, hour, false),
-                hour.rem_euclid(24) == 19,
-                "hour {hour}"
-            );
-            assert!(replay::cadence::should_walk(TableId::Focus, hour, true));
-            assert!(replay::cadence::should_walk(
-                TableId::CompletedFocuses,
-                hour,
-                true
-            ));
-        }
-    }
-}
+mod tests;
 
 #[cfg(test)]
 #[path = "governance_research_tests.rs"]
