@@ -40,6 +40,7 @@ pub(crate) struct Environment {
     impassable: BTreeSet<u32>,
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
     terrain: Option<installed_content::movement::MovementMap>,
+    terrain_names: Result<Vec<Vec<u8>>, String>,
     dlcs: BTreeSet<String>,
     triggers: installed_content::trigger_keys::TriggerNames,
     aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
@@ -86,6 +87,15 @@ impl Environment {
             state_names,
             neighbors,
             terrain: installed_content::movement::MovementMap::read(layers, &defines).ok(),
+            terrain_names: installed_content::terrain::read_definitions(layers)
+                .map(|definitions| {
+                    definitions
+                        .categories
+                        .into_iter()
+                        .map(|category| category.name)
+                        .collect()
+                })
+                .map_err(|e| e.to_string()),
             dlcs: layers.dlc_names()?,
             triggers: installed_content::trigger_keys::TriggerNames::new(
                 installed_content::scripted_triggers::read(layers)?,
@@ -234,7 +244,7 @@ impl<'a> ScriptedText<'a> {
                 ));
             }
             self.nested.set(depth + 1);
-            let expanded = self.process(&text, 0, &bound, at);
+            let expanded = self.process(&text, 0, &bound, at, Object::Event);
             self.nested.set(depth);
             return expanded;
         }
@@ -259,6 +269,96 @@ impl<'a> ScriptedText<'a> {
                 self.localise(definition.as_ref().map_err(Clone::clone)?)
             },
         )
+    }
+
+    /// GetDisplayName (140E67930), as province GetName calls it (141A83DD0).
+    pub(super) fn province_name(&self, id: u32) -> Result<String, String> {
+        let (names, gap) = rows::<tables::ProvinceNames>(self.frame);
+        if let Some(row) = names.iter().find(|row| row.province == id) {
+            let text = self
+                .localisation
+                .localise(&row.name)
+                .map_err(|e| e.to_string())?;
+            if !text.is_empty() {
+                return Ok(text);
+            }
+        } else if !complete::<tables::ProvinceNames>(self.frame) {
+            return Err(format!("GetName of province {id}: ProvinceNames {gap}"));
+        }
+        let (provinces, gap) = rows::<tables::Provinces>(self.frame);
+        let province = provinces
+            .iter()
+            .find(|row| row.id == id)
+            .ok_or_else(|| format!("province {id}: Provinces {gap}"))?;
+        // 140E68E30 takes the STATE's owner original tag or tag, not the
+        // province controller. A null state uses the country at slot zero.
+        let owner = if province.state == 0 {
+            0
+        } else {
+            let (states, gap) = rows::<tables::States>(self.frame);
+            let state = states
+                .iter()
+                .find(|row| row.id == province.state)
+                .ok_or_else(|| {
+                    format!(
+                        "province {id}: state {} has no States row: {gap}",
+                        province.state
+                    )
+                })?;
+            self.scopes.slot(state.owner).ok_or_else(|| {
+                format!(
+                    "province {id}: state owner's link {} resolves to no country",
+                    state.owner
+                )
+            })?
+        };
+        let appearance = self
+            .country_row::<tables::CountryAppearance>(owner, |row| row.country)?
+            .ok_or_else(|| {
+                format!("province {id}: owner slot {owner} has no CountryAppearance row")
+            })?;
+        let tag = if appearance.name_tag.is_empty() {
+            self.scopes
+                .tag(owner)
+                .ok_or_else(|| format!("province {id}: owner slot {owner} has no country tag"))?
+        } else {
+            std::str::from_utf8(&appearance.name_tag)
+                .map_err(|_| format!("province {id}: owner's original tag is not UTF-8"))?
+        };
+        for key in [
+            format!("{tag}_VICTORY_POINTS_{id}"),
+            format!("VICTORY_POINTS_{id}"),
+        ] {
+            if self.localisation.get(&key).is_some() {
+                return self.localise(&key);
+            }
+        }
+        Ok(String::new())
+    }
+
+    pub(super) fn province_terrain(&self, id: u32) -> Result<i32, String> {
+        self.environment()?.terrain.as_ref().and_then(|map| map.terrain(id))
+            .map(|terrain| terrain.index)
+            .ok_or_else(|| format!("Terrain of province {id}: the recorded-content province template is unavailable (141A83F00)"))
+    }
+
+    /// Terrain GetName (141A857D0) localises its CGameItem id.
+    pub(super) fn terrain_name(&self, ordinal: i32) -> Result<String, String> {
+        // Null CTerrainType has an empty id (140AC6860 -> 1414297D0).
+        if ordinal == 0 {
+            return Ok(String::new());
+        }
+        let environment = self.environment()?;
+        let names = environment.terrain_names.as_ref().map_err(Clone::clone)?;
+        let name = ordinal.checked_sub(1).and_then(|at| usize::try_from(at).ok()).and_then(|at| names.get(at))
+            .ok_or_else(|| format!("Terrain.GetName: native terrain ordinal {ordinal} has no recorded-content category"))?;
+        let id = self
+            .localisation
+            .localise(name)
+            .map_err(|e| e.to_string())?;
+        self.localisation
+            .localise(id.as_bytes())
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -299,6 +399,9 @@ fn bound_scope(object: Object, scopes: &EventScopes, active: usize) -> (EventSco
         Object::Country(slot) => EventObject::Country(slot),
         Object::State(id) => EventObject::State(id.unwrap_or(crate::triggers::NULL_STATE)),
         Object::Character(id) => EventObject::Character(id),
+        Object::Province(_) | Object::Terrain(_) => {
+            unreachable!("1410CD900 does not bind these text kinds")
+        }
     };
     let current = scopes.scopes[active];
     let carried = |link| match link {
@@ -370,6 +473,7 @@ impl Environment {
             impassable: BTreeSet::new(),
             neighbors: Ok(BTreeMap::new()),
             terrain: None,
+            terrain_names: Ok(Vec::new()),
             dlcs: BTreeSet::new(),
             triggers: Default::default(),
             aliases: Default::default(),
@@ -388,5 +492,15 @@ impl Environment {
         aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
     ) -> Self {
         Self { aliases, ..self }
+    }
+
+    pub(super) fn with_terrain(
+        mut self,
+        terrain: installed_content::movement::MovementMap,
+        names: Vec<Vec<u8>>,
+    ) -> Self {
+        self.terrain = Some(terrain);
+        self.terrain_names = Ok(names);
+        self
     }
 }

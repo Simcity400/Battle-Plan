@@ -48,6 +48,10 @@ enum Object {
     Country(u32),
     /// Kind 4: a state, `None` for a null state object.
     State(Option<u32>),
+    /// Kind 15: an explicit province text object, outside CEventScope.
+    Province(Option<u32>),
+    /// Kind 16: the province template's terrain ordinal, zero for null.
+    Terrain(i32),
     /// Kind 8: a character by id.
     Character(u32),
 }
@@ -306,7 +310,33 @@ impl<'a> ScriptedText<'a> {
         if scopes.scopes.is_empty() {
             return Err("scripted text needs an event scope".into());
         }
-        self.process(text, 0, scopes, 0)
+        self.process(text, 0, scopes, 0, Object::Event)
+    }
+
+    /// An explicit province text context (kind 15, 1410CCE20), with the
+    /// caller's event scope for event promotions. Provinces are not event
+    /// scope targets (141A81250), and cannot bind scripted entries (1410CD900).
+    pub fn expand_province_in(
+        &self,
+        text: &str,
+        province: u32,
+        scopes: &EventScopes,
+    ) -> Result<String, String> {
+        if scopes.scopes.is_empty() {
+            return Err("scripted text needs an event scope".into());
+        }
+        let (provinces, gap) = rows::<tables::Provinces>(self.frame);
+        let found = provinces.iter().any(|row| row.id == province);
+        if !found && !complete::<tables::Provinces>(self.frame) {
+            return Err(format!("province {province}: Provinces {gap}"));
+        }
+        self.process(
+            text,
+            0,
+            scopes,
+            0,
+            Object::Province(found.then_some(province)),
+        )
     }
 
     /// ProcessString with the context's saved event scope `start`.
@@ -316,6 +346,7 @@ impl<'a> ScriptedText<'a> {
         depth: i32,
         scopes: &EventScopes,
         start: usize,
+        context: Object,
     ) -> Result<String, String> {
         if depth >= self.content.recursion {
             return Ok(text.to_owned());
@@ -344,18 +375,24 @@ impl<'a> ScriptedText<'a> {
                     "[?{variable}]: the variable form's value formatting (1412BA1F0) is not ported"
                 ));
             }
-            let value = self.bracket(inner, scopes, start)?;
-            out.push_str(&self.process(&value, depth + 1, scopes, start)?);
+            let value = self.bracket(inner, scopes, start, context)?;
+            out.push_str(&self.process(&value, depth + 1, scopes, start, context)?);
             rest = &rest[open + 1 + length + 1..];
         }
     }
 
     /// One `[A.B.Property]`, from the context's saved event scope `start`
     /// (RestoreContext 1410D0900 before each bracket).
-    fn bracket(&self, inner: &str, scopes: &EventScopes, start: usize) -> Result<String, String> {
+    fn bracket(
+        &self,
+        inner: &str,
+        scopes: &EventScopes,
+        start: usize,
+        context: Object,
+    ) -> Result<String, String> {
         let segments: Vec<&str> = inner.split('.').collect();
         let (property, promotions) = segments.split_last().unwrap_or((&"", &[]));
-        let mut object = Object::Event;
+        let mut object = context;
         let mut active = start;
         for segment in promotions {
             object = self
@@ -408,14 +445,38 @@ impl<'a> ScriptedText<'a> {
                     return self.character_country(id);
                 }
             }
-            Object::Event => {}
+            Object::Province(province) => {
+                // Province member table/dispatcher 141A83DC0 / 141A83F00:
+                // Terrain uses the template +0xA8; Controller uses +0x188.
+                if named(segment, "Terrain") || named(segment, "Controller") {
+                    let Some(id) = province else {
+                        return Ok(object);
+                    };
+                    return if named(segment, "Terrain") {
+                        self.province_terrain(id).map(Object::Terrain)
+                    } else {
+                        let (provinces, gap) = rows::<tables::Provinces>(self.frame);
+                        let row = provinces
+                            .iter()
+                            .find(|row| row.id == id)
+                            .ok_or_else(|| format!("province {id}: Provinces {gap}"))?;
+                        self.scopes
+                            .slot(row.controller)
+                            .map(Object::Country)
+                            .ok_or_else(|| {
+                                format!(
+                                    "province {id}'s controller link {} resolves to no country",
+                                    row.controller
+                                )
+                            })
+                    };
+                }
+            }
+            Object::Event | Object::Terrain(_) => {}
         }
         // 1 in kind 1, and 2 from every kind: the event-scope table.
         if named(segment, "Player") {
-            return Err(
-                "Player: the observing player's country (CGameState+0x520) is not chosen by this view"
-                    .into(),
-            );
+            return self.local_player().map(Object::Country);
         }
         // 141A81250 on the active scope: THIS keeps it; ROOT, FROM and PREV
         // follow its +0x18, +0x20 and +0x28. The chosen scope becomes the
@@ -567,6 +628,22 @@ impl<'a> ScriptedText<'a> {
                 }
             }
             Object::Character(id) => self.character_property(id, name)?,
+            Object::Province(province) => {
+                // 141A83EF0 registers only GetName; 141A83DD0 passes 0,
+                // disabling the state-name fallback of 140E67930.
+                return if named(name, "GetName") {
+                    province.map_or_else(|| Ok("NULL".into()), |id| self.province_name(id))
+                } else {
+                    Ok(String::new()) // kind 15 has no entry fallback (1410CD900).
+                };
+            }
+            Object::Terrain(ordinal) => {
+                return if named(name, "GetName") {
+                    self.terrain_name(ordinal)
+                } else {
+                    Ok(String::new()) // kind 16 has no entry fallback (1410CD900).
+                };
+            }
         };
         let Some(text) = property else {
             // A miss: a scripted localisation of that name (1410CE090), else
@@ -896,13 +973,13 @@ impl<'a> ScriptedText<'a> {
             }
             EventObject::Province(id) => {
                 return Err(format!(
-                    "{name}: the event scope is province {id}, whose text context (141A81250) is not ported"
+                    "{name}: province {id} is a text object, not a native event-scope target (141A81250)"
                 ));
             }
         })
     }
 
-    /// The local player's country as 1410CF9C0 takes it: CGameState+0x520
+    /// The local player's country as 1410CF9C0 / 141A81250 take it: CGameState+0x520
     /// when signed-positive, else +0x524 (LocalPlayer, viewing_country),
     /// through CountryLinks; refused by name where the hour does not say.
     fn local_player(&self) -> Result<u32, String> {
@@ -918,9 +995,15 @@ impl<'a> ScriptedText<'a> {
                 players.len()
             ));
         };
-        let raw = player.viewing_country().ok_or(
-            "the local player's scope holds no country (CGameState+0x520 and +0x524 are not positive), which the port does not follow",
-        )?;
+        let raw = if (player.country as i32) > 0 {
+            player.country
+        } else {
+            player.observer_country
+        };
+        // ResolveCountryReference (140BA56A0) maps zero to slot zero.
+        if raw == 0 {
+            return Ok(0);
+        }
         self.scopes
             .slot(raw)
             .ok_or_else(|| format!("the local player's country link {raw} has no CountryLinks row"))

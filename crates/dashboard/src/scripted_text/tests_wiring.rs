@@ -28,6 +28,105 @@ fn rendered(
 }
 
 #[test]
+fn province_text_uses_native_members_name_precedence_and_recorded_perspective() {
+    use installed_content::movement::{MovementMap, ProvinceTerrain};
+    let (catalogue, _folder) = tests::catalogue(
+        "entry = { name = Echo text = { localization_key = WRONG } }",
+        " GER_VICTORY_POINTS_5:0 \"Owner\"\n SOV_VICTORY_POINTS_5:0 \"Controller\"\n VICTORY_POINTS_5:0 \"Generic\"\n OLD_VICTORY_POINTS_5:0 \"Original\"\n RENAME:0 \"Renamed\"\n mod_terrain:0 \"terrain_alias\"\n terrain_alias:0 \"Cold\"\n WRONG:0 \"not bound\"\n",
+    );
+    let content = catalogue.scripted_content().unwrap();
+    let terrain = MovementMap::from_parts(&[
+        (5, ProvinceTerrain { flags: 1, index: 1 }, Vec::new()),
+        (6, ProvinceTerrain { flags: 1, index: 0 }, Vec::new()),
+    ]);
+    assert!(
+        content
+            .environment
+            .set(Ok(entries::Environment::synthetic()
+                .with_terrain(terrain, vec![b"mod_terrain".to_vec()])))
+            .is_ok()
+    );
+    let mut f = frame();
+    set::<tables::Provinces>(
+        &mut f,
+        vec![
+            ProvinceRow {
+                id: 5,
+                state: 64,
+                owner: 100,
+                controller: 200,
+                ..Default::default()
+            },
+            ProvinceRow {
+                id: 6,
+                ..Default::default()
+            },
+        ],
+    );
+    set::<tables::LocalPlayer>(
+        &mut f,
+        vec![LocalPlayerRow {
+            country: 0,
+            observer_country: 200,
+        }],
+    );
+    let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(0))]);
+    let render = |f: &DecodedFrame, province, value| {
+        ScriptedText::new(f, &catalogue.localisation, content, 0)
+            .expand_province_in(value, province, &scopes)
+    };
+    assert_eq!(render(&f, 5, "[GetName]/[Controller.GetTag]/[Terrain.GetName]/[Player.GetTag]/[ROOT.GetTag]/[Echo]/[GetID]").as_deref(),
+        Ok("Owner/SOV/Cold/SOV/GER//"));
+    assert_eq!(
+        render(&f, 6, "[GetName]/[Terrain.GetName]").as_deref(),
+        Ok("/")
+    );
+    assert_eq!(render(&f, 999, "[GetName]").as_deref(), Ok("NULL"));
+    for (country, observer_country) in [(100, 200), (0, 0)] {
+        set::<tables::LocalPlayer>(
+            &mut f,
+            vec![LocalPlayerRow {
+                country,
+                observer_country,
+            }],
+        );
+        assert_eq!(render(&f, 5, "[Player.GetTag]").as_deref(), Ok("GER"));
+    }
+    set::<tables::ProvinceNames>(
+        &mut f,
+        vec![ProvinceNameRow {
+            province: 5,
+            name: b"RENAME".to_vec(),
+        }],
+    );
+    assert_eq!(render(&f, 5, "[GetName]").as_deref(), Ok("Renamed"));
+    set::<tables::ProvinceNames>(
+        &mut f,
+        vec![ProvinceNameRow {
+            province: 5,
+            name: vec![0],
+        }],
+    );
+    assert_eq!(render(&f, 5, "[GetName]").as_deref(), Ok("Owner"));
+    let TableView::Complete(TableRows::CountryAppearance(appearance)) =
+        &mut *f.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    appearance[0].name_tag = b"OLD".to_vec();
+    assert_eq!(render(&f, 5, "[GetName]").as_deref(), Ok("Original"));
+    *f.tables[TableId::ProvinceNames.index()] = TableView::Unavailable {
+        reason: "test gap".into(),
+    };
+    assert!(
+        render(&f, 5, "[GetName]")
+            .unwrap_err()
+            .contains("ProvinceNames")
+    );
+    assert_eq!(render(&f, 5, "[Controller.GetTag]").as_deref(), Ok("SOV"));
+}
+
+#[test]
 fn saved_globals_promote_text_and_missing_names_leave_its_context_unchanged() {
     let (catalogue, _folder) = tests::catalogue("", " NAME:0 \"Saved character\"\n");
     let mut f = frame();
