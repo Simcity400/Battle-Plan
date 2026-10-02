@@ -9,7 +9,9 @@ use installed_content::{
     ResolvedLayers,
     content::ResolvedContent,
     gfx::SpriteSet,
+    gui::native::{resources, sprites::Plain},
     image::Rgba8Image,
+    image::native::Decode,
     localisation::{Argument, Localisation},
 };
 use std::{
@@ -386,95 +388,66 @@ pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Ca
     Ok(catalogue)
 }
 
-/// Largest texture file or edge read for an image reply.
-const MAX_TEXTURE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_TEXTURE_EDGE: u32 = 2048;
-
-/// Decodes a DDS or TGA texture from the content layers within the default
-/// budget. Textures sit outside content hash coverage.
-pub fn read_texture(layers: &ResolvedLayers, path: &str) -> io::Result<Rgba8Image> {
-    read_texture_within(layers, path, MAX_TEXTURE_BYTES, MAX_TEXTURE_EDGE)
+/// Loads a texture through the shared native GUI resource path. Textures sit
+/// outside content hash coverage.
+pub fn read_texture(layers: &ResolvedLayers, path: &str, decode: Decode) -> io::Result<Rgba8Image> {
+    gui_texture(layers, path.as_bytes(), decode)
 }
 
-/// Decodes a DDS or TGA texture, refusing a file over `max_bytes` or an image
-/// with a side over `max_edge` before decoding it.
-pub fn read_texture_within(
-    layers: &ResolvedLayers,
-    path: &str,
-    max_bytes: usize,
-    max_edge: u32,
-) -> io::Result<Rgba8Image> {
-    let bytes = layers.read_uncovered(path)?;
-    if bytes.len() > max_bytes {
-        return Err(invalid("Artwork exceeds input budget"));
-    }
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".dds") {
-        // Check dimensions before decoding the container's authored mip levels.
-        if bytes.len() < 128
-            || u32::from_le_bytes(bytes[12..16].try_into().unwrap()) > max_edge
-            || u32::from_le_bytes(bytes[16..20].try_into().unwrap()) > max_edge
-        {
-            return Err(invalid("Artwork dimensions exceed budget"));
-        }
-        installed_content::image::rgba::dds_base(&installed_content::image::dds::decode(&bytes)?)
-    } else if lower.ends_with(".tga") {
-        if bytes.len() < 18
-            || u16::from_le_bytes(bytes[12..14].try_into().unwrap()) as u32 > max_edge
-            || u16::from_le_bytes(bytes[14..16].try_into().unwrap()) as u32 > max_edge
-        {
-            return Err(invalid("Artwork dimensions exceed budget"));
-        }
-        installed_content::image::tga::decode(&bytes)
-    } else {
-        Err(invalid("Unsupported artwork format"))
-    }
-}
-
-/// A texture's first authored frame (the normal state; a sprite sheet is never
-/// stretched), point-sampled down to `max_edge`, as a PNG data URL.
+/// A bare texture's first frame of a horizontal strip (the normal state; a
+/// sprite sheet is never stretched), point-sampled down to `max_edge`, as a PNG
+/// data URL. Sprite artwork goes through [`sprite_frame_png`].
 pub fn texture_png(
     layers: &ResolvedLayers,
     path: &str,
+    decode: Decode,
     frames: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    texture_frame_png(layers, path, frames, 0, max_edge)
+    texture_frame_png(layers, path, decode, frames, 0, max_edge)
 }
 
-/// One authored frame (zero-based) of a horizontal sprite sheet, as
+/// One native frame (zero-based) of a horizontal sprite sheet, as
 /// [`texture_png`] reads the first.
 pub fn texture_frame_png(
     layers: &ResolvedLayers,
     path: &str,
+    decode: Decode,
     frames: u32,
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    image_frame_png(&read_texture(layers, path)?, frames, frame, max_edge)
+    gui_texture_frame_png(layers, path.as_bytes(), decode, frames, frame, max_edge)
 }
 
-/// Native GUI texture loading, including the resolver and client decode state.
+/// Native GUI texture loading: `resources::stack_texture` (the resolver, its
+/// 16 MiB `load_file` limit, the client decode state and the cube-map refusal),
+/// then RGBA8. Sprite artwork, shields and resource icons all use this path;
+/// decoded edges are bounded only by the native decoder's cited device limit.
 pub(crate) fn gui_texture(
     layers: &ResolvedLayers,
     name: &[u8],
-    decode: installed_content::image::native::Decode,
+    decode: Decode,
 ) -> io::Result<Rgba8Image> {
-    let texture =
-        installed_content::gui::native::resources::stack_texture(layers, name, decode)?.map_err(|why| {
-            invalid(format!(
-                "GUI texture {} is unavailable: {why}",
-                String::from_utf8_lossy(name)
-            ))
-        })?;
-    installed_content::image::rgba::dds_base(&texture.image)
+    let texture = resources::stack_texture(layers, name, decode)?.map_err(|why| {
+        let extra = if why.native_failure() {
+            "; the game draws no texture either"
+        } else {
+            ""
+        };
+        invalid(format!(
+            "GUI texture {} is unavailable: {why}{extra}",
+            String::from_utf8_lossy(name)
+        ))
+    })?;
+    installed_content::image::rgba::dds_base(texture.image)
 }
 
 /// A GUI sprite frame returned as dashboard artwork.
 pub(crate) fn gui_texture_frame_png(
     layers: &ResolvedLayers,
     name: &[u8],
-    decode: installed_content::image::native::Decode,
+    decode: Decode,
     frames: u32,
     frame: u32,
     max_edge: u32,
@@ -488,32 +461,29 @@ fn image_frame_png(
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    if frames == 0 || !image.width.is_multiple_of(frames) || frame >= frames {
+    if frames == 0 || frame >= frames {
         return Err(invalid("Invalid sprite frames"));
     }
-    let frame_width = image.width / frames;
-    let left = frame * frame_width;
-    png_data_url(&sample_frame(
-        image,
-        [frame_width as f64, image.height as f64],
-        [left as f64, 0.0],
-        max_edge,
-    )?)
+    let plain = Plain {
+        frames: frames
+            .try_into()
+            .map_err(|_| invalid("Invalid sprite frames"))?,
+        ..Plain::default()
+    };
+    png_data_url(&native_frame(image, &plain, frame, max_edge)?)
 }
 
-/// A static plain sprite's authored frame, using native strip geometry
-/// (frame_dimensions 14222B4B0, build_geometry 14222CB90). Shader-driven
-/// and animated forms need the native renderer and are refused by name.
+/// A static plain sprite's authored frame, using native strip geometry.
+/// Shader-driven and animated forms need the native renderer and are refused
+/// by name.
 pub fn sprite_frame_png(
     layers: &ResolvedLayers,
     sprite: &installed_content::gfx::SpriteType,
+    decode: Decode,
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    use installed_content::gui::native::{
-        resources::frame_geometry,
-        sprites::{DEFAULT_EFFECT, SpriteKind},
-    };
+    use installed_content::gui::native::sprites::{DEFAULT_EFFECT, SpriteKind};
     let SpriteKind::Plain(plain) = &sprite.facts.kind else {
         return Err(invalid(format!(
             "{} needs native sprite rendering",
@@ -532,55 +502,50 @@ pub fn sprite_frame_png(
             "animation, masking, custom effect or nonstandard frame geometry needs native sprite rendering",
         ));
     }
-    if plain.frames <= 0 || frame >= plain.frames as u32 || max_edge == 0 {
+    if plain.frames <= 0 || frame >= plain.frames as u32 {
         return Err(invalid("invalid icon frame"));
     }
     let path = sprite
         .texture
         .as_deref()
         .ok_or_else(|| invalid("sprite has no texture"))?;
-    let image = read_texture(layers, path)?;
-    let extent = frame_geometry(plain, [image.width, image.height]);
-    let offset = if plain.frame_direction_y() {
-        [0.0, frame as f32 * extent[1]]
-    } else {
-        [frame as f32 * extent[0], 0.0]
-    };
-    png_data_url(&sample_frame(
-        &image,
-        extent.map(f64::from),
-        offset.map(f64::from),
-        max_edge,
-    )?)
+    let image = read_texture(layers, path, decode)?;
+    png_data_url(&native_frame(&image, plain, frame, max_edge)?)
 }
 
-/// Point-sample one extent at an offset; horizontal and native sprite frames share it.
-fn sample_frame(
+/// One frame of a plain sprite's texture, point-sampled down to `max_edge`.
+/// frame_dimensions@14222B4B0 queries the integer extent, while
+/// build_geometry@14222CB90 steps frames by the fractional pitch. Both divide
+/// the padded texture extent (pad_power_of_two@1423F8FA0).
+fn native_frame(
     image: &Rgba8Image,
-    extent: [f64; 2],
-    offset: [f64; 2],
+    plain: &Plain,
+    frame: u32,
     max_edge: u32,
 ) -> io::Result<Rgba8Image> {
-    if max_edge == 0
-        || image.width == 0
-        || image.height == 0
-        || extent
-            .iter()
-            .any(|value| !value.is_finite() || *value <= 0.0)
-        || offset
-            .iter()
-            .any(|value| !value.is_finite() || *value < 0.0)
-    {
-        return Err(invalid("invalid frame sampling geometry"));
+    debug_assert!(frame < plain.frames.max(0) as u32);
+    let texture = [image.width, image.height];
+    let size = resources::frame_extent(plain, texture);
+    let pitch = resources::frame_geometry(plain, texture);
+    if max_edge == 0 || size.iter().any(|edge| *edge <= 0) {
+        return Err(invalid(
+            "Invalid sprite frames: the queried frame has no pixels",
+        ));
     }
-    let scale = (extent[0].max(extent[1]) / max_edge as f64).max(1.0);
-    let width = (extent[0] / scale).round().max(1.0) as u32;
-    let height = (extent[1] / scale).round().max(1.0) as u32;
-    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    let offset = if plain.frame_direction_y() {
+        [0.0, frame as f32 * pitch[1]]
+    } else {
+        [frame as f32 * pitch[0], 0.0]
+    };
+    let size = size.map(|edge| edge as u32);
+    let scale = (f64::from(size[0].max(size[1])) / f64::from(max_edge)).max(1.0);
+    let width = (f64::from(size[0]) / scale).round().max(1.0) as u32;
+    let height = (f64::from(size[1]) / scale).round().max(1.0) as u32;
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height {
         for x in 0..width {
-            let px = (offset[0] + x as f64 * extent[0] / width as f64) as u32;
-            let py = (offset[1] + y as f64 * extent[1] / height as f64) as u32;
+            let px = (offset[0] + (x as f32 + 0.5) * pitch[0] / width as f32) as u32;
+            let py = (offset[1] + (y as f32 + 0.5) * pitch[1] / height as f32) as u32;
             let at =
                 ((py.min(image.height - 1) * image.width + px.min(image.width - 1)) * 4) as usize;
             pixels.extend_from_slice(&image.pixels[at..at + 4]);
@@ -609,6 +574,9 @@ pub fn png_data_url(image: &Rgba8Image) -> io::Result<String> {
         base64::engine::general_purpose::STANDARD.encode(encoded)
     ))
 }
+
+#[cfg(test)]
+pub(crate) mod texture_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -857,7 +825,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn frame_sampler_shares_horizontal_vertical_and_downsampled_offsets() {
+    fn native_frames_share_horizontal_vertical_fractional_and_downsampled_offsets() {
         let image = Rgba8Image {
             width: 4,
             height: 4,
@@ -870,24 +838,26 @@ pub(crate) mod tests {
                 .map(|pixel| pixel[0])
                 .collect::<Vec<_>>()
         };
+        let strip = |frames, frame_direction| Plain {
+            frames,
+            frame_direction,
+            ..Plain::default()
+        };
+        let sample = |plain: Plain, frame, max_edge| native_frame(&image, &plain, frame, max_edge);
         assert_eq!(
-            values(sample_frame(&image, [2.0, 4.0], [2.0, 0.0], 4).unwrap()),
+            values(sample(strip(2, 0), 1, 4).unwrap()),
             [2, 3, 6, 7, 10, 11, 14, 15]
         );
         assert_eq!(
-            values(sample_frame(&image, [4.0, 2.0], [0.0, 2.0], 4).unwrap()),
+            values(sample(strip(2, 1), 1, 4).unwrap()),
             [8, 9, 10, 11, 12, 13, 14, 15]
         );
-        assert_eq!(
-            values(sample_frame(&image, [4.0, 4.0], [0.0, 0.0], 2).unwrap()),
-            [0, 2, 8, 10]
-        );
-        assert_eq!(
-            values(sample_frame(&image, [1.5, 2.0], [1.5, 2.0], 4).unwrap()),
-            [9, 10, 13, 14]
-        );
-        assert!(sample_frame(&image, [0.0, 4.0], [0.0, 0.0], 4).is_err());
-        assert!(sample_frame(&image, [4.0, 4.0], [0.0, 0.0], 0).is_err());
+        // Downsampled at pixel centres.
+        assert_eq!(values(sample(strip(1, 0), 0, 2).unwrap()), [5, 7, 13, 15]);
+        // Three frames over four texels: one queried texel, a 4/3 pitch.
+        assert_eq!(values(sample(strip(3, 0), 1, 4).unwrap()), [2, 6, 10, 14]);
+        assert!(sample(strip(5, 0), 0, 4).is_err());
+        assert!(sample(strip(1, 0), 0, 0).is_err());
     }
 
     #[test]

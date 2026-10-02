@@ -260,7 +260,8 @@ fn law_content(
             .ok()
             .and_then(|frame| frame.checked_sub(1))
             .ok_or_else(|| "Occupation-law icon frame is not positive".to_owned())?;
-        catalogue::sprite_frame_png(&cat.content.layers, sprite, frame, 32)
+        let decode = cat.gui_decode.clone()?;
+        catalogue::sprite_frame_png(&cat.content.layers, sprite, decode, frame, 32)
             .map_err(|e| e.to_string())
     })();
     let missing = icon.as_ref().err().cloned();

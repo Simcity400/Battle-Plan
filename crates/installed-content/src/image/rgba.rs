@@ -1,4 +1,4 @@
-//! CPU expansion of the shared DDS decoder's BC1/2/3 blocks for UI artwork.
+//! CPU expansion of the shared DDS decoder's BC1/2/3 blocks and 16-bit surfaces for UI artwork.
 use super::{
     Rgba8Image,
     dds::{Texture, TextureFormat},
@@ -6,27 +6,60 @@ use super::{
 };
 use std::io;
 
-pub fn dds_base(texture: &Texture) -> io::Result<Rgba8Image> {
-    let mip = texture.base();
-    if texture.faces != 1 || mip.width > 2048 || mip.height > 2048 {
-        return Err(invalid("UI artwork dimensions exceed their budget"));
+/// The base level of a two-dimensional texture as RGBA8. Its edges are those the
+/// decoder admitted: the native decoder refuses any past its cited device limit.
+/// Straight RGBA8 is moved, not copied; 16-bit surfaces expand as the device
+/// samples them ([`TextureFormat::sample_16`]).
+pub fn dds_base(mut texture: Texture) -> io::Result<Rgba8Image> {
+    if texture.faces != 1 {
+        return Err(invalid("UI artwork must be a two-dimensional texture"));
     }
+    let format = texture.format;
+    let mip = texture.mips.swap_remove(0).swap_remove(0);
+    let texels = mip.width as usize * mip.height as usize;
+    if format == TextureFormat::Rgba8 {
+        return Ok(Rgba8Image {
+            width: mip.width,
+            height: mip.height,
+            pixels: mip.data,
+        });
+    }
+    if format.sample_16(0).is_some() {
+        if mip.data.len() != texels * 2 {
+            return Err(invalid(format!(
+                "{format:?} UI artwork holds {} bytes for {}x{} texels",
+                mip.data.len(),
+                mip.width,
+                mip.height
+            )));
+        }
+        let pixels = mip
+            .data
+            .chunks_exact(2)
+            .flat_map(|word| {
+                let texel = format.sample_16(u16::from_le_bytes([word[0], word[1]]));
+                texel
+                    .unwrap_or_default()
+                    .map(|value| (value * 255.0).round() as u8)
+            })
+            .collect();
+        return Ok(Rgba8Image {
+            width: mip.width,
+            height: mip.height,
+            pixels,
+        });
+    }
+    if matches!(format, TextureFormat::Bc7 { .. }) {
+        return Err(invalid("BC7 UI artwork has no CPU expansion"));
+    }
+    let size = format
+        .block_bytes()
+        .ok_or_else(|| invalid(format!("{format:?} UI artwork has no CPU expansion")))?;
     let mut image = Rgba8Image {
         width: mip.width,
         height: mip.height,
-        pixels: vec![0; (mip.width * mip.height * 4) as usize],
+        pixels: vec![0; texels * 4],
     };
-    if texture.format == TextureFormat::Rgba8 {
-        image.pixels.clone_from(&mip.data);
-        return Ok(image);
-    }
-    if matches!(texture.format, TextureFormat::Bc7 { .. }) {
-        return Err(invalid("BC7 UI artwork has no CPU expansion"));
-    }
-    let size = texture
-        .format
-        .block_bytes()
-        .ok_or_else(|| invalid("Unsupported UI texture"))?;
     for (index, block) in mip.data.chunks_exact(size).enumerate() {
         let mut rgba = [[0_u8; 4]; 16];
         let colors = if size == 8 { block } else { &block[8..] };
@@ -44,7 +77,7 @@ pub fn dds_base(texture: &Texture) -> io::Result<Rgba8Image> {
             ]
         };
         let mut palette = [rgb(c0), rgb(c1), [0; 4], [0; 4]];
-        let opaque = c0 > c1 || texture.format != TextureFormat::Bc1;
+        let opaque = c0 > c1 || format != TextureFormat::Bc1;
         for channel in [0, 1, 2] {
             let a = u16::from(palette[0][channel]);
             let b = u16::from(palette[1][channel]);
@@ -61,12 +94,12 @@ pub fn dds_base(texture: &Texture) -> io::Result<Rgba8Image> {
         for (i, pixel) in rgba.iter_mut().enumerate() {
             *pixel = palette[((indices >> (i * 2)) & 3) as usize];
         }
-        if texture.format == TextureFormat::Bc2 {
+        if format == TextureFormat::Bc2 {
             let alpha = u64::from_le_bytes(block[..8].try_into().unwrap());
             for (i, pixel) in rgba.iter_mut().enumerate() {
                 pixel[3] = ((alpha >> (i * 4)) & 15) as u8 * 17;
             }
-        } else if texture.format == TextureFormat::Bc3 {
+        } else if format == TextureFormat::Bc3 {
             let mut alpha = [0_u8; 8];
             alpha[0] = block[0];
             alpha[1] = block[1];
@@ -107,7 +140,7 @@ mod tests {
     use super::super::dds::MipLevel;
     use super::*;
     fn image(format: TextureFormat, data: Vec<u8>) -> Rgba8Image {
-        dds_base(&Texture {
+        dds_base(Texture {
             format,
             width: 3,
             height: 2,
@@ -150,6 +183,25 @@ mod tests {
                 .pixels
                 .chunks_exact(4)
                 .all(|p| p == [255, 0, 0, 64])
+        );
+    }
+
+    #[test]
+    fn sixteen_bit_surfaces_expand_as_sampled() {
+        // 5-6-5 pure red, then 1-5-5-5 half green with alpha clear.
+        let red = 0xF800_u16.to_le_bytes().repeat(6);
+        assert!(
+            image(TextureFormat::B5G6R5, red)
+                .pixels
+                .chunks_exact(4)
+                .all(|p| p == [255, 0, 0, 255])
+        );
+        let green = (16_u16 << 5).to_le_bytes().repeat(6);
+        assert!(
+            image(TextureFormat::B5G5R5A1, green)
+                .pixels
+                .chunks_exact(4)
+                .all(|p| p == [0, 132, 0, 0])
         );
     }
 }

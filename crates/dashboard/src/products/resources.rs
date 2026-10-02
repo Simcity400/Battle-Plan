@@ -547,6 +547,51 @@ mod tests {
     }
 
     #[test]
+    fn a_mod_resource_icon_uses_the_padded_fractional_png_frame() {
+        use crate::catalogue::texture_tests::{from_url, png_bytes, texture_catalogue};
+        let image = installed_content::image::Rgba8Image {
+            width: 6,
+            height: 3,
+            pixels: (0..18).flat_map(|x| [x, 20, 30, 200]).collect(),
+        };
+        let (mut catalogue, _folders) = texture_catalogue(
+            &[
+                (
+                    "interface/mod.gui",
+                    "guiTypes = { containerWindowType = { name = resources_info_entry buttonType = { name = resources_icon spriteType = GFX_mod_sheet } } }",
+                ),
+                (
+                    "interface/art.gfx",
+                    "spriteTypes = { spriteType = { name = GFX_mod_sheet textureFile = gfx/mod/sheet.png noOfFrames = 3 } }",
+                ),
+                (
+                    "common/resources/mod.txt",
+                    "resources = { mod_ore = { icon_frame = 2 } }",
+                ),
+            ],
+            &[("gfx/mod/sheet.png", png_bytes(&image))],
+        );
+        catalogue.gui_decode = Ok(installed_content::image::native::Decode {
+            force_pow2_textures: true,
+        });
+        let mut cached = Default::default();
+        let mut warnings = Vec::new();
+        resource_content(
+            &ContentView::of(&catalogue),
+            &[("mod_ore".into(), 1)],
+            &mut cached,
+            &mut warnings,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let icon = from_url(cached[&("mod_ore".into(), 1)].icon.as_deref().unwrap());
+        assert_eq!((icon.width, icon.height), (2, 4));
+        assert_eq!(&icon.pixels[..8], [3, 20, 30, 200, 4, 20, 30, 200]);
+        assert_eq!(&icon.pixels[24..], [0; 8]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
     fn unknown_decode_settings_keep_resource_names_and_refuse_icons_by_token() {
         let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
             (

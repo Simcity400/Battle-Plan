@@ -178,7 +178,7 @@ impl Product for CountryFlags {
                 state.contexts.truncate(RECENT_HOURS);
             }
         }
-        let shield = if params.size == CountryFlagSize::Shield {
+        let mut load_shield = || -> io::Result<Arc<ShieldStyle>> {
             let catalogue = crate::catalogue::catalogue(source, content)?;
             let decode = *catalogue.gui_decode.as_ref().map_err(|why| {
                 invalid(format!(
@@ -191,23 +191,32 @@ impl Product for CountryFlags {
                 .filter(|(owner, setting, _)| {
                     Arc::ptr_eq(owner, &state.contexts[0].content) && *setting == decode
                 })
-                .map(|(_, _, style)| Arc::clone(style));
-            Some(match current {
+                .map(|(_, _, style)| style.clone());
+            let style = match current {
                 Some(style) => style,
                 None => {
-                    let style = Arc::new(ShieldStyle::load(&catalogue)?);
+                    let style = ShieldStyle::load(&catalogue)
+                        .map(Arc::new)
+                        .map_err(|error| error.to_string());
                     state.shield = Some((
                         Arc::clone(&state.contexts[0].content),
                         decode,
-                        Arc::clone(&style),
+                        style.clone(),
                     ));
                     style
                 }
-            })
-        } else {
-            None
+            };
+            style.map_err(invalid)
         };
-        state.contexts[0].reply(params, shield.as_deref(), cancelled)
+        let shield = (params.size == CountryFlagSize::Shield)
+            .then(|| load_shield().map_err(|error| error.to_string()));
+        state.contexts[0].reply(
+            params,
+            shield
+                .as_ref()
+                .map(|style| style.as_ref().map(Arc::as_ref).map_err(String::as_str)),
+            cancelled,
+        )
     }
 }
 
@@ -216,12 +225,16 @@ struct FlagState {
     /// Most recently used first.
     contexts: Vec<FlagContext>,
     /// The shield read from the content it belongs to; new content rereads it.
-    shield: Option<(
-        Arc<ResolvedContent>,
-        installed_content::image::native::Decode,
-        Arc<ShieldStyle>,
-    )>,
+    shield: Option<CachedShield>,
 }
+
+/// The shield as last loaded for (content, decode), a refusal included, so a
+/// refused shield is not decoded again on every request.
+type CachedShield = (
+    Arc<ResolvedContent>,
+    installed_content::image::native::Decode,
+    Result<Arc<ShieldStyle>, String>,
+);
 
 /// The top bar's `player_flag` sprite as the recorded content declares it (a
 /// `maskedShieldType`, `GFX_shield_medium` in vanilla): `textureFile2` supplies
@@ -533,11 +546,25 @@ impl FlagContext {
     fn reply(
         &self,
         request: &CountryFlagParams,
-        shield_style: Option<&ShieldStyle>,
+        shield_style: Option<Result<&ShieldStyle, &str>>,
         cancelled: &AtomicBool,
     ) -> io::Result<CountryFlagReply> {
         let mut flags = Vec::new();
         let mut warnings = self.warnings.clone();
+        let shield_style = match shield_style {
+            Some(Ok(style)) => Some(style),
+            Some(Err(reason)) => {
+                warnings.push(format!("Shield artwork unavailable: {reason}"));
+                return Ok(CountryFlagReply {
+                    branch_id: request.branch_id.clone(),
+                    hour: request.hour,
+                    size: request.size,
+                    flags,
+                    warnings,
+                });
+            }
+            None => None,
+        };
         if let Some(style) = shield_style {
             warnings.extend(style.warnings.iter().cloned());
         }
@@ -604,6 +631,89 @@ mod tests {
         let why = ShieldStyle::load(&catalogue).err().unwrap().to_string();
         assert!(why.contains("player_flag shield artwork"), "{why}");
         assert!(why.contains("settings.txt"), "{why}");
+        assert_shield_warning(&catalogue, &why);
+    }
+
+    fn assert_shield_warning(catalogue: &crate::catalogue::Catalogue, reason: &str) {
+        let context = FlagContext {
+            options: ResolveOptions {
+                game_dir: "G".into(),
+                user_dir: "U".into(),
+                cache_dir: "C".into(),
+            },
+            content: Arc::clone(&catalogue.content),
+            cells: [[1, 1]; 3],
+            choices: HashMap::new(),
+            branch_id: "1".into(),
+            hour: 0,
+            warnings: vec!["standing warning".into()],
+        };
+        let request = CountryFlagParams {
+            branch_id: "1".into(),
+            hour: 0,
+            tags: vec!["MOD tag".into()],
+            size: CountryFlagSize::Shield,
+        };
+        let reply = context
+            .reply(&request, Some(Err(reason)), &AtomicBool::new(false))
+            .unwrap();
+        assert!(reply.flags.is_empty());
+        assert_eq!(
+            reply.warnings,
+            [
+                "standing warning",
+                &format!("Shield artwork unavailable: {reason}")
+            ]
+        );
+    }
+
+    #[test]
+    fn shield_png_padding_and_every_refusal_use_the_shared_gui_path() {
+        use crate::catalogue::texture_tests::{png_bytes, refusal_textures, texture_catalogue};
+        let mask = Rgba8Image {
+            width: 3,
+            height: 2,
+            pixels: vec![200; 24],
+        };
+        let refusals = refusal_textures();
+        let mut textures: Vec<_> = refusals
+            .iter()
+            .filter(|(_, bytes, _)| !bytes.is_empty())
+            .map(|(path, bytes, _)| (*path, bytes.clone()))
+            .collect();
+        textures.extend([
+            ("gfx/mod/mask.png", png_bytes(&mask)),
+            ("gfx/mod/overlay.png", png_bytes(&mask)),
+        ]);
+        let (mut catalogue, _folders) = texture_catalogue(
+            &[
+                (
+                    "interface/topbar.gui",
+                    "guiTypes = { containerWindowType = { name = topbar buttonType = { name = player_flag spriteType = GFX_mod_shield } } }",
+                ),
+                (
+                    "interface/art.gfx",
+                    "spriteTypes = { maskedShieldType = { name = GFX_mod_shield textureFile1 = gfx/mod/overlay.png textureFile2 = gfx/mod/mask.png } }",
+                ),
+            ],
+            &textures,
+        );
+        catalogue.gui_decode = Ok(installed_content::image::native::Decode {
+            force_pow2_textures: true,
+        });
+        let loaded = ShieldStyle::load(&catalogue).unwrap();
+        assert_eq!((loaded.mask.width, loaded.mask.height), (4, 2));
+        assert_eq!(loaded.overlay.unwrap().width, 4);
+        for (path, _, expected) in refusals {
+            let facts = installed_content::gui::native::sprites::read_sprites(format!(
+                "spriteTypes = {{ maskedShieldType = {{ name = GFX_mod_shield textureFile2 = \"{path}\" }} }}"
+            ).as_bytes());
+            catalogue.sprites =
+                installed_content::gfx::SpriteSet::new(&[("interface/art.gfx".into(), facts)]);
+            let why = ShieldStyle::load(&catalogue).err().unwrap().to_string();
+            assert!(why.contains(expected), "{path}: {why}");
+            assert_shield_warning(&catalogue, &why);
+        }
     }
 
     #[test]

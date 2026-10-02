@@ -2,6 +2,49 @@ use super::{CountryLook, IdeaCountry, IdeaName, PoliticsContent};
 use crate::products::country_stability::{BreakdownLine, line_name};
 use std::sync::Arc;
 
+#[test]
+fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
+    let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/mod.lua",
+            "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"mod_seat\" } } }",
+        ),
+        (
+            "common/ideas/mod.txt",
+            "ideas = { country = { mod_spirit = { picture = mod_picture } } }",
+        ),
+        (
+            "interface/mod.gfx",
+            "spriteTypes = { spriteType = { name = GFX_idea_mod_picture textureFile = gfx/mod/icon.png } }",
+        ),
+    ]);
+    let reason = "settings.txt is unavailable: test read failure";
+    catalogue.gui_decode = Err(reason.into());
+    let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
+    let country = IdeaCountry {
+        tag: "MOD tag",
+        slot: 0,
+        look: None,
+    };
+    let (artwork, problem) = content.idea_artwork("mod_spirit", None, country);
+    assert!(artwork.icon.is_none());
+    assert_eq!(
+        problem.as_deref(),
+        Some(format!("mod_spirit: icon unavailable: {reason}").as_str())
+    );
+    for (kind, name) in [(0, "GFX_idea_mod_picture"), (1, "gfx/mod/icon.png")] {
+        let why = content
+            .load_recorded_portrait(kind, name.as_bytes())
+            .unwrap_err();
+        assert!(why.contains(reason), "{why}");
+    }
+    let why = content
+        .sprite_png("gfx/mod/direct.png")
+        .unwrap_err()
+        .to_string();
+    assert!(why.contains(reason), "{why}");
+}
+
 /// 140FBCF90 localises the key it selects and nothing else; 140FC16E0
 /// takes `token_desc` before the override's. Read from a content folder
 /// through the Politics content loader.

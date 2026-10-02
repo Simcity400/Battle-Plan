@@ -168,16 +168,18 @@ impl Context {
             declared => declared,
         };
         let icon = match declared {
-            Some(sprite) => match &sprite.texture {
-                Some(path) => Some(catalogue::texture_png(
-                    &self.catalogue.content.layers,
-                    path,
-                    sprite.frames,
-                    ICON_EDGE,
-                )?),
-                None => None,
-            },
-            None => None,
+            Some(sprite) if sprite.texture.is_some() => Some(catalogue::sprite_frame_png(
+                &self.catalogue.content.layers,
+                sprite,
+                *self
+                    .catalogue
+                    .gui_decode
+                    .as_ref()
+                    .map_err(|why| invalid(why.clone()))?,
+                0,
+                ICON_EDGE,
+            )?),
+            _ => None,
         };
         Ok(Artwork {
             token: token.into(),
@@ -250,4 +252,171 @@ fn artwork_bytes(art: &Artwork) -> usize {
         + art.name.as_ref().map_or(0, String::len)
         + art.description.as_ref().map_or(0, String::len)
         + art.icon.as_ref().map_or(0, String::len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalogue::texture_tests::{from_url, png_bytes, texture_catalogue};
+    use installed_content::image::{Rgba8Image, native::Decode};
+
+    #[test]
+    fn mod_png_artwork_and_native_refusals_reach_the_catalogue_reply() {
+        let image = Rgba8Image {
+            width: 6,
+            height: 3,
+            pixels: (0..18).flat_map(|x| [x, 20, 30, 200]).collect(),
+        };
+        let (mut catalogue, _folders) = texture_catalogue(
+            &[
+                (
+                    "interface/art.gfx",
+                    concat!(
+                        "spriteTypes = { ",
+                        "spriteType = { name = GFX_mod_tech_medium textureFile = \"gfx/mod/sheet.png\" noOfFrames = 3 } ",
+                        "spriteType = { name = GFX_bad_tech_medium textureFile = \"gfx/mod/noise.png\" } ",
+                        "spriteType = { name = GFX_unknown_tech_medium textureFile = \"gfx/mod/tiny.png\" } ",
+                        "spriteType = { name = GFX_absent_tech_medium textureFile = \"gfx/mod/absent.png\" } }",
+                    ),
+                ),
+                (
+                    "common/terrain/mod.txt",
+                    "categories = { mod_ground = { movement_cost = 1 } }",
+                ),
+            ],
+            &[
+                ("gfx/mod/sheet.png", png_bytes(&image)),
+                ("gfx/mod/noise.png", vec![0x13; 20]),
+                ("gfx/mod/tiny.png", vec![0, 0, 1]),
+            ],
+        );
+        catalogue.gui_decode = Ok(Decode {
+            force_pow2_textures: true,
+        });
+        let mut context = Context::load(Arc::new(catalogue), Kind::Technology).unwrap();
+        let tokens = BTreeSet::from(["mod_tech", "bad_tech", "unknown_tech", "absent_tech"]);
+        let cancelled = AtomicBool::new(false);
+        let (artwork, warnings) = context.catalogue(tokens.clone(), &cancelled).unwrap();
+        let icon = artwork
+            .iter()
+            .find(|art| art.token == "mod_tech")
+            .unwrap()
+            .icon
+            .as_deref()
+            .unwrap();
+        let frame = from_url(icon);
+        assert_eq!((frame.width, frame.height), (2, 4));
+        assert_eq!(&frame.pixels[..8], [0, 20, 30, 200, 2, 20, 30, 200]);
+        assert_eq!(&frame.pixels[24..], [0; 8]);
+        for (token, reason) in [
+            ("bad_tech", "the game draws no texture either"),
+            ("unknown_tech", "does not determine what the game draws"),
+            ("absent_tech", "tried"),
+        ] {
+            assert!(
+                artwork
+                    .iter()
+                    .find(|art| art.token == token)
+                    .unwrap()
+                    .icon
+                    .is_none()
+            );
+            assert!(
+                warnings
+                    .iter()
+                    .any(|warning| warning.contains(token) && warning.contains(reason)),
+                "{warnings:?}"
+            );
+        }
+        let (_, cached_warnings) = context.catalogue(tokens, &cancelled).unwrap();
+        assert_eq!(cached_warnings, warnings);
+    }
+
+    #[test]
+    fn every_texture_refusal_reaches_artwork_warnings() {
+        let refusals = crate::catalogue::texture_tests::refusal_textures();
+        let sprites = format!(
+            "spriteTypes = {{ {} }}",
+            refusals
+                .iter()
+                .enumerate()
+                .map(|(i, (path, _, _))| format!(
+                    "spriteType = {{ name = GFX_mod_refusal_{i}_medium textureFile = \"{path}\" }}"
+                ))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let textures: Vec<_> = refusals
+            .iter()
+            .filter(|(_, bytes, _)| !bytes.is_empty())
+            .map(|(path, bytes, _)| (*path, bytes.clone()))
+            .collect();
+        let (catalogue, _folders) = texture_catalogue(
+            &[
+                ("interface/art.gfx", &sprites),
+                (
+                    "common/terrain/mod.txt",
+                    "categories = { mod_ground = { movement_cost = 1 } }",
+                ),
+            ],
+            &textures,
+        );
+        let mut context = Context::load(Arc::new(catalogue), Kind::Technology).unwrap();
+        let tokens: Vec<_> = (0..refusals.len())
+            .map(|i| format!("mod_refusal_{i}"))
+            .collect();
+        let cancelled = AtomicBool::new(false);
+        let (artwork, warnings) = context
+            .catalogue(tokens.iter().map(String::as_str).collect(), &cancelled)
+            .unwrap();
+        assert!(artwork.iter().all(|art| art.icon.is_none()));
+        for (token, (_, _, reason)) in tokens.iter().zip(&refusals) {
+            assert!(
+                warnings
+                    .iter()
+                    .any(|warning| warning.contains(token) && warning.contains(reason)),
+                "{warnings:?}"
+            );
+        }
+        let (_, cached) = context
+            .catalogue(tokens.iter().map(String::as_str).collect(), &cancelled)
+            .unwrap();
+        assert_eq!(cached, warnings);
+    }
+
+    #[test]
+    fn unknown_gui_decode_is_the_items_problem_and_keeps_its_text() {
+        let (mut catalogue, _folders) = texture_catalogue(
+            &[
+                (
+                    "interface/art.gfx",
+                    "spriteTypes = { spriteType = { name = GFX_mod_tech_medium textureFile = gfx/mod/icon.png } }",
+                ),
+                (
+                    "common/terrain/mod.txt",
+                    "categories = { mod_ground = { movement_cost = 1 } }",
+                ),
+                (
+                    "localisation/mod_l_english.yml",
+                    "\u{feff}l_english:\n mod_tech:0 \"Mod technology\"\n mod_tech_desc:0 \"Mod description\"\n",
+                ),
+            ],
+            &[],
+        );
+        let reason = "settings.txt is unavailable: test read failure";
+        catalogue.gui_decode = Err(reason.into());
+        let mut context = Context::load(Arc::new(catalogue), Kind::Technology).unwrap();
+        let (artwork, warnings) = context
+            .catalogue(BTreeSet::from(["mod_tech"]), &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(artwork[0].name.as_deref(), Some("Mod technology"));
+        assert_eq!(artwork[0].description.as_deref(), Some("Mod description"));
+        assert!(artwork[0].icon.is_none());
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning == &format!("mod_tech: {reason}")),
+            "{warnings:?}"
+        );
+    }
 }
