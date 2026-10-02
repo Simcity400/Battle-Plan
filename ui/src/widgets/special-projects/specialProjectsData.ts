@@ -1,4 +1,4 @@
-import type { ProjectDate, ProjectEpisode, ProjectPresentation, ProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
+import type { ProjectDate, ProjectEpisode, ProjectPresentation, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout.ts';
 import { clipToSpans, runAt } from '../../charts/series.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -36,7 +36,7 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
       || !(run.completion === null || date(run.completion)) || !(run.iterations === null || integer(run.iterations)) || !(run.cancellation === null || date(run.cancellation))) return bad();
     if (!ordered(project.runs as {firstHour:number;lastHour:number}[])) return bad();
     for (const raw of project.runs) {
-      const run = raw as ProjectRun;
+      const run = raw as SpecialProjectRun;
       const info = input.presentations[run.presentation] as ProjectPresentation;
       if ((project.start as ProjectDate).hour > run.firstHour || (run.state === 'completed') !== (run.completion !== null) || (run.state === 'cancelled') !== (run.cancellation !== null)
         || run.completion && run.completion.hour > run.firstHour || run.state === 'completed' && run.progress !== 100
@@ -55,7 +55,7 @@ export const scientistName = (data: SpecialProjectsReply, info: ProjectPresentat
   const name = scientist.name ?? (scientist.id != null ? `Scientist ${scientist.id} · name not recorded` : scientist.assigned === false ? 'Unassigned' : 'Scientist not recorded');
   return info.scientistAsOf === null ? name : `Last assigned · ${name}`;
 };
-export interface ProjectCard { project: ProjectEpisode; run: ProjectRun; info: ProjectPresentation }
+export interface ProjectCard { project: ProjectEpisode; run: SpecialProjectRun; info: ProjectPresentation }
 
 /** Step lookup, with fixed game-day retention. A missing hour never carries a
  * card from an older observation; future completion is never exposed. */

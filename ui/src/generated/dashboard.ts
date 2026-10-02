@@ -1440,7 +1440,7 @@ export type ProjectPresentation = { name: string, specialization: string | null,
  */
 scientistAsOf: number | null, };
 export type ProjectState = "running" | "paused" | "cancelled" | "completed" | "unknown";
-export type ProjectRun = { firstHour: number, lastHour: number, presentation: number,
+export type SpecialProjectRun = { firstHour: number, lastHour: number, presentation: number,
 /**
  * Percent from prototype +0x88, clamped as 141A238C0. No phase ratio.
  */
@@ -1449,7 +1449,7 @@ progress: number, state: ProjectState, completion: ProjectDate | null, cancellat
  * Native history length minus IsCompleted. Missing history is null.
  */
 iterations: number | null, };
-export type ProjectEpisode = { id: string, start: ProjectDate, runs: Array<ProjectRun>, };
+export type ProjectEpisode = { id: string, start: ProjectDate, runs: Array<SpecialProjectRun>, };
 export type SpecialProjectsReply = { branchId: string, tag: string, available: Array<HourSpan>, readHours: Array<number>, projects: Array<ProjectEpisode>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
 /**
  * Native NUMBER text, localized once per distinct recorded count.
@@ -1706,6 +1706,20 @@ knownAt: number, count: number,
  * Levels repaired (the healthy level rising back to the level), not built.
  */
 repair: boolean, };
+export type ProjectRun = { firstHour: number, lastHour: number,
+/**
+ * Factories assigned (`active_factories`).
+ */
+factories: number,
+/**
+ * Levels (railway: segments) still to build (`amount`).
+ */
+remaining: number,
+/**
+ * Levels still to repair (`repair_levels`): while above zero the line repairs
+ * (the engine's repair branch), else it builds its remaining new levels.
+ */
+repairLevels: number, };
 export type ConstructionProject = {
 /**
  * The line's native handle, as a decimal string.

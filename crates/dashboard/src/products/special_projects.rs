@@ -83,7 +83,7 @@ pub enum ProjectState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectRun {
+pub struct SpecialProjectRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub presentation: u32,
@@ -101,7 +101,7 @@ pub struct ProjectRun {
 pub struct ProjectEpisode {
     pub id: String,
     pub start: ProjectDate,
-    pub runs: Vec<ProjectRun>,
+    pub runs: Vec<SpecialProjectRun>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -453,7 +453,7 @@ impl Builder {
         project: &ProjectRow,
         tag: &str,
         slot: u32,
-        previous: Option<&ProjectRun>,
+        previous: Option<&SpecialProjectRun>,
         mut content: Option<&mut Content>,
     ) -> u32 {
         let mut scientist = self.person(frame, project, content.as_deref());
@@ -771,7 +771,7 @@ impl Builder {
                     .and_then(|run| run.cancellation.clone())
                     .unwrap_or(ProjectDate { hour, exact: false })
             });
-            let mut run = ProjectRun {
+            let mut run = SpecialProjectRun {
                 first_hour: hour,
                 last_hour: hour,
                 presentation,
@@ -1008,7 +1008,7 @@ impl Product for SpecialProjects {
             ProjectPerson::decl(),
             ProjectPresentation::decl(),
             ProjectState::decl(),
-            ProjectRun::decl(),
+            SpecialProjectRun::decl(),
             ProjectEpisode::decl(),
             SpecialProjectsReply::decl(),
         ]
