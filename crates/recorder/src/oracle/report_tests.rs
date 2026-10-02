@@ -77,9 +77,7 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     );
     report.carried.clear();
     report.hour += 1;
-    report
-        .observed_refresh
-        .push(replay::cadence::cadence(TableId::CountryIntel));
+    report.intel_walked = true;
     let before = report.differences.len();
     report.attempt("CountryIntel", differ);
     assert_eq!(report.differences.len(), before + 1, "retried off its slot");
@@ -93,6 +91,121 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     unscoped.attempt("economy CountryFuel", differ);
     assert_eq!(unscoped.differences.len(), 1);
     assert!(unscoped.carried.is_empty());
+}
+
+/// A daily table is read at its slot hour although the shared read was
+/// charged to an hourly anchor (part Q: every Daily(17) table timed zero
+/// at slot 17, the economy-rest copy charged to ProvinceSupply); off the
+/// slot only a timed table of the slot proves a read; CountryIntel only by
+/// its own walk.
+#[test]
+fn a_daily_read_is_dated_by_its_slot_not_by_its_charged_timing() {
+    let slot = match replay::cadence::cadence(TableId::CountryFuel) {
+        replay::cadence::Cadence::Daily(slot) => slot as Hour,
+        other => panic!("CountryFuel is {other:?}"),
+    };
+    let frame = |hour, timed: &[TableId]| {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour,
+            metrics: Default::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+        };
+        for table in timed {
+            frame.metrics.table_ns[table.index()] = 1;
+        }
+        frame
+    };
+    let read = |frame: &DecodedFrame, table| daily_read(frame.hour, &frame.metrics, table);
+    let hour = 24 * 1000 + slot;
+    assert!(read(
+        &frame(hour, &[TableId::ProvinceSupply]),
+        TableId::CountryFuel
+    ));
+    assert!(read(&frame(hour, &[]), TableId::CountryFuelConsumers));
+    assert!(!read(
+        &frame(hour + 1, &[TableId::ProvinceSupply]),
+        TableId::CountryFuel
+    ));
+    assert!(read(
+        &frame(hour + 1, &[TableId::CountryFuelConsumers]),
+        TableId::CountryFuel
+    ));
+    let intel = match replay::cadence::cadence(TableId::CountryIntel) {
+        replay::cadence::Cadence::Daily(slot) => 24 * 1000 + slot as Hour,
+        other => panic!("CountryIntel is {other:?}"),
+    };
+    assert!(!read(
+        &frame(intel, &[TableId::LogisticsEquipment]),
+        TableId::CountryIntel
+    ));
+    assert!(read(
+        &frame(intel + 1, &[TableId::CountryIntel]),
+        TableId::CountryIntel
+    ));
+    assert!(!read(
+        &frame(intel + 1, &[TableId::CountryIntel]),
+        TableId::LogisticsEquipment
+    ));
+}
+
+/// LogisticsEquipment shares CountryIntel's slot. A deferred CountryIntel
+/// walk leaves CountryIntel carried on the slot hour although LogisticsEquipment
+/// was walked, and its retry at the next hour does not make the carried
+/// logistics rows current; the scan of read hours agrees.
+#[test]
+fn country_intel_and_the_rest_of_its_slot_are_no_evidence_for_each_other() {
+    let slot = match replay::cadence::cadence(TableId::CountryIntel) {
+        replay::cadence::Cadence::Daily(slot) => slot as Hour,
+        other => panic!("CountryIntel is {other:?}"),
+    };
+    assert_eq!(
+        replay::cadence::cadence(TableId::LogisticsEquipment),
+        replay::cadence::cadence(TableId::CountryIntel)
+    );
+    let differ = |report: &mut Report| {
+        report.difference("field", 1, 2);
+        Ok(())
+    };
+    let hour = 24 * 1000 + slot;
+    let read_hours = BTreeMap::from([
+        (TableId::CountryIntel, hour - 24),
+        (TableId::LogisticsEquipment, hour),
+    ]);
+    for (hour, walked, intel, logistics) in [
+        (hour, TableId::LogisticsEquipment, false, true),
+        (hour + 1, TableId::CountryIntel, true, false),
+    ] {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour,
+            metrics: Default::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+        };
+        frame.metrics.table_ns[walked.index()] = 1;
+        let mut report = Report {
+            read_hours: Some(read_hours.clone()),
+            ..Report::default()
+        };
+        report.record_tables(&frame);
+        assert!(!report.full_refresh(), "hour {hour}");
+        report.attempt("CountryIntel", differ);
+        report.attempt("economy LogisticsEquipment", differ);
+        assert_eq!(
+            (
+                !report.carried.contains_key("CountryIntel"),
+                !report.carried.contains_key("economy LogisticsEquipment"),
+            ),
+            (intel, logistics),
+            "hour {hour}"
+        );
+    }
 }
 
 #[test]

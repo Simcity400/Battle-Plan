@@ -97,6 +97,23 @@ pub fn observe_country_intel(memory: &impl Memory, base: usize) -> Option<usize>
     Some(rows.min(slots.saturating_mul(slots)))
 }
 
+/// Live equipment-line population, using ProductionLines' walk with no row
+/// storage: only country identities, production managers and roster headers
+/// are read. An unreadable census contributes no sizing hint.
+pub fn observe_production_lines(memory: &impl Memory, base: usize) -> Option<usize> {
+    let game_state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
+    let state = usize::try_from(game_state)
+        .ok()
+        .filter(|state| *state != 0)?;
+    match engine::cproduction_status::walk_lines(memory, base, state, &mut []) {
+        engine::walk::Outcome::Rows { len } => Some(len),
+        engine::walk::Outcome::Truncated { len, unread_rows } => {
+            len.checked_add(unread_rows as usize)
+        }
+        engine::walk::Outcome::Unavailable { .. } => None,
+    }
+}
+
 /// The raid arenas whose per-country demand content decides, not the slot
 /// count: the raid type tokens of every raid parent and of the player cache,
 /// and every country's convoy reservation words.
@@ -438,8 +455,6 @@ mod tests {
     const INTEL_TABLES: usize = 0x5000_0000;
     const INTEL_RECORDS: usize = 0x6000_0000;
     const BLOC_LINKS: usize = 0x7000_0000;
-    const PRODUCTION: usize = 0x7100_0000;
-    const PRODUCTION_STRIDE: usize = 0x600;
     // Country air objects, their region history tables, windows and records.
     const AIR_MANAGER: usize = 0x80_0000;
     const AIR_ROOTS: usize = 0x90_0000;
@@ -654,33 +669,6 @@ mod tests {
                 let id = (address - LINKS) / 4;
                 return word(LINKS + id * 4, id as u64);
             }
-            if (PRODUCTION..PRODUCTION + self.slots * PRODUCTION_STRIDE).contains(&address) {
-                use engine::cproduction_status as production;
-                let slot = (address - PRODUCTION) / PRODUCTION_STRIDE;
-                let status = PRODUCTION + slot * PRODUCTION_STRIDE;
-                let offset = address - status;
-                return match offset {
-                    0..8 => word(status, (BASE + production::VTABLE_RVA) as u64),
-                    o if (production::COUNTRY..production::COUNTRY + 8).contains(&o) => {
-                        let index = if self.relocated == Some(slot) {
-                            self.slots
-                        } else {
-                            slot
-                        };
-                        word(
-                            status + production::COUNTRY,
-                            (OBJECTS + index * OBJECT) as u64,
-                        )
-                    }
-                    o => production::CONTROLLED_FACTORY_COUNTS
-                        .into_iter()
-                        .enumerate()
-                        .find(|(_, at)| (*at..*at + 4).contains(&o))
-                        .map_or(0, |(index, at)| {
-                            word(status + at, slot as u64 + index as u64)
-                        }),
-                };
-            }
             let objects = self.slots + usize::from(self.relocated.is_some());
             if (OBJECTS + OBJECT..OBJECTS + objects * OBJECT).contains(&address) {
                 let index = (address - OBJECTS) / OBJECT;
@@ -692,6 +680,7 @@ mod tests {
                 let offset = address - object;
                 let capacity = ccountry::COSMETIC_TAG + msvc_string::CAPACITY;
                 let culture = ccountry::GRAPHICAL_CULTURE + msvc_string::CAPACITY;
+                let culture_2d = ccountry::GRAPHICAL_CULTURE_2D + msvc_string::CAPACITY;
                 return match offset {
                     0..8 => word(object, (BASE + ccountry::VTABLE_RVA) as u64),
                     o if (ccountry::ID..ccountry::ID + 4).contains(&o) => {
@@ -703,18 +692,13 @@ mod tests {
                     o if (culture..culture + 8).contains(&o) => {
                         word(object + culture, msvc_string::INLINE_CAPACITY)
                     }
+                    o if (culture_2d..culture_2d + 8).contains(&o) => {
+                        word(object + culture_2d, msvc_string::INLINE_CAPACITY)
+                    }
                     o if (ccountry::DIPLOMACY_STATUS..ccountry::DIPLOMACY_STATUS + 8)
                         .contains(&o) =>
                     {
                         word(object + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64)
-                    }
-                    o if (ccountry::PRODUCTION_STATUS..ccountry::PRODUCTION_STATUS + 8)
-                        .contains(&o) =>
-                    {
-                        word(
-                            object + ccountry::PRODUCTION_STATUS,
-                            (PRODUCTION + slot * PRODUCTION_STRIDE) as u64,
-                        )
                     }
                     o if self.intel
                         && (ccountry::INTEL_TABLE..ccountry::INTEL_TABLE + 8).contains(&o) =>
@@ -986,23 +970,6 @@ mod tests {
             country_counters::Captured::with_capacities(&sizing.extended.country_counters);
         counters.capture(&memory, BASE, STATE);
         assert_eq!(counters.outcomes()[0], Outcome::Rows { len: COUNTRIES });
-        assert_eq!(counters.outcomes()[2], Outcome::Rows { len: COUNTRIES });
-        let tables = counters.tables();
-        let replay::frame::TableView::Complete(replay::rows::TableRows::CountryFactoryCounts(rows)) =
-            &tables[2]
-        else {
-            panic!("complete factories")
-        };
-        assert_eq!(rows.len(), COUNTRIES);
-        assert_eq!(
-            rows.last().unwrap(),
-            &replay::rows::CountryFactoryCountsRow {
-                country: COUNTRIES as u32,
-                military: COUNTRIES as i32,
-                naval: COUNTRIES as i32 + 1,
-                civilian: COUNTRIES as i32 + 2,
-            }
-        );
         let mut small =
             country_appearance::Captured::with_capacities(&vanilla.extended.country_appearance);
         small.capture(&memory, BASE, STATE);
@@ -1923,15 +1890,16 @@ mod tests {
         let per_state = bytes(1_501);
         let large = bytes(5_001);
         assert!(vanilla <= per_state && per_state <= large);
-        // Linear, not quadratic: about 16 KiB per country slot per frame
-        // (measured 2026-09-28 after merging main's fuel and volunteer
-        // tables with the raid and political tables; main alone is 16,519 B
-        // per slot between 1,500 and 5,000 slots), dominated by the project
-        // pools and the per-slot research, party and raid rows; the doctrine
-        // tactic unlock rows add about 21 bytes per slot. Measured 2026-10-02
-        // with the naval mission inputs and main's factory counts: 20,497 B.
+        // Linear, not quadratic: about 22 KiB per country slot per frame.
+        // Measured 2026-10-02 with the merged economy, naval mission and
+        // saved-global target captures: 22,321 B per slot (rounded up)
+        // between 1,501 and 5,001 slots. The 23 KiB bound leaves about
+        // 1.2 KiB of margin. Project pools and the per-slot research, party
+        // and raid rows dominate; the economy adds CountryFactories and
+        // eight organisation/history rows per slot. LogisticsEquipment and
+        // saved-global target arenas follow live demand, not country slots.
         assert!(
-            large - per_state <= 3_500 * 21 * 1024,
+            large - per_state <= 3_500 * 23 * 1024,
             "vanilla {vanilla}, 1,501 slots {per_state}, 5,001 slots {large}"
         );
     }
@@ -1968,6 +1936,102 @@ mod tests {
                 grown >= expected,
                 "{name}: grew to {grown}, built {expected}"
             );
+        }
+    }
+
+    /// The sizing walk needs roster headers, never line pointers or payloads.
+    #[test]
+    fn line_output_population_counts_live_rosters_at_1500_and_5000_countries() {
+        use engine::{Memory, cpdx_array, cproduction_status as production};
+        const MANAGERS: usize = 0x3_0000_0000;
+        const MANAGER: usize = 0x300;
+        const LINE_POINTERS: usize = 0x4_0000_0000;
+        struct Lines {
+            world: World,
+            per_country: u32,
+            unreadable: bool,
+        }
+        impl Memory for Lines {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                // There is deliberately no storage for any line pointer.
+                if (LINE_POINTERS..LINE_POINTERS + self.per_country as usize * 8).contains(&address)
+                {
+                    return false;
+                }
+                if self.unreadable && address == MANAGERS + MANAGER + production::LINES {
+                    return false;
+                }
+                for (offset, byte) in output.iter_mut().enumerate() {
+                    let at = address + offset;
+                    let word = |start, value: u64| (value >> ((at - start) * 8)) as u8;
+                    *byte = if (OBJECTS + OBJECT..OBJECTS + self.world.slots * OBJECT).contains(&at)
+                    {
+                        let slot = (at - OBJECTS) / OBJECT;
+                        let field = OBJECTS + slot * OBJECT + ccountry::PRODUCTION_STATUS;
+                        if (field..field + 8).contains(&at) {
+                            word(field, (MANAGERS + slot * MANAGER) as u64)
+                        } else {
+                            self.world.byte(at)
+                        }
+                    } else if (MANAGERS + MANAGER..MANAGERS + self.world.slots * MANAGER)
+                        .contains(&at)
+                    {
+                        let slot = (at - MANAGERS) / MANAGER;
+                        let manager = MANAGERS + slot * MANAGER;
+                        let fields = [
+                            (manager, 8, (BASE + production::VTABLE_RVA) as u64),
+                            (
+                                manager + production::COUNTRY,
+                                8,
+                                (OBJECTS + slot * OBJECT) as u64,
+                            ),
+                            (manager + production::LINES, 8, LINE_POINTERS as u64),
+                            (
+                                manager + production::LINES + cpdx_array::CAPACITY,
+                                4,
+                                u64::from(self.per_country),
+                            ),
+                            (
+                                manager + production::LINES + cpdx_array::COUNT,
+                                4,
+                                u64::from(self.per_country),
+                            ),
+                        ];
+                        fields
+                            .into_iter()
+                            .find_map(|(start, len, value)| {
+                                (start..start + len)
+                                    .contains(&at)
+                                    .then(|| word(start, value))
+                            })
+                            .unwrap_or(0)
+                    } else {
+                        self.world.byte(at)
+                    };
+                }
+                true
+            }
+        }
+        for countries in [1500, 5000] {
+            let mut memory = Lines {
+                world: World {
+                    slots: countries + 1,
+                    ..world()
+                },
+                per_country: 14,
+                unreadable: false,
+            };
+            assert_eq!(
+                observe_production_lines(&memory, BASE),
+                Some(countries * 14)
+            );
+            memory.per_country = 28;
+            assert_eq!(
+                observe_production_lines(&memory, BASE),
+                Some(countries * 28)
+            );
+            memory.unreadable = true;
+            assert_eq!(observe_production_lines(&memory, BASE), None);
         }
     }
 

@@ -473,6 +473,8 @@ fn run(module: HMODULE) -> Result<(), String> {
     let mut history_hooks = unsafe { crate::history_changes::Hooks::new(&memory, base) }?;
     // A family whose sentinels differ is left uninstalled; it reads as before.
     let mut opinion_hooks = unsafe { crate::opinion_changes::Hooks::new(&memory, base) }?;
+    let lines = crate::country_scale::observe_production_lines(&memory, base).unwrap_or(0);
+    let mut line_hooks = unsafe { crate::line_output::Hooks::new(&memory, base, lines) };
     // Size every country-proportional buffer from the live registry before
     // the hook exists. At the main menu the registry may still be empty; the
     // spool thread then raises capacities as soon as a save fills it.
@@ -497,6 +499,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     if let Some(demand) = crate::country_scale::observe_politics(&memory, base) {
         sizing.extended.raise_for_politics(demand);
     }
+    sizing.extended.line_output.entries = sizing.extended.line_output.entries.max(lines);
     let shared = Arc::new(Shared::with_sizing(
         base,
         hook.trampoline(),
@@ -579,6 +582,13 @@ fn run(module: HMODULE) -> Result<(), String> {
             })
             .and_then(|ready| {
                 if ready {
+                    line_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
                     hook.set_enabled(true)
                 } else {
                     Ok(false)
@@ -634,6 +644,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     ranges.extend(relation_hooks.executable_ranges());
     ranges.extend(history_hooks.executable_ranges());
     ranges.extend(opinion_hooks.executable_ranges());
+    ranges.extend(line_hooks.executable_ranges());
     while spool_id.load(Ordering::Acquire) == 0 {
         std::thread::yield_now();
     }
@@ -662,6 +673,18 @@ fn run(module: HMODULE) -> Result<(), String> {
                 let _ = fs::write(
                     dll_path.with_file_name("collector.error.txt"),
                     format!("opinion hook detach pending: {result:?}"),
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    loop {
+        match line_hooks.set_enabled(false) {
+            Ok(true) => break,
+            result => {
+                let _ = fs::write(
+                    dll_path.with_file_name("collector.error.txt"),
+                    format!("production line hook detach pending: {result:?}"),
                 );
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -762,6 +785,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     drop(relation_hooks);
     drop(history_hooks);
     drop(opinion_hooks);
+    drop(line_hooks);
     drop(shared);
     if let Some(error) = installation_error {
         add_terminal_error(&mut spool_result, error);
@@ -885,6 +909,7 @@ fn add_decode_status(status: &mut Value) {
     status["relation_changes"] = crate::relation_changes::status();
     status["history_changes"] = crate::history_changes::status();
     status["opinion_changes"] = crate::opinion_changes::status();
+    status["line_output"] = crate::line_output::status();
     #[cfg(feature = "callback_profile")]
     {
         status["callback_profile"] = crate::callback_profile::status();
@@ -1022,6 +1047,7 @@ fn wait_quiet(
             || crate::relation_changes::active() != 0
             || crate::history_changes::active() != 0
             || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
+            || crate::line_output::ACTIVE.load(Ordering::SeqCst) != 0
         {
             Ok(false)
         } else {
@@ -1033,6 +1059,7 @@ fn wait_quiet(
                         || crate::relation_changes::active() != 0
                         || crate::history_changes::active() != 0
                         || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
+                        || crate::line_output::ACTIVE.load(Ordering::SeqCst) != 0
                     {
                         Ok(false)
                     } else {
@@ -1079,6 +1106,7 @@ struct RegistryWatch {
     saved_targets: engine::saved_event_targets::Demand,
     last_politics: Option<Instant>,
     politics: crate::country_scale::PoliticsDemand,
+    last_lines: Option<Instant>,
 }
 
 impl RegistryWatch {
@@ -1086,6 +1114,19 @@ impl RegistryWatch {
     /// The intel total walks every country's table header, so it is sampled
     /// less often than the three registry headers.
     const INTEL_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// Line rosters can grow without the country registry changing. Repeat
+    /// the offer even without growth so a failed allocation can be retried.
+    fn poll_lines(&mut self, memory: &impl engine::Memory, base: usize) -> Option<usize> {
+        if self
+            .last_lines
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return None;
+        }
+        self.last_lines = Some(Instant::now());
+        crate::country_scale::observe_production_lines(memory, base)
+    }
 
     /// The country slots and strategic regions when either is larger than
     /// any seen before, at most every `INTERVAL`.
@@ -1466,6 +1507,19 @@ fn spool_loop(
         }
         crate::relation_changes::collect();
         crate::history_changes::collect();
+        crate::line_output::collect();
+        if let Some(lines) = registry.poll_lines(&live, shared.base) {
+            crate::line_output::presize(lines);
+            if lines > extended_capacities.line_output.entries {
+                extended_capacities.line_output.entries = lines;
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+        }
         // A save load rebuilds the country registry before its first hourly
         // tick; presize every buffer while the game is still loading. Sizing
         // only grows, so a larger region roster alone repeats it harmlessly.

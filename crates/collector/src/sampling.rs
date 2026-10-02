@@ -1393,6 +1393,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             // Before any capture of the hour, while this thread holds the game.
             crate::relation_changes::boundary(!continuous || recovery);
             crate::history_changes::boundary(!continuous || recovery);
+            // Every production tick before this sample is in the log: the
+            // daily pass runs on this thread, inside the hourly update this
+            // callback precedes. The spool totals the log per branch.
+            frame.extended.drain_line_output();
+            crate::line_output::install_offered();
             frame.extended.prepare_hour(clock.hour, force_full);
             let state = clock.game_state as usize;
             let cache_begin = qpc();

@@ -60,6 +60,9 @@ pub(super) fn compare(
     all_complete &= report.attempt("economy ResourceExchanges", |report| {
         compare_exchanges(frame, &saved.economy, links, tokens, report)
     });
+    all_complete &= report.attempt("economy LogisticsEquipment", |report| {
+        compare_logistics(frame, &saved.economy, links, tokens, report)
+    });
     all_complete &= report.attempt("economy HubMotorization", |report| {
         compare_motorization(frame, &saved.economy, links, report)
     });
@@ -93,7 +96,7 @@ pub(super) fn compare(
             Ok(())
         });
     }
-    report.limitation("economy save country tags compare resolved identity and cannot certify equivalent raw country-link aliases", "CountryFuel, CountryFuelConsumers, CountryExperience, ResourceExchanges, PurchaseContracts, HubMotorization, DisruptedSupply, ForeignHomebases");
+    report.limitation("economy save country tags compare resolved identity and cannot certify equivalent raw country-link aliases", "CountryFuel, CountryFuelConsumers, CountryExperience, LogisticsEquipment, ResourceExchanges, PurchaseContracts, HubMotorization, DisruptedSupply, ForeignHomebases");
     if all_complete {
         Ok(())
     } else {
@@ -987,6 +990,137 @@ fn compare_fuel_consumers(
         );
     }
     report.compared("CountryFuelConsumers", count);
+    Ok(())
+}
+
+/// The CLogisticsStatus series LogisticsEquipment reads: stock and balance.
+const LOGISTICS_STOCK_SERIES: u32 = 15;
+const LOGISTICS_BALANCE_SERIES: u32 = 16;
+/// Records of the daily window the reader accepts (engine::cloop_history).
+const LOGISTICS_DAILY_RECORDS: i32 = 30;
+
+/// LogisticsEquipment against each country's saved `logistics` history.
+/// CLogisticsStatus::vf2@1413609d0 writes the history exactly for the
+/// countries IsCountryAIControlled rejects, the countries the reader reads,
+/// so a country with rows and no saved history, or the reverse, is a
+/// difference. Each row compares with its index in the record at the saved
+/// daily window's `offset` (the current slot) of series 15 and 16.
+fn compare_logistics(
+    frame: &DecodedFrame,
+    saved: &economy::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut actual: BTreeMap<&[u8], Vec<&replay::rows::LogisticsEquipmentRow>> = BTreeMap::new();
+    for row in complete::<tables::LogisticsEquipment>(frame)? {
+        let tag = required_country_tag(row.country, links)?;
+        actual.entry(tag).or_default().push(row);
+    }
+    for rows in actual.values_mut() {
+        rows.sort_by_key(|row| row.archetype);
+        if rows
+            .iter()
+            .zip(0..)
+            .any(|(row, index)| row.archetype != index)
+        {
+            return Err(invalid(
+                "logistics rows of a country are not every archetype index from zero",
+            ));
+        }
+    }
+    let mut count = 0;
+    for (tag, country) in &saved.countries {
+        let name = String::from_utf8_lossy(tag);
+        let history = match &country.logistics {
+            Some(economy::Logistics::History(history)) => Some(history),
+            Some(economy::Logistics::Empty) | None => None,
+        };
+        let (history, rows) = match (history, actual.remove(tag.as_slice())) {
+            (None, None) => continue,
+            (Some(_), None) => {
+                report.difference(
+                    format!("{name}.logistics"),
+                    "no rows",
+                    "saved history (not AI-controlled)",
+                );
+                continue;
+            }
+            (None, Some(_)) => {
+                report.difference(
+                    format!("{name}.logistics"),
+                    "rows",
+                    "no saved history (AI-controlled)",
+                );
+                continue;
+            }
+            (Some(history), Some(rows)) => (history, rows),
+        };
+        let fields = rows.len();
+        let mut records = [None, None];
+        for (record, series) in records
+            .iter_mut()
+            .zip([LOGISTICS_STOCK_SERIES, LOGISTICS_BALANCE_SERIES])
+        {
+            let label = format!("{name}.logistics.series[{series}]");
+            let Some(window) = history.get(&series).map(|history| &history.windows[0]) else {
+                report.difference(label, "read", "series absent");
+                continue;
+            };
+            equal(
+                report,
+                format!("{label}.max_elements"),
+                window.max_elements,
+                LOGISTICS_DAILY_RECORDS,
+            );
+            let slot = usize::try_from(window.offset)
+                .map_err(|_| invalid("saved logistics offset is negative"))?;
+            match window.record(slot, fields) {
+                Ok(values) => *record = Some(values),
+                Err(error) => {
+                    report.difference(
+                        format!("{label}.data"),
+                        format!("{fields} archetypes"),
+                        error.to_string(),
+                    );
+                }
+            }
+        }
+        let [Some(stock), Some(balance)] = records else {
+            continue;
+        };
+        for (row, (stock, balance)) in rows.iter().zip(stock.iter().zip(&balance)) {
+            let archetype = tokens.get(&row.token).map_or_else(
+                || row.archetype.to_string(),
+                |token| String::from_utf8_lossy(token).into_owned(),
+            );
+            let label = format!("{name}.logistics[{archetype}]");
+            equal(report, format!("{label}.stock_raw"), row.stock_raw, *stock);
+            equal(
+                report,
+                format!("{label}.balance_raw"),
+                row.balance_raw,
+                *balance,
+            );
+            count += 1;
+        }
+    }
+    for tag in actual.keys() {
+        report.difference(
+            format!("{}.logistics", String::from_utf8_lossy(tag)),
+            "rows",
+            "country absent",
+        );
+    }
+    report.compared("LogisticsEquipment", count);
+    report.limitation(
+        "the save does not name equipment archetypes: rows compare by record index, and the recorded archetype token has no save counterpart",
+        "LogisticsEquipment",
+    );
+    report.limitation(
+        "only the current daily record of the stock and balance series is recorded; the save's other daily records, its twelve- and seven-record windows and its other 17 series are not compared",
+        "LogisticsEquipment",
+    );
     Ok(())
 }
 
@@ -2119,5 +2253,110 @@ mod tests {
             missing: 1,
         };
         assert!(compare_experience(&frame, &saved, &links, &mut Report::default()).is_err());
+    }
+
+    /// A saved series whose 30-record daily window holds `current` at slot 12,
+    /// another day's values at slot 11 and nothing elsewhere.
+    fn logistics_series(index: u32, current: &str) -> String {
+        let mut data = Vec::new();
+        for slot in 0..30 {
+            data.push(match slot {
+                11 => "7 7 7",
+                12 => current,
+                _ => "0 0 0",
+            });
+        }
+        format!(
+            "{index}={{ history_queue={{ 0={{ max_elements=30 offset=12 is_full=yes data={{ {} }} }} 1={{ max_elements=12 offset=1 is_full=yes }} 2={{ max_elements=7 offset=2 is_full=yes }} }} }}",
+            data.join(" ")
+        )
+    }
+
+    #[test]
+    fn logistics_oracle_compares_the_current_daily_record_and_the_computed_countries() {
+        use replay::rows::LogisticsEquipmentRow;
+        let history = format!(
+            "history={{ {} {} }}",
+            logistics_series(15, "145075 0 2017.5"),
+            logistics_series(16, "-112 0.00001 2017.5"),
+        );
+        let saved = economy::parse(
+            &parser::parse(
+                format!("countries={{GER={{logistics={{{history}}}}} ENG={{logistics={{}}}}}}")
+                    .as_bytes(),
+            )
+            .unwrap()
+            .items,
+        )
+        .unwrap();
+        let country = |id, tag: &[u8]| CountryRow {
+            id,
+            canonical_slot: id,
+            tag: tag.to_vec(),
+            political_power_raw: None,
+            command_power_raw: 0,
+            stability_raw: 0,
+            war_support_raw: 0,
+            convoys_raw: None,
+            peace_conference_participant: 0,
+            manpower_residual: 0,
+        };
+        let (germany, england) = (country(11, b"GER"), country(12, b"ENG"));
+        let links = BTreeMap::from([(11, &germany), (12, &england)]);
+        let row = |country, archetype, balance_raw, stock_raw| LogisticsEquipmentRow {
+            country,
+            archetype,
+            token: 0x5000 + archetype,
+            balance_raw,
+            stock_raw,
+        };
+        let matching = vec![
+            row(11, 0, -11_200_000, 14_507_500_000),
+            row(11, 1, 1, 0),
+            row(11, 2, 201_750_000, 201_750_000),
+        ];
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 2,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+        };
+        let mut run = |rows: Vec<LogisticsEquipmentRow>| {
+            *frame.tables[TableId::LogisticsEquipment.index()] =
+                TableView::Complete(TableRows::LogisticsEquipment(rows));
+            let mut report = Report::default();
+            let result = compare_logistics(&frame, &saved, &links, &BTreeMap::new(), &mut report);
+            (result.is_ok(), report)
+        };
+        let (ok, report) = run(matching.clone());
+        assert!(ok);
+        assert_eq!(report.differences, Vec::<String>::new());
+        assert_eq!(report.compared_tables["LogisticsEquipment"], 3);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|key| key.contains("does not name equipment archetypes"))
+        );
+        // One native unit of either series is a difference.
+        let mut changed = matching.clone();
+        changed[1].balance_raw = 0;
+        changed[2].stock_raw -= 1;
+        assert_eq!(run(changed).1.differences.len(), 2);
+        // The AI-controlled country the save writes no history for has no
+        // rows; rows for it, or none for a computed country, are differences.
+        let mut extra = matching.clone();
+        extra.push(row(12, 0, 0, 0));
+        assert_eq!(run(extra).1.differences.len(), 1);
+        assert_eq!(run(Vec::new()).1.differences.len(), 1);
+        // A recorded archetype count the saved records do not hold.
+        let (ok, report) = run(matching[..2].to_vec());
+        assert!(ok);
+        assert_eq!(report.differences.len(), 2);
+        // Rows that are not every index from zero cannot be compared.
+        assert!(!run(matching[1..].to_vec()).0);
     }
 }

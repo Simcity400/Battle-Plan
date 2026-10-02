@@ -50,6 +50,62 @@ pub struct Production {
     /// The +E8 roster under `foreign_lease_equipments`, written only when
     /// nonempty: absence is an empty roster.
     pub foreign_lease_variants: Vec<u64>,
+    /// The +4A8 recalculation flag, which E5D3B0 writes unconditionally as
+    /// `dirty` (token 0x3484). While it is set the hourly production update
+    /// 140E54DE0 has a factory-total recalculation pending.
+    pub dirty: Option<bool>,
+    /// E5D3B0 writes the +0x130 organisations under `industrial_organisations`
+    /// in array order, each keyed by its script key, only when there is one:
+    /// absence is an empty array.
+    pub organisations: Vec<Organisation>,
+}
+
+/// One COrganisation block (Serialize 140da84b0), in the fields the replay
+/// records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Organisation {
+    /// The block's key, the organisation's script-key token as written.
+    pub key: Vec<u8>,
+    /// Full CID (type 79 low word).
+    pub id: u64,
+    /// `name` (token 0x1b) and `icon` (0xb5): written even when empty, so an
+    /// absent one is malformed rather than empty.
+    pub name: Option<Vec<u8>>,
+    pub icon: Option<Vec<u8>>,
+    /// `history` blocks in table slot order.
+    pub history: Vec<OrganisationHistory>,
+}
+
+/// One `history={ equipment=<variant> data={ date units } }` block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrganisationHistory {
+    pub variant: u64,
+    /// `units` (0x2faa), which the value writer 140da8930 always writes.
+    pub units: i32,
+}
+
+fn parse_organisation(key: &[u8], items: &[Item]) -> io::Result<Organisation> {
+    let mut history = Vec::new();
+    for item in items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"history"))
+    {
+        let fields = block(&item.value)?;
+        history.push(OrganisationHistory {
+            variant: typed_handle(
+                field(fields, b"equipment")?
+                    .ok_or_else(|| invalid("saved organisation history lacks its equipment"))?,
+            )?,
+            units: integer(&required_bytes(required_block(fields, b"data")?, b"units")?)?,
+        });
+    }
+    Ok(Organisation {
+        key: key.to_vec(),
+        id: object_id(items)?,
+        name: bytes(items, b"name")?,
+        icon: bytes(items, b"icon")?,
+        history,
+    })
 }
 
 fn parse_equipment_roster(value: &crate::parser::Value) -> io::Result<Vec<u64>> {
@@ -153,6 +209,10 @@ pub struct Line {
     /// 19260B0 omits only a completely zero MIO CID.
     pub mio: Option<u64>,
     pub requested_factories: i32,
+    /// Every counted per-factory efficiency (+0xC0), raw Q15: 19260B0 writes
+    /// them under `factory_efficiencies` through the /32768 formatter, and
+    /// only when the count (+0xCC) is positive, so absence is an empty array.
+    pub factory_efficiencies: Vec<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,6 +240,9 @@ pub struct Variant {
     pub origin: Option<Vec<u8>>,
     /// `override_model`, the variant's explicit model entity.
     pub override_model: Option<Vec<u8>>,
+    /// `override_sprite` (token 0x3c92): BD4770 writes the icon entry's
+    /// string, without its kind, exactly when the entry's active byte is set.
+    pub override_sprite: Option<Vec<u8>>,
     pub modules: Option<Vec<Module>>,
     pub upgrades: Option<Vec<Upgrade>>,
 }
@@ -393,19 +456,7 @@ fn parse_production(items: &[Item]) -> io::Result<Production> {
             Some(b"railway_gun_lines") => 3,
             _ => continue,
         };
-        let fields = block(&item.value)?;
-        lines.push(Line {
-            base: parse_line_base(fields)?,
-            kind,
-            variant: typed_handle(
-                field(fields, b"equipment_variant_index")?
-                    .ok_or_else(|| invalid("saved production line lacks its variant handle"))?,
-            )?,
-            mio: field(fields, b"industrial_manufacturer")?
-                .map(typed_handle)
-                .transpose()?,
-            requested_factories: integer(&required_bytes(fields, b"requested_factories")?)?,
-        });
+        lines.push(parse_line(kind, block(&item.value)?)?);
     }
     Ok(Production {
         lines,
@@ -435,6 +486,22 @@ fn parse_production(items: &[Item]) -> io::Result<Production> {
             .transpose()?,
         foreign_lease_variants: field(items, b"foreign_lease_equipments")?
             .map(parse_equipment_roster)
+            .transpose()?
+            .unwrap_or_default(),
+        dirty: field(items, b"dirty")?.map(boolean).transpose()?,
+        organisations: field(items, b"industrial_organisations")?
+            .map(|value| {
+                block(value)?
+                    .iter()
+                    .map(|item| {
+                        let key = item
+                            .key
+                            .as_deref()
+                            .ok_or_else(|| invalid("saved organisation has no key"))?;
+                        parse_organisation(key, block(&item.value)?)
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            })
             .transpose()?
             .unwrap_or_default(),
     })
@@ -620,6 +687,7 @@ fn parse_variant(id: u64, definition: &[u8], items: &[Item]) -> io::Result<Varia
         creator: bytes(items, b"creator")?,
         origin: bytes(items, b"origin")?,
         override_model: bytes(items, b"override_model")?,
+        override_sprite: bytes(items, b"override_sprite")?,
         modules,
         upgrades,
     })
@@ -678,6 +746,37 @@ pub fn parse_pool(items: &[Item]) -> io::Result<Pool> {
         allow_zero_entries: field(items, b"allow_zero_entries")?
             .map(boolean)
             .transpose()?,
+    })
+}
+
+/// One equipment line (19260B0) of the given save subtype; the caller
+/// supplies the `military_lines`-style wrapper's fields.
+pub fn parse_line(kind: u8, fields: &[Item]) -> io::Result<Line> {
+    Ok(Line {
+        base: parse_line_base(fields)?,
+        kind,
+        variant: typed_handle(
+            field(fields, b"equipment_variant_index")?
+                .ok_or_else(|| invalid("saved production line lacks its variant handle"))?,
+        )?,
+        mio: field(fields, b"industrial_manufacturer")?
+            .map(typed_handle)
+            .transpose()?,
+        requested_factories: integer(&required_bytes(fields, b"requested_factories")?)?,
+        factory_efficiencies: field(fields, b"factory_efficiencies")?
+            .map(|value| {
+                block(value)?
+                    .iter()
+                    .map(|item| {
+                        if item.key.is_some() {
+                            return Err(invalid("saved factory efficiency has a key"));
+                        }
+                        super::economy::FuelQuantity::parse(scalar(&item.value)?)?.raw()
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default(),
     })
 }
 
@@ -743,6 +842,16 @@ mod tests {
         let absent = production(b"countries={GER={production={}}}");
         assert_eq!(absent.available_variants, None);
         assert!(absent.foreign_lease_variants.is_empty());
+        // The recalculation flag keeps its absence apart from `no`.
+        assert_eq!(absent.dirty, None);
+        assert_eq!(
+            production(b"countries={GER={production={dirty=yes}}}").dirty,
+            Some(true)
+        );
+        assert_eq!(
+            production(b"countries={GER={production={dirty=no}}}").dirty,
+            Some(false)
+        );
     }
 
     #[test]

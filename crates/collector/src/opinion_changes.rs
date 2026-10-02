@@ -31,7 +31,7 @@ static LOG_OWNERS: [AtomicUsize; LOG] = [const { AtomicUsize::new(0) }; LOG];
 /// A value on its own cache line: writers on every TBB worker update it, so
 /// it must not share a line with anything the capture or the writers read.
 #[repr(align(64))]
-pub struct Padded<T>(T);
+pub struct Padded<T>(pub(crate) T);
 impl<T> std::ops::Deref for Padded<T> {
     type Target = T;
     fn deref(&self) -> &T {

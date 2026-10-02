@@ -1,12 +1,12 @@
 use super::{
     Captured, Divisions, MISSING, active_abilities, air, army_icon_inputs, character_inputs,
-    combat_details, construction, country_appearance, country_counters, country_stability,
-    country_tactic_unlocks, division_templates, faction_theatres, fog, group_counters,
-    hired_advisors, leader_paths, leader_portraits, map_facilities, map_names, model_inputs,
-    modifier_definitions, naval_bases, naval_combat_sources, naval_counters, naval_details,
-    naval_history, naval_mission_inputs, naval_result_details, projects, raid_launch_inputs,
-    raid_state_inputs, raid_target_statuses, railway_guns, saved_event_targets, scatter,
-    unpublished, visibility,
+    combat_details, construction, country_appearance, country_counters, country_factories,
+    country_stability, country_tactic_unlocks, division_templates, faction_theatres, fog,
+    group_counters, hired_advisors, industrial_organisations, leader_paths, leader_portraits,
+    logistics, map_facilities, map_names, model_inputs, modifier_definitions, naval_bases,
+    naval_combat_sources, naval_counters, naval_details, naval_history, naval_mission_inputs,
+    naval_result_details, projects, raid_launch_inputs, raid_state_inputs, raid_target_statuses,
+    railway_guns, saved_event_targets, scatter, unpublished, visibility,
 };
 use crate::{division_census::UnitInputs, map_capture::Orders};
 use engine::{Memory, walk::Outcome};
@@ -341,6 +341,12 @@ impl Captured {
         );
         std::mem::swap(&mut self.hired_advisors, &mut packs.hired_advisors);
         std::mem::swap(&mut self.character_inputs, &mut packs.character_inputs);
+        std::mem::swap(&mut self.logistics, &mut packs.logistics);
+        std::mem::swap(&mut self.country_factories, &mut packs.country_factories);
+        std::mem::swap(
+            &mut self.industrial_organisations,
+            &mut packs.industrial_organisations,
+        );
         std::mem::swap(&mut self.country_stability, &mut packs.country_stability);
         std::mem::swap(
             &mut self.country_tactic_unlocks,
@@ -599,7 +605,8 @@ impl RaidStateStores {
 
 /// The live-memory packs run as a second pool job from the first burst
 /// (map names, templates, visibility, faction theatres, model inputs,
-/// modifier definitions, hired advisors and character inputs). No defines are recorded: the
+/// modifier definitions, hired advisors, character inputs, logistics, country
+/// factories and industrial organisations). No defines are recorded: the
 /// viewer reads the movement defines from the content's `NDefines`. Each
 /// table keeps its own [`replay::cadence`]: the
 /// template dictionary is daily, its counter inputs hourly.
@@ -612,6 +619,9 @@ pub(crate) struct SlowPacks {
     pub(crate) modifier_definitions: modifier_definitions::Captured,
     pub(crate) hired_advisors: hired_advisors::Captured,
     pub(crate) character_inputs: character_inputs::Captured,
+    pub(crate) logistics: logistics::Captured,
+    pub(crate) country_factories: country_factories::Captured,
+    pub(crate) industrial_organisations: industrial_organisations::Captured,
     pub(crate) country_stability: country_stability::Captured,
     pub(crate) country_tactic_unlocks: country_tactic_unlocks::Captured,
     pub(crate) naval_mission_inputs: naval_mission_inputs::Captured,
@@ -758,6 +768,11 @@ impl SlowPacks {
             .fail_capture(hour, force_full, reason);
         self.hired_advisors.fail_capture(hour, force_full, reason);
         self.character_inputs.fail_capture(hour, force_full, reason);
+        self.logistics.fail_capture(hour, force_full, reason);
+        self.country_factories
+            .fail_capture(hour, force_full, reason);
+        self.industrial_organisations
+            .fail_capture(hour, force_full, reason);
         self.country_stability
             .fail_capture(hour, force_full, reason);
         self.country_tactic_unlocks
@@ -777,6 +792,9 @@ impl SlowPacks {
             + self.modifier_definitions.allocated_bytes()
             + self.hired_advisors.allocated_bytes()
             + self.character_inputs.allocated_bytes()
+            + self.logistics.allocated_bytes()
+            + self.country_factories.allocated_bytes()
+            + self.industrial_organisations.allocated_bytes()
             + self.country_stability.allocated_bytes()
             + self.country_tactic_unlocks.allocated_bytes()
             + self.naval_mission_inputs.allocated_bytes()
@@ -792,6 +810,9 @@ impl SlowPacks {
             modifier_definitions: modifier_definitions::Captured::vacant(),
             hired_advisors: hired_advisors::Captured::vacant(),
             character_inputs: character_inputs::Captured::vacant(),
+            logistics: logistics::Captured::vacant(),
+            country_factories: country_factories::Captured::vacant(),
+            industrial_organisations: industrial_organisations::Captured::vacant(),
             country_stability: country_stability::Captured::vacant(),
             country_tactic_unlocks: country_tactic_unlocks::Captured::vacant(),
             naval_mission_inputs: naval_mission_inputs::Captured::vacant(),
@@ -827,7 +848,10 @@ impl SlowPacks {
             modifier_definitions,
             hired_advisors,
             character_inputs,
-            country_tactic_unlocks
+            country_tactic_unlocks,
+            logistics,
+            country_factories,
+            industrial_organisations
         );
         let cost = self.country_stability.capture(
             memory,

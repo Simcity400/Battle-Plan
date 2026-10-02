@@ -14,8 +14,8 @@ use engine::{
 };
 use replay::rows::TableSchema;
 
-/// Through the explicit entity's string header.
-const VARIANT: usize = cequipment_variant::EXPLICIT_ENTITY + 32;
+/// Through the icon entry's string header.
+const VARIANT: usize = cequipment_variant::ICON_OVERRIDE_TOKEN + 32;
 const DEFINITION: usize = 0x40;
 /// An equipment type reaches its archetype pointer.
 const TYPE_DEFINITION: usize = cequipment_type::ARCHETYPE + 8;
@@ -30,6 +30,19 @@ fn explicit_entity(index: usize) -> String {
         format!("designer_explicit_entity_{index}")
     } else {
         String::new()
+    }
+}
+
+/// Variant `index`'s icon entry: an active sprite name for every eleventh
+/// variant, the auto-design sentinel path for every third, else the inactive
+/// entry a new variant starts with.
+fn icon(index: usize) -> (u8, u32, String) {
+    if index.is_multiple_of(11) {
+        (1, 0, format!("GFX_designer_icon_{index}"))
+    } else if index.is_multiple_of(3) {
+        (1, 1, ".".into())
+    } else {
+        (0, 1, String::new())
     }
 }
 
@@ -214,6 +227,10 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
             variant + cequipment_variant::EXPLICIT_ENTITY,
             explicit_entity(index).as_bytes(),
         );
+        let (active, kind, icon) = icon(index);
+        writer.put(variant + cequipment_variant::ICON_OVERRIDE_ACTIVE, &[active]);
+        writer.u32(variant + cequipment_variant::ICON_OVERRIDE_KIND, kind);
+        writer.string(variant + cequipment_variant::ICON_OVERRIDE_TOKEN, icon.as_bytes());
         writer.u64(variant + cequipment_variant::DEFINITION, equipment as u64);
         writer.u64(variant + cequipment_variant::CLASSIFIER_FLAGS, mix(seed));
         writer.u32(variant + cequipment_variant::MISSION_MASK, (seed >> 32) as u32);
@@ -370,6 +387,12 @@ fn scaled_variant_rows_match_the_recorded_digests() {
         for row in definitions {
             let index = (row.id >> 32) as usize - 1;
             assert_eq!(row.explicit_entity, explicit_entity(index).as_bytes(), "variant {index}");
+            let (active, kind, icon) = icon(index);
+            assert_eq!(
+                (row.icon_active, row.icon_kind, row.icon.as_slice()),
+                (active, kind, icon.as_bytes()),
+                "variant {index}"
+            );
         }
     }
 }

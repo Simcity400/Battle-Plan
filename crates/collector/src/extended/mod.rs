@@ -357,6 +357,10 @@ packs!(
     modifier_definitions,
     hired_advisors,
     character_inputs,
+    logistics,
+    country_factories,
+    industrial_organisations,
+    line_output,
     country_stability,
     new_divisions,
     country_tactic_unlocks,
@@ -387,6 +391,8 @@ impl Capacities {
         self.air_histories.raise_for_countries(slots);
         self.model_inputs.raise_for_countries(slots);
         self.hired_advisors.raise_for_countries(slots);
+        self.country_factories.raise_for_countries(slots);
+        self.industrial_organisations.raise_for_countries(slots);
         self.country_stability.raise_for_countries(slots);
         self.country_tactic_unlocks.raise_for_countries(slots);
         self.naval_mission_inputs.raise_for_countries(slots);
@@ -451,6 +457,22 @@ impl Captured {
     }
 
     /// Freeze this callback's primary activity before any shared source visitor.
+    /// Hand the production line hook log over into this frame, from the
+    /// clocked callback (`line_output::drain`).
+    pub(crate) fn drain_line_output(&mut self) {
+        self.line_output.drain();
+    }
+
+    /// The production ticks this frame handed over, for the spool's totals.
+    pub(crate) fn line_output(&self) -> &line_output::Captured {
+        &self.line_output
+    }
+
+    #[cfg(test)]
+    pub(crate) fn line_output_mut(&mut self) -> &mut line_output::Captured {
+        &mut self.line_output
+    }
+
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         // A frame whose sliced job never runs must not report an older read.
         self.governance.reset_slice_selections(hour, force_full);
@@ -1819,7 +1841,10 @@ impl Captured {
                 modifier_definitions,
                 hired_advisors,
                 character_inputs,
-                country_tactic_unlocks
+                country_tactic_unlocks,
+                logistics,
+                country_factories,
+                industrial_organisations
             );
             // No loaned fingerprint store: only the hour's slice is read.
             let cost = self.country_stability.capture(

@@ -216,10 +216,10 @@ fixture!(PowerBalanceRow, |key| {ordinal: key as u32}, {value_raw: i64, balance:
 fixture!(PowerBalanceMemberRow, |key| {record: (key >> 32) as u32, ordinal: key as u32}, {country: u32, daily_raw: i64, weekly_raw: i64, daily_present: bool, weekly_present: bool, daily_flags: u32, weekly_flags: u32});
 fixture!(PowerBalanceRangeRow, |key| {record: (key >> 32) as u32, ordinal: key as u32}, {identity: Vec<u8>});
 fixture!(PowerBalanceOverrideRow, |key| {record: (key >> 32) as u32, ordinal: key as u32}, {side: Vec<u8>, gfx: Vec<u8>});
-fixture!(ProductionLineRow, |key| {handle: key as u64}, {country: u32, kind: u8, variant: u64, mio: u64, active_factories: i32, requested_factories: i32, cost_raw: i64, speed_raw: i64, produced_raw: i64, priority: i32, amount: i32});
+fixture!(ProductionLineRow, |key| {handle: key as u64}, {country: u32, kind: u8, variant: u64, mio: u64, active_factories: i32, requested_factories: i32, cost_raw: i64, speed_raw: i64, produced_raw: i64, priority: i32, amount: i32, max_factories: i32, efficiency_raw: i64});
 fixture!(StockpileRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {variant_handle: u64, amount_raw: i64});
 fixture!(DivisionEquipmentRow, |key| {division: (key >> 32) as u64, ordinal: key as u32}, {template: u64, country: u32, variant_handle: u64, amount_raw: i64});
-fixture!(VariantDefinitionRow, |key| {id: key as u64}, {equipment_token: u32, creator_link: u32, origin_link: u32, append_variant_name: u8, obsolete: u8, classifier_flags: u64, mission_mask: u32, display_name: Vec<u8>, variant_name: Vec<u8>, explicit_entity: Vec<u8>, archetype_token: u32});
+fixture!(VariantDefinitionRow, |key| {id: key as u64}, {equipment_token: u32, creator_link: u32, origin_link: u32, append_variant_name: u8, obsolete: u8, classifier_flags: u64, mission_mask: u32, display_name: Vec<u8>, variant_name: Vec<u8>, explicit_entity: Vec<u8>, archetype_token: u32, icon_active: u8, icon_kind: u32, icon: Vec<u8>});
 sample_struct!(LocalSubunitRequirement {
     archetype_token: u32,
     amount_raw: i64
@@ -254,6 +254,7 @@ fixture!(ScientistRow, |key| {character: key as u32}, {country: u32, ordinal: u3
 fixture!(ScientistSkillRow, |key| {character: (key >> 32) as u32, ordinal: key as u32}, {token: u32, level: i32, experience_raw: i64});
 fixture!(CountryFuelRow, |key| {country: key as u32}, {current_raw: i64, maximum_raw: i64, gain_raw: i64, cost_raw: i64, gain_from_states_raw: i64, lend_lease_gain_raw: i64, lend_lease_consumption_raw: i64, gain_per_oil_raw: i64, history_index: i32, remaining_hours: i32, ring_gain_raw: i64, ring_consumed_raw: i64, ring_other_raw: i64, ring_requested_0_raw: i64, ring_requested_1_raw: i64, ring_requested_2_raw: i64, ring_received_0_raw: i64, ring_received_1_raw: i64, ring_received_2_raw: i64});
 fixture!(CountryFuelConsumerRow, |key| {country: (key >> 32) as u32, index: key as u32}, {priority: i32, requested_raw: i64, received_raw: i64});
+fixture!(CountryFactoriesRow, |key| {country: key as u32}, {military_levels: i32, military_total_raw: i64, military_controlled_raw: i64, military_owned_raw: i64, military_damaged_raw: i64, military_used: i32, military_unavailable: i32, military_from_subjects: i32, military_to_overlord: i32, military_from_others: i32, military_to_others: i32, naval_levels: i32, naval_total_raw: i64, naval_controlled_raw: i64, naval_owned_raw: i64, naval_damaged_raw: i64, naval_used: i32, naval_unavailable: i32, naval_from_subjects: i32, naval_to_overlord: i32, naval_from_others: i32, naval_to_others: i32, civilian_levels: i32, civilian_total_raw: i64, civilian_controlled_raw: i64, civilian_owned_raw: i64, civilian_damaged_raw: i64, civilian_used: i32, civilian_unavailable: i32, civilian_from_subjects: i32, civilian_to_overlord: i32, civilian_from_others: i32, civilian_to_others: i32, civilian_license_exports: i32, civilian_trade_exports: i32, consumer_goods: i32, special_projects: i32, license_imports: i32, trade_imports: i32, contract_payments: i32});
 fixture!(ResourceDefinitionRow, |key| {id: key as u32}, {token: u32, active: u8, factory_cost: i64});
 fixture!(CountryResourceRow, |key| {country: (key >> 32) as u32, resource: key as u32}, {produced: i64, adjustment: i64, imported: i64, used: i64, special_total: i64, production_demand: i64, to_export: i64, base_export: i64, exported: i64});
 fixture!(ResourceExchangeRow, |key| {id: key as u64}, {exporter: u32, importer: u32, resource: u32, import_ordinal: u32, export_ordinal: u32, convoys_assigned: i32, convoys_required: i32, efficiency_a: i64, efficiency_b: i64, delivered: i64, required_factories: i32, assigned_factories: i32, no_trade_influence: u8, no_resources: u8});
@@ -439,6 +440,10 @@ fixture!(HiredAdvisorRow, |key| {country: (key >> 32) as u32, ordinal: key as u3
 fixture!(NavalSupremacyRow, |key| {region: (key >> 32) as u32, country: key as u32}, {region_slot: u32, current: i64, base_target: i64, target: i64, individual_ratio: i64, previous: i64, decline_from: i64});
 fixture!(RadarCoverageRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {state: Option<u32>, provinces: Vec<u32>});
 fixture!(SentVolunteerRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {division: u64});
+fixture!(LogisticsEquipmentRow, |key| {country: (key >> 32) as u32, archetype: key as u32}, {token: u32, balance_raw: i64, stock_raw: i64});
+fixture!(IndustrialOrganisationRow, |key| {organisation: key as u64}, {country: u32, ordinal: u32, owner: u32, token: u32, name: Vec<u8>, icon: Vec<u8>});
+fixture!(IndustrialOrganisationHistoryRow, |key| {organisation: (key >> 64) as u64, variant: key as u64}, {units: i32});
+fixture!(ProductionLineOutputRow, |key| {line: (key >> 32) as u64, ordinal: key as u32}, {country: u32, variant: u64, mio: u64, units: i64, mio_credit: i64, since_hour: i32, observed_since_creation: bool, ended: bool, exact: bool});
 fixture!(VolunteerHostRow, |key| {country: (key >> 32) as u32, position: key as u32}, {host: u32, deployed_divisions: i32});
 fixture!(TheatreAreaRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {representative: Option<u32>, provinces: Vec<u32>});
 fixture!(StationedUnitRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {unit: u64});
@@ -666,7 +671,7 @@ fixture!(NavalCombatShipRow, |key| { combat: (key >> 33) as u64, side: ((key >> 
 fixture!(NavalCombatResultDetailsRow, |key| { result: key as u64 }, { sides: [NavalResultSideDetails;2] });
 // Combat fixture end
 fixture!(TrainInventoryRow, |key| {country: key as u32}, {node_count: u32, allocations: Vec<TrainAllocation>, controller_access: SparseBytes});
-fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32});
+fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>});
 fixture!(ArmyIconInputRow, |key| {division: key as u64}, {separate_counter: u8, alternate_template: u64});
 fixture!(ProvinceUnitOrderRow,|key| {province:key as u32},{mixed:Vec<u64>,naval:Vec<u64>});
 sample_struct!(CharacterPortrait {category:u32,size:u32,is_set:u8,kind:u32,identity:Vec<u8>});
@@ -750,7 +755,6 @@ fixture!(StateResourceRow, |key| {state: (key >> 32) as u32, resource: key as u3
 fixture!(StateDynamicModifierRow, |key| {state: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>, scope_country: u32, scope_state: i32});
 fixture!(CountryBuildingResourceRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {entry: u32, building: u32, count: u32, resource: u32, amount: i64});
 fixture!(RaidCountryInputRow, |key| {canonical_slot: key as u32}, {air_range_factor: Option<i64>, naval_commando_range_factor: Option<i64>, autonomous: Option<u32>, convoy_reservations: Vec<u32>});
-fixture!(CountryFactoryCountsRow, |key| {country: key as u32}, {military: i32, naval: i32, civilian: i32});
 fixture!(CountryCommandPowerRow, |key| {canonical_slot: key as u32}, {allocated_command_power_raw: i64, max_command_power: Option<i64>, max_command_power_factor: Option<i64>, ace_effectiveness_factor: Option<i64>, air_ace_bonuses_factor: Option<i64>});
 fixture!(DivisionRetreatBanRow, |key| {division: key as u64}, {owner: u32, bans: u8});
 fixture!(StateCoreRow, |key| {state: key as u32}, {cores: Vec<u32>});
@@ -960,6 +964,7 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         TableId::CountryFuelConsumers => {
             TableRows::CountryFuelConsumers(rows::<CountryFuelConsumerRow>(tick))
         }
+        TableId::CountryFactories => TableRows::CountryFactories(rows::<CountryFactoriesRow>(tick)),
         TableId::ResourceDefinitions => {
             TableRows::ResourceDefinitions(rows::<ResourceDefinitionRow>(tick))
         }
@@ -1107,6 +1112,18 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         TableId::NavalSupremacy => TableRows::NavalSupremacy(rows::<NavalSupremacyRow>(tick)),
         TableId::RadarCoverage => TableRows::RadarCoverage(rows::<RadarCoverageRow>(tick)),
         TableId::SentVolunteers => TableRows::SentVolunteers(rows::<SentVolunteerRow>(tick)),
+        TableId::LogisticsEquipment => {
+            TableRows::LogisticsEquipment(rows::<LogisticsEquipmentRow>(tick))
+        }
+        TableId::IndustrialOrganisations => {
+            TableRows::IndustrialOrganisations(rows::<IndustrialOrganisationRow>(tick))
+        }
+        TableId::IndustrialOrganisationHistory => {
+            TableRows::IndustrialOrganisationHistory(rows::<IndustrialOrganisationHistoryRow>(tick))
+        }
+        TableId::ProductionLineOutput => {
+            TableRows::ProductionLineOutput(rows::<ProductionLineOutputRow>(tick))
+        }
         TableId::VolunteerHosts => TableRows::VolunteerHosts(rows::<VolunteerHostRow>(tick)),
         TableId::TheatreAreas => TableRows::TheatreAreas(rows::<TheatreAreaRow>(tick)),
         TableId::StationedUnits => TableRows::StationedUnits(rows::<StationedUnitRow>(tick)),
@@ -1274,9 +1291,6 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         }
         TableId::RaidCountryInputs => {
             TableRows::RaidCountryInputs(rows::<RaidCountryInputRow>(tick))
-        }
-        TableId::CountryFactoryCounts => {
-            TableRows::CountryFactoryCounts(rows::<CountryFactoryCountsRow>(tick))
         }
         TableId::CountryCommandPower => {
             TableRows::CountryCommandPower(rows::<CountryCommandPowerRow>(tick))
@@ -1894,6 +1908,7 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         ui_green: 0x0000_0001, // Denormal.
         ui_blue: 0x7fc0_0001,  // NaN payload.
         ui_alpha: 0xbf80_0000, // Negative one.
+        graphical_culture_2d: b"western_european_2d".to_vec(),
     };
     let mut bytes = Vec::new();
     encode_row(&previous, 0, &mut bytes).unwrap();
@@ -1948,6 +1963,14 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
     let delta = recoloured.delta(Some(&previous)).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 14);
     assert_eq!(delta.apply(Some(previous.clone())).unwrap(), recoloured);
+    // Main's fields keep their bits; the 2D culture follows as 17.
+    let next = CountryAppearanceRow {
+        graphical_culture_2d: Vec::new(),
+        ..previous.clone()
+    };
+    let delta = next.delta(Some(&previous)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 17);
+    assert_eq!(delta.apply(Some(previous.clone())).unwrap(), next);
 }
 
 #[test]
@@ -2308,6 +2331,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<ArmyUpgradeProducedRow>(TableId::ArmyUpgradeProduced);
     check_table::<CountryFuelRow>(TableId::CountryFuel);
     check_table::<CountryFuelConsumerRow>(TableId::CountryFuelConsumers);
+    check_table::<CountryFactoriesRow>(TableId::CountryFactories);
     check_table::<ResourceDefinitionRow>(TableId::ResourceDefinitions);
     check_table::<CountryResourceRow>(TableId::CountryResources);
     check_table::<ResourceExchangeRow>(TableId::ResourceExchanges);
@@ -2397,6 +2421,10 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<NavalSupremacyRow>(TableId::NavalSupremacy);
     check_table::<RadarCoverageRow>(TableId::RadarCoverage);
     check_table::<SentVolunteerRow>(TableId::SentVolunteers);
+    check_table::<LogisticsEquipmentRow>(TableId::LogisticsEquipment);
+    check_table::<IndustrialOrganisationRow>(TableId::IndustrialOrganisations);
+    check_table::<IndustrialOrganisationHistoryRow>(TableId::IndustrialOrganisationHistory);
+    check_table::<ProductionLineOutputRow>(TableId::ProductionLineOutput);
     check_table::<VolunteerHostRow>(TableId::VolunteerHosts);
     check_table::<TheatreAreaRow>(TableId::TheatreAreas);
     check_table::<StationedUnitRow>(TableId::StationedUnits);
@@ -2455,7 +2483,6 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<CountryBuildingResourceRow>(TableId::CountryBuildingResources);
     check_table::<RaidCountryInputRow>(TableId::RaidCountryInputs);
     check_table::<CountryCommandPowerRow>(TableId::CountryCommandPower);
-    check_table::<CountryFactoryCountsRow>(TableId::CountryFactoryCounts);
     check_table::<DivisionRetreatBanRow>(TableId::DivisionRetreatBans);
     check_table::<StateCoreRow>(TableId::StateCores);
     check_table::<RaidEquipmentRow>(TableId::RaidEquipment);

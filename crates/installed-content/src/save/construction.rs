@@ -8,6 +8,8 @@ use super::{
 };
 
 pub type BuildingKey = (u32, Vec<u8>);
+/// Owning country tag and building type of an offsite building.
+pub type OffsiteKey = (Vec<u8>, Vec<u8>);
 pub type LawKey = (Vec<u8>, Vec<u8>, u32);
 pub type GarrisonKey = (Vec<u8>, u32);
 
@@ -135,6 +137,11 @@ pub struct CountryResources {
 pub struct Pack {
     pub state_buildings: BTreeMap<BuildingKey, Building>,
     pub province_buildings: BTreeMap<BuildingKey, Building>,
+    /// A country's offsite buildings (CCountry +0x1350), which 70C580 writes
+    /// as the country's `buildings` block (token 0x2f59) and omits when empty,
+    /// so a country without one has none. They have no location: `location`
+    /// is zero.
+    pub country_buildings: BTreeMap<OffsiteKey, Building>,
     pub building_construction: BTreeMap<u64, BuildingConstruction>,
     pub railway_construction: BTreeMap<u64, RailwayConstruction>,
     pub occupation_settings: BTreeMap<Vec<u8>, OccupationSettings>,
@@ -366,10 +373,11 @@ fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()>
     Ok(())
 }
 
-fn buildings(
+fn buildings<K: Ord>(
     location: u32,
     items: &[Item],
-    output: &mut BTreeMap<BuildingKey, Building>,
+    output: &mut BTreeMap<K, Building>,
+    key: impl Fn(&[u8]) -> K,
 ) -> io::Result<()> {
     for (ordinal, item) in items.iter().enumerate() {
         let name = item
@@ -386,7 +394,7 @@ fn buildings(
             healthy_level: number(fields, b"healthy_levels")?,
             partial_health: fixed(fields, b"partial_health")?,
         };
-        if output.insert((location, name.clone()), row).is_some() {
+        if output.insert(key(name), row).is_some() {
             return Err(invalid("duplicate scoped building type"));
         }
     }
@@ -460,6 +468,11 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
         if let Some(value) = field(fields, b"occupation_status")? {
             occupation(country, block(value)?, &mut pack)?;
         }
+        if let Some(value) = field(fields, b"buildings")? {
+            buildings(0, block(value)?, &mut pack.country_buildings, |name| {
+                (country.to_vec(), name.to_vec())
+            })?;
+        }
         if let Some(value) = field(fields, b"resources")? {
             pack.country_resources
                 .insert(country.to_vec(), country_resources(block(value)?)?);
@@ -497,7 +510,9 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
         )?;
         let fields = block(&item.value)?;
         if let Some(value) = field(fields, b"buildings")? {
-            buildings(state, block(value)?, &mut pack.state_buildings)?;
+            buildings(state, block(value)?, &mut pack.state_buildings, |name| {
+                (state, name.to_vec())
+            })?;
         }
         if let Some(value) = field(fields, b"resources")? {
             for entry in block(value)? {
@@ -538,7 +553,12 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                 .ok_or_else(|| invalid("construction province lacks id"))?,
         )?;
         if let Some(value) = field(block(&item.value)?, b"buildings")? {
-            buildings(province, block(value)?, &mut pack.province_buildings)?;
+            buildings(
+                province,
+                block(value)?,
+                &mut pack.province_buildings,
+                |name| (province, name.to_vec()),
+            )?;
         }
     }
     if pack
@@ -690,7 +710,7 @@ mod tests {
                 building={id={id=4 type=59} cost=1 priority=-8 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}
                 railway_gun={id={id=1 type=76} priority=1 amount=0 cost=0 created_date="1944.8.26.17" railway_gun={id=1 type=74}}
                 rail_way={id={id=4 type=4713} cost=2 priority=-9 amount=1 created_date=1936.1.1.12 base=-1 target=3 current_province=-1 remaining_hours=-0.00001 rail_way={8 3 8}}
-            }}}}
+            }} buildings={factory={level=3 healthy_levels=2 partial_health=50}}} ITA={}}
             states={3={buildings={factory={level=-32768 healthy_levels=-2 partial_health=-90071992547.40993} port={level=1 healthy_levels=1 partial_health=0}} resistance={}}}
             provinces={3={buildings={factory={level=32767 healthy_levels=1 partial_health=0.00001}}}}
         "#).unwrap();
@@ -717,6 +737,11 @@ mod tests {
             i16::MAX
         );
         assert_eq!(saved.state_resistance[&3].level.raw, 0);
+        // A country's offsite buildings keep their tag; a country without a
+        // block has none.
+        let offsite = &saved.country_buildings[&(b"GER".to_vec(), b"factory".to_vec())];
+        assert_eq!((offsite.level, offsite.healthy_level), (3, 2));
+        assert_eq!(saved.country_buildings.len(), 1);
     }
 
     #[test]

@@ -164,4 +164,17 @@ fn country_intel_is_dated_only_by_its_measured_walk() {
     let mut timed = replay::frame::Metrics::default();
     timed.table_ns[TableId::CountryIntel.index()] = 1;
     assert!(super::slot_read(&timed, TableId::CountryIntel, hour + 5));
+    // Intel can move off its slot independently of the other daily walks.
+    let sibling = TableId::LogisticsEquipment;
+    assert_eq!(daily_slot_of(sibling), slot);
+    assert!(!super::slot_read(&timed, sibling, hour + 5));
+    let mut sibling_timed = replay::frame::Metrics::default();
+    sibling_timed.table_ns[sibling.index()] = 1;
+    for sampled_hour in [hour, hour + 5] {
+        assert!(!super::slot_read(
+            &sibling_timed,
+            TableId::CountryIntel,
+            sampled_hour
+        ));
+    }
 }

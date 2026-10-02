@@ -134,13 +134,18 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
             .is_ok()
     );
     let mut f = frame();
-    set::<tables::CountryFactoryCounts>(
+    set::<tables::CountryFactories>(
         &mut f,
-        vec![CountryFactoryCountsRow {
+        vec![CountryFactoriesRow {
             country: 200,
-            military: i32::MAX,
-            naval: i32::MAX,
-            civilian: 9,
+            military_levels: i32::MAX,
+            naval_levels: i32::MAX,
+            civilian_levels: 9,
+            // Fixed5 totals are independent of the group heads.
+            military_total_raw: i64::MIN,
+            naval_total_raw: i64::MAX,
+            civilian_total_raw: -100_000,
+            ..Default::default()
         }],
     );
     let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
@@ -154,22 +159,22 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
     // 1038583950, %60 = 30: subtract 30 then 10 to choose B (140A9CD70).
     assert_eq!(text.expand("[Pick]").as_deref(), Ok("B"));
     drop(text);
-    set::<tables::CountryFactoryCounts>(&mut f, Vec::new());
+    set::<tables::CountryFactories>(&mut f, Vec::new());
     let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     assert!(
         text.expand("[Pick]")
             .unwrap_err()
-            .contains("country 200 has no CountryFactoryCounts row")
+            .contains("country 200 has no CountryFactories row")
     );
     drop(text);
-    *f.tables[TableId::CountryFactoryCounts.index()] = TableView::Unavailable {
+    *f.tables[TableId::CountryFactories.index()] = TableView::Unavailable {
         reason: "capture failed".into(),
     };
     let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     assert!(
         text.expand("[Pick]")
             .unwrap_err()
-            .contains("CountryFactoryCounts is unavailable")
+            .contains("CountryFactories is unavailable")
     );
 }
 
@@ -216,7 +221,7 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
             scopes,
         )
         .unwrap_err();
-    assert!(why.contains("CountryFactoryCounts row"), "{why}");
+    assert!(why.contains("CountryFactories row"), "{why}");
 }
 
 #[test]

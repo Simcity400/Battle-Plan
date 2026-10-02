@@ -36,6 +36,10 @@ pub(super) fn group_tables(name: &str) -> Vec<TableId> {
             TableId::VariantStats,
             TableId::VariantUpgrades,
         ],
+        "IndustrialOrganisations" => vec![
+            TableId::IndustrialOrganisations,
+            TableId::IndustrialOrganisationHistory,
+        ],
         _ => TableId::ALL
             .into_iter()
             .filter(|table| format!("{table:?}") == last)
@@ -43,11 +47,32 @@ pub(super) fn group_tables(name: &str) -> Vec<TableId> {
     }
 }
 
+/// Whether `frame` read the daily `table`: at its own slot hour by the
+/// cadence, since the slot's walk is always taken, or off it when its own walk
+/// or another table of its slot was timed (a forced full hour). A timing alone
+/// is no proof either way: a shared read is charged to one anchor, which can
+/// be an hourly table (the economy-rest raw-copy split charges the Daily(17)
+/// tables' read to ProvinceSupply). CountryIntel's walk can move off its slot
+/// alone, so it is read only where its own walk was timed, and it and the
+/// other tables of its slot are no evidence for each other.
+pub(crate) fn daily_read(hour: Hour, metrics: &replay::frame::Metrics, table: TableId) -> bool {
+    let timed = |table: TableId| metrics.table_ns[table.index()] != 0;
+    if table == TableId::CountryIntel {
+        return timed(table);
+    }
+    let cadence = replay::cadence::cadence(table);
+    cadence.is_refresh(hour)
+        || TableId::ALL.into_iter().any(|other| {
+            other != TableId::CountryIntel
+                && replay::cadence::cadence(other) == cadence
+                && timed(other)
+        })
+}
+
 /// Per daily table, the last hour at or before `hour` on `branch` whose frame
-/// read it: its own walk was measured, or a walk of another table of its slot
-/// was, since a shared read times only its anchor. Blocks are read newest
-/// first, keeping frame metrics and no table payloads, and the scan stops once
-/// every daily table has a read hour (a branch starts with a full read).
+/// read it ([`daily_read`]). Blocks are read newest first, keeping frame
+/// metrics and no table payloads, and the scan stops once every daily table
+/// has a read hour (a branch starts with a full read).
 pub(super) fn last_read_hours(
     replay: &Replay,
     branch: BranchId,
@@ -77,14 +102,8 @@ pub(super) fn last_read_hours(
             if frame.hour > hour {
                 break;
             }
-            let walked = TableId::ALL
-                .into_iter()
-                .filter(|table| frame.metrics.table_ns[table.index()] != 0)
-                .map(replay::cadence::cadence)
-                .collect::<Vec<_>>();
             for &table in &daily {
-                let cadence = replay::cadence::cadence(table);
-                if frame.metrics.table_ns[table.index()] != 0 || walked.contains(&cadence) {
+                if daily_read(frame.hour, &frame.metrics, table) {
                     let entry = last.entry(table).or_insert(frame.hour);
                     *entry = (*entry).max(frame.hour);
                 }
@@ -113,7 +132,11 @@ pub(super) struct Report {
     /// Positive game-thread costs identify refresh groups actually walked,
     /// including forced branch/keyframe refreshes outside their usual slot.
     /// A reconstructed snapshot alone is not proof: it may contain cached rows.
+    /// CountryIntel's walk is left out: it can move off its slot alone, so it
+    /// proves only itself ([`Report::intel_walked`]).
     pub(super) observed_refresh: Vec<replay::cadence::Cadence>,
+    /// CountryIntel's own walk was measured at the compared hour.
+    pub(super) intel_walked: bool,
     /// A daily table other than CountryIntel was walked off its slot: this
     /// hour was a forced full walk (branch start, load, gap or refresh).
     pub(super) forced_full: bool,
@@ -235,13 +258,15 @@ impl Report {
     /// is always taken, except CountryIntel's: a held shared buffer moves it
     /// to a later hour, and that retry is recorded as its measured cost
     /// (`sampling::exported_table_ticks`). So CountryIntel is read at an hour
-    /// only when a walk of its slot was measured there (or the hour is a full
-    /// refresh); other daily tables also on their slot hour.
+    /// only when its own walk was measured there (or the hour is a full
+    /// refresh), whatever the other tables of its slot (IntelNetworks,
+    /// LogisticsEquipment) did; they are read on their slot hour or when their
+    /// walk was measured.
     pub(super) fn read_at_hour(&self, table: TableId) -> bool {
-        let cadence = replay::cadence::cadence(table);
-        self.full_refresh()
-            || self.observed_refresh.contains(&cadence)
-            || (table != TableId::CountryIntel && self.refresh_is_current(table, self.hour))
+        if table == TableId::CountryIntel {
+            return self.full_refresh() || self.intel_walked;
+        }
+        self.full_refresh() || self.refresh_is_current(table, self.hour)
     }
 
     /// A sliced table compared only for the owners read at this hour: the
@@ -301,8 +326,10 @@ impl Report {
                 )
                 && !replay::cadence::is_refresh(table, frame.hour)
         });
+        self.intel_walked = frame.metrics.table_ns[TableId::CountryIntel.index()] != 0;
         for table in TableId::ALL {
-            if frame.metrics.table_ns[table.index()] != 0
+            if table != TableId::CountryIntel
+                && frame.metrics.table_ns[table.index()] != 0
                 && matches!(
                     replay::cadence::cadence(table),
                     replay::cadence::Cadence::Daily(_) | replay::cadence::Cadence::Static

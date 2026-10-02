@@ -1,0 +1,1140 @@
+//! Allocation-free observation of every production tick
+//! ([`engine::line_output_sites`]): the units each production line completes,
+//! which the game counts nowhere per line. A detour only records and calls the
+//! original; it never changes game behaviour and calls no game function.
+//!
+//! The delivery site runs only when a ProduceEquipment delivers, with the
+//! units times [`UNIT_SCALE`]; from one of the four ProduceEquipment call sites
+//! it leaves that amount pending on its thread. The credit site ends every
+//! ProduceEquipment with the count the game credits the line's organisation;
+//! it takes the pending delivery of the same ProduceEquipment and appends the
+//! line's handle, producing country, variant and organisation with both counts
+//! to a bounded lock-free log. A naval line that cannot deploy credits without
+//! delivering, so the two counts differ exactly there and on non-positive
+//! counts. The rocket line's delivery has no credit and leaves nothing
+//! pending, since its caller is not one of the four sites.
+//!
+//! Every clocked hourly callback hands the log over since its last drain into
+//! its frame ([`drain`]); the spool totals it per branch
+//! (`extended::line_output`). The detours run on the simulation thread only
+//! (the daily production pass is serial); the log is multi-producer safe
+//! anyway, and a delivery pairs only with a credit on its own thread.
+//! Storage follows the live equipment-line population, observed before the
+//! hooks are installed and by the spool thread. After draining, the callback
+//! installs an offered larger log only with no waiting entries or active
+//! writer; the spool frees the retired log. A swap preserves cursor and epoch.
+//!
+//! A site whose prologue differs from the pinned sentinel, or that cannot be
+//! detoured, leaves both uninstalled: the collector still attaches and
+//! ProductionLineOutput is unavailable with the reason (`unhooked` in
+//! `status.json`).
+use crate::{hook::Hook, opinion_changes::Padded};
+use engine::{
+    Memory,
+    line_output_sites::{
+        CREDIT, DELIVERY, HookSite, LINE_HANDLE, LINE_ORGANISATION, LINE_VARIANT, UNIT_SCALE,
+        VARIANT_HANDLE,
+    },
+};
+use std::{
+    cell::Cell,
+    ops::Range,
+    ptr,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    },
+};
+
+/// One serial daily pass appends at most one entry per live equipment line.
+/// Reserve two passes: one can remain after a short drain while its storage
+/// grows off-thread, with room for the next pass. The floor covers menu attach;
+/// no population ceiling is imposed, and a backlog beyond this still overflows.
+fn capacity_for_lines(lines: usize) -> usize {
+    lines.saturating_mul(2).max(1024)
+}
+
+#[derive(Default)]
+struct Slot {
+    line: AtomicU64,
+    country: AtomicU32,
+    variant: AtomicU64,
+    organisation: AtomicU64,
+    /// Delivered units in the low half, the credited count in the high half.
+    counts: AtomicU64,
+    exact: AtomicU8,
+}
+
+struct Log {
+    slots: Box<[Slot]>,
+}
+impl Log {
+    /// Off-thread; an allocation failure leaves the current log installed.
+    fn new(capacity: usize) -> Option<Box<Self>> {
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(capacity).ok()?;
+        slots.resize_with(capacity, Slot::default);
+        Some(Box::new(Self {
+            slots: slots.into_boxed_slice(),
+        }))
+    }
+}
+
+#[derive(Default)]
+struct LogSwap {
+    current: Option<Box<Log>>,
+    next: Option<Box<Log>>,
+    retired: Option<Box<Log>>,
+}
+static LOG_SWAP: Mutex<LogSwap> = Mutex::new(LogSwap {
+    current: None,
+    next: None,
+    retired: None,
+});
+static LOG: AtomicPtr<Log> = AtomicPtr::new(ptr::null_mut());
+static CAPACITY: AtomicUsize = AtomicUsize::new(0);
+static SWAPS: AtomicU64 = AtomicU64::new(0);
+static FAILED_OFFERS: AtomicU64 = AtomicU64::new(0);
+
+/// Loader/spool thread: offer storage for the live line population. Never
+/// shrink or replace an equally large offer; allocation stays off-thread.
+pub fn presize(lines: usize) {
+    let Ok(mut swap) = LOG_SWAP.lock() else {
+        return;
+    };
+    let capacity = capacity_for_lines(lines);
+    let offered = swap.next.as_ref().map_or(0, |log| log.slots.len());
+    if capacity <= CAPACITY.load(Ordering::Acquire) || capacity <= offered {
+        return;
+    }
+    if let Some(next) = Log::new(capacity) {
+        swap.next = Some(next);
+    } else {
+        FAILED_OFFERS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Hourly simulation-thread boundary, after the drain and before production
+/// can run (also before installing the hooks): neither allocate nor free.
+pub fn install_offered() {
+    let Ok(mut swap) = LOG_SWAP.try_lock() else {
+        return;
+    };
+    if swap.retired.is_some()
+        || ACTIVE.load(Ordering::SeqCst) != 0
+        || CURSOR.load(Ordering::SeqCst) != CONSUMED.load(Ordering::Relaxed)
+    {
+        return;
+    }
+    let Some(mut next) = swap.next.take() else {
+        return;
+    };
+    let capacity = next.slots.len();
+    let pointer = &mut *next as *mut Log;
+    swap.retired = swap.current.replace(next);
+    LOG.store(pointer, Ordering::SeqCst);
+    CAPACITY.store(capacity, Ordering::Release);
+    if swap.retired.is_some() {
+        SWAPS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Spool thread: no writer or drain can still hold the replaced log.
+pub fn collect() {
+    if let Ok(mut swap) = LOG_SWAP.lock() {
+        drop(swap.retired.take());
+    }
+}
+
+fn log() -> Option<&'static Log> {
+    // SAFETY: writers hold Call and the sole consumer is the simulation
+    // thread. Only its empty, writer-free boundary replaces the log, and
+    // detach drains every callback before releasing storage.
+    unsafe { LOG.load(Ordering::SeqCst).as_ref() }
+}
+
+/// Entries ever appended; each log maps `n` to `n % slots.len()`.
+static CURSOR: Padded<AtomicU64> = Padded(AtomicU64::new(0));
+static EPOCH: AtomicU64 = AtomicU64::new(1);
+static ENABLED: AtomicBool = AtomicBool::new(false);
+pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
+/// The trampolines: credit, then delivery.
+static ORIGINAL: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
+/// The module base the callers' RVAs are relative to.
+static BASE: AtomicUsize = AtomicUsize::new(0);
+/// The next entry the hourly drain hands over; only the callback moves it.
+static CONSUMED: AtomicU64 = AtomicU64::new(0);
+/// Why the hooks are not installed, when they are not.
+static UNHOOKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// `[credits, deliveries from a ProduceEquipment, other deliveries, entries,
+/// inexact entries, drains, entries handed over, overflowed logs, unobserved
+/// drains, failed producer reads]`.
+static COUNTERS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
+
+/// One credited or delivering production tick of one line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Entry {
+    /// The line's CID (+0x08), `ProductionLines.handle`.
+    pub line: u64,
+    /// Producing country's raw reference, resolved through CountryLinks.
+    pub country: u32,
+    /// The produced variant's CID, zero when the line had no variant.
+    pub variant: u64,
+    /// The organisation CID the game credits (+0x90), zero for none.
+    pub mio: u64,
+    /// Units delivered: the delivery's amount over [`UNIT_SCALE`], zero
+    /// without a delivery or when the tick is not exact.
+    pub units: i32,
+    /// The count the game passed to the organisation credit.
+    pub credit: i32,
+    /// The caller was a ProduceEquipment and any delivery paired with it: the
+    /// same ProduceEquipment, the same variant, and a nonnegative whole number
+    /// of units equal to the credit (including a conversion clamped to zero).
+    pub exact: bool,
+}
+
+/// A delivery waiting for the credit of its ProduceEquipment.
+#[derive(Clone, Copy)]
+struct Pending {
+    /// Index of the delivering ProduceEquipment (`HookSite::callers`).
+    producer: Option<usize>,
+    variant: usize,
+    amount: i64,
+    /// A second delivery arrived before any credit took the first.
+    doubled: bool,
+}
+const NOTHING_PENDING: Pending = Pending {
+    producer: None,
+    variant: 0,
+    amount: 0,
+    doubled: false,
+};
+
+thread_local! {
+    static PENDING: Cell<Pending> = const { Cell::new(NOTHING_PENDING) };
+}
+
+/// A hook state change or a lapped writer: no drain can continue across it.
+pub fn invalidate() {
+    EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+
+struct Call;
+impl Call {
+    fn enter() -> Self {
+        ACTIVE.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+impl Drop for Call {
+    fn drop(&mut self) {
+        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The ProduceEquipment index whose call returns to `caller`, if any.
+fn producer(site: &HookSite, caller: usize) -> Option<usize> {
+    let base = BASE.load(Ordering::Relaxed);
+    site.callers
+        .iter()
+        .position(|&rva| base.wrapping_add(rva) == caller)
+}
+
+/// A live native value the game is using; the detour's receivers are the line
+/// the game just produced for and its variant.
+fn live_u64(address: usize) -> u64 {
+    unsafe { std::ptr::read_volatile(address as *const u64) }
+}
+
+/// After the delivery site returned to `caller`: leave its amount pending when
+/// a ProduceEquipment called it.
+fn observe_delivery(caller: usize, variant: usize, amount: i64) {
+    let Some(index) = producer(&DELIVERY, caller) else {
+        COUNTERS[2].fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+    let doubled = PENDING.get().producer.is_some();
+    PENDING.set(Pending {
+        producer: Some(index),
+        variant,
+        amount,
+        doubled,
+    });
+}
+
+/// After the credit site returned to `caller`, with the delivery `pending`
+/// before it: append the tick when it credited, delivered or was not exact.
+fn observe_credit(line: usize, count: i32, caller: usize, pending: Pending) {
+    COUNTERS[0].fetch_add(1, Ordering::Relaxed);
+    let variant = live_u64(line.wrapping_add(LINE_VARIANT)) as usize;
+    let producer = producer(&CREDIT, caller);
+    let (units, exact) = match pending.producer {
+        None => (0, producer.is_some()),
+        Some(index) => {
+            let units = (pending.amount >= 0 && pending.amount % UNIT_SCALE == 0)
+                .then(|| i32::try_from(pending.amount / UNIT_SCALE).ok())
+                .flatten();
+            match units {
+                Some(units)
+                    if producer == Some(index)
+                        && pending.variant == variant
+                        && units == count
+                        && !pending.doubled =>
+                {
+                    (units, true)
+                }
+                _ => (0, false),
+            }
+        }
+    };
+    if count == 0 && units == 0 && exact {
+        return;
+    }
+    // The serial native pass keeps the line, status and country alive here.
+    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let country = match engine::line_output_sites::producing_country(
+        &memory,
+        BASE.load(Ordering::Relaxed),
+        line,
+    ) {
+        Ok(country) => country,
+        Err(_) => {
+            COUNTERS[9].fetch_add(1, Ordering::Relaxed);
+            invalidate();
+            return;
+        }
+    };
+    append(Entry {
+        country,
+        line: live_u64(line.wrapping_add(LINE_HANDLE)),
+        variant: if variant == 0 {
+            0
+        } else {
+            live_u64(variant.wrapping_add(VARIANT_HANDLE))
+        },
+        mio: live_u64(line.wrapping_add(LINE_ORGANISATION)),
+        units,
+        credit: count,
+        exact,
+    });
+}
+
+/// Store an entry, from inside a [`Call`]. A writer that stalled until writers
+/// had appended a whole log after its index may have overwritten a newer entry
+/// in its slot; every drain meanwhile saw it active and handed nothing over, so
+/// it ends the observation (a new epoch) before it leaves.
+fn append(entry: Entry) {
+    COUNTERS[3].fetch_add(1, Ordering::Relaxed);
+    if !entry.exact {
+        COUNTERS[4].fetch_add(1, Ordering::Relaxed);
+    }
+    let Some(log) = log() else {
+        invalidate();
+        return;
+    };
+    let capacity = log.slots.len() as u64;
+    let index = CURSOR.fetch_add(1, Ordering::SeqCst);
+    let slot = &log.slots[(index % capacity) as usize];
+    slot.line.store(entry.line, Ordering::SeqCst);
+    slot.country.store(entry.country, Ordering::SeqCst);
+    slot.variant.store(entry.variant, Ordering::SeqCst);
+    slot.organisation.store(entry.mio, Ordering::SeqCst);
+    slot.counts.store(
+        u64::from(entry.units as u32) | u64::from(entry.credit as u32) << 32,
+        Ordering::SeqCst,
+    );
+    slot.exact.store(u8::from(entry.exact), Ordering::SeqCst);
+    if CURSOR.load(Ordering::SeqCst).wrapping_sub(index) > capacity {
+        invalidate();
+    }
+}
+
+fn entry(slot: &Slot) -> Entry {
+    let counts = slot.counts.load(Ordering::SeqCst);
+    Entry {
+        line: slot.line.load(Ordering::SeqCst),
+        country: slot.country.load(Ordering::SeqCst),
+        variant: slot.variant.load(Ordering::SeqCst),
+        mio: slot.organisation.load(Ordering::SeqCst),
+        units: counts as u32 as i32,
+        credit: (counts >> 32) as u32 as i32,
+        exact: slot.exact.load(Ordering::SeqCst) != 0,
+    }
+}
+
+/// What one hourly drain handed over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Drained {
+    /// The observation the entries belong to; a new epoch cannot continue an
+    /// older one.
+    pub epoch: u64,
+    /// The log index of the first entry handed over. After an overflow it is
+    /// past the lost entries, so it no longer continues the previous drain.
+    pub first: u64,
+    /// The log position at the drain: every tick before this hour's sample is
+    /// below it, and every later one at or above it.
+    pub cursor: u64,
+    /// Entries handed over, from `first`.
+    pub copied: usize,
+    /// Entries that were waiting (`copied` or more): the storage the caller
+    /// needs to take them all at once.
+    pub pending: usize,
+}
+
+#[cfg(test)]
+impl Drained {
+    /// Every tick before this hour's sample was handed over, now or earlier.
+    fn complete(&self) -> bool {
+        self.first + self.copied as u64 >= self.cursor
+    }
+}
+
+/// Hand the entries since the last drain over into `output`, from the hourly
+/// callback, which is their only consumer. `Err` when ticks go unobserved
+/// (hooks disabled or not installed, or the observation restarted during the
+/// drain): the entries are skipped. With a writer active nothing is copied and
+/// the entries wait; with short storage only the oldest `output.len()` are
+/// copied and the rest wait for a later drain.
+pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
+    let mut consumed = CONSUMED.load(Ordering::Relaxed);
+    let drained = drain_from(&mut consumed, output);
+    CONSUMED.store(consumed, Ordering::Relaxed);
+    drained
+}
+
+fn drain_from(consumed: &mut u64, output: &mut [Entry]) -> Result<Drained, &'static str> {
+    COUNTERS[5].fetch_add(1, Ordering::Relaxed);
+    // The cursor before the writer check: a writer that took an earlier index
+    // is still active until its slot is stored.
+    let cursor = CURSOR.load(Ordering::SeqCst);
+    let epoch = EPOCH.load(Ordering::SeqCst);
+    let unobserved = |consumed: &mut u64, reason| {
+        COUNTERS[8].fetch_add(1, Ordering::Relaxed);
+        *consumed = cursor;
+        Err(reason)
+    };
+    if UNHOOKED.get().is_some() {
+        return unobserved(consumed, "production line hooks are not installed");
+    }
+    if !ENABLED.load(Ordering::SeqCst) {
+        return unobserved(consumed, "production line hooks are not enabled");
+    }
+    let Some(log) = log() else {
+        return unobserved(consumed, "production line log is not installed");
+    };
+    let capacity = log.slots.len() as u64;
+    let settled = ACTIVE.load(Ordering::SeqCst) == 0;
+    let pending = cursor.wrapping_sub(*consumed);
+    if pending > capacity {
+        // The oldest entries were overwritten: hand over none, and start the
+        // next drain at the cursor, past the loss.
+        COUNTERS[7].fetch_add(1, Ordering::Relaxed);
+        *consumed = cursor;
+        return Ok(Drained {
+            epoch,
+            first: cursor,
+            cursor,
+            copied: 0,
+            pending: 0,
+        });
+    }
+    let pending = pending as usize;
+    let first = *consumed;
+    let copied = if settled {
+        pending.min(output.len())
+    } else {
+        0
+    };
+    for (offset, entry_out) in output[..copied].iter_mut().enumerate() {
+        *entry_out = entry(&log.slots[((first + offset as u64) % capacity) as usize]);
+    }
+    let now = CURSOR.load(Ordering::SeqCst);
+    if now.wrapping_sub(first) > capacity {
+        // Writers appended a whole log during the copy: a copied slot may hold
+        // a later entry. The loss starts the next drain past it.
+        COUNTERS[7].fetch_add(1, Ordering::Relaxed);
+        *consumed = now;
+        return Ok(Drained {
+            epoch,
+            first: now,
+            cursor,
+            copied: 0,
+            pending: 0,
+        });
+    }
+    if EPOCH.load(Ordering::SeqCst) != epoch {
+        // A writer lapped while stalled, or the hooks changed state, between
+        // the epoch read and here: the copy may hold a stale entry.
+        return unobserved(
+            consumed,
+            "production line observation restarted during the drain",
+        );
+    }
+    *consumed = first + copied as u64;
+    COUNTERS[6].fetch_add(copied as u64, Ordering::Relaxed);
+    Ok(Drained {
+        epoch,
+        first,
+        cursor,
+        copied,
+        pending,
+    })
+}
+
+pub fn status() -> serde_json::Value {
+    let counters = COUNTERS
+        .each_ref()
+        .map(|value| value.load(Ordering::Relaxed));
+    serde_json::json!({
+        "unhooked": UNHOOKED.get(),
+        "enabled": ENABLED.load(Ordering::SeqCst),
+        "capacity": CAPACITY.load(Ordering::Acquire),
+        "swaps": SWAPS.load(Ordering::Relaxed),
+        "failed_offers": FAILED_OFFERS.load(Ordering::Relaxed),
+        "credits": counters[0],
+        "producer_deliveries": counters[1],
+        "other_deliveries": counters[2],
+        "entries": counters[3],
+        "inexact_entries": counters[4],
+        "drains": counters[5],
+        "handed_over": counters[6],
+        "overflowed_logs": counters[7],
+        "unobserved_drains": counters[8],
+        "failed_producer_reads": counters[9],
+        "scope": "cumulative since attach; credits count every ProduceEquipment, other_deliveries the rocket line's and any other caller's (never paired); an entry is a tick that credited, delivered or was not exact"
+    })
+}
+
+pub struct Hooks {
+    hooks: Vec<Hook>,
+}
+impl Hooks {
+    /// The enclosing runtime verified the executable hash before construction.
+    /// `lines` is the live roster population observed by the loader.
+    /// Never fails: without both hooks ProductionLineOutput is unavailable.
+    pub unsafe fn new(memory: &impl Memory, base: usize, lines: usize) -> Self {
+        presize(lines);
+        install_offered();
+        let hooks = unsafe { Self::install(memory, base) }.unwrap_or_else(|reason| {
+            let _ = UNHOOKED.set(reason);
+            Vec::new()
+        });
+        Self { hooks }
+    }
+
+    /// Both sentinels are checked before either detour is created. The credit
+    /// hook is first: enabling in order, a delivery is observed only while its
+    /// credit is, so nothing is left pending (disabling runs in reverse).
+    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Vec<Hook>, String> {
+        let sites = [&CREDIT, &DELIVERY];
+        let callbacks = [
+            credit_entry as *const () as usize,
+            delivery_entry as *const () as usize,
+        ];
+        for site in sites {
+            if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                return Err(format!("production line {} sentinel differs", site.name));
+            }
+        }
+        if LOG.load(Ordering::SeqCst).is_null() {
+            return Err("production line log allocation failed".into());
+        }
+        BASE.store(base, Ordering::Relaxed);
+        let mut hooks = Vec::new();
+        for (index, site) in sites.into_iter().enumerate() {
+            let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }?;
+            ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
+            hooks.push(hook);
+        }
+        Ok(hooks)
+    }
+
+    /// Ticks while the hooks were not both enabled went unobserved, so every
+    /// change of state starts a new epoch.
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+        if !enabled {
+            ENABLED.store(false, Ordering::SeqCst);
+        }
+        invalidate();
+        let mut order: Vec<&mut Hook> = self.hooks.iter_mut().collect();
+        if !enabled {
+            order.reverse();
+        }
+        for hook in order {
+            if !hook.set_enabled(enabled)? {
+                return Ok(false);
+            }
+        }
+        ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
+        Ok(true)
+    }
+
+    pub fn executable_ranges(&self) -> Vec<Range<usize>> {
+        self.hooks
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .collect()
+    }
+}
+
+impl Drop for Hooks {
+    fn drop(&mut self) {
+        // Like the hook relays, storage is released only if hooks were never
+        // enabled, or after they were removed and every callback drained.
+        LOG.store(ptr::null_mut(), Ordering::SeqCst);
+        CAPACITY.store(0, Ordering::Release);
+        let mut swap = LOG_SWAP
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *swap = LogSwap::default();
+    }
+}
+
+fn original(site: usize) -> usize {
+    ORIGINAL[site].load(Ordering::Acquire)
+}
+
+// Both native functions take three integer arguments, so R9 is free: each
+// entry copies its return address (the game's call site) there and jumps to
+// the Rust body, which returns to the game itself. The entries touch no stack.
+#[unsafe(naked)]
+unsafe extern "system" fn credit_entry() {
+    core::arch::naked_asm!("mov r9, qword ptr [rsp]", "jmp {body}", body = sym credit);
+}
+
+#[unsafe(naked)]
+unsafe extern "system" fn delivery_entry() {
+    core::arch::naked_asm!("mov r9, qword ptr [rsp]", "jmp {body}", body = sym delivery);
+}
+
+// Signatures from the pinned decompiles; every argument is passed through
+// unchanged.
+unsafe extern "system" fn credit(line: usize, speed: i64, count: i32, caller: usize) {
+    let _call = Call::enter();
+    let pending = PENDING.replace(NOTHING_PENDING);
+    let original: unsafe extern "system" fn(usize, i64, i32) =
+        unsafe { std::mem::transmute(original(0)) };
+    unsafe { original(line, speed, count) };
+    observe_credit(line, count, caller, pending);
+}
+
+unsafe extern "system" fn delivery(status: usize, variant: usize, amount: i64, caller: usize) {
+    let _call = Call::enter();
+    let original: unsafe extern "system" fn(usize, usize, i64) =
+        unsafe { std::mem::transmute(original(1)) };
+    unsafe { original(status, variant, amount) };
+    observe_delivery(caller, variant, amount);
+}
+
+/// Tests that touch the process-wide observation state take this first.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Observation on (true) or off, with the callers' RVAs relative to zero and
+/// the drain at the current cursor. Hold [`test_lock`].
+#[cfg(test)]
+pub(crate) fn observe_for_test(enabled: bool) {
+    BASE.store(0, Ordering::Relaxed);
+    ENABLED.store(enabled, Ordering::SeqCst);
+    CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
+    if enabled {
+        reset_log_for_test(4096);
+    }
+    PENDING.set(NOTHING_PENDING);
+}
+
+#[cfg(test)]
+fn reset_log_for_test(capacity: usize) {
+    let mut current = Log::new(capacity).unwrap();
+    LOG.store(&mut *current, Ordering::SeqCst);
+    CAPACITY.store(capacity, Ordering::Release);
+    *LOG_SWAP.lock().unwrap() = LogSwap {
+        current: Some(current),
+        ..Default::default()
+    };
+}
+
+/// One ProduceEquipment of a synthetic line: the delivery (when `delivered`
+/// is some) and the credit, as the native calls return to `producer`'s sites.
+/// Hold [`test_lock`].
+#[cfg(test)]
+pub(crate) fn produce_for_test(line: usize, producer: usize, count: i32, delivered: Option<i64>) {
+    if let Some(amount) = delivered {
+        observe_delivery(
+            DELIVERY.callers[producer],
+            live_u64(line + LINE_VARIANT) as usize,
+            amount,
+        );
+    }
+    let pending = PENDING.replace(NOTHING_PENDING);
+    observe_credit(line, count, CREDIT.callers[producer], pending);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MILITARY: usize = 0;
+    const NAVAL: usize = 1;
+
+    /// A line and its variant in owned memory, laid out at the offsets the
+    /// detours read.
+    struct Line {
+        line: Vec<u64>,
+        _variant: Vec<u64>,
+        _status: Vec<u64>,
+        country: Vec<u64>,
+    }
+    impl Line {
+        fn new(handle: u64, variant: u64, mio: u64) -> Self {
+            let mut owned_variant = vec![0_u64; 4];
+            owned_variant[VARIANT_HANDLE / 8] = variant;
+            let mut line = vec![0_u64; 0x20];
+            let mut status = vec![0_u64; (engine::cproduction_status::COUNTRY + 8) / 8];
+            let mut country = vec![0_u64; (engine::ccountry::PRODUCTION_STATUS + 8) / 8];
+            status[0] = engine::cproduction_status::VTABLE_RVA as u64;
+            country[0] = engine::ccountry::VTABLE_RVA as u64;
+            country[engine::ccountry::ID / 8] = 5001;
+            country[engine::ccountry::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
+            status[engine::cproduction_status::COUNTRY / 8] = country.as_ptr() as u64;
+            line[0] = engine::cmilitary_production_line::VTABLE_RVA as u64;
+            line[engine::cproduction_line::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
+            line[LINE_HANDLE / 8] = handle;
+            line[LINE_VARIANT / 8] = owned_variant.as_ptr() as u64;
+            line[LINE_ORGANISATION / 8] = mio;
+            Self {
+                line,
+                _variant: owned_variant,
+                _status: status,
+                country,
+            }
+        }
+        fn address(&self) -> usize {
+            self.line.as_ptr() as usize
+        }
+        fn variant_pointer(&self) -> usize {
+            self.line[LINE_VARIANT / 8] as usize
+        }
+    }
+
+    fn drained(capacity: usize) -> (Result<Drained, &'static str>, Vec<Entry>) {
+        let mut output = vec![Entry::default(); capacity];
+        let result = drain(&mut output);
+        let copied = result.map_or(0, |drained| drained.copied);
+        output.truncate(copied);
+        (result, output)
+    }
+
+    fn tick(line: u64) -> Entry {
+        Entry {
+            line,
+            country: 5001,
+            variant: line + 100,
+            mio: line + 200,
+            units: 1,
+            credit: 1,
+            exact: true,
+        }
+    }
+
+    #[test]
+    fn a_live_population_larger_than_the_log_presizes_a_full_serial_pass() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        reset_log_for_test(8);
+        let population = 70_000;
+        let before = drained(0).0.unwrap();
+        let swaps = status()["swaps"].as_u64().unwrap();
+        let overflows = status()["overflowed_logs"].as_u64().unwrap();
+        presize(population);
+        let offered = LOG_SWAP.lock().unwrap().next.as_deref().unwrap() as *const Log;
+        presize(population);
+        assert_eq!(
+            LOG_SWAP.lock().unwrap().next.as_deref().unwrap() as *const Log,
+            offered
+        );
+        assert_eq!(status()["capacity"], 8);
+        install_offered();
+        assert_eq!(status()["capacity"], population * 2);
+        assert_eq!(status()["swaps"], swaps + 1);
+        assert!(LOG_SWAP.lock().unwrap().retired.is_some());
+        collect();
+        assert!(LOG_SWAP.lock().unwrap().retired.is_none());
+        let expected: Vec<_> = (1..=population as u64).map(tick).collect();
+        for &entry in &expected {
+            let _writer = Call::enter();
+            append(entry);
+        }
+        let (result, entries) = drained(population);
+        let after = result.unwrap();
+        assert_eq!(entries, expected);
+        assert!(after.complete());
+        assert_eq!((after.epoch, after.first), (before.epoch, before.cursor));
+        assert_eq!(status()["overflowed_logs"], overflows);
+        assert!(drained(1).1.is_empty());
+        observe_for_test(false);
+    }
+
+    #[test]
+    fn swaps_wait_for_pending_entries_and_writers_without_losing_or_duplicating_ticks() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        reset_log_for_test(8);
+        for line in 1..=3 {
+            let _writer = Call::enter();
+            append(tick(line));
+        }
+        presize(20);
+        install_offered();
+        assert_eq!(status()["capacity"], 8);
+        assert!(LOG_SWAP.lock().unwrap().next.is_some());
+        let (first, mut entries) = drained(2);
+        let first = first.unwrap();
+        install_offered();
+        assert_eq!(status()["capacity"], 8);
+        let (last, rest) = drained(2);
+        let last = last.unwrap();
+        entries.extend(rest);
+        let writer = Call::enter();
+        install_offered();
+        assert_eq!(status()["capacity"], 8);
+        assert!(LOG_SWAP.lock().unwrap().next.is_some());
+        drop(writer);
+        install_offered();
+        assert_eq!(status()["capacity"], capacity_for_lines(20));
+        assert!(LOG_SWAP.lock().unwrap().retired.is_some());
+        // Until the spool collects the old log, another swap would free it
+        // on the game thread and must wait too.
+        presize(2000);
+        install_offered();
+        assert_eq!(status()["capacity"], capacity_for_lines(20));
+        collect();
+        install_offered();
+        collect();
+        for line in 4..=6 {
+            let _writer = Call::enter();
+            append(tick(line));
+        }
+        let (after, rest) = drained(8);
+        let after = after.unwrap();
+        entries.extend(rest);
+        assert_eq!(entries, (1..=6).map(tick).collect::<Vec<_>>());
+        assert_eq!(last.first, first.first + first.copied as u64);
+        assert_eq!(after.first, last.cursor);
+        assert_eq!((last.epoch, after.epoch), (first.epoch, first.epoch));
+        assert!(after.complete());
+        assert!(drained(8).1.is_empty());
+        observe_for_test(false);
+    }
+
+    /// Deliveries pair with the credit of the same ProduceEquipment; a naval
+    /// line that cannot deploy credits without delivering; ticks without
+    /// either leave nothing; the rocket line's delivery is never paired.
+    #[test]
+    fn deliveries_pair_with_their_credit_and_blocked_ships_credit_alone() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        let a = Line::new(0x11_0000_0021, 0x5_0000_0046, 0x9_0000_004f);
+        let b = Line::new(0x12_0000_0021, 0x6_0000_0046, 0);
+        produce_for_test(a.address(), MILITARY, 3, Some(3 * UNIT_SCALE));
+        produce_for_test(a.address(), MILITARY, 0, None);
+        produce_for_test(b.address(), NAVAL, 2, None);
+        // The rocket line delivers from elsewhere; nothing waits for a credit.
+        observe_delivery(0x00f5_c24a, b.variant_pointer(), 5 * UNIT_SCALE);
+        produce_for_test(b.address(), NAVAL, 0, None);
+        // A negative count is credited, with nothing delivered.
+        produce_for_test(a.address(), MILITARY, -1, None);
+        let (result, entries) = drained(8);
+        let drained = result.unwrap();
+        assert!(drained.complete());
+        assert_eq!(
+            entries,
+            [
+                Entry {
+                    country: 5001,
+                    line: 0x11_0000_0021,
+                    variant: 0x5_0000_0046,
+                    mio: 0x9_0000_004f,
+                    units: 3,
+                    credit: 3,
+                    exact: true,
+                },
+                Entry {
+                    country: 5001,
+                    line: 0x12_0000_0021,
+                    variant: 0x6_0000_0046,
+                    mio: 0,
+                    units: 0,
+                    credit: 2,
+                    exact: true,
+                },
+                Entry {
+                    country: 5001,
+                    line: 0x11_0000_0021,
+                    variant: 0x5_0000_0046,
+                    mio: 0x9_0000_004f,
+                    units: 0,
+                    credit: -1,
+                    exact: true,
+                },
+            ]
+        );
+        observe_for_test(false);
+    }
+
+    #[test]
+    fn zero_conversion_is_exact_only_when_delivery_and_credit_match() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        let a = Line::new(0x11_0000_0021, 0x5_0000_0046, 0);
+        let other = Line::new(0x12_0000_0021, 0x6_0000_0046, 0);
+        // 140F5979D/140F597B8..BD can clamp the conversion to zero after
+        // entering the positive-count block, which still calls both hooks.
+        produce_for_test(a.address(), MILITARY, 0, Some(0));
+        produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
+        let (_, entries) = drained(8);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].exact);
+        assert_eq!((entries[0].units, entries[0].credit), (1, 1));
+
+        // Even a zero delivery must pair: wrong producer, variant, duplicate,
+        // unknown caller, or nonzero credit cannot be excused as a no-op.
+        observe_delivery(DELIVERY.callers[NAVAL], a.variant_pointer(), 0);
+        observe_credit(
+            a.address(),
+            0,
+            CREDIT.callers[MILITARY],
+            PENDING.replace(NOTHING_PENDING),
+        );
+        observe_delivery(DELIVERY.callers[MILITARY], other.variant_pointer(), 0);
+        observe_credit(
+            a.address(),
+            0,
+            CREDIT.callers[MILITARY],
+            PENDING.replace(NOTHING_PENDING),
+        );
+        observe_delivery(DELIVERY.callers[MILITARY], a.variant_pointer(), 0);
+        produce_for_test(a.address(), MILITARY, 0, Some(0));
+        observe_delivery(DELIVERY.callers[MILITARY], a.variant_pointer(), 0);
+        observe_credit(a.address(), 0, 0x1234, PENDING.replace(NOTHING_PENDING));
+        produce_for_test(a.address(), MILITARY, 1, Some(0));
+        produce_for_test(a.address(), MILITARY, 0, Some(UNIT_SCALE));
+        produce_for_test(
+            a.address(),
+            MILITARY,
+            1,
+            Some((i64::from(i32::MAX) + 1) * UNIT_SCALE),
+        );
+        let (_, entries) = drained(8);
+        assert_eq!(entries.len(), 7);
+        assert!(entries.iter().all(|entry| !entry.exact && entry.units == 0));
+        observe_for_test(false);
+    }
+
+    #[test]
+    fn unauthenticated_producer_ends_the_observation_instead_of_recording_zero() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        let mut a = Line::new(0x11_0000_0021, 0x5_0000_0046, 0);
+        let before = drained(8).0.unwrap();
+        a.country[engine::ccountry::ID / 8] = 0;
+        produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
+        let (after, entries) = drained(8);
+        assert!(entries.is_empty());
+        assert_ne!(after.unwrap().epoch, before.epoch);
+        observe_for_test(false);
+    }
+
+    /// A delivery that another ProduceEquipment, another variant, a second
+    /// delivery or an amount that is not whole units claims is not guessed.
+    #[test]
+    fn deliveries_that_do_not_pair_exactly_make_the_tick_inexact() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        let a = Line::new(0x21_0000_0021, 0x7_0000_0046, 0);
+        let other = Line::new(0x22_0000_0021, 0x8_0000_0046, 0);
+        let inexact = |credit| Entry {
+            country: 5001,
+            line: 0x21_0000_0021,
+            variant: 0x7_0000_0046,
+            mio: 0,
+            units: 0,
+            credit,
+            exact: false,
+        };
+        // The naval site delivered; the military site credits.
+        observe_delivery(DELIVERY.callers[NAVAL], a.variant_pointer(), UNIT_SCALE);
+        let pending = PENDING.replace(NOTHING_PENDING);
+        observe_credit(a.address(), 1, CREDIT.callers[MILITARY], pending);
+        // Another variant was delivered.
+        observe_delivery(
+            DELIVERY.callers[MILITARY],
+            other.variant_pointer(),
+            UNIT_SCALE,
+        );
+        let pending = PENDING.replace(NOTHING_PENDING);
+        observe_credit(a.address(), 1, CREDIT.callers[MILITARY], pending);
+        // Two deliveries before one credit.
+        observe_delivery(DELIVERY.callers[MILITARY], a.variant_pointer(), UNIT_SCALE);
+        produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
+        // Part of a unit, and a negative amount.
+        produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE / 2));
+        produce_for_test(a.address(), NAVAL, -2, Some(-2 * UNIT_SCALE));
+        // A credit from an unknown caller.
+        observe_credit(a.address(), 0, 0x1234, NOTHING_PENDING);
+        let (_, entries) = drained(8);
+        assert_eq!(
+            entries,
+            [
+                inexact(1),
+                inexact(1),
+                inexact(1),
+                inexact(1),
+                inexact(-2),
+                inexact(0)
+            ]
+        );
+        observe_for_test(false);
+    }
+
+    /// Short storage hands over the oldest entries and keeps the rest for the
+    /// next drain; a writer that is active hands over nothing yet.
+    #[test]
+    fn short_storage_and_active_writers_defer_entries_without_losing_them() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        let a = Line::new(0x31_0000_0021, 0x9_0000_0046, 0);
+        for count in 1..=5 {
+            produce_for_test(
+                a.address(),
+                MILITARY,
+                count,
+                Some(i64::from(count) * UNIT_SCALE),
+            );
+        }
+        let (result, entries) = drained(2);
+        let first = result.unwrap();
+        assert_eq!((first.copied, first.pending), (2, 5));
+        assert!(!first.complete());
+        assert_eq!(entries.iter().map(|e| e.units).collect::<Vec<_>>(), [1, 2]);
+        let writer = Call::enter();
+        let (result, _) = drained(8);
+        let during = result.unwrap();
+        assert_eq!((during.first, during.copied), (first.first + 2, 0));
+        assert!(!during.complete());
+        drop(writer);
+        let (result, entries) = drained(8);
+        let last = result.unwrap();
+        assert_eq!(last.first, first.first + 2);
+        assert!(last.complete());
+        assert_eq!(
+            entries.iter().map(|e| e.units).collect::<Vec<_>>(),
+            [3, 4, 5]
+        );
+        observe_for_test(false);
+    }
+
+    /// An overflowed log hands over nothing and restarts past the loss, so the
+    /// next drain no longer continues the previous one; disabled hooks hand
+    /// over nothing; an epoch change is visible to the spool.
+    #[test]
+    fn overflow_disabled_hooks_and_epochs_are_never_handed_over_as_continuous() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        reset_log_for_test(8);
+        let a = Line::new(0x41_0000_0021, 0xa_0000_0046, 0);
+        let (before, _) = drained(1);
+        let before = before.unwrap();
+        let overflows = status()["overflowed_logs"].as_u64().unwrap();
+        for _ in 0..=CAPACITY.load(Ordering::Acquire) {
+            produce_for_test(a.address(), NAVAL, 1, None);
+        }
+        presize(20);
+        install_offered();
+        assert_eq!(status()["capacity"], 8);
+        let (result, entries) = drained(4);
+        let overflowed = result.unwrap();
+        assert_eq!(status()["overflowed_logs"], overflows + 1);
+        assert!(entries.is_empty());
+        assert!(overflowed.first > before.first + before.copied as u64);
+        assert_eq!(overflowed.first, overflowed.cursor);
+        assert!(overflowed.complete());
+        // Growing after the loss cannot turn it into a continuous drain.
+        install_offered();
+        collect();
+        let grown = drained(4).0.unwrap();
+        assert_eq!(
+            (grown.epoch, grown.first),
+            (overflowed.epoch, overflowed.cursor)
+        );
+        invalidate();
+        let (result, _) = drained(4);
+        assert!(result.unwrap().epoch > overflowed.epoch);
+        ENABLED.store(false, Ordering::SeqCst);
+        produce_for_test(a.address(), NAVAL, 1, None);
+        let (result, _) = drained(4);
+        assert_eq!(result, Err("production line hooks are not enabled"));
+        observe_for_test(false);
+    }
+
+    /// Concurrent producers each keep every entry they append: the log's
+    /// indices are claimed atomically.
+    #[test]
+    fn concurrent_producers_keep_every_entry() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        let lines: Vec<Line> = (0..4)
+            .map(|index| Line::new(0x51_0000_0021 + (index << 32), 0xb_0000_0046, 0))
+            .collect();
+        let addresses: Vec<usize> = lines.iter().map(Line::address).collect();
+        std::thread::scope(|scope| {
+            for &address in &addresses {
+                scope.spawn(move || {
+                    for count in 1..=500 {
+                        produce_for_test(
+                            address,
+                            MILITARY,
+                            count,
+                            Some(i64::from(count) * UNIT_SCALE),
+                        );
+                    }
+                });
+            }
+        });
+        let (result, entries) = drained(4096);
+        assert!(result.unwrap().complete());
+        assert_eq!(entries.len(), 2000);
+        for line in &lines {
+            let handle = line.line[LINE_HANDLE / 8];
+            let units: i64 = entries
+                .iter()
+                .filter(|entry| entry.line == handle && entry.exact)
+                .map(|entry| i64::from(entry.units))
+                .sum();
+            assert_eq!(units, 500 * 501 / 2);
+        }
+        observe_for_test(false);
+    }
+
+    /// An unrecognised prologue installs nothing and fails nothing; drains then
+    /// report why ticks go unobserved.
+    #[test]
+    fn unrecognised_prologues_leave_the_table_unavailable() {
+        let _lock = test_lock();
+        let bytes = vec![0_u8; 0x10];
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let hooks = unsafe { Hooks::install(&memory, 0) };
+        assert_eq!(
+            hooks.err().as_deref(),
+            Some("production line credit sentinel differs")
+        );
+    }
+}

@@ -26,6 +26,8 @@ pub struct Country {
     pub exports: Option<Vec<ResourceExchange>>,
     /// The resource pools of the same object; `None` with it.
     pub pools: Option<ResourcePools>,
+    /// None when the country writes no `logistics` block.
+    pub logistics: Option<Logistics>,
 }
 
 /// One resource pool as CStrategicResourcePool::vf2 (140BBD5D0) writes it:
@@ -57,6 +59,61 @@ pub struct ResourcePools {
     pub base_export: ResourcePool,
     /// `exported` (0x30C5): the pool at +0x5B0.
     pub exported: ResourcePool,
+}
+
+/// A saved `logistics` block. CLogisticsStatus::vf2@1413609d0 writes its
+/// `history` only for a country IsCountryAIControlled@1401e1fe0 rejects, so an
+/// AI-controlled country's block is empty.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Logistics {
+    Empty,
+    /// Each series the writer emits (a field count above zero), by index.
+    History(BTreeMap<u32, LoopHistory>),
+}
+
+/// One saved CLoopHistory: `history_queue` with its daily, twelve-record and
+/// third windows in order (CLoopHistoryContainerQueue::vf2@141505f20 writes
+/// them as `0`, `1` and `2`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoopHistory {
+    pub windows: [LoopWindow; 3],
+}
+
+/// One window as CLoopHistoryContainer::vf2@141505bb0 writes it: its capacity,
+/// current slot and wrapped flag, then `data`, every record's values in record
+/// order (fixed5, five trimmed decimals). The writer omits `data` when every
+/// value is zero.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoopWindow {
+    pub max_elements: i32,
+    pub offset: i32,
+    pub is_full: bool,
+    pub data: Option<Vec<Decimal>>,
+}
+
+impl LoopWindow {
+    /// The raw values of the record at `slot`, each record holding `fields`
+    /// values. Omitted data is every value zero; data that does not hold
+    /// `max_elements` records of `fields` values is refused.
+    pub fn record(&self, slot: usize, fields: usize) -> io::Result<Vec<i64>> {
+        let records = usize::try_from(self.max_elements)
+            .map_err(|_| invalid("save logistics window has a negative capacity"))?;
+        if slot >= records {
+            return Err(invalid("save logistics slot is outside its window"));
+        }
+        let Some(data) = &self.data else {
+            return Ok(vec![0; fields]);
+        };
+        if records.checked_mul(fields) != Some(data.len()) {
+            return Err(invalid(
+                "save logistics data is not the window's records of the expected size",
+            ));
+        }
+        Ok(data[slot * fields..(slot + 1) * fields]
+            .iter()
+            .map(|value| value.raw)
+            .collect())
+    }
 }
 
 /// Exact native signed /32768 values. 141294210 omits the first eight fields
@@ -466,6 +523,65 @@ fn consumer_values(value: &Value) -> io::Result<[Decimal; FUEL_CONSUMER_VALUES]>
     Ok(values.try_into().expect("three values"))
 }
 
+/// CLogisticsStatus::vf2@1413609d0 writes `history` with one block per series
+/// in index order, keyed by the index; each is CLoopHistory::vf2@141505b90's
+/// `history_queue`. Any other layout is refused.
+fn parse_logistics(items: &[Item]) -> io::Result<Logistics> {
+    let mut fields = Sequence::new(items, "logistics");
+    if items.is_empty() {
+        return Ok(Logistics::Empty);
+    }
+    let mut series = BTreeMap::new();
+    for item in block(fields.next("history")?)? {
+        let index = item
+            .key
+            .as_deref()
+            .ok_or_else(|| invalid("save logistics series lacks its index"))
+            .and_then(integer::<u32>)?;
+        if series.keys().next_back().is_some_and(|&last| last >= index) {
+            return Err(invalid("save logistics series are not in index order"));
+        }
+        let mut history = Sequence::new(block(&item.value)?, "logistics series");
+        let queue = block(history.next("history_queue")?)?;
+        history.end()?;
+        let mut queue = Sequence::new(queue, "logistics history_queue");
+        let mut window = |key| queue.next(key).and_then(block).and_then(parse_window);
+        let windows = [window("0")?, window("1")?, window("2")?];
+        queue.end()?;
+        series.insert(index, LoopHistory { windows });
+    }
+    fields.end()?;
+    Ok(Logistics::History(series))
+}
+
+fn parse_window(items: &[Item]) -> io::Result<LoopWindow> {
+    let mut fields = Sequence::new(items, "logistics window");
+    let max_elements = fields.integer("max_elements")?;
+    let offset = fields.integer("offset")?;
+    let is_full = boolean(fields.next("is_full")?)?;
+    let data = if fields.peek_is("data") {
+        let values = block(fields.next("data")?)?;
+        if values.iter().any(|item| item.key.is_some()) {
+            return Err(invalid("save logistics data holds a keyed value"));
+        }
+        Some(
+            values
+                .iter()
+                .map(|item| Decimal::parse(scalar(&item.value)?))
+                .collect::<io::Result<Vec<_>>>()?,
+        )
+    } else {
+        None
+    };
+    fields.end()?;
+    Ok(LoopWindow {
+        max_elements,
+        offset,
+        is_full,
+        data,
+    })
+}
+
 fn parse_experience(items: &[Item]) -> io::Result<Option<Experience>> {
     let Some(status) = field(items, b"experience_status")? else {
         return Ok(None);
@@ -752,6 +868,9 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                     experience: parse_experience(fields)?,
                     exports: parse_exports(fields)?,
                     pools: parse_pools(fields)?,
+                    logistics: field(fields, b"logistics")?
+                        .map(|value| parse_logistics(block(value)?))
+                        .transpose()?,
                 },
             )
             .is_some()
@@ -1166,6 +1285,99 @@ mod tests {
         assert!(exports[1].receiver.is_none());
         assert!(exports[1].resource.is_none());
         assert!(parsed.countries[b"D01".as_slice()].exports.is_none());
+    }
+
+    /// A `history_queue` in the writer's layout: a two-record daily window
+    /// with the given data, then two empty windows.
+    fn queue(data: &str) -> String {
+        format!(
+            "history_queue={{ 0={{ max_elements=2 offset=1 is_full=yes {data} }} 1={{ max_elements=12 offset=0 is_full=no }} 2={{ max_elements=7 offset=0 is_full=no }} }}"
+        )
+    }
+
+    fn parse_logistics_text(body: &str) -> io::Result<Pack> {
+        parse(
+            &parser::parse(
+                format!(
+                    "countries={{GER={{logistics={{{body}}}}} ENG={{logistics={{}}}} D01={{}}}}"
+                )
+                .as_bytes(),
+            )
+            .unwrap()
+            .items,
+        )
+    }
+
+    #[test]
+    fn logistics_keeps_each_series_window_and_exact_record_values() {
+        let body = format!(
+            "history={{ 15={{ {} }} 16={{ {} }} }}",
+            queue("data={ 0 1 2 145075 2017.5 3423 }"),
+            queue("data={ 0 0 0 -112 -0.00001 90071992547.40993 }"),
+        );
+        let parsed = parse_logistics_text(&body).unwrap();
+        let Some(Logistics::History(series)) = &parsed.countries[b"GER".as_slice()].logistics
+        else {
+            panic!("saved history");
+        };
+        assert_eq!(series.keys().copied().collect::<Vec<_>>(), [15, 16]);
+        let daily = &series[&16].windows[0];
+        assert_eq!(
+            (daily.max_elements, daily.offset, daily.is_full),
+            (2, 1, true)
+        );
+        assert_eq!(
+            daily.record(1, 3).unwrap(),
+            [-11_200_000, -1, 9_007_199_254_740_993]
+        );
+        assert_eq!(
+            series[&15].windows[0].record(1, 3).unwrap(),
+            [14_507_500_000, 201_750_000, 342_300_000]
+        );
+        // An omitted list is every value zero.
+        assert_eq!(series[&15].windows[1].record(11, 3).unwrap(), [0, 0, 0]);
+        assert!(daily.record(1, 4).is_err());
+        assert!(daily.record(2, 3).is_err());
+        assert_eq!(
+            parsed.countries[b"ENG".as_slice()].logistics,
+            Some(Logistics::Empty)
+        );
+        assert!(parsed.countries[b"D01".as_slice()].logistics.is_none());
+    }
+
+    #[test]
+    fn logistics_refuses_layouts_its_writer_cannot_produce() {
+        for body in [
+            format!(
+                "history={{ 16={{ {} }} 15={{ {} }} }}",
+                queue(""),
+                queue("")
+            ),
+            format!("history={{ 15={{ {} }} }} other=1", queue("")),
+            format!("history={{ 15={{ {} extra=1 }} }}", queue("")),
+            format!("history={{ 15={{ {} }} }}", queue("data={ 1 a=2 }")),
+            format!("history={{ 15={{ {} }} }}", queue("data={ 1.000001 }")),
+            "history={ 15={ history_queue={ 0={ max_elements=2 offset=1 } } } }".to_owned(),
+            "history={ 15={ history_queue={ 1={ max_elements=2 offset=1 is_full=no } } } }"
+                .to_owned(),
+            // A window after the writer's three, or the daily one again.
+            format!(
+                "history={{ 15={{ {} }} }}",
+                queue("").replace(
+                    "is_full=no } }",
+                    "is_full=no } 3={ max_elements=1 offset=0 is_full=no } }"
+                )
+            ),
+            format!(
+                "history={{ 15={{ {} }} }}",
+                queue("").replace(
+                    "is_full=no } }",
+                    "is_full=no } 0={ max_elements=2 offset=0 is_full=no } }"
+                )
+            ),
+        ] {
+            assert!(parse_logistics_text(&body).is_err(), "{body}");
+        }
     }
 
     /// The pools as CCountryResources::Write (140CAEB80) emits them: each

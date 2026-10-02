@@ -25,10 +25,22 @@ const SLOT_LAYOUT: RecordLayout<'static> =
 
 /// CLoopHistory primary vtable; a729 RTTI identity and old derive_country_row_result vtable check.
 pub const VTABLE_RVA: usize = 0x029b_be58;
-/// CLoopHistory window pointer at +0x20; old derive_country_row_result follows it before field reads.
+/// CLoopHistory embedded CLoopHistoryContainerQueue at +8 (vtable 0x1429bbe08, written by the
+/// constructor@141504330); its three window pointers follow at +0x10, +0x18 and +0x20.
+pub const QUEUE: usize = 0x08;
+/// CLoopHistory daily window pointer; AdvanceLoopHistoryWindows@141504690 creates it with 30 records,
+/// CLoopHistoryContainerQueue::Advance@1415050b0 advances it on every call, and
+/// GetNestedQword10_30@141504620 reads its current record (+0x30) for the logistics series.
+pub const DAILY_WINDOW: usize = 0x10;
+/// Records in the daily window; AdvanceLoopHistoryWindows@141504690 passes 0x1e.
+pub const DAILY_WINDOW_CAPACITY: u32 = 30;
+/// CLoopHistory third window pointer at +0x20 (the queue's third window, which advances when the
+/// twelve-record second window wraps); old derive_country_row_result follows it before field reads.
 pub const WINDOW: usize = 0x20;
 /// CLoopHistory self-reference pointer at +0x28; old derive_country_row_result requires object equality.
 pub const SELF_REFERENCE: usize = 0x28;
+/// CLoopHistory roll-up mode i32; the constructor@141504330 stores its third argument here and
+pub const ROLL_UP: usize = 0x30;
 /// CLoopHistory field-count u32 at +0x34; old derive_country_row_result checks the air schema's 89 fields.
 pub const FIELD_COUNT: usize = 0x34;
 

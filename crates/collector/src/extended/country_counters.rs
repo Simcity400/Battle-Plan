@@ -1,32 +1,27 @@
 //! Hourly country pride-of-the-fleet reference and owned-state count, and
-//! civil-war array and stored factory group-head counts, with independent outcomes.
+//! each country's civil-war array (CountryCivilWars), from the same country
+//! walk's census.
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
-use engine::{Memory, ccountry, cproduction_status, walk::Outcome};
+use engine::{Memory, ccountry, walk::Outcome};
 use replay::{
     frame::TableView,
-    rows::{CountryCivilWarRow, CountryCounterInputRow, CountryFactoryCountsRow, TableId, tables},
+    rows::{CountryCivilWarRow, CountryCounterInputRow, TableId, tables},
 };
 
-pub const N: usize = 3;
-pub const TABLES: [TableId; N] = [
-    TableId::CountryCounterInputs,
-    TableId::CountryCivilWars,
-    TableId::CountryFactoryCounts,
-];
+pub const N: usize = 2;
+pub const TABLES: [TableId; N] = [TableId::CountryCounterInputs, TableId::CountryCivilWars];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     civil_wars: usize,
-    factories: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
         Self {
             rows: 512,
             civil_wars: 64,
-            factories: 512,
         }
     }
 }
@@ -34,7 +29,6 @@ impl Capacities {
     /// One row per canonical country slot.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));
-        crate::country_scale::raise(&mut self.factories, crate::country_scale::rows(slots, 1));
     }
 
     /// CountryCivilWars from the live entry total
@@ -48,7 +42,6 @@ impl Capacities {
 pub struct Captured {
     rows: CaptureRows<ccountry::CounterInputsRow>,
     civil_wars: CaptureRows<ccountry::CivilWarRow>,
-    factories: CaptureRows<cproduction_status::FactoryCountsRow>,
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -56,7 +49,6 @@ impl Captured {
         Self::with_capacities(&Capacities {
             rows: 0,
             civil_wars: 0,
-            factories: 0,
         })
     }
 
@@ -64,23 +56,18 @@ impl Captured {
         Self {
             rows: CaptureRows::new(capacity.rows),
             civil_wars: CaptureRows::new(capacity.civil_wars),
-            factories: CaptureRows::new(capacity.factories),
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
         self.civil_wars.reset();
-        self.factories.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes()
-            + self.civil_wars.allocated_bytes()
-            + self.factories.allocated_bytes()
+        self.rows.allocated_bytes() + self.civil_wars.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
         self.civil_wars.grow(&mut capacity.civil_wars);
-        self.factories.grow(&mut capacity.factories);
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let mut ticks = [0; N];
@@ -91,32 +78,15 @@ impl Captured {
                 ccountry::walk_counter_inputs(memory, base, state, &mut self.rows.rows);
             ticks[0] = qpc().saturating_sub(begin).max(0) as u64;
         }
-        {
-            let _reads = crate::read_accounting::table(TABLES[1]);
-            let begin = qpc();
-            self.civil_wars.outcome =
-                ccountry::walk_civil_wars(memory, base, state, &mut self.civil_wars.rows);
-            ticks[1] = qpc().saturating_sub(begin).max(0) as u64;
-        }
-        {
-            let _reads = crate::read_accounting::table(TABLES[2]);
-            let begin = qpc();
-            self.factories.outcome = cproduction_status::walk_factory_counts(
-                memory,
-                base,
-                state,
-                &mut self.factories.rows,
-            );
-            ticks[2] = qpc().saturating_sub(begin).max(0) as u64;
-        }
+        let _reads = crate::read_accounting::table(TABLES[1]);
+        let begin = qpc();
+        self.civil_wars.outcome =
+            ccountry::walk_civil_wars(memory, base, state, &mut self.civil_wars.rows);
+        ticks[1] = qpc().saturating_sub(begin).max(0) as u64;
         ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [
-            self.rows.outcome,
-            self.civil_wars.outcome,
-            self.factories.outcome,
-        ]
+        [self.rows.outcome, self.civil_wars.outcome]
     }
 
     pub fn tables(&self) -> [TableView; N] {
@@ -139,16 +109,6 @@ impl Captured {
                     target: r.target,
                 },
             ),
-            table::<tables::CountryFactoryCounts, _>(
-                self.factories.outcome,
-                &self.factories.rows,
-                |r| CountryFactoryCountsRow {
-                    country: r.country,
-                    military: r.military,
-                    naval: r.naval,
-                    civilian: r.civilian,
-                },
-            ),
         ]
     }
 }
@@ -166,12 +126,10 @@ mod tests {
         let mut capture = Captured::with_capacities(&Capacities {
             rows: 1,
             civil_wars: 2,
-            factories: 1,
         });
         capture.capture(&memory, 0, 0);
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         assert!(matches!(capture.tables()[1], TableView::Unavailable { .. }));
-        assert!(matches!(capture.tables()[2], TableView::Unavailable { .. }));
         capture.reset();
         capture.rows.rows[0] = ccountry::CounterInputsRow {
             country: 7,
@@ -187,32 +145,15 @@ mod tests {
             target: 0x8000_0002,
         };
         capture.civil_wars.outcome = Outcome::Rows { len: 1 };
-        capture.factories.rows[0] = cproduction_status::FactoryCountsRow {
-            country: 7,
-            military: i32::MIN,
-            naval: i32::MAX,
-            civilian: -3,
-        };
-        capture.factories.outcome = Outcome::Rows { len: 1 };
         let [
             TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)),
             TableView::Complete(replay::rows::TableRows::CountryCivilWars(wars)),
-            TableView::Complete(replay::rows::TableRows::CountryFactoryCounts(factories)),
         ] = capture.tables()
         else {
             panic!("complete");
         };
         assert_eq!(rows[0].pride_of_the_fleet, (32 << 32) | 51);
         assert_eq!(rows[0].country, 7);
-        assert_eq!(
-            factories,
-            [CountryFactoryCountsRow {
-                country: 7,
-                military: i32::MIN,
-                naval: i32::MAX,
-                civilian: -3
-            }]
-        );
         assert_eq!(rows[0].owned_state_count, 3);
         assert_eq!(rows[0].first_division, (9 << 32) | 4);
         assert_eq!(rows[0].controlled_state_count, 5);

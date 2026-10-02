@@ -290,6 +290,8 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     /// The read hour of each (sliced table, owner) in `sliced_cache`.
     sliced_reads: BTreeMap<(u32, u32), i32>,
     sliced_branch: Option<BranchId>,
+    /// Each production line's output on the current branch.
+    line_output: crate::extended::line_output::Totals,
     variables_scratch: ScriptVariableComparison,
     character_shadow: CharacterShadow,
     intel_shadow: IntelShadow,
@@ -333,6 +335,7 @@ impl Campaign {
             sliced_cache: BTreeMap::new(),
             sliced_reads: BTreeMap::new(),
             sliced_branch: None,
+            line_output: Default::default(),
             variables_scratch: ScriptVariableComparison::default(),
             character_shadow: CharacterShadow::default(),
             intel_shadow: IntelShadow::default(),
@@ -589,6 +592,18 @@ impl<B: SegmentBackend> Campaign<B> {
         (retry, unpublished)
     }
 
+    /// Add this frame's production ticks to the branch's per-line totals and
+    /// publish ProductionLineOutput beside the frame's ProductionLines. Before
+    /// the staggered carry, so an off-slot hour's skip is carried.
+    fn assemble_line_output(&mut self, source: &mut FrameInput, captured: &Captured) {
+        self.line_output.assemble(
+            source.branch,
+            source.hour,
+            captured.extended.line_output(),
+            &mut source.tables,
+        );
+    }
+
     // Spool-internal carry-forward keeps format-neutral byte-identical output.
     fn apply_staggered_inputs(&mut self, source: &mut FrameInput) -> [bool; TABLE_COUNT] {
         if self.staggered_branch != Some(source.branch) {
@@ -749,7 +764,13 @@ impl<B: SegmentBackend> Campaign<B> {
     ) -> io::Result<()> {
         let source = source.into();
         let (branch, hour) = (source.branch, source.hour);
+        let held_line_output = crate::extended::line_output::holds_publication(
+            &source.tables[TableId::ProductionLineOutput.index()],
+        );
         let result = self.write_inner(source, qpc, signal, unknown, work);
+        if result.is_ok() {
+            self.line_output.written(held_line_output);
+        }
         if let Err(error) = &result {
             // Codec/validation errors are failures too. Closing also prevents a
             // partially published context from being reused after such an error.
@@ -1629,6 +1650,7 @@ impl Processor {
                 )
             },
         );
+        campaign.assemble_line_output(&mut source, captured);
         let retry_full = needs_retry(&source.tables) || sliced_retry;
         let skipped = campaign.apply_staggered_inputs(&mut source);
         if let Some(layout) = &captured.fixed_layout {
@@ -4035,6 +4057,7 @@ mod tests {
                 sliced_cache: BTreeMap::new(),
                 sliced_reads: BTreeMap::new(),
                 sliced_branch: None,
+                line_output: Default::default(),
                 variables_scratch: ScriptVariableComparison::default(),
                 character_shadow: CharacterShadow::default(),
                 intel_shadow: IntelShadow::default(),
@@ -5080,6 +5103,161 @@ mod tests {
             }
             assert!(decoded.complete::<tables::Countries>().is_ok());
         }
+    }
+
+    /// The hour's drained ticks reach the branch totals whether or not the
+    /// lines' slot is read; the table is published with the census, carried
+    /// off its slot, and round-trips through the encoder.
+    #[test]
+    fn line_output_totals_publish_with_the_census_and_carry_off_its_slot() {
+        use crate::line_output::{Drained, Entry};
+        use replay::{
+            frame::FrameDecoder,
+            rows::{ProductionLineRow, TableRows},
+        };
+        const LINE: u64 = 0x10_0000_0021;
+        const VARIANT: u64 = 0x5_0000_0046;
+        let (mut campaign, _) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut captured = Captured::new();
+        let mut decoder = FrameDecoder::new();
+        let mut published = Vec::new();
+        for (hour, first, ticks, skip) in [(0, 10, 1, false), (1, 11, 2, true), (2, 13, 0, false)] {
+            let entries = vec![
+                Entry {
+                    line: LINE,
+                    country: 5001,
+                    variant: VARIANT,
+                    mio: 0,
+                    units: 2,
+                    credit: 2,
+                    exact: true,
+                };
+                ticks
+            ];
+            captured.extended.line_output_mut().set_drained_for_test(
+                Ok(Drained {
+                    epoch: 1,
+                    first,
+                    cursor: first + ticks as u64,
+                    copied: ticks,
+                    pending: ticks,
+                }),
+                &entries,
+            );
+            let mut source: FrameInput = staggered_frame(branch, hour, skip).into();
+            if !skip {
+                source.tables[TableId::ProductionLines.index()] =
+                    TableInput::Sampled(TableView::Complete(TableRows::ProductionLines(vec![
+                        ProductionLineRow {
+                            handle: LINE,
+                            country: 5001,
+                            variant: VARIANT,
+                            ..Default::default()
+                        },
+                    ])));
+            }
+            campaign.assemble_line_output(&mut source, &captured);
+            campaign.apply_staggered_inputs(&mut source);
+            let frame = campaign.encoder.encode_input(source, hour == 0).unwrap();
+            let decoded = decoder.apply(&frame).unwrap();
+            let rows = decoded.complete::<tables::ProductionLineOutput>().unwrap();
+            assert_eq!(rows[0].country, 5001);
+            published.push((rows[0].units, rows[0].mio_credit, rows[0].since_hour));
+        }
+        // The first frame's ticks came before the observation began; hour 1
+        // carries hour 0's publication; hour 2 publishes hour 1's two ticks.
+        assert_eq!(published, [(0, 0, 0), (0, 0, 0), (4, 4, 0)]);
+    }
+
+    /// A line that ends in a publication whose write fails keeps its final
+    /// totals: the next written frame, a census at the next hour, repeats it.
+    #[test]
+    fn a_failed_write_keeps_the_final_totals_of_ended_lines() {
+        use crate::line_output::{Drained, Entry};
+        use replay::{
+            frame::FrameDecoder,
+            rows::{ProductionLineRow, TableRows},
+        };
+        const LINE_A: u64 = 0x10_0000_0021;
+        const LINE_B: u64 = 0x11_0000_0021;
+        const VARIANT: u64 = 0x5_0000_0046;
+        let (mut campaign, store) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut captured = Captured::new();
+        for (hour, first, lines, ticks, fails) in [
+            (0, 10, &[LINE_A, LINE_B][..], 0, false),
+            (1, 10, &[LINE_A][..], 1, true),
+            (2, 11, &[LINE_A][..], 0, false),
+        ] {
+            if hour != 0 {
+                campaign.observe(None, hour, Some(1)).unwrap();
+            }
+            let entries = vec![
+                Entry {
+                    line: LINE_B,
+                    country: 5001,
+                    variant: VARIANT,
+                    mio: 0,
+                    units: 1,
+                    credit: 1,
+                    exact: true,
+                };
+                ticks
+            ];
+            captured.extended.line_output_mut().set_drained_for_test(
+                Ok(Drained {
+                    epoch: 1,
+                    first,
+                    cursor: first + ticks as u64,
+                    copied: ticks,
+                    pending: ticks,
+                }),
+                &entries,
+            );
+            let mut source: FrameInput = staggered_frame(branch, hour, false).into();
+            source.tables[TableId::ProductionLines.index()] =
+                TableInput::Sampled(TableView::Complete(TableRows::ProductionLines(
+                    lines
+                        .iter()
+                        .map(|&handle| ProductionLineRow {
+                            handle,
+                            country: 5001,
+                            variant: VARIANT,
+                            ..Default::default()
+                        })
+                        .collect(),
+                )));
+            campaign.assemble_line_output(&mut source, &captured);
+            campaign.apply_staggered_inputs(&mut source);
+            store.borrow_mut().fail_frame_flush = fails;
+            let written = campaign.write(
+                source,
+                1000 + i64::from(hour),
+                Some(1),
+                0,
+                &mut WorkSample::default(),
+            );
+            assert_eq!(written.is_err(), fails, "hour {hour}");
+        }
+        // The failure closed the first segment; the next one starts at hour 2.
+        let recovered = recover_prefix(store.borrow().segments.get(&1).unwrap());
+        let frame = recovered
+            .records
+            .iter()
+            .find_map(|record| match record {
+                Record::Frame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        let decoded = FrameDecoder::new().apply(frame).unwrap();
+        let rows = decoded.complete::<tables::ProductionLineOutput>().unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.line, row.units, row.ended))
+                .collect::<Vec<_>>(),
+            [(LINE_A, 0, false), (LINE_B, 1, true)]
+        );
     }
 
     fn conversion_reuse_frame(

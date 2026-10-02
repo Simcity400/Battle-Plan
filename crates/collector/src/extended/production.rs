@@ -971,8 +971,17 @@ fn copy_variant_identity(log: &mut RawLog<8>, memory: &impl Memory, pointer: usi
 }
 
 /// Mirror of `walk_lines`' read set: array header, per-line pointers, the
-/// seven scattered field spans per line plus variant identities.
-fn copy_production_lines(log: &mut RawLog<8>, memory: &impl Memory, manager: usize) {
+/// eight scattered field spans per line plus variant identities, then each
+/// line's maximum-factory and efficiency reads. `defines` holds the six
+/// maximum-factory defines once a line of this pass has staged them; the walk
+/// reads them once, at the first line that needs one.
+fn copy_production_lines(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    manager: usize,
+    defines: &mut Option<[i32; 6]>,
+) {
     let Some(header_start) = pspan(
         log,
         memory,
@@ -1000,7 +1009,7 @@ fn copy_production_lines(log: &mut RawLog<8>, memory: &impl Memory, manager: usi
             Some(p) => p,
             None => continue,
         };
-        // Seven scattered spans exactly like `read_row`'s `copy_scattered`.
+        // Eight scattered spans exactly like `read_row`'s `copy_scattered`.
         let takes = [
             (pointer, 16),
             (
@@ -1032,27 +1041,196 @@ fn copy_production_lines(log: &mut RawLog<8>, memory: &impl Memory, manager: usi
                     .unwrap_or(0),
                 4,
             ),
+            (
+                pointer
+                    .checked_add(cequipment_production_line::FACTORY_EFFICIENCIES)
+                    .unwrap_or(0),
+                16,
+            ),
         ];
-        let mut variant = None;
-        for (addr, len) in takes {
-            if let Some(start) = pspan(log, memory, Some(addr), len, M_P_LINES)
-                && addr
-                    == pointer
-                        .checked_add(cequipment_production_line::EQUIPMENT_VARIANT)
-                        .unwrap_or(0)
-            {
-                variant = usize::try_from(p_pool_u64(log, start))
-                    .ok()
-                    .filter(|&p| p != 0);
-            }
+        let mut starts = [None; 8];
+        for (start, (addr, len)) in starts.iter_mut().zip(takes) {
+            *start = pspan(log, memory, Some(addr), len, M_P_LINES);
         }
+        let variant = starts[5].and_then(|start| {
+            usize::try_from(p_pool_u64(log, start))
+                .ok()
+                .filter(|&p| p != 0)
+        });
         if let Some(v) = variant {
             copy_variant_identity(log, memory, v, M_P_LINES);
+            if let [Some(identity), Some(active), .., Some(header)] = starts {
+                let kind = usize::try_from(p_pool_u64(log, identity))
+                    .ok()
+                    .and_then(|vtable| vtable.checked_sub(base))
+                    .and_then(line_kind);
+                let active = i32::from_le_bytes(log.bytes[active..active + 4].try_into().unwrap());
+                let header = log.bytes[header..header + 16].try_into().unwrap();
+                if let Some(kind) = kind {
+                    copy_line_efficiency(log, memory, base, kind, v, active, header, defines);
+                }
+            }
         }
         if log.overflowed {
             return;
         }
     }
+}
+
+/// `read_row`'s line kind by exact primary vtable.
+fn line_kind(rva: usize) -> Option<u8> {
+    Some(match rva {
+        engine::cmilitary_production_line::VTABLE_RVA => cequipment_production_line::KIND_MILITARY,
+        engine::cnaval_production_line::VTABLE_RVA => cequipment_production_line::KIND_NAVAL,
+        engine::cship_refit_production_line::VTABLE_RVA => {
+            cequipment_production_line::KIND_SHIP_REFIT
+        }
+        engine::crailway_gun_production_line::VTABLE_RVA => {
+            cequipment_production_line::KIND_RAILWAY_GUN
+        }
+        _ => return None,
+    })
+}
+
+/// Mirror of `read_row`'s maximum factories and the efficiency entries they
+/// select. A failed or unparsable span stops here; the replay fails the same.
+#[allow(clippy::too_many_arguments)]
+fn copy_line_efficiency(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    kind: u8,
+    variant: usize,
+    active: i32,
+    header: [u8; 16],
+    defines: &mut Option<[i32; 6]>,
+) {
+    let Some(maximum) = copy_max_factories(log, memory, base, kind, variant, defines) else {
+        return;
+    };
+    let count = u32::try_from(active.min(maximum)).unwrap_or(0);
+    if count == 0 {
+        return;
+    }
+    let Some(array) = Array::from_header(header, 8).filter(|array| count <= array.count) else {
+        return;
+    };
+    let batch = cequipment_production_line::EFFICIENCY_BATCH as u32;
+    for first in (0..count).step_by(batch as usize) {
+        let len = (count - first).min(batch) as usize;
+        if pspan(log, memory, array.element(first, 8), len * 8, M_P_LINES).is_none() {
+            return;
+        }
+    }
+}
+
+/// Mirror of `cequipment_production_line::max_factories`: the variant's type
+/// link and classifier, then the type's and its archetype's optionals, then
+/// the defines the kind selects.
+fn copy_max_factories(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    kind: u8,
+    variant: usize,
+    defines: &mut Option<[i32; 6]>,
+) -> Option<i32> {
+    use engine::cequipment_type;
+    let optional = match kind {
+        cequipment_production_line::KIND_RAILWAY_GUN => {
+            return copy_factory_define(log, memory, base, defines, 5);
+        }
+        cequipment_production_line::KIND_MILITARY => 0,
+        _ => cequipment_type::MAX_NAV_FACTORIES - cequipment_type::MAX_MIL_FACTORIES,
+    };
+    let definition = pspan(
+        log,
+        memory,
+        variant.checked_add(cequipment_variant::DEFINITION),
+        8,
+        M_P_LINES,
+    )?;
+    let flags = pspan(
+        log,
+        memory,
+        variant.checked_add(cequipment_variant::CLASSIFIER_FLAGS),
+        8,
+        M_P_LINES,
+    )?;
+    let expected = base.checked_add(cequipment_type::VTABLE_RVA)? as u64;
+    let mut equipment = usize::try_from(p_pool_u64(log, definition)).ok()?;
+    for archetype in [false, true] {
+        if equipment == 0 {
+            return None;
+        }
+        let vtable = pspan(log, memory, Some(equipment), 8, M_P_LINES)?;
+        let maximum = pspan(
+            log,
+            memory,
+            equipment.checked_add(cequipment_type::MAX_MIL_FACTORIES),
+            16,
+            M_P_LINES,
+        )?;
+        let next = if archetype {
+            None
+        } else {
+            Some(pspan(
+                log,
+                memory,
+                equipment.checked_add(cequipment_type::ARCHETYPE),
+                8,
+                M_P_LINES,
+            )?)
+        };
+        if p_pool_u64(log, vtable) != expected {
+            return None;
+        }
+        let value = maximum + optional;
+        if log.bytes[value + 4] != 0 {
+            return Some(i32::from_le_bytes(
+                log.bytes[value..value + 4].try_into().unwrap(),
+            ));
+        }
+        if let Some(next) = next {
+            equipment = usize::try_from(p_pool_u64(log, next)).ok()?;
+        }
+    }
+    let flags = p_pool_u64(log, flags);
+    let index = if kind == cequipment_production_line::KIND_MILITARY {
+        0
+    } else if flags & cequipment_variant::CONVOY_CLASSIFIER_MASK != 0 {
+        1
+    } else if flags & cequipment_variant::FLOATING_HARBOR_CLASSIFIER_MASK != 0 {
+        2
+    } else if flags & cequipment_variant::CAPITAL_SHIP_CLASSIFIER_MASK != 0 {
+        4
+    } else {
+        3
+    };
+    copy_factory_define(log, memory, base, defines, index)
+}
+
+/// Stages the six maximum-factory defines at the first line that needs one;
+/// the walk reads them together once.
+fn copy_factory_define(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    defines: &mut Option<[i32; 6]>,
+    index: usize,
+) -> Option<i32> {
+    if defines.is_none() {
+        let mut values = [0; 6];
+        for (value, rva) in values
+            .iter_mut()
+            .zip(cequipment_production_line::MAX_FACTORY_DEFINE_RVAS)
+        {
+            let start = pspan(log, memory, base.checked_add(rva), 4, M_P_LINES)?;
+            *value = i32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap());
+        }
+        *defines = Some(values);
+    }
+    defines.map(|values| values[index])
 }
 
 /// Mirror of `walk_stockpiles`' read set: pool vtable, array header,
@@ -1617,10 +1795,11 @@ fn copy_production_rest_pass(
     if !copy_production_census(&mut job.log, memory, base, game_state, &mut job.census) {
         return;
     }
+    let mut defines = None;
     for index in 0..job.census.len() {
         let country = job.census[index];
         if let Some(manager) = copy_production_manager(&mut job.log, memory, base, &country) {
-            copy_production_lines(&mut job.log, memory, manager);
+            copy_production_lines(&mut job.log, memory, base, manager, &mut defines);
             if job.log.overflowed {
                 return;
             }
@@ -1699,6 +1878,8 @@ impl Captured {
                     produced_raw: r.produced_raw,
                     priority: r.priority,
                     amount: r.amount,
+                    max_factories: r.max_factories,
+                    efficiency_raw: r.efficiency_raw,
                 }
             })
             .into(),
@@ -2064,7 +2245,7 @@ fn definitions(
     arena: &Arena<u8>,
 ) -> TableView {
     let bytes = match checked_text(rows, arena, |r| {
-        [r.display_name, r.variant_name, r.explicit_entity]
+        [r.display_name, r.variant_name, r.explicit_entity, r.icon]
     }) {
         Ok(bytes) => bytes,
         Err(failure) => return failure,
@@ -2083,6 +2264,9 @@ fn definitions(
             display_name: text(bytes, r.display_name).unwrap().to_vec(),
             variant_name: text(bytes, r.variant_name).unwrap().to_vec(),
             explicit_entity: text(bytes, r.explicit_entity).unwrap().to_vec(),
+            icon_active: r.icon_active,
+            icon_kind: r.icon_kind,
+            icon: text(bytes, r.icon).unwrap().to_vec(),
         }
     })
 }
@@ -2128,6 +2312,9 @@ pub(crate) mod production_rest_test_kit {
     const RDATA: usize = 0x11400;
     const RECORD: usize = 0x11500;
     const RLIST: usize = 0x11600;
+    const EDATA: usize = 0x11700;
+    /// The variant's equipment type, its own archetype, as constructed.
+    pub(super) const EQUIPMENT_TYPE: usize = 0x12000;
 
     fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
         bytes[address - BASE..address - BASE + value.len()].copy_from_slice(value);
@@ -2224,6 +2411,39 @@ pub(crate) mod production_rest_test_kit {
         ] {
             put(&mut bytes, PLINE + offset, &value.to_le_bytes());
         }
+        // Twenty per-factory efficiencies, Q15, of which the 12 active count.
+        array(
+            &mut bytes,
+            PLINE + cequipment_production_line::FACTORY_EFFICIENCIES,
+            EDATA,
+            20,
+        );
+        for index in 0..20 {
+            let value = (index as i64 + 40) << 15;
+            put(&mut bytes, EDATA + index * 8, &value.to_le_bytes());
+        }
+        // The variant's equipment type sets its own military maximum, so no
+        // define outside this memory is read.
+        put(
+            &mut bytes,
+            VARIANT + cequipment_variant::DEFINITION,
+            &(EQUIPMENT_TYPE as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            EQUIPMENT_TYPE,
+            &(engine::cequipment_type::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            EQUIPMENT_TYPE + engine::cequipment_type::ARCHETYPE,
+            &(EQUIPMENT_TYPE as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            EQUIPMENT_TYPE + engine::cequipment_type::MAX_MIL_FACTORIES,
+            &[150, 0, 0, 0, 1],
+        );
         // Variant identity.
         put(
             &mut bytes,
@@ -2802,6 +3022,8 @@ mod tests {
             priority: i32::MIN,
             active_factories: -1,
             requested_factories: i32::MAX,
+            max_factories: i32::MIN,
+            efficiency_raw: i64::MIN,
             ..Default::default()
         };
         captured.stockpiles.outcome = Outcome::Rows { len: 1 };
@@ -2876,6 +3098,10 @@ mod tests {
                 line.requested_factories
             ),
             (i32::MIN, -1, i32::MAX)
+        );
+        assert_eq!(
+            (line.max_factories, line.efficiency_raw),
+            (i32::MIN, i64::MIN)
         );
         let stock = &complete::<tables::Stockpiles>(&views[1])[0];
         assert_eq!(
@@ -3222,6 +3448,9 @@ mod tests {
             display_name: TextSpan { start: 0, len: 2 },
             variant_name: TextSpan { start: 2, len: 2 },
             explicit_entity: TextSpan { start: 3, len: 1 },
+            icon_active: 0xfe,
+            icon_kind: u32::MAX,
+            icon: TextSpan { start: 1, len: 3 },
         };
         captured.variants.modules.outcome = Outcome::Rows { len: 2 };
         captured.variants.modules.rows[0] = equipment_module_container::Row {
@@ -3250,6 +3479,14 @@ mod tests {
             (&[0xff, 0][..], &[0x80, b'A'][..])
         );
         assert_eq!(definition.explicit_entity, b"A");
+        assert_eq!(
+            (
+                definition.icon_active,
+                definition.icon_kind,
+                &definition.icon[..]
+            ),
+            (0xfe, u32::MAX, &[0, 0x80, b'A'][..])
+        );
         assert_eq!(
             (
                 definition.equipment_token,
@@ -3485,6 +3722,75 @@ mod tests {
         assert_eq!(split.license_records.outcome, Outcome::Rows { len: 1 });
     }
 
+    /// The kit's memory plus the six maximum-factory defines at their module
+    /// addresses (module base zero).
+    struct DefinedMemory<'a>(&'a [u8]);
+
+    impl Memory for DefinedMemory<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if let Some(index) = cequipment_production_line::MAX_FACTORY_DEFINE_RVAS
+                .iter()
+                .position(|&rva| rva == address)
+            {
+                destination.copy_from_slice(&(index as i32 + 3).to_le_bytes());
+                return true;
+            }
+            engine::memory::SliceMemory {
+                base: production_rest_test_kit::BASE,
+                bytes: self.0,
+            }
+            .copy(address, destination)
+        }
+    }
+
+    #[test]
+    fn production_rest_split_copy_stages_line_maximums_defines_and_efficiencies() {
+        use super::production_rest_test_kit as kit;
+        let at = |address: usize| address - kit::BASE;
+        let capacities = kit::capacities();
+        let mut bytes = kit::fixture();
+        let row = |bytes: &[u8]| {
+            let direct = kit::direct(&DefinedMemory(bytes), &capacities);
+            let (split, _, _) = kit::split(&DefinedMemory(bytes), &capacities);
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(split.lines.outcome, direct.lines.outcome);
+            (split.lines.outcome, split.lines.rows[0])
+        };
+        // 12 active of the type's 150: the average of 40..=51 percent.
+        let (outcome, line) = row(&bytes);
+        assert_eq!(outcome, Outcome::Rows { len: 1 });
+        assert_eq!(
+            (line.max_factories, line.efficiency_raw),
+            (150, (40..52).sum::<i64>() * 32_768 / 12)
+        );
+        // Without the type's optional the military define (index 0) applies.
+        let flag = at(kit::EQUIPMENT_TYPE + engine::cequipment_type::MAX_MIL_FACTORIES + 4);
+        bytes[flag] = 0;
+        let (_, line) = row(&bytes);
+        assert_eq!(line.max_factories, 3);
+        assert_eq!(line.efficiency_raw, (40 + 41 + 42) * 32_768 / 3);
+        // A naval line with the capital-ship bit takes that define (index 4).
+        let vtable = at(kit::PLINE);
+        bytes[vtable..vtable + 8].copy_from_slice(
+            &(engine::cnaval_production_line::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        let flags = at(kit::VARIANT + cequipment_variant::CLASSIFIER_FLAGS);
+        bytes[flags..flags + 8]
+            .copy_from_slice(&cequipment_variant::CAPITAL_SHIP_CLASSIFIER_MASK.to_le_bytes());
+        let (_, line) = row(&bytes);
+        assert_eq!(line.max_factories, 7);
+        // An efficiency array shorter than the clamped factories fails alike.
+        let count = at(kit::PLINE + cequipment_production_line::FACTORY_EFFICIENCIES + 12);
+        bytes[count..count + 4].copy_from_slice(&6_u32.to_le_bytes());
+        let (outcome, _) = row(&bytes);
+        assert_eq!(
+            outcome,
+            Outcome::Unavailable {
+                reason: "production line efficiency array shorter than its factories"
+            }
+        );
+    }
+
     struct PlanFixtureMemory<'a> {
         bytes: &'a [u8],
         calls: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -3594,7 +3900,9 @@ mod tests {
         assert!(copy_production_rest_refresh(&initial, fixture_plan_context(), &mut job).raw_ok);
         job.log.prepare_read_plan();
         let next_variant = kit::BASE + bytes.len();
-        let identity = bytes[kit::VARIANT - kit::BASE..kit::VARIANT - kit::BASE + 16].to_vec();
+        // The identity through the type link and classifier the line reads.
+        let variant = kit::VARIANT - kit::BASE;
+        let identity = bytes[variant..variant + cequipment_variant::CLASSIFIER_FLAGS + 8].to_vec();
         bytes.extend_from_slice(&identity);
         let pointer = kit::PLINE + cequipment_production_line::EQUIPMENT_VARIANT - kit::BASE;
         bytes[pointer..pointer + 8].copy_from_slice(&(next_variant as u64).to_le_bytes());

@@ -91,6 +91,7 @@ impl Captured {
                 leader_ideology: r.leader_ideology.as_bytes().to_vec(),
                 overlord: r.overlord,
                 graphical_culture: r.graphical_culture.as_bytes().to_vec(),
+                graphical_culture_2d: r.graphical_culture_2d.as_bytes().to_vec(),
                 leader_character: r.leader_character,
                 ui_red: r.ui_rgba[0],
                 ui_green: r.ui_rgba[1],

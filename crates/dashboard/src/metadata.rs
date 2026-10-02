@@ -279,14 +279,21 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
 /// enough: a shared read may be charged to a table outside the slot, as the
 /// economy-rest raw copy charges its daily tables' read to the hourly
 /// ProvinceSupply, so their slot hours show no timing. CountryIntel's walk can
-/// move off its slot, so only timing dates it. A walk that failed leaves the
+/// move off its slot alone, so only its own timing dates it; it and the other
+/// tables of its slot are no evidence for each other. A failed walk leaves its
 /// table incomplete, which callers check. Other hours carry the last read.
 /// Every product that dates a daily table's values by their read uses this.
 pub fn slot_read(metrics: &Metrics, table: TableId, hour: i32) -> bool {
+    let timed = |table: TableId| metrics.table_ns[table.index()] != 0;
+    if table == TableId::CountryIntel {
+        return timed(table);
+    }
     let slot = replay::cadence::cadence(table);
-    (table != TableId::CountryIntel && replay::cadence::is_refresh(table, hour))
+    replay::cadence::is_refresh(table, hour)
         || TableId::ALL.into_iter().any(|other| {
-            replay::cadence::cadence(other) == slot && metrics.table_ns[other.index()] != 0
+            other != TableId::CountryIntel
+                && replay::cadence::cadence(other) == slot
+                && timed(other)
         })
 }
 

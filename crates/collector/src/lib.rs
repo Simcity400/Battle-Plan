@@ -26,6 +26,7 @@ mod fixed_layout;
 mod history;
 mod history_changes;
 mod hook;
+mod line_output;
 mod map_capture;
 mod map_spool;
 mod opinion_changes;
