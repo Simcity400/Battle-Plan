@@ -1432,6 +1432,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn destruction_hours_roundtrip_positive_empty_unavailable_and_selected() {
+        use crate::rows::{EquipmentDestructionCause, EquipmentDestructionRow};
+        let event = EquipmentDestructionRow {
+            country: 4999,
+            cause: EquipmentDestructionCause::Attrition,
+            variant: 0xf00100000046,
+            amount_raw: 900001,
+        };
+        let views = [
+            TableView::Unavailable {
+                reason: "first interval partial".into(),
+            },
+            TableView::Complete(TableRows::EquipmentDestruction(vec![event.clone()])),
+            TableView::Complete(TableRows::EquipmentDestruction(vec![])),
+            TableView::Complete(TableRows::EquipmentDestruction(vec![event])),
+            TableView::Unavailable {
+                reason: "event log overflow".into(),
+            },
+        ];
+        let mut encoder = FrameEncoder::new();
+        let mut input = vec![
+            Record::SessionStart(session(1)),
+            Record::BranchStart(branch(1, 1)),
+        ];
+        for (i, view) in views.iter().enumerate() {
+            let mut frame = source(1, i as i32 + 1);
+            *frame.tables[TableId::EquipmentDestruction.index()] = view.clone();
+            frame.metrics.table_ns[TableId::EquipmentDestruction.index()] = 1;
+            input.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+        }
+        let replay = Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+        for (i, view) in views.iter().enumerate() {
+            let SeekResult::Frame(frame) = replay.seek(1, i as i32 + 1).unwrap() else {
+                panic!("missing hour");
+            };
+            assert_eq!(&*frame.tables[TableId::EquipmentDestruction.index()], view);
+        }
+        for block in &replay.index {
+            let full = replay.read_block(block).unwrap();
+            let selected = replay
+                .read_block_selected(block, &[TableId::EquipmentDestruction])
+                .unwrap();
+            for (a, b) in full.iter().zip(&selected) {
+                assert_eq!(
+                    a.tables[TableId::EquipmentDestruction.index()],
+                    b.tables[TableId::EquipmentDestruction.index()]
+                );
+            }
+        }
+        assert_eq!(
+            crate::cadence::cadence(TableId::EquipmentDestruction),
+            crate::cadence::Cadence::Hourly
+        );
+    }
+
     fn records(id: u64, hours: &[i32]) -> Vec<Record> {
         let mut encoder = FrameEncoder::new();
         let mut records = vec![

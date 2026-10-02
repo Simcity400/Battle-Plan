@@ -4,6 +4,28 @@
 
 Native layouts, offsets and guarded readers belong in [`engine`](../engine/README.md). Replay schemas, cadence and encoding belong in [`replay`](../replay/README.md).
 
+[equipment_destruction.rs](src/equipment_destruction.rs) observes land damage,
+attrition's actual subtraction call, aircraft destruction and garrison
+resistance for every native owner, without player or orders-group predicates.
+Pre/native/post reads and bounded appends run on the writer's thread; buffer
+growth uses the live country registry and saved design census off-thread. A
+try-lock never waits: overlap, refusal, overflow or lost publication withholds
+the table for the rest of that branch. First/load/discontinuity intervals are
+partial and unavailable. The hourly game thread drains owned rows; aggregation
+and encoding run off-thread. The engine maps supported writer return PCs to
+semantic causes before recording; an unknown caller records `unknown` and is
+counted without guessing. Status exposes each hook, cumulative failure and
+unknown-caller counters, and the highest interval event count with its buffer
+capacity (including partial or refused intervals). Failed off-thread sizing
+observations count `prepare_failures` and skip growth without invalidating the
+existing branch observation. Both detach quiescence checks include every
+writer's ACTIVE counter, including while its original is running outside the DLL.
+
+Run the ignored `equipment_destruction::tests::destruction_scale_bench` test in
+release through the build wrapper, with `--ignored --nocapture --test-threads=1`.
+It exercises the actual callback and SEH-guarded reads at the design and stress
+country scales. Synthetic timing does not certify game slowdown or live cost.
+
 ## Start here
 
 Read [AGENTS.md](../../AGENTS.md), then [cadence.rs](../replay/src/cadence.rs) and [sampling.rs](src/sampling.rs). Follow the implementation for current dispatch points, roles and instrumentation; do not maintain another table catalogue or numbered phase map here.
@@ -69,6 +91,15 @@ Keep these outcomes distinct:
 | Bounded walk truncates | Publish `Truncated { len, unread_rows }`, preserve growth demand and grow buffers off-thread. |
 
 A Rust panic in callback coordination stops acquisition for that attachment. The incomplete buffer remains owned until unload; subsequent hours become explicit losses while the loader restores the hook, drains completed captures and reports the terminal failure.
+
+Native-original callback risks include the portrait, advisor, relation, history
+and opinion observer families, and equipment destruction's `land`, `air`,
+`garrison` and `attrition` callbacks in
+[equipment_destruction.rs](src/equipment_destruction.rs). They invoke native
+originals from `extern "system"` callbacks with a non-unwinding ABI. A Rust panic
+or native exception unwinding through those boundaries can terminate the game
+process; native exception safety is unverified for these existing observer
+patterns.
 
 The longest hourly jobs leave first: the ShipModels census, World, Research and, off the Focus slot, Governance at the highest claim priority. The callback joins the short census before the World join and dispatches the ShipModels details at the next claim priority, so a worker-only family such as Governance never queues behind them on a small pool: one part per 512 ships of the live census, at most four (a part no worker takes runs inline when the callback joins it), each over a contiguous census range with its own capture, memos and snapshot arena, bounded by the whole read ceiling as the unsplit walk was. Part captures grow with the family (`part_rows`), so every range fits; a range that does not is a broken invariant and publishes the family unavailable. The callback joins the parts last-dispatched first, so queued parts run inline instead of parking. Rows and outcomes join in census order, so the first failure keeps its position; an interrupted part is terminal for the family. The game never stores a ship's maximum organisation (hoi4re note on 140c28730), so the details recompute it and the split, not a stored-value read, shortens the path. Governance otherwise waits for the World join, which decides whether World delegated that hour's Focus walk; off that slot nothing is delegated. The variant registry and its detail tables run in their own daily Variants job, off the Governance critical path, and leave in the first burst on their slot only. Governance, Variants, Orders, Ordinary, Presentation, AirMissions, every ETA range and each air relation and history part have reserved pool slots and batch tickets. Their building, variant, order, combat and membership payloads can grow from already-read counts during acquisition, so the callback must never execute them, including fallback and unwind paths. Growth keeps the original observation; it does not restart the walk. Restore Gated before Governance returns its building buffers to construction; consume the building and variant timings once during final table assembly.
 

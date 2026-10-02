@@ -117,6 +117,23 @@ impl Hook {
         self.relocation.trampoline() as *const () as usize
     }
 
+    /// Replace one verified five-byte CALL with a CALL to the relay. The
+    /// callback invokes the original call target itself, then returns to
+    /// site+5. Its native caller's frame and unwind information stay intact.
+    /// The relocation trampoline is retained for ownership, never invoked.
+    pub unsafe fn new_call(
+        site: usize,
+        callback: usize,
+        original: [u8; 16],
+    ) -> Result<Self, String> {
+        if original[0] != 0xe8 {
+            return Err("call tap requires a five-byte rel32 CALL".into());
+        }
+        let mut hook = unsafe { Self::new(site, callback, original) }?;
+        hook.patch[0] = 0xe8;
+        Ok(hook)
+    }
+
     pub fn executable_ranges(&self) -> [Range<usize>; 2] {
         let trampoline = self.trampoline();
         [
@@ -323,5 +340,44 @@ impl Drop for Threads {
                 CloseHandle(thread.handle);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod call_tap_tests {
+    use super::*;
+    core::arch::global_asm!(
+        ".text", ".globl call_tap_test_caller", ".seh_proc call_tap_test_caller",
+        "call_tap_test_caller:", "sub rsp, 0x28", ".seh_stackalloc 0x28", ".seh_endprologue",
+        ".globl call_tap_test_call_site", "call_tap_test_call_site:", "call {target}",
+        ".rept 11", "nop", ".endr", "add rsp, 0x28", "ret", ".seh_endproc", target = sym target);
+    unsafe extern "system" {
+        fn call_tap_test_caller(value: usize) -> usize;
+        fn call_tap_test_call_site();
+    }
+    extern "system" fn target(value: usize) -> usize {
+        value + 1
+    }
+    extern "system" fn tapped(value: usize) -> usize {
+        target(value) + 100
+    }
+    #[test]
+    fn call_patch_returns_to_native_continuation_and_restores_exactly() {
+        let site = call_tap_test_call_site as *const () as usize;
+        let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+            .try_into()
+            .unwrap();
+        assert_eq!(sentinel[0], 0xe8);
+        assert_eq!(unsafe { call_tap_test_caller(41) }, 42);
+        let mut hook =
+            unsafe { Hook::new_call(site, tapped as *const () as usize, sentinel) }.unwrap();
+        assert!(hook.set_enabled(true).unwrap());
+        assert_eq!(unsafe { call_tap_test_caller(41) }, 142);
+        assert!(hook.set_enabled(false).unwrap());
+        assert_eq!(unsafe { call_tap_test_caller(41) }, 42);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(site as *const u8, 16) },
+            sentinel
+        );
     }
 }

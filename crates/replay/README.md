@@ -71,6 +71,30 @@ Cadence and acceptance remain defined in code. [naval_mission_derive.rs](src/nav
 
 Combat Log equipment rows preserve the native monthly loss and recovery totals for every held country log. Country and feature gates, orders-group membership and pruning can limit what the game recorded; consumers must keep those losses unknown when coverage is unproven. Ended lend-lease exchanges can lose changes after their last daily read. See [CombatLogEquipmentRow and LendLeaseEquipmentRow](src/extended_rows/economy_construction.rs) and the hourly [DivisionCensusRow](src/extended_rows/movement.rs).
 
+EquipmentDestruction holds only positive hourly removals by raw country,
+stable cause and full design handle (VariantDefinitions identity).
+Amounts are exact native fixed5 pre-minus-post pool quantities, including
+rounding and clamping, aggregated within the hour and dated by the drain that
+read them. Resolve type and design metadata through the existing recorded
+variant tables and content stack. The hooked writers cover active land-combat
+damage, naval transport destruction, immediate army damage, attrition, aircraft
+destruction and garrison resistance. Cause values are independent of executable
+addresses; the stable names live in the
+[row contract](src/extended_rows/equipment_destruction.rs).
+Unrecognized callers record explicit unknown, counted in collector status.
+Source classifications and their executable evidence live in
+[engine](../engine/src/equipment_destruction.rs).
+These rows cover every country and divisions outside orders groups, but they
+are not the Combat Log and do not claim unhooked causes such as convoy-pool or
+lend-lease losses, scrapping or equipment captured/transferred between pools.
+Two unhooked destruction writers are not covered: paradrop disruption
+(`CArmy::ApplyParadropDisruption` -> `140C7AE10`) and the remaining equipment of
+divisions destroyed in combat (`CLandCombatant::participant_lifecycle` `141299850`).
+A complete empty hour means no removals through the hooked writers. Missing
+is never zero: a first/branch interval is partial, and overflow, refusal or a
+lost drain makes subsequent hours unavailable until a new branch. A text save
+keeps remaining pools, not loss events, so it cannot certify their totals.
+
 ## Compatibility and recovery
 
 This release reads and writes only the current format. Reject other replay versions at the header and incompatible spool records explicitly; do not infer or silently translate an older layout.

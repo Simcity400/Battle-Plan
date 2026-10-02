@@ -473,6 +473,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     let mut history_hooks = unsafe { crate::history_changes::Hooks::new(&memory, base) }?;
     // A family whose sentinels differ is left uninstalled; it reads as before.
     let mut opinion_hooks = unsafe { crate::opinion_changes::Hooks::new(&memory, base) }?;
+    let mut destruction_hooks = unsafe { crate::equipment_destruction::Hooks::new(&memory, base) };
     let lines = crate::country_scale::observe_production_lines(&memory, base).unwrap_or(0);
     let mut line_hooks = unsafe { crate::line_output::Hooks::new(&memory, base, lines) };
     let mut prune_hooks = unsafe { crate::combat_log_prune::Hooks::new(&memory, base) };
@@ -485,6 +486,8 @@ fn run(module: HMODULE) -> Result<(), String> {
     crate::relation_changes::presize(slots);
     crate::history_changes::presize(slots, strategic_regions(&memory, base));
     let mut sizing = crate::country_scale::Sizing::for_slots(slots);
+    crate::equipment_destruction::prepare(&memory, base, slots);
+    sizing.extended.equipment_destruction = crate::equipment_destruction::capacity();
     sizing.content = engine::cdlc_manager::observe_counts(&memory, base);
     if let Some(rows) = crate::country_scale::observe_country_intel(&memory, base) {
         sizing.extended.raise_for_country_intel(rows);
@@ -605,6 +608,13 @@ fn run(module: HMODULE) -> Result<(), String> {
             })
             .and_then(|ready| {
                 if ready {
+                    destruction_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
                     hook.set_enabled(true)
                 } else {
                     Ok(false)
@@ -660,6 +670,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     ranges.extend(relation_hooks.executable_ranges());
     ranges.extend(history_hooks.executable_ranges());
     ranges.extend(opinion_hooks.executable_ranges());
+    ranges.extend(destruction_hooks.executable_ranges());
     ranges.extend(line_hooks.executable_ranges());
     ranges.extend(prune_hooks.executable_ranges());
     ranges.extend(construction_hooks.executable_ranges());
@@ -672,6 +683,18 @@ fn run(module: HMODULE) -> Result<(), String> {
     wait_quiet(&ranges, image_size, &owned_workers, &dll_path);
     // Keep mutation observation intact until the last acquisition has finished.
     // Then restore its hooks and drain callbacks that entered during restoration.
+    loop {
+        match destruction_hooks.set_enabled(false) {
+            Ok(true) => break,
+            result => {
+                let _ = fs::write(
+                    dll_path.with_file_name("collector.error.txt"),
+                    format!("destruction hook detach pending: {result:?}"),
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
     loop {
         match portrait_hooks.set_enabled(false) {
             Ok(true) => break,
@@ -827,6 +850,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     drop(relation_hooks);
     drop(history_hooks);
     drop(opinion_hooks);
+    drop(destruction_hooks);
     drop(line_hooks);
     drop(prune_hooks);
     drop(construction_hooks);
@@ -953,6 +977,7 @@ fn add_decode_status(status: &mut Value) {
     status["relation_changes"] = crate::relation_changes::status();
     status["history_changes"] = crate::history_changes::status();
     status["opinion_changes"] = crate::opinion_changes::status();
+    status["equipment_destruction"] = crate::equipment_destruction::status();
     status["line_output"] = crate::line_output::status();
     status["combat_log_prune"] = crate::combat_log_prune::status();
     status["construction_ic"] = crate::construction_ic::status();
@@ -1077,6 +1102,21 @@ fn add_decode_status(status: &mut Value) {
     }
 }
 
+// Both quiescence checks use the same predicate, including while the threads
+// are suspended: a writer may be in its native original outside DLL code.
+pub(crate) fn observers_active() -> bool {
+    ACTIVE.load(Ordering::SeqCst) != 0
+        || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
+        || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
+        || crate::relation_changes::active() != 0
+        || crate::history_changes::active() != 0
+        || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
+        || crate::line_output::ACTIVE.load(Ordering::SeqCst) != 0
+        || crate::combat_log_prune::ACTIVE.load(Ordering::SeqCst) != 0
+        || crate::construction_ic::ACTIVE.load(Ordering::SeqCst) != 0
+        || crate::equipment_destruction::active() != 0
+}
+
 fn wait_quiet(
     ranges: &[std::ops::Range<usize>],
     image_size: usize,
@@ -1087,30 +1127,12 @@ fn wait_quiet(
     loop {
         let outcome = if image_size == 0 {
             Err("collector image size unreadable".to_string())
-        } else if ACTIVE.load(Ordering::SeqCst) != 0
-            || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
-            || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
-            || crate::relation_changes::active() != 0
-            || crate::history_changes::active() != 0
-            || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
-            || crate::line_output::ACTIVE.load(Ordering::SeqCst) != 0
-            || crate::combat_log_prune::ACTIVE.load(Ordering::SeqCst) != 0
-            || crate::construction_ic::ACTIVE.load(Ordering::SeqCst) != 0
-        {
+        } else if observers_active() {
             Ok(false)
         } else {
             Threads::open_excluding(excluded_threads).and_then(|mut threads| {
                 let quiet = threads.suspend().and_then(|()| {
-                    if ACTIVE.load(Ordering::SeqCst) != 0
-                        || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
-                        || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
-                        || crate::relation_changes::active() != 0
-                        || crate::history_changes::active() != 0
-                        || crate::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0
-                        || crate::line_output::ACTIVE.load(Ordering::SeqCst) != 0
-                        || crate::combat_log_prune::ACTIVE.load(Ordering::SeqCst) != 0
-                        || crate::construction_ic::ACTIVE.load(Ordering::SeqCst) != 0
-                    {
+                    if observers_active() {
                         Ok(false)
                     } else {
                         threads.contains_ip(ranges).map(|present| !present)
@@ -1493,11 +1515,13 @@ fn spool_loop(
                 Ok(prepared) if prepared.allows_early_recycle() => Some(prepared),
                 Ok(prepared) => {
                     if let Err(error) = processor.write_prepared(prepared) {
+                        crate::equipment_destruction::lost_drain();
                         last_warning = Some(error.to_string());
                     }
                     None
                 }
                 Err(error) => {
+                    crate::equipment_destruction::lost_drain();
                     last_warning = Some(error.to_string());
                     None
                 }
@@ -1552,11 +1576,23 @@ fn spool_loop(
             if let Some(prepared) = pending_write
                 && let Err(error) = processor.write_prepared(prepared)
             {
+                crate::equipment_destruction::lost_drain();
                 last_warning = Some(error.to_string());
             }
         }
         crate::relation_changes::collect();
         crate::history_changes::collect();
+        crate::equipment_destruction::prepare(&live, shared.base, registry.slots);
+        let destruction_capacity = crate::equipment_destruction::capacity();
+        if destruction_capacity > extended_capacities.equipment_destruction {
+            extended_capacities.equipment_destruction = destruction_capacity;
+            grow_idle_frames(
+                shared,
+                &mut capacities,
+                &mut map_capacities,
+                &mut extended_capacities,
+            );
+        }
         crate::line_output::collect();
         if let Some(lines) = registry.poll_lines(&live, shared.base) {
             crate::line_output::presize(lines);
@@ -1664,6 +1700,7 @@ fn spool_loop(
         }
         let flush_started = sampling::qpc();
         if let Err(error) = processor.flush() {
+            crate::equipment_destruction::lost_drain();
             last_warning = Some(error.to_string());
         }
         let flush_ns = shared.ns(sampling::qpc() - flush_started);

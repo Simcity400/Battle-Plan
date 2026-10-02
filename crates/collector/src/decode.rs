@@ -840,6 +840,7 @@ pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
             None
         }
         Err(job) => {
+            crate::equipment_destruction::lost_drain();
             DROPS.fetch_add(1, Ordering::Relaxed);
             Some(job)
         }
@@ -1596,6 +1597,7 @@ pub fn detach_drain() -> Result<(), String> {
     if let Some(handle) = worker
         && handle.join().is_err()
     {
+        crate::equipment_destruction::lost_drain();
         error = Some("decode worker panicked; its in-flight frame may be incomplete".into());
     }
     WORKER_ID.store(0, Ordering::Release);
@@ -1615,6 +1617,7 @@ pub fn detach_drain() -> Result<(), String> {
     }))
     .is_err()
     {
+        crate::equipment_destruction::lost_drain();
         error = Some("decode detach drain panicked; queued frames remain incomplete".into());
     }
     STOP.store(false, Ordering::Release);

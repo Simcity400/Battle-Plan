@@ -97,6 +97,22 @@ The [naval mission input reader](src/naval_mission_inputs.rs) reads the native s
 
 [saved_event_targets.rs](src/saved_event_targets.rs) reads the saved event targets a save writes, in native order; its module docs hold the fields, liveness bits and refusals.
 
+[equipment_destruction.rs](src/equipment_destruction.rs) owns the destruction
+writer sites, call ABI, native source classifications and ownership evidence.
+It reads exact per-design pre/post pool differences; requested removal is not
+exact because the native pool arithmetic clamps. The attrition CALL tap runs
+only after the native early-outs and loss roll. The active-damage hook covers
+accumulated land-combat damage flushed by `CArmy::OnCombatEnded`, naval transport
+damage and immediate army damage. It does not cover paradrop disruption
+(`CArmy::ApplyParadropDisruption` -> 140C7AE10), or the remaining equipment of
+divisions destroyed in combat (logged by
+`CLandCombatant::participant_lifecycle` 141299850); those writers are queued for
+follow-up hooks. The engine maps verified caller RVAs to semantic causes; replay
+owns their stable encoding. Unrecognized callers produce an explicit unknown
+cause and are counted, preserving the actual removal. Negative pools, increases,
+short reads and arithmetic overflow remain named refusals. Live coverage and
+removal agreement remain unverified until the coordinated capture.
+
 [fixed5.rs](src/fixed5.rs) owns the native logarithm, exponential and power series
 (1424DAA00, 1424DA930, 1424DAB50), shared by movement and naval mission derivation.
 

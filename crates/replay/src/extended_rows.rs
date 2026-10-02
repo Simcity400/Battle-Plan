@@ -5,6 +5,7 @@ use crate::value::value_struct;
 pub use air::*;
 pub use characters_intelligence::*;
 pub use economy_construction::*;
+pub use equipment_destruction::*;
 pub use map_presentation::*;
 pub use movement::*;
 pub use naval_weather::*;
@@ -17,6 +18,8 @@ mod air;
 mod characters_intelligence;
 #[path = "extended_rows/economy_construction.rs"]
 mod economy_construction;
+#[path = "extended_rows/equipment_destruction.rs"]
+mod equipment_destruction;
 #[path = "extended_rows/map_presentation.rs"]
 mod map_presentation;
 #[path = "extended_rows/movement.rs"]

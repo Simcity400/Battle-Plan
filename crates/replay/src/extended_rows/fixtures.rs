@@ -3,6 +3,21 @@ use std::fmt::Debug;
 trait Sample {
     fn sample(tick: usize) -> Self;
 }
+impl Fixture for EquipmentDestructionRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            country: (key >> 72) as u32,
+            cause: EquipmentDestructionCause::try_from((key >> 64) as u8).unwrap(),
+            variant: key as u64,
+            amount_raw: (tick as i64).saturating_add(1),
+        }
+    }
+    fn largest_key() -> u128 {
+        (u32::MAX as u128) << 72
+            | (EquipmentDestructionCause::AirNavalAa as u128) << 64
+            | u64::MAX as u128
+    }
+}
 macro_rules! signed_samples {
     ($($ty:ty),+) => { $(impl Sample for $ty {
         fn sample(tick: usize) -> Self { match tick % 3 { 0 => <$ty>::MIN, 1 => -1, _ => <$ty>::MAX } }
@@ -1040,6 +1055,9 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         TableId::ScriptFlags => TableRows::ScriptFlags(rows::<ScriptFlagRow>(tick)),
         TableId::GlobalSavedEventTargets => {
             TableRows::GlobalSavedEventTargets(rows::<GlobalSavedEventTargetRow>(tick))
+        }
+        TableId::EquipmentDestruction => {
+            TableRows::EquipmentDestruction(rows::<EquipmentDestructionRow>(tick))
         }
         TableId::ScriptVariables => TableRows::ScriptVariables(rows::<ScriptVariablesRow>(tick)),
         TableId::Operations => TableRows::Operations(rows::<OperationRow>(tick)),
@@ -2386,6 +2404,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<ScriptFlagRow>(TableId::ScriptFlags);
     check_table::<ScriptVariablesRow>(TableId::ScriptVariables);
     check_table::<GlobalSavedEventTargetRow>(TableId::GlobalSavedEventTargets);
+    check_table::<EquipmentDestructionRow>(TableId::EquipmentDestruction);
     check_table::<ReserveModifierBreakdownRow>(TableId::ReserveModifierBreakdowns);
     check_table::<PowerBalanceModifierBreakdownRow>(TableId::PowerBalanceModifierBreakdowns);
     check_table::<OperationRow>(TableId::Operations);

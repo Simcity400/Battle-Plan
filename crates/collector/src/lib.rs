@@ -23,6 +23,7 @@ mod country_scale;
 mod decode;
 mod division_census;
 mod division_detail;
+mod equipment_destruction;
 mod extended;
 mod fixed_layout;
 mod history;

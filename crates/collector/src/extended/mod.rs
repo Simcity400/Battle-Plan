@@ -319,6 +319,7 @@ packs!(
     country_counters,
     group_counters,
     saved_event_targets,
+    equipment_destruction,
     leader_paths,
     country_appearance,
     ship_models,
@@ -1855,7 +1856,7 @@ impl Captured {
             )+};
         }
         // StateFlags needs the States rows supplied first: it stays inline.
-        ordinary!(weather, state_flags);
+        ordinary!(weather, state_flags, equipment_destruction);
         if let Some(done) = self.ordinary_ticks.take() {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;

@@ -1007,6 +1007,7 @@ unsafe fn return_slice_store(
 /// Restore an owned frame's absorbed witnesses, record its lost hour and return
 /// the buffer. Shared by every queue-full branch; no new loss reasons.
 fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
+    crate::equipment_destruction::lost_drain();
     // The dropped hour's sliced reads are never published: read them again.
     // A clockless frame read nothing, and its selections belong to an older hour.
     let read = frame.clock.is_some();
@@ -1105,6 +1106,7 @@ unsafe fn guarded_acquisition(
             }
         }
     }
+    crate::equipment_destruction::lost_drain();
     unsafe { (&mut *shared.pending.get()).push(entry) };
     shared.dropped.fetch_add(1, Ordering::Relaxed);
     false
@@ -1127,6 +1129,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         // has not run. The frame's identity and the settled state the body reads.
         let clock_start = qpc();
         let entry = cgame_state::read_clock(&memory, shared.base);
+        crate::equipment_destruction::boundary(entry);
         let entry_ticks = qpc() - clock_start;
         #[cfg(feature = "callback_profile")]
         let profile_before = callback_profile_counters(shared);
@@ -3694,6 +3697,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             shared.sample_roster(&memory, entry);
             (&mut *shared.pending.get()).push(entry);
         }
+        crate::equipment_destruction::lost_drain();
         shared.dropped.fetch_add(1, Ordering::Relaxed);
     }
 }

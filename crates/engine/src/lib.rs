@@ -465,6 +465,7 @@ pub mod entity_state_definition_layout;
 pub mod equipment_definition_functions;
 pub mod equipment_designer_handler;
 pub mod equipment_designer_state;
+pub mod equipment_destruction;
 pub mod equipment_entry;
 pub mod equipment_graphic_pool_functions;
 pub mod equipment_mission_group;
