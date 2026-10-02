@@ -50,6 +50,7 @@ impl Evaluator<'_, '_> {
                 | "divide_temp_variable"
                 | "clamp_temp_variable"
                 | "round_temp_variable"
+                | "modulo_temp_variable"
         ) {
             return None;
         }
@@ -95,7 +96,7 @@ impl Evaluator<'_, '_> {
                     continue;
                 }
                 match key.as_deref() {
-                    Some(b"tooltip") => continue,
+                    Some(b"tooltip") if name != "modulo_temp_variable" => continue,
                     Some(b"var") => {
                         assign(self, &mut var, scalar)?;
                         continue;
@@ -103,7 +104,9 @@ impl Evaluator<'_, '_> {
                     Some(b"value") => {}
                     _ => assign(self, &mut var, field.key.as_deref().unwrap_or_default())?,
                 }
-                if field.value.items().is_some() {
+                // Modulo's 140480E00 / 140481020 reader takes one token,
+                // including shorthand `tooltip`; it has no CExpression.
+                if field.value.items().is_some() && name != "modulo_temp_variable" {
                     right = Right::Expression(&field.value);
                 } else {
                     match &mut right {
@@ -166,6 +169,29 @@ impl Evaluator<'_, '_> {
                 let value = current()?;
                 let value = upper.map_or(value, |upper| value.min(upper));
                 lower.map_or(value, |lower| value.max(lower))
+            }
+            "modulo_temp_variable" => {
+                // ApplyScriptVariableModulo@14047B280 caches the floored,
+                // narrowed target BEFORE evaluating/rounding the divisor.
+                let numerator = modulo_integer(current()?);
+                if numerator < 0 {
+                    return Ok(());
+                }
+                let Right::Scalar(operand) = right else {
+                    unreachable!()
+                };
+                let divisor = if operand.parsed {
+                    self.evaluate_operand(&operand, scopes, None)
+                        .and_then(|v| self.raw(v))?
+                } else {
+                    0
+                };
+                let divisor = fixed_round(divisor) as i32;
+                if divisor <= 0 {
+                    // A RHS alias may have changed the target. No store here.
+                    return Ok(());
+                }
+                i64::from(numerator % divisor) * ONE
             }
             _ => {
                 let rhs = match right {
@@ -278,6 +304,17 @@ impl Evaluator<'_, '_> {
 fn rounded(value: i64) -> i64 {
     // 1424D87B0: the shared fixed_round result, returned as fixed5.
     fixed_round(value).wrapping_mul(ONE)
+}
+
+fn modulo_integer(value: i64) -> i32 {
+    // 14047B280 floors in fixed5, wraps that product, divides, then narrows.
+    let whole = value / ONE;
+    let floored = if value % ONE == 0 {
+        value
+    } else {
+        (whole + (value >> 63)).wrapping_mul(ONE)
+    };
+    (floored / ONE) as i32
 }
 
 fn quotient(value: i64, rhs: i64) -> Result<i64, String> {

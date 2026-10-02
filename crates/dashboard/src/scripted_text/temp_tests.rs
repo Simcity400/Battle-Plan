@@ -7,7 +7,9 @@ fn temp_variables_drive_localisation_conditions_and_text_weights() {
         a = { name = Pick text = {
             trigger = { set_temp_variable = { t = 2 }
                 multiply_temp_variable = { t = 3 }
-                check_variable = { t = 6 } }
+                check_variable = { t = 6 }
+                modulo_temp_variable = { t = 4 }
+                check_variable = { t = 2 } }
             random_list = { seed = t
                 1 = { localization_key = YES modifier = { factor = t } }
                 0 = { localization_key = NO } }
