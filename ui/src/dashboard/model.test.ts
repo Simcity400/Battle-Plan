@@ -138,6 +138,9 @@ test('only campaign maps start live; unlinked maps hold the branch end and linke
   const linked = createWidget('map', 'main');
   assert.equal(linked.time.mode, 'follow');
   assert.equal(createWidget('placeholder', 'main').time.mode, 'campaign');
+  // A widget about the whole world (`countries.all`) starts on all countries; others on the dashboard's country.
+  assert.deepEqual(createWidget('trade-flows', 'main').countries, { kind: 'all' });
+  assert.deepEqual(createWidget('resource-balance', 'main').countries, { kind: 'selected' });
   const map = { ...linked, time: { mode: 'campaign' as const } };
   assert.equal(widgetUnavailable(map), null);
   assert.deepEqual(resolveWindow(map, track, [track], 0), { firstHour: 2000, lastHour: 2000 });

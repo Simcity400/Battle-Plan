@@ -310,6 +310,32 @@ pub fn bounded_json(value: &impl Serialize, cancelled: &AtomicBool) -> Result<St
     String::from_utf8(output.bytes).map_err(|error| error.to_string())
 }
 
+/// The bytes `value` takes as JSON, counted without keeping them; none once past
+/// `limit`, where counting stops. For a product that refuses an over-long reply
+/// with its own message before the transport would.
+pub fn json_len(value: &impl Serialize, limit: usize) -> Option<usize> {
+    struct Counter {
+        bytes: usize,
+        limit: usize,
+    }
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes = self.bytes.saturating_add(bytes.len());
+            if self.bytes > self.limit {
+                return Err(io::Error::other("Past the limit"));
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter { bytes: 0, limit };
+    serde_json::to_writer(&mut counter, value).ok()?;
+    Some(counter.bytes)
+}
+
 pub fn bounded_text(value: &str, maximum: usize) -> String {
     let mut end = value.len().min(maximum);
     while !value.is_char_boundary(end) {

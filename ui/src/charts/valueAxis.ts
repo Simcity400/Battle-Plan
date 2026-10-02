@@ -95,6 +95,37 @@ export function rescale(raw: string | bigint, denominator: bigint | number, deci
   return value < 0n ? -((-value + half) / whole) : (value + half) / whole;
 }
 
+/** Sums exact fractions with positive denominators, then rounds once to decimal
+ * units (`rescale`), such as averages over different recorded durations. */
+export function rescaleSum(values: Iterable<readonly [bigint, bigint | number]>, decimals: number): bigint {
+  // Common durations need only one fraction, however many countries contributed.
+  const totals = new Map<bigint, bigint>();
+  for (const [raw, denominator] of values) {
+    const units = BigInt(denominator);
+    if (units <= 0n) throw new RangeError('A fraction’s denominator must be positive.');
+    totals.set(units, (totals.get(units) ?? 0n) + raw);
+  }
+  const gcd = (first: bigint, second: bigint) => {
+    let a = first < 0n ? -first : first;
+    let b = second;
+    while (b) [a, b] = [b, a % b];
+    return a;
+  };
+  let sum = 0n;
+  let denominator = 1n;
+  for (const [units, raw] of totals) {
+    if (!raw) continue;
+    const common = gcd(denominator, units);
+    sum = sum * (units / common) + raw * (denominator / common);
+    denominator *= units / common;
+    // Reduce after adding so the next sum keeps only the precision it needs.
+    const divisor = gcd(sum, denominator);
+    sum /= divisor;
+    denominator /= divisor;
+  }
+  return rescale(sum, denominator, decimals);
+}
+
 /** An amount as the game shows it, from a recorded fixed-point integer: at most
  * `digits` decimals (two by default), none when whole. */
 export function formatAmount(raw: string | bigint, scale: number, digits = 2): string {

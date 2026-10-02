@@ -7,6 +7,10 @@
 .timeline-view { position: sticky; top: 0; }
 .timeline-chart canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .timeline-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
+/* A flow diagram (flow/FlowDiagram.tsx) fills what its widget gives it. */
+.flow-diagram { position: relative; flex: 1; width: 100%; min-height: 0; }
+.flow-diagram canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.flow-diagram canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
 .time-chart-reset { position: absolute; top: var(--space-2); left: 50%; transform: translateX(-50%); }
 
 .chart-tooltip { position: fixed; inset: 0 auto auto 0; margin: 0; min-width: 160px; max-width: 320px; max-height: calc(100vh - 16px); overflow: hidden; padding: var(--space-3) var(--space-4);

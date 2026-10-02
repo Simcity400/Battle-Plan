@@ -22,8 +22,10 @@ pub mod party_history;
 pub mod politics_content;
 pub mod research;
 pub mod resource_balance;
+pub mod resources;
 pub mod stability_parts;
 pub mod subjects;
+pub mod trade_flows;
 
 use std::{io, sync::atomic::AtomicBool};
 
@@ -216,6 +218,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
     register::<resource_balance::ResourceBalance>(),
+    register::<trade_flows::TradeFlows>(),
     register::<subjects::Subjects>(),
 ];
 
@@ -502,6 +505,8 @@ mod tests {
             "IdeaHistoryReply",
             "PartyHistoryReply",
             "ResourceBalanceReply",
+            "ResourceInfo",
+            "TradeFlowsReply",
             "SubjectReply",
         ] {
             assert_eq!(

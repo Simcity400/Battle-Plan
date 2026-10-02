@@ -853,6 +853,70 @@ series: Array<ResourceSeries>,
  * deals.
  */
 dealHours: Array<HourSpan>, trades: Array<TradeRun>, warnings: Array<string>, };
+export type TradeFlowParams = { branchId: string,
+/**
+ * Only flows with one of these countries as seller or buyer; every flow when null.
+ */
+tags: Array<string> | null, };
+export type TradeFlow = {
+/**
+ * The seller's index in `countries`.
+ */
+seller: number,
+/**
+ * The buyer's index in `countries`.
+ */
+buyer: number,
+/**
+ * The resource's native index.
+ */
+resource: number, firstHours: Array<number>, lastHours: Array<number>,
+/**
+ * The daily amount delivered, summed over the flow's deals, as an exact
+ * decimal string with `decimals` places.
+ */
+deliveredRaw: Array<string>,
+/**
+ * Civilian factories the buyer pays.
+ */
+factories: Array<number>, convoysAssigned: Array<number>, convoysRequired: Array<number>,
+/**
+ * Deals summed into the run.
+ */
+deals: Array<number>, };
+export type PartialSpan = { firstHour: number, lastHour: number,
+/**
+ * Deals the read listed but could not attribute.
+ */
+deals: number, };
+export type TradeFlowsReply = { branchId: string, decimals: number,
+/**
+ * Every recorded resource, in the game's order.
+ */
+resources: Array<ResourceInfo>,
+/**
+ * The tags flows name, sorted.
+ */
+countries: Array<string>,
+/**
+ * Hours the deal table and country catalogue were recorded, ascending.
+ */
+reads: Array<number>,
+/**
+ * Hours whose deals are known, as ascending spans. Outside them the deals
+ * are unknown, not none.
+ */
+known: Array<HourSpan>,
+/**
+ * Known hours whose read also listed deals that could not be attributed (a
+ * seller or buyer the links do not resolve, a resource the definitions do not
+ * name), as ascending spans: the flows there are only part of the trade.
+ */
+partial: Array<PartialSpan>,
+/**
+ * By seller, buyer and resource.
+ */
+flows: Array<TradeFlow>, warnings: Array<string>, };
 export type SubjectParams = { branchId: string, };
 export type SubjectLevel = {
 /**

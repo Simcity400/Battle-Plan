@@ -51,14 +51,16 @@
 //! deals add up to `imported` in 3,055 of the 3,073 and its export deals to
 //! `exported` in 3,065, so the widget shows any remainder as its own part.
 
-use super::{CountryParams, LoadContext, Product};
+pub use super::resources::{RESOURCE_DECIMALS, ResourceInfo, ordinals};
+use super::{
+    CountryParams, LoadContext, Product,
+    resources::{Learned, resource_infos},
+};
 use crate::{
     Source,
-    catalogue::{self, Catalogue},
     metadata::{IdentityTrack, link_slot, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
 };
-use installed_content::localisation::Localisation;
 use replay::{
     container::Replay,
     frame::FrameDecoder,
@@ -77,22 +79,10 @@ use ts_rs::TS;
 
 pub struct ResourceBalance;
 
-/// Decimal places of every recorded resource amount.
-pub const RESOURCE_DECIMALS: u8 = 5;
 /// Runs kept per country before the scan refuses, far above a long campaign's
 /// daily changes.
 const MAX_RUNS: usize = 400_000;
 const CACHED_COUNTRIES: usize = 8;
-/// Longest side of a returned resource icon.
-const ICON_EDGE: u32 = 48;
-/// The trade view's resource row and its icon button, the element the game gives
-/// each resource's `icon_frame`: `CTradeResourceInfoItem::CTradeResourceInfoItem@141CA4B50`
-/// opens template literal 142A4A878 and asks it for button literal 1429C0690
-/// (FindButton, vtable +0x68). Vanilla declares the row in
-/// `interface/countrytradeview.gui`; any GUI file may declare it.
-const RESOURCE_ROW: &str = "resources_info_entry";
-const RESOURCE_ICON: &str = "resources_icon";
-
 /// A country's recorded pools of one resource over consecutive hours while they
 /// stay unchanged. Raw values are exact decimal strings with
 /// [`RESOURCE_DECIMALS`] places.
@@ -155,24 +145,6 @@ pub struct TradeRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub starts_segment: bool,
-}
-
-/// A recorded resource, as content names and pictures it. The game keeps every
-/// declaration of a resource as its own resource, even one repeating a token
-/// (`CStrategicResourceDatabase::load_file@140AB2ED0` interns each declared key and
-/// appends a new item and key with no check for an earlier one), so resources are
-/// told apart by their native index and a repeated token is numbered.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ResourceInfo {
-    /// The native index (`ResourceDefinitions.id`).
-    pub id: u32,
-    pub token: String,
-    /// Which declaration of its token this is, from 1, in the game's order.
-    pub ordinal: u32,
-    pub name: Option<String>,
-    /// A PNG data URL; null when content has no icon for it.
-    pub icon: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -247,7 +219,7 @@ fn same_terms(a: &TradeRun, b: &TradeRun) -> bool {
 }
 
 /// Adds an hour to ascending spans, joining it to the last span when it follows it.
-fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
+pub(crate) fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
     match spans.last_mut() {
         Some(span) if span.last_hour.checked_add(1) == Some(hour) => span.last_hour = hour,
         _ => spans.push(HourSpan {
@@ -276,7 +248,7 @@ pub fn scan(
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Resource request cancelled");
     let budget = || io::Error::other("Resource history exceeds its memory budget");
     let mut result = ScannedBalance::default();
-    let mut ids: BTreeMap<u32, String> = BTreeMap::new();
+    let mut learned = Learned::default();
     // The identity and hour last seen, and whether the pools and the deals were
     // recorded for it at that hour. The two tables are captured apart, so each
     // has its own.
@@ -332,29 +304,15 @@ pub fn scan(
             ) else {
                 continue;
             };
-            for definition in definitions {
-                if ids.contains_key(&definition.id) {
-                    continue;
-                }
-                let Some(token) = lexical
-                    .binary_search_by_key(&definition.token, |row| row.token)
-                    .ok()
-                    .and_then(|index| std::str::from_utf8(&lexical[index].literal).ok())
-                    .filter(|token| !token.is_empty())
-                else {
-                    continue;
-                };
-                ids.insert(definition.id, token.to_owned());
-                result.resources.push((definition.id, token.to_owned()));
-                result.resources.sort_by_key(|(id, _)| *id);
-            }
+            learned.learn(definitions, lexical);
+            result.resources = learned.list();
             if let Ok(rows) = decoded.complete::<tables::CountryResources>() {
                 pools_open = true;
                 for row in rows
                     .iter()
                     .filter(|row| link_slot(links, row.country) == Some(slot))
                 {
-                    if !ids.contains_key(&row.resource) {
+                    if !learned.contains(row.resource) {
                         result.unnamed += 1;
                         continue;
                     }
@@ -412,7 +370,7 @@ pub fn scan(
                 } else {
                     continue;
                 };
-                if !ids.contains_key(&exchange.resource) {
+                if !learned.contains(exchange.resource) {
                     result.unnamed += 1;
                     continue;
                 }
@@ -466,181 +424,6 @@ pub fn scan(
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<((u64, String), Arc<ScannedBalance>)>,
-    content: Option<ContentCache>,
-}
-
-/// Names and icons, and the standing warnings, for the catalogue they were read from.
-struct ContentCache {
-    catalogue: Arc<Catalogue>,
-    /// By token and which declaration of it (from 1).
-    resources: BTreeMap<(String, u32), Declared>,
-    warnings: Vec<String>,
-}
-
-/// A declaration's name and icon from content.
-#[derive(Clone)]
-pub(crate) struct Declared {
-    pub(crate) name: Option<String>,
-    pub(crate) icon: Option<String>,
-}
-
-/// The icon sprite of the trade view's resource row, and each content declaration's
-/// frame in it: per token, its declarations in load order.
-struct Icons {
-    texture: String,
-    frames: u32,
-    icon_frames: BTreeMap<String, Vec<Option<u32>>>,
-}
-
-fn icons(catalogue: &Catalogue) -> io::Result<(Icons, Vec<String>)> {
-    let layers = &catalogue.content.layers;
-    let mut gui_warnings = Vec::new();
-    let name = installed_content::gui::window_button_sprite(
-        &catalogue.guis,
-        RESOURCE_ROW,
-        RESOURCE_ICON,
-        &mut gui_warnings,
-    )?;
-    let sprite = catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
-    let texture = sprite
-        .texture
-        .clone()
-        .ok_or_else(|| crate::invalid(format!("{name} has no texture")))?;
-    let (resources, mut warnings) = installed_content::resources::read(layers)?;
-    warnings.extend(gui_warnings);
-    let mut icon_frames: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
-    for resource in resources {
-        icon_frames
-            .entry(resource.token)
-            .or_default()
-            .push(resource.icon_frame);
-    }
-    Ok((
-        Icons {
-            texture,
-            frames: sprite.frames,
-            icon_frames,
-        },
-        warnings,
-    ))
-}
-
-/// Which declaration of its token each resource is, from 1, in the game's order:
-/// the game appends every declaration, so the k-th native resource with a token is
-/// its k-th declaration in load order.
-pub fn ordinals(resources: &[(u32, String)]) -> Vec<u32> {
-    let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
-    resources
-        .iter()
-        .map(|(_, token)| {
-            let count = seen.entry(token.as_str()).or_default();
-            *count += 1;
-            *count
-        })
-        .collect()
-}
-
-/// A resource's name as the game shows it. GetLocalizedResourceName
-/// (140BBC360), which the trade view (1415EA940), the state resource tooltip
-/// (141DADF30) and the other resource texts call, localises
-/// `PRODUCTION_MATERIALS_` (14293AF98) followed by the token upper-cased by the
-/// C runtime's toupper (1424B87F0 -> 14254F1FC), through the plain localiser
-/// (142230F20) only: brackets are glyphs ([`catalogue::View::Plain`]).
-/// `None`, with the reason in `warnings`, when there is no name to show.
-fn resource_name(
-    localisation: &Localisation,
-    token: &str,
-    warnings: &mut Vec<String>,
-) -> Option<String> {
-    let upper = installed_content::localisation::crt_case_text(token, true, false);
-    let key = format!("PRODUCTION_MATERIALS_{upper}");
-    // An empty text is shown empty, as the game's text box shows it; a key
-    // the content lacks is its own bytes (142230940).
-    catalogue::localised(localisation, &key, catalogue::View::Plain)
-        .inspect_err(|reason| warnings.push(format!("{token}: no name: {reason}")))
-        .ok()
-}
-
-/// Names and icons for `wanted` declarations (token, ordinal) from content: the name
-/// the game's resource texts use ([`resource_name`]) and the declaration's frame of
-/// the trade view's icon.
-pub(crate) fn resource_content(
-    catalogue: &Catalogue,
-    wanted: &[(String, u32)],
-    cached: &mut BTreeMap<(String, u32), Declared>,
-    warnings: &mut Vec<String>,
-    cancelled: &AtomicBool,
-) -> io::Result<()> {
-    let missing: Vec<&(String, u32)> = wanted
-        .iter()
-        .filter(|key| !cached.contains_key(*key))
-        .collect();
-    if missing.is_empty() {
-        return Ok(());
-    }
-    let icons = match icons(catalogue) {
-        Ok((icons, notes)) => {
-            warnings.extend(notes);
-            Some(icons)
-        }
-        Err(error) => {
-            warnings.push(format!("Resource icons are unavailable: {error}"));
-            None
-        }
-    };
-    for (token, ordinal) in missing {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Resource request cancelled",
-            ));
-        }
-        // The name is the token's; its notes are given once, with the first declaration.
-        let mut notes = Vec::new();
-        let name = resource_name(&catalogue.localisation, token, &mut notes);
-        if *ordinal == 1 {
-            warnings.extend(notes);
-        }
-        let icon = match icons.as_ref().map(|icons| {
-            let frame = icons
-                .icon_frames
-                .get(token.as_str())
-                .and_then(|frames| frames.get(*ordinal as usize - 1))
-                .copied()
-                .flatten();
-            (icons, frame)
-        }) {
-            Some((icons, Some(frame))) => match catalogue
-                .gui_decode
-                .as_ref()
-                .map_err(crate::invalid)
-                .and_then(|decode| {
-                    catalogue::gui_texture_frame_png(
-                        &catalogue.content.layers,
-                        icons.texture.as_bytes(),
-                        *decode,
-                        icons.frames,
-                        frame - 1,
-                        ICON_EDGE,
-                    )
-                }) {
-                Ok(icon) => Some(icon),
-                Err(error) => {
-                    warnings.push(format!("{token}: icon unavailable: {error}"));
-                    None
-                }
-            },
-            Some((_, None)) => {
-                warnings.push(format!(
-                    "{token}: the recorded content gives no usable icon frame."
-                ));
-                None
-            }
-            None => None,
-        };
-        cached.insert((token.clone(), *ordinal), Declared { name, icon });
-    }
-    Ok(())
 }
 
 impl Product for ResourceBalance {
@@ -697,83 +480,9 @@ impl Product for ResourceBalance {
                 scanned
             }
         };
-        let mut warnings = Vec::new();
-        let ordinals = ordinals(&scanned.resources);
-        let declarations: Vec<(String, u32)> = scanned
-            .resources
-            .iter()
-            .zip(&ordinals)
-            .map(|((_, token), ordinal)| (token.clone(), *ordinal))
-            .collect();
-        let info = |index: usize, declared: Option<&Declared>| {
-            let (id, token) = &scanned.resources[index];
-            ResourceInfo {
-                id: *id,
-                token: token.clone(),
-                ordinal: ordinals[index],
-                name: declared.and_then(|declared| declared.name.clone()),
-                icon: declared.and_then(|declared| declared.icon.clone()),
-            }
-        };
-        // Without the game folders the bars still draw, named by token and without icons.
-        let resources = match context
-            .content()
-            .and_then(|content| catalogue::catalogue(source, content))
-        {
-            Ok(catalogue) => {
-                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                if !cache
-                    .content
-                    .as_ref()
-                    .is_some_and(|cached| Arc::ptr_eq(&cached.catalogue, &catalogue))
-                {
-                    let mut standing = catalogue.verification.clone();
-                    standing.extend(catalogue.warnings.iter().cloned());
-                    cache.content = Some(ContentCache {
-                        catalogue: Arc::clone(&catalogue),
-                        resources: BTreeMap::new(),
-                        warnings: standing,
-                    });
-                }
-                let content = cache.content.as_mut().expect("content cached");
-                resource_content(
-                    &catalogue,
-                    &declarations,
-                    &mut content.resources,
-                    &mut content.warnings,
-                    cancelled,
-                )?;
-                warnings.extend(content.warnings.iter().cloned());
-                let resources: Vec<ResourceInfo> = declarations
-                    .iter()
-                    .enumerate()
-                    .map(|(index, key)| info(index, content.resources.get(key)))
-                    .collect();
-                if resources.iter().any(|resource| resource.icon.is_some()) {
-                    warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
-                }
-                resources
-            }
-            Err(error) => {
-                warnings.push(format!("Resource names and icons are unavailable: {error}"));
-                (0..scanned.resources.len())
-                    .map(|index| info(index, None))
-                    .collect()
-            }
-        };
-        // Each declaration is its own resource in the game, so each is shown, numbered.
-        for (index, (_, token)) in scanned.resources.iter().enumerate() {
-            if ordinals[index] == 2 {
-                let count = scanned
-                    .resources
-                    .iter()
-                    .filter(|(_, other)| other == token)
-                    .count();
-                warnings.push(format!(
-                    "{token} is declared {count} times; the game keeps each declaration as its own resource, so each is shown and numbered."
-                ));
-            }
-        }
+        // Without game folders resources keep their tokens and no icons.
+        let (resources, mut warnings) =
+            resource_infos(source, context, &scanned.resources, cancelled)?;
         if scanned.unnamed > 0 {
             warnings.push(format!(
                 "{} recorded rows name a resource the recorded definitions do not; they are left out.",

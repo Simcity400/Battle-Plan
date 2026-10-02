@@ -10,7 +10,7 @@ use crate::{
         idea_history::{Joined, categories},
         party_history::ideology_infos,
         politics_content::{CountryLook, IdeaCountry, PoliticsContent},
-        resource_balance::resource_content,
+        resources::{ContentView, resource_content},
         validate_tag,
     },
 };
@@ -184,7 +184,7 @@ fn resource_balance_names_and_draws_a_mod_resource_from_the_mod_s_own_art() {
     ];
     let (mut declared, mut warnings) = (BTreeMap::new(), Vec::new());
     resource_content(
-        &catalogue,
+        &ContentView::of(&catalogue),
         &wanted,
         &mut declared,
         &mut warnings,
@@ -692,7 +692,7 @@ fn a_resource_icon_is_the_trade_row_s_button_whatever_file_declares_it() {
         let catalogue = stack.catalogue(&[]);
         let (mut declared, mut warnings) = (BTreeMap::new(), Vec::new());
         resource_content(
-            &catalogue,
+            &ContentView::of(&catalogue),
             &[("mod_ore".to_owned(), 1)],
             &mut declared,
             &mut warnings,

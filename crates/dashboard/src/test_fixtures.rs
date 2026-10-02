@@ -322,3 +322,100 @@ pub(crate) fn stability_frame(
         ]));
     frame
 }
+
+/// Germany (raw links 11 and `germany`, slot 7), Italy (21, slot 8) and Spain
+/// (31, slot 9), with steel and oil. Deals are (handle, exporter, importer,
+/// delivered).
+pub(crate) fn resource_frame(
+    hour: i32,
+    steel: i64,
+    germany: u32,
+    deals: &[(u64, u32, u32, i64)],
+) -> DecodedFrame {
+    use replay::rows::{
+        CountryResourceRow, LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow,
+    };
+    let mut frame = source(1, hour, Some(1));
+    let country = |id, canonical_slot, tag: &[u8]| CountryRow {
+        id,
+        canonical_slot,
+        tag: tag.to_vec(),
+        ..Default::default()
+    };
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+        country(21, 8, b"ITA"),
+        country(31, 9, b"SPR"),
+        country(germany, 7, b"GER"),
+    ]));
+    let link = |id, canonical_slot| CountryLinkRow { id, canonical_slot };
+    *frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(vec![
+            link(11, 7),
+            link(21, 8),
+            link(31, 9),
+            link(germany, 7),
+        ]));
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 501,
+                literal: b"steel".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 502,
+                literal: b"oil".to_vec(),
+            },
+        ]));
+    *frame.tables[TableId::ResourceDefinitions.index()] =
+        TableView::Complete(TableRows::ResourceDefinitions(vec![
+            ResourceDefinitionRow {
+                id: 1,
+                token: 501,
+                active: 1,
+                factory_cost: 12_500,
+            },
+            ResourceDefinitionRow {
+                id: 2,
+                token: 502,
+                active: 1,
+                factory_cost: 12_500,
+            },
+        ]));
+    let pools = |country, resource, produced| CountryResourceRow {
+        country,
+        resource,
+        produced,
+        imported: 800_000,
+        to_export: 2_500_000,
+        exported: 1_700_000,
+        used: produced + 800_000 - 2_500_000,
+        // Special projects take 0.4; the production lines need 30.
+        special_total: produced + 800_000 - 2_500_000 - 40_000,
+        production_demand: -3_000_000,
+        ..Default::default()
+    };
+    *frame.tables[TableId::CountryResources.index()] =
+        TableView::Complete(TableRows::CountryResources(vec![
+            // Germany's rows name it by its other link.
+            pools(11, 1, steel),
+            pools(11, 2, 0),
+            pools(21, 1, 99_900_000),
+        ]));
+    *frame.tables[TableId::ResourceExchanges.index()] =
+        TableView::Complete(TableRows::ResourceExchanges(
+            deals
+                .iter()
+                .map(|&(id, exporter, importer, delivered)| ResourceExchangeRow {
+                    id,
+                    exporter,
+                    importer,
+                    resource: 1,
+                    delivered,
+                    assigned_factories: 1,
+                    required_factories: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    frame
+}

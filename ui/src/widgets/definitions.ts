@@ -17,7 +17,8 @@ import { definition as rulingParty } from './ruling-party/definition.ts';
 import { definition as spiritHistory } from './spirit-history/definition.ts';
 import { definition as stability } from './stability/definition.ts';
 import { definition as subjects } from './subjects/definition.ts';
+import { definition as tradeFlows } from './trade-flows/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, fuel, occupiedStates, experience, factions, subjects, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, fuel, occupiedStates, experience, factions, subjects, tradeFlows, placeholder] as const;
 
 registerWidgets(widgetMetas);

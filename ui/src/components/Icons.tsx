@@ -57,6 +57,7 @@ const paths = {
   layers: <><path d="m12 3.5 8.5 4.5-8.5 4.5L3.5 8 12 3.5Z" /><path d="m3.5 12 8.5 4.5 8.5-4.5M3.5 16l8.5 4.5 8.5-4.5" /></>,
   history: <><path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5" /><path d="M4 4v4.5h4.5M12 8v4.2l3 1.8" /></>,
   droplet: <path d="M12 3.5c2.6 3.4 6 7.1 6 10.8a6 6 0 0 1-12 0c0-3.7 3.4-7.4 6-10.8Z" />,
+  flows: <><path d="M4 5.5v5M20 5.5v4M20 13.5v5M4 14.5v4" /><path d="M4 8c8 0 8 8 16 8M4 16.5c7 0 9-5 16-5.5" /></>,
   shield: <><path d="M12 3.5 19 6v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6l7-2.5Z" /><path d="M12 3.5v17" /></>,
   hierarchy: <><rect x="9" y="3.5" width="6" height="4.5" rx="1.25" /><rect x="3.5" y="16" width="6" height="4.5" rx="1.25" /><rect x="14.5" y="16" width="6" height="4.5" rx="1.25" /><path d="M12 8v4M6.5 16v-4h11v4" /></>,
 } satisfies Record<string, ReactNode>;

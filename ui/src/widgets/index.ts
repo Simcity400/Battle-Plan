@@ -20,7 +20,8 @@ import resourceBalance from './resource-balance';
 import rulingParty from './ruling-party';
 import spiritHistory from './spirit-history';
 import subjects from './subjects';
+import tradeFlows from './trade-flows';
 
-const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, fuel, 'occupied-states': occupiedStates, experience, factions, subjects, placeholder };
+const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, fuel, 'occupied-states': occupiedStates, experience, factions, subjects, 'trade-flows': tradeFlows, placeholder };
 
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

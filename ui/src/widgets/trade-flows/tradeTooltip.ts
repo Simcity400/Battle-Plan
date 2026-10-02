@@ -1,0 +1,107 @@
+import { dayLabel } from '../../charts/draw.ts';
+import { fitTooltip } from '../../charts/tooltip.ts';
+import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
+import { formatAmount } from '../../charts/valueAxis.ts';
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
+import { compareTags } from '../../dashboard/tagOrder.ts';
+import { measureAmount, measureNote, measureRows, resourceName } from './tradeData.ts';
+import type { Flow, Measure, SideLink, SideNode } from './tradeData';
+
+/** Countries or trades named in a tooltip, largest first. */
+export const TOOLTIP_LIMIT = 8;
+
+interface TooltipOptions {
+  measure: Measure;
+  from: number;
+  hour: number;
+  read: number | null;
+  decimals: number;
+  note?: string;
+  viewport: number;
+  nodeName: (node: SideNode) => string;
+  labelAt: (hour: number) => CountryLabel;
+  ask: (hour: number, tags: readonly string[]) => void;
+}
+
+/** The date, labels and requests every trade tooltip uses. */
+function tooltipContext(options: TooltipOptions) {
+  const { measure, from, hour, read, decimals, nodeName, labelAt } = options;
+  const tipHour = measure === 'current' ? read ?? hour : hour;
+  const named = labelAt(tipHour);
+  return {
+    named,
+    ask: (tags: readonly (string | null)[]) => options.ask(tipHour, [...new Set(tags.filter((tag): tag is string => tag != null))].sort(compareTags)),
+    name: (node: SideNode) => node.tag ? named(node.tag).name : nodeName(node),
+    amount: (flows: readonly Flow[]) => formatAmount(measureAmount(flows, measure, from, hour), decimals),
+    subtitle: `${measureNote(measure)} · ${measure === 'current' ? dayLabel(hour) : `${dayLabel(from)} – ${dayLabel(hour)}`}`,
+  };
+}
+
+/** A ribbon's recorded terms and the countries trading through its endpoints. */
+export function ribbonTooltip(link: SideLink, source: SideNode, target: SideNode, options: TooltipOptions): TooltipContent {
+  const { measure, from, hour, decimals, note, viewport } = options;
+  const { named, ask, name, amount, subtitle } = tooltipContext(options);
+  const parts = [...link.flows].sort((a, b) => Number(measureAmount([b], measure, from, hour) - measureAmount([a], measure, from, hour)));
+  const soleAggregated = parts.length === 1 && (source.tag == null || target.tag == null);
+  const listTrades = parts.length > 1 || soleAggregated;
+  const tags = [source.tag, target.tag, ...(listTrades ? parts.slice(0, TOOLTIP_LIMIT).flatMap(flow => [flow.seller, flow.buyer]) : [])];
+  ask(tags);
+  const title = soleAggregated ? `${named(parts[0].seller).name} → ${named(parts[0].buyer).name}` : `${name(source)} → ${name(target)}`;
+  const head = { title, icon: link.resource.icon ?? undefined, subtitle: `${resourceName(link.resource)} · ${subtitle}`, note };
+  const rows = measureRows(link.flows, measure, from, hour, decimals);
+  function* forms(): Generator<TooltipContent> {
+    if (!listTrades) { yield { ...head, rows }; return; }
+    for (let count = Math.min(TOOLTIP_LIMIT, parts.length); count >= 1; count--) {
+      const listed: TooltipRow[] = soleAggregated
+        ? [{ label: 'Seller', value: named(parts[0].seller).name, icon: named(parts[0].seller).flag, divider: true },
+          { label: 'Buyer', value: named(parts[0].buyer).name, icon: named(parts[0].buyer).flag }]
+        : parts.slice(0, count).map((flow, index) => ({ label: `${named(flow.seller).name} → ${named(flow.buyer).name}`,
+          value: amount([flow]), indent: true, short: true, divider: index === 0 }));
+      const more = parts.length - count;
+      yield { ...head, rows: [...rows, ...listed, ...(more ? [{ label: `${more.toLocaleString('en-US')} more`, tone: 'muted' as const, indent: true }] : [])] };
+    }
+    yield { ...head, rows };
+  }
+  return fitTooltip(forms(), viewport, { keep: 0 });
+}
+
+interface NodeTooltipOptions extends TooltipOptions {
+  resourceOrder: ReadonlyMap<number, number> | undefined;
+  resourceColour: (id: number) => string | undefined;
+}
+
+/** A country's trade by resource, or the countries summed into an other node. */
+export function nodeTooltip(node: SideNode, links: readonly SideLink[], options: NodeTooltipOptions): TooltipContent {
+  const { note, viewport, resourceOrder, resourceColour } = options;
+  const { named, ask, name, amount, subtitle } = tooltipContext(options);
+  const own = links.filter(link => link[node.side] === node.id);
+  const sells = node.side === 'source';
+  const byResource = new Map<number, Flow[]>();
+  for (const link of own) {
+    const list = byResource.get(link.resource.id) ?? [];
+    for (const flow of link.flows) list.push(flow);
+    byResource.set(link.resource.id, list);
+  }
+  const gameOrder = (id: number) => resourceOrder?.get(id) ?? 0;
+  const resourceRows: TooltipRow[] = [...byResource].sort((a, b) => gameOrder(a[0]) - gameOrder(b[0])).map(([id, list]) => {
+    const resource = list[0].resource;
+    return { label: resourceName(resource), swatch: resourceColour(id), icon: resource.icon ?? undefined, value: amount(list), short: true };
+  });
+  const everything = own.flatMap(link => link.flows);
+  const partners = new Set(everything.map(flow => sells ? flow.buyer : flow.seller));
+  const members = node.tag ? [] : node.members;
+  ask(node.tag ? [node.tag] : members.slice(0, TOOLTIP_LIMIT));
+  const head = { title: name(node), icon: node.tag ? named(node.tag).flag : undefined,
+    subtitle: `${sells ? 'Sells' : 'Buys'} · ${subtitle}`, note };
+  const total: TooltipRow = { label: `${sells ? 'Sold to' : 'Bought from'} ${partners.size.toLocaleString('en-US')} ${partners.size === 1 ? 'country' : 'countries'}`,
+    value: amount(everything), strong: true, divider: true };
+  function* forms(): Generator<TooltipContent> {
+    for (let count = Math.min(TOOLTIP_LIMIT, members.length); count >= 0; count--) {
+      const listed: TooltipRow[] = members.slice(0, count).map((tag, index) => ({ label: named(tag).name, icon: named(tag).flag, divider: index === 0, short: true,
+        value: amount(everything.filter(flow => (sells ? flow.seller : flow.buyer) === tag)) }));
+      const more = members.length - count;
+      yield { ...head, rows: [...resourceRows, total, ...listed, ...(members.length && more ? [{ label: `${more.toLocaleString('en-US')} more`, tone: 'muted' as const }] : [])] };
+    }
+  }
+  return fitTooltip(forms(), viewport, { keep: 1 });
+}
