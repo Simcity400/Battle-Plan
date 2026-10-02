@@ -60,9 +60,10 @@ pub(crate) const RETREAT_BANS: usize = 7;
 pub(crate) const AIR_RELATIONS: usize = 8;
 pub(crate) const AIR_HISTORIES: usize = 9;
 pub(crate) const NAVAL_MISSIONS: usize = 10;
+pub(crate) const COMBAT_LOG: usize = 11;
 
 /// Every sliced family. Index with the family constants above.
-pub(crate) const FAMILIES: [SliceFamily; 11] = [
+pub(crate) const FAMILIES: [SliceFamily; 12] = [
     SliceFamily {
         name: "research",
         owner: OwnerKind::Country,
@@ -159,6 +160,16 @@ pub(crate) const FAMILIES: [SliceFamily; 11] = [
             TableId::NavalMissionCountries,
             TableId::NavalMissionCommanders,
         ],
+    },
+    // The Combat Log, read in the Slow job without a fingerprint store: at
+    // the last hour before the daily prune the family selects each country
+    // holding a deleted group's log ([`SliceSelection::select`]); every other
+    // read waits for its slice; a country whose last complete read is older
+    // than the previous calendar month is read whole.
+    SliceFamily {
+        name: "combat_log",
+        owner: OwnerKind::Country,
+        tables: &[TableId::CombatLogEquipment],
     },
 ];
 
@@ -263,6 +274,25 @@ impl SliceSelection {
             set_bit(&mut self.early, owner, true);
             self.early_count += 1;
         }
+    }
+
+    /// Add `owner` to this hour's read outside its slice, without a
+    /// fingerprint. An owner above the fingerprint range cannot be marked and
+    /// is counted in `out_of_range`; false then.
+    pub(crate) fn select(&mut self, owner: u32) -> bool {
+        debug_assert!(
+            !self.early.is_empty(),
+            "placeholder selections cannot select"
+        );
+        if owner as usize >= FINGERPRINT_OWNERS {
+            self.out_of_range += 1;
+            return false;
+        }
+        if !self.contains(owner) {
+            set_bit(&mut self.early, owner, true);
+            self.early_count += 1;
+        }
+        true
     }
 
     /// The scan visited every live owner: owners it did not see are gone, and
@@ -663,5 +693,24 @@ mod tests {
         assert_eq!(FAMILIES[AIR_HISTORIES].owner, OwnerKind::CanonicalSlot);
         assert_eq!(FAMILIES[NAVAL_MISSIONS].name, "naval_missions");
         assert_eq!(FAMILIES[NAVAL_MISSIONS].owner, OwnerKind::Country);
+        assert_eq!(FAMILIES[COMBAT_LOG].name, "combat_log");
+        assert_eq!(FAMILIES[COMBAT_LOG].owner, OwnerKind::Country);
+    }
+
+    #[test]
+    fn select_adds_an_owner_once_outside_its_slice() {
+        let mut selection = SliceSelection::new(true);
+        selection.reset(5, false);
+        // Owner 29 is in hour 5's slice already: selecting it adds nothing.
+        assert!(selection.select(29));
+        assert_eq!(selection.early_count, 0);
+        assert!(selection.select(30));
+        assert!(selection.select(30));
+        assert!(selection.select(6));
+        assert_eq!(selection.early_count, 2);
+        assert!(selection.contains(6) && selection.contains(30) && selection.contains(29));
+        assert!(!selection.contains(7));
+        assert!(!selection.select(FINGERPRINT_OWNERS as u32));
+        assert_eq!(selection.out_of_range, 1);
     }
 }

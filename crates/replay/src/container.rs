@@ -1416,6 +1416,10 @@ mod tests {
             TableView::Complete(TableRows::SimulationFeatures(vec![
                 crate::rows::SimulationFeatureRow::default(),
             ]));
+        tables[TableId::CombatLogState.index()] =
+            TableView::Complete(TableRows::CombatLogState(vec![
+                crate::rows::CombatLogStateRow::default(),
+            ]));
         tables[TableId::AirSortieModifierMetadata.index()] =
             TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
                 crate::rows::AirSortieModifierMetadataRow::default(),

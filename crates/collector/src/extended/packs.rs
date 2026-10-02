@@ -1,6 +1,6 @@
 use super::{
     Captured, Divisions, MISSING, active_abilities, air, army_icon_inputs, character_inputs,
-    combat_details, construction, country_appearance, country_counters, country_factories,
+    combat_details, combat_log, construction, country_appearance, country_counters, country_factories,
     country_stability, country_tactic_unlocks, division_templates, faction_theatres, fog,
     group_counters, hired_advisors, industrial_organisations, leader_paths, leader_portraits,
     logistics, map_facilities, map_names, model_inputs, modifier_definitions, naval_bases,
@@ -116,6 +116,9 @@ impl Captured {
         let mut packs = request.packs;
         let mut stores = request.stores;
         if !completed {
+            // The Combat Log read may have advanced its countries' last
+            // complete read before failing.
+            combat_log::forget_reads();
             packs.fail(request.hour, request.force_full, "slow acquisition failed");
             for store in [&mut stores.stability, &mut stores.naval_missions]
                 .into_iter()
@@ -342,6 +345,7 @@ impl Captured {
         std::mem::swap(&mut self.hired_advisors, &mut packs.hired_advisors);
         std::mem::swap(&mut self.character_inputs, &mut packs.character_inputs);
         std::mem::swap(&mut self.logistics, &mut packs.logistics);
+        std::mem::swap(&mut self.combat_log, &mut packs.combat_log);
         std::mem::swap(&mut self.country_factories, &mut packs.country_factories);
         std::mem::swap(
             &mut self.industrial_organisations,
@@ -605,9 +609,9 @@ impl RaidStateStores {
 
 /// The live-memory packs run as a second pool job from the first burst
 /// (map names, templates, visibility, faction theatres, model inputs,
-/// modifier definitions, hired advisors, character inputs, logistics, country
-/// factories and industrial organisations). No defines are recorded: the
-/// viewer reads the movement defines from the content's `NDefines`. Each
+/// modifier definitions, hired advisors, character inputs, logistics, the Combat
+/// Log, country factories and industrial organisations). No defines are recorded:
+/// the viewer reads the movement defines from the content's `NDefines`. Each
 /// table keeps its own [`replay::cadence`]: the
 /// template dictionary is daily, its counter inputs hourly.
 pub(crate) struct SlowPacks {
@@ -620,6 +624,7 @@ pub(crate) struct SlowPacks {
     pub(crate) hired_advisors: hired_advisors::Captured,
     pub(crate) character_inputs: character_inputs::Captured,
     pub(crate) logistics: logistics::Captured,
+    pub(crate) combat_log: combat_log::Captured,
     pub(crate) country_factories: country_factories::Captured,
     pub(crate) industrial_organisations: industrial_organisations::Captured,
     pub(crate) country_stability: country_stability::Captured,
@@ -769,6 +774,7 @@ impl SlowPacks {
         self.hired_advisors.fail_capture(hour, force_full, reason);
         self.character_inputs.fail_capture(hour, force_full, reason);
         self.logistics.fail_capture(hour, force_full, reason);
+        self.combat_log.fail_capture(hour, force_full, reason);
         self.country_factories
             .fail_capture(hour, force_full, reason);
         self.industrial_organisations
@@ -793,6 +799,7 @@ impl SlowPacks {
             + self.hired_advisors.allocated_bytes()
             + self.character_inputs.allocated_bytes()
             + self.logistics.allocated_bytes()
+            + self.combat_log.allocated_bytes()
             + self.country_factories.allocated_bytes()
             + self.industrial_organisations.allocated_bytes()
             + self.country_stability.allocated_bytes()
@@ -811,6 +818,7 @@ impl SlowPacks {
             hired_advisors: hired_advisors::Captured::vacant(),
             character_inputs: character_inputs::Captured::vacant(),
             logistics: logistics::Captured::vacant(),
+            combat_log: combat_log::Captured::vacant(),
             country_factories: country_factories::Captured::vacant(),
             industrial_organisations: industrial_organisations::Captured::vacant(),
             country_stability: country_stability::Captured::vacant(),
@@ -850,6 +858,7 @@ impl SlowPacks {
             character_inputs,
             country_tactic_unlocks,
             logistics,
+            combat_log,
             country_factories,
             industrial_organisations
         );

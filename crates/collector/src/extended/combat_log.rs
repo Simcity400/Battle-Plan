@@ -1,0 +1,812 @@
+//! The game's own equipment-loss records.
+//!
+//! CombatLogEquipment: every country's Combat Log (NCombatLog,
+//! CGameState+0x880), per orders group, loss reason, month and variant, and
+//! its recoveries. It is sliced by country: each hour reads the countries of
+//! that hour's slice. A country whose last complete read was in this or the
+//! previous calendar month is read through each array's last two month
+//! entries (every entry that can have changed since); a country never read
+//! completely in this session, or last read earlier, and every country at a
+//! full hour, is read whole. At the last sample before the daily prune it
+//! also reads each country holding the log of a deleted orders group.
+//!
+//! The prune detour ([`crate::combat_log_prune`]) keeps the final rows of
+//! every log the prune deletes. Each is published once, with a read of its
+//! country at the next sample, and then kept for [`RETAIN_HOURS`]: a sign
+//! that a read may not have been published ([`forget_reads`], or a full
+//! hour) publishes every kept final again.
+//!
+//! The finals and each country's last complete read hour belong to the
+//! session (load signal) they were observed in and are shared by every
+//! capture buffer ([`Store`]); a load starts them afresh.
+//!
+//! CombatLogState: hourly, the writer's country-gate operand (CGameState+0x520)
+//! and whether the prunes since the previous sample were observed. It helps
+//! explain why the game did not keep a country's land losses; the writer also
+//! requires an orders group. It never selects what the collector captures.
+//!
+//! LendLeaseEquipment: daily, each giver's lend-lease exchanges' delivered
+//! and sunk equipment per variant.
+use crate::{
+    sampling::qpc,
+    slicing::{FINGERPRINT_OWNERS, SliceSelection},
+    spooling::table,
+    table_capture::CaptureRows,
+};
+use engine::{
+    Memory, clend_lease_exchange as lend_lease, ncombat_log_cequipment_loss::month_bucket,
+    ncombat_log_cmanager as native, walk::Outcome,
+};
+use replay::{
+    cadence::{SKIPPED_REASON, STAGGER_PERIOD, should_walk},
+    frame::TableView,
+    rows::{CombatLogEquipmentRow, CombatLogStateRow, LendLeaseEquipmentRow, TableId, tables},
+};
+use std::sync::{
+    Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
+
+pub const N: usize = 3;
+pub const TABLES: [TableId; N] = [
+    TableId::CombatLogEquipment,
+    TableId::CombatLogState,
+    TableId::LendLeaseEquipment,
+];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
+
+/// The sample before the daily prune: CGameState::HourlyUpdate@1401dcef0 runs
+/// CGameState::DailyUpdate@1401d4390 (and so the Combat Log prune) inside the
+/// update entered at raw hour `% 24 == 23`, after that hour's sample.
+pub const PRUNE_HOUR: i32 = 23;
+
+/// Rows the first capture is sized for. Demand follows the stored orders
+/// groups, months and variants across all countries. A larger read grows the
+/// buffer off-thread after truncation; player status never sizes or selects it.
+const ROWS: usize = 4096;
+/// Lend-lease rows the first capture is sized for: a few exchanges' designs.
+const LEND_LEASE_ROWS: usize = 512;
+
+/// Hours a published final is kept, to be published again if the frame that
+/// published it turns out unpublished. The spool reports an unpublished frame
+/// ([`forget_reads`], or a full-refresh retry) when it takes the frame, which
+/// is within the capture buffers' rotation of a few hours.
+pub const RETAIN_HOURS: i32 = 24;
+/// A country with no complete read in this session.
+const NEVER: i32 = i32::MIN;
+
+/// A deleted log's final row, and the hour a published read carried it.
+#[derive(Clone, Copy)]
+struct Final {
+    row: native::Row,
+    published: Option<i32>,
+}
+
+/// The Combat Log state every capture buffer shares, for one session (load
+/// signal). Captures run one at a time: each hour's Slow job, or its inline
+/// fallback, completes inside that hour's callback. So the lock is never
+/// contended; only the capture takes it, and the game thread only raises
+/// [`FORGET`].
+struct Store {
+    signal: Option<i64>,
+    /// The last sample hour the store was brought to.
+    hour: Option<i32>,
+    finals: Vec<Final>,
+    /// Each country's last complete read hour ([`NEVER`] when none), by
+    /// country below [`FINGERPRINT_OWNERS`]; allocated at the first capture.
+    read_hour: Vec<i32>,
+}
+
+const EMPTY_STORE: Store = Store {
+    signal: None,
+    hour: None,
+    finals: Vec::new(),
+    read_hour: Vec::new(),
+};
+
+#[cfg(not(test))]
+static STORE: Mutex<Store> = Mutex::new(EMPTY_STORE);
+/// A read since the last capture may not have been published.
+#[cfg(not(test))]
+static FORGET: AtomicBool = AtomicBool::new(false);
+
+// Tests run captures on many threads at once: each test thread has its own
+// store and flag, so no test sees another's.
+#[cfg(test)]
+thread_local! {
+    static STORE: Mutex<Store> = const { Mutex::new(EMPTY_STORE) };
+    static FORGET: AtomicBool = const { AtomicBool::new(false) };
+    static DRAINS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn lock(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
+    store.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(not(test))]
+fn with_store<R>(visit: impl FnOnce(&mut Store) -> R) -> R {
+    visit(&mut lock(&STORE))
+}
+#[cfg(test)]
+fn with_store<R>(visit: impl FnOnce(&mut Store) -> R) -> R {
+    STORE.with(|store| visit(&mut lock(store)))
+}
+
+#[cfg(not(test))]
+fn take_forget() -> bool {
+    FORGET.swap(false, Ordering::AcqRel)
+}
+#[cfg(test)]
+fn take_forget() -> bool {
+    FORGET.with(|forget| forget.swap(false, Ordering::AcqRel))
+}
+
+/// Some Combat Log read may not have been published (a failed Slow job, a
+/// dropped frame, a family the spool could not publish): the next capture
+/// reads every country whole at its next read and publishes every kept final
+/// again. Any thread.
+#[cfg(not(test))]
+pub(crate) fn forget_reads() {
+    FORGET.store(true, Ordering::Release);
+}
+#[cfg(test)]
+pub(crate) fn forget_reads() {
+    FORGET.with(|forget| forget.store(true, Ordering::Release));
+}
+
+/// Hand the prune log's rows of this session over. Under test, only a test
+/// thread that opted in ([`drain_prune_log_for_test`]) drains the shared log.
+fn drain_prune_log(signal: i64, output: &mut Vec<native::Row>) -> bool {
+    #[cfg(test)]
+    if !DRAINS.get() {
+        return false;
+    }
+    crate::combat_log_prune::drain(signal, output).is_ok()
+}
+
+/// This test thread's captures drain the prune log, and its store starts
+/// empty. Hold [`crate::combat_log_prune::test_lock`].
+#[cfg(test)]
+pub(crate) fn drain_prune_log_for_test() {
+    DRAINS.set(true);
+    with_store(|store| *store = EMPTY_STORE);
+    take_forget();
+}
+
+/// Whether a country last read completely at `last` must be read whole at
+/// `hour`: never read, read in a later hour (never in one session), or read
+/// before the previous calendar month, whose entries the window no longer
+/// covers.
+fn needs_all(last: i32, hour: i32) -> bool {
+    last == NEVER || last > hour || month_bucket(last) < month_bucket(hour).saturating_sub(1)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Capacities {
+    rows: usize,
+    lend_lease: usize,
+}
+impl Default for Capacities {
+    fn default() -> Self {
+        Self {
+            rows: ROWS,
+            lend_lease: LEND_LEASE_ROWS,
+        }
+    }
+}
+
+pub struct Captured {
+    rows: CaptureRows<native::Row>,
+    lend_lease: CaptureRows<lend_lease::Row>,
+    viewing: Result<i32, &'static str>,
+    prune_observed: bool,
+    /// The countries this hour's read covered.
+    selection: SliceSelection,
+    /// The walk's variant memo, cleared at the start of every walk.
+    memo: native::VariantMemo,
+    /// The sample's load signal ([`Self::set_signal`]).
+    signal: i64,
+    /// Rows the prune log handed over this hour, before they join the store.
+    drained: Vec<native::Row>,
+    /// The countries this hour's walk read.
+    visited: Vec<u32>,
+}
+
+const VIEWING_UNREAD: &str = "viewing country unreadable";
+
+impl Captured {
+    pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.rows
+            .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
+        self.lend_lease
+            .fail(super::failed_capture(TABLES[2], hour, force_full, reason));
+        // The state is read every hour, so a failed job loses it.
+        self.viewing = Err(reason);
+    }
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self {
+            rows: CaptureRows::new(0),
+            lend_lease: CaptureRows::new(0),
+            viewing: Err(VIEWING_UNREAD),
+            prune_observed: false,
+            selection: SliceSelection::new(false),
+            memo: native::VariantMemo::vacant(),
+            signal: 0,
+            drained: Vec::new(),
+            visited: Vec::new(),
+        }
+    }
+    pub fn with_capacities(capacity: &Capacities) -> Self {
+        Self {
+            rows: CaptureRows::new(capacity.rows),
+            lend_lease: CaptureRows::new(capacity.lend_lease),
+            viewing: Err(VIEWING_UNREAD),
+            prune_observed: false,
+            selection: SliceSelection::new(true),
+            memo: native::VariantMemo::new(),
+            signal: 0,
+            drained: Vec::new(),
+            visited: Vec::new(),
+        }
+    }
+    pub fn reset(&mut self) {
+        self.rows.reset();
+        self.lend_lease.reset();
+        self.viewing = Err(VIEWING_UNREAD);
+        self.prune_observed = false;
+    }
+    pub fn allocated_bytes(&self) -> usize {
+        self.rows.allocated_bytes()
+            + self.lend_lease.allocated_bytes()
+            + self.memo.allocated_bytes()
+            + self.drained.capacity() * size_of::<native::Row>()
+            + self.visited.capacity() * size_of::<u32>()
+    }
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.rows.grow(&mut capacity.rows);
+        self.lend_lease.grow(&mut capacity.lend_lease);
+    }
+
+    /// The countries whose CombatLogEquipment rows this frame's read replaced.
+    pub(crate) fn selection(&self) -> &SliceSelection {
+        &self.selection
+    }
+
+    /// Start a frame's selection at its hour; the capture resets it again.
+    pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
+        self.selection.reset(hour, force_full);
+    }
+
+    /// The sample's load signal (`Clock::play_session_started_at`), which
+    /// names the session the store and the prune log's rows must belong to.
+    pub(crate) fn set_signal(&mut self, signal: i64) {
+        self.signal = signal;
+    }
+
+    pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        self.reset();
+        self.selection.reset(hour, force_full);
+        let (state_cost, log_cost) = with_store(|store| {
+            let state_cost = {
+                let _reads = crate::read_accounting::table(TABLES[1]);
+                let started = qpc();
+                self.viewing = native::viewing_country(memory, game_state).ok_or(VIEWING_UNREAD);
+                self.prune_observed = self.begin(store, hour, force_full);
+                qpc().saturating_sub(started).max(0) as u64
+            };
+            let log_cost = {
+                let _reads = crate::read_accounting::table(TABLES[0]);
+                let started = qpc();
+                self.rows.outcome = self.read_log(store, memory, base, game_state, hour, force_full);
+                qpc().saturating_sub(started).max(0) as u64
+            };
+            (state_cost, log_cost)
+        });
+        let lend_lease_cost = if should_walk(TABLES[2], hour, force_full) {
+            let _reads = crate::read_accounting::table(TABLES[2]);
+            let started = qpc();
+            self.lend_lease.outcome =
+                lend_lease::walk(memory, base, game_state, &mut self.lend_lease.rows);
+            qpc().saturating_sub(started).max(0) as u64
+        } else {
+            self.lend_lease.outcome = Outcome::Unavailable {
+                reason: SKIPPED_REASON,
+            };
+            0
+        };
+        [log_cost, state_cost, lend_lease_cost]
+    }
+
+    /// Bring the shared store to this sample: a new session starts it afresh,
+    /// a possibly unpublished read or a full hour publishes every kept final
+    /// again, finals published [`RETAIN_HOURS`] ago retire, and the prunes
+    /// since the previous sample add theirs. Whether those prunes were all
+    /// observed.
+    fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
+        if store.read_hour.len() != FINGERPRINT_OWNERS {
+            store.read_hour = vec![NEVER; FINGERPRINT_OWNERS];
+        }
+        // A load (a new signal; an earlier hour could only be one too):
+        // nothing kept describes the new branch.
+        if store.signal != Some(self.signal) || store.hour.is_some_and(|last| hour < last) {
+            store.signal = Some(self.signal);
+            store.finals.clear();
+            store.read_hour.fill(NEVER);
+        }
+        store.hour = Some(hour);
+        let forget = take_forget();
+        if forget {
+            store.read_hour.fill(NEVER);
+        }
+        if forget || force_full {
+            // A full hour is also how the spool retries an unpublished frame.
+            for kept in &mut store.finals {
+                kept.published = None;
+            }
+        }
+        store.finals.retain(|kept| {
+            kept.published
+                .is_none_or(|published| (published..published.saturating_add(RETAIN_HOURS)).contains(&hour))
+        });
+        self.drained.clear();
+        let observed = drain_prune_log(self.signal, &mut self.drained);
+        store.finals.extend(self.drained.iter().map(|&row| Final {
+            row,
+            published: None,
+        }));
+        observed
+    }
+
+    fn read_log(
+        &mut self,
+        store: &mut Store,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> Outcome {
+        // Finals not yet published go with a read of their country now.
+        for kept in store.finals.iter().filter(|kept| kept.published.is_none()) {
+            self.selection.select(kept.row.country);
+        }
+        if !force_full && hour.rem_euclid(STAGGER_PERIOD) == PRUNE_HOUR {
+            let selection = &mut self.selection;
+            if let Err(reason) =
+                native::countries_with_deleted_groups(memory, base, game_state, |country| {
+                    selection.select(country);
+                })
+            {
+                return Outcome::Unavailable { reason };
+            }
+        }
+        let selection = &self.selection;
+        let read_hour = &store.read_hour;
+        let visited = &mut self.visited;
+        visited.clear();
+        let outcome = native::walk(
+            memory,
+            base,
+            game_state,
+            |country| {
+                if !selection.contains(country) {
+                    return None;
+                }
+                visited.push(country);
+                // A country above the tracked range is read at every hour
+                // and read whole.
+                let last = read_hour.get(country as usize).copied().unwrap_or(NEVER);
+                Some(if force_full || needs_all(last, hour) {
+                    native::Months::All
+                } else {
+                    native::Months::Window
+                })
+            },
+            &mut self.rows.rows,
+            &mut self.memo,
+        );
+        let Outcome::Rows { len } = outcome else {
+            return outcome;
+        };
+        // The unpublished finals follow the read. A deleted log's rows never
+        // collide with a live log's: its orders group id is not reused.
+        let pending = store
+            .finals
+            .iter()
+            .filter(|kept| kept.published.is_none())
+            .count();
+        let free = self.rows.rows.len() - len;
+        if pending > free {
+            return Outcome::Truncated {
+                len,
+                unread_rows: u32::try_from(pending).unwrap_or(u32::MAX),
+            };
+        }
+        let mut at = len;
+        for kept in store.finals.iter_mut().filter(|kept| kept.published.is_none()) {
+            self.rows.rows[at] = kept.row;
+            kept.published = Some(hour);
+            at += 1;
+        }
+        // The read is complete: each country it covered is current now.
+        for &country in &self.visited {
+            if let Some(last) = store.read_hour.get_mut(country as usize) {
+                *last = hour;
+            }
+        }
+        Outcome::Rows { len: at }
+    }
+
+    pub fn outcomes(&self) -> [Outcome; N] {
+        [
+            self.rows.outcome,
+            match self.viewing {
+                Ok(_) => Outcome::Rows { len: 1 },
+                Err(reason) => Outcome::Unavailable { reason },
+            },
+            self.lend_lease.outcome,
+        ]
+    }
+
+    pub fn tables(&self) -> [TableView; N] {
+        let state = self.viewing.map(|viewing_country_raw| CombatLogStateRow {
+            viewing_country_raw,
+            prune_observed: u8::from(self.prune_observed),
+        });
+        [
+            table::<tables::CombatLogEquipment, _>(self.rows.outcome, &self.rows.rows, |row| {
+                CombatLogEquipmentRow {
+                    country: row.country,
+                    group: row.group,
+                    kind: row.kind,
+                    month: row.month,
+                    variant: row.variant,
+                    date: row.date,
+                    amount_raw: row.amount_raw,
+                }
+            }),
+            match state {
+                Ok(row) => table::<tables::CombatLogState, _>(
+                    Outcome::Rows { len: 1 },
+                    std::slice::from_ref(&row),
+                    Clone::clone,
+                ),
+                Err(reason) => table::<tables::CombatLogState, _>(
+                    Outcome::Unavailable { reason },
+                    &[] as &[CombatLogStateRow],
+                    Clone::clone,
+                ),
+            },
+            table::<tables::LendLeaseEquipment, _>(
+                self.lend_lease.outcome,
+                &self.lend_lease.rows,
+                |row| LendLeaseEquipmentRow {
+                    giver: row.giver,
+                    exchange: row.exchange,
+                    kind: row.kind,
+                    variant: row.variant,
+                    receiver: row.receiver,
+                    amount_raw: row.amount_raw,
+                },
+            ),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay::rows::TableRows;
+
+    fn game_state(viewing: i32) -> Vec<u8> {
+        let mut bytes = vec![0; 0x1000];
+        bytes[engine::cgame_state::LOCAL_PLAYER_COUNTRY..engine::cgame_state::LOCAL_PLAYER_COUNTRY + 4]
+            .copy_from_slice(&viewing.to_le_bytes());
+        bytes
+    }
+
+    fn row(country: u32, group: u32) -> native::Row {
+        native::Row {
+            country,
+            group,
+            kind: 0,
+            month: 23_325,
+            variant: 1326,
+            date: 60_827_868,
+            amount_raw: 300_000,
+        }
+    }
+
+    #[test]
+    fn the_state_is_hourly_and_lend_lease_daily_in_the_last_slot() {
+        let _lock = crate::combat_log_prune::test_lock();
+        crate::combat_log_prune::observe_for_test(true);
+        drain_prune_log_for_test();
+        let bytes = game_state(4);
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        for hour in 0..24 {
+            captured.capture(&memory, 0, 0x1000, hour, false);
+            let [log, state, lend_lease] = captured.outcomes();
+            assert_eq!(state, Outcome::Rows { len: 1 }, "{hour}");
+            let skipped = lend_lease
+                == Outcome::Unavailable {
+                    reason: SKIPPED_REASON,
+                };
+            assert_eq!(skipped, hour != PRUNE_HOUR, "{hour}");
+            // This synthetic state has no manager array: the log is
+            // unavailable, never an empty table.
+            assert!(
+                matches!(log, Outcome::Unavailable { reason } if reason != SKIPPED_REASON),
+                "{hour}"
+            );
+        }
+        let [_, TableView::Complete(TableRows::CombatLogState(rows)), _] = captured.tables()
+        else {
+            panic!("complete state");
+        };
+        assert_eq!(
+            rows,
+            [CombatLogStateRow {
+                viewing_country_raw: 4,
+                prune_observed: 1
+            }]
+        );
+    }
+
+    #[test]
+    fn an_unobserved_prune_is_said_and_an_unreadable_state_is_unavailable() {
+        let _lock = crate::combat_log_prune::test_lock();
+        crate::combat_log_prune::observe_for_test(false);
+        drain_prune_log_for_test();
+        let bytes = game_state(-1);
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        captured.capture(&memory, 0, 0x1000, 5, false);
+        let [_, TableView::Complete(TableRows::CombatLogState(rows)), _] = captured.tables()
+        else {
+            panic!("complete state");
+        };
+        assert_eq!(
+            rows,
+            [CombatLogStateRow {
+                viewing_country_raw: -1,
+                prune_observed: 0
+            }]
+        );
+        let memory = engine::memory::SliceMemory {
+            base: 0x10_0000,
+            bytes: &bytes,
+        };
+        captured.capture(&memory, 0, 0x1000, 5, false);
+        assert!(matches!(captured.tables()[1], TableView::Unavailable { .. }));
+    }
+
+    const SIGNAL: i64 = 1_778_888_888;
+
+    /// A game state whose Combat Log holds only the null sentinel slot: a
+    /// complete read with no rows of its own.
+    fn logged_state() -> Vec<u8> {
+        let mut bytes = game_state(4);
+        let header = engine::cgame_state::COMBAT_LOGS;
+        bytes[header..header + 8].copy_from_slice(&0x1f00_u64.to_le_bytes());
+        bytes[header + 8..header + 12].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[header + 12..header + 16].copy_from_slice(&1_u32.to_le_bytes());
+        bytes
+    }
+
+    /// Capture `hour` in `captured` with load signal `signal`: its Combat
+    /// Log rows.
+    fn capture(
+        captured: &mut Captured,
+        bytes: &[u8],
+        signal: i64,
+        hour: i32,
+        force_full: bool,
+    ) -> Vec<native::Row> {
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes,
+        };
+        captured.set_signal(signal);
+        captured.capture(&memory, 0, 0x1000, hour, force_full);
+        let Outcome::Rows { len } = captured.rows.outcome else {
+            panic!("complete read at {hour}: {:?}", captured.rows.outcome);
+        };
+        captured.rows.rows[..len].to_vec()
+    }
+
+    fn buffers() -> [Captured; 4] {
+        std::array::from_fn(|_| Captured::with_capacities(&Capacities::default()))
+    }
+
+    #[test]
+    fn finals_of_other_countries_are_captured_with_every_gate_operand() {
+        let _lock = crate::combat_log_prune::test_lock();
+        crate::combat_log_prune::observe_for_test(true);
+        drain_prune_log_for_test();
+        let [mut captured, ..] = buffers();
+        for (index, viewing) in [4_i32, 0, -1].into_iter().enumerate() {
+            let mut bytes = logged_state();
+            let offset = engine::cgame_state::LOCAL_PLAYER_COUNTRY;
+            bytes[offset..offset + 4].copy_from_slice(&viewing.to_le_bytes());
+            let signal = SIGNAL + index as i64;
+            crate::combat_log_prune::append_for_test(signal, &[row(29, 7), row(30, 8)]);
+            assert_eq!(capture(&mut captured, &bytes, signal, 5, true), [row(29, 7), row(30, 8)]);
+        }
+    }
+
+    #[test]
+    fn a_final_goes_out_once_with_whichever_buffer_reads_next_and_retires_a_day_later() {
+        let _lock = crate::combat_log_prune::test_lock();
+        crate::combat_log_prune::observe_for_test(true);
+        drain_prune_log_for_test();
+        let bytes = logged_state();
+        let [mut a, mut b, mut c, mut d] = buffers();
+        crate::combat_log_prune::append_for_test(SIGNAL, &[row(29, 7)]);
+        assert_eq!(capture(&mut a, &bytes, SIGNAL, 5, false), [row(29, 7)]);
+        assert!(a.selection().contains(29));
+        // Another buffer's later read neither repeats it nor reads its
+        // country outside the slice.
+        assert!(capture(&mut b, &bytes, SIGNAL, 6, false).is_empty());
+        assert!(!b.selection().contains(29));
+        // A read that may not have been published: every kept final again.
+        forget_reads();
+        assert_eq!(capture(&mut c, &bytes, SIGNAL, 7, false), [row(29, 7)]);
+        assert!(capture(&mut d, &bytes, SIGNAL, 8, false).is_empty());
+        // Retired a day after it last went out: nothing to publish again.
+        assert!(capture(&mut a, &bytes, SIGNAL, 7 + RETAIN_HOURS, false).is_empty());
+        forget_reads();
+        assert!(capture(&mut b, &bytes, SIGNAL, 8 + RETAIN_HOURS, false).is_empty());
+    }
+
+    /// Codex #160 round 1: a buffer holding a deleted group's final, a load of
+    /// an earlier save, and that buffer's return round the rotation.
+    #[test]
+    fn a_load_leaves_no_final_of_the_left_branch_in_any_buffer() {
+        let _lock = crate::combat_log_prune::test_lock();
+        crate::combat_log_prune::observe_for_test(true);
+        drain_prune_log_for_test();
+        let bytes = logged_state();
+        let [mut a, mut b, mut c, mut d] = buffers();
+        crate::combat_log_prune::append_for_test(SIGNAL, &[row(29, 7)]);
+        assert_eq!(capture(&mut a, &bytes, SIGNAL, 100, false), [row(29, 7)]);
+        // The left session's prune after its last sample, then the load.
+        crate::combat_log_prune::append_for_test(SIGNAL, &[row(30, 8)]);
+        let loaded = SIGNAL + 1;
+        assert!(capture(&mut b, &bytes, loaded, 50, true).is_empty());
+        assert!(capture(&mut c, &bytes, loaded, 51, false).is_empty());
+        assert!(capture(&mut d, &bytes, loaded, 52, false).is_empty());
+        assert!(capture(&mut a, &bytes, loaded, 53, false).is_empty());
+        forget_reads();
+        assert!(capture(&mut b, &bytes, loaded, 54, true).is_empty());
+        // Should a load keep its signal, an earlier hour still starts afresh.
+        crate::combat_log_prune::append_for_test(loaded, &[row(31, 9)]);
+        assert_eq!(capture(&mut c, &bytes, loaded, 60, false), [row(31, 9)]);
+        assert!(capture(&mut d, &bytes, loaded, 40, true).is_empty());
+    }
+
+    /// A gap or a retried frame in the same session forces a full hour: a
+    /// full read cannot see a deleted log, so its kept final goes out again.
+    #[test]
+    fn a_full_hour_in_the_same_session_publishes_kept_finals_again() {
+        let _lock = crate::combat_log_prune::test_lock();
+        crate::combat_log_prune::observe_for_test(true);
+        drain_prune_log_for_test();
+        let bytes = logged_state();
+        let [mut a, mut b, ..] = buffers();
+        crate::combat_log_prune::append_for_test(SIGNAL, &[row(29, 7)]);
+        assert_eq!(capture(&mut a, &bytes, SIGNAL, 5, false), [row(29, 7)]);
+        assert_eq!(capture(&mut b, &bytes, SIGNAL, 9, true), [row(29, 7)]);
+    }
+
+    /// Raw game hour of a day of a year (365-day years from the game's epoch).
+    fn day(year: i32, day: i32) -> i32 {
+        43_800_000 + year * 8760 + day * 24
+    }
+
+    #[test]
+    fn a_country_is_read_whole_unless_read_this_or_last_month() {
+        let february = day(1941, 40);
+        assert!(!needs_all(day(1941, 10), february), "January");
+        assert!(!needs_all(day(1941, 35), february), "February");
+        assert!(needs_all(day(1940, 364), february), "December");
+        assert!(!needs_all(day(1940, 364), day(1941, 0)), "across a year");
+        assert!(needs_all(day(1941, 10), day(1941, 63)), "January in March");
+        assert!(needs_all(NEVER, february));
+        assert!(needs_all(february + 1, february), "a later read");
+    }
+
+    #[test]
+    fn unpublished_reads_and_loads_forget_every_last_read() {
+        let _lock = crate::combat_log_prune::test_lock();
+        crate::combat_log_prune::observe_for_test(true);
+        drain_prune_log_for_test();
+        let bytes = logged_state();
+        let [mut a, ..] = buffers();
+        capture(&mut a, &bytes, SIGNAL, 5, false);
+        let last = |country: usize| with_store(|store| store.read_hour[country]);
+        with_store(|store| store.read_hour[29] = 5);
+        capture(&mut a, &bytes, SIGNAL, 6, false);
+        assert_eq!(last(29), 5, "kept while nothing went unpublished");
+        forget_reads();
+        capture(&mut a, &bytes, SIGNAL, 7, false);
+        assert_eq!(last(29), NEVER);
+        with_store(|store| store.read_hour[29] = 7);
+        capture(&mut a, &bytes, SIGNAL + 1, 8, true);
+        assert_eq!(last(29), NEVER, "a load");
+    }
+
+    #[test]
+    fn conversion_keeps_native_values() {
+        let mut captured = Captured::with_capacities(&Capacities {
+            rows: 2,
+            lend_lease: 1,
+        });
+        captured.rows.rows[0] = row(4, 12793);
+        captured.rows.rows[1] = native::Row {
+            kind: native::RECOVERED_KIND,
+            variant: 1846,
+            amount_raw: i64::MAX,
+            ..row(4, 12793)
+        };
+        captured.rows.outcome = Outcome::Rows { len: 2 };
+        captured.lend_lease.rows[0] = lend_lease::Row {
+            giver: 4,
+            exchange: 97730,
+            kind: lend_lease::SUNK_KIND,
+            variant: 5157,
+            receiver: 9,
+            amount_raw: 300_000,
+        };
+        captured.lend_lease.outcome = Outcome::Rows { len: 1 };
+        captured.viewing = Ok(4);
+        let [
+            TableView::Complete(TableRows::CombatLogEquipment(rows)),
+            TableView::Complete(TableRows::CombatLogState(state)),
+            TableView::Complete(TableRows::LendLeaseEquipment(lend)),
+        ] = captured.tables()
+        else {
+            panic!("complete tables");
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[1].kind, rows[1].amount_raw), (4, i64::MAX));
+        assert_eq!(
+            state,
+            [CombatLogStateRow {
+                viewing_country_raw: 4,
+                prune_observed: 0
+            }]
+        );
+        assert_eq!(
+            lend,
+            [LendLeaseEquipmentRow {
+                giver: 4,
+                exchange: 97730,
+                kind: 1,
+                variant: 5157,
+                receiver: 9,
+                amount_raw: 300_000,
+            }]
+        );
+        captured.rows.outcome = Outcome::Truncated {
+            len: 1,
+            unread_rows: 9,
+        };
+        assert!(matches!(captured.tables()[0], TableView::Truncated { .. }));
+    }
+}

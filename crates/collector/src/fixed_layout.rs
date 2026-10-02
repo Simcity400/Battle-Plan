@@ -90,6 +90,7 @@ mod tests {
                     | TableId::SunkShips
                     | TableId::WorldTension
                     | TableId::SimulationFeatures
+                    | TableId::CombatLogState
                     | TableId::AirSortieModifierMetadata
                     | TableId::LocalPlayer
             ) {

@@ -1,7 +1,7 @@
 //! The sole game-thread callback. Buffers are allocated before publication to its free queue.
 
 mod divisions;
-use divisions::supply_division_census_sources;
+use divisions::{fail_divisions_capture, supply_division_census_sources};
 pub(crate) use divisions::{
     DivisionsCopyContext, DivisionsCopyReport, DivisionsJob, copy_divisions_core_refresh,
     copy_divisions_inputs_refresh, decode_divisions_payload,
@@ -481,7 +481,7 @@ impl Captured {
             &mut capacities[4],
         );
         let census = &mut self.division_fallback;
-        if census.overflowed {
+        if census.overflowed || census.counts_need_growth() {
             census.grow();
         }
         census.reserve_sources(capacities[4].max(self.extended.division_capture_capacities().0));
@@ -966,6 +966,9 @@ pub(crate) fn completed_callback_ticks(base: &AtomicI64, tail: &AtomicI64) -> Op
 /// Forget the fingerprint stores of every family the spool could not publish.
 fn forget_unpublished_families(shared: &Shared) {
     let families = shared.forget_families.swap(0, Ordering::AcqRel);
+    if families & (1 << crate::slicing::COMBAT_LOG) != 0 {
+        extended::combat_log::forget_reads();
+    }
     for (family, store) in shared.slice_fingerprints.iter().enumerate() {
         if families & (1 << family) != 0 {
             // SAFETY: game thread only, between callbacks' loans.
@@ -1007,6 +1010,9 @@ fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
     // The dropped hour's sliced reads are never published: read them again.
     // A clockless frame read nothing, and its selections belong to an older hour.
     let read = frame.clock.is_some();
+    if read {
+        extended::combat_log::forget_reads();
+    }
     frame.extended.drop_air_copies();
     for (family, fingerprints) in shared
         .slice_fingerprints
@@ -1397,6 +1403,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             // daily pass runs on this thread, inside the hourly update this
             // callback precedes. The spool totals the log per branch.
             frame.extended.drain_line_output();
+            frame
+                .extended
+                .set_load_signal(clock.play_session_started_at);
             // Every construction line's daily output before this sample is in
             // its log too: the same serial pass advances construction.
             frame.extended.drain_construction_ic();
@@ -1886,6 +1895,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     .division_fallback
                     .capture(&cached, shared.base, state, capacity);
                 frame.divisions_result = frame.division_fallback.install_rows(&mut frame.divisions);
+                frame
+                    .extended
+                    .install_division_counts(&frame.division_fallback);
                 supply_division_census_sources(
                     &frame.division_fallback,
                     &mut frame.extended,
@@ -3163,10 +3175,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 frame.extended.naval_pilot().fail_naval_capture(reason);
             }
             if let Some(reason) = divisions_failure {
-                frame.divisions_result = Outcome::Unavailable { reason };
-                if divisions_ctx.details_active {
-                    frame.extended.fail_division_details(reason);
-                }
+                fail_divisions_capture(frame, reason, divisions_ctx.details_active);
             }
             // Restore the final independent request before releasing the lease.
             segment!(13);

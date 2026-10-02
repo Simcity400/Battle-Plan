@@ -1,6 +1,7 @@
 //! One owned division census and narrowly gathered native core fields.
 //! The census survives a private core-field failure so other consumers can
 //! authenticate their own inputs without walking the country rosters again.
+//! DivisionCensus counts accumulate in the core projection, charged to Divisions.
 
 use engine::{
     Memory, carmy, ccountry,
@@ -76,6 +77,9 @@ impl UnitInputs {
 
 #[derive(Debug)]
 pub(crate) struct Census {
+    counts: Vec<Option<replay::rows::DivisionCensusRow>>,
+    required_counts: usize,
+    counts_error: Option<&'static str>,
     entries: Vec<Entry>,
     unit_inputs: Option<Arc<UnitInputs>>,
     rows: Vec<carmy::Row>,
@@ -96,6 +100,9 @@ pub(crate) struct Census {
 impl Default for Census {
     fn default() -> Self {
         Self {
+            counts: Vec::new(),
+            required_counts: 0,
+            counts_error: None,
             entries: Vec::new(),
             unit_inputs: None,
             rows: Vec::new(),
@@ -117,6 +124,7 @@ impl Default for Census {
 impl Census {
     pub fn new() -> Self {
         Self {
+            counts: vec![None; crate::country_scale::census_rows(512)],
             entries: Vec::with_capacity(8192),
             unit_inputs: Some(Arc::new(UnitInputs::new(8192))),
             rows: Vec::with_capacity(8192),
@@ -125,6 +133,9 @@ impl Census {
         }
     }
     pub fn clear(&mut self) {
+        self.counts.fill(None);
+        self.required_counts = 0;
+        self.counts_error = None;
         self.entries.clear();
         if let Some(shared) = &mut self.unit_inputs {
             let inputs =
@@ -151,7 +162,8 @@ impl Census {
         self.core_captured = false;
     }
     pub fn allocated_bytes(&self) -> u64 {
-        crate::raw_memory::vector_bytes(&self.entries)
+        crate::raw_memory::vector_bytes(&self.counts)
+            + crate::raw_memory::vector_bytes(&self.entries)
             + self.unit_inputs.as_ref().map_or(0, |inputs| {
                 crate::raw_memory::vector_bytes(&inputs.seeds)
                     + crate::raw_memory::vector_bytes(&inputs.roster_slots)
@@ -161,6 +173,9 @@ impl Census {
     }
     pub fn payload_bytes(&self) -> u64 {
         self.bytes
+    }
+    pub(crate) fn counts_need_growth(&self) -> bool {
+        self.required_counts > self.counts.len()
     }
     pub fn initialized(&self) -> bool {
         self.entries.capacity() != 0
@@ -172,6 +187,11 @@ impl Census {
         self.unit_inputs.as_ref()
     }
     pub fn grow(&mut self) {
+        self.counts.resize(
+            self.required_counts
+                .max(crate::country_scale::census_rows(self.counts.len())),
+            None,
+        );
         let target = self
             .required
             .max(self.entries.capacity().saturating_mul(2))
@@ -323,6 +343,10 @@ impl Census {
         // native pointer, vtable, identity and link checks slot by slot.
         let reader = ccountry::Reader::new(memory, base, state)?;
         let [countries, links] = reader.arrays();
+        self.required_counts = links.count as usize;
+        if self.counts.len() < self.required_counts {
+            self.counts_error = Some("division coverage country capacity exhausted");
+        }
         let countries = Countries { countries, links };
         let mut found = false;
         // Set once the owned roster storage is exhausted: every later roster
@@ -353,6 +377,14 @@ impl Census {
                 continue;
             };
             let (pointer, canonical) = (country.pointer, country.canonical_slot);
+            if let Some(count) = self.counts.get_mut(country.id as usize) {
+                *count = Some(replay::rows::DivisionCensusRow {
+                    country: country.id,
+                    ..Default::default()
+                });
+            } else {
+                self.counts_error = Some("division coverage country capacity exhausted");
+            }
             found = true;
             let roster = self.array(
                 memory,
@@ -531,6 +563,12 @@ impl Census {
                 }
             }
             let row = project(memory, &countries, *entry, seed, &mut identities)?;
+            Self::count_division(
+                &mut self.counts,
+                self.required_counts,
+                &mut self.counts_error,
+                &row,
+            );
             self.sources.push(DivisionSource {
                 pointer: entry.pointer,
                 division: row.id,
@@ -540,6 +578,61 @@ impl Census {
             self.rows.push(row);
         }
         Ok(())
+    }
+    fn count_division(
+        counts: &mut [Option<replay::rows::DivisionCensusRow>],
+        country_count: usize,
+        counts_error: &mut Option<&'static str>,
+        row: &carmy::Row,
+    ) {
+        // CArmy::active_damage@140c7bfc0 chooses +0x1dc when signed-positive,
+        // otherwise the roster owner (+0x1d8). Count here, never walk twice.
+        let owner = if (row.expeditionary_owner as i32) > 0 {
+            row.expeditionary_owner
+        } else {
+            row.roster_owner
+        };
+        if owner as usize >= country_count {
+            *counts_error = Some("division owner outside country links");
+        } else if let Some(count) = counts.get_mut(owner as usize) {
+            let count = count.get_or_insert_with(|| replay::rows::DivisionCensusRow {
+                country: owner,
+                ..Default::default()
+            });
+            let value = if row.orders_group == 0 {
+                &mut count.ungrouped
+            } else {
+                &mut count.grouped
+            };
+            if let Some(next) = value.checked_add(1) {
+                *value = next;
+            } else {
+                *counts_error = Some("division coverage count overflow");
+            }
+        } else {
+            *counts_error = Some("division coverage country capacity exhausted");
+        }
+    }
+    pub(crate) fn install_counts(&self, output: &mut [replay::rows::DivisionCensusRow]) -> Outcome {
+        if let Some(reason) = self.counts_error {
+            return Outcome::Unavailable { reason };
+        }
+        if !matches!(self.outcome(usize::MAX), Outcome::Rows { .. }) {
+            return Outcome::Unavailable {
+                reason: "division coverage census incomplete",
+            };
+        }
+        let mut len = 0;
+        let mut missing = 0;
+        for count in self.counts.iter().flatten() {
+            if let Some(row) = output.get_mut(len) {
+                *row = count.clone();
+                len += 1;
+            } else {
+                missing += 1;
+            }
+        }
+        complete(len, missing)
     }
     fn array(
         &mut self,
@@ -1530,5 +1623,153 @@ mod tests {
         assert_eq!(census.rows[0].province, expected_collision[0] as u32);
         assert_eq!(census.rows[0].template, expected_collision[1]);
         assert_eq!(census.rows[0].orders_group, expected_collision[2]);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::sampling::divisions_test_kit as kit;
+    use replay::rows::DivisionCensusRow;
+
+    #[test]
+    fn all_countries_and_raw_aliases_follow_the_native_writer_without_extra_reads() {
+        let mut bytes = kit::fixture();
+        bytes[kit::A3 + engine::cunit::EXPEDITIONARY_OWNER
+            ..kit::A3 + engine::cunit::EXPEDITIONARY_OWNER + 4]
+            .copy_from_slice(&3_u32.to_le_bytes());
+        bytes[kit::A1 + engine::cunit::EXPEDITIONARY_OWNER
+            ..kit::A1 + engine::cunit::EXPEDITIONARY_OWNER + 4]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut census = Census::new();
+        census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        let mut output = vec![DivisionCensusRow::default(); 8];
+        assert_eq!(census.install_counts(&mut output), Outcome::Rows { len: 3 });
+        assert_eq!(
+            &output[..3],
+            &[
+                DivisionCensusRow {
+                    country: 1,
+                    grouped: 1,
+                    ungrouped: 1
+                },
+                DivisionCensusRow {
+                    country: 2,
+                    grouped: 0,
+                    ungrouped: 0
+                },
+                DivisionCensusRow {
+                    country: 3,
+                    grouped: 1,
+                    ungrouped: 0
+                },
+            ]
+        );
+        assert_eq!(
+            census.install_counts(&mut output[..1]),
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 2
+            }
+        );
+        census.clear();
+        bytes[kit::A2..kit::A2 + 8].fill(0);
+        census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        assert!(matches!(
+            census.install_counts(&mut output),
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn country_capacity_failure_does_not_accept_a_partial_count_and_grows_off_thread() {
+        let bytes = kit::fixture();
+        let mut census = Census::new();
+        census.counts.truncate(2);
+        census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        let mut output = vec![DivisionCensusRow::default(); 8];
+        assert!(matches!(
+            census.install_counts(&mut output),
+            Outcome::Unavailable { .. }
+        ));
+        assert!(census.counts_need_growth());
+        census.grow();
+        census.clear();
+        census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        assert_eq!(census.install_counts(&mut output), Outcome::Rows { len: 2 });
+    }
+
+    #[test]
+    fn owner_outside_country_links_is_not_a_capacity_failure() {
+        for capacity in [3, 8] {
+            for expeditionary_owner in [0, 3] {
+                let mut census = Census::new();
+                census.counts.resize(capacity, None);
+                census.required_counts = 3;
+                let row = carmy::Row {
+                    roster_owner: if expeditionary_owner == 0 { 3 } else { 1 },
+                    expeditionary_owner,
+                    ..Default::default()
+                };
+                Census::count_division(
+                    &mut census.counts,
+                    census.required_counts,
+                    &mut census.counts_error,
+                    &row,
+                );
+                assert_eq!(
+                    census.install_counts(&mut []),
+                    Outcome::Unavailable {
+                        reason: "division owner outside country links",
+                    }
+                );
+                assert!(!census.counts_need_growth());
+                assert!(census.counts.iter().all(Option::is_none));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn division_coverage_counts_scale() {
+        use std::{hint::black_box, time::Instant};
+        for countries in [1500_u32, 5000] {
+            let mut census = Census::new();
+            census.counts.resize(countries as usize + 1, None);
+            let rows: Vec<_> = (1..=countries)
+                .flat_map(|owner| {
+                    (0_u32..100).map(move |division| carmy::Row {
+                        roster_owner: owner,
+                        orders_group: u64::from(division % 2),
+                        ..Default::default()
+                    })
+                })
+                .collect();
+            let start = Instant::now();
+            for _ in 0..100 {
+                census.counts.fill(None);
+                for row in &rows {
+                    Census::count_division(
+                        &mut census.counts,
+                        countries as usize + 1,
+                        &mut census.counts_error,
+                        black_box(row),
+                    );
+                }
+                black_box(&census.counts);
+            }
+            println!(
+                "division coverage countries={countries}, divisions={}, count_ms_per_hour={:.6} (accumulation and clearing only; no native reads or builds)",
+                rows.len(),
+                start.elapsed().as_secs_f64() * 1000.0 / 100.0
+            );
+            assert_eq!(
+                census.counts[countries as usize]
+                    .as_ref()
+                    .unwrap()
+                    .ungrouped,
+                50
+            );
+        }
     }
 }

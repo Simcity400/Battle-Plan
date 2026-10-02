@@ -134,6 +134,18 @@ fn a_daily_read_is_dated_by_its_slot_not_by_its_charged_timing() {
         &frame(hour + 1, &[TableId::CountryFuelConsumers]),
         TableId::CountryFuel
     ));
+    let lend_slot = match replay::cadence::cadence(TableId::LendLeaseEquipment) {
+        replay::cadence::Cadence::Daily(slot) => 24 * 1000 + slot as Hour,
+        other => panic!("LendLeaseEquipment is {other:?}"),
+    };
+    assert!(read(
+        &frame(lend_slot, &[TableId::Divisions]),
+        TableId::LendLeaseEquipment
+    ));
+    assert!(!read(
+        &frame(lend_slot + 1, &[TableId::Divisions]),
+        TableId::LendLeaseEquipment
+    ));
     let intel = match replay::cadence::cadence(TableId::CountryIntel) {
         replay::cadence::Cadence::Daily(slot) => 24 * 1000 + slot as Hour,
         other => panic!("CountryIntel is {other:?}"),

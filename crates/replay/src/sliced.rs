@@ -19,11 +19,11 @@
 //! hour reads every roster and replaces the table.
 
 use crate::rows::{
-    AceRangeInputRow, AirCountryRelationRow, AirNavalPatrolHistoryRow, CountryBuildingResourceRow,
-    CountryStabilityInputRow, CountryStabilityLineRow, DivisionRetreatBanRow,
-    NavalMissionCommanderRow, NavalMissionCountryRow, RaidAirSiteRow, RaidCountryInputRow,
-    RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow, ResearchInputRow,
-    ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
+    AceRangeInputRow, AirCountryRelationRow, AirNavalPatrolHistoryRow, CombatLogEquipmentRow,
+    CountryBuildingResourceRow, CountryStabilityInputRow, CountryStabilityLineRow,
+    DivisionRetreatBanRow, NavalMissionCommanderRow, NavalMissionCountryRow, RaidAirSiteRow,
+    RaidCountryInputRow, RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow,
+    ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
     StateDynamicModifierRow, StateResourceInputRow, StateResourceRow, StockpileArchetypeRow,
     TableId, TableRows,
 };
@@ -53,6 +53,7 @@ sliced_by!(
     CountryBuildingResourceRow,
     CountryStabilityInputRow,
     CountryStabilityLineRow,
+    CombatLogEquipmentRow,
     NavalMissionCountryRow,
     NavalMissionCommanderRow
 );
@@ -148,6 +149,9 @@ macro_rules! dispatch {
             }
             (TableRows::CountryStabilityLines($old), TableRows::CountryStabilityLines($new)) => {
                 Ok(TableRows::CountryStabilityLines($body?))
+            }
+            (TableRows::CombatLogEquipment($old), TableRows::CombatLogEquipment($new)) => {
+                Ok(TableRows::CombatLogEquipment($body?))
             }
             (TableRows::NavalMissionCountries($old), TableRows::NavalMissionCountries($new)) => {
                 Ok(TableRows::NavalMissionCountries($body?))

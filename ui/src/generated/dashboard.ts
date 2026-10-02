@@ -1602,6 +1602,77 @@ states: Array<StateName>,
  * In order of first read, then handle.
  */
 projects: Array<ConstructionProject>, warnings: Array<string>, };
+export type LossSource = { "kind": "combatLog", "reason": number } | { "kind": "recovered" } | { "kind": "sunkShips" } | { "kind": "sunkConvoys" } | { "kind": "lendLeaseSunk" } | { "kind": "lendLeaseSent" } | { "kind": "air" };
+export type LossName = { key: string | null, template: string | null, text: string | null, };
+export type UnknownReason = "unread" | "endedAfterLastRead";
+export type UnknownSpan = { firstHour: number, lastHour: number, reason: UnknownReason, };
+export type LossPoint = { hour: number,
+/**
+ * Exact decimal string, in [`LossesReply::amount_scale`] units.
+ */
+totalRaw: string, };
+export type LossLeaf = {
+/**
+ * Index into [`LossesReply::designs`]; null when the record names none.
+ */
+design: number | null,
+/**
+ * The running total at each hour it changed, in hour order.
+ */
+points: Array<LossPoint>,
+/**
+ * From this hour the total is a lower bound: a lend-lease exchange of
+ * this design ended after its last read ([`UnknownReason::EndedAfterLastRead`]).
+ */
+lowerBoundFrom: number | null, };
+export type LossCause = { source: LossSource, name: LossName,
+/**
+ * The group this cause belongs to in the game's own view (the Combat
+ * Log's attrition column for reasons 1 to 3).
+ */
+group: LossName | null,
+/**
+ * False for what is not a loss: recovered equipment and lend-lease sent.
+ */
+loss: boolean,
+/**
+ * Why the amounts are unknown throughout, when they are (air, or a
+ * retention setting that deletes entries still changing): no leaves.
+ */
+unknown: string | null,
+/**
+ * Spans of hours whose amounts are unknown, in hour order.
+ */
+unknownSpans: Array<UnknownSpan>, leaves: Array<LossLeaf>, };
+export type LossDesign = {
+/**
+ * The variant's reference id.
+ */
+variant: number,
+/**
+ * The design's recorded name, or its equipment's localised name.
+ */
+name: string | null,
+/**
+ * Its equipment type's script token (VariantDefinitions, LexicalTokens).
+ */
+equipment: string | null,
+/**
+ * The equipment's archetype from the content stack: the type level.
+ */
+archetype: string | null, archetypeName: string | null, };
+export type Coverage = "logged" | "notLogged" | { "partial": { ungrouped: number, } } | "unknown" | "pruneUnobserved";
+export type CoverageSpan = { firstHour: number, lastHour: number, coverage: Coverage, };
+export type LossesReply = { branchId: string, tag: string, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>,
+/**
+ * Land (Combat Log) coverage of each recorded hour.
+ */
+coverage: Array<CoverageSpan>,
+/**
+ * Months the game keeps a Combat Log entry (the content's define), which
+ * bounds the history a branch's first read can hold.
+ */
+retainedMonths: number | null, warnings: Array<string>, };
 export type SpendingGap = "notRecorded" | "readFailed" | "listedLate" | "builtBeforeRead" | "sharedTarget" | "levelsUnaccounted" | "unclaimedRise" | "costChanged" | "repairing" | "unexplained" | "leftUnfinished" | "endUnknown" | "finishedAfterRead";
 export type SpentStep = { knownAt: number,
 /**
@@ -1701,4 +1772,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "construction-spending"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;

@@ -1,8 +1,7 @@
 use super::{Captured, INITIAL_CAPACITIES, elapsed, extended, qpc};
-#[cfg(test)]
 use engine::walk::Outcome;
 
-/// One independently bounded owned division census and its five detail tables.
+/// One independently bounded owned division census, coverage counts and five detail tables.
 /// No address/span replay or live memory access remains on the decode worker.
 #[derive(Debug, Default)]
 pub(crate) struct DivisionsJob {
@@ -38,7 +37,7 @@ impl DivisionsJob {
         self.census.initialized()
     }
     pub fn grow_for_next(&self) -> bool {
-        self.overflowed || self.census.overflowed
+        self.overflowed || self.census.overflowed || self.census.counts_need_growth()
     }
     pub fn grow(&mut self) {
         self.census.grow();
@@ -221,6 +220,19 @@ pub(crate) fn copy_divisions_refresh(
     divisions_copy_report(payload)
 }
 
+/// The hourly core and coverage counts fail even off the detail tables' slot.
+pub(super) fn fail_divisions_capture(
+    frame: &mut Captured,
+    reason: &'static str,
+    details_active: bool,
+) {
+    frame.divisions_result = Outcome::Unavailable { reason };
+    frame.extended.install_failed_division_counts(reason);
+    if details_active {
+        frame.extended.fail_division_details(reason);
+    }
+}
+
 /// Worker installation copies compact core rows and transfers owned detail
 /// buffers. Callback presentation rows and their source packet survive.
 pub(crate) fn decode_divisions_payload(
@@ -231,6 +243,7 @@ pub(crate) fn decode_divisions_payload(
 ) {
     let started = qpc();
     frame.divisions_result = job.census.install_rows(&mut frame.divisions);
+    frame.extended.install_division_counts(&job.census);
     decode_ticks[0] += elapsed(started);
     if job.context.details_active {
         let started = qpc();

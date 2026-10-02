@@ -1032,6 +1032,9 @@ mod tests {
                             Default::default(),
                         ]))
                     }
+                    TableId::CombatLogState => {
+                        TableUpdate::Snapshot(TableRows::CombatLogState(vec![Default::default()]))
+                    }
                     TableId::AirSortieModifierMetadata => {
                         TableUpdate::Snapshot(TableRows::AirSortieModifierMetadata(vec![
                             Default::default(),

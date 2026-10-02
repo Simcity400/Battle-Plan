@@ -32,7 +32,8 @@ pub(crate) use packs::{
 const MISSING: Outcome = Outcome::Unavailable {
     reason: "acquisition source not supplied",
 };
-const DIVISION_SOURCE_TABLES: [TableId; 9] = [
+const DIVISION_SOURCE_TABLES: [TableId; 10] = [
+    TableId::DivisionCensus,
     TableId::DivisionEquipment,
     TableId::ArmyUpgradeGroups,
     TableId::ArmyUpgradeRequests,
@@ -291,7 +292,7 @@ macro_rules! packs {
                 if $pack::TABLES[anchor] == TableId::ArmyUpgradeGroups { continue; }
                 groups.push((name, $pack::TABLES[anchor], members.iter().map(|&index| $pack::TABLES[index]).collect()));
             })+
-            groups.push(("divisions, equipment, upgrades, movement, counter status and ETA inputs", TableId::Divisions,
+            groups.push(("divisions, coverage counts, equipment, upgrades, movement, counter status and ETA inputs", TableId::Divisions,
                 std::iter::once(TableId::Divisions).chain(DIVISION_SOURCE_TABLES).collect()));
             groups.push(("country census, appearance and supply trains", TableId::Countries,
                 vec![TableId::Countries, TableId::CountryAppearance, TableId::SupplyNodes, TableId::TrainInventory]));
@@ -360,6 +361,8 @@ packs!(
     hired_advisors,
     character_inputs,
     logistics,
+    combat_log,
+    division_counts,
     country_factories,
     industrial_organisations,
     line_output,
@@ -395,6 +398,7 @@ impl Capacities {
         self.model_inputs.raise_for_countries(slots);
         self.hired_advisors.raise_for_countries(slots);
         self.country_factories.raise_for_countries(slots);
+        self.division_counts.raise_for_countries(slots);
         self.industrial_organisations.raise_for_countries(slots);
         self.country_stability.raise_for_countries(slots);
         self.country_tactic_unlocks.raise_for_countries(slots);
@@ -466,6 +470,12 @@ impl Captured {
         self.line_output.drain();
     }
 
+    /// The sample's load signal, which names the session the Combat Log's
+    /// kept rows belong to.
+    pub(crate) fn set_load_signal(&mut self, signal: i64) {
+        self.combat_log.set_signal(signal);
+    }
+
     /// The production ticks this frame handed over, for the spool's totals.
     pub(crate) fn line_output(&self) -> &line_output::Captured {
         &self.line_output
@@ -501,6 +511,7 @@ impl Captured {
         self.raid_state_inputs.reset_selections(hour, force_full);
         self.division_presentation.reset_selection(hour, force_full);
         self.country_stability.prepare_hour(hour, force_full);
+        self.combat_log.prepare_hour(hour, force_full);
         self.naval_mission_inputs.reset_selection(hour, force_full);
         self.air.prepare_hour(hour, force_full);
         self.fog.prepare_hour(hour, force_full);
@@ -769,6 +780,7 @@ impl Captured {
             crate::slicing::RELATIONS => self.intel.relations_selection(),
             crate::slicing::STABILITY => self.country_stability.selection(),
             crate::slicing::RETREAT_BANS => self.division_presentation.bans_selection(),
+            crate::slicing::COMBAT_LOG => self.combat_log.selection(),
             crate::slicing::AIR_RELATIONS => self.air_relations.selection(),
             crate::slicing::AIR_HISTORIES => self.air_histories.selection(),
             crate::slicing::NAVAL_MISSIONS => self.naval_mission_inputs.selection(),
@@ -1731,6 +1743,13 @@ impl Captured {
     ) -> [replay::frame::TableView; division_presentation::N] {
         self.division_presentation.tables()
     }
+    pub(crate) fn install_division_counts(&mut self, census: &crate::division_census::Census) {
+        self.division_counts.install(census);
+    }
+    pub(crate) fn install_failed_division_counts(&mut self, reason: &'static str) {
+        self.division_counts.fail(reason);
+    }
+
     pub fn finish_divisions(&mut self, outcome: Outcome) -> u64 {
         self.divisions.finish(outcome);
         0
@@ -1862,6 +1881,7 @@ impl Captured {
                 character_inputs,
                 country_tactic_unlocks,
                 logistics,
+                combat_log,
                 country_factories,
                 industrial_organisations
             );

@@ -1017,6 +1017,9 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
         frame.divisions_result = engine::walk::Outcome::Unavailable {
             reason: MISSING_PAYLOAD_REASON,
         };
+        frame
+            .extended
+            .install_failed_division_counts(MISSING_PAYLOAD_REASON);
         frame.extended.fail_division_details(MISSING_PAYLOAD_REASON);
         frame.extended.set_divisions_raw_mode(false);
     }

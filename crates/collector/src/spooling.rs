@@ -5069,6 +5069,10 @@ mod tests {
             TableView::Complete(TableRows::SimulationFeatures(vec![
                 replay::rows::SimulationFeatureRow::default(),
             ]));
+        tables[TableId::CombatLogState.index()] =
+            TableView::Complete(TableRows::CombatLogState(vec![
+                replay::rows::CombatLogStateRow::default(),
+            ]));
         tables[TableId::AirSortieModifierMetadata.index()] =
             TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
                 replay::rows::AirSortieModifierMetadataRow::default(),

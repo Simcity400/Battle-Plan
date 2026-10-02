@@ -445,6 +445,10 @@ fixture!(IndustrialOrganisationRow, |key| {organisation: key as u64}, {country: 
 fixture!(IndustrialOrganisationHistoryRow, |key| {organisation: (key >> 64) as u64, variant: key as u64}, {units: i32});
 fixture!(ConstructionLineOutputRow, |key| {line: key as u64}, {railway: bool, construction_raw: i64, repair_raw: i64, bank_raw: i64, instant_raw: i64, carry_raw: i64, ticks: i32, since_hour: i32, observed_since_creation: bool, linked: bool, ended: bool, exact: bool, repair_ticks: i32});
 fixture!(ProductionLineOutputRow, |key| {line: (key >> 32) as u64, ordinal: key as u32}, {country: u32, variant: u64, mio: u64, units: i64, mio_credit: i64, since_hour: i32, observed_since_creation: bool, ended: bool, exact: bool});
+fixture!(CombatLogEquipmentRow, |key| {country: (key >> 88) as u32, group: (key >> 56) as u32, kind: (key >> 48) as u8, month: (key >> 32) as u16, variant: key as u32}, {date: i32, amount_raw: i64});
+fixture!(DivisionCensusRow, |key| {country: key as u32}, {grouped: u32, ungrouped: u32});
+fixture!(CombatLogStateRow, |_key| {}, {viewing_country_raw: i32, prune_observed: u8});
+fixture!(LendLeaseEquipmentRow, |key| {giver: (key >> 72) as u32, exchange: (key >> 40) as u32, kind: (key >> 32) as u8, variant: key as u32}, {receiver: u32, amount_raw: i64});
 fixture!(VolunteerHostRow, |key| {country: (key >> 32) as u32, position: key as u32}, {host: u32, deployed_divisions: i32});
 fixture!(TheatreAreaRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {representative: Option<u32>, provinces: Vec<u32>});
 fixture!(StationedUnitRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {unit: u64});
@@ -1125,6 +1129,14 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         TableId::ProductionLineOutput => {
             TableRows::ProductionLineOutput(rows::<ProductionLineOutputRow>(tick))
         }
+        TableId::CombatLogEquipment => {
+            TableRows::CombatLogEquipment(rows::<CombatLogEquipmentRow>(tick))
+        }
+        TableId::CombatLogState => TableRows::CombatLogState(rows::<CombatLogStateRow>(tick)),
+        TableId::LendLeaseEquipment => {
+            TableRows::LendLeaseEquipment(rows::<LendLeaseEquipmentRow>(tick))
+        }
+        TableId::DivisionCensus => TableRows::DivisionCensus(rows::<DivisionCensusRow>(tick)),
         TableId::ConstructionLineOutput => {
             TableRows::ConstructionLineOutput(rows::<ConstructionLineOutputRow>(tick))
         }
@@ -2430,6 +2442,10 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<IndustrialOrganisationHistoryRow>(TableId::IndustrialOrganisationHistory);
     check_table::<ProductionLineOutputRow>(TableId::ProductionLineOutput);
     check_table::<ConstructionLineOutputRow>(TableId::ConstructionLineOutput);
+    check_table::<CombatLogEquipmentRow>(TableId::CombatLogEquipment);
+    check_table::<CombatLogStateRow>(TableId::CombatLogState);
+    check_table::<LendLeaseEquipmentRow>(TableId::LendLeaseEquipment);
+    check_table::<DivisionCensusRow>(TableId::DivisionCensus);
     check_table::<VolunteerHostRow>(TableId::VolunteerHosts);
     check_table::<TheatreAreaRow>(TableId::TheatreAreas);
     check_table::<StationedUnitRow>(TableId::StationedUnits);

@@ -17,6 +17,7 @@ mod acquisition_wars;
 mod advisor_changes;
 #[cfg(feature = "callback_profile")]
 mod callback_profile;
+mod combat_log_prune;
 mod construction_ic;
 mod country_scale;
 mod decode;

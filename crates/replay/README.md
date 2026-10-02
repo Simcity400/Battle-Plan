@@ -36,9 +36,9 @@ Field contracts, native representations, census rules and save joins live beside
 | Country appearance, counters, portraits and local viewpoint | [map_presentation.rs](src/extended_rows/map_presentation.rs) |
 | Parties, script stores, saved-global targets, research and stability | [politics_research.rs](src/extended_rows/politics_research.rs) |
 | Characters, roles, advisors and agencies | [characters_intelligence.rs](src/extended_rows/characters_intelligence.rs) |
-| Fuel, factories, logistics, production, construction, variants and industrial organisations | [economy_construction.rs](src/extended_rows/economy_construction.rs) |
+| Fuel, factories, logistics, production, construction, variants, industrial organisations, Combat Log equipment and lend-lease | [economy_construction.rs](src/extended_rows/economy_construction.rs) |
 | Country and state manpower, and faction identity | [rows.rs](src/rows.rs) |
-| Division ETA, invasion preparation and volunteers | [movement.rs](src/extended_rows/movement.rs) |
+| Division census, ETA, invasion preparation and volunteers | [movement.rs](src/extended_rows/movement.rs) |
 | Raids and equipment pools | [raids_projects.rs](src/extended_rows/raids_projects.rs) |
 | Task-force motion, regions and combat/transfer vectors | [naval_weather.rs](src/extended_rows/naval_weather.rs) |
 | Naval combat sides and air-base wing occurrences | [combat_rows.rs](src/combat_rows.rs) |
@@ -68,6 +68,8 @@ ProductionLineOutput totals begin with observation on each recording branch; con
 ConstructionLineOutput's linked primary holds combined output; its partner's share is inexact and unknown, never an exact zero. Ownership comes from the construction census, so a line created and ended between censuses has unknown ownership. Ended totals survive until a written publication; lost observation withholds the table until a new branch. See [ConstructionLineOutputRow](src/extended_rows/economy_construction.rs) for the separate output and progress totals.
 
 Cadence and acceptance remain defined in code. [naval_mission_derive.rs](src/naval_mission_derive.rs) ports the naval mission arithmetic; the fixed-layout family withholds all four mission-input tables when the registered modifier layout differs.
+
+Combat Log equipment rows preserve the native monthly loss and recovery totals for every held country log. Country and feature gates, orders-group membership and pruning can limit what the game recorded; consumers must keep those losses unknown when coverage is unproven. Ended lend-lease exchanges can lose changes after their last daily read. See [CombatLogEquipmentRow and LendLeaseEquipmentRow](src/extended_rows/economy_construction.rs) and the hourly [DivisionCensusRow](src/extended_rows/movement.rs).
 
 ## Compatibility and recovery
 

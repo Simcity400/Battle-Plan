@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn failed_division_job_publishes_hourly_census_reason_even_without_details() {
+    let mut frame = Captured::new();
+    for details_active in [false, true] {
+        frame.extended.reset();
+        let before = frame.extended.outcomes();
+        let reason = "accepted division acquisition panicked";
+        fail_divisions_capture(&mut frame, reason, details_active);
+        let unavailable = Outcome::Unavailable { reason };
+        assert_eq!(frame.divisions_result, unavailable);
+        assert_eq!(
+            frame.extended.outcomes()[replay::rows::TableId::DivisionCensus.index()],
+            unavailable
+        );
+        for table in [
+            replay::rows::TableId::DivisionEquipment,
+            replay::rows::TableId::ArmyUpgradeGroups,
+            replay::rows::TableId::ArmyUpgradeRequests,
+            replay::rows::TableId::ArmyUpgradeDeliveries,
+            replay::rows::TableId::ArmyUpgradeProduced,
+        ] {
+            assert_eq!(
+                frame.extended.outcomes()[table.index()],
+                if details_active {
+                    unavailable
+                } else {
+                    before[table.index()]
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn template_model_failures_fold_by_reason_and_keep_the_first() {
     use extended::division_templates::{MODEL_REASONS, ModelFailures};
     let hour = |reasons: &[(&'static str, u32)]| {

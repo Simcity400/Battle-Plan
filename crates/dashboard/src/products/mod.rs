@@ -19,6 +19,7 @@ pub mod country_measure;
 pub mod country_stability;
 pub mod country_styles;
 pub mod equipment;
+pub mod equipment_losses;
 pub mod equipment_produced;
 pub mod equipment_stockpile;
 pub mod idea_format;
@@ -263,6 +264,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<world_tension::WorldTension>(),
     register::<autonomy::Autonomy>(),
     register::<construction_log::ConstructionLog>(),
+    register::<equipment_losses::EquipmentLosses>(),
     register::<construction_spending::ConstructionSpending>(),
 ];
 
@@ -340,6 +342,7 @@ mod tests {
             "TensionReply",
             "AutonomyReply",
             "ConstructionLogReply",
+            "LossesReply",
             "ConstructionSpendingReply",
         ] {
             assert_eq!(

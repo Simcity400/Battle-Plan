@@ -528,6 +528,72 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
 }
 
 #[test]
+fn missing_division_payload_publishes_hourly_census_reason_even_without_details() {
+    use engine::walk::Outcome;
+    use replay::rows::TableId;
+
+    struct NoReads;
+    impl engine::Memory for NoReads {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            panic!("missing division payload must not retry native reads");
+        }
+    }
+    let mut frame = sampling::Captured::new();
+    for details_active in [false, true] {
+        frame.extended.reset();
+        let hour = (0..24)
+            .find(|&hour| {
+                replay::cadence::should_walk(TableId::DivisionEquipment, hour, false)
+                    == details_active
+            })
+            .unwrap();
+        let details = frame.extended.test_division_detail();
+        details.divisions_raw_mode = true;
+        details.rest_raw_mode = true;
+        details.acquire(
+            &NoReads,
+            0,
+            0,
+            crate::extended::production::Sources {
+                rows: &[],
+                outcome: Outcome::Rows { len: 0 },
+            },
+            hour,
+            false,
+        );
+        assert_eq!(details.division_details_active(), details_active);
+        let mut job = bare_job(0, 1, hour, 0);
+        job.divisions_refresh = true;
+        fail_missing_payloads(&mut frame, &job);
+        let missing = Outcome::Unavailable {
+            reason: MISSING_PAYLOAD_REASON,
+        };
+        assert_eq!(frame.divisions_result, missing);
+        let outcomes = frame.extended.outcomes();
+        assert_eq!(outcomes[TableId::DivisionCensus.index()], missing);
+        for table in [
+            TableId::DivisionEquipment,
+            TableId::ArmyUpgradeGroups,
+            TableId::ArmyUpgradeRequests,
+            TableId::ArmyUpgradeDeliveries,
+            TableId::ArmyUpgradeProduced,
+        ] {
+            assert_eq!(
+                outcomes[table.index()],
+                if details_active {
+                    missing
+                } else {
+                    Outcome::Unavailable {
+                        reason: replay::cadence::SKIPPED_REASON,
+                    }
+                }
+            );
+        }
+        assert!(!frame.extended.test_division_detail().divisions_raw_mode);
+    }
+}
+
+#[test]
 fn relations_gate_admits_every_hour_for_its_owner_slice() {
     for hour in -48..48i32 {
         assert!(relations_refresh_hour(hour, false), "hour {hour}");

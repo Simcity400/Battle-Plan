@@ -28,6 +28,22 @@ pub struct Country {
     pub pools: Option<ResourcePools>,
     /// None when the country writes no `logistics` block.
     pub logistics: Option<Logistics>,
+    /// The country's outgoing lend-lease exchanges (`resources` → `lend_lease`,
+    /// CLendLeaseExchange::Serialize@14195b480), in save order; None
+    /// preserves an absent resources object.
+    pub lend_lease: Option<Vec<LendLease>>,
+}
+
+/// One saved lend-lease exchange of its giver.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LendLease {
+    /// The exchange's full typed reference (low u32 type, high u32 id).
+    pub id: u64,
+    pub receiver: Vec<u8>,
+    /// `total_delivered` (token 0x3150, exchange +0x2d8).
+    pub delivered: super::production::Pool,
+    /// `equipment_sunk` (token 0x3155, exchange +0x298).
+    pub sunk: super::production::Pool,
 }
 
 /// One resource pool as CStrategicResourcePool::vf2 (140BBD5D0) writes it:
@@ -753,11 +769,11 @@ fn parse_pool(items: &[Item]) -> io::Result<ResourcePool> {
         .collect()
 }
 
-fn parse_pools(items: &[Item]) -> io::Result<Option<ResourcePools>> {
-    let Some(resources) = field(items, b"resources")? else {
+fn parse_pools(resources: Option<&[Item]>) -> io::Result<Option<ResourcePools>> {
+    let Some(resources) = resources else {
         return Ok(None);
     };
-    let fields = block(resources)?;
+    let fields = resources;
     let pool = |key: &[u8]| {
         field(fields, key)?
             .ok_or_else(|| {
@@ -793,12 +809,12 @@ fn parse_pools(items: &[Item]) -> io::Result<Option<ResourcePools>> {
     }))
 }
 
-fn parse_exports(items: &[Item]) -> io::Result<Option<Vec<ResourceExchange>>> {
-    let Some(resources) = field(items, b"resources")? else {
+fn parse_exports(resources: Option<&[Item]>) -> io::Result<Option<Vec<ResourceExchange>>> {
+    let Some(resources) = resources else {
         return Ok(None);
     };
     let mut exports = Vec::new();
-    for entry in block(resources)?
+    for entry in resources
         .iter()
         .filter(|entry| entry.key.as_deref() == Some(b"export"))
     {
@@ -825,6 +841,29 @@ fn parse_exports(items: &[Item]) -> io::Result<Option<Vec<ResourceExchange>>> {
         });
     }
     Ok(Some(exports))
+}
+
+fn parse_lend_lease(resources: Option<&[Item]>) -> io::Result<Option<Vec<LendLease>>> {
+    let Some(resources) = resources else {
+        return Ok(None);
+    };
+    let mut exchanges = Vec::new();
+    for entry in resources
+        .iter()
+        .filter(|entry| entry.key.as_deref() == Some(b"lend_lease"))
+    {
+        let fields = block(&entry.value)?;
+        let pool = |key: &[u8]| super::production::parse_pool(required_block(fields, key)?);
+        exchanges.push(LendLease {
+            id: typed_handle(
+                field(fields, b"id")?.ok_or_else(|| invalid("lend-lease exchange lacks id"))?,
+            )?,
+            receiver: required_bytes(fields, b"receiver")?,
+            delivered: pool(b"total_delivered")?,
+            sunk: pool(b"equipment_sunk")?,
+        });
+    }
+    Ok(Some(exchanges))
 }
 
 fn parse_supply_root(items: &[Item]) -> io::Result<Option<BTreeMap<Vec<u8>, Supply>>> {
@@ -857,6 +896,7 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
             .filter(|tag| !tag.is_empty())
             .ok_or_else(|| invalid("save economy country lacks tag"))?;
         let fields = block(&item.value)?;
+        let resources = field(fields, b"resources")?.map(block).transpose()?;
         let fuel = field(fields, b"fuel_status")?
             .map(|value| parse_fuel(block(value)?))
             .transpose()?;
@@ -866,8 +906,9 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                 Country {
                     fuel,
                     experience: parse_experience(fields)?,
-                    exports: parse_exports(fields)?,
-                    pools: parse_pools(fields)?,
+                    exports: parse_exports(resources)?,
+                    lend_lease: parse_lend_lease(resources)?,
+                    pools: parse_pools(resources)?,
                     logistics: field(fields, b"logistics")?
                         .map(|value| parse_logistics(block(value)?))
                         .transpose()?,
@@ -1293,6 +1334,60 @@ mod tests {
         format!(
             "history_queue={{ 0={{ max_elements=2 offset=1 is_full=yes {data} }} 1={{ max_elements=12 offset=0 is_full=no }} 2={{ max_elements=7 offset=0 is_full=no }} }}"
         )
+    }
+
+    #[test]
+    fn lend_lease_keeps_each_exchanges_delivered_and_sunk_pools_in_save_order() {
+        let parsed = parse(
+            &parser::parse(
+                br#"countries={GER={resources={
+                    export={id={id=1 type=4713} receiver=D01 resource=test_resource
+                        efficiency=1 efficiency_due_to_lost_convoys=0 delivered=2
+                        required_cic=1 lended_cic=0}
+                    lend_lease={ receiver="SOV" id={ id=97730 type=4713 }
+                        total_delivered={ equipment={ id={ id=1723 type=70 } amount=18 }
+                            equipment={ id={ id=1722 type=70 } amount=0.5 } allow_zero_entries=no }
+                        equipment_sunk={ allow_zero_entries=no } }
+                    lend_lease={ receiver="D01" id={ id=97731 type=4713 }
+                        total_delivered={ allow_zero_entries=no }
+                        equipment_sunk={ equipment={ id={ id=5157 type=70 } amount=3 } allow_zero_entries=no } }
+                    produced={test_resource=-0.00001} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}
+                }} ENG={resources={produced={} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}}} ITA={}}"#,
+            )
+            .unwrap()
+            .items,
+        )
+        .unwrap();
+        let ger = parsed.countries[b"GER".as_slice()]
+            .lend_lease
+            .as_ref()
+            .unwrap();
+        assert_eq!(ger.len(), 2);
+        assert_eq!(ger[0].id, (97730_u64 << 32) | 4713);
+        assert_eq!(ger[0].receiver, b"SOV");
+        assert_eq!(ger[0].delivered.equipment[1].amount.raw, 50_000);
+        assert!(ger[0].sunk.equipment.is_empty());
+        assert_eq!(ger[1].receiver, b"D01");
+        assert_eq!(ger[1].sunk.equipment[0].amount.raw, 300_000);
+        let country = &parsed.countries[b"GER".as_slice()];
+        assert_eq!(country.exports.as_ref().unwrap()[0].delivered.raw, 200_000);
+        assert_eq!(country.pools.as_ref().unwrap().produced[0].1.raw, -1);
+        assert_eq!(
+            parsed.countries[b"ENG".as_slice()].lend_lease,
+            Some(Vec::new())
+        );
+        assert!(parsed.countries[b"ITA".as_slice()].lend_lease.is_none());
+        assert!(parsed.countries[b"ITA".as_slice()].exports.is_none());
+        assert!(parsed.countries[b"ITA".as_slice()].pools.is_none());
+        // An exchange without its pools is refused, not read as empty.
+        assert!(
+            parse(
+                &parser::parse(br#"countries={GER={resources={lend_lease={ receiver="SOV" id={ id=1 type=4713 } } produced={} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}}}}"#)
+                    .unwrap()
+                    .items
+            )
+            .is_err()
+        );
     }
 
     fn parse_logistics_text(body: &str) -> io::Result<Pack> {
