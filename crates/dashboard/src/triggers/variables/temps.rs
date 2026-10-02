@@ -4,7 +4,7 @@ use super::*;
 use installed_content::parser::Value as ParsedValue;
 
 enum Right<'v> {
-    Scalar(ScopedVariable),
+    Scalar(Box<ScopedVariable>),
     Expression(&'v ParsedValue),
 }
 
@@ -72,7 +72,7 @@ impl Evaluator<'_, '_> {
 
     fn set_temp(&self, name: &str, item: &Item, scopes: Scopes) -> Result<(), String> {
         let mut var = zero();
-        let mut right = Right::Scalar(zero());
+        let mut right = Right::Scalar(Box::new(zero()));
         let mut min = zero();
         let mut max = zero();
         if name == "round_temp_variable" {

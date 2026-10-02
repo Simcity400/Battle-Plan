@@ -67,7 +67,9 @@ impl Pending {
                 .retain(|(queued, _)| queued.request_id() != Some(id.as_str()));
         }
         let bytes: usize = self.data.iter().map(|(_, bytes)| *bytes).sum();
-        if self.data.len() >= MAX_QUEUED_DATA || bytes.saturating_add(length) > MAX_QUEUED_DATA_BYTES {
+        if self.data.len() >= MAX_QUEUED_DATA
+            || bytes.saturating_add(length) > MAX_QUEUED_DATA_BYTES
+        {
             return Err(NATIVE_QUEUE_FULL.into());
         }
         self.data.push_back((request, length));
