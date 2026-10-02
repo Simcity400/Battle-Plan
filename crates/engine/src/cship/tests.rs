@@ -1,0 +1,1158 @@
+use super::*;
+use crate::{equipment_entry, memory::SliceMemory};
+use std::cell::{Cell, RefCell};
+
+const BASE: usize = 0x1000;
+const PARENT: usize = 0x1000;
+const VARIANTS: [usize; 2] = [0x2000, 0x2500];
+const DEFINITIONS: [usize; 2] = [0x3000, 0x3800];
+const BANK: usize = 0x4000;
+const HEAP: usize = 0x5000;
+const SHIP_ID: u64 = (42 << 32) | HANDLE_TYPE as u64;
+const PARENT_ID: u64 = (17 << 32) | ctask_force::DEFAULT_HANDLE_TYPE as u64;
+
+fn word(bytes: &mut [u8], at: usize, value: u64) {
+    bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn dword(bytes: &mut [u8], at: usize, value: u32) {
+    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn inline(bytes: &mut [u8], at: usize, text: &[u8]) {
+    bytes[at..at + text.len()].copy_from_slice(text);
+    word(bytes, at + 16, text.len() as u64);
+    word(bytes, at + 24, 15);
+}
+
+fn fixture() -> Vec<u8> {
+    let mut bytes = vec![0; 0x6000];
+    word(&mut bytes, 0, VTABLE_RVA as u64);
+    word(&mut bytes, HANDLE, SHIP_ID);
+    word(&mut bytes, TASK_FORCE, (BASE + PARENT) as u64);
+    word(&mut bytes, PARENT, ctask_force::VTABLE_RVA as u64);
+    word(&mut bytes, PARENT + cunit::HANDLE, PARENT_ID);
+    word(
+        &mut bytes,
+        EQUIPMENT_POOL,
+        cequipment_variant_pool::VTABLE_RVA as u64,
+    );
+    word(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
+        (BASE + BANK) as u64,
+    );
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::CAPACITY,
+        2,
+    );
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+        2,
+    );
+    inline(&mut bytes, FALLBACK_SPRITE, b"destroyer");
+    word(&mut bytes, FORMATION_FLAGS, u64::MAX);
+    dword(&mut bytes, MODEL_NUMBER, i32::MIN as u32);
+    for index in 0..2 {
+        let variant = VARIANTS[index];
+        let definition = DEFINITIONS[index];
+        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        word(&mut bytes, variant + 8, ((index as u64 + 1) << 32) | 70);
+        dword(
+            &mut bytes,
+            variant + cequipment_variant::EQUIPMENT_TOKEN,
+            index as u32 + 11,
+        );
+        word(
+            &mut bytes,
+            variant + cequipment_variant::DEFINITION,
+            (BASE + definition) as u64,
+        );
+        word(&mut bytes, definition, cequipment_type::VTABLE_RVA as u64);
+        dword(
+            &mut bytes,
+            definition + cequipment_type::TOKEN,
+            index as u32 + 11,
+        );
+        inline(
+            &mut bytes,
+            definition + cequipment_type::HULL_SPRITE,
+            &[b'A' + index as u8],
+        );
+        word(
+            &mut bytes,
+            BANK + index * equipment_entry::STRIDE,
+            (BASE + variant) as u64,
+        );
+        word(
+            &mut bytes,
+            BANK + index * equipment_entry::STRIDE + 8,
+            i64::MIN as u64,
+        );
+    }
+    bytes
+}
+
+fn model(bytes: &[u8]) -> Result<ModelRow, &'static str> {
+    read_model(
+        &SliceMemory { base: BASE, bytes },
+        0,
+        BASE,
+        &Row {
+            id: SHIP_ID,
+            task_force: PARENT_ID,
+            ..Row::default()
+        },
+        &mut ModelMemo::default(),
+    )
+}
+
+#[test]
+fn model_selects_first_signed_maximum_and_preserves_bits_and_native_bytes() {
+    let mut bytes = fixture();
+    // Even an i64::MIN first entry is selected, and an equal second loses.
+    let row = model(&bytes).unwrap();
+    assert_eq!(row.ship, SHIP_ID);
+    assert_eq!(row.variant, (1 << 32) | 70);
+    assert_eq!(row.hull_sprite.as_bytes(), b"A");
+    assert_eq!(row.fallback_sprite.as_bytes(), b"destroyer");
+    assert_eq!(row.model_number, i32::MIN);
+    assert_eq!(row.formation_flags, u64::MAX);
+    word(&mut bytes, BANK + 8, -1_i64 as u64);
+    word(&mut bytes, BANK + equipment_entry::STRIDE + 8, 0);
+    inline(
+        &mut bytes,
+        DEFINITIONS[1] + cequipment_type::HULL_SPRITE,
+        &[0xff, 0, b'X'],
+    );
+    let row = model(&bytes).unwrap();
+    assert_eq!(row.variant, (2 << 32) | 70);
+    assert_eq!(row.hull_sprite.as_bytes(), &[0xff, 0, b'X']);
+    word(&mut bytes, BANK + 8, i64::MAX as u64);
+    assert_eq!(model(&bytes).unwrap().variant, (1 << 32) | 70);
+}
+
+#[test]
+fn empty_and_selected_null_pools_preserve_no_variant_without_invented_hull() {
+    let mut bytes = fixture();
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+        0,
+    );
+    word(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
+        0,
+    );
+    let row = model(&bytes).unwrap();
+    assert_eq!(row.variant, 0);
+    assert!(row.hull_sprite.as_bytes().is_empty());
+    assert_eq!(row.fallback_sprite.as_bytes(), b"destroyer");
+    let mut bytes = fixture();
+    word(&mut bytes, BANK, 0);
+    word(&mut bytes, BANK + 8, i64::MAX as u64);
+    assert_eq!(
+        model(&bytes),
+        Err("positive ship equipment has null variant")
+    );
+    word(&mut bytes, BANK + 8, 0);
+    assert_eq!(model(&bytes).unwrap().variant, 0);
+}
+
+#[test]
+fn counter_flags_include_all_positive_variants_and_preserve_raw_maximum_and_airbase() {
+    let mut bytes = fixture();
+    word(&mut bytes, BANK + 8, 5);
+    word(&mut bytes, BANK + 24, 1);
+    word(
+        &mut bytes,
+        VARIANTS[0] + cequipment_variant::CLASSIFIER_FLAGS,
+        1 << 6,
+    );
+    word(
+        &mut bytes,
+        VARIANTS[1] + cequipment_variant::CLASSIFIER_FLAGS,
+        (1 << 37) | (1 << 63),
+    );
+    bytes[DEFINITION_VALID] = 255;
+    word(&mut bytes, MAXIMUM_STRENGTH, i64::MIN as u64);
+    word(&mut bytes, CARRIER_AIR_BASE, (BASE + 0x5800) as u64);
+    word(&mut bytes, ANTI_AIR_BASE, i64::MIN as u64);
+    word(&mut bytes, 0x5800, crate::cair_base::VTABLE_RVA as u64);
+    word(&mut bytes, 0x5808, (7 << 32) | 65);
+    word(&mut bytes, 0x5860, SHIP_ID);
+    let row = model(&bytes).unwrap();
+    assert_eq!(row.variant, (1 << 32) | 70);
+    assert_eq!(
+        row.positive_equipment_flags,
+        (1 << 6) | (1 << 37) | (1 << 63)
+    );
+    assert_eq!(row.definition_valid, 255);
+    assert_eq!(row.maximum_strength, i64::MIN);
+    assert_eq!(row.anti_air_base, i64::MIN);
+    assert_eq!(row.carrier_air_base, (7 << 32) | 65);
+    word(&mut bytes, BANK + 24, 0);
+    assert_eq!(model(&bytes).unwrap().positive_equipment_flags, 1 << 6);
+    word(&mut bytes, 0x5860, 0);
+    assert!(model(&bytes).is_err());
+}
+
+#[test]
+fn model_rejects_changed_census_identity_bad_pool_and_mismatched_variant_definition() {
+    for at in [
+        0,
+        HANDLE,
+        TASK_FORCE,
+        PARENT,
+        PARENT + cunit::HANDLE,
+        EQUIPMENT_POOL,
+        VARIANTS[0],
+        VARIANTS[0] + cequipment_variant::TYPE,
+        VARIANTS[0] + cequipment_variant::DEFINITION,
+        DEFINITIONS[0],
+        DEFINITIONS[0] + cequipment_type::TOKEN,
+    ] {
+        let mut bytes = fixture();
+        bytes[at] ^= 1;
+        assert!(model(&bytes).is_err(), "bad field at {at:x}");
+    }
+    let mut bytes = fixture();
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+        3,
+    );
+    assert!(model(&bytes).is_err());
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+        u32::MAX,
+    );
+    assert!(model(&bytes).is_err());
+}
+
+#[test]
+fn model_strings_reject_corruption_overflow_and_unreadable_bytes_without_truncation() {
+    let mut bytes = fixture();
+    word(&mut bytes, FALLBACK_SPRITE + 16, 16);
+    assert!(model(&bytes).is_err());
+    let mut bytes = fixture();
+    word(&mut bytes, FALLBACK_SPRITE, (BASE + HEAP) as u64);
+    word(&mut bytes, FALLBACK_SPRITE + 16, MODEL_TEXT_CAPACITY as u64);
+    word(&mut bytes, FALLBACK_SPRITE + 24, 511);
+    bytes[HEAP..HEAP + MODEL_TEXT_CAPACITY].fill(b'X');
+    assert_eq!(
+        model(&bytes).unwrap().fallback_sprite.as_bytes(),
+        &[b'X'; MODEL_TEXT_CAPACITY]
+    );
+    word(
+        &mut bytes,
+        FALLBACK_SPRITE + 16,
+        MODEL_TEXT_CAPACITY as u64 + 1,
+    );
+    assert_eq!(
+        model(&bytes),
+        Err("ship model sprite exceeds owned capacity")
+    );
+    word(&mut bytes, FALLBACK_SPRITE + 16, MODEL_TEXT_CAPACITY as u64);
+    bytes[HEAP + MODEL_TEXT_CAPACITY] = 1;
+    assert!(model(&bytes).is_err());
+    bytes[HEAP + MODEL_TEXT_CAPACITY] = 0;
+    assert!(model(&bytes[..HEAP + MODEL_TEXT_CAPACITY]).is_err());
+    word(&mut bytes, FALLBACK_SPRITE, 0);
+    assert!(model(&bytes).is_err());
+}
+
+#[test]
+fn pool_selection_crosses_bounded_batch_boundary_and_checks_all_amounts() {
+    let mut bytes = fixture();
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+        65,
+    );
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::CAPACITY,
+        65,
+    );
+    for index in 0..65 {
+        word(
+            &mut bytes,
+            BANK + index * equipment_entry::STRIDE,
+            (BASE + VARIANTS[0]) as u64,
+        );
+        word(
+            &mut bytes,
+            BANK + index * equipment_entry::STRIDE + 8,
+            index as u64,
+        );
+    }
+    word(
+        &mut bytes,
+        BANK + 64 * equipment_entry::STRIDE,
+        (BASE + VARIANTS[1]) as u64,
+    );
+    assert_eq!(model(&bytes).unwrap().variant, (2 << 32) | 70);
+    assert!(model(&bytes[..BANK + 65 * equipment_entry::STRIDE - 1]).is_err());
+}
+
+#[test]
+fn oversized_pool_is_unavailable_before_any_entry_is_read() {
+    let mut bytes = fixture();
+    let count = cequipment_variant_pool::MODEL_SELECTION_CAPACITY + 1;
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+        count,
+    );
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::CAPACITY,
+        count,
+    );
+    assert_eq!(
+        model(&bytes[..BANK]),
+        Err("ship model equipment pool exceeds selection capacity")
+    );
+}
+
+struct Scalar<'a, M>(&'a M);
+
+impl<M: Memory> Memory for Scalar<'_, M> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.0.copy(address, output)
+    }
+}
+
+struct Trace<'a, M> {
+    source: &'a M,
+    reads: RefCell<Vec<(usize, usize)>>,
+    fault: Option<(usize, usize)>,
+    change: Option<(usize, usize, u8)>,
+    prefetched: Cell<usize>,
+}
+
+impl<'a, M> Trace<'a, M> {
+    fn new(source: &'a M) -> Self {
+        Self {
+            source,
+            reads: RefCell::new(Vec::new()),
+            fault: None,
+            change: None,
+            prefetched: Cell::new(0),
+        }
+    }
+}
+
+impl<M: Memory> Memory for Trace<'_, M> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let ordinal = self.reads.borrow().len();
+        self.reads.borrow_mut().push((address, output.len()));
+        if let Some((failed, partial)) = self.fault
+            && ordinal == failed
+        {
+            let len = partial.min(output.len());
+            if len != 0 {
+                self.source.copy(address, &mut output[..len]);
+            }
+            return false;
+        }
+        if !self.source.copy(address, output) {
+            return false;
+        }
+        if let Some((changed, byte, xor)) = self.change
+            && ordinal == changed
+        {
+            output[byte] ^= xor;
+        }
+        true
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        Scalar(self).copy_scattered(addresses, destinations)
+    }
+
+    fn copy_scattered_prefetched<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.prefetched.set(self.prefetched.get() + 1);
+        self.copy_scattered(addresses, destinations)
+    }
+}
+
+struct CounterSource(usize);
+
+impl Memory for CounterSource {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        for (offset, bytes) in [
+            (DEFINITION_VALID, [255; 8]),
+            (MAXIMUM_STRENGTH, i64::MIN.to_le_bytes()),
+            (CARRIER_AIR_BASE, u64::MAX.to_le_bytes()),
+            (ANTI_AIR_BASE, (i64::MIN + 1).to_le_bytes()),
+        ] {
+            if self.0.checked_add(offset) == Some(address) {
+                output.copy_from_slice(&bytes[..output.len()]);
+                return true;
+            }
+        }
+        panic!("unexpected counter source {address:#x}");
+    }
+}
+
+// The original scalar statements, including lazy address construction.
+fn scalar_model_counters(
+    memory: &impl Memory,
+    pointer: usize,
+) -> Result<(u8, i64, u64, i64), &'static str> {
+    let at = |offset| {
+        pointer
+            .checked_add(offset)
+            .ok_or("ship model address overflow")
+    };
+    let valid =
+        read(memory, at(DEFINITION_VALID)?).ok_or("ship definition-valid byte unreadable")?;
+    let strength = read(memory, at(MAXIMUM_STRENGTH)?).ok_or("ship maximum strength unreadable")?;
+    let air = read(memory, at(CARRIER_AIR_BASE)?).ok_or("ship carrier air base unreadable")?;
+    let anti_air = read(memory, at(ANTI_AIR_BASE)?).ok_or("ship anti-air base unreadable")?;
+    Ok((valid, strength, air, anti_air))
+}
+
+#[test]
+fn model_counter_gather_matches_scalar_faults_partial_copies_and_address_overflow() {
+    let faults: Vec<_> = std::iter::once(None)
+        .chain(
+            [1, 8, 8, 8]
+                .into_iter()
+                .enumerate()
+                .flat_map(|(field, len)| (0..=len).map(move |partial| Some((field, partial)))),
+        )
+        .collect();
+    for pointer in [
+        0,
+        BASE,
+        usize::MAX - DEFINITION_VALID + 1,
+        usize::MAX - DEFINITION_VALID,
+        usize::MAX - MAXIMUM_STRENGTH + 1,
+        usize::MAX - MAXIMUM_STRENGTH,
+        usize::MAX - CARRIER_AIR_BASE + 1,
+        usize::MAX - CARRIER_AIR_BASE,
+        usize::MAX - CARRIER_AIR_BASE - 7,
+        usize::MAX - CARRIER_AIR_BASE - 8,
+        usize::MAX - ANTI_AIR_BASE + 1,
+        usize::MAX - ANTI_AIR_BASE,
+    ] {
+        let source = CounterSource(pointer);
+        for &fault in &faults {
+            let mut scalar = Trace::new(&source);
+            scalar.fault = fault;
+            let mut gathered = Trace::new(&source);
+            gathered.fault = fault;
+            assert_eq!(
+                read_model_counters(&gathered, pointer),
+                scalar_model_counters(&scalar, pointer),
+                "pointer {pointer:#x}, fault {fault:?}"
+            );
+            assert_eq!(
+                *gathered.reads.borrow(),
+                *scalar.reads.borrow(),
+                "pointer {pointer:#x}, fault {fault:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn model_counter_gather_retains_four_observations_and_twenty_five_bytes() {
+    let source = CounterSource(BASE);
+    let census = crate::read_census::ReadCensus::new(&source);
+    let expected = Ok((255, i64::MIN, u64::MAX, i64::MIN + 1));
+    assert_eq!(scalar_model_counters(&census, BASE), expected);
+    assert_eq!((census.calls(), census.spans(), census.bytes()), (4, 4, 25));
+    census.reset();
+    assert_eq!(read_model_counters(&census, BASE), expected);
+    assert_eq!((census.calls(), census.spans(), census.bytes()), (1, 4, 25));
+}
+
+#[test]
+fn organisation_pairs_keep_aliases_partial_faults_and_lazy_invalid_address_order() {
+    struct Source;
+    impl Memory for Source {
+        fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
+            bytes.fill(address as u8);
+            true
+        }
+    }
+    fn check<const A: usize, const B: usize>() {
+        use crate::cnaval_combatant::field;
+        for (first, second) in [
+            ((BASE, 8), (BASE, 0)),
+            ((BASE, 8), (BASE, 8)),
+            ((0, 8), (BASE, 0)),
+            ((BASE, 8), (0, 0)),
+            ((usize::MAX - 4, 8), (BASE, 0)),
+            ((BASE, 8), (usize::MAX - 4, 8)),
+            ((usize::MAX - A + 1, 0), (BASE, 0)),
+            ((BASE, 8), (usize::MAX - B + 1, 0)),
+        ] {
+            for fault in std::iter::once(None).chain(
+                [A, B]
+                    .into_iter()
+                    .enumerate()
+                    .flat_map(|(field, len)| (0..=len).map(move |partial| Some((field, partial)))),
+            ) {
+                let mut scalar = Trace::new(&Source);
+                scalar.fault = fault;
+                let expected: Result<([u8; A], [u8; B]), &'static str> = (|| {
+                    Ok((
+                        field::<[u8; A]>(&scalar, first.0, first.1)?,
+                        field::<[u8; B]>(&scalar, second.0, second.1)?,
+                    ))
+                })();
+                let mut gathered = Trace::new(&Source);
+                gathered.fault = fault;
+                assert_eq!(
+                    organisation_pair::<A, B>(&gathered, first, second),
+                    expected
+                );
+                assert_eq!(*gathered.reads.borrow(), *scalar.reads.borrow());
+            }
+        }
+        let census = crate::read_census::ReadCensus::new(&Source);
+        assert!(organisation_pair::<A, B>(&census, (BASE, 8), (BASE, 0)).is_ok());
+        assert_eq!(
+            (census.calls(), census.spans(), census.bytes()),
+            (1, 2, A + B)
+        );
+    }
+    check::<8, 4>();
+    check::<8, 8>();
+    check::<4, 8>();
+}
+
+const AIR: usize = 0x5800;
+
+fn full_model_fixture() -> Vec<u8> {
+    let mut bytes = fixture();
+    word(&mut bytes, BANK + 8, 5);
+    word(&mut bytes, BANK + 24, 1);
+    word(
+        &mut bytes,
+        VARIANTS[0] + cequipment_variant::CLASSIFIER_FLAGS,
+        1 << 6,
+    );
+    word(
+        &mut bytes,
+        VARIANTS[1] + cequipment_variant::CLASSIFIER_FLAGS,
+        1 << 37,
+    );
+    bytes[DEFINITION_VALID] = 255;
+    word(&mut bytes, MAXIMUM_STRENGTH, i64::MIN as u64);
+    word(&mut bytes, CARRIER_AIR_BASE, (BASE + AIR) as u64);
+    word(&mut bytes, AIR, crate::cair_base::VTABLE_RVA as u64);
+    word(&mut bytes, AIR + crate::cair_base::HANDLE, (7 << 32) | 65);
+    word(&mut bytes, AIR + crate::cair_base::HOST_REFERENCE, SHIP_ID);
+    bytes
+}
+
+fn traced_model(memory: &impl Memory) -> Result<ModelRow, &'static str> {
+    traced_model_memo(memory, &mut ModelMemo::default())
+}
+
+fn traced_model_memo(memory: &impl Memory, memo: &mut ModelMemo) -> Result<ModelRow, &'static str> {
+    read_model(
+        memory,
+        0,
+        BASE,
+        &Row {
+            id: SHIP_ID,
+            task_force: PARENT_ID,
+            ..Row::default()
+        },
+        memo,
+    )
+}
+
+// Primary observation order, with the source diagnostic if
+// that exact copy fails. Hints never add an entry to this sequence.
+fn full_model_reads() -> Vec<(usize, usize, &'static str)> {
+    let ship = "ship model fields unreadable";
+    let parent = "ship model task force identity unreadable";
+    let variant = "ship model variant fields unreadable";
+    [
+        (0, 16, ship),
+        (TASK_FORCE, 8, ship),
+        (FORMATION_FLAGS, 8, ship),
+        (MODEL_NUMBER, 4, ship),
+        (PARENT, 8, parent),
+        (PARENT + cunit::HANDLE, 8, parent),
+        (
+            EQUIPMENT_POOL,
+            8,
+            "equipment pool vtable unreadable or mismatch",
+        ),
+        (
+            EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
+            16,
+            "equipment pool array unreadable",
+        ),
+        (BANK, 32, "equipment model pool entries unreadable"),
+        (
+            VARIANTS[0],
+            16,
+            "ship equipment variant identity unreadable",
+        ),
+        (
+            VARIANTS[0] + cequipment_variant::CLASSIFIER_FLAGS,
+            8,
+            "ship equipment flags unreadable",
+        ),
+        (
+            VARIANTS[1],
+            16,
+            "ship equipment variant identity unreadable",
+        ),
+        (
+            VARIANTS[1] + cequipment_variant::CLASSIFIER_FLAGS,
+            8,
+            "ship equipment flags unreadable",
+        ),
+        (FALLBACK_SPRITE, 32, "string header unreadable"),
+        (DEFINITION_VALID, 1, "ship definition-valid byte unreadable"),
+        (MAXIMUM_STRENGTH, 8, "ship maximum strength unreadable"),
+        (CARRIER_AIR_BASE, 8, "ship carrier air base unreadable"),
+        (ANTI_AIR_BASE, 8, "ship anti-air base unreadable"),
+        (AIR, 8, "ship carrier air base identity invalid"),
+        (
+            AIR + crate::cair_base::HANDLE,
+            8,
+            "ship air base handle unreadable",
+        ),
+        (
+            AIR + crate::cair_base::HOST_REFERENCE,
+            8,
+            "ship carrier air base has null handle",
+        ),
+        (VARIANTS[0], 16, variant),
+        (
+            VARIANTS[0] + cequipment_variant::EQUIPMENT_TOKEN,
+            4,
+            variant,
+        ),
+        (VARIANTS[0] + cequipment_variant::DEFINITION, 8, variant),
+        (
+            DEFINITIONS[0],
+            12,
+            "ship model equipment definition identity unreadable",
+        ),
+        (
+            DEFINITIONS[0] + cequipment_type::HULL_SPRITE,
+            32,
+            "string header unreadable",
+        ),
+    ]
+    .map(|(offset, len, reason)| (BASE + offset, len, reason))
+    .to_vec()
+}
+
+#[test]
+fn model_hull_reuse_retains_exact_bytes_and_bounded_native_savings() {
+    // Fixed one-slot state, with no heap or per-ship memo growth.
+    assert!(std::mem::size_of::<ModelMemo>() <= 304);
+    for (heap, len, extra_calls, extra_bytes) in
+        [(false, 3, 0, 0), (true, 0, 1, 1), (true, 256, 2, 257)]
+    {
+        let mut bytes = full_model_fixture();
+        let sprite = DEFINITIONS[0] + cequipment_type::HULL_SPRITE;
+        bytes[sprite..sprite + 32].fill(0);
+        let payload: Vec<u8> = (0..len).map(|i| [0xff, 0, b'X'][i % 3]).collect();
+        if heap {
+            word(&mut bytes, sprite, (BASE + HEAP) as u64);
+            word(&mut bytes, sprite + 16, len as u64);
+            word(&mut bytes, sprite + 24, 511);
+            bytes[HEAP..HEAP + len].copy_from_slice(&payload);
+        } else {
+            inline(&mut bytes, sprite, &payload);
+        }
+        let source = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let census = crate::read_census::ReadCensus::new(&source);
+        let mut memo = ModelMemo::default();
+        let cold = traced_model_memo(&census, &mut memo).unwrap();
+        assert_eq!(cold.hull_sprite.as_bytes(), payload);
+        assert_eq!(
+            (census.calls(), census.spans(), census.bytes()),
+            (17 + extra_calls, 26 + extra_calls, 309 + extra_bytes)
+        );
+        census.reset();
+        assert_eq!(traced_model_memo(&census, &mut memo), Ok(cold));
+        assert_eq!(
+            (census.calls(), census.spans(), census.bytes()),
+            (15, 24, 265)
+        );
+        // All independent observations still occur, in their original order.
+        let reads: Vec<_> = full_model_reads()[..24]
+            .iter()
+            .map(|&(a, n, _)| (a, n))
+            .collect();
+        let trace = Trace::new(&source);
+        assert_eq!(traced_model_memo(&trace, &mut memo), Ok(cold));
+        assert_eq!(*trace.reads.borrow(), reads);
+        for (ordinal, &(_, len, reason)) in full_model_reads()[..24].iter().enumerate() {
+            let mut trace = Trace::new(&source);
+            trace.fault = Some((ordinal, len / 2));
+            assert_eq!(traced_model_memo(&trace, &mut memo), Err(reason));
+            assert_eq!(*trace.reads.borrow(), reads[..=ordinal]);
+        }
+    }
+}
+
+#[test]
+fn model_hull_reuse_keeps_other_ship_and_selected_variant_inputs_fresh() {
+    let mut bytes = full_model_fixture();
+    let other = 0x6000;
+    bytes.resize(0x7000, 0);
+    bytes.copy_within(..SIZE, other);
+    let other_id = SHIP_ID + (1 << 32);
+    word(&mut bytes, other + HANDLE, other_id);
+    word(&mut bytes, other + CARRIER_AIR_BASE, 0);
+    inline(&mut bytes, other + FALLBACK_SPRITE, b"different");
+    dword(&mut bytes, other + MODEL_NUMBER, 71);
+    let mut memo = ModelMemo::default();
+    assert!(
+        traced_model_memo(
+            &SliceMemory {
+                base: BASE,
+                bytes: &bytes
+            },
+            &mut memo
+        )
+        .is_ok()
+    );
+
+    // The second ship selects a different variant that shares the definition.
+    word(&mut bytes, BANK + 24, 6);
+    dword(
+        &mut bytes,
+        VARIANTS[1] + cequipment_variant::EQUIPMENT_TOKEN,
+        11,
+    );
+    word(
+        &mut bytes,
+        VARIANTS[1] + cequipment_variant::DEFINITION,
+        (BASE + DEFINITIONS[0]) as u64,
+    );
+    word(
+        &mut bytes,
+        VARIANTS[1] + cequipment_variant::CLASSIFIER_FLAGS,
+        1 << 63,
+    );
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let census = crate::read_census::ReadCensus::new(&source);
+    let row_source = Row {
+        id: other_id,
+        task_force: PARENT_ID,
+        roster_ordinal: 9,
+        ..Row::default()
+    };
+    let warm = read_model(&census, 0, BASE + other, &row_source, &mut memo).unwrap();
+    let warm_counts = (census.calls(), census.spans(), census.bytes());
+    census.reset();
+    let cold = read_model(
+        &census,
+        0,
+        BASE + other,
+        &row_source,
+        &mut ModelMemo::default(),
+    )
+    .unwrap();
+    assert_eq!(warm, cold);
+    assert_eq!(warm.variant, (2 << 32) | 70);
+    assert_eq!(warm.fallback_sprite.as_bytes(), b"different");
+    assert_eq!(warm.model_number, 71);
+    assert_eq!(warm.roster_ordinal, 9);
+    assert_eq!(warm.positive_equipment_flags, (1 << 6) | (1 << 63));
+    assert_eq!(
+        warm_counts,
+        (census.calls() - 2, census.spans() - 2, census.bytes() - 44)
+    );
+}
+
+#[test]
+fn model_hull_changed_token_pointer_and_capture_reacquire_complete_definition() {
+    let mut bytes = full_model_fixture();
+    let mut memo = ModelMemo::default();
+    assert!(
+        traced_model_memo(
+            &SliceMemory {
+                base: BASE,
+                bytes: &bytes
+            },
+            &mut memo
+        )
+        .is_ok()
+    );
+    dword(
+        &mut bytes,
+        VARIANTS[0] + cequipment_variant::EQUIPMENT_TOKEN,
+        99,
+    );
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let trace = Trace::new(&source);
+    assert_eq!(
+        traced_model_memo(&trace, &mut memo),
+        Err("ship model equipment definition identity mismatch")
+    );
+    assert_eq!(trace.reads.borrow().len(), 25);
+    assert_eq!(memo.hull.as_ref().unwrap().token, 11_u32.to_le_bytes());
+    for (definition, reset, text) in [
+        (DEFINITIONS[0], false, b'B'),
+        (DEFINITIONS[1], false, b'C'),
+        (DEFINITIONS[1], true, b'D'),
+    ] {
+        word(
+            &mut bytes,
+            VARIANTS[0] + cequipment_variant::DEFINITION,
+            (BASE + definition) as u64,
+        );
+        dword(&mut bytes, definition + cequipment_type::TOKEN, 99);
+        inline(
+            &mut bytes,
+            definition + cequipment_type::HULL_SPRITE,
+            &[text],
+        );
+        if reset {
+            memo = ModelMemo::default();
+        }
+        let source = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let census = crate::read_census::ReadCensus::new(&source);
+        assert_eq!(
+            traced_model_memo(&census, &mut memo)
+                .unwrap()
+                .hull_sprite
+                .as_bytes(),
+            &[text]
+        );
+        assert_eq!(
+            (census.calls(), census.spans(), census.bytes()),
+            (17, 26, 309)
+        );
+    }
+}
+
+#[test]
+fn model_hull_failures_keep_original_prefix_and_never_publish_partial_text() {
+    let mut bytes = full_model_fixture();
+    let sprite = DEFINITIONS[0] + cequipment_type::HULL_SPRITE;
+    word(&mut bytes, sprite, (BASE + HEAP) as u64);
+    word(&mut bytes, sprite + 16, 17);
+    word(&mut bytes, sprite + 24, 31);
+    bytes[HEAP..HEAP + 17].fill(0xff);
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let mut expected = full_model_reads();
+    expected.extend([
+        (
+            BASE + HEAP + 17,
+            1,
+            "string terminator unreadable or invalid",
+        ),
+        (BASE + HEAP, 17, "string bytes unreadable"),
+    ]);
+    let reads: Vec<_> = expected.iter().map(|&(a, n, _)| (a, n)).collect();
+    for (ordinal, &(_, len, reason)) in expected.iter().enumerate().skip(24) {
+        for partial in [0, len / 2, len] {
+            let mut memo = ModelMemo::default();
+            let mut trace = Trace::new(&source);
+            trace.fault = Some((ordinal, partial));
+            assert_eq!(traced_model_memo(&trace, &mut memo), Err(reason));
+            assert_eq!(*trace.reads.borrow(), reads[..=ordinal]);
+            assert!(memo.hull.is_none());
+            let trace = Trace::new(&source);
+            assert!(traced_model_memo(&trace, &mut memo).is_ok());
+            assert_eq!(*trace.reads.borrow(), reads);
+        }
+    }
+}
+
+#[test]
+fn model_prefetched_groups_keep_every_primary_fault_prefix_and_guard_count() {
+    let bytes = full_model_fixture();
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let expected = full_model_reads();
+    let reads: Vec<_> = expected
+        .iter()
+        .map(|&(address, len, _)| (address, len))
+        .collect();
+    let memory = Trace::new(&source);
+    assert!(traced_model(&memory).is_ok());
+    assert_eq!(*memory.reads.borrow(), reads);
+    // Ship, parent, counters and selected-variant gathers.
+    assert_eq!(memory.prefetched.get(), 4);
+    let census = crate::read_census::ReadCensus::new(&source);
+    assert!(traced_model(&census).is_ok());
+    // Primary reads retain the existing four batched field groups.
+    assert_eq!(
+        (census.calls(), census.spans(), census.bytes()),
+        (17, 26, 309)
+    );
+    for (ordinal, &(_, len, reason)) in expected.iter().enumerate() {
+        for partial in [0, len / 2, len] {
+            let mut memory = Trace::new(&source);
+            memory.fault = Some((ordinal, partial));
+            assert_eq!(
+                traced_model(&memory),
+                Err(reason),
+                "copy {ordinal}, partial {partial}"
+            );
+            assert_eq!(*memory.reads.borrow(), reads[..=ordinal], "copy {ordinal}");
+        }
+    }
+}
+
+#[test]
+fn model_primary_identity_gates_keep_the_first_read_prefix() {
+    let bytes = full_model_fixture();
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let reads: Vec<_> = full_model_reads().iter().map(|&(a, n, _)| (a, n)).collect();
+    for (ordinal, byte, xor, end, reason) in [
+        (0, 0, 1, 4, "ship model identity differs from census"),
+        (4, 0, 1, 6, "ship model task force differs from census"),
+        (9, 0, 1, 10, "variant vtable or reference type mismatch"),
+        (18, 0, 1, 19, "ship carrier air base identity invalid"),
+        (19, 4, 7, 20, "ship carrier air base has null handle"),
+        (19, 0, 1, 20, "ship carrier air base has null handle"),
+        (20, 0, 1, 21, "ship carrier air base has null handle"),
+        (21, 0, 1, 24, "variant vtable or reference type mismatch"),
+        (
+            24,
+            0,
+            1,
+            25,
+            "ship model equipment definition identity mismatch",
+        ),
+    ] {
+        let mut memory = Trace::new(&source);
+        memory.change = Some((ordinal, byte, xor));
+        assert_eq!(traced_model(&memory), Err(reason), "invalid copy {ordinal}");
+        assert_eq!(
+            *memory.reads.borrow(),
+            reads[..end],
+            "invalid copy {ordinal}"
+        );
+    }
+    let mut bytes = bytes;
+    word(&mut bytes, CARRIER_AIR_BASE, 0);
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let memory = Trace::new(&source);
+    assert_eq!(traced_model(&memory).unwrap().carrier_air_base, 0);
+    let without_air: Vec<_> = reads
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| ![18, 19, 20].contains(index))
+        .map(|(_, read)| read)
+        .collect();
+    assert_eq!(*memory.reads.borrow(), without_air);
+}
+
+#[test]
+fn model_fallback_heap_text_completes_before_any_counter_observation() {
+    let mut bytes = full_model_fixture();
+    word(&mut bytes, FALLBACK_SPRITE, (BASE + HEAP) as u64);
+    word(&mut bytes, FALLBACK_SPRITE + 16, 17);
+    word(&mut bytes, FALLBACK_SPRITE + 24, 31);
+    bytes[HEAP..HEAP + 17].fill(0xff);
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let memory = Trace::new(&source);
+    assert!(traced_model(&memory).is_ok());
+    let reads = memory.reads.borrow().clone();
+    assert_eq!(
+        reads[13..19],
+        [
+            (BASE + FALLBACK_SPRITE, 32),
+            (BASE + HEAP + 17, 1),
+            (BASE + HEAP, 17),
+            (BASE + DEFINITION_VALID, 1),
+            (BASE + MAXIMUM_STRENGTH, 8),
+            (BASE + CARRIER_AIR_BASE, 8),
+        ]
+    );
+    for (ordinal, reason) in [
+        (13, "string header unreadable"),
+        (14, "string terminator unreadable or invalid"),
+        (15, "string bytes unreadable"),
+    ] {
+        let mut memory = Trace::new(&source);
+        memory.fault = Some((ordinal, 1));
+        assert_eq!(traced_model(&memory), Err(reason));
+        assert_eq!(*memory.reads.borrow(), reads[..=ordinal]);
+    }
+    bytes[HEAP + 17] = 1;
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let memory = Trace::new(&source);
+    assert_eq!(
+        traced_model(&memory),
+        Err("string terminator unreadable or invalid")
+    );
+    assert_eq!(*memory.reads.borrow(), reads[..15]);
+}
+
+#[test]
+fn model_pool_lookahead_preserves_chunks_ties_and_every_positive_duplicate_read() {
+    for count in [0usize, 1, 2, 4, 5, 63, 64, 65, 130] {
+        let mut bytes = full_model_fixture();
+        dword(
+            &mut bytes,
+            EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+            count as u32,
+        );
+        dword(
+            &mut bytes,
+            EQUIPMENT_POOL + cequipment_variant_pool::CAPACITY,
+            count as u32,
+        );
+        for index in 0..count {
+            let (pointer, amount) = match index % 4 {
+                0 => (BASE + VARIANTS[0], i64::MIN),
+                1 => (0, 0),
+                2 => (BASE + VARIANTS[0], i64::MAX),
+                _ => (BASE + VARIANTS[1], i64::MAX),
+            };
+            word(
+                &mut bytes,
+                BANK + index * equipment_entry::STRIDE,
+                pointer as u64,
+            );
+            word(
+                &mut bytes,
+                BANK + index * equipment_entry::STRIDE + 8,
+                amount as u64,
+            );
+        }
+        let source = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let pool = BASE + EQUIPMENT_POOL;
+        let selected = match count {
+            0 | 2 => 0,
+            _ => BASE + VARIANTS[0],
+        };
+        let flags = if count < 3 {
+            0
+        } else if count == 3 {
+            1 << 6
+        } else {
+            (1 << 6) | (1 << 37)
+        };
+        let mut expected = vec![
+            (pool, 8, "equipment pool vtable unreadable or mismatch"),
+            (
+                pool + cequipment_variant_pool::ITEMS,
+                16,
+                "equipment pool array unreadable",
+            ),
+        ];
+        let mut positives = 0;
+        for start in (0..count).step_by(64) {
+            let n = (count - start).min(64);
+            expected.push((
+                BASE + BANK + start * equipment_entry::STRIDE,
+                n * equipment_entry::STRIDE,
+                "equipment model pool entries unreadable",
+            ));
+            for index in start..start + n {
+                if index % 4 < 2 {
+                    continue;
+                }
+                positives += 1;
+                let variant = BASE + VARIANTS[index % 2];
+                expected.extend([
+                    (variant, 16, "ship equipment variant identity unreadable"),
+                    (
+                        variant + cequipment_variant::CLASSIFIER_FLAGS,
+                        8,
+                        "ship equipment flags unreadable",
+                    ),
+                ]);
+            }
+        }
+        let reads: Vec<_> = expected.iter().map(|&(a, n, _)| (a, n)).collect();
+        let memory = Trace::new(&source);
+        assert_eq!(
+            cequipment_variant_pool::model_selection(&memory, 0, pool),
+            Ok((selected, flags))
+        );
+        assert_eq!(*memory.reads.borrow(), reads, "{count} entries");
+        let census = crate::read_census::ReadCensus::new(&source);
+        assert_eq!(
+            cequipment_variant_pool::model_selection(&census, 0, pool),
+            Ok((selected, flags))
+        );
+        assert_eq!(census.calls(), 2 + count.div_ceil(64) + 2 * positives);
+        assert_eq!(census.spans(), 2 + count.div_ceil(64) + 2 * positives);
+        assert_eq!(census.bytes(), 24 + 16 * count + 24 * positives);
+        if count == 65 {
+            for (ordinal, &(_, len, reason)) in expected.iter().enumerate() {
+                let mut memory = Trace::new(&source);
+                memory.fault = Some((ordinal, len / 2));
+                assert_eq!(
+                    cequipment_variant_pool::model_selection(&memory, 0, pool),
+                    Err(reason)
+                );
+                assert_eq!(*memory.reads.borrow(), reads[..=ordinal]);
+            }
+            // A later repeated variant's fresh flags still affect the union.
+            let ordinal = reads
+                .iter()
+                .rposition(|&(a, n)| {
+                    a == BASE + VARIANTS[0] + cequipment_variant::CLASSIFIER_FLAGS && n == 8
+                })
+                .unwrap();
+            let mut memory = Trace::new(&source);
+            memory.change = Some((ordinal, 7, 128));
+            assert_eq!(
+                cequipment_variant_pool::model_selection(&memory, 0, pool),
+                Ok((selected, flags | (1 << 63)))
+            );
+            assert_eq!(*memory.reads.borrow(), reads);
+        }
+    }
+}
