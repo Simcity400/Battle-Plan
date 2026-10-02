@@ -2,6 +2,19 @@
 
 The in-house chart kit every widget draws with. It has no chart dependency: time charts draw on Canvas 2D so dozens of animated widgets stay cheap, and one shared scheduler drives them all. Tables use selectable HTML with native scrolling and viewport windowing. Pure logic is tested with `node --test`.
 
+Sunburst items distinguish an unmeasured part from an unknown total. Set
+`unknownValue` when missing reads prevent telling its amount: the slice and its
+ancestors say “Not known”, with the item's reason, and an unknown view draws no
+slices or percentages. Exact groups remain reachable through the legend.
+`finalUnknown` means the whole amount is unknown; Fill then uses Share and says
+“Whole total not known”. A supplied final weight orders the parts only and is
+never presented as that unknown whole. Construction spending and Production
+spending share this kit without separate drawing or styling.
+For incomplete attribution, `unknownLevels` and `finalUnknownLevels` mark just
+the affected grouped levels at the current and final hours. An
+`authoritativeTotal` can supply an independently established whole;
+it stays exact even when content cannot place every delivery in a domain or type.
+
 | Module | What it does |
 |---|---|
 | [table/](table/) | Shared style-5 HTML tables: one typed column model with arbitrary cells and accessible headers, exact persisted sorting with deterministic key ties, missing-last ordering, cell bars, optional ranks, density-scaled row heights, muted rows, sticky headers, motion/windowing, lazy tooltips, keyboard activation and extensible row menus. The README gives the final API and a Military story. |

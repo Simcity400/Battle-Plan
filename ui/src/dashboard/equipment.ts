@@ -4,6 +4,13 @@
  * stack (`crates/dashboard/src/products/equipment.rs`); nothing here is vanilla. */
 import { entryAt } from './reads.ts';
 import type { Domain, StockVariantName } from '../generated/dashboard';
+import type { OptionField } from './options';
+
+/** Every production widget uses the same refit selection and default. */
+export const REFITS_OPTION: OptionField = {
+  key: 'refits', section: 'options', label: 'Count refitted ships',
+  hint: 'A refit rebuilds a ship the country already had as another design', kind: 'toggle', default: false,
+};
 
 /** The arms, in the game's order. */
 export const DOMAINS: readonly Domain[] = ['land', 'air', 'naval'];

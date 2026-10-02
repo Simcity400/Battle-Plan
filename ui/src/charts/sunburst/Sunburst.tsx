@@ -12,12 +12,12 @@ import { useChartTokens } from '../useChartTokens';
 import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import { amountText, approachColour, arcTargets, foldTree, foldView, groupTree, keyRings, listed, keyedSlice, labelFits, notMeasured, pathTo, shareText, sliceAt, sliceColours,
   sliceTooltip, sunGeometry, sunburstSummary, unknownTotal, walk } from './layout';
-import type { DrawnSlice, SunburstItem, SunburstNode, SunburstText, SunKey } from './layout';
+import type { DrawnSlice, SunburstItem, SunburstNode, SunburstText, SunburstTotal, SunKey } from './layout';
 import type { SunburstSettings } from './sunburstOptions';
 import '../charts.css';
 import './sunburst.css';
 
-export type { SunburstItem, SunburstKey, SunburstNode, SunburstText } from './layout';
+export type { SunburstItem, SunburstKey, SunburstNode, SunburstText, SunburstTotal } from './layout';
 
 export interface SunburstProps {
   /** Names the chart for screen readers. */
@@ -26,6 +26,8 @@ export interface SunburstProps {
   items: readonly SunburstItem[];
   /** The whole, at the centre before zooming in (such as "All construction"). */
   root: { id: string; label: string };
+  /** An independently known whole whose attribution may still be incomplete. */
+  authoritativeTotal?: SunburstTotal;
   /** Which levels of the items' paths show (every level can be switched off). */
   levels?: readonly boolean[];
   text: SunburstText;
@@ -92,9 +94,9 @@ export default function Sunburst(props: SunburstProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [focusPath, setFocusPath] = useState<readonly string[]>([]);
   const { tree, focus } = useMemo(() => {
-    const tree = foldTree(groupTree(props.items, props.root, props.levels));
+    const tree = foldTree(groupTree(props.items, props.root, props.levels, props.authoritativeTotal));
     return { tree, focus: foldView(tree, focusPath) };
-  }, [props.items, props.root, props.levels, focusPath]);
+  }, [props.items, props.root, props.levels, props.authoritativeTotal, focusPath]);
   const latest = useRef({ props, tree, focus });
   latest.current = { props, tree, focus };
   const [legendHover, setLegendHover] = useState<string | null>(null);
@@ -242,9 +244,10 @@ export default function Sunburst(props: SunburstProps) {
       const big = Math.max(tokens.fontSize.body, Math.min(tokens.fontSize.title * 2.2, g.hole * 0.36));
       const lines = centreLines([
         { text: zoomed.label, size: tokens.fontSize.small, weight: 500, colour: tokens.muted, rank: 1 },
-        { text: notMeasured(zoomed) ? 'Not measured' : amountText(zoomed, p.text), size: notMeasured(zoomed) ? tokens.fontSize.body : big, weight: 600, colour: tokens.text, rank: 0 },
-        { text: p.settings.growth === 'fill' && zoomed.final > 0 ? `${p.text.unit} · ${shareText(zoomed.value, zoomed.final)} of the whole` : p.text.unit,
+        { text: zoomed.valueUnknown ? 'Not known' : notMeasured(zoomed) ? 'Not measured' : amountText(zoomed, p.text), size: zoomed.valueUnknown || notMeasured(zoomed) ? tokens.fontSize.body : big, weight: 600, colour: tokens.text, rank: 0 },
+        { text: p.settings.growth === 'fill' && !zoomed.valueUnknown && !zoomed.finalUnknown && zoomed.final > 0 ? `${p.text.unit} · ${shareText(zoomed.value, zoomed.final)} of the whole` : p.text.unit,
           size: tokens.fontSize.small, weight: 400, colour: tokens.muted, rank: 3 },
+        ...(p.settings.growth === 'fill' && zoomed.finalUnknown && !zoomed.valueUnknown ? [{ text: 'Whole total not known', size: tokens.fontSize.small, weight: 400, colour: tokens.muted, rank: 4 }] : []),
         ...(unknownTotal(zoomed) ? [{ text: `${unknownTotal(zoomed)} not counted`, size: tokens.fontSize.small, weight: 400, colour: tokens.muted, rank: 4 }] : []),
         ...(zoomedIn ? [{ text: '↑ back', size: tokens.fontSize.small, weight: 500, colour: pointed === 'centre' ? tokens.text : tokens.muted, rank: 2 }] : []),
       ], Math.max(0, g.hole - 8) * 1.7);
@@ -436,8 +439,8 @@ export default function Sunburst(props: SunburstProps) {
           {icons && (part.icon ? <img className="sunburst-icon" src={part.icon} alt="" />
             : <span className="sunburst-icon is-missing" aria-hidden="true" data-tooltip="No artwork in the recorded content">?</span>)}
           <span className="sunburst-name" data-tooltip={part.label.length > 18 ? part.label : undefined}>{part.label}</span>
-          <b>{notMeasured(part) ? 'Not measured' : part.value > 0 ? amountText(part, text) : 'Not counted'}{unknownTotal(part) ? <sup aria-hidden="true">+?</sup> : null}</b>
-          <small>{part.unmeasured || !(part.value > 0) ? '' : shareText(part.value, focus.value)}</small>
+          <b>{part.valueUnknown ? 'Not known' : notMeasured(part) ? 'Not measured' : part.value > 0 ? amountText(part, text) : 'Not counted'}{unknownTotal(part) ? <sup aria-hidden="true">+?</sup> : null}</b>
+          <small>{part.valueUnknown || focus.valueUnknown || part.unmeasured || !(part.value > 0) ? '' : shareText(part.value, focus.value)}</small>
         </>;
         const uncounted = !part.unmeasured && !(part.value > 0);
         // Pointer and keyboard both show the slice's own tooltip, and the row reads

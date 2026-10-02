@@ -1,5 +1,6 @@
 import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
+import { REFITS_OPTION } from '../../dashboard/equipment.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { GROUPINGS, MEASURES } from './producedData.ts';
 
@@ -18,8 +19,7 @@ export const OPTIONS: readonly OptionField[] = [
     choices: GROUPINGS.map(item => ({ value: item.value, label: item.label })) },
   { key: 'included', section: 'options', label: 'Included types', hint: 'From the campaign’s own content', kind: 'content-set',
     automatic: 'All types', max: MAX_INCLUDED, default: '' },
-  { key: 'refits', section: 'options', label: 'Count refitted ships', hint: 'A refit rebuilds a ship the country already had as another design',
-    kind: 'toggle', default: false },
+  REFITS_OPTION,
   { key: 'split', section: 'options', label: 'Split bars by group', hint: 'One segment per type, variant or arm instead of one total', kind: 'toggle', default: false,
     visibleWhen: options => view(options) === 'race' },
   DATE_OVERLAY_OPTION,

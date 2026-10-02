@@ -8,6 +8,92 @@ const key = (id: string) => ({ id, label: id.toUpperCase() });
 const item = (path: string[], value: number | null, extra: Partial<SunburstItem> = {}): SunburstItem => ({ path: path.map(key), value, ...extra });
 const ROOT = { id: 'all', label: 'All' };
 
+test('an independent whole remains exact when content cannot completely attribute its groups', () => {
+  const parts = [
+    item(['land', 'type', 'design'], 10, { exact: 10n, unknownLevels: [true, true, false], note: 'Unresolved equipment could belong here.' }),
+    item(['unresolved', 'token', 'other'], 5, { exact: 5n }),
+  ];
+  const total = { value: 15, exact: 15n, final: 15 };
+  const root = groupTree(parts, ROOT, [true, true, true], total);
+  const land = root.children[0];
+  assert.equal(root.valueUnknown, false);
+  assert.equal(root.exact, 15n);
+  assert.equal(land.valueUnknown, true);
+  assert.equal(land.children[0].valueUnknown, true);
+  assert.equal(land.children[0].children[0].valueUnknown, false);
+  assert.deepEqual(land.notes, ['Unresolved equipment could belong here.']);
+  assert.equal(arcTargets(root, root, 'share').get(land.id)!.shown, false);
+  assert.equal(arcTargets(root, root, 'share').get(land.children[0].id)!.shown, false);
+  assert.equal(arcTargets(root, root, 'share').get(root.children[1].id)!.shown, true);
+  const designs = groupTree(parts, ROOT, [false, false, true], total);
+  assert.ok(designs.children.every(node => !node.valueUnknown));
+  assert.equal(designs.exact, 15n);
+  const before = [item(['land', 'type', 'design'], 10, { exact: 10n, final: 20, finalUnknownLevels: [true, true, false] })];
+  const grouped = groupTree(before, ROOT, [true, true, true], { value: 10, exact: 10n, final: 20 });
+  assert.equal(grouped.finalUnknown, false);
+  assert.equal(grouped.children[0].finalUnknown, true);
+  assert.equal(sweepOf(grouped.children[0], 'fill'), Math.PI * 2);
+  const exactDesigns = groupTree(before, ROOT, [false, false, true], { value: 10, exact: 10n, final: 20 });
+  assert.equal(exactDesigns.children[0].finalUnknown, false);
+  assert.equal(sweepOf(exactDesigns.children[0], 'fill'), Math.PI);
+});
+
+test('an exact subtree stays drawable after zooming through an unknown whole', () => {
+  const root = groupTree([
+    item(['known', 'design'], 12, { exact: 12n }),
+    item(['unknown', 'design'], null, { unknownValue: true }),
+  ], ROOT, [], { value: null, exact: null, note: 'A read is missing.' });
+  assert.equal(root.valueUnknown, true);
+  assert.equal(root.exact, null);
+  const known = root.children.find(child => child.key === 'known')!;
+  assert.equal(arcTargets(root, known, 'share').get(known.children[0].id)!.shown, true);
+});
+
+test('an unknown total stays unknown beside exact parts, with no guessed shares or slices', () => {
+  const root = groupTree([
+    item(['land', 'type', 'design'], null, { unknownValue: true, note: 'Its delivery cost was not read.', final: 8 }),
+    item(['air', 'type', 'design'], 20, { exact: 20n }),
+  ], ROOT);
+  const text = { format: (value: number) => String(value), unit: 'IC', valueLabel: 'Delivered value' };
+  assert.equal(root.valueUnknown, true);
+  assert.equal(root.exact, null);
+  assert.equal(sweepOf(root, 'share'), 0);
+  assert.ok([...arcTargets(root, root, 'share').values()].every(target => !target.shown));
+  const land = root.children.find(node => node.key === 'land')!;
+  const air = root.children.find(node => node.key === 'air')!;
+  assert.equal(land.valueUnknown, true);
+  assert.equal(listed(land), true);
+  assert.equal(sliceTooltip(land, root, text)[0].rows[0].value, 'Not known');
+  assert.equal(sliceTooltip(land, root, text)[0].note, 'Its delivery cost was not read.');
+  assert.equal(air.valueUnknown, false);
+  assert.equal(sliceTooltip(air, root, text)[0].rows.length, 1);
+  assert.match(sunburstSummary(root, text), /^All: not known: Its delivery cost was not read\./);
+  assert.equal(sweepOf(air, 'share'), Math.PI * 2);
+  const flat = groupTree([
+    item(['a'], 5, { exact: 5n }), item(['b'], null, { unknownValue: true }),
+  ], ROOT, [false]);
+  assert.equal(flat.valueUnknown, true);
+  assert.equal(flat.exact, null);
+});
+
+test('Fill needs a known whole; an unknown denominator uses Share and survives folding', () => {
+  const root = foldTree(groupTree(Array.from({ length: 10 }, (_, index) =>
+    item([String(index)], index + 1, { exact: BigInt(index + 1), final: index + 2, finalUnknown: index === 0, unknownValue: index === 1 })), ROOT));
+  assert.equal(root.finalUnknown, true);
+  assert.equal(root.valueUnknown, true);
+  const other = root.children.at(-1)!;
+  assert.equal(other.finalUnknown, true);
+  assert.equal(other.valueUnknown, true);
+  assert.equal(other.exact, null);
+  const early = groupTree([item(['a'], 10, { exact: 10n, final: 20, finalUnknown: true })], ROOT);
+  assert.equal(early.valueUnknown, false);
+  assert.equal(early.exact, 10n);
+  assert.equal(sweepOf(early, 'fill'), Math.PI * 2);
+  const absent = groupTree([item(['a'], null, { unknownValue: true, present: false, final: 20, finalUnknown: true })], ROOT);
+  assert.equal(absent.valueUnknown, false);
+  assert.equal(absent.finalUnknown, true);
+});
+
 test('a tree adds its items up and keeps missing measurement apart from zero', () => {
   const root = groupTree([
     item(['new', 'civ', 'ruhr'], 30, { final: 50 }),

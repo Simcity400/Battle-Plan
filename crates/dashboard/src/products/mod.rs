@@ -33,6 +33,7 @@ pub mod occupied_states;
 pub mod party_history;
 pub mod politics_content;
 pub mod production_lines;
+pub mod production_spending;
 pub mod research;
 pub mod resource_balance;
 pub mod resources;
@@ -262,6 +263,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<production_lines::ProductionLineDetail>(),
     register::<equipment_stockpile::EquipmentStockpile>(),
     register::<equipment_produced::EquipmentProduced>(),
+    register::<production_spending::ProductionSpending>(),
     register::<trade_flows::TradeFlows>(),
     register::<special_projects::SpecialProjects>(),
     register::<subjects::Subjects>(),

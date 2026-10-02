@@ -22,12 +22,23 @@ export interface SunburstItem {
   /** The same amount exactly, for what is written (`SunburstText.format`), where a
    * number could lose digits: an integer in the widget's own units. */
   exact?: bigint | null;
+  /** The total cannot be told, rather than merely not measured. Unknown parts
+   * make every ancestor's total unknown, even beside exact measured parts. */
+  unknownValue?: boolean;
+  /** Incomplete attribution at particular path levels. The exact leaf can stay
+   * known even when its type or domain cannot have a complete total. */
+  unknownLevels?: readonly boolean[];
   /** False for an item that has not appeared by the moment shown: it adds only its
    * `final`, so the order, the colours and Fill's whole stay those of the end. */
   present?: boolean;
   /** Its whole amount at the end of what is shown: Fill growth sweeps toward it, and
    * slices keep one order while playback grows them. Defaults to `value`. */
   final?: number | null;
+  /** The whole total cannot be told. Any numeric `final` is only an ordering
+   * weight; Fill shows Share until its denominator is known. */
+  finalUnknown?: boolean;
+  /** Incomplete attribution of the whole at particular path levels. */
+  finalUnknownLevels?: readonly boolean[];
   /** Parts of it not counted by the moment shown, as counts by reason. */
   unknown?: Readonly<Record<string, number>>;
   /** Why it is not measured, when `value` is null. */
@@ -37,6 +48,10 @@ export interface SunburstItem {
    * items hold it (a project that repaired and then built, with the kind level off). */
   counted?: readonly string[];
 }
+
+/** An independently established whole, when it does not depend on how its parts
+ * are attributed (such as all deliveries despite an unresolved equipment type). */
+export type SunburstTotal = Pick<SunburstItem, 'value' | 'exact' | 'unknownValue' | 'final' | 'finalUnknown' | 'note'>;
 
 export interface SunburstNode {
   /** Unique in the tree: the keys from the root, so it survives regrouping. */
@@ -51,7 +66,9 @@ export interface SunburstNode {
   value: number;
   /** The same exactly, when every measured item gave one; else null. */
   exact: bigint | null;
+  valueUnknown: boolean;
   final: number;
+  finalUnknown: boolean;
   /** Something in it has appeared by the moment shown. */
   present: boolean;
   /** Nothing in it is measured: it has no slice, and the legend says why. */
@@ -78,12 +95,12 @@ const add = (into: Record<string, number>, from: Readonly<Record<string, number>
 
 /** Whether a node can be drawn at some moment of what is shown: it has a whole
  * amount. Folding and palette slots go by this alone, so they hold all playback long. */
-export const drawable = (node: SunburstNode) => node.final > 0;
+export const drawable = (node: SunburstNode) => node.final > 0 || node.value > 0;
 
 /** Whether a node is listed (legend, read-out): it has appeared, and it has an
  * amount, is not measured, or has parts not counted. A node with no amount yet but
  * with parts not counted stays listed, with its uncertainty, though it has no slice. */
-export const listed = (node: SunburstNode) => node.present && (node.unmeasured || node.partlyUnmeasured || node.value > 0 || unknownTotal(node) > 0);
+export const listed = (node: SunburstNode) => node.present && (node.valueUnknown || node.unmeasured || node.partlyUnmeasured || node.value > 0 || unknownTotal(node) > 0);
 
 /** Whether a node shows "Not measured" rather than an amount: none of it is
  * measured, or part of it is not and the rest has no amount yet. */
@@ -101,33 +118,39 @@ function order(a: SunburstNode, b: SunburstNode): number {
  * false is skipped, so its children join up and items with the same keys below it
  * add together). Amounts and unknown counts add up the tree; a node is unmeasured
  * only when every item in it is. */
-export function groupTree(items: readonly SunburstItem[], root: { id: string; label: string }, shown: readonly boolean[] = []): SunburstNode {
-  const top: SunburstNode = { id: root.id, key: root.id, label: root.label, depth: 0, parent: null, children: [], value: 0, exact: 0n, final: 0, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
+export function groupTree(items: readonly SunburstItem[], root: { id: string; label: string }, shown: readonly boolean[] = [], authoritativeTotal?: SunburstTotal): SunburstNode {
+  const top: SunburstNode = { id: root.id, key: root.id, label: root.label, depth: 0, parent: null, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
   const byId = new Map<string, SunburstNode>([[top.id, top]]);
   const measured = new Set<SunburstNode>();
   const notes = new Map<SunburstNode, Set<string>>();
   for (const item of items) {
-    const keys = item.path.filter((_, level) => shown[level] ?? true);
+    const keys = item.path.map((key, level) => ({ key, level })).filter(({ level }) => shown[level] ?? true);
     let node = top;
     const chain = [top];
-    for (const key of keys) {
+    const uncertain = new Set<SunburstNode>();
+    const finalUncertain = new Set<SunburstNode>();
+    for (const { key, level } of keys) {
       const id = `${node.id}${SEPARATOR}${key.id}`;
       let child = byId.get(id);
       if (!child) {
-        child = { id, key: key.id, label: key.label, icon: key.icon ?? undefined, depth: node.depth + 1, parent: node, children: [], value: 0, exact: 0n, final: 0, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
+        child = { id, key: key.id, label: key.label, icon: key.icon ?? undefined, depth: node.depth + 1, parent: node, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
         byId.set(id, child);
         node.children.push(child);
       }
       node = child;
       chain.push(child);
+      if (item.unknownLevels?.[level] && item.present !== false) for (const link of chain) uncertain.add(link);
+      if (item.finalUnknownLevels?.[level]) for (const link of chain) finalUncertain.add(link);
     }
     const present = item.present !== false;
     const value = present ? item.value : null;
     const final = item.final === undefined ? item.value : item.final;
     for (const link of chain) {
       if (final != null) link.final += final;
+      link.finalUnknown ||= item.finalUnknown === true || finalUncertain.has(link);
       if (!present) continue;
       link.present = true;
+      link.valueUnknown ||= item.unknownValue === true || uncertain.has(link);
       if (value != null) {
         link.value += value;
         link.exact = link.exact != null && item.exact != null ? link.exact + item.exact : null;
@@ -137,7 +160,7 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
       for (const id of item.counted ?? []) link.counted.add(id);
       link.count = link.counted.size;
       if (value == null) link.partlyUnmeasured = true;
-      if (value == null && item.note) {
+      if ((value == null || uncertain.has(link)) && item.note) {
         let seen = notes.get(link);
         if (!seen) { seen = new Set(); notes.set(link, seen); }
         if (!seen.has(item.note)) { seen.add(item.note); link.notes.push(item.note); }
@@ -146,8 +169,18 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
   }
   for (const node of byId.values()) {
     node.unmeasured = node.present && !measured.has(node);
-    if (!measured.has(node)) node.exact = null;
+    if (!measured.has(node) || node.valueUnknown) node.exact = null;
     node.children.sort(order);
+  }
+  if (authoritativeTotal) {
+    top.present = true;
+    top.valueUnknown = authoritativeTotal.value == null || authoritativeTotal.unknownValue === true;
+    top.value = authoritativeTotal.value ?? top.value;
+    top.exact = top.valueUnknown ? null : authoritativeTotal.exact ?? null;
+    top.unmeasured = false;
+    top.final = authoritativeTotal.final ?? top.final;
+    top.finalUnknown = authoritativeTotal.finalUnknown === true || authoritativeTotal.final === null;
+    if (authoritativeTotal.note && !top.notes.includes(authoritativeTotal.note)) top.notes.push(authoritativeTotal.note);
   }
   return top;
 }
@@ -170,10 +203,12 @@ function foldChildren(node: SunburstNode, limit: number, label: string): void {
     const folded = shown.slice(limit - 1);
     const surplus = new Set(folded);
     const other: SunburstNode = { id: `${node.id}${SEPARATOR}\u0001other`, key: '\u0001other', label, depth: node.depth + 1, parent: node,
-      children: folded, value: 0, exact: 0n, final: 0, present: false, unmeasured: false, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0, other: true };
+      children: folded, value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, present: false, unmeasured: false, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0, other: true };
     const notes = new Set<string>();
     for (const child of folded) {
       other.value += child.value; other.final += child.final; add(other.unknown, child.unknown);
+      other.valueUnknown ||= child.valueUnknown;
+      other.finalUnknown ||= child.finalUnknown;
       for (const id of child.counted) other.counted.add(id);
       other.count = other.counted.size;
       other.present ||= child.present;
@@ -185,7 +220,7 @@ function foldChildren(node: SunburstNode, limit: number, label: string): void {
     // the sum of theirs, when each has one), else not measured.
     const measured = folded.filter(child => child.present && !child.unmeasured);
     other.unmeasured = other.present && measured.length === 0;
-    other.exact = measured.length ? measured.reduce<bigint | null>((sum, child) => sum != null && child.exact != null ? sum + child.exact : null, 0n) : null;
+    other.exact = measured.length && !other.valueUnknown ? measured.reduce<bigint | null>((sum, child) => sum != null && child.exact != null ? sum + child.exact : null, 0n) : null;
     node.children = [...node.children.filter(child => !surplus.has(child)), other].sort(order);
   }
 }
@@ -243,6 +278,8 @@ export interface ArcTarget { a0: number; a1: number; ring: number; shown: boolea
 /** How far round the circle the zoomed slice's children reach: all the way (Share),
  * or as far as its amount has come toward its whole amount (Fill). */
 export function sweepOf(focus: SunburstNode, growth: Growth): number {
+  if (focus.valueUnknown) return 0;
+  if (focus.finalUnknown) return TAU;
   if (growth === 'share') return TAU;
   return focus.final > 0 ? TAU * Math.max(0, Math.min(1, focus.value / focus.final)) : focus.value > 0 ? TAU : 0;
 }
@@ -254,11 +291,12 @@ export function arcTargets(root: SunburstNode, focus: SunburstNode, growth: Grow
   const opened = new Set(pathTo(focus));
   const spans = new Map<string, [number, number, boolean]>();
   const part = (node: SunburstNode, a0: number, a1: number, closed = false) => {
-    spans.set(node.id, [a0, a1, closed]);
+    const blocked = closed || (node.valueUnknown && !(opened.has(node) && node !== focus));
+    spans.set(node.id, [a0, a1, blocked]);
     let at = a0;
     for (const child of node.children) {
       const width = node.value > 0 ? (a1 - a0) * child.value / node.value : 0;
-      part(child, at, at + width, closed || (node.other === true && !opened.has(node)));
+      part(child, at, at + width, blocked || (node.other === true && !opened.has(node)));
       at += width;
     }
   };
@@ -423,11 +461,13 @@ export const unknownTotal = (node: SunburstNode) => Object.values(node.unknown).
 export function sliceTooltip(node: SunburstNode, focus: SunburstNode, text: SunburstText): TooltipContent[] {
   const path = pathTo(node).slice(1).map(step => step.label).join(' › ') || node.label;
   const unmeasured = notMeasured(node);
-  const rows: TooltipRow[] = [unmeasured
+  const rows: TooltipRow[] = [node.valueUnknown
+    ? { label: text.valueLabel, value: 'Not known', tone: 'muted' }
+    : unmeasured
     ? { label: text.valueLabel, value: 'Not measured', tone: 'muted' }
     : { label: text.valueLabel, value: `${amountText(node, text)} ${text.unit}`, strong: true }];
-  if (!unmeasured && node.parent) rows.push({ label: `Of ${node.parent.label}`, value: shareText(node.value, node.parent.value) });
-  if (!unmeasured && node.parent && node.parent !== focus && node !== focus) rows.push({ label: `Of ${focus.label}`, value: shareText(node.value, focus.value) });
+  if (!node.valueUnknown && !unmeasured && node.parent && !node.parent.valueUnknown) rows.push({ label: `Of ${node.parent.label}`, value: shareText(node.value, node.parent.value) });
+  if (!node.valueUnknown && !unmeasured && node.parent && node.parent !== focus && node !== focus && !focus.valueUnknown) rows.push({ label: `Of ${focus.label}`, value: shareText(node.value, focus.value) });
   if (text.countLabel && node.count > 0) rows.push({ label: text.countLabel, value: String(node.count) });
   rows.push(...(text.describe?.(node) ?? []));
   const total = unknownTotal(node);
@@ -441,15 +481,16 @@ export function sliceTooltip(node: SunburstNode, focus: SunburstNode, text: Sunb
 }
 
 /** A node's amount as written, exactly when the tree has it. */
-export const amountText = (node: SunburstNode, text: SunburstText) => text.format(node.value, node.exact);
+export const amountText = (node: SunburstNode, text: SunburstText) => node.valueUnknown ? 'Not known' : text.format(node.value, node.exact);
 
 /** How a node is read out: "not measured", else its amount (and share of `whole`),
  * and what is not counted. */
 export function spokenAmount(node: SunburstNode, whole: SunburstNode | null, text: SunburstText): string {
+  if (node.valueUnknown) return `not known${node.notes.length ? `: ${node.notes.join(' ')}` : ''}`;
   if (notMeasured(node)) return 'not measured';
   const unknown = unknownTotal(node);
   if (!(node.value > 0) && unknown) return `nothing counted, ${unknown} not counted`;
-  const amount = `${amountText(node, text)} ${text.unit}${whole ? `, ${shareText(node.value, whole.value)}` : ''}`;
+  const amount = `${amountText(node, text)} ${text.unit}${whole && !whole.valueUnknown ? `, ${shareText(node.value, whole.value)}` : ''}`;
   return unknown ? `${amount}, ${unknown} not counted` : amount;
 }
 

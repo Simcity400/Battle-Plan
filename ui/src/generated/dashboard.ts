@@ -1360,6 +1360,23 @@ reads: Array<number>,
  * The hour each observation began: running totals count from it.
  */
 observations: Array<number>, warnings: Array<string>, };
+export type ProductionSpendingParams = { branchId: string, tag: string, refits: boolean, };
+export type ProductionSpendingUnknown = "missingCost" | "invalidCost" | "outputInexact" | "lostOutput" | "missedPublication" | "recordingGap" | "observationRestarted" | "countryChanged";
+export type ProductionSpendingRun = { firstHour: number, lastHour: number,
+/**
+ * Decimal string of the fixed5 total; null is unknown, never a partial sum.
+ */
+totalRaw: string | null, reason: ProductionSpendingUnknown | null, };
+export type ProductionSpendingLeaf = { variant: string, typeKey: string, name: string | null, domain: Domain | null, names: Array<StockVariantName>, runs: Array<ProductionSpendingRun>, };
+export type ProductionSpendingReply = { branchId: string, tag: string, decimals: number, reads: Array<number>, observations: Array<number>,
+/**
+ * Domain → content archetype → variant is built from these exact leaves.
+ */
+leaves: Array<ProductionSpendingLeaf>,
+/**
+ * The country's total is independent of unresolved type/domain membership.
+ */
+total: Array<ProductionSpendingRun>, warnings: Array<string>, };
 export type TradeFlowParams = { branchId: string,
 /**
  * Only flows with one of these countries as seller or buyer; every flow when null.
@@ -2018,4 +2035,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;
