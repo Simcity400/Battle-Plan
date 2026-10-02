@@ -7,6 +7,7 @@
 
 pub mod artwork;
 pub mod autonomy;
+pub mod construction_log;
 pub mod country_experience;
 pub mod country_factories;
 pub mod country_flags;
@@ -257,6 +258,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<subjects::Subjects>(),
     register::<world_tension::WorldTension>(),
     register::<autonomy::Autonomy>(),
+    register::<construction_log::ConstructionLog>(),
 ];
 
 pub fn find(key: &str) -> Option<&'static Registered> {
@@ -332,6 +334,7 @@ mod tests {
             "BranchParams",
             "TensionReply",
             "AutonomyReply",
+            "ConstructionLogReply",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == name).count(),

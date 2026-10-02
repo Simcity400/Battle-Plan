@@ -1412,6 +1412,175 @@ recorded: Array<HourSpan>,
  * not name: a country without a lane there may be one of them.
  */
 unidentified: Array<HourSpan>, warnings: Array<string>, };
+export type ConstructionLogParams = { branchId: string, };
+export type ProjectKind = "building" | "railway";
+export type EndKind = "finished" | "removed" | "unknown";
+export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "routeUnclear" | "risesUnclear";
+export type ProjectEnd = { kind: EndKind,
+/**
+ * The hour the last level rose, for a finished project.
+ */
+hour: number | null,
+/**
+ * The read that showed the line gone: nothing about the ending shows before it.
+ */
+knownAt: number, unknown: UnknownEnd | null, };
+export type LevelsBuilt = {
+/**
+ * The hour the building rose; null when only the read shows it (railways, and
+ * a building line whose levels could be any of several rises).
+ */
+hour: number | null,
+/**
+ * The read that established it.
+ */
+knownAt: number, count: number,
+/**
+ * Levels repaired (the healthy level rising back to the level), not built.
+ */
+repair: boolean, };
+export type ProjectRun = { firstHour: number, lastHour: number,
+/**
+ * Factories assigned (`active_factories`).
+ */
+factories: number,
+/**
+ * Levels (railway: segments) still to build (`amount`).
+ */
+remaining: number,
+/**
+ * Levels still to repair (`repair_levels`): while above zero the line repairs
+ * (the engine's repair branch), else it builds its remaining new levels.
+ */
+repairLevels: number, };
+export type ConstructionProject = {
+/**
+ * The line's native handle, as a decimal string.
+ */
+id: string, kind: ProjectKind,
+/**
+ * The queue owner's tag at the project's first read.
+ */
+tag: string,
+/**
+ * Index into [`ConstructionLogReply::types`].
+ */
+building: number,
+/**
+ * It had levels to repair at its first read. What it does over time is per
+ * stretch: a run with `repair_levels` above zero repairs, one without builds
+ * its remaining new levels (a line can repair, then build).
+ */
+repair: boolean,
+/**
+ * The target state (a railway: the state of its route's first province).
+ */
+state: number | null,
+/**
+ * A railway: the state of its route's last province.
+ */
+toState: number | null,
+/**
+ * A building built in one province (a naval base, a bunker).
+ */
+province: number | null,
+/**
+ * A railway: provinces on its route, and its levels before and after.
+ */
+routeProvinces: number | null, baseLevel: number | null, targetLevel: number | null,
+/**
+ * Fixed5 cost per level (railway: the whole route), as at the first read.
+ */
+costRaw: string,
+/**
+ * When the game created the line.
+ */
+createdHour: number,
+/**
+ * The first read that lists it: nothing about it shows before.
+ */
+firstRead: number,
+/**
+ * Work before its first read was not recorded; its counts are lower bounds.
+ */
+earlierUnknown: boolean, runs: Array<ProjectRun>,
+/**
+ * Levels (railway: segments) the line completed. A building line's are as many
+ * as the line itself shows it completed (its count or progress fell, or a
+ * daily healthy rise under its repair), dated by the daily rise its progress
+ * could have made; by the read (`hour` null) when more such rises at
+ * different hours could be them. A railway's are dated by the read. A rise at
+ * another hour (a player's decision or event choice) is never among them.
+ */
+built: Array<LevelsBuilt>,
+/**
+ * Levels that cannot be told built or dropped, dated by the read (`hour`
+ * null): what the line's remaining count lost between two reads when some
+ * hour between them was not recorded or another project was building at the
+ * same place, and what it still had to build when it left the queue
+ * unknowably (`EndKind::Unknown`).
+ */
+unaccounted: Array<LevelsBuilt>,
+/**
+ * Extra possible completions of a listed, non-doubtful stretch: levels the
+ * line may have both built and had added, dated by the read (`hour` null).
+ * They widen both counts without changing the certain levels.
+ */
+possible: Array<LevelsBuilt>,
+/**
+ * Levels added to the line between two reads (the player queued more, or new
+ * damage gave it repair work), dated by the read (`hour` null). While it stays
+ * listed: the new levels it completed beyond how far its count fell, and the
+ * damage its building took (or the rise of its repair count net of its
+ * repairs, if more). Once it left: the damage before its last claimed rise, or
+ * its repairs beyond what it had left if more; a new level is never added
+ * then. Only the line's own completions are `built`, so a building raised by
+ * something else adds nothing.
+ */
+added: Array<LevelsBuilt>,
+/**
+ * Null while it is in the queue at the branch's last read.
+ */
+end: ProjectEnd | null, };
+export type BuildingInfo = {
+/**
+ * The recorded lexer id of the type.
+ */
+id: number,
+/**
+ * Its script name; null when the recorded dictionary lacks it.
+ */
+token: string | null, name: string | null,
+/**
+ * A PNG data URL: the construction queue's picture of it.
+ */
+icon: string | null, };
+export type StateName = { id: number, name: string | null, };
+export type ConstructionLogReply = { branchId: string,
+/**
+ * Units per factory output point of `cost_raw`.
+ */
+costScale: number,
+/**
+ * Hours the building queue was read, ascending.
+ */
+reads: Array<number>,
+/**
+ * Hours the railway queue was read, ascending.
+ */
+railwayReads: Array<number>, types: Array<BuildingInfo>,
+/**
+ * The construction queue's repair marker.
+ */
+repairIcon: string | null,
+/**
+ * Names of the states the projects name, by state id.
+ */
+states: Array<StateName>,
+/**
+ * In order of first read, then handle.
+ */
+projects: Array<ConstructionProject>, warnings: Array<string>, };
 /** Refusals for want of room: a message starting with one may be tried again. */
 export const CAPACITY_REACHED = "Dashboard request capacity reached";
 export const TOO_MANY_SOURCES = "Too many open dashboard source bindings";
@@ -1421,4 +1590,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "subjects", "autonomy"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "subjects", "autonomy", "construction-log"] as const;

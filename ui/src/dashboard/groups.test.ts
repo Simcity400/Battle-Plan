@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply } from '../generated/dashboard';
-import { groupLabel, groupMembers, groupRuns, groupUnobserved, membershipChanges, worldFilter } from './groups.ts';
+import { countryMatch, groupLabel, groupMembers, groupRuns, groupUnobserved, membershipChanges, worldFilter } from './groups.ts';
 import { createWidget } from './model.ts';
 import { parseTemplate } from './storage.ts';
 import { defaultTemplate } from './model.ts';
@@ -112,8 +112,33 @@ test('a faction is unobserved where no faction was read or its own roster was in
   assert.deepEqual(groupUnobserved(reply, group).map(span => span.firstHour), [50, 190]);
 });
 
+test('a log row passes the country choice at its own hour, and all countries pass everything', () => {
+  const all = countryMatch({ kind: 'all' }, [], undefined, 200);
+  assert.equal(all.ready && all.matches('XYZ', 1), true);
+  const chosen = countryMatch({ kind: 'tags', tags: ['GER'] }, ['ENG'], undefined, 200);
+  assert.deepEqual([chosen.matches('GER', 1), chosen.matches('ENG', 1)], [true, false]);
+  assert.equal(countryMatch({ kind: 'selected' }, ['ENG'], undefined, 200).matches('ENG', 1), true);
+  // A mod's tag may hold a space: it stays one tag.
+  const spaced = countryMatch({ kind: 'selected' }, ['A B'], undefined, 200);
+  assert.deepEqual([spaced.matches('A B', 1), spaced.matches('A', 1), spaced.matches('B', 1)], [true, false, false]);
+  assert.equal(countryMatch({ kind: 'selected' }, [], undefined, 200).reason, 'Choose a country in the widget settings.');
+  const axis = { kind: 'group', group: { type: 'faction', id: '5' }, aggregate: false } as const;
+  assert.equal(countryMatch({ ...axis, membership: 'hour' }, [], undefined, 200).ready, false);
+  const atHour = countryMatch({ ...axis, membership: 'hour' }, [], REPLY, 200);
+  // Italy's rows pass only while it was a member; none pass where membership was not recorded.
+  assert.deepEqual([atHour.matches('ITA', 150), atHour.matches('ITA', 175), atHour.matches('GER', 195), atHour.matches('GER', 150)], [true, false, false, true]);
+  const atEnd = countryMatch({ ...axis, membership: 'end' }, [], REPLY, 180);
+  assert.deepEqual([atEnd.matches('ITA', 150), atEnd.matches('HUN', 100)], [false, true]);
+  // Factions were not recorded at the branch's last hour: its members then are unknown, not none.
+  const unknownEnd = countryMatch({ ...axis, membership: 'end' }, [], REPLY, 200);
+  assert.deepEqual([unknownEnd.matches('GER', 150), unknownEnd.reason], [false, 'This group’s members were not recorded at the end of this campaign branch.']);
+  assert.equal(countryMatch({ ...axis, membership: 'ever' }, [], REPLY, 200).matches('ITA', 100), true);
+  assert.equal(countryMatch({ ...axis, group: { type: 'faction', id: '99' }, membership: 'ever' }, [], REPLY, 200).reason, 'This group is not in this campaign branch.');
+});
+
 test('a widget about the whole world shows all countries by default, narrowed by chosen ones or a group', () => {
   assert.deepEqual(createWidget('factions', 'main').countries, { kind: 'all' });
+  assert.deepEqual(createWidget('construction-log', 'main').countries, { kind: 'all' });
   assert.deepEqual(createWidget('political-power', 'main').countries, { kind: 'selected' });
   const filter = (selection: Parameters<typeof worldFilter>[0], fallback: string[] = [], reply: CountryGroupReply | undefined = REPLY, hour = 150) =>
     worldFilter(selection, fallback, reply, hour, 200);

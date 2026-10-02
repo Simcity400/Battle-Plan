@@ -739,24 +739,29 @@ pub(crate) mod tests {
             std::fs::write(&file, text).unwrap();
         }
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        (layers_catalogue(layers), Folder(root))
+    }
+
+    /// The same catalogue seam for fixtures with several content layers.
+    pub(crate) fn layers_catalogue(layers: ResolvedLayers) -> Catalogue {
         let localisation = installed_content::localisation::read(&layers, "english").unwrap();
         let sprites = installed_content::gfx::read(&layers).unwrap();
-        let catalogue = Catalogue {
+        let guis = installed_content::gui::native::read_layers(&layers).unwrap();
+        Catalogue {
             content: Arc::new(ResolvedContent {
                 layers,
                 stats: Default::default(),
             }),
             localisation: Arc::new(localisation),
             sprites,
-            guis: installed_content::gui::native::Guis { files: Vec::new() },
+            guis,
             gui_decode: Ok(Default::default()),
             verification: Vec::new(),
             warnings: Vec::new(),
             recorded_language: "english".into(),
             refused: Mutex::default(),
             scripted: OnceLock::new(),
-        };
-        (catalogue, Folder(root))
+        }
     }
 
     /// Stored controls: colour codes and inline images leave the plain text,

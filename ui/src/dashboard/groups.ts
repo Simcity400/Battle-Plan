@@ -148,6 +148,29 @@ export function worldFilter(selection: CountrySelection, fallback: readonly stri
   selection.membership === 'hour' ? hour : lastHour, selection.membership === 'ever' ? runs : undefined);
 }
 
+/** Whether a dated row of a country passes a widget's country choice, for logs, whose
+ * rows are each about one country at one hour: every country for "all", the chosen
+ * countries, or a group's members under its rule, at the row's own hour, else as
+ * `worldFilter` counts them at the branch end or ever. `ready` is false while the
+ * group history loads; a row whose group membership at its hour was not recorded
+ * does not pass. */
+export interface CountryMatch { ready: boolean; matches: (tag: string, hour: number) => boolean; reason: string | null }
+
+export function countryMatch(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number): CountryMatch {
+  if (selection.kind === 'group' && !groups) return { ready: false, matches: () => false, reason: null };
+  if (selection.kind === 'group' && selection.membership === 'hour') {
+    const runs = groupRuns(groups!, selection.group);
+    if (!runs) return { ready: true, matches: () => false, reason: 'This group is not in this campaign branch.' };
+    const unobserved = groupUnobserved(groups!, selection.group);
+    const byTag = new Map<string, MembershipRun[]>();
+    for (const run of runs) byTag.set(run.tag, [...(byTag.get(run.tag) ?? []), run]);
+    const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
+    return { ready: true, matches: (tag, hour) => !hidden(hour) && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), reason: null };
+  }
+  const { tags, reason } = worldFilter(selection, fallback, groups, lastHour, lastHour);
+  return { ready: true, matches: tag => tags === null || tags.has(tag), reason };
+}
+
 export interface ResolvedCountries {
   tags: string[];
   /** For a group counted at each hour: each country's membership runs. */

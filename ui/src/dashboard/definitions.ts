@@ -80,7 +80,8 @@ export interface WidgetMeta {
   /** How many countries the widget shows at once (1 when absent); whether it ranks
    * countries by its value (offering a top-N group) and can sum a group into one series.
    * `all`: the widget shows the whole world by default (every faction, every
-   * overlord), and chosen countries or a group narrow it. */
+   * overlord, every country's construction), and chosen countries or a group
+   * narrow it. */
   countries?: { max: number; ranked?: boolean; aggregate?: boolean; all?: boolean };
   /** The countries a new or reset widget shows (the dashboard's country when absent),
    * such as a race's top 10 of all countries. */
