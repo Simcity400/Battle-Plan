@@ -2,8 +2,39 @@
 //!
 //! `BuildRegionalAircraftScenarios@14122EFD0` scans each region's
 //! `CStrategicAir+0x98` mission vector in order. The sorted active-region IDs
-//! at +0xC8 index the nonempty vectors, and `_AllActiveMissions` at +0xB0
-//! counts the same registrations, so a missed region cannot pass as empty.
+//! at +0xC8 also include carrier combat regions from +0x140: a listed region
+//! can have no ordinary registrations. `_AllActiveMissions` at +0xB0 counts
+//! only the ordinary registrations, so a missed region cannot pass as empty.
+//!
+//! Native writer audit (a729, virtual addresses): RegisterMission@140C4E360
+//! appends to +0x98[region] and +0xB0 and sorted-inserts +0xC8;
+//! UnregisterMission@140C4E570 removes both registrations and erases +0xC8
+//! when the ordinary regional count reaches zero. CAirMission::SetRegion
+//! @140F70850 calls these writers for the old and new regions.
+//! Mission load @140F6FBC0 uses SetRegion; wing teardown @140F45430 calls
+//! the mission destructor @140F60460, which uses SetRegion(NULL).
+//! TransferToBase @140C55170 changes pools then refreshes the mission through
+//! @140F4F220; incompatible targets are unassigned through SetRegion(NULL).
+//!
+//! The carrier pass @140C56D40 is a separate writer: it clears +0x140's
+//! regional counts (@140C56D70), then visits carrier hosts in naval combat.
+//! For a wing with no assigned region or a zero mission mask (@140C56EA2),
+//! it appends the embedded mission to +0x140[combat region] (@140C56F06)
+//! and inserts that region into +0xC8 (@140C56F68-140C56FF2), without
+//! writing +0x98 or +0xB0. It does not clear +0xC8 first, so a special-only
+//! region can remain listed after its carrier combat ends. This is a stable
+//! empty ordinary vector, not evidence of a missed registration.
+//!
+//! PtrVector::PushBack_stride8@140120090 also temporarily zeroes a vector's
+//! count while reallocating. Capture at HourlyUpdate@1401DCEF0 entry joins
+//! every native read before the trampoline; it does not retry or wait out a
+//! writer. Invalid headers, unreadable entries and count mismatches still
+//! refuse the census; dependents must not treat that failure as absence.
+//! The strategic-air hourly pass @140C485F0 calls the carrier refresh through
+//! @140C368F0 / @140C57F80. The tag command @14113E4B0 changes the local
+//! player through @1401EE470 (+0x520/+0x524), not these registries: SetRegion
+//! resolves ownership through the wing's pool, and this census visits every
+//! country air object independently of the local player.
 
 use crate::{
     Memory, ccountry,
@@ -66,6 +97,15 @@ pub struct Row {
     pub ordinal: u32,
 }
 
+/// The first failed country's canonical slot and, when known, region ID.
+/// Acquisition retains only numbers; conversion can name the failure without
+/// allocating on the capture path or changing the replay row format.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FailureContext {
+    pub country_slot: Option<u32>,
+    pub region: Option<u32>,
+}
+
 const BATCH: usize = 64;
 /// +0x98 outer header through the +0xC8 region header, one guarded copy.
 const HEADERS: usize =
@@ -95,6 +135,27 @@ pub fn walk(
     wings: &[WingIdentity],
     output: &mut [Row],
 ) -> Outcome {
+    walk_with_diagnostic(
+        memory,
+        base,
+        game_state,
+        wings,
+        output,
+        &mut FailureContext::default(),
+    )
+}
+
+/// The same census, retaining the first failure's location for diagnostics.
+/// A complete or capacity-truncated walk leaves no failure context.
+pub fn walk_with_diagnostic(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    wings: &[WingIdentity],
+    output: &mut [Row],
+    failure: &mut FailureContext,
+) -> Outcome {
+    *failure = FailureContext::default();
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let mut len = 0;
@@ -109,15 +170,16 @@ pub fn walk(
                 *pointer = address;
             }
             let mut headers = [[0_u8; HEADERS]; BATCH];
-            if memory.copy_records(
+            let copied = memory.copy_records(
                 RecordSources::Pointers(&pointers[..roots.len()]),
                 &HEADER_LAYOUT,
                 headers
                     .as_flattened_mut()
                     .get_mut(..roots.len() * HEADERS)
                     .unwrap(),
-            ) != roots.len()
-            {
+            );
+            if copied != roots.len() {
+                failure.country_slot = roots.get(copied).map(|&(_, slot)| slot);
                 return Err("regional mission headers unreadable");
             }
             for (bytes, &(_, canonical_slot)) in headers.iter().zip(roots) {
@@ -130,7 +192,9 @@ pub fn walk(
                     output,
                     &mut len,
                     &mut unread_rows,
+                    failure,
                 )?;
+                *failure = FailureContext::default();
             }
             Ok(())
         };
@@ -164,7 +228,9 @@ fn root_missions(
     output: &mut [Row],
     len: &mut usize,
     unread_rows: &mut u32,
+    failure: &mut FailureContext,
 ) -> Result<(), &'static str> {
+    failure.country_slot = Some(canonical_slot);
     let (Some(outer), Some(all), Some(regions)) = (
         header(
             bytes,
@@ -180,6 +246,7 @@ fn root_missions(
     let mut ids = [0_u32; BATCH];
     let mut previous = None;
     for first in (0..regions.count).step_by(BATCH) {
+        failure.region = None;
         let count = (regions.count - first).min(BATCH as u32);
         crate::cpdx_array::copy_u32s(
             memory,
@@ -188,6 +255,7 @@ fn root_missions(
             "active mission regions unreadable",
         )?;
         for &region in &ids[..count as usize] {
+            failure.region = Some(region);
             if previous.is_some_and(|last| region <= last) {
                 return Err("active mission regions out of order");
             }
@@ -195,8 +263,7 @@ fn root_missions(
             let missions = outer
                 .element(region, crate::cpdx_array::STRIDE)
                 .and_then(|at| Array::read(memory, at, 8))
-                .filter(|missions| missions.count != 0)
-                .ok_or("active mission region vector missing, invalid or empty")?;
+                .ok_or("active mission region vector missing or invalid")?;
             registered = registered
                 .checked_add(missions.count)
                 .ok_or("regional mission count overflow")?;
@@ -236,6 +303,7 @@ fn root_missions(
             }
         }
     }
+    failure.region = None;
     if registered != all.count {
         return Err("regional and all-active mission counts differ");
     }
@@ -357,6 +425,145 @@ mod tests {
                 unread_rows: 1
             }
         );
+    }
+
+    #[test]
+    fn a_listed_empty_carrier_region_preserves_ordinary_registrations() {
+        let (mut bytes, wings) = fixture();
+        // Carrier combat lists region 2, whose ordinary vector is empty.
+        // Exercise both a never-allocated vector and retained empty storage.
+        array(
+            &mut bytes,
+            OWNER + cstrategic_air::ACTIVE_MISSION_REGIONS,
+            IDS,
+            2,
+        );
+        put32(&mut bytes, IDS, 2);
+        put32(&mut bytes, IDS + 4, 5);
+        for data in [0, MEMBERS + 0x100] {
+            array(&mut bytes, REGIONS + 2 * 0x18, data, 0);
+            if data != 0 {
+                put32(&mut bytes, REGIONS + 2 * 0x18 + 8, 2);
+            }
+            let mut rows = [Row::default(); 2];
+            assert_eq!(capture(&bytes, &wings, &mut rows), Outcome::Rows { len: 2 });
+            assert_eq!(
+                rows[0],
+                Row {
+                    wing: 202,
+                    ordinal: 0
+                }
+            );
+            assert_eq!(
+                rows[1],
+                Row {
+                    wing: 101,
+                    ordinal: 1
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_carrier_only_region_has_zero_ordinary_registrations() {
+        let (mut bytes, mut wings) = fixture();
+        for wing in &mut wings {
+            wing.region = None;
+        }
+        array(&mut bytes, REGIONS + 5 * 0x18, 0, 0);
+        array(
+            &mut bytes,
+            OWNER + cstrategic_air::ALL_ACTIVE_MISSIONS,
+            0,
+            0,
+        );
+        let mut rows = [Row::default(); 2];
+        assert_eq!(capture(&bytes, &wings, &mut rows), Outcome::Rows { len: 0 });
+        // An empty vector cannot hide registrations counted by all-active.
+        array(
+            &mut bytes,
+            OWNER + cstrategic_air::ALL_ACTIVE_MISSIONS,
+            ALL,
+            2,
+        );
+        assert_eq!(
+            capture(&bytes, &wings, &mut rows),
+            Outcome::Unavailable {
+                reason: "regional and all-active mission counts differ"
+            }
+        );
+    }
+
+    #[test]
+    fn removing_the_last_ordinary_region_leaves_a_complete_empty_census() {
+        let (mut bytes, mut wings) = fixture();
+        for wing in &mut wings {
+            wing.region = None;
+        }
+        // UnregisterMission removes the region after its last registration.
+        array(&mut bytes, REGIONS + 5 * 0x18, MEMBERS, 0);
+        put32(&mut bytes, REGIONS + 5 * 0x18 + 8, 2);
+        array(
+            &mut bytes,
+            OWNER + cstrategic_air::ACTIVE_MISSION_REGIONS,
+            IDS,
+            0,
+        );
+        array(
+            &mut bytes,
+            OWNER + cstrategic_air::ALL_ACTIVE_MISSIONS,
+            ALL,
+            0,
+        );
+        assert_eq!(capture(&bytes, &wings, &mut []), Outcome::Rows { len: 0 });
+    }
+
+    #[test]
+    fn invalid_region_headers_keep_the_country_and_region_in_the_diagnostic() {
+        let (mut bytes, wings) = fixture();
+        let mut rows = [Row::default(); 2];
+        let mut failure = FailureContext::default();
+        // The region exists, but its count exceeds its capacity.
+        put32(&mut bytes, REGIONS + 5 * 0x18 + 8, 1);
+        assert_eq!(
+            walk_with_diagnostic(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                GS,
+                &wings,
+                &mut rows,
+                &mut failure,
+            ),
+            Outcome::Unavailable {
+                reason: "active mission region vector missing or invalid"
+            }
+        );
+        assert_eq!(
+            failure,
+            FailureContext {
+                country_slot: Some(1),
+                region: Some(5)
+            }
+        );
+        put32(&mut bytes, REGIONS + 5 * 0x18 + 8, 2);
+        assert_eq!(
+            walk_with_diagnostic(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                GS,
+                &wings,
+                &mut rows,
+                &mut failure,
+            ),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(failure, FailureContext::default());
     }
 
     #[test]

@@ -149,6 +149,7 @@ pub struct Captured {
     /// The owned wing job installed the census; the typed visitor did not run.
     identities_owned: bool,
     registrations: CaptureRows<cair_regional_mission::Row>,
+    registration_failure: cair_regional_mission::FailureContext,
     /// Base handles to probe: registered pool bases, unregistered training
     /// wings' pool bases and every transfer base.
     handles: Vec<u64>,
@@ -267,6 +268,7 @@ impl Captured {
             identity_outcome: NO_WING_SOURCE,
             identities_owned: false,
             registrations: CaptureRows::new(capacity.rows[7]),
+            registration_failure: Default::default(),
             handles: vec![0; capacity.wings * 2],
             references: CaptureRows::new(capacity.rows[8]),
             sorties: Sorties::with_capacities(&capacity.sorties),
@@ -307,6 +309,7 @@ impl Captured {
 
     fn reset_missions(&mut self) {
         self.registrations.reset();
+        self.registration_failure = Default::default();
         self.patrol_combats.reset();
         self.missions = None;
         self.reset_joins();
@@ -393,6 +396,7 @@ impl Captured {
             self.identity_outcome = require_parent(parent, self.identity_outcome);
         }
         self.registrations.reset();
+        self.registration_failure = Default::default();
         self.patrol_combats.reset();
         let begin = qpc();
         self.registrations.outcome = if !self.active[7] {
@@ -402,12 +406,13 @@ impl Captured {
             let identities = &mut self.identities.first[..len];
             identities.sort_unstable_by_key(|wing| wing.mission_pointer);
             bounded(
-                cair_regional_mission::walk(
+                cair_regional_mission::walk_with_diagnostic(
                     memory,
                     base,
                     game_state,
                     identities,
                     &mut self.registrations.rows,
+                    &mut self.registration_failure,
                 ),
                 self.registrations.rows.len(),
             )
@@ -470,6 +475,7 @@ impl Captured {
     }
 
     fn fail_missions_rows(&mut self, reason: &'static str) {
+        self.registration_failure = Default::default();
         self.registrations.fail(failed(self.active[7], reason));
         self.patrol_combats.fail(failed(self.active[15], reason));
     }
@@ -834,12 +840,7 @@ impl Captured {
                     channels: r.channels,
                 }
             }),
-            table::<tables::AirRegionalMissions, _>(outcomes[7], &self.registrations.rows, |r| {
-                rows::AirRegionalMissionRow {
-                    wing: r.wing,
-                    ordinal: r.ordinal,
-                }
-            }),
+            self.registration_table(),
             air_reference_witness::table_view(
                 outcomes[8],
                 &self.references.rows[..outcomes[8].len().min(self.references.rows.len())],
@@ -868,6 +869,26 @@ impl Captured {
                 }
             }),
         ]
+    }
+
+    fn registration_table(&self) -> TableView {
+        if let Outcome::Unavailable { reason } = self.registrations.outcome
+            && let Some(country) = self.registration_failure.country_slot
+        {
+            let reason = match self.registration_failure.region {
+                Some(region) => format!("{reason} (country slot {country}, region {region})"),
+                None => format!("{reason} (country slot {country})"),
+            };
+            return unavailable(&reason);
+        }
+        table::<tables::AirRegionalMissions, _>(
+            self.registrations.outcome,
+            &self.registrations.rows,
+            |r| rows::AirRegionalMissionRow {
+                wing: r.wing,
+                ordinal: r.ordinal,
+            },
+        )
     }
 
     fn ace_table(&self, outcome: Outcome) -> TableView {

@@ -66,6 +66,37 @@ fn patrol_combats_truncate_and_refuse_short_scratch() {
 use super::*;
 
 #[test]
+fn registration_failures_name_the_country_and_region_and_do_not_survive_reset() {
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    let reason = "active mission region vector missing or invalid";
+    captured.registrations.outcome = Outcome::Unavailable { reason };
+    captured.registration_failure = cair_regional_mission::FailureContext {
+        country_slot: Some(17),
+        region: Some(9),
+    };
+    assert!(matches!(
+        captured.registration_table(),
+        TableView::Unavailable { reason }
+            if reason == "active mission region vector missing or invalid (country slot 17, region 9)"
+    ));
+    captured.registration_failure.region = None;
+    assert!(matches!(
+        captured.registration_table(),
+        TableView::Unavailable { reason }
+            if reason == "active mission region vector missing or invalid (country slot 17)"
+    ));
+    captured.fail_missions_rows("air mission job failed");
+    assert!(matches!(
+        captured.registration_table(),
+        TableView::Unavailable { reason } if reason == "air mission job failed"
+    ));
+    assert_eq!(captured.registration_failure, Default::default());
+    captured.registration_failure.country_slot = Some(17);
+    captured.reset_missions();
+    assert_eq!(captured.registration_failure, Default::default());
+}
+
+#[test]
 fn air_bases_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
     use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
     static LOCAL: Tracker = Tracker::new();
