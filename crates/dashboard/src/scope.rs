@@ -395,12 +395,6 @@ impl RecordedScopes {
         self.aliases.get(tag)
     }
 
-    /// Why whether a name is a tag alias is unknown: a file of the alias
-    /// database whose reading stops short.
-    pub fn aliases_unknown(&self) -> Option<String> {
-        (!self.aliases.unknown.is_empty()).then(|| self.aliases.unknown.join("; "))
-    }
-
     /// Every country's canonical slot, in slot order (the game state's
     /// country array, CGameState+0x310), or why the recording does not hold
     /// them all.
