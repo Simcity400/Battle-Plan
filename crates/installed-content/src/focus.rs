@@ -75,7 +75,7 @@ pub fn parse(
     input: &[u8],
     database: Database,
     names: &KeyNames,
-) -> io::Result<BTreeMap<String, FocusDefinition>> {
+) -> io::Result<(BTreeMap<String, FocusDefinition>, Vec<String>)> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -159,7 +159,7 @@ pub fn parse(
                     Some(b"completion_reward_joint_originator" | b"completion_reward_joint_member"),
                 )
                 | (Continuous, Some(b"select_effect" | b"cancel_effect" | b"daily_reward")) => {
-                    Shape::ByKey
+                    Shape::Effect
                 }
                 (Continuous, Some(b"modifier")) => {
                     Shape::Object(Modifier(modifiers::Node::Modifier))
@@ -367,7 +367,10 @@ pub fn parse(
         .filter(|item| roots.iter().any(|root| item.keyword_is(root)))
         .collect();
     collect(&own, &mut result)?;
-    Ok(result)
+    Ok((
+        result,
+        document.misreads.iter().map(ToString::to_string).collect(),
+    ))
 }
 
 /// `NDefines.NFocus.FOCUS_POINT_DAYS` from the evaluated defines. Content
@@ -407,7 +410,10 @@ pub fn read(
             Database::Continuous
         };
         match parse(&layers.read(&path)?, database, &names) {
-            Ok(definitions) => result.extend(definitions),
+            Ok((definitions, notes)) => {
+                result.extend(definitions);
+                warnings.extend(notes.into_iter().map(|note| format!("{path}: {note}")));
+            }
             Err(error) => {
                 warnings.push(format!("Focus definitions unavailable in {path}: {error}"))
             }
@@ -419,6 +425,42 @@ pub fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(
+        input: &[u8],
+        database: Database,
+        names: &KeyNames,
+    ) -> io::Result<BTreeMap<String, FocusDefinition>> {
+        super::parse(input, database, names).map(|(definitions, _)| definitions)
+    }
+
+    #[test]
+    fn layer_warnings_name_and_count_deferred_effect_readers() -> io::Result<()> {
+        let root = std::env::temp_dir().join(format!("focus-effect-gap-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("common/national_focus"))?;
+        std::fs::write(
+            root.join("common/national_focus/gap.txt"),
+            b"focus_tree = {
+focus = { id = test completion_reward = {
+set_capital = { state = 1 } set_capital = { state = 2 }
+} } }",
+        )?;
+        let layers = ResolvedLayers::from_folders(&[(&root, &[])])?;
+        let (definitions, warnings) = read(&layers)?;
+        assert!(definitions.contains_key("test"));
+        let warning = warnings
+            .iter()
+            .find(|warning| warning.contains("Deferred effect `set_capital`"))
+            .unwrap();
+        assert!(
+            warning.contains("common/national_focus/gap.txt: line 3:"),
+            "{warning}"
+        );
+        assert!(warning.contains("key reader 0x1403B4F40"), "{warning}");
+        assert!(warning.contains("count: 2"), "{warning}");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
     #[test]
     fn native_focus_variables_keywords_and_scripted_key_dispatch() {
         let defs = parse(

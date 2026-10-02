@@ -49,6 +49,9 @@ pub struct KeyNames {
     /// The scripted-trigger names, folded ([`crate::scripted_triggers`]'s
     /// name pass).
     pub scripted: BTreeSet<Vec<u8>>,
+    /// Scripted-effect names with +0x58 set, loaded fifth in 14018B610,
+    /// after idea tags (14018CF67 -> 140193190).
+    pub scripted_effects: BTreeSet<Vec<u8>>,
     /// The building, resource and ideology names loaded by then.
     pub counts: CountTriggerNames,
     /// The country tags, exactly as declared (FindCountryIndexByTag
@@ -161,6 +164,7 @@ impl KeyNames {
         let (resources, _) = resources::read(layers)?;
         let mut names = Self {
             scripted: crate::scripted_triggers::names(layers)?,
+            scripted_effects: crate::scripted_effects::names(layers)?,
             counts: CountTriggerNames::new(
                 &buildings::Buildings::default(),
                 &ideologies,
@@ -200,6 +204,7 @@ impl KeyNames {
         let mut names = self.clone();
         match point {
             Point::IdeaTags => {
+                names.scripted_effects.clear();
                 names.aliases.clear();
                 names.characters.clear();
                 names.counts = CountTriggerNames::default();
@@ -216,7 +221,7 @@ impl KeyNames {
 
     /// Where the scope step (14146DB00 -> 14146DAA0) ends for a key's text
     /// over these names.
-    fn scope(&self, text: &[u8], quoted: bool) -> ScopeStep {
+    pub(crate) fn scope(&self, text: &[u8], quoted: bool) -> ScopeStep {
         let Ok(text) = std::str::from_utf8(text) else {
             return ScopeStep::Unknown(format!(
                 "key {} is not UTF-8, so whether it is a scope (14146DB00) is not read",

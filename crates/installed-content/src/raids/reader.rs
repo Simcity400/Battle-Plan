@@ -311,7 +311,7 @@ pub(super) fn document(
                 Shape::Object(Outcome)
             }
             (Outcome, Some(b"division_effects" | b"actor_effects" | b"victim_effects")) => {
-                Shape::ByKey
+                Shape::Effect
             } // 141577C10
             (Outcome, Some(b"custom_sound" | b"destroy_additional_equipment")) => Shape::One,
             (Outcome, Some(b"visual_effect")) => Shape::Object(Visual),

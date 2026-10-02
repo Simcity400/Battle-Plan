@@ -124,6 +124,8 @@ fn classify(message: &str, default: Kind) -> Kind {
         Kind::ParseFailure
     } else if UNSETTLED.iter().any(|words| message.contains(words)) {
         Kind::Unsettled
+    } else if message.contains("Deferred effect `") {
+        Kind::Unsupported
     } else if MISREAD.iter().any(|words| message.contains(words)) {
         Kind::Misread
     } else if message.contains("refused") || message.contains("not registered") {
@@ -523,7 +525,9 @@ fn interface(
         }
         None => log.not_run(&["weather", "particles.emitters"], "particles"),
     }
-    log.read("abilities", || installed_content::abilities::read(layers));
+    if let Some(abilities) = log.read("abilities", || installed_content::abilities::read(layers)) {
+        log.notes("abilities", Kind::Misread, &abilities.warnings);
+    }
     log.read("ambient", || installed_content::ambient::read(layers));
     interface
 }
@@ -820,7 +824,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         log.notes("names", Kind::Unsettled, &names.unknown);
     }
     if let Some((_, warnings)) = log.read("focus", || installed_content::focus::read(layers)) {
-        log.notes("focus", Kind::Refused, &warnings);
+        log.notes("focus", Kind::Misread, &warnings);
     }
     if let Some(None) = log.read("focus.point_days", || installed_content::focus::point_days(layers)) {
         log.note(
@@ -832,7 +836,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some((_, warnings)) = log.read("technology", || {
         installed_content::technology::read_equipment(layers)
     }) {
-        log.notes("technology", Kind::Refused, &warnings);
+        log.notes("technology", Kind::Misread, &warnings);
     }
 }
 
@@ -1196,6 +1200,20 @@ fn viewer_map_assets(
 mod tests {
     use super::*;
     use installed_content::raids::RaidType;
+
+    #[test]
+    fn counted_effect_warnings_reach_the_corpus_report() {
+        let warning = "common/national_focus/gap.txt: line 3: Deferred effect `set_capital`: value reader 0x140534280, key reader 0x1403B4F40; by-key reading retained (count: 2)".to_owned();
+        let mut log = Log::default();
+        log.notes("focus", Kind::Misread, &[warning]);
+        assert_eq!(log.diagnostics.len(), 1);
+        let note = &log.diagnostics[0];
+        assert_eq!(note.kind, Kind::Unsupported);
+        assert_eq!(note.file.as_deref(), Some("common/national_focus/gap.txt"));
+        assert_eq!(note.line, Some(3));
+        assert!(note.message.contains("key reader 0x1403B4F40"));
+        assert!(note.message.contains("count: 2"));
+    }
 
     #[test]
     fn raids_are_not_run_without_the_interface_registry() {

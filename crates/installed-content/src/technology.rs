@@ -12,6 +12,9 @@ use crate::{
 use std::{collections::BTreeMap, io};
 mod units;
 
+/// Each technology's single unconditional equipment link, when known.
+pub type EquipmentLinks = BTreeMap<String, Option<String>>;
+
 #[derive(Clone, Copy)]
 enum Node {
     File,
@@ -32,7 +35,7 @@ enum Node {
 pub fn parse_equipment(
     input: &[u8],
     names: &KeyNames,
-) -> io::Result<BTreeMap<String, Option<String>>> {
+) -> io::Result<(EquipmentLinks, Vec<String>)> {
     parse_with_registry(input, &units::Registry::default(), names)
 }
 
@@ -40,7 +43,7 @@ fn parse_with_registry(
     input: &[u8],
     registry: &units::Registry,
     names: &KeyNames,
-) -> io::Result<BTreeMap<String, Option<String>>> {
+) -> io::Result<(EquipmentLinks, Vec<String>)> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -114,7 +117,7 @@ fn parse_with_registry(
                 // +0x470), then CEffect::ReadScript (140534280) reads the body only
                 // when the value slot is `{`.
                 (Technology, Some(b"on_research_complete")) => Shape::LimitedBody(Effect),
-                (Effect, _) => native::untraced(field),
+                (Effect, _) => crate::effect_keys::shape(Some(names), field).map(|()| Effect),
                 (Technology, Some(b"parent" | b"enable_tactic")) => Shape::Current,
                 (
                     Technology,
@@ -249,7 +252,10 @@ fn parse_with_registry(
             );
         }
     }
-    Ok(result)
+    Ok((
+        result,
+        read.misreads.iter().map(ToString::to_string).collect(),
+    ))
 }
 
 pub fn read_equipment(
@@ -262,7 +268,10 @@ pub fn read_equipment(
     // 140AC1BA0 enumerates this directory without recursion.
     for path in layers.directory_files("common/technologies", ".txt")? {
         match parse_with_registry(&layers.read(&path)?, &registry, &names) {
-            Ok(definitions) => result.extend(definitions),
+            Ok((definitions, notes)) => {
+                result.extend(definitions);
+                warnings.extend(notes.into_iter().map(|note| format!("{path}: {note}")));
+            }
             Err(error) => warnings.push(format!(
                 "Technology equipment links unavailable in {path}: {error}"
             )),
@@ -280,6 +289,13 @@ pub fn read_equipment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_equipment(
+        input: &[u8],
+        names: &KeyNames,
+    ) -> io::Result<BTreeMap<String, Option<String>>> {
+        super::parse_equipment(input, names).map(|(definitions, _)| definitions)
+    }
 
     #[test]
     fn effect_bodies_follow_the_brace_guard_and_leading_limit() {
@@ -368,7 +384,10 @@ mod tests {
                 .contains("custom_unit")
         );
         assert_eq!(
-            parse_with_registry(bytes, &registry, &KeyNames::default()).unwrap()["a"].as_deref(),
+            parse_with_registry(bytes, &registry, &KeyNames::default())
+                .unwrap()
+                .0["a"]
+                .as_deref(),
             Some("one")
         );
     }
