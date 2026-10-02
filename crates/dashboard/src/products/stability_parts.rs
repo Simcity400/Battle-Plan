@@ -14,6 +14,7 @@ use super::{
     CountryParams, LoadContext, Product,
     country_groups::HourSpan,
     country_stability::{self, BreakdownLine, FormulaBreakdown, StabilityBreakdown},
+    identity::NamingCountry,
     politics_content::{PoliticsContent, politics_content},
     recorded_rows,
 };
@@ -204,7 +205,7 @@ struct Part {
     line: Option<BreakdownLine>,
     character: Option<Character>,
     /// The line's country at its hour, which idea names need.
-    country: super::NamingCountry,
+    country: NamingCountry,
     runs: Vec<FixedRun>,
 }
 
@@ -220,7 +221,7 @@ impl Measure {
         hour: i32,
         joined: bool,
         values: &[Value],
-        country: &super::NamingCountry,
+        country: &NamingCountry,
         runs: &mut usize,
     ) {
         match self.observed.last_mut() {
@@ -288,7 +289,7 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
         TableId::Characters,
         TableId::LexicalTokens,
         TableId::CountryAppearance,
-        // Whether a dynamic country is in civil war (super::civil_war).
+        // Whether a dynamic country is in civil war (super::identity::civil_war).
         TableId::CountryCivilWars,
         TableId::CountryWars,
         TableId::WarRelations,
@@ -417,7 +418,7 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
             let Some((_, _, values)) = current.as_ref() else {
                 continue;
             };
-            let naming = super::NamingCountry::read(decoded, country);
+            let naming = NamingCountry::read(decoded, country);
             for (measure, values) in result.measures.iter_mut().zip(values.iter()) {
                 if let Some(values) = values {
                     measure.record(hour, joined, values, &naming, &mut runs);

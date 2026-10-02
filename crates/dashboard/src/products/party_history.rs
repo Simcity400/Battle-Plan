@@ -26,7 +26,7 @@
 
 use super::{
     CountryParams, LoadContext, Product, country_measure::FixedRun, idea_history::IdeaCharacter,
-    politics_content::politics_content,
+    identity, politics_content::politics_content,
 };
 use crate::{
     Source,
@@ -501,7 +501,7 @@ pub fn scan(
                         token: found
                             .zip(lexical)
                             .and_then(|(found, lexical)| {
-                                super::character_script_token(found, lexical)
+                                identity::character_script_token(found, lexical)
                             })
                             .unwrap_or_default()
                             .to_owned(),

@@ -264,7 +264,7 @@ fn an_idea_is_named_for_its_country() {
 /// only while the cosmetic tag (+0x1488, length +0x1498) is empty.
 #[test]
 fn a_dynamic_country_in_civil_war_skips_its_keys() {
-    use crate::products::NamingCountry;
+    use crate::products::identity::NamingCountry;
     use replay::{
         frame::{DecodedFrame, TableView},
         rows::{

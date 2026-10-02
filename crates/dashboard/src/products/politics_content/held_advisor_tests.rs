@@ -2,9 +2,9 @@ use super::PoliticsContent;
 use crate::{
     catalogue::View,
     products::{
-        built_template,
         country_stability::{BreakdownLine, RecordedCharacter, line_group},
         idea_history::{Joined, info},
+        identity::built_template,
     },
 };
 use replay::rows::{CharacterRow, LexicalTokenRow};

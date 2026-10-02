@@ -226,7 +226,7 @@ impl RecordedScopes {
         );
         let mut by_token: BTreeMap<String, Vec<(u32, Option<u32>)>> = BTreeMap::new();
         for row in characters {
-            if let Some(token) = crate::products::character_script_token(row, lexical) {
+            if let Some(token) = crate::products::identity::character_script_token(row, lexical) {
                 by_token
                     .entry(token.to_ascii_lowercase())
                     .or_default()

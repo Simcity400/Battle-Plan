@@ -16,6 +16,7 @@
 use super::{
     CountryParams, LoadContext, Product,
     idea_format::{LocalisedText, ModifierFormat},
+    identity::{NamingCountry, built_template, character_script_token},
     politics_content::{IdeaCountry, PoliticsContent, RecordedName, politics_content},
 };
 use crate::{
@@ -225,7 +226,7 @@ pub struct ScannedIdeas {
     pub identity_starts: Vec<i32>,
     /// For each identity start, the country as idea naming reads it
     /// (140FBCF90).
-    pub(crate) identity_naming: Vec<super::NamingCountry>,
+    pub(crate) identity_naming: Vec<NamingCountry>,
     /// Each recorded advisor holder's template (CCharacter+0x20), by
     /// character id, or why the recording does not give it.
     pub(crate) templates: BTreeMap<u32, Result<BuiltTemplate, String>>,
@@ -263,7 +264,7 @@ pub fn scan(
         TableId::Characters,
         TableId::LexicalTokens,
         TableId::CountryAppearance,
-        // Whether a dynamic country is in civil war (super::civil_war).
+        // Whether a dynamic country is in civil war (super::identity::civil_war).
         TableId::CountryCivilWars,
         TableId::CountryWars,
         TableId::WarRelations,
@@ -339,7 +340,7 @@ pub fn scan(
                 result.identity_starts.push(hour);
                 result
                     .identity_naming
-                    .push(super::NamingCountry::read(decoded, country));
+                    .push(NamingCountry::read(decoded, country));
             }
             let owner = |raw: u32| link_slot(links, raw) == Some(slot);
             // Each appointed advisor's idea with its recorded seat and character.
@@ -364,7 +365,7 @@ pub fn scan(
                 });
                 let token = row
                     .zip(lexical)
-                    .and_then(|(row, lexical)| super::character_script_token(row, lexical))
+                    .and_then(|(row, lexical)| character_script_token(row, lexical))
                     .unwrap_or_default();
                 let name = row
                     .and_then(|row| std::str::from_utf8(&row.token).ok())
@@ -373,7 +374,7 @@ pub fn scan(
                 // first template read stands.
                 if !matches!(result.templates.get(&advisor.character), Some(Ok(_))) {
                     let template = match (characters, row) {
-                        (_, Some(row)) => super::built_template(row, lexical),
+                        (_, Some(row)) => built_template(row, lexical),
                         (Some(_), None) => Err(format!(
                             "character {} has no Characters row at hour {hour}",
                             advisor.character
