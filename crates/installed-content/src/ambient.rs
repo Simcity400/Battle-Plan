@@ -85,13 +85,8 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<AmbientObjectType
         Type,
         Object,
     }
-    // The loader's lexer mode is not traced; the two modes differ only on
-    // a leading byte-order mark, which is refused by name.
-    if input.starts_with(b"\xef\xbb\xbf") {
-        return Err(invalid(
-            "ambient objects: a leading byte-order mark (the loader's lexer mode is not traced)",
-        ));
-    }
+    // 140B46EC0 borrows an open file through 1424A63D0 -> 1424A62E0,
+    // bypassing the file constructor's BOM skip (1424A8C30).
     let document = native::read(
         input,
         native::Mode::KeepMark,
@@ -373,5 +368,17 @@ type={
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn the_loader_keeps_a_leading_mark_as_part_of_the_first_key() {
+        let types = parse(
+            b"\xef\xbb\xbftype={type=lost} type={type=kept object={name=placed}}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].entity, "kept");
+        assert_eq!(types[0].objects[0].name, "placed");
     }
 }

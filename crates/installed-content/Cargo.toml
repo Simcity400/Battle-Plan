@@ -24,5 +24,5 @@ sha2.workspace = true
 test-support = []
 
 [target.'cfg(windows)'.dependencies]
-# The monitors the game's SDL display indices name; see settings::desktops.
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
+# Native folder opens and the monitors the game's SDL display indices name.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_HiDpi"] }
