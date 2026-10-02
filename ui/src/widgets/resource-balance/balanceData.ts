@@ -6,7 +6,8 @@ import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatAmount, formatSigned } from '../../charts/valueAxis.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import { contentSet, setLimit, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options.ts';
+import { chosenShown, largestToken, toggleChosen as toggleKit } from '../../dashboard/chosen.ts';
+import type { ChipAction, ChoiceSource } from '../../dashboard/chosen';
 import type { PoolRun, ResourceBalanceReply, ResourceInfo, ResourceSeries, TradeRun } from '../../generated/dashboard';
 
 /** Where a country's resources come from and where they go, from the recorded
@@ -163,15 +164,9 @@ export function orderResources(reply: ResourceBalanceReply, hour: number, order:
 }
 
 /** The token of the resource with the largest supply or demand anywhere in the
- * branch: the over-time view's choice until the user picks. */
+ * branch: the over-time view's choice until the user picks (the kit's `largestToken`). */
 export function automaticResource(reply: ResourceBalanceReply): string | null {
-  let best: { token: string; size: bigint } | null = null;
-  for (let index = 0; index < reply.series.length; index++) {
-    const series = reply.series[index];
-    const size = barScale([series], null);
-    if (series.runs.length && (!best || size > best.size)) best = { token: reply.resources[index].token, size };
-  }
-  return best?.token ?? reply.resources[0]?.token ?? null;
+  return largestToken(reply.series.map((series, index) => ({ token: reply.resources[index].token, size: barScale([series], null), recorded: series.runs.length > 0 })));
 }
 
 /** The resources shown for chosen tokens, in the order chosen: every declaration
@@ -180,38 +175,23 @@ export function chosenLines(reply: ResourceBalanceReply, tokens: readonly string
   return tokens.flatMap(token => reply.resources.filter(item => item.token === token));
 }
 
+/** The recording's resources as chips choose them: a token draws a line per declaration. */
+const resourceChoices = (reply: ResourceBalanceReply): ChoiceSource => ({
+  lines: token => reply.resources.filter(item => item.token === token).length,
+  name: token => resourceName(reply.resources.find(item => item.token === token) ?? { name: null, token, ordinal: 1 }),
+  noun: 'resource',
+});
+
 /** The chosen resources this recording has, in the order chosen; the automatic
  * choice when none are chosen or none are recorded here. */
 export function chosenResources(reply: ResourceBalanceReply, chosen: readonly string[]): string[] {
-  const known = chosen.filter(token => reply.resources.some(item => item.token === token));
-  if (known.length) return known;
-  const automatic = automaticResource(reply);
-  return automatic ? [automatic] : [];
+  return chosenShown(resourceChoices(reply), chosen, automaticResource(reply));
 }
 
-/** What clicking one in-widget chip does: the resources to store, or why it cannot. */
-export type ChipAction = { value: string } | { reason: string };
-
-/** Clicking one in-widget chip: that token toggled in the stored list, as the
- * settings panel's chips do (`toggleContentSet`). With nothing stored, the list
- * starts from the automatic choice shown, when that can be stored at all: choosing
- * another resource never requires storing one that cannot be. Tokens this campaign
- * lacks, such as another campaign's modded resource, are kept and count toward
- * `max`. A click that cannot act says why: its token cannot be stored, the limit is
- * reached, or it would leave nothing this campaign shows. */
+/** Clicking one in-widget resource chip (the kit's `toggleChosen`): the resources to
+ * store, or why it cannot act. */
 export function toggleChosen(reply: ResourceBalanceReply, stored: readonly string[], shown: readonly string[], token: string, max: number): ChipAction {
-  const base = stored.length ? stored : shown.filter(storableToken);
-  if (!base.includes(token) && !storableToken(token)) return { reason: UNSTORABLE };
-  const next = toggleContentSet(base.join(' '), token, max);
-  if (next == null) return { reason: `At most ${setLimit(max)} can be chosen` };
-  const lines = chosenLines(reply, contentSet(next));
-  if (!lines.length) return { reason: 'One resource always stays chosen' };
-  // The limit counts lines drawn: a repeated token draws one line per declaration.
-  if (!base.includes(token) && lines.length > max) {
-    const added = reply.resources.filter(item => item.token === token);
-    return { reason: `At most ${max} lines can be drawn; ${resourceName(added[0])} adds ${added.length}` };
-  }
-  return { value: next };
+  return toggleKit(resourceChoices(reply), stored, shown, token, max);
 }
 
 /** Supply and demand as plotting runs, broken where the recording breaks. */

@@ -1,0 +1,648 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { AmountRun, EquipmentStockpileReply, StockVariant } from '../../generated/dashboard';
+import { resolveY } from '../../charts/view.ts';
+import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen.ts';
+import { contentKey, contentSet, setToken, storableToken } from '../../dashboard/options.ts';
+import { OPTIONS } from './definition.ts';
+import { AI_NOTE, automaticGroups, automaticLines, chartChoices, chartRuns, choiceKey, choiceRow, CHOSEN_KEYS, oneChoicePerRow, columnVars, designAt, hasRecords, NO_DESIGN, OTHER_DESIGN, otherDesigns, stockChoices, typeName, undrawableReason, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, barExtent, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, orderGroups, overTimeTooltip,
+  shareOf, shareRuns, shareScale, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, weeklyAt } from './stockpileData.ts';
+
+const U = 100000;
+const run = (firstHour: number, lastHour: number, amount: number): AmountRun => ({ firstHour, lastHour, amountRaw: String(Math.round(amount * U)) });
+/** A variant; names default their design to none recorded. */
+const variant = (id: string, token: string, archetype: string | null, stock: AmountRun[], weekly: AmountRun[] = [],
+  names: (Omit<StockVariant['names'][number], 'design'> & { design?: string | null })[] = []): StockVariant =>
+  ({ id, token, archetype, names: names.map(name => ({ design: null, ...name })), stock, weekly });
+const TRUCKS = 'The game adds the supply system’s trucks to its stock here, which the recording lacks, so what is needed cannot be derived.';
+
+/** Germany in the W3 save (2 Dec 1943) for the stock, with a logistics record read at
+ * 96 and 120 while a player controlled it (hours 96–130) and AI-controlled from 140:
+ * infantry +1,549 of 145,666 in stock, light tanks −373 of 720, anti-tank guns −1,225
+ * with none in stock, trucks (a supply_truck type) −40. Stock reads at 100, 124 and
+ * 140, the second without its production lines, and a gap after 130. */
+const REPLY: EquipmentStockpileReply = {
+  branchId: '1', tag: 'GER', campaignKey: 'c0ffee', decimals: 5, warnings: [], reads: [100, 124, 140],
+  stockHours: [{ firstHour: 100, lastHour: 130 }, { firstHour: 140, lastHour: 150 }],
+  lineHours: [{ firstHour: 100, lastHour: 123 }, { firstHour: 140, lastHour: 150 }],
+  types: [
+    { key: 'infantry_equipment', name: 'Infantry Equipment', domain: 'land', needNote: null },
+    { key: 'light_tank_chassis', name: 'Light Tank', domain: 'land', needNote: null },
+    { key: 'anti_tank_equipment', name: 'Anti-Tank', domain: 'land', needNote: null },
+    { key: 'motorized_equipment', name: 'Truck', domain: 'land', needNote: TRUCKS },
+    { key: 'cas_equipment', name: 'Close Air Support', domain: 'air', needNote: null },
+    { key: 'fighter_equipment', name: 'Fighter', domain: 'air', needNote: null },
+  ],
+  variants: [
+    variant('1326', 'infantry_equipment_1', 'infantry_equipment', [run(100, 123, 145666), run(124, 130, 146000), run(140, 150, 140000)], [run(100, 123, 541.9)]),
+    variant('1351', 'light_tank_chassis_1', 'light_tank_chassis', [run(100, 130, 720)], [], [{ firstHour: 90, name: 'Panzer I Ausf. A', known: true }]),
+    variant('1354', 'light_tank_chassis_2', 'light_tank_chassis', [run(100, 130, 1396)], [run(100, 123, 15)], [{ firstHour: 90, name: 'Panzer II', known: true }, { firstHour: 120, name: 'Panzer II Ausf. F', known: true }]),
+    variant('1329', 'motorized_equipment_1', 'motorized_equipment', [run(100, 130, 5195)]),
+    variant('1375', 'cas_1', 'cas_equipment', [run(100, 130, 157)]),
+    variant('1400', 'fighter_equipment_1', 'fighter_equipment', [], [run(100, 123, 19.1)]),
+  ],
+  logistics: [
+    { key: 'infantry_equipment', balance: [run(96, 119, 1549), run(120, 130, 1000)], stock: [run(96, 130, 145666)] },
+    { key: 'light_tank_chassis', balance: [run(96, 130, -373)], stock: [run(96, 130, 720)] },
+    { key: 'anti_tank_equipment', balance: [run(96, 130, -1225)], stock: [] },
+    { key: 'motorized_equipment', balance: [run(96, 130, -40)], stock: [run(96, 130, 5195)] },
+  ],
+  logisticsReads: [96, 120], lineReads: [100, 140],
+  balanceHours: [{ firstHour: 96, lastHour: 130 }],
+  aiHours: [{ firstHour: 140, lastHour: 150 }],
+  needBoundRaw: String(0x53e2d620fb40),
+};
+
+test('the reply is validated and groups follow the game’s order, logistics-only types included', () => {
+  assert.equal(validateStockpileReply(REPLY), REPLY);
+  assert.throws(() => validateStockpileReply({ ...REPLY, variants: [{ ...REPLY.variants[0], archetype: 'unknown_type' }] }));
+  assert.throws(() => validateStockpileReply({ ...REPLY, logistics: [{ key: 'unknown_type', balance: [], stock: [] }] }));
+  assert.deepEqual(stockGroups(REPLY, 'type', 110).map(group => [group.key, group.variants.length, group.types.join()]), [
+    ['infantry_equipment', 1, 'infantry_equipment'], ['light_tank_chassis', 2, 'light_tank_chassis'], ['anti_tank_equipment', 0, 'anti_tank_equipment'],
+    ['motorized_equipment', 1, 'motorized_equipment'], ['cas_equipment', 1, ''], ['fighter_equipment', 1, '']]);
+  assert.deepEqual(stockGroups(REPLY, 'domain', 110).map(group => [group.key, group.label, group.types.length]), [['land', 'Land', 4], ['air', 'Air', 0]]);
+  // Variants have no balance of their own and take the name recorded at the hour.
+  const variants = stockGroups(REPLY, 'variant', 110);
+  assert.deepEqual(variants.map(group => group.label).slice(0, 3), ['infantry_equipment_1', 'Panzer I Ausf. A', 'Panzer II']);
+  assert.ok(variants.every(group => group.types.length === 0));
+  assert.equal(variantName(REPLY.variants[2], 125), 'Panzer II Ausf. F');
+  // Before its first recorded name, a variant is named by its token, never backfilled.
+  assert.equal(variantName(REPLY.variants[1], 50), 'light_tank_chassis_1');
+  assert.deepEqual(stockGroups(REPLY, 'type', 110, ['anti_tank_equipment']).map(group => group.key), ['anti_tank_equipment']);
+});
+
+test('the balance is known for a player, marked for an AI country and unknown elsewhere', () => {
+  assert.equal(balanceMode(REPLY, 110), 'player');
+  assert.equal(balanceMode(REPLY, 145), 'ai');
+  assert.equal(balanceMode(REPLY, 135), 'unknown');
+  const [infantry, tanks, antiTank, trucks] = stockGroups(REPLY, 'type', 110);
+  // Need = max(0, stock) − balance, from the same record.
+  assert.deepEqual(balanceAt(REPLY, infantry, 110), { balance: 1549n * 100000n, stock: 145666n * 100000n, need: 144117n * 100000n, needNote: null });
+  assert.deepEqual(balanceAt(REPLY, tanks, 110)?.need, 1093n * 100000n);
+  // A shortage of a type held nowhere: all of it is needed.
+  assert.deepEqual(balanceAt(REPLY, antiTank, 110)?.need, 1225n * 100000n);
+  // A supply_truck type's need is not derived; the balance still shows.
+  assert.deepEqual(balanceAt(REPLY, trucks, 110), { balance: -40n * 100000n, stock: 5195n * 100000n, need: null, needNote: TRUCKS });
+  assert.equal(balanceAt(REPLY, infantry, 145), null);
+  assert.equal(balanceAt(REPLY, stockGroups(REPLY, 'variant', 110)[0], 110), null);
+  // An arm sums its types; with the trucks in it, its need is not derived.
+  const land = stockGroups(REPLY, 'domain', 110)[0];
+  assert.deepEqual(balanceAt(REPLY, land, 110), { balance: (1549n - 373n - 1225n - 40n) * 100000n, stock: (145666n + 720n + 5195n) * 100000n, need: null, needNote: TRUCKS });
+  // A negative stock counts as none available; a sum at the saturation bound is not a need.
+  const negative: EquipmentStockpileReply = { ...REPLY, logistics: [{ key: 'infantry_equipment', balance: [run(96, 130, -5)], stock: [run(96, 130, -2)] }] };
+  assert.equal(balanceAt(negative, infantry, 110)?.need, 5n * 100000n);
+  const saturated: EquipmentStockpileReply = { ...REPLY, logistics: [{ key: 'infantry_equipment', balance: [{ firstHour: 96, lastHour: 130, amountRaw: String(-0x53e2d620fb40) }], stock: [] }] };
+  assert.equal(balanceAt(saturated, infantry, 110)?.need, null);
+});
+
+test('shares of need scale the bars, order the shortages and draw over time', () => {
+  const groups = stockGroups(REPLY, 'type', 110);
+  const [infantry, tanks, antiTank, trucks] = groups;
+  assert.ok(Math.abs(shareOf(balanceAt(REPLY, infantry, 110))! - 1549 / 144117) < 1e-6);
+  assert.equal(shareOf(balanceAt(REPLY, antiTank, 110)), -1);
+  assert.equal(shareOf(balanceAt(REPLY, trucks, 110)), null);
+  assert.equal(shareOf({ balance: 5n, need: 0n }), null);
+  // The campaign scale is the largest share at any logistics read: the full shortage.
+  assert.equal(shareScale(REPLY, groups, null), 1);
+  assert.equal(formatPercent(-0.3413), '−34%');
+  assert.equal(formatPercent(0.0107), '+1%');
+  // Biggest shortage first; groups without a balance keep the game's order after.
+  assert.deepEqual(orderGroups(REPLY, groups, 110, 'shortage').map(group => group.key),
+    ['anti_tank_equipment', 'light_tank_chassis', 'motorized_equipment', 'infantry_equipment', 'cas_equipment', 'fighter_equipment']);
+  assert.deepEqual(orderGroups(REPLY, groups, 145, 'shortage').map(group => group.key), groups.map(group => group.key));
+  // Over time: the share in per cent, changing where the record does, nothing for trucks.
+  assert.deepEqual(shareRuns(REPLY, infantry).map(item => [item.firstHour, item.lastHour, Math.round(item.value * 100) / 100, item.breakBefore]),
+    [[96, 119, 1.07, true], [120, 130, Math.round(1000 / 144666 * 10000) / 100, false]]);
+  assert.deepEqual(shareRuns(REPLY, tanks).map(item => [item.firstHour, item.lastHour]), [[96, 130]]);
+  assert.deepEqual(shareRuns(REPLY, trucks), []);
+});
+
+test('stock, weekly output and stock bars work for AI countries and variants', () => {
+  const [infantry, tanks, , , cas, fighters] = stockGroups(REPLY, 'type', 110);
+  assert.equal(stockAt(REPLY, tanks, 110), 2116n * 100000n);
+  assert.equal(stockAt(REPLY, fighters, 110), 0n);
+  assert.equal(stockAt(REPLY, infantry, 135), null);
+  assert.equal(weeklyAt(REPLY, infantry, 110), 54190000n);
+  assert.equal(weeklyAt(REPLY, infantry, 126), null);
+  assert.equal(stockAt(REPLY, cas, 126), 157n * 100000n);
+  assert.deepEqual(stockRuns(REPLY, infantry).map(item => [item.firstHour, item.lastHour, item.value, item.breakBefore]),
+    [[100, 123, 145666, true], [124, 130, 146000, false], [140, 150, 140000, true]]);
+  assert.deepEqual(barExtent(REPLY, stockGroups(REPLY, 'type', 110), null), { positive: 146000n * 100000n, negative: 0n });
+  assert.deepEqual(orderGroups(REPLY, stockGroups(REPLY, 'type', 110), 145, 'stock').map(group => group.key).slice(0, 2), ['infantry_equipment', 'light_tank_chassis']);
+});
+
+test('the automatic lines are the main land and air types; chips toggle groups', () => {
+  const groups = stockGroups(REPLY, 'type', 110);
+  assert.deepEqual(automaticGroups(REPLY, groups, 'type'), ['infantry_equipment', 'motorized_equipment', 'light_tank_chassis', 'cas_equipment']);
+  assert.deepEqual(automaticGroups(REPLY, stockGroups(REPLY, 'domain', 110), 'domain'), ['land', 'air']);
+  const source = groupChoices(groups, 'equipment type');
+  assert.equal(source.lines('anti_tank_equipment'), 1);
+  assert.equal(source.lines('mod_rifle'), 0);
+});
+
+test('tooltips give the game’s surplus for a player, the note for an AI country and stock for variants', () => {
+  const groups = stockGroups(REPLY, 'type', 110);
+  const tanks = groups[1];
+  const player = groupTooltip(REPLY, tanks, 'type', 110, { title: tanks.label }, 1000);
+  assert.deepEqual(player.rows.map(row => [row.label, row.value]), [
+    ['In stock', '720'], ['Needed', '1,093'], ['Shortage', '−373'], ['Share of need', '−34%'], ['Produced per week', '15'],
+    ['Panzer II', '1,396'], ['Panzer I Ausf. A', '720']]);
+  const trucks = groupTooltip(REPLY, groups[3], 'type', 110, { title: 'Truck' }, 1000);
+  assert.deepEqual(trucks.rows.slice(0, 3).map(row => [row.label, row.value]), [['In stock', '5,195'], ['Needed', 'Not derived'], ['Shortage', '−40']]);
+  assert.match(trucks.note ?? '', /trucks/);
+  const ai = groupTooltip(REPLY, tanks, 'type', 145, { title: tanks.label }, 1000);
+  assert.deepEqual(ai.rows.slice(0, 2).map(row => row.label), ['In stock', 'Produced per week']);
+  assert.ok(ai.note?.includes(AI_NOTE));
+  const unknown = groupTooltip(REPLY, tanks, 'type', 135, { title: tanks.label }, 1000);
+  assert.deepEqual(unknown.rows.map(row => [row.label, row.value]).slice(0, 2), [['In stock', 'Not recorded'], ['Surplus or shortage', 'Not recorded']]);
+  const variant = stockGroups(REPLY, 'variant', 110)[2];
+  const byVariant = groupTooltip(REPLY, variant, 'variant', 110, { title: variant.label }, 1000);
+  assert.equal(byVariant.rows[0].label, 'Light Tank');
+  assert.match(byVariant.note ?? '', /by equipment type, not by variant/);
+  // A short window trims the variant list but keeps the totals, and the full list is spoken.
+  const short = groupTooltip(REPLY, tanks, 'type', 110, { title: tanks.label }, 190);
+  assert.ok(short.rows.length < player.rows.length && short.rows[0].label === 'In stock' && short.spoken);
+  assert.equal(groupLabel(REPLY, tanks, 110), 'Light Tank: shortage −373, −34% of need');
+  assert.equal(groupLabel(REPLY, tanks, 145), 'Light Tank: 0 in stock');
+  const over = overTimeTooltip('1 Dec 1943', [{ group: tanks, color: 'red', stock: 2116n * 100000n, weekly: null, logistics: balanceAt(REPLY, tanks, 110) }], 5, undefined, 1000);
+  assert.deepEqual(over.rows.map(row => [row.label, row.value]), [['Light Tank', '−373 (−34%)'], ['Needed', '1,093'], ['Produced per week', 'Not recorded']]);
+  const stockOnly = overTimeTooltip('1 Dec 1943', [{ group: tanks, color: 'red', stock: 2116n * 100000n, weekly: null }], 5, undefined, 1000);
+  assert.deepEqual(stockOnly.rows[0].value, '2,116');
+});
+
+test('an uncomputable weekly rate is unknown, never zero or a partial sum', () => {
+  // A read whose variant has a costless line: the product records no amount there.
+  const costless: EquipmentStockpileReply = { ...REPLY, variants: [variant('1326', 'infantry_equipment_1', 'infantry_equipment', [run(100, 130, 5)],
+    [{ firstHour: 100, lastHour: 123, amountRaw: null }]), variant('1327', 'infantry_equipment_1', 'infantry_equipment', [], [run(100, 123, 541.9)])] };
+  assert.equal(validateStockpileReply(costless), costless);
+  const infantry = stockGroups(costless, 'type', 110)[0];
+  assert.equal(weeklyAt(costless, infantry, 110), null);
+  const tip = groupTooltip(costless, infantry, 'type', 110, { title: 'Infantry' }, 1000);
+  assert.deepEqual(tip.rows.find(row => row.label === 'Produced per week')?.value, 'Not recorded');
+});
+
+test('a recorded zero balance shows as zero; a type with nothing but zeros adds no row', () => {
+  const zeros: EquipmentStockpileReply = { ...REPLY, logistics: [...REPLY.logistics,
+    { key: 'fighter_equipment', balance: [run(96, 130, 0)], stock: [run(96, 130, 0)] },
+    { key: 'cas_equipment', balance: [run(96, 130, 0)], stock: [] }] };
+  const groups = stockGroups(zeros, 'type', 110);
+  const fighters = groups.find(group => group.key === 'fighter_equipment')!;
+  // Fighters have a variant, so their row takes the recorded zero, not "Not recorded".
+  assert.deepEqual(balanceAt(zeros, fighters, 110), { balance: 0n, stock: 0n, need: 0n, needNote: null });
+  assert.equal(groupLabel(zeros, fighters, 110), 'Fighter: surplus 0');
+  const cas = groups.find(group => group.key === 'cas_equipment')!;
+  assert.deepEqual(cas.types, ['cas_equipment']);
+  // A logistics-only type recorded as zero throughout adds no row.
+  const bare: EquipmentStockpileReply = { ...REPLY, logistics: [...REPLY.logistics, { key: 'fighter_equipment', balance: [run(96, 130, 0)], stock: [] }],
+    variants: REPLY.variants.filter(item => item.archetype !== 'fighter_equipment') };
+  assert.ok(!stockGroups(bare, 'type', 110).some(group => group.key === 'fighter_equipment'));
+});
+
+test('a variant is labelled as recorded at the hour shown, and an unnamed one by its handle', () => {
+  const renamed: EquipmentStockpileReply = { ...REPLY, variants: [variant('5', 'tank_1', 'light_tank_chassis', [run(100, 130, 1)], [],
+    [{ firstHour: 0, name: 'Original', known: true }, { firstHour: 24, name: 'Renamed', known: true }]), variant('9', '', null, [run(100, 130, 1)])] };
+  const groups = stockGroups(renamed, 'variant', Infinity);
+  assert.equal(groups.find(group => group.key === 'c0ffee:5:tank_1')!.label, 'Renamed');
+  assert.equal(labelAt(groups.find(group => group.key === 'c0ffee:5:tank_1')!, 'variant', 12), 'Original');
+  assert.equal(labelAt(groups.find(group => group.key === 'c0ffee:5:tank_1')!, 'variant', 30), 'Renamed');
+  // A type keeps its name at every hour.
+  assert.equal(labelAt(stockGroups(REPLY, 'type', 110)[0], 'type', 12), 'Infantry Equipment');
+  // No recorded definition: no name and an empty token.
+  assert.equal(variantName(renamed.variants[1], 110), 'Variant 9');
+});
+
+test('an arm counts every type of it for its need, whatever order the record lists them in', () => {
+  // Trucks (a supply_truck type, need not derived) recorded at zero with no variants.
+  const zeroTrucks = { key: 'motorized_equipment', balance: [run(96, 130, 0)], stock: [run(96, 130, 0)] };
+  const others = REPLY.logistics.filter(item => item.key !== 'motorized_equipment');
+  const variants = REPLY.variants.filter(item => item.archetype !== 'motorized_equipment');
+  for (const logistics of [[zeroTrucks, ...others], [...others, zeroTrucks]]) {
+    const reply: EquipmentStockpileReply = { ...REPLY, variants, logistics };
+    const land = stockGroups(reply, 'domain', 110)[0];
+    assert.ok(land.types.includes('motorized_equipment'));
+    assert.equal(balanceAt(reply, land, 110)?.need, null);
+    // As a type of its own, zeros throughout and no variants: no row.
+    assert.ok(!stockGroups(reply, 'type', 110).some(group => group.key === 'motorized_equipment'));
+  }
+});
+
+test('a variant name is the entry that applies at the hour, then the token or handle', () => {
+  const named = (names: Parameters<typeof variant>[5], token = 'tank_1') => variant('5', token, 'light_tank_chassis', [], [], names);
+  // A later name never leaks into hours before it.
+  assert.equal(variantName(named([{ firstHour: 0, name: null, known: true }, { firstHour: 10, name: 'B', known: true }]), 5), 'tank_1');
+  assert.equal(variantName(named([{ firstHour: 0, name: null, known: true }, { firstHour: 10, name: 'B', known: true }]), 12), 'B');
+  // A later unnamed entry does not keep the obsolete earlier name.
+  assert.equal(variantName(named([{ firstHour: 0, name: 'A', known: true }, { firstHour: 10, name: null, known: true }, { firstHour: 20, name: 'C', known: true }]), 15), 'tank_1');
+  assert.equal(variantName(named([{ firstHour: 0, name: 'A', known: true }, { firstHour: 10, name: null, known: true }, { firstHour: 20, name: 'C', known: true }]), 5), 'A');
+  assert.equal(variantName(named([{ firstHour: 0, name: null, known: true }], ''), 5), 'Variant 5');
+});
+
+test('each grouping keeps its own lines chosen over time', () => {
+  assert.equal(new Set(Object.values(CHOSEN_KEYS)).size, 3);
+  for (const grouping of ['type', 'variant', 'domain'] as const) {
+    const options = { view: 'time', grouping };
+    const shown = OPTIONS.filter(field => Object.values(CHOSEN_KEYS).includes(field.key) && (!field.visibleWhen || field.visibleWhen(options)));
+    assert.deepEqual(shown.map(field => field.key), [CHOSEN_KEYS[grouping]]);
+    assert.equal(shown[0].kind, 'content-set');
+  }
+});
+
+test('most in stock first sorts by the stock each row shows', () => {
+  // The logistics record counts more light tanks than the stockpile read later.
+  const reply: EquipmentStockpileReply = { ...REPLY, logistics: REPLY.logistics.map(item => item.key === 'light_tank_chassis'
+    ? { ...item, stock: [run(96, 130, 200000)] } : item) };
+  const groups = stockGroups(reply, 'type', 110);
+  // A player row shows the record's stock: light tanks first.
+  assert.equal(orderGroups(reply, groups, 110, 'stock')[0].key, 'light_tank_chassis');
+  // An AI hour shows the stockpile: infantry first.
+  assert.equal(orderGroups(reply, stockGroups(reply, 'type', 145), 145, 'stock')[0].key, 'infantry_equipment');
+});
+
+test('a group whose variants cannot be told has unknown stock and production, never zero', () => {
+  // No content: the logistics archetype and the variant are not joined.
+  const unresolved: EquipmentStockpileReply = { ...REPLY, types: [],
+    variants: [variant('1', 'rifle_1', null, [run(100, 130, 500)], [run(100, 123, 70)])],
+    logistics: [{ key: ':rifle', balance: [run(96, 130, 10)], stock: [run(96, 130, 500)] }] };
+  assert.equal(validateStockpileReply(unresolved), unresolved);
+  const groups = stockGroups(unresolved, 'type', 110);
+  const archetype = groups.find(group => group.key === ':rifle')!;
+  const variantRow = groups.find(group => group.key === ':rifle_1')!;
+  assert.equal(variantsComplete(unresolved, archetype, item => item.weekly, 110), false);
+  assert.equal(weeklyAt(unresolved, archetype, 110), null);
+  assert.equal(stockAt(unresolved, archetype, 110), null);
+  assert.equal(groupTooltip(unresolved, archetype, 'type', 110, { title: 'rifle' }, 1000).rows.find(row => row.label === 'Produced per week')?.value, 'Not recorded');
+  // As a type row it may be part of a type, so it is unknown too; its variant row is exact.
+  assert.equal(weeklyAt(unresolved, variantRow, 110), null);
+  assert.equal(weeklyAt(unresolved, stockGroups(unresolved, 'variant', 110)[0], 110), 7000000n);
+});
+
+test('a tiny share of need is kept exactly and never collapses the scale', () => {
+  const tiny: EquipmentStockpileReply = { ...REPLY, logistics: [{ key: 'infantry_equipment', balance: [run(96, 130, 1)], stock: [run(96, 130, 2000001)] }],
+    variants: REPLY.variants.filter(item => item.archetype === 'infantry_equipment') };
+  const infantry = stockGroups(tiny, 'type', 110)[0];
+  const logistics = balanceAt(tiny, infantry, 110)!;
+  assert.equal(logistics.need, 2000000n * 100000n);
+  assert.equal(shareOf(logistics), 5e-7);
+  assert.equal(shareScale(tiny, [infantry], null), 5e-7);
+  assert.equal(formatPercent(5e-7), '+0.00005%');
+  assert.equal(formatPercent(-0.3413), '−34%');
+  assert.ok(shareRuns(tiny, infantry).every(item => item.value > 0));
+});
+
+test('a variant of unknown type makes every type and arm total unknown, never zero or partial', () => {
+  // The logistics record resolves the rifle type, but the variant table was not read:
+  // a variant holding 100 rifles and making 70 a week has no type.
+  const unread: EquipmentStockpileReply = { ...REPLY,
+    variants: [...REPLY.variants, variant('77', '', null, [run(100, 130, 100)], [run(100, 123, 70)])] };
+  const infantry = stockGroups(unread, 'type', 110)[0];
+  assert.equal(infantry.key, 'infantry_equipment');
+  assert.equal(stockAt(unread, infantry, 110), null);
+  assert.equal(weeklyAt(unread, infantry, 110), null);
+  assert.equal(groupTooltip(unread, infantry, 'type', 110, { title: 'Infantry' }, 1000).rows.find(row => row.label === 'Produced per week')?.value, 'Not recorded');
+  assert.equal(stockAt(unread, stockGroups(unread, 'domain', 110)[0], 110), null);
+  // Its own variant row, and every other variant row, stay exact.
+  const rows = stockGroups(unread, 'variant', 110);
+  assert.equal(weeklyAt(unread, rows.find(row => row.key === 'c0ffee:77:')!, 110), 7000000n);
+  assert.equal(stockAt(unread, rows.find(row => row.key === 'c0ffee:1351:light_tank_chassis_1')!, 110), 72000000n);
+  // After its stock ends, or where it holds zero, it makes nothing unknown.
+  assert.equal(stockAt(unread, infantry, 140), 140000n * 100000n);
+  const zero: EquipmentStockpileReply = { ...REPLY, variants: [...REPLY.variants, variant('78', '', null, [run(100, 130, 0)])] };
+  assert.equal(stockAt(zero, stockGroups(zero, 'type', 110)[0], 110), 145666n * 100000n);
+  // The stock line over time breaks where the total is unknown.
+  assert.deepEqual(stockRuns(unread, infantry).map(item => [item.firstHour, item.lastHour]), [[140, 150]]);
+});
+
+test('a recorded negative stock draws left of zero', () => {
+  const negative: EquipmentStockpileReply = { ...REPLY, variants: [...REPLY.variants, variant('9', 'cas_2', 'cas_equipment', [run(100, 130, -200)])] };
+  assert.deepEqual(barExtent(negative, stockGroups(negative, 'type', 110), null), { positive: 146000n * 100000n, negative: 43n * 100000n });
+});
+
+test('a saved list keeps one choice per row, the first', () => {
+  const variant = (design: string) => setToken(`campaign:7:rifle#${design}`);
+  assert.deepEqual(oneChoicePerRow([variant('a'), setToken('infantry_equipment'), variant('b')]), [variant('a'), setToken('infantry_equipment')]);
+});
+
+test('the automatic lines are the top types among those that can be drawn', () => {
+  const groups = stockGroups(REPLY, 'type', 110);
+  // Trucks (no share) would take a land place; filtered first, the land places go to the rest.
+  const drawable = (group: { key: string }) => group.key !== 'motorized_equipment';
+  assert.deepEqual(automaticLines(REPLY, groups, 'type', drawable), ['infantry_equipment', 'light_tank_chassis', 'anti_tank_equipment', 'cas_equipment', 'fighter_equipment']);
+  assert.ok(!automaticLines(REPLY, groups, 'type', drawable).includes('motorized_equipment'));
+});
+
+test('the spoken tooltip lists every variant even where the eye sees eight', () => {
+  const many: EquipmentStockpileReply = { ...REPLY, variants: [...REPLY.variants.filter(item => item.archetype !== 'infantry_equipment'),
+    ...Array.from({ length: 10 }, (_, index) => variant(String(2000 + index), 'infantry_equipment_1', 'infantry_equipment', [run(100, 130, 100 - index)], [],
+      [{ firstHour: 0, name: `Rifle ${index}`, known: true }]))] };
+  const infantry = stockGroups(many, 'type', 110)[0];
+  const tip = groupTooltip(many, infantry, 'type', 110, { title: 'Infantry' }, 10000);
+  assert.ok(tip.rows.some(row => row.label === '2 more variants'));
+  assert.ok(tip.spoken?.includes('Rifle 9') && tip.spoken.includes('91'));
+});
+
+test('an arm is unknown wherever an unresolved logistics type could belong to it', () => {
+  // A resolved land type: 10 in stock, short 50; an unresolved type: 20, short 100.
+  const reply: EquipmentStockpileReply = { ...REPLY, variants: [],
+    logistics: [{ key: 'light_tank_chassis', balance: [run(96, 130, -50)], stock: [run(96, 130, 10)] },
+      { key: ':mod_gun', balance: [run(96, 130, -100)], stock: [run(96, 130, 20)] }] };
+  const arms = stockGroups(reply, 'domain', 110);
+  const land = arms.find(group => group.key === 'land')!;
+  assert.equal(typesComplete(reply, land, 110), false);
+  // Every measure summed from the record is unknown: balance, stock, need and share.
+  assert.equal(balanceAt(reply, land, 110), null);
+  assert.equal(shareOf(balanceAt(reply, land, 110)), null);
+  assert.deepEqual(shareRuns(reply, land), []);
+  assert.equal(groupLabel(reply, land, 110), 'Land: surplus or shortage not known');
+  const tip = groupTooltip(reply, land, 'domain', 110, { title: 'Land' }, 1000);
+  assert.equal(tip.rows.find(row => row.label === 'Surplus or shortage')?.value, 'Not known');
+  assert.ok(tip.note?.includes('which arm it belongs to cannot be told'));
+  assert.deepEqual(orderGroups(reply, arms, 110, 'shortage').map(group => group.key), ['unresolved', 'land']);
+  // The unresolved arm is exactly its own types; a type's own row is exact.
+  assert.equal(balanceAt(reply, arms.find(group => group.key === 'unresolved')!, 110)?.balance, -100n * 100000n);
+  assert.equal(balanceAt(reply, stockGroups(reply, 'type', 110).find(group => group.key === 'light_tank_chassis')!, 110)?.balance, -50n * 100000n);
+  // An unresolved type recorded at zero makes nothing unknown.
+  const zero: EquipmentStockpileReply = { ...reply, logistics: [reply.logistics[0], { key: ':mod_gun', balance: [run(96, 130, 0)], stock: [run(96, 130, 0)] }] };
+  assert.equal(balanceAt(zero, stockGroups(zero, 'domain', 110).find(group => group.key === 'land')!, 110)?.balance, -50n * 100000n);
+});
+
+test('an arm’s share line breaks where an unresolved type makes it unknown', () => {
+  // Land: 10 in stock, short 50 over 0-71; an unresolved type listed only in 24-47.
+  const reply: EquipmentStockpileReply = { ...REPLY, variants: [], balanceHours: [{ firstHour: 0, lastHour: 71 }], logisticsReads: [0, 24, 48],
+    logistics: [{ key: 'light_tank_chassis', balance: [run(0, 71, -50)], stock: [run(0, 71, 10)] },
+      // Listed (so deciding) only while it holds a shortage.
+      { key: ':mod_gun', balance: [run(24, 47, -100)], stock: [] }] };
+  const land = stockGroups(reply, 'domain', 30).find(group => group.key === 'land')!;
+  assert.deepEqual(shareRuns(reply, land).map(item => [item.firstHour, item.lastHour, Math.round(item.value * 100) / 100, item.breakBefore]),
+    [[0, 23, -83.33, true], [48, 71, -83.33, true]]);
+});
+
+test('log scale applies to a share chart only where every share shown is positive (the kit’s rule)', () => {
+  const view = { x: null, y: null };
+  assert.equal(resolveY(view as never, { yMin: null, yMax: null, log: true }, [5, 50]).log, true);
+  assert.equal(resolveY(view as never, { yMin: null, yMax: null, log: true }, [-10, 50]).log, false);
+  // Without log, an auto-fitted share axis holds zero on both signs.
+  assert.ok(resolveY(view as never, { yMin: null, yMax: null, log: false }, [5, 50]).range[0] <= 0);
+});
+
+test('the header and every row share one name and amount column', () => {
+  assert.deepEqual(columnVars(['Infantry Equipment', 'x'.repeat(40)], ['+1,549', '−373']), { '--stockpile-name': 'calc(28ch + 38px)', '--stockpile-amount': '7ch' });
+  assert.deepEqual(columnVars([], []), { '--stockpile-name': 'calc(8ch + 38px)', '--stockpile-amount': '5ch' });
+});
+
+test('a modded campaign’s types, arms and default lines come from its own data', () => {
+  // A mod removes vanilla infantry and adds a walker (land, unnamed in its localisation)
+  // and an airship (air); the lines chosen by default are its types, by recorded amounts.
+  const modded: EquipmentStockpileReply = { ...REPLY, logistics: [], balanceHours: [], logisticsReads: [], aiHours: [{ firstHour: 96, lastHour: 150 }],
+    types: [
+      { key: 'mod_walker_equipment', name: null, domain: 'land', needNote: null },
+      { key: 'mod_hovertank_chassis', name: 'Hover Tank', domain: 'land', needNote: null },
+      { key: 'mod_airship_equipment', name: 'Airship', domain: 'air', needNote: null },
+    ],
+    variants: [
+      variant('1', 'mod_walker_equipment_1', 'mod_walker_equipment', [run(100, 130, 500)], [], [{ firstHour: 90, name: null, known: true }]),
+      variant('2', 'mod_hovertank_chassis_1', 'mod_hovertank_chassis', [run(100, 130, 40)]),
+      variant('3', 'mod_airship_equipment_1', 'mod_airship_equipment', [run(100, 130, 7)]),
+    ] };
+  assert.equal(validateStockpileReply(modded), modded);
+  const groups = stockGroups(modded, 'type', 110);
+  assert.deepEqual(groups.map(group => group.key), ['mod_walker_equipment', 'mod_hovertank_chassis', 'mod_airship_equipment']);
+  // A type content does not name falls back visibly to its key, a variant to its token.
+  assert.equal(typeName(modded, 'mod_walker_equipment'), 'mod_walker_equipment');
+  assert.equal(variantName(modded.variants[0], 110), 'mod_walker_equipment_1');
+  assert.deepEqual(stockGroups(modded, 'domain', 110).map(group => [group.key, group.variants.length]), [['land', 2], ['air', 1]]);
+  assert.deepEqual(automaticGroups(modded, groups, 'type'), ['mod_walker_equipment', 'mod_hovertank_chassis', 'mod_airship_equipment']);
+});
+
+test('an arm\u2019s need is unknown while an unresolved type is listed, even at zero', () => {
+  // Guns: 10 in stock, short 50; an unresolved (maybe supply-truck) type recorded at 0 and 0.
+  const reply: EquipmentStockpileReply = { ...REPLY, variants: [],
+    logistics: [{ key: 'light_tank_chassis', balance: [run(96, 130, -50)], stock: [run(96, 130, 10)] },
+      { key: ':mod_truck', balance: [run(96, 130, 0)], stock: [run(96, 130, 0)] }] };
+  const land = stockGroups(reply, 'domain', 110).find(group => group.key === 'land')!;
+  const logistics = balanceAt(reply, land, 110)!;
+  // Its zeros add nothing to the balance or the stock, but prove no zero need.
+  assert.deepEqual([logistics.balance, logistics.stock, logistics.need], [-50n * 100000n, 10n * 100000n, null]);
+  assert.match(logistics.needNote ?? '', /not derived/);
+  assert.equal(shareOf(logistics), null);
+  // The type's own row keeps its need.
+  assert.equal(balanceAt(reply, stockGroups(reply, 'type', 110).find(group => group.key === 'light_tank_chassis')!, 110)?.need, 60n * 100000n);
+});
+
+test('recorded production shows without any stockpile read', () => {
+  const productionOnly: EquipmentStockpileReply = { ...REPLY, reads: [], stockHours: [], logistics: [], logisticsReads: [], balanceHours: [], aiHours: [{ firstHour: 96, lastHour: 150 }] };
+  assert.equal(hasRecords(productionOnly), true);
+  const infantry = stockGroups(productionOnly, 'type', 110)[0];
+  assert.equal(stockAt(productionOnly, infantry, 110), null);
+  assert.equal(weeklyAt(productionOnly, infantry, 110), 54190000n);
+  assert.equal(hasRecords({ ...productionOnly, lineReads: [], aiHours: [] }), false);
+});
+
+test('a variant\u2019s name is not known from a boundary until the next read', () => {
+  const renamed = variant('5', 'tank_1', 'light_tank_chassis', [], [], [{ firstHour: 0, name: 'Old name', known: true },
+    { firstHour: 10, name: null, known: false }, { firstHour: 20, name: 'New name', known: true }]);
+  assert.equal(variantName(renamed, 5), 'Old name');
+  assert.equal(variantName(renamed, 15), 'tank_1');
+  assert.equal(variantName(renamed, 25), 'New name');
+});
+
+/** A reply of `types` equipment types, each with `perType` unchanged variants and a
+ * logistics record, over `days` daily reads. */
+function sized(types: number, perType: number, days: number): EquipmentStockpileReply {
+  const last = days * 24;
+  const reads = Array.from({ length: days }, (_, day) => day * 24);
+  return { branchId: '1', tag: 'GER', campaignKey: 'c0ffee', decimals: 5, warnings: [], reads, logisticsReads: reads, lineReads: reads,
+    stockHours: [{ firstHour: 0, lastHour: last }], lineHours: [{ firstHour: 0, lastHour: last }],
+    balanceHours: [{ firstHour: 0, lastHour: last }], aiHours: [], needBoundRaw: String(0x53e2d620fb40),
+    types: Array.from({ length: types }, (_, index) => ({ key: `type_${index}`, name: null, domain: index % 2 ? 'air' as const : 'land' as const, needNote: null })),
+    logistics: Array.from({ length: types }, (_, index) => ({ key: `type_${index}`, balance: [run(0, last, -index)], stock: [run(0, last, 10 + index)] })),
+    variants: Array.from({ length: types * perType }, (_, index) => variant(String(index + 1), `v_${index}`, `type_${index % types}`, [run(0, last, index % 97)], [run(0, last, 1)])) };
+}
+
+/** The median time of a few calls, in milliseconds. */
+function timed(work: () => void): number {
+  const times = Array.from({ length: 5 }, () => { const start = performance.now(); work(); return performance.now() - start; });
+  return times.sort((a, b) => a - b)[2];
+}
+
+test('the campaign scans grow linearly with the reply, not with reads times variants', () => {
+  const run = (reply: EquipmentStockpileReply) => () => {
+    const groups = stockGroups(reply, 'type', 0);
+    barExtent(reply, groups, null);
+    shareScale(reply, groups, null);
+    automaticGroups(reply, groups, 'type');
+  };
+  const small = sized(25, 50, 912);
+  const large = sized(100, 50, 3650);
+  timed(run(small));
+  const [short, long] = [timed(run(small)), timed(run(large))];
+  // Four times the types, variants and reads: well under the sixteen times a
+  // reads-by-variants scan would take, and within a render's budget.
+  assert.ok(long < Math.max(short * 10, 60), `${short.toFixed(1)} ms, then ${long.toFixed(1)} ms`);
+  assert.ok(long < 1000, `${long.toFixed(1)} ms for 100 types, 5,000 variants and 3,650 reads`);
+});
+
+test('excluded types never make a filtered arm unknown; variants of unknown type still do', () => {
+  const reply: EquipmentStockpileReply = { ...REPLY, variants: [],
+    logistics: [{ key: 'infantry_equipment', balance: [run(96, 130, 5)], stock: [run(96, 130, 10)] },
+      { key: ':mod_gun', balance: [run(96, 130, -100)], stock: [run(96, 130, 20)] },
+      { key: ':mod_truck', balance: [run(96, 130, 0)], stock: [run(96, 130, 0)] }] };
+  // Only rifles included: the unresolved types are excluded by their keys.
+  const land = stockGroups(reply, 'domain', 110, ['infantry_equipment']).find(group => group.key === 'land')!;
+  assert.deepEqual(land.scope, ['infantry_equipment']);
+  assert.equal(typesComplete(reply, land, 110), true);
+  assert.deepEqual(balanceAt(reply, land, 110), { balance: 5n * 100000n, stock: 10n * 100000n, need: 5n * 100000n, needNote: null });
+  // Unfiltered, they count.
+  assert.equal(balanceAt(reply, stockGroups(reply, 'domain', 110).find(group => group.key === 'land')!, 110), null);
+  // Included explicitly, an unresolved type counts again.
+  assert.equal(typesComplete(reply, stockGroups(reply, 'domain', 110, ['infantry_equipment', ':mod_gun']).find(group => group.key === 'land')!, 110), false);
+  // A variant of unknown type could be a rifle, so it keeps the filtered rifles row unknown.
+  const untyped: EquipmentStockpileReply = { ...REPLY, variants: [...REPLY.variants, variant('77', '', null, [run(100, 130, 100)])] };
+  const rifles = stockGroups(untyped, 'type', 110, ['infantry_equipment'])[0];
+  assert.equal(stockAt(untyped, rifles, 110), null);
+});
+
+test('a saved variant selects only the same design of the same campaign', () => {
+  const tank = variant('1351', 'light_tank_chassis_1', 'light_tank_chassis', [run(100, 130, 1)]);
+  const plane = variant('1351', 'fighter_equipment_1', 'fighter_equipment', [run(100, 130, 1)]);
+  assert.equal(variantKey(REPLY, tank), 'c0ffee:1351:light_tank_chassis_1');
+  // The handle alone matches; the stored key does not.
+  const other: EquipmentStockpileReply = { ...REPLY, variants: [plane] };
+  const source = groupChoices(stockGroups(other, 'variant', 110), 'variant');
+  assert.equal(source.lines(variantKey(REPLY, tank)), 0);
+  assert.equal(source.lines(variantKey(REPLY, plane)), 1);
+  // Another campaign's custom tank with the same handle and token is another design.
+  const campaignB: EquipmentStockpileReply = { ...REPLY, campaignKey: 'beef', variants: [tank] };
+  const inB = groupChoices(stockGroups(campaignB, 'variant', 110), 'variant');
+  assert.equal(inB.lines(variantKey(REPLY, tank)), 0);
+  assert.equal(inB.lines(variantKey(campaignB, tank)), 1);
+  assert.notEqual(variantKey(REPLY, tank), variantKey(campaignB, tank));
+});
+
+test('every group key a setting stores is storable, unresolved types and their arm included', () => {
+  const reply: EquipmentStockpileReply = { ...REPLY, campaignKey: 'c0ffee'.repeat(5) + 'ab',
+    variants: [...REPLY.variants, variant('77', 'mod_gun_1', null, [run(100, 130, 1)])],
+    logistics: [...REPLY.logistics, { key: ':mod_gun', balance: [run(96, 130, -100)], stock: [run(96, 130, 20)] }] };
+  for (const grouping of ['type', 'variant', 'domain'] as const) {
+    const keys = stockGroups(reply, grouping, 110).map(group => group.key);
+    assert.ok(keys.length > 0);
+    for (const key of keys) assert.ok(storableToken(key), `${grouping} key ${key}`);
+  }
+  assert.ok(stockGroups(reply, 'type', 110).some(group => group.key === ':mod_gun'));
+  assert.ok(stockGroups(reply, 'domain', 110).some(group => group.key === 'unresolved'));
+  assert.equal(typeName(reply, ':mod_gun'), 'mod_gun');
+  // Included by its key, an unresolved type limits the rows like any other.
+  const included = stockGroups(reply, 'type', 110, [':mod_gun']);
+  assert.deepEqual(included.map(group => group.key), [':mod_gun']);
+});
+
+test('a type whose key a setting cannot store can be included and chosen for the chart', () => {
+  const reply: EquipmentStockpileReply = { ...REPLY,
+    types: [...REPLY.types, { key: 'mod/rifles', name: 'Mod rifles', domain: 'land', needNote: null }],
+    variants: [...REPLY.variants, variant('90', 'mod/rifles_1', 'mod/rifles', [run(100, 130, 7)], [], [{ firstHour: 90, name: 'Mod rifle', known: true, design: 'feed' }])] };
+  const token = setToken('mod/rifles');
+  assert.equal(storableToken('mod/rifles'), false);
+  assert.ok(storableToken(token));
+  // Included types store the token; read back, it limits the rows to the key.
+  const included = contentSet(token).map(contentKey);
+  assert.deepEqual(stockGroups(reply, 'type', 110, included).map(group => group.key), ['mod/rifles']);
+  // The chart's chips store the same token, so the type can be chosen.
+  for (const grouping of ['type', 'variant', 'domain'] as const) {
+    const groups = stockGroups(reply, grouping, 110);
+    const source = storedChoices(stockChoices(groups, 'group'));
+    const group = grouping === 'type' ? groups.find(item => item.key === 'mod/rifles')! : groups.find(item => item.variants.some(variant => variant.id === '90'))!;
+    const key = choiceKey(group, 110)!;
+    const action = toggleChosen(source, [], [], setToken(key), 8);
+    assert.ok('value' in action, `${grouping}: ${JSON.stringify(action)}`);
+    const chosen = chosenShown(source, contentSet(action.value), null).map(token => choiceRow(contentKey(token)));
+    assert.ok(chosen.includes(group.key), `${grouping}: ${chosen.join(', ')}`);
+    for (const item of groups) {
+      const choice = choiceKey(item, 110);
+      if (choice != null) assert.ok(storableToken(setToken(choice)), `${grouping} key ${choice}`);
+    }
+  }
+});
+
+test('toggling a renamed variant removes the fingerprint that selected its row', () => {
+  const data: EquipmentStockpileReply = { ...REPLY, variants: [
+    variant('1351', 'light_tank_chassis_1', 'light_tank_chassis', [run(100, 130, 5)], [], [
+      { firstHour: 100, name: 'Old name', known: true, design: 'aaaa' },
+      { firstHour: 120, name: 'New name', known: true, design: 'bbbb' },
+    ]),
+    variant('15', 'infantry_equipment_1', 'infantry_equipment', [run(100, 130, 8)], [], [
+      { firstHour: 100, name: 'Rifle', known: true, design: 'cccc' },
+    ]),
+  ] };
+  const groups = stockGroups(data, 'variant', Infinity);
+  const renamed = groups.find(group => group.variants[0]?.id === '1351')!;
+  const rifle = groups.find(group => group.variants[0]?.id === '15')!;
+  const source = storedChoices(stockChoices(groups, 'variant'));
+  const stored = [renamed, rifle].map(group => setToken(choiceKey(group, 100)!));
+  const shown = chosenShown(source, stored, null);
+  const choice = choiceKey(renamed, 125, shown.map(contentKey))!;
+  assert.equal(choice, contentKey(stored[0]));
+  assert.notEqual(choice, choiceKey(renamed, 125));
+  const action = toggleChosen(source, stored, shown, setToken(choice), 8);
+  assert.ok('value' in action);
+  assert.equal(action.value, stored[1]);
+  const remaining = contentSet(action.value);
+  assert.deepEqual(chosenShown(source, remaining, null).map(token => choiceRow(contentKey(token))), [rifle.key]);
+  const add = toggleChosen(source, remaining, remaining, setToken(choiceKey(renamed, 125, remaining.map(contentKey))!), 8);
+  assert.ok('value' in add);
+  assert.deepEqual(contentSet(add.value), [stored[1], setToken(choiceKey(renamed, 125)!)]);
+});
+
+test('a saved variant choice is its design: another design under the handle is shown unavailable, never drawn', () => {
+  const tank = (designs: [number, string | null][]) => variant('1351', 'light_tank_chassis_1', 'light_tank_chassis', [run(100, 130, 5)], [],
+    designs.map(([firstHour, design], index) => ({ firstHour, name: `Design ${index}`, known: true, design })));
+  const branchA: EquipmentStockpileReply = { ...REPLY, variants: [tank([[90, 'aaaa'], [120, 'cccc']])] };
+  const rowsA = stockGroups(branchA, 'variant', 110);
+  const row = rowsA[0];
+  // The design recorded by the hour shown, else the first.
+  assert.equal(designAt(row.variants[0], 100), 'aaaa');
+  assert.equal(designAt(row.variants[0], 125), 'cccc');
+  assert.equal(designAt(row.variants[0], 10), 'aaaa');
+  const chosenEarly = choiceKey(row, 100)!;
+  assert.equal(chosenEarly, `${row.key}#aaaa`);
+  assert.equal(choiceRow(chosenEarly), row.key);
+  // Renamed in this branch (a new fingerprint), it is still the same design.
+  const inA = stockChoices(rowsA, 'variant');
+  assert.equal(inA.lines(chosenEarly), 1);
+  assert.equal(inA.lines(choiceKey(row, 125)!), 1);
+  assert.deepEqual(otherDesigns(rowsA, [chosenEarly]), []);
+  // A reload of an earlier save gave the handle to another design of the same type.
+  const branchB: EquipmentStockpileReply = { ...REPLY, variants: [tank([[90, 'bbbb']])] };
+  const rowsB = stockGroups(branchB, 'variant', 110);
+  assert.equal(rowsB[0].key, row.key, 'same campaign, handle and token');
+  assert.equal(stockChoices(rowsB, 'variant').lines(chosenEarly), 0);
+  assert.deepEqual(otherDesigns(rowsB, [chosenEarly]).map(other => [other.group.key, other.reason]), [[row.key, OTHER_DESIGN]]);
+  // A choice without a design, or of a variant whose design was never recorded, never matches.
+  assert.equal(stockChoices(rowsB, 'variant').lines(row.key), 0);
+  const unrecorded: EquipmentStockpileReply = { ...REPLY, variants: [tank([[90, null]])] };
+  const rowsU = stockGroups(unrecorded, 'variant', 110);
+  assert.equal(choiceKey(rowsU[0], 110), null);
+  assert.deepEqual(otherDesigns(rowsU, [chosenEarly]).map(other => other.reason), [NO_DESIGN]);
+  // Types and arms are chosen by their keys.
+  const types = stockGroups(REPLY, 'type', 110);
+  assert.equal(choiceKey(types[0], 110), types[0].key);
+});
+
+test('settings offer only what can be drawn, and each chip says why it cannot', () => {
+  // Trucks (a supply_truck type) have a recorded balance but no derivable need.
+  const types = stockGroups(REPLY, 'type', Infinity);
+  const trucks = types.find(group => group.key === 'motorized_equipment')!;
+  assert.deepEqual(chartRuns(REPLY, trucks, 'type'), []);
+  const offered = chartChoices(REPLY, 'type').map(choice => contentKey(choice.value));
+  assert.ok(!offered.includes('motorized_equipment'), offered.join(', '));
+  assert.ok(offered.includes('infantry_equipment'));
+  assert.match(undrawableReason(REPLY, trucks, 'type'), /trucks .*so it has no share to draw$/);
+  // Chosen alone, it draws nothing, so the automatic lines show instead of an empty chart.
+  const source = stockChoices(types, 'equipment type', group => chartRuns(REPLY, group, 'type').length > 0);
+  assert.equal(source.lines('motorized_equipment'), 0);
+  assert.deepEqual(chosenShown(source, ['motorized_equipment'], ['infantry_equipment']), ['infantry_equipment']);
+  // By variant the chart draws stock, so the truck variant is offered; one with no
+  // recorded design is not.
+  const variants = chartChoices(REPLY, 'variant').map(choice => choiceRow(contentKey(choice.value)));
+  assert.deepEqual(variants, []);
+  const designed: EquipmentStockpileReply = { ...REPLY, variants: REPLY.variants.map(item => ({ ...item, names: [{ firstHour: 90, name: null, known: true, design: `d${item.id}` }] })) };
+  assert.ok(chartChoices(designed, 'variant').some(choice => contentKey(choice.value).includes(':1329:motorized_equipment_1#d1329')));
+});

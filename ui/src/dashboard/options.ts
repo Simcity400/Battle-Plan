@@ -46,14 +46,28 @@ const TOKEN_TEXT = /^[^\s\p{Cc},]*$/u;
 /** Bounded in UTF-16 units, as the stored text as a whole is. */
 const contentToken = (value: string) => value.length <= MAX_TOKEN && TOKEN_TEXT.test(value);
 /** One token of a content set. */
-const setToken = (value: string) => value.length > 0 && contentToken(value);
+const setTokenText = (value: string) => value.length > 0 && contentToken(value);
+const ESCAPED_POINT = /:([0-9a-f]{1,6}):/g;
+const unicodeScalar = (point: number) => point <= 0x10ffff && (point < 0xd800 || point > 0xdfff);
+const validEscapes = (token: string) => [...token.matchAll(ESCAPED_POINT)].every(([, hex]) => unicodeScalar(parseInt(hex, 16)));
 
 /** Whether a content token can be stored in a content set: some content names
  * cannot (too long, or with characters a stored token may not hold), and a control
  * offering them says so rather than failing when picked. */
-export const storableToken = (token: string) => setToken(token);
+export const storableToken = (token: string) => setTokenText(token) && validEscapes(token);
 /** Why a chip for a token that cannot be stored is disabled. */
 export const UNSTORABLE = 'Its content name is too long or holds characters a setting cannot store';
+
+/** A content key as a storable token: each character a setting cannot store (and
+ * `:` itself) is written as `:<hex code point>:`, so a key with any characters, such
+ * as a type content does not resolve (`?token`), can still be chosen; plain keys are
+ * unchanged. `contentKey` reads it back. Only its length, or a lone surrogate, can
+ * still make it unstorable (`storableToken`). */
+export const setToken = (key: string) => key.replace(/[^\w.-]/gu, character => `:${character.codePointAt(0)!.toString(16)}:`);
+export const contentKey = (token: string) => token.replace(ESCAPED_POINT, (escape, hex: string) => {
+  const point = parseInt(hex, 16);
+  return unicodeScalar(point) ? String.fromCodePoint(point) : escape;
+});
 
 /** The most tokens a content-set field really holds. */
 export const setLimit = (max: number) => Math.max(0, Math.min(MAX_SET_TOKENS, Math.floor(max)));
@@ -104,7 +118,7 @@ export function validOption(field: OptionField, value: unknown): value is Option
   switch (field.kind) {
     case 'toggle': return typeof value === 'boolean';
     case 'choice': return typeof value === 'string' && field.choices.some(choice => choice.value === value);
-    case 'content-choice': return typeof value === 'string' && contentToken(value);
+    case 'content-choice': return typeof value === 'string' && contentToken(value) && validEscapes(value);
     case 'content-set': {
       if (typeof value !== 'string') return false;
       const tokens = contentSet(value);

@@ -58,3 +58,15 @@ test('a tooltip is read out as one line, or as its full content when trimmed', (
     'Oil; Per day; Produced 32; Not recorded; Read earlier.');
   assert.equal(tooltipText({ title: 'Oil', rows: [], spoken: 'Oil in full' }), 'Oil in full');
 });
+
+test('a full form, when given, is what assistive technology reads whatever is shown', () => {
+  const full: TooltipContent = { title: 'Rifles', rows: Array.from({ length: 10 }, (_, index) => ({ label: `Variant ${index}`, value: String(index) })) };
+  const capped: TooltipContent = { title: 'Rifles', rows: [...full.rows.slice(0, 8), { label: '2 more variants' }] };
+  // The capped form fits, but the spoken text lists every variant.
+  const shown = fitTooltip([capped], 10000, { full });
+  assert.equal(shown.rows.length, 9);
+  assert.ok(shown.spoken?.includes('Variant 9'));
+  // A cut form reads the full one too; without it, the first form is read as before.
+  assert.ok(fitTooltip([capped], 60, { full }).spoken?.includes('Variant 9'));
+  assert.equal(fitTooltip([capped], 10000).spoken, undefined);
+});

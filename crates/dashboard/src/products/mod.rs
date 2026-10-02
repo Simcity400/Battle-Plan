@@ -13,6 +13,8 @@ pub mod country_groups;
 pub mod country_measure;
 pub mod country_stability;
 pub mod country_styles;
+pub mod equipment;
+pub mod equipment_stockpile;
 pub mod idea_format;
 pub mod idea_history;
 pub mod land_owners;
@@ -218,6 +220,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
     register::<resource_balance::ResourceBalance>(),
+    register::<equipment_stockpile::EquipmentStockpile>(),
     register::<trade_flows::TradeFlows>(),
     register::<subjects::Subjects>(),
 ];
@@ -505,6 +508,8 @@ mod tests {
             "IdeaHistoryReply",
             "PartyHistoryReply",
             "ResourceBalanceReply",
+            "EquipmentStockpileReply",
+            "AmountRun",
             "ResourceInfo",
             "TradeFlowsReply",
             "SubjectReply",

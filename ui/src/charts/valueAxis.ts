@@ -177,3 +177,10 @@ export function formatAxisValue(value: number, ticks: readonly number[] = [value
   if (Math.abs(value) >= 1000 && kPlaces <= 1) return `${formatFixed(own.units, own.scale + 3, kPlaces)}k`;
   return formatFixed(own.units, own.scale, places);
 }
+
+/** A percentage value-axis label: `formatAxisValue` with a percent sign, so ticks
+ * of a small range stay apart (0.1% beside 0.2%, never every tick "0%"). Pass
+ * it as a time chart's `formatValue` for values already in per cent. */
+export function formatAxisPercent(value: number, ticks: readonly number[] = [value]): string {
+  return `${formatAxisValue(value, ticks)}%`;
+}

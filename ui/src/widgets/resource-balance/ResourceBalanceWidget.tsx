@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type { CSSProperties } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -12,7 +12,8 @@ import { clipToSpans, extentOfAll, runAt, sameStretch } from '../../charts/serie
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import type { ChartTokens } from '../../charts/tokens';
-import { hideTooltip, showTooltip, tooltipText } from '../../charts/tooltip';
+import { tooltipText } from '../../charts/tooltip';
+import { useRowTooltips } from '../../charts/useRowTooltips';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatAmount, formatSigned } from '../../charts/valueAxis';
@@ -120,25 +121,18 @@ function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, break
     const run = series ? runAt(series.runs, hour) : null;
     return { resource, balance: run ? balanceOf(run) : null, glides: series != null && sameStretch(series.runs, drawnHour.current, hour) };
   }).filter(row => !hideEmpty || !row.balance || row.balance.supply > 0n || row.balance.demand > 0n);
-  // Hover follows playback: the pointer's row is re-described whenever the hour changes.
-  const [hovered, setHovered] = useState<{ id: number; x: number; y: number } | null>(null);
   // Every row's breakdown and its spoken text, built once per hour (and reply, names
   // and window); moving the pointer reuses them.
   const described = useMemo(() => new Map(data.resources.map(resource => {
     const content = breakdown(resource, hour);
     return [resource.id, { content, text: tooltipText(content ?? { title: resourceName(resource), rows: [] }) }] as const;
   })), [data, breakdown, hour]);
-  // Out of view (scrolled away, a hidden tab), the widget shows no tooltip and forgets the pointer.
-  useEffect(() => { if (!active) { setHovered(null); hideTooltip(owner); } }, [active, owner]);
+  // Hover and focus follow playback: the row shown is re-described whenever the hour changes (the kit's row tooltips).
+  const content = useCallback((id: number) => described.get(id)?.content ?? null, [described]);
+  const rowTips = useRowTooltips<number>({ owner, active, content, revision: `${hour}:${data.branchId}`, onMenu: (_, x, y) => onMenu(hour, x, y) });
   // Only a shown tooltip's hour has its partners named.
-  const tipHour = hovered && active ? hour : null;
+  const tipHour = rowTips.hovered != null && active ? hour : null;
   useEffect(() => onTipHour(tipHour), [tipHour, onTipHour]);
-  useEffect(() => {
-    const content = hovered && active ? described.get(hovered.id)?.content : null;
-    if (hovered && content) showTooltip(owner, content, hovered.x, hovered.y, `${hovered.id}:${hour}:${data.branchId}`);
-    else hideTooltip(owner);
-  }, [hovered, hour, data, owner, described, active]);
-  useEffect(() => () => hideTooltip(owner), [owner]);
   const any = (pick: (balance: Balance) => bigint) => rows.some(row => row.balance && pick(row.balance) !== 0n);
   const [supplyColor, demandColor] = [tokens.categories[0], tokens.categories[1]];
   const legend = [
@@ -159,29 +153,15 @@ function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, break
   const describe = (resource: ResourceInfo, balance: Balance | null) => balance
     ? `${resourceName(resource)}: supply ${formatAmount(balance.supply, data.decimals)}, demand ${formatAmount(balance.demand, data.decimals)}, ${balance.net < 0n ? 'deficit' : 'surplus'} ${formatSigned(balance.net, data.decimals)}`
     : `${resourceName(resource)}: not recorded at this time`;
-  const descriptionId = (resource: ResourceInfo) => `${owner}-${resource.id}-breakdown`;
-  const pointAt = (element: HTMLElement) => { const rect = element.getBoundingClientRect(); return { x: rect.right - 8, y: rect.top + rect.height / 2 }; };
   return <>
     <p className="resource-caption">Per day</p>
     <Legend label="Bar parts" items={legend} />
     <ol className="resource-bars" style={glide} aria-label={`Resources on ${dayLabel(hour)}`}>
-      {rows.map(({ resource, balance, glides }) => <li key={resource.id} tabIndex={0} aria-label={describe(resource, balance)} aria-describedby={descriptionId(resource)}
+      {rows.map(({ resource, balance, glides }) => <li key={resource.id} aria-label={describe(resource, balance)} {...rowTips.rowProps(resource.id)}
         // Across a gap or a change of country the bar jumps, as a line breaks there.
-        style={glides ? undefined : { '--resource-glide': '0ms' } as CSSProperties}
-        onPointerMove={(event: ReactPointerEvent) => setHovered({ id: resource.id, x: event.clientX, y: event.clientY })}
-        onPointerLeave={() => setHovered(null)}
-        onFocus={event => setHovered({ id: resource.id, ...pointAt(event.currentTarget) })}
-        onBlur={() => setHovered(null)}
-        onContextMenu={event => { event.preventDefault(); onMenu(hour, event.clientX, event.clientY); }}
-        onKeyDown={(event: ReactKeyboardEvent<HTMLLIElement>) => {
-          if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
-            event.preventDefault();
-            const point = pointAt(event.currentTarget);
-            onMenu(hour, point.x, point.y);
-          } else if (event.key === 'Escape') setHovered(null);
-        }}>
+        style={glides ? undefined : { '--resource-glide': '0ms' } as CSSProperties}>
         {/* The breakdown the focus tooltip shows, in full even where the window trims it (the tooltip layer is not read out). */}
-        <span id={descriptionId(resource)} className="sr-only">{described.get(resource.id)?.text}</span>
+        <span id={rowTips.descriptionId(resource.id)} className="sr-only">{described.get(resource.id)?.text}</span>
         <span className="resource-name">{resource.icon ? <img src={resource.icon} alt="" /> : <span className="resource-icon-missing" aria-hidden="true" />}
           <span>{resourceName(resource)}</span></span>
         {balance ? <>

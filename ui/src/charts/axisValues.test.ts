@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { exactDecimal, formatAmount, formatAxisValue, formatNativeFixed5, formatSigned, linearTicks, rescale, rescaleSum } from './valueAxis.ts';
+import { exactDecimal, formatAmount, formatAxisPercent, formatAxisValue, formatNativeFixed5, formatSigned, linearTicks, rescale, rescaleSum } from './valueAxis.ts';
 
 const axis = (ticks: number[]) => ticks.map(tick => formatAxisValue(tick, ticks));
 
@@ -66,6 +66,12 @@ test('amounts in binary fixed point are written exactly in decimals', () => {
   assert.equal(rescale(16384n, 32768n, 2), 50n);
   // Any denominator, such as a net over two scales.
   assert.equal(rescale(2n, 3n, 3), 667n);
+});
+
+test('percent axis labels keep small ticks apart and hold their sign', () => {
+  const ticks = [0, 0.1, 0.2, 0.3, 0.4];
+  assert.deepEqual(ticks.map(tick => formatAxisPercent(tick, ticks)), ['0.0%', '0.1%', '0.2%', '0.3%', '0.4%']);
+  assert.deepEqual([-50, 0, 50].map(tick => formatAxisPercent(tick, [-50, 0, 50])), ['−50%', '0%', '50%']);
 });
 
 test('fraction sums round once at ties with equal or different denominators', () => {

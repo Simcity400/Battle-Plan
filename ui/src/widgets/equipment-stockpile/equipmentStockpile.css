@@ -1,0 +1,40 @@
+.equipment-stockpile { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0 var(--space-2); }
+.equipment-stockpile > .chip-set { padding: 0 var(--space-3); }
+.stockpile-caption, .stockpile-empty { margin: 0; padding: 0 var(--space-3); font-size: var(--type-xs); color: var(--muted); }
+/* The bars' parent carries the shared column widths to the header and every row
+   without a box of its own (custom properties inherit through display: contents). */
+.stockpile-rows { display: contents; }
+/* Mock-up economy-1: art and name, a bar from zero, the exact amount at the right.
+   Rows sit at their slot and slide to a new one (useRowMotion); the list scrolls. */
+.stockpile-bars { position: relative; flex: none; margin: 0 var(--space-3); padding: 0; list-style: none; }
+.equipment-stockpile:has(.stockpile-bars) { overflow-y: auto; }
+.stockpile-bars > li { position: absolute; top: 0; left: 0; right: 0; display: grid; grid-template-columns: var(--stockpile-name, 12em) minmax(60px, 1fr) var(--stockpile-amount, 6ch);
+  align-items: center; column-gap: var(--space-3); border-radius: var(--r-sm); }
+.stockpile-bars > li:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.stockpile-bars > li:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; background: var(--hover); }
+.stockpile-name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; font-size: var(--type-sm); font-weight: 500; color: var(--text); }
+.stockpile-name > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Neutral in place of the game's art, which the recording does not tell (see README). */
+.stockpile-art { width: 30px; height: 16px; flex: none; border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.stockpile-track { position: relative; height: 12px; }
+.stockpile-zero { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--chart-axis); }
+.stockpile-bar { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--accent);
+  transition: left var(--stock-glide, 0ms) var(--ease), width var(--stock-glide, 0ms) var(--ease); }
+.stockpile-bar.is-negative { background: var(--error); }
+.stockpile-bars b { justify-self: end; font-size: var(--type-sm); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
+.stockpile-bars b.is-negative { color: var(--error); }
+.stockpile-missing { grid-column: span 2; font-size: var(--type-sm); color: var(--muted); }
+.stockpile-chart { flex: 1; min-height: 0; }
+/* Diverging rows (a player-controlled country): shortage left, surplus right, one scale,
+   the exact amount just past the bar's end; the track leaves room for it on both sides. */
+.stockpile-bars.is-diverging > li { grid-template-columns: var(--stockpile-name, 12em) minmax(80px, 1fr); }
+.stockpile-track.is-diverging { margin: 0 var(--stockpile-amount, 7ch); }
+.stockpile-end { position: absolute; top: 50%; font-size: var(--type-sm); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap;
+  transition: left var(--stock-glide, 0ms) var(--ease); }
+.stockpile-end.is-right { transform: translate(6px, -50%); }
+.stockpile-end.is-left { transform: translate(calc(-100% - 6px), -50%); }
+.stockpile-end.is-negative { color: var(--error); }
+.stockpile-end.is-unshared { color: var(--muted); }
+.stockpile-sides { display: grid; grid-template-columns: var(--stockpile-name, 12em) 1fr 1fr; margin: 0; padding: 0 var(--space-3); font-size: var(--type-xs); color: var(--muted); }
+.stockpile-sides > span:first-child { grid-column: 2; text-align: center; }
+.stockpile-sides > span:last-child { text-align: center; }

@@ -853,6 +853,121 @@ series: Array<ResourceSeries>,
  * deals.
  */
 dealHours: Array<HourSpan>, trades: Array<TradeRun>, warnings: Array<string>, };
+export type AmountRun = { firstHour: number, lastHour: number, amountRaw: string | null, };
+export type Domain = "land" | "air" | "naval";
+export type StockVariantName = {
+/**
+ * The read these names are from; they hold until the next entry.
+ */
+firstHour: number,
+/**
+ * `GetDisplayName`; null when content does not name it, or when not known.
+ */
+name: string | null,
+/**
+ * False from an hour the variant's names stopped being known (a gap, or a due
+ * read of the variant table that did not land) until the next entry.
+ */
+known: boolean,
+/**
+ * The design's fingerprint as read then (`equipment::design_fingerprint`: its
+ * name, modules and upgrade levels); null where not known. A saved variant
+ * choice carries it, so a later branch's other design under the same handle
+ * is never taken for it.
+ */
+design: string | null, };
+export type StockVariant = {
+/**
+ * The variant's native handle (`VariantDefinitions.id`), as a decimal string.
+ */
+id: string,
+/**
+ * The equipment type's script key; empty when no read of the variant table
+ * named it.
+ */
+token: string,
+/**
+ * Its type's archetype key; null when content does not resolve its type.
+ */
+archetype: string | null, names: Array<StockVariantName>,
+/**
+ * In stock, fixed5; no run inside a known span means none.
+ */
+stock: Array<AmountRun>,
+/**
+ * Units a week from its military production lines, fixed5; no run inside a
+ * known span means none.
+ */
+weekly: Array<AmountRun>, };
+export type StockType = { key: string,
+/**
+ * The localised key; null when content does not name it.
+ */
+name: string | null, domain: Domain,
+/**
+ * Why its need cannot be derived from the logistics record; null when
+ * `max(0, stock) − balance` is exactly what it needs.
+ */
+needNote: string | null, };
+export type TypeLogistics = {
+/**
+ * The archetype key (a `types` key), or [`UNRESOLVED_MARK`] and the recorded
+ * token's spelling when content does not resolve it.
+ */
+key: string, balance: Array<AmountRun>, stock: Array<AmountRun>, };
+export type EquipmentStockpileReply = { branchId: string, tag: string,
+/**
+ * The recorded campaign identity (`ReplayMetadata::campaign_key`). A variant's
+ * handle is an id only within its campaign, so saved variant choices carry it.
+ */
+campaignKey: string, decimals: number,
+/**
+ * Every archetype a listed variant belongs to, in the equipment database's
+ * order (the game's order); empty without content.
+ */
+types: Array<StockType>, variants: Array<StockVariant>,
+/**
+ * Hours the stockpile was read, ascending: a value shown later is as of the
+ * latest read before it.
+ */
+reads: Array<number>,
+/**
+ * Hours whose stock is known: each read and the hours carried from it.
+ */
+stockHours: Array<HourSpan>,
+/**
+ * Hours whose production lines are known, likewise. Lines are captured apart
+ * from the stockpile, so stock can be known where production is not.
+ */
+lineHours: Array<HourSpan>,
+/**
+ * Hours the production lines were read, ascending, for dating a weekly rate
+ * apart from the stockpile read.
+ */
+lineReads: Array<number>,
+/**
+ * Each archetype's logistics record over the branch.
+ */
+logistics: Array<TypeLogistics>,
+/**
+ * Hours the logistics record was read for the country, ascending.
+ */
+logisticsReads: Array<number>,
+/**
+ * Hours whose balance is known: reads that held the country's rows and the
+ * hours carried from them.
+ */
+balanceHours: Array<HourSpan>,
+/**
+ * Hours the country was AI-controlled, so the game computed no balance: reads
+ * of a complete table without its rows and the hours carried from them.
+ */
+aiHours: Array<HourSpan>,
+/**
+ * The saturation bound of `Demand + PoolDifference`, fixed5: a derived need
+ * at it is not a real sum.
+ */
+needBoundRaw: string, warnings: Array<string>, };
 export type TradeFlowParams = { branchId: string,
 /**
  * Only flows with one of these countries as seller or buyer; every flow when null.

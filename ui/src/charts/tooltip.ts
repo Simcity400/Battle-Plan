@@ -78,7 +78,11 @@ export const tooltipRoom = (height: number) => height - WINDOW_MARGIN;
 
 /** Fitting options: the last `keep` rows (such as a total) always show, and `more`
  * words the row that counts rows left out. */
-export interface FitOptions { keep?: number; more?: (hidden: number) => string }
+/** `keep` rows at the bottom always stay when a form is cut; `more` words the row
+ * counting what was cut; `full` is the complete content assistive technology reads,
+ * when even the fullest form shown is already trimmed (such as a list capped for the
+ * eye); without it the first form is read. */
+export interface FitOptions { keep?: number; more?: (hidden: number) => string; full?: TooltipContent }
 
 const moreRows = (hidden: number) => `${hidden} more ${hidden === 1 ? 'row' : 'rows'}: a taller window shows them`;
 
@@ -88,7 +92,8 @@ const moreRows = (hidden: number) => `${hidden} more ${hidden === 1 ? 'row' : 'r
  * compact) is cut to fit: its last `keep` rows always stay, then as many rows from
  * the top as fit, with one row counting the rest; at a very short window its
  * description and then its note make room for them. Whatever is shown, `spoken`
- * holds the first form in full, so assistive technology still reads everything. */
+ * holds `options.full`, else the first form, in full, so assistive technology still
+ * reads everything. */
 export function fitTooltip(forms: Iterable<TooltipContent>, height: number, options: FitOptions = {}): TooltipContent {
   const room = tooltipRoom(height);
   let first: TooltipContent | undefined;
@@ -96,7 +101,7 @@ export function fitTooltip(forms: Iterable<TooltipContent>, height: number, opti
   for (const form of forms) {
     first ??= form;
     last = form;
-    if (tooltipHeight(form) <= room) return form === first ? form : { ...form, spoken: tooltipText(first) };
+    if (tooltipHeight(form) <= room) return form === first && !options.full ? form : { ...form, spoken: tooltipText(options.full ?? first) };
   }
   if (!first || !last) return { title: '', rows: [] };
   const keep = Math.min(Math.max(0, options.keep ?? 0), last.rows.length);
@@ -111,7 +116,7 @@ export function fitTooltip(forms: Iterable<TooltipContent>, height: number, opti
   let shown = 0;
   while (shown < top.length && used + tooltipRowHeight(top[shown]) <= room) used += tooltipRowHeight(top[shown++]);
   const rows = shown === top.length ? last.rows : [...top.slice(0, shown), more(top.length - shown), ...kept];
-  return { ...cut, rows, spoken: tooltipText(first) };
+  return { ...cut, rows, spoken: tooltipText(options.full ?? first) };
 }
 
 type Listener = () => void;

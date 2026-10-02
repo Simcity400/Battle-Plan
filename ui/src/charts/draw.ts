@@ -77,6 +77,18 @@ export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
   ctx.restore();
 }
 
+/** An emphasised rule across the plot at one value, such as zero where lines cross
+ * from surplus to shortage; nothing when the value is outside the plot. */
+export function drawValueRule(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, value: number): void {
+  const y = frame.toY(value);
+  if (!Number.isFinite(y) || y < frame.plotTop || y > frame.plotTop + frame.plotHeight) return;
+  ctx.save();
+  ctx.strokeStyle = tokens.axis;
+  ctx.lineWidth = tokens.lineWidth.series / 2 + tokens.lineWidth.grid / 2;
+  ctx.beginPath(); ctx.moveTo(frame.plotLeft, crisp(y)); ctx.lineTo(frame.plotLeft + frame.plotWidth, crisp(y)); ctx.stroke();
+  ctx.restore();
+}
+
 /** Clips drawing to the plot so zoomed series never spill over the axes. */
 export function clipToPlot(ctx: CanvasRenderingContext2D, frame: PlotFrame): void {
   ctx.beginPath();

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contentSet, MAX_OPTION_KEYS, MAX_SET_TOKENS, MAX_TOKEN, parseStoredOptions, resolveOptions, sectionFields, setLimit, setOption, storableToken,
+import { contentKey, contentSet, MAX_OPTION_KEYS, MAX_SET_TOKENS, MAX_TOKEN, parseStoredOptions, resolveOptions, sectionFields, setLimit, setOption, setToken, storableToken,
   toggleContentSet } from './options.ts';
 import type { OptionField } from './options';
 import { settingsSections, SETTINGS_SECTIONS } from './settingsSections.ts';
@@ -131,4 +131,36 @@ test('view preferences save settings but leave unknown campaigns and pins as dra
   assert.equal(elsewhere.campaign, 'default');
   assert.deepEqual(elsewhere.time, { mode: 'campaign' });
   assert.equal('options' in mergeViewPreferences(saved, saved, spec(), tracks), false);
+});
+
+test('any content key round-trips through a storable token, plain keys unchanged', () => {
+  for (const key of ['infantry_equipment', 'mod.type-1', '?mod_gun', '?#77', 'a:b', 'Ärmel', 'x y', '🙂']) {
+    const token = setToken(key);
+    assert.ok(storableToken(token), `${key} → ${token}`);
+    assert.equal(contentKey(token), key);
+  }
+  assert.equal(setToken('infantry_equipment'), 'infantry_equipment');
+  assert.equal(setToken('?mod_gun'), ':3f:mod_gun');
+});
+
+test('stored content escapes accept only Unicode scalar values and invalid choices default safely', () => {
+  const fields: readonly OptionField[] = [
+    { key: 'included', section: 'options', label: 'Included', kind: 'content-set', automatic: 'All', max: 8, default: '' },
+    { key: 'picked', section: 'options', label: 'Picked', kind: 'content-choice', automatic: 'Automatic', default: '' },
+  ];
+  for (const token of [':ffffff:', ':110000:', ':d800:', ':dfff:', 'valid:41::dabc:']) {
+    const stored = parseStoredOptions({ included: token, picked: token, unrelated: 'kept' });
+    assert.ok(stored);
+    assert.deepEqual(resolveOptions(fields, stored), { included: '', picked: '' }, token);
+    assert.equal(storableToken(token), false, token);
+    assert.equal(setOption(fields, undefined, 'included', token), null);
+    assert.equal(setOption(fields, undefined, 'picked', token), null);
+    assert.doesNotThrow(() => contentKey(token));
+  }
+  for (const point of [0, 0xd7ff, 0xe000, 0xffff, 0x10000, 0x10ffff]) {
+    const token = `:${point.toString(16)}:`;
+    assert.deepEqual(resolveOptions(fields, parseStoredOptions({ included: token, picked: token })!), { included: token, picked: token });
+    assert.equal(contentKey(token), String.fromCodePoint(point));
+  }
+  assert.equal(contentKey(':ffffff:'), ':ffffff:');
 });

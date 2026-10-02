@@ -178,3 +178,73 @@ fn country_intel_is_dated_only_by_its_measured_walk() {
         ));
     }
 }
+
+#[test]
+fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothing_else() {
+    use crate::metadata::slot_read;
+    use crate::test_fixtures::slot_hour;
+    let walked = |tables: &[TableId]| {
+        let mut metrics = replay::frame::Metrics::default();
+        for table in tables {
+            metrics.table_ns[table.index()] = 1;
+        }
+        metrics
+    };
+    let slot = slot_hour(TableId::LogisticsEquipment);
+    assert_eq!(slot, slot_hour(TableId::CountryIntel));
+    // Intel deferred at the slot hour, then retried alone. Its retry cannot
+    // date the logistics rows carried from the slot read.
+    let deferred = walked(&[TableId::LogisticsEquipment]);
+    assert!(slot_read(&deferred, TableId::LogisticsEquipment, slot));
+    assert!(!slot_read(&deferred, TableId::CountryIntel, slot));
+    let retry = walked(&[TableId::CountryIntel]);
+    assert!(slot_read(&retry, TableId::CountryIntel, slot + 1));
+    assert!(!slot_read(&retry, TableId::LogisticsEquipment, slot + 1));
+
+    let fuel = slot_hour(TableId::CountryFuel);
+    let shared = walked(&[TableId::CountryFuelConsumers]);
+    assert!(slot_read(&shared, TableId::CountryFuel, fuel));
+    assert!(!slot_read(&walked(&[]), TableId::CountryFuel, fuel + 1));
+    // Off-slot timing dates its own slot only. A full read needs evidence
+    // for the other slots too, and Intel always needs its own timing.
+    let off_slot = fuel + 3;
+    assert!(slot_read(&shared, TableId::CountryFuel, off_slot));
+    for table in [
+        TableId::Stockpiles,
+        TableId::ProductionLines,
+        TableId::LogisticsEquipment,
+        TableId::CountryIntel,
+    ] {
+        assert!(!slot_read(&shared, table, off_slot), "{table:?}");
+    }
+    let full = walked(&[
+        TableId::CountryFuelConsumers,
+        TableId::DeploymentLines,
+        TableId::LogisticsEquipment,
+        TableId::CountryIntel,
+    ]);
+    for table in [
+        TableId::CountryFuel,
+        TableId::Stockpiles,
+        TableId::ProductionLines,
+        TableId::LogisticsEquipment,
+        TableId::CountryIntel,
+    ] {
+        assert!(slot_read(&full, table, off_slot), "{table:?}");
+    }
+    let stock = slot_hour(TableId::Stockpiles);
+    assert!(slot_read(
+        &walked(&[TableId::DeploymentLines]),
+        TableId::ProductionLines,
+        stock
+    ));
+    assert!(!slot_read(&walked(&[]), TableId::Stockpiles, stock + 1));
+    // Resources are now hourly; a lack of daily-slot timing cannot make them carried.
+    for table in [TableId::CountryResources, TableId::ResourceExchanges] {
+        assert!(slot_read(&walked(&[]), table, fuel));
+        assert!(slot_read(&walked(&[]), table, fuel + 2));
+    }
+    // The shared economy read can be charged to an hourly anchor instead.
+    assert!(slot_read(&walked(&[]), TableId::CountryFuel, fuel));
+    assert!(slot_read(&walked(&[]), TableId::LogisticsEquipment, slot));
+}

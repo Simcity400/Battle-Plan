@@ -12,6 +12,7 @@ pub mod metadata;
 pub mod modifier_text;
 pub mod products;
 pub mod protocol;
+pub mod read_runs;
 pub mod scope;
 pub mod scripted_text;
 pub mod service;

@@ -323,6 +323,146 @@ pub(crate) fn stability_frame(
     frame
 }
 
+/// Germany's (native id 9001, also linked as 11) and Italy's stockpiles and
+/// production lines. `read` times a walk of another table of the stockpile slot
+/// only, as a shared read times only its anchor; `lines` None records the
+/// production lines as unavailable. Variants 10 and 20 are infantry equipment
+/// (token 1), 30 a ship (token 2); variant 20 has its own name.
+pub(crate) fn stockpile_frame(
+    hour: i32,
+    read: bool,
+    stock: &[(u64, i64)],
+    lines: Option<&[(u64, i64, i64, u8)]>,
+) -> DecodedFrame {
+    use replay::rows::{LexicalTokenRow, ProductionLineRow, StockpileRow, VariantDefinitionRow};
+    let mut frame = source(1, hour, Some(1));
+    *frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow {
+                id: 11,
+                canonical_slot: 7,
+            },
+            CountryLinkRow {
+                id: 21,
+                canonical_slot: 8,
+            },
+            CountryLinkRow {
+                id: 9001,
+                canonical_slot: 7,
+            },
+        ]));
+    let mut rows: Vec<StockpileRow> = stock
+        .iter()
+        .enumerate()
+        .map(|(ordinal, &(variant_handle, amount_raw))| StockpileRow {
+            country: 11,
+            ordinal: ordinal as u32,
+            variant_handle,
+            amount_raw,
+        })
+        .collect();
+    // Italy's stock is not Germany's.
+    rows.push(StockpileRow {
+        country: 21,
+        ordinal: 0,
+        variant_handle: 10,
+        amount_raw: 999,
+    });
+    *frame.tables[TableId::Stockpiles.index()] = TableView::Complete(TableRows::Stockpiles(rows));
+    *frame.tables[TableId::ProductionLines.index()] = match lines {
+        Some(lines) => TableView::Complete(TableRows::ProductionLines(
+            lines
+                .iter()
+                .enumerate()
+                .map(
+                    |(index, &(variant, speed_raw, cost_raw, kind))| ProductionLineRow {
+                        handle: index as u64 + 1,
+                        country: 9001,
+                        kind,
+                        variant,
+                        speed_raw,
+                        cost_raw,
+                        ..Default::default()
+                    },
+                )
+                .collect(),
+        )),
+        None => TableView::Unavailable {
+            reason: "fixture".into(),
+        },
+    };
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 1,
+                literal: b"infantry_equipment_1".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 2,
+                literal: b"destroyer_1".to_vec(),
+            },
+        ]));
+    let variant = |id, equipment_token, name: &[u8]| VariantDefinitionRow {
+        id,
+        equipment_token,
+        creator_link: 9001,
+        display_name: name.to_vec(),
+        ..Default::default()
+    };
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![
+            variant(10, 1, b""),
+            variant(20, 1, b"Gewehr 43"),
+            variant(30, 2, b""),
+        ]));
+    frame.metrics.table_ns[TableId::Countries.index()] = 1;
+    if read {
+        frame.metrics.table_ns[TableId::DeploymentLines.index()] = 1;
+    }
+    // The initial stockpile frame reads variants too; later reads follow their cadence.
+    if hour == slot_hour(TableId::Stockpiles)
+        || replay::cadence::is_refresh(TableId::VariantDefinitions, hour)
+    {
+        frame.metrics.table_ns[TableId::VariantModules.index()] = 1;
+    }
+    frame
+}
+
+/// The hour of a daily table's slot on day 1000.
+pub(crate) fn slot_hour(table: TableId) -> i32 {
+    let replay::cadence::Cadence::Daily(slot) = replay::cadence::cadence(table) else {
+        panic!("{table:?} is read in a daily slot");
+    };
+    1000 * replay::cadence::STAGGER_PERIOD + slot as i32
+}
+
+/// A stockpile frame whose variant 20 is named `name`, or whose variant table is
+/// unavailable (`None`) though its read was due.
+pub(crate) fn named_frame(hour: i32, name: Option<&[u8]>) -> DecodedFrame {
+    use replay::rows::VariantDefinitionRow;
+    let mut frame = stockpile_frame(hour, false, &[(20, 100_000)], Some(&[]));
+    // The variant table's slot-mate walked: its read was due at this hour.
+    frame.metrics.table_ns[TableId::VariantModules.index()] = 1;
+    *frame.tables[TableId::VariantDefinitions.index()] = match name {
+        Some(name) => {
+            TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+                id: 20,
+                equipment_token: 1,
+                creator_link: 9001,
+                display_name: name.to_vec(),
+                ..Default::default()
+            }]))
+        }
+        None => TableView::Unavailable {
+            reason: "fixture".into(),
+        },
+    };
+    frame
+}
+
+pub(crate) fn replay(frames: Vec<DecodedFrame>) -> replay::container::Replay {
+    replay::container::Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
+}
 /// Germany (raw links 11 and `germany`, slot 7), Italy (21, slot 8) and Spain
 /// (31, slot 9), with steel and oil. Deals are (handle, exporter, importer,
 /// delivered).
