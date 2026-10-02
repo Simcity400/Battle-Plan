@@ -25,10 +25,11 @@ import research from './research';
 import resourceBalance from './resource-balance';
 import rulingParty from './ruling-party';
 import spiritHistory from './spirit-history';
+import specialProjects from './special-projects';
 import subjects from './subjects';
 import tradeFlows from './trade-flows';
 import worldTension from './world-tension';
 
-const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, 'equipment-stockpile': equipmentStockpile, fuel, factories, 'equipment-produced': equipmentProduced, 'occupied-states': occupiedStates, experience, factions, subjects, 'trade-flows': tradeFlows, 'world-tension': worldTension, autonomy, 'construction-log': constructionLog, 'construction-spending': constructionSpending, placeholder };
+const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, 'equipment-stockpile': equipmentStockpile, fuel, factories, 'equipment-produced': equipmentProduced, 'occupied-states': occupiedStates, experience, factions, subjects, 'trade-flows': tradeFlows, 'world-tension': worldTension, autonomy, 'construction-log': constructionLog, 'construction-spending': constructionSpending, 'special-projects': specialProjects, placeholder };
 
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

@@ -76,3 +76,6 @@
    system's preference, useAppearance): rows neither glide, flash nor fade. */
 :root[data-motion='reduced'] .moving-row { transition: none; }
 :root[data-motion='reduced'] .moving-row.is-entering { animation: none; }
+/* Shared project/content blueprint tile, also used by lane label identities. */
+.blueprint-tile { width:72px; height:48px; border-radius:6px; background:var(--blueprint); display:grid; place-items:center; box-shadow:inset 0 0 0 1px var(--blueprint-border); color:var(--blueprint-text); }
+.blueprint-tile img { width:64px; height:39px; object-fit:contain; }

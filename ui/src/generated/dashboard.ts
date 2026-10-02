@@ -1192,6 +1192,41 @@ partial: Array<PartialSpan>,
  * By seller, buyer and resource.
  */
 flows: Array<TradeFlow>, warnings: Array<string>, };
+export type ProjectDate = { hour: number,
+/**
+ * False means the event occurred by this observation, not at this hour.
+ */
+exact: boolean, };
+export type ProjectPerson = {
+/**
+ * None when the recorded reference cannot establish an assignment.
+ */
+assigned: boolean | null, id: number | null, name: string | null, portrait: string | null, missing: string | null, };
+export type ProjectPresentation = { name: string, specialization: string | null, specializationName: string | null, icon: string | null, iconMissing: string | null, scientist: number,
+/**
+ * Completed projects lose their program; this dates the last assignment.
+ */
+scientistAsOf: number | null, };
+export type ProjectState = "running" | "paused" | "cancelled" | "completed" | "unknown";
+export type ProjectRun = { firstHour: number, lastHour: number, presentation: number,
+/**
+ * Percent from prototype +0x88, clamped as 141A238C0. No phase ratio.
+ */
+progress: number, state: ProjectState, completion: ProjectDate | null, cancellation: ProjectDate | null,
+/**
+ * Native history length minus IsCompleted. Missing history is null.
+ */
+iterations: number | null, };
+export type ProjectEpisode = { id: string, start: ProjectDate, runs: Array<ProjectRun>, };
+export type SpecialProjectsReply = { branchId: string, tag: string, available: Array<HourSpan>, readHours: Array<number>, projects: Array<ProjectEpisode>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
+/**
+ * Native NUMBER text, localized once per distinct recorded count.
+ */
+iterationTexts: { [key in number]?: string | null },
+/**
+ * Why the data/content is unavailable, distinct from an empty country set.
+ */
+unavailable: string | null, warnings: Array<string>, };
 export type SubjectParams = { branchId: string, };
 export type SubjectLevel = {
 /**
@@ -1439,20 +1474,6 @@ knownAt: number, count: number,
  * Levels repaired (the healthy level rising back to the level), not built.
  */
 repair: boolean, };
-export type ProjectRun = { firstHour: number, lastHour: number,
-/**
- * Factories assigned (`active_factories`).
- */
-factories: number,
-/**
- * Levels (railway: segments) still to build (`amount`).
- */
-remaining: number,
-/**
- * Levels still to repair (`repair_levels`): while above zero the line repairs
- * (the engine's repair branch), else it builds its remaining new levels.
- */
-repairLevels: number, };
 export type ConstructionProject = {
 /**
  * The line's native handle, as a decimal string.
@@ -1680,4 +1701,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "subjects", "autonomy", "construction-log", "construction-spending"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "equipment-produced", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "construction-spending"] as const;

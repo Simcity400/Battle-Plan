@@ -1,0 +1,4 @@
+.progress-meter { height:7px; border-radius:999px; background:color-mix(in srgb,var(--text) 10%,transparent); overflow:hidden; }
+.progress-meter i { display:block; height:100%; border-radius:inherit; background:var(--accent); }
+.progress-meter.is-done i { background:var(--positive); }
+.progress-meter.is-idle i { background:var(--muted); }

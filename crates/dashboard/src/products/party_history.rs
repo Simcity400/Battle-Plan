@@ -189,16 +189,7 @@ pub struct LeaderArtwork {
     pub portrait_missing: Option<String>,
 }
 
-/// The portrait entry a leader view asks the recorded holder for.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RecordedPortrait {
-    /// A set entry: kind 0 names a sprite, kind 1 a texture path.
-    Entry { kind: u32, identity: Vec<u8> },
-    /// No set entry of that size: the game generates the portrait.
-    Generated,
-    /// The character's portrait holder was not recorded this hour.
-    Unrecorded,
-}
+pub use super::character_portraits::RecordedPortrait;
 
 /// A leader as scanned: the character and the portrait entry of its runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -273,25 +264,12 @@ fn leader_portrait(
     holders: Option<&[replay::rows::CharacterPortraitRow]>,
     id: u32,
 ) -> RecordedPortrait {
-    let holder = holders.and_then(|rows| {
-        rows.binary_search_by_key(&id, |row| row.character)
-            .ok()
-            .map(|index| &rows[index])
-    });
-    let Some(holder) = holder else {
-        return RecordedPortrait::Unrecorded;
-    };
-    match replay::rows::portrait_entry(
-        &holder.portraits,
+    super::character_portraits::recorded_portrait(
+        holders,
+        id,
         replay::rows::PORTRAIT_CIVILIAN,
         replay::rows::PORTRAIT_LARGE,
-    ) {
-        Some(entry) if entry.is_set != 0 => RecordedPortrait::Entry {
-            kind: entry.kind,
-            identity: entry.identity.clone(),
-        },
-        _ => RecordedPortrait::Generated,
-    }
+    )
 }
 
 /// Scans one branch for one country's parties.
@@ -686,18 +664,7 @@ impl Product for PartyHistory {
             let (name, portrait) = match &politics {
                 Some(politics) => (
                     politics.character_name(script, &character.name),
-                    match &leader.portrait {
-                        RecordedPortrait::Entry { kind, identity } => {
-                            politics.recorded_portrait(*kind, identity)
-                        }
-                        RecordedPortrait::Generated => Err(
-                            "The game generates this portrait from inputs the recording lacks."
-                                .to_owned(),
-                        ),
-                        RecordedPortrait::Unrecorded => {
-                            Err("The leader's portraits were not recorded.".to_owned())
-                        }
-                    },
+                    super::character_portraits::portrait_png(politics, &leader.portrait),
                 ),
                 None => (None, Err("Content is unavailable.".to_owned())),
             };

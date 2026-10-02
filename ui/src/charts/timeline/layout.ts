@@ -16,6 +16,10 @@ export interface TimelineSpan {
   shade?: number;
   /** Drawn in the accent colour, such as a spirit still active at the playhead. */
   emphasis?: boolean;
+  /** A successfully completed interval, using the theme's positive colour. */
+  positive?: boolean;
+  /** A mark at the actual end, such as a completion tick. */
+  endLabel?: string;
   /** A fill of its own (such as a faction's or a subject level's colour), over
    * `shade` and `emphasis`; text inside it takes a readable colour. */
   color?: string;
@@ -46,7 +50,7 @@ export interface TimelineLane {
   names?: boolean;
   /** A lane about one thing (a spirit) names it in the left column whatever the
    * playhead holds, with `label` beneath. */
-  identity?: { label: string; icon?: string };
+  identity?: { label: string; icon?: string; tile?: 'blueprint' };
   /** Faded in the left column, such as a line that has ended. */
   muted?: boolean;
   /** How far the left column indents the lane, in levels, for a tree such as an

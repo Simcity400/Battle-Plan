@@ -54,6 +54,28 @@ export function forgetSettledProducts(client: DashboardClient, sourceId: string)
 
 export interface ProductState<T> { data?: T; error?: string; retry: () => void }
 
+/** Several independent country replies, on the same shared cache as useProduct.
+ * Request order is reply order; one failure never presents a partial comparison
+ * as complete. Playback still performs only local lookups. */
+export function useProducts<T>(client: DashboardClient, requests: readonly ProductRequest[], active: boolean, validate?: (data: unknown) => T): ProductState<T[]> {
+  const key = JSON.stringify(requests.map(productKey));
+  const [state, setState] = useState<{ key: string; data?: T[]; error?: string }>();
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!active || !requests.length) return;
+    const controller = new AbortController();
+    void Promise.all(requests.map(request => loadProduct<T>(client, request, controller.signal, validate))).then(
+      data => { if (!controller.signal.aborted) setState({ key, data }); },
+      error => { if (!controller.signal.aborted) setState({ key, error: error instanceof Error ? error.message : String(error) }); },
+    );
+    return () => controller.abort();
+    // The structured key names the requests and their order.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, key, active, attempt]);
+  const current = requests.length && state?.key === key ? state : undefined;
+  return { data: current?.data, error: current?.error, retry: () => { setState(undefined); setAttempt(value => value + 1); } };
+}
+
 /** Widgets read a product with this hook; a null request clears the state. */
 export function useProduct<T>(client: DashboardClient, request: ProductRequest | null, active: boolean, validate?: (data: unknown) => T): ProductState<T> {
   const content = useContentRevision(client);

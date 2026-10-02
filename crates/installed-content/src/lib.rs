@@ -60,6 +60,7 @@ pub mod scripted_effects;
 pub mod scripted_localisation;
 pub mod scripted_triggers;
 pub mod settings;
+pub mod special_projects;
 pub mod states;
 pub mod static_modifiers;
 pub mod tag_aliases;

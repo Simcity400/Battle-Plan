@@ -47,6 +47,8 @@ limitations remain explicit in the [widget guide](../../ui/src/widgets/occupied-
 
 The Experience widget reads [`country_experience.rs`](src/products/country_experience.rs): banked army, navy and air experience at each read, and their net change from a read one day earlier in the same unbroken country stretch. Its [widget guide](../../ui/src/widgets/experience/README.md) describes the display and missing-data rules. Multi-country line products share selection validation in `products/mod.rs`.
 
+Special projects adds per-country project episodes, native prototype progress and localized completed-iteration counts, exact or bounded dates, and shared character names and portraits. Gaps interrupt reads within an episode.
+
 ## Service
 
 `Service` owns sources by canonical path and revision, hands the frontend independently releasable leases, and runs product and open jobs on a small loader pool. Requests for the same product on the same source serialise on that product's cache; different products and sources run in parallel. Replies are bounded, fragmented and cancellable at every step. The map process shares the same sources through `open_map`. [transport.rs](src/transport.rs) owns the retryable refusal catalogue, including the browser bridge and native command queue capacity messages; the generated frontend constants and desktop queue read that catalogue. A capacity refusal decides no country fact and is retried.

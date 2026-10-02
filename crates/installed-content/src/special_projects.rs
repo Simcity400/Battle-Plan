@@ -1,0 +1,336 @@
+//! Presentation fields of the native special-project databases. Definitions
+//! are keyed by LexerToken, not by their position in the database.
+
+use crate::{
+    ResolvedLayers,
+    fields::invalid,
+    parser::{
+        Value,
+        native::{self, Mode, Shape},
+    },
+    script_files,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Project {
+    pub specialization: Option<String>,
+    pub name: Option<String>,
+    pub icon: Option<String>,
+    pub refusal: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Catalog {
+    pub projects: BTreeMap<String, Project>,
+    pub specializations: BTreeSet<String>,
+    pub warnings: Vec<String>,
+    /// An unreadable stream may override prior tokens; none are assumed valid.
+    pub unsettled: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum Node {
+    Projects,
+    Project,
+    Narrative,
+    Specializations,
+    Specialization,
+    Body,
+    Complexity,
+    Mtth,
+    Costs,
+    Uniform,
+    Reward,
+    Option,
+    Output,
+    DlcList,
+}
+
+fn read(
+    bytes: &[u8],
+    specialization: bool,
+    names: Option<&crate::key_names::KeyNames>,
+) -> io::Result<Vec<crate::parser::Item>> {
+    // Loaders 140141670/140130160: mode 0, keyed ReadObject and reuse the
+    // persistent object on repeated tokens. Template dispatch 140A85D70;
+    // specialization dispatch 140AAC100; narrative dispatch 140A82E90.
+    let read = native::read(
+        bytes,
+        Mode::KeepMark,
+        native::Top::File(if specialization {
+            Node::Specializations
+        } else {
+            Node::Projects
+        }),
+        names,
+        &mut |node, field| match node {
+            Node::Projects => Shape::Object(Node::Project),
+            Node::Specializations => Shape::Object(Node::Specialization),
+            Node::Project => match field.keyword().as_deref() {
+                Some(b"specialization" | b"icon" | b"blueprint_image" | b"prototype_time") => {
+                    Shape::One
+                }
+                Some(b"narrative") => Shape::Object(Node::Narrative),
+                Some(b"special_project_parent") => Shape::ListIfOpen,
+                Some(b"project_tags") => Shape::ListIfOpen,
+                Some(b"visible" | b"allowed" | b"available") => Shape::Trigger,
+                Some(b"complexity") => Shape::ObjectIfOpen(Node::Complexity), // 141453030
+                Some(b"project_output") => Shape::Object(Node::Output),
+                Some(b"ai_will_do" | b"empty_reward_weight") => Shape::Object(Node::Mtth),
+                Some(b"resource_cost") => Shape::Object(Node::Body),
+                Some(b"breakthrough_cost") => Shape::Object(Node::Costs),
+                // 140A85D70 -> 1409BFE50: the shared custom statement loop
+                // supports both references and inline reward definitions.
+                Some(b"unique_prototype_rewards" | b"generic_prototype_rewards") => {
+                    Shape::Statements(Node::Uniform)
+                }
+                _ => Shape::Skip,
+            },
+            Node::Narrative => match field.keyword().as_deref() {
+                Some(b"name" | b"desc") => Shape::One,
+                _ => Shape::Skip,
+            },
+            Node::Specialization => match field.keyword().as_deref() {
+                Some(b"icon" | b"blueprint_image" | b"program_background") => Shape::One,
+                Some(b"color") => Shape::Color,
+                _ => Shape::One, // 140AAC100 returns without ReportUnexpectedToken.
+            },
+            Node::Complexity => match field.keyword().as_deref() {
+                Some(b"min" | b"max") => Shape::One,
+                _ => Shape::Skip,
+            },
+            Node::Mtth => native::mean_time_to_happen(field),
+            Node::Costs => Shape::ObjectIfOpen(Node::Mtth),
+            Node::Uniform => {
+                if field.opens() {
+                    Shape::Object(Node::Reward)
+                } else {
+                    Shape::One
+                }
+            }
+            // CPrototypeReward::ReadToken 140A82ED0; scalar presentation is
+            // projected away, but every reached reader still consumes its form.
+            Node::Reward => match field.keyword().as_deref() {
+                Some(b"option") => Shape::Object(Node::Option),
+                Some(b"threshold") => Shape::Object(Node::Complexity),
+                Some(b"weight") => Shape::Object(Node::Mtth),
+                Some(b"narrative") => Shape::Object(Node::Narrative),
+                Some(b"allowed") => Shape::Trigger,
+                Some(b"icon" | b"fire_only_once" | b"force_reward_if_available") => Shape::One,
+                _ => Shape::Skip,
+            },
+            Node::Option => match field.keyword().as_deref() {
+                Some(b"narrative") => Shape::Object(Node::Narrative),
+                Some(b"iteration_output") => Shape::Object(Node::Output),
+                Some(b"ai_will_do") => Shape::Object(Node::Mtth),
+                Some(b"default" | b"token") => Shape::One,
+                _ => Shape::Skip, // CPrototypeRewardOption::ReadToken 140A83310.
+            },
+            // SOutput::ReadToken 140A83400 -> 1409BFE50/14048FD40.
+            Node::Output => match field.keyword().as_deref() {
+                Some(b"country_effects" | b"scientist_effects" | b"facility_state_effects") => {
+                    Shape::ByKey
+                }
+                Some(b"enable_equipments" | b"enable_equipment_modules" | b"enable_subunits") => {
+                    Shape::Statements(Node::DlcList)
+                }
+                Some(b"equipment_bonus") => Shape::Statements(Node::Body),
+                Some(b"sub_unit_bonus") => Shape::Object(Node::Body),
+                _ => Shape::Skip,
+            },
+            Node::DlcList => {
+                if field.keyword_is("limit") {
+                    Shape::Trigger
+                } else {
+                    Shape::One
+                }
+            }
+            // These fields do not supply project presentation. The shared
+            // by-key reader walks their ordinary nested trigger/effect forms;
+            // ambiguous consumption is a named refusal, never a tree guess.
+            Node::Body => Shape::ByKey,
+        },
+    );
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!("special projects: {cause}")));
+    }
+    Ok(read.items)
+}
+
+fn string(value: &Value) -> io::Result<String> {
+    let bytes = value
+        .read_string()
+        .ok_or_else(|| invalid("special project string is not a scalar"))?;
+    String::from_utf8(bytes.to_vec()).map_err(|e| invalid(format!("special project string: {e}")))
+}
+
+impl Catalog {
+    pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
+        let mut result = Self::default();
+        // CBuildingDatabase::load 14018B610 loads project bodies after buildings.
+        let names = layers.key_names()?;
+        for (folder, specialization) in [
+            ("common/special_projects/specialization/", true),
+            ("common/special_projects/projects/", false),
+        ] {
+            for path in script_files::paths(layers, folder, Some(".txt")) {
+                let items = match read(&layers.read(&path)?, specialization, Some(&names)) {
+                    Ok(items) => items,
+                    Err(error) => {
+                        let reason = format!("Special projects: refused 1 file {path}: {error}");
+                        result.unsettled = Some(reason.clone());
+                        result.warnings.push(reason);
+                        continue;
+                    }
+                };
+                for item in items {
+                    let token = match item.key_str() {
+                        Ok(token) => token.to_owned(),
+                        Err(error) => {
+                            result.warnings.push(format!(
+                                "Special projects: refused 1 definition in {path}: {error}"
+                            ));
+                            continue;
+                        }
+                    };
+                    if specialization {
+                        result.specializations.insert(token);
+                        continue;
+                    }
+                    let project = result.projects.entry(token.clone()).or_default();
+                    // 140130160 reuses the earlier template: scalars overwrite,
+                    // omitted fields retain their previous value.
+                    for field in item.value.items().unwrap_or_default() {
+                        let destination = if field.keyword_is("specialization") {
+                            Some(&mut project.specialization)
+                        } else if field.keyword_is("icon") {
+                            Some(&mut project.icon)
+                        } else {
+                            None
+                        };
+                        if let Some(destination) = destination {
+                            match string(&field.value) {
+                                Ok(value) => *destination = Some(value),
+                                Err(error) => {
+                                    let reason = format!(
+                                        "{path}: {token}: refused 1 {}: {error}",
+                                        field.key_str().unwrap_or("field")
+                                    );
+                                    project.refusal = Some(reason.clone());
+                                    result.warnings.push(reason);
+                                }
+                            }
+                        }
+                        if field.keyword_is("narrative") {
+                            for entry in field.value.items().unwrap_or_default() {
+                                if entry.keyword_is("name") {
+                                    match string(&entry.value) {
+                                        Ok(value) => project.name = Some(value),
+                                        Err(error) => {
+                                            let reason = format!(
+                                                "{path}: {token}: refused 1 narrative.name: {error}"
+                                            );
+                                            project.refusal = Some(reason.clone());
+                                            result.warnings.push(reason);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_scalar_consumption_variables_and_narrative_dispatch() {
+        let items = read(br#"@kind = mod_science p = { SPECIALIZATION = @kind icon = GFX_mod narrative = { name = mod_name desc = x unknown = {name=no} } }"#, false, None).unwrap();
+        let fields = items[0].value.items().unwrap();
+        assert_eq!(string(&fields[0].value).unwrap(), "mod_science");
+        assert_eq!(
+            fields[2].value.items().unwrap()[0].value.scalar_str(),
+            Some("mod_name")
+        );
+        let items = read(b"p={icon={specialization=mod_kind}}", false, None).unwrap();
+        assert_eq!(
+            items[0].value.items().unwrap()[1].value.scalar_str(),
+            Some("mod_kind")
+        );
+    }
+
+    /// Read-only audit of the installed vanilla and Workshop corpus. No game.
+    #[test]
+    #[ignore = "requires BATTLE_PLAN_SP_GAME and BATTLE_PLAN_SP_WORKSHOP read-only content folders"]
+    fn installed_content_corpus() {
+        use std::path::Path;
+        fn walk(
+            root: &Path,
+            specialization: bool,
+            files: &mut usize,
+            definitions: &mut usize,
+            refusals: &mut Vec<String>,
+            names: &crate::key_names::KeyNames,
+        ) {
+            if !root.is_dir() {
+                return;
+            }
+            for entry in std::fs::read_dir(root).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, specialization, files, definitions, refusals, names);
+                } else if path.extension().is_some_and(|ext| ext == "txt") {
+                    *files += 1;
+                    match read(&std::fs::read(&path).unwrap(), specialization, Some(names)) {
+                        Ok(items) => *definitions += items.len(),
+                        Err(reason) => refusals.push(format!("{}: {reason}", path.display())),
+                    }
+                }
+            }
+        }
+        let game = std::env::var_os("BATTLE_PLAN_SP_GAME").or_else(|| std::env::var_os("HOI4_SP_GAME")).expect("BATTLE_PLAN_SP_GAME");
+        let workshop = std::env::var_os("BATTLE_PLAN_SP_WORKSHOP").or_else(|| std::env::var_os("HOI4_SP_WORKSHOP")).expect("BATTLE_PLAN_SP_WORKSHOP");
+        let mut roots = vec![std::path::PathBuf::from(game)];
+        roots.extend(
+            std::fs::read_dir(workshop)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.is_dir()),
+        );
+        roots.sort();
+        let folders: Vec<_> = roots.iter().map(|root| (root.as_path(), &[][..])).collect();
+        let layers = ResolvedLayers::from_folders(&folders).unwrap();
+        let names = layers.key_names().unwrap();
+        let mut refusals = Vec::new();
+        for root in roots {
+            let (mut files, mut definitions) = (0, 0);
+            for (folder, specialization) in [("projects", false), ("specialization", true)] {
+                walk(
+                    &root.join("common/special_projects").join(folder),
+                    specialization,
+                    &mut files,
+                    &mut definitions,
+                    &mut refusals,
+                    &names,
+                );
+            }
+            println!(
+                "{}: {files} files, {definitions} definitions",
+                root.display()
+            );
+        }
+        for reason in &refusals {
+            println!("REFUSED {reason}");
+        }
+        assert!(refusals.is_empty(), "{} refused files", refusals.len());
+    }
+}

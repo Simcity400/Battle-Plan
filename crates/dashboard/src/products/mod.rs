@@ -7,6 +7,7 @@
 
 pub mod artwork;
 pub mod autonomy;
+pub mod character_portraits;
 pub mod construction_log;
 pub mod construction_spending;
 pub mod country_experience;
@@ -32,6 +33,7 @@ pub mod politics_content;
 pub mod research;
 pub mod resource_balance;
 pub mod resources;
+pub mod special_projects;
 pub mod stability_parts;
 pub mod subjects;
 pub mod trade_flows;
@@ -256,6 +258,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<equipment_stockpile::EquipmentStockpile>(),
     register::<equipment_produced::EquipmentProduced>(),
     register::<trade_flows::TradeFlows>(),
+    register::<special_projects::SpecialProjects>(),
     register::<subjects::Subjects>(),
     register::<world_tension::WorldTension>(),
     register::<autonomy::Autonomy>(),

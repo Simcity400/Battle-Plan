@@ -21,11 +21,12 @@ import { definition as research } from './research/definition.ts';
 import { definition as resourceBalance } from './resource-balance/definition.ts';
 import { definition as rulingParty } from './ruling-party/definition.ts';
 import { definition as spiritHistory } from './spirit-history/definition.ts';
+import { definition as specialProjects } from './special-projects/definition.ts';
 import { definition as stability } from './stability/definition.ts';
 import { definition as subjects } from './subjects/definition.ts';
 import { definition as tradeFlows } from './trade-flows/definition.ts';
 import { definition as worldTension } from './world-tension/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, factories, equipmentProduced, occupiedStates, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, factories, equipmentProduced, occupiedStates, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, placeholder] as const;
 
 registerWidgets(widgetMetas);

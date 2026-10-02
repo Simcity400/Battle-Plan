@@ -43,11 +43,15 @@ export interface TimelineProps {
   /** The value a band (`TimelineSpan.band`) is drawn full thickness at: the largest
    * any band reaches, so every lane shares one scale. */
   bandMax?: number;
+  /** Bar thickness in layout pixels; bands retain their shared value scale. */
+  barHeight?: number;
   /** `full` asks for every row, for text read out rather than shown. */
   tooltip?: (lane: TimelineLane, span: TimelineSpan | null, hour: number, full?: boolean) => TooltipContent | null;
   /** What the timeline shows at the moment shown, as text for keyboard and screen-reader users. */
   description?: string;
-  onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
+  onContextMenu?: (hour: number, clientX: number, clientY: number, lane?: TimelineLane, span?: TimelineSpan | null) => void;
+  /** Opt into context menus in the label column; plot menus are unchanged. */
+  labelMenu?: boolean;
   /** The lanes in view changed (first and last index, inclusive; last below first
    * when none), so a widget can ask for what only those lanes show, such as names
    * and flags at the playhead. */
@@ -293,14 +297,26 @@ export default function Timeline(props: TimelineProps) {
         holders.set(lane.id, state);
         // An ended lane's name and icon are faded.
         const fade = lane.muted ? 0.55 : 1;
+        const blueprint = lane.identity?.tile === 'blueprint';
         // A heading with no icon of its own starts its text where an icon would be.
-        const textAt = indent + (lane.heading && !lane.identity?.icon ? 10 : ICON + 18);
+        const textAt = indent + (blueprint ? 62 : lane.heading && !lane.identity?.icon ? 10 : ICON + 18);
         const textWidth = Math.max(8, left - textAt - 10);
         const holder = (span: TimelineSpan | null, alpha: number) => {
           context.globalAlpha = alpha * fade;
           context.textAlign = 'left'; context.textBaseline = 'middle';
           if (span) {
-            drawIcon(span.icon, 10 + indent, centre, ICON, !!lane.pill);
+            if (blueprint) {
+              context.fillStyle = tokens.blueprint; context.beginPath(); context.roundRect(8, centre - 14, 46, 28, 4); context.fill();
+              context.strokeStyle = tokens.blueprintBorder; context.stroke();
+              const loaded = image(span.icon);
+              if (loaded) {
+                const scale = Math.min(44 / loaded.naturalWidth, 26 / loaded.naturalHeight);
+                const w = loaded.naturalWidth * scale, h = loaded.naturalHeight * scale;
+                context.drawImage(loaded, 31 - w / 2, centre - h / 2, w, h);
+              } else {
+                context.fillStyle = tokens.blueprintText; context.fillText('?', 27, centre);
+              }
+            } else drawIcon(span.icon, 10 + indent, centre, ICON, !!lane.pill);
             context.fillStyle = tokens.text; context.font = font(tokens, tokens.fontSize.body, lane.heading ? 600 : 500);
             context.fillText(lane.pill ? span.label : fitText(span.label, textWidth), textAt, centre - 7, textWidth);
           } else {
@@ -347,7 +363,7 @@ export default function Timeline(props: TimelineProps) {
           // A span's own colour (a faction, a subject level) comes first. A law keeps its
           // escalation shade even while held (signed off, mock-up politics-4); other held
           // spans are accented.
-          const fill = span.color ?? (span.shade != null ? mix(tokens.surface, tokens.accent, 0.3 + 0.6 * span.shade)
+          const fill = span.color ?? (span.positive ? mix(tokens.surface, tokens.positive, 0.7) : span.shade != null ? mix(tokens.surface, tokens.accent, 0.3 + 0.6 * span.shade)
             : span.emphasis ? mix(tokens.surface, tokens.accent, 0.55) : mix(tokens.surface, tokens.text, 0.1));
           const background = parseColor(fill);
           const onFill = (span.color == null && span.shade == null && !span.emphasis) || !background ? tokens.text : readableText(background);
@@ -366,7 +382,13 @@ export default function Timeline(props: TimelineProps) {
           const from = Math.max(left, toX(hours[0]) + 1);
           const to = Math.min(right, toX(hours[1]) - 1);
           if (to - from < 1.5) continue;
-          context.beginPath(); context.roundRect(from, centre - 12, to - from, 24, 5); context.fill();
+          const barHeight = Math.min(ROW_HEIGHT - 4, Math.max(2, p.barHeight ?? 24));
+          context.beginPath(); context.roundRect(from, centre - barHeight / 2, to - from, barHeight, Math.min(5, barHeight / 2)); context.fill();
+          if (span.endLabel && to - from >= 16 && hours[1] >= span.lastHour + 1) {
+            context.fillStyle = readableText(parseColor(fill) ?? parseColor(tokens.text)!);
+            context.font = font(tokens, tokens.fontSize.small, 600);
+            context.fillText(span.endLabel, to - 14, centre);
+          }
           let textX = from + 7;
           const content = barContent(lane.icons ?? p.showIcons, lane.names ?? p.showNames, !!span.icon);
           if (content.icon && to - from > 28) { drawIcon(span.icon, from + 2, centre, BAR_ICON); textX = from + BAR_ICON + 6; }
@@ -473,10 +495,13 @@ export default function Timeline(props: TimelineProps) {
       const handler = latest.current.onContextMenu;
       const point = local(event);
       const index = laneUnder(point.y);
-      if (!handler || point.x < left || index == null) return;
+      if (!handler || point.x < left && !latest.current.labelMenu || index == null) return;
       event.preventDefault();
       // Jump to what is drawn under the pointer: a band column's step, else the pointer's hour.
-      handler(pointed(latest.current.lanes[index], point.x, Math.min(hourAt(point.x), latest.current.playhead ?? Infinity)).hour, event.clientX, event.clientY);
+      const lane = latest.current.lanes[index];
+      const target = point.x < left ? { hour: latest.current.playhead ?? latest.current.extent[1], span: null }
+        : pointed(lane, point.x, Math.min(hourAt(point.x), latest.current.playhead ?? Infinity));
+      handler(target.hour, event.clientX, event.clientY, lane, target.span);
     };
     element.addEventListener('pointerdown', down);
     element.addEventListener('pointermove', move);
@@ -638,7 +663,9 @@ export default function Timeline(props: TimelineProps) {
     if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && menuHour != null) {
       event.preventDefault();
       const bounds = canvas.current!.getBoundingClientRect();
-      props.onContextMenu(Math.floor(menuHour), bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+      const lane = keyed.current ? lanes[keyed.current.lane] : undefined;
+      const span = selected?.span ?? null;
+      props.onContextMenu(Math.floor(menuHour), bounds.left + bounds.width / 2, bounds.top + bounds.height / 2, lane, span);
     }
   };
   // The spacer is as tall as every lane; the view inside it stays in place while it scrolls.
@@ -653,4 +680,3 @@ export default function Timeline(props: TimelineProps) {
     {props.description && <p id={`${owner}-description`} className="sr-only">{props.description}</p>}
   </div>;
 }
-

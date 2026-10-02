@@ -5,6 +5,7 @@
   --canvas: #0a0f16; --chrome: #0f151d; --surface: #111822; --raised: #1c2532; --overlay: #161e29; --border: #2a3646;
   --text: #eef3f9; --muted: #9fb0c3; --accent: #5cb2ff; --accent-text: #0a0f16; --selection: #5cb2ff; --glow: #2fc6c0;
   --positive: #5fd49b; --warning: #f0c060; --error: #f07178;
+  --blueprint: #1b3a5c; --blueprint-border: #2f5c8a; --blueprint-text: #eef3f9;
   --glass: 78%; --glass-blur: 16px; --radius: 10px; --backdrop-dim: 55%; --backdrop-blur: 0px;
   --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-display: var(--font-ui);
