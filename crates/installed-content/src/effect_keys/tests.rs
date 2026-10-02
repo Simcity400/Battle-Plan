@@ -4,7 +4,7 @@ use crate::parser::{
     native::{self, Read},
 };
 
-fn read(text: &[u8], names: &KeyNames) -> Read {
+pub(super) fn read(text: &[u8], names: &KeyNames) -> Read {
     native::read(
         text,
         native::Mode::KeepMark,
@@ -20,7 +20,7 @@ fn read(text: &[u8], names: &KeyNames) -> Read {
     )
 }
 
-fn block<'a>(items: &'a [Item], key: &str) -> &'a [Item] {
+pub(super) fn block<'a>(items: &'a [Item], key: &str) -> &'a [Item] {
     items
         .iter()
         .find(|item| item.keyword_is(key))
@@ -30,7 +30,7 @@ fn block<'a>(items: &'a [Item], key: &str) -> &'a [Item] {
         .unwrap()
 }
 
-fn scalar<'a>(items: &'a [Item], key: &str) -> &'a [u8] {
+pub(super) fn scalar<'a>(items: &'a [Item], key: &str) -> &'a [u8] {
     items
         .iter()
         .find(|item| item.keyword_is(key))
@@ -116,8 +116,7 @@ fn else_and_else_if_read_the_conditional_before_attachment() {
             .iter()
             .filter(|note| note.count.is_some())
             .collect();
-        assert_eq!(gaps.len(), 1);
-        assert!(gaps[0].what.contains("0x141385BA0"));
+        assert!(gaps.is_empty(), "{gaps:?}");
         let text = format!("body = {{ {key} = no }} final = 2");
         assert!(
             read_effect_nonblock(text.as_bytes())

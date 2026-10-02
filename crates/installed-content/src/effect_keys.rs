@@ -11,6 +11,7 @@ use crate::{
     trigger_keys::ScopeStep,
 };
 
+pub(crate) mod key_readers;
 #[cfg(test)]
 mod tests;
 
@@ -1169,7 +1170,7 @@ pub(crate) fn body_error(key: &str, value: &str) -> String {
 fn class_shape(readers: (u64, u64), field: &Field<'_>) -> Shape<()> {
     let (value_reader, key_reader) = readers;
     match readers {
-        (READ_SCRIPT, READ_EFFECT) => Shape::Effect,
+        (READ_SCRIPT, key_reader) => key_readers::shape(key_reader, field),
         (READ_VALUE, _) => Shape::One,
         _ => {
             let read = if value_reader == READ_SCRIPT {
