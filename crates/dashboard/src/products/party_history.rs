@@ -583,6 +583,7 @@ struct Cache {
 
 impl Product for PartyHistory {
     const KEY: &'static str = "party-history";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
     type Reply = PartyHistoryReply;
 

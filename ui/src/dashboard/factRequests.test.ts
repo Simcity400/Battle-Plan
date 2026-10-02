@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FactRequests, HourStore, MAX_READING, nameKey, readFacts, RETRY_MOST_MS, retryDelay } from './countryFacts.ts';
+import { FAILED_FACT, FactRequests, HourStore, MAX_READING, nameKey, readFacts, RETRY_MOST_MS, retryDelay } from './countryFacts.ts';
 import type { FactClock, FactRead, NameAt } from './countryFacts';
 import type { DashboardClient, ProductRequest } from './client';
-import { BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
+import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TOO_MANY_SOURCES, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
 
 /** Reads that finish when the test's clock passes their end, counted, with a clock
  * whose waits run as it advances. Like the desktop, at most `limit` requests are
@@ -59,6 +59,31 @@ function clockedReads(duration: number, limit = Infinity) {
 }
 
 const at = (tags: readonly string[]): NameAt[] => tags.map(tag => ({ hour: 100, tag }));
+
+test('configuration failures are kept while wanted and pruned when playback leaves their hours', async () => {
+  let calls = 0;
+  const requests = new FactRequests(new HourStore<string>(4), async (plan, _signal, done) => {
+    calls++;
+    await Promise.resolve();
+    done(plan[0][0], plan[0][1], null, false);
+  }, () => {});
+  const past: NameAt[] = [];
+  // Ten years of monthly looks with unconfigured folders, plus several countries
+  // requested at different label hours. Failures never accumulate behind playback.
+  for (let hour = 100; hour < 100 + 10 * 365 * 24; hour += 30 * 24) {
+    const wanted = [{ hour, tag: 'opaque,"tag' }, { hour: 90, tag: 'old line' }];
+    requests.want(wanted, 64, 64);
+    await Promise.resolve();
+    assert.equal(requests.want(wanted, 64, 64), 0);
+    assert.equal(requests.pickRead(wanted).get(nameKey(hour, 'opaque,"tag')), FAILED_FACT);
+    assert.equal(requests.pickRead(past).size, 0);
+    past.push(wanted[0]);
+  }
+  assert.equal(calls, past.length + 1);
+  assert.equal(requests.pickRead([{ hour: 90, tag: 'old line' }]).get(nameKey(90, 'old line')), FAILED_FACT);
+  assert.equal(requests.retry(), 2);
+  requests.cancel();
+});
 
 test('a top-N last place alternating every 50 ms never cancels reads taking 120 ms, and each country is asked once', async () => {
   const { read, stats, advance, clock } = clockedReads(120);
@@ -160,20 +185,121 @@ test('a failing read is tried again at once on a new attempt, and not at all onc
   assert.equal(timers.length, 0);
 });
 
-test('a product error completes a read with nothing; a refusal for want of room is a failure to try again', async () => {
+test('configuration errors stay failures; refusals for want of room can be retried automatically', async () => {
   const spec = { product: 'country-flags', perRequest: 8, params: () => ({}), extract: () => new Map<string, string>() };
   const source = { sourceId: 's', revision: '1', branchId: '1' };
   const outcome = async (error: unknown) => {
     const client = { product: async () => { throw error; } } as unknown as DashboardClient;
-    const chunks: (ReadonlyMap<string, string> | null)[] = [];
-    await readFacts(client, source, spec, [[100, ['GER']]], new AbortController().signal, (_hour, _tags, found) => chunks.push(found));
+    const chunks: [ReadonlyMap<string, string> | null, boolean | undefined][] = [];
+    await readFacts(client, source, spec, [[100, ['GER']]], new AbortController().signal, (_hour, _tags, found, retryable) => chunks.push([found, retryable]));
     return chunks;
   };
-  // Flags without the game folders: the product's answer, so the placeholder shows.
-  assert.deepEqual(await outcome(new Error('Choose the game and user folders in Settings first')), [new Map()]);
-  // The desktop out of room: nothing decided, tried again.
-  assert.deepEqual(await outcome(new Error(`${TRANSIENT_ERRORS[0]}. Retry this view.`)), [null]);
-  assert.deepEqual(await outcome(new TypeError('Failed to fetch')), [null]);
+  assert.deepEqual(await outcome(new Error('Choose the game and user folders in Settings first')), [[null, false]]);
+  // Every refusal for want of room, as its producer words it: nothing decided, tried again.
+  for (const refusal of [
+    ...TRANSIENT_ERRORS,
+    CAPACITY_REACHED, // the data service
+    `${CAPACITY_REACHED}. Retry this view.`, // the desktop's and the browser bridge's admission
+    TOO_MANY_SOURCES, // the data service's source bindings
+    NATIVE_QUEUE_FULL, // the desktop's pipe to the native service
+    `${MAP_CONTROLS_BUSY}; try again`, // the desktop's map controls
+  ]) assert.deepEqual(await outcome(new Error(refusal)), [[null, true]], refusal);
+  assert.deepEqual(await outcome(new TypeError('Failed to fetch')), [[null, true]]);
+});
+
+test('flags at the same source and hour are requested again after configuring folders and retrying', async () => {
+  const { clock, advance, timers } = clockedReads(0);
+  let configured = false;
+  let calls = 0;
+  const client = { product: async (request: import('./client').ProductRequest) => {
+    calls++;
+    if (!configured) throw new Error('Choose the game and user folders in Settings first');
+    return { ...request, data: { ABC: 'flag of the current country' } };
+  } } as unknown as DashboardClient;
+  const spec = { product: 'country-flags', perRequest: 32, params: () => ({}),
+    extract: (data: unknown) => new Map(Object.entries(data as Record<string, string>)) };
+  const read: FactRead<string> = (plan, signal, onChunk) => readFacts(client, { sourceId: 'same', revision: 'same', branchId: '1' }, spec, plan, signal, onChunk);
+  const store = new HourStore<string>(8);
+  const requests = new FactRequests(store, read, () => {}, clock);
+  requests.want(at(['ABC']), 64, 32);
+  await advance(30_000);
+  assert.equal(calls, 1);
+  assert.equal(store.answered(100, 'ABC'), false);
+  assert.equal(store.pickRead(at(['ABC'])).has(nameKey(100, 'ABC')), false);
+  assert.equal(requests.pickRead(at(['ABC'])).get(nameKey(100, 'ABC')), FAILED_FACT);
+  assert.equal(timers.length, 0);
+  configured = true;
+  assert.equal(requests.retry(), 1);
+  await advance(30_001);
+  assert.equal(calls, 2);
+  assert.equal(store.get(100, 'ABC'), 'flag of the current country');
+  requests.cancel();
+});
+
+test('a read the desktop’s full request queue refused stays wanted and is read once there is room', async () => {
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  const clock: FactClock = {
+    now: () => now,
+    after: (ms, run) => { const timer = { at: now + ms, run }; timers.push(timer); return () => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); }; },
+  };
+  const settle = async () => { for (let turn = 0; turn < 8; turn++) await Promise.resolve(); };
+  const advance = async (to: number) => {
+    // Every wait due by `to`, in time order, including those a retry sets.
+    await settle();
+    for (let timer = timers.find(item => item.at <= to); timer; timer = timers.find(item => item.at <= to)) {
+      for (const item of timers) if (item.at < timer.at) timer = item;
+      now = timer.at;
+      timers.splice(timers.indexOf(timer), 1);
+      timer.run();
+      await settle();
+    }
+    now = to;
+    await settle();
+  };
+  // The desktop's queue to the native service is full until `full` is cleared.
+  const desk = { full: true, asked: 0 };
+  const client = {
+    product: async (request: { sourceId: string; revision: string; product: string }) => {
+      desk.asked++;
+      if (desk.full) throw new Error(NATIVE_QUEUE_FULL);
+      return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { GER: 'flag of GER' } };
+    },
+  } as unknown as DashboardClient;
+  const spec = { product: 'country-flags', perRequest: 8, params: () => ({}),
+    extract: (data: unknown) => new Map(Object.entries(data as Record<string, string>)) };
+  const read: FactRead<string> = (plan, signal, onChunk) => readFacts(client, { sourceId: 's', revision: '1', branchId: '1' }, spec, plan, signal, onChunk);
+  const store = new HourStore<string>(8);
+  let changes = 0;
+  const requests = new FactRequests(store, read, () => changes++, clock);
+  requests.want(at(['GER']), 64, 64);
+  await advance(1000);
+  // Refused, never cached as missing: still loading, and asked again after each wait.
+  assert.ok(desk.asked >= 2, `${desk.asked} asks`);
+  assert.equal(store.answered(100, 'GER'), false);
+  assert.equal(store.pickRead(at(['GER'])).has(nameKey(100, 'GER')), false);
+  assert.ok(changes > 0); // Failure is exposed as unknown, so consumers redraw.
+  const failedChanges = changes;
+  // Room again: the next wait reads it.
+  desk.full = false;
+  await advance(1000 + RETRY_MOST_MS);
+  assert.equal(store.get(100, 'GER'), 'flag of GER');
+  assert.equal(changes, failedChanges + 1);
+  // A new attempt (`retry`) reads at once too, without waiting.
+  const later = new HourStore<string>(8);
+  const again = new FactRequests(later, read, () => {}, clock);
+  desk.full = true;
+  again.want(at(['FRA', 'GER']), 64, 64);
+  await settle();
+  assert.equal(later.answered(100, 'GER'), false);
+  desk.full = false;
+  assert.equal(again.retry(), 1);
+  await settle();
+  assert.equal(later.get(100, 'GER'), 'flag of GER');
+  // The reply lacked FRA: a completed read, so it is read with nothing.
+  assert.equal(later.pickRead(at(['FRA'])).get(nameKey(100, 'FRA')), null);
+  again.cancel();
+  requests.cancel();
 });
 
 test('busy browser and full native queue refusals are retried without caching an empty fact', async () => {

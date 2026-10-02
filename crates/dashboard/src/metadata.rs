@@ -248,6 +248,27 @@ pub fn tagged_country<'a>(
         .unwrap_or(TaggedCountry::Unresolved)
 }
 
+/// Every tag's [`TaggedCountry`] this hour in one pass over the rows, each as
+/// [`tagged_country`] gives it, for a product that reads every country at once.
+/// Tags are the recorded bytes.
+pub fn tagged_countries<'a>(
+    countries: &'a [CountryRow],
+    links: &[CountryLinkRow],
+) -> BTreeMap<&'a [u8], TaggedCountry<'a>> {
+    let mut tagged = BTreeMap::new();
+    for country in countries {
+        let entry = tagged
+            .entry(country.tag.as_slice())
+            .or_insert(TaggedCountry::Unresolved);
+        if matches!(entry, TaggedCountry::Unresolved)
+            && let Ok(slot) = mapped_slot(country, links)
+        {
+            *entry = TaggedCountry::Found(country, slot);
+        }
+    }
+    tagged
+}
+
 /// The recording client's stored viewpoint, including an observer's selected
 /// country. Multiplayer roster order never identifies the local client.
 fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> Option<u32> {

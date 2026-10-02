@@ -44,10 +44,19 @@ pub(super) struct Pending {
     pub(super) close: bool,
 }
 
+/// Data requests queued for the native pipe at most, by count and by bytes.
+pub(super) const MAX_QUEUED_DATA: usize = 128;
+pub(super) const MAX_QUEUED_DATA_BYTES: usize = 2 * 1024 * 1024;
+/// Map actions queued at most.
+pub(super) const MAX_QUEUED_ACTIONS: usize = 16;
+
 impl Pending {
-    /// Queues a data request, or refuses it with the transient `NATIVE_QUEUE_FULL`
-    /// while the queue is at its budget. A Cancel removes its request if still queued;
-    /// one taken by the writer precedes the Cancel on its pipe.
+    /// Queues a data request of `length` serialized bytes. A cancel first removes its
+    /// request if that has not left the queue (a copy the writer already took precedes
+    /// the cancel on its pipe). A full queue refuses with [`NATIVE_QUEUE_FULL`], which
+    /// says only that there was no room, so the frontend tries the request again.
+    ///
+    /// [`NATIVE_QUEUE_FULL`]: dashboard::transport::NATIVE_QUEUE_FULL
     pub(super) fn enqueue_data(
         &mut self,
         request: DataCommand,
@@ -58,10 +67,24 @@ impl Pending {
                 .retain(|(queued, _)| queued.request_id() != Some(id.as_str()));
         }
         let bytes: usize = self.data.iter().map(|(_, bytes)| *bytes).sum();
-        if self.data.len() >= 128 || bytes.saturating_add(length) > 2 * 1024 * 1024 {
+        if self.data.len() >= MAX_QUEUED_DATA || bytes.saturating_add(length) > MAX_QUEUED_DATA_BYTES {
             return Err(NATIVE_QUEUE_FULL.into());
         }
         self.data.push_back((request, length));
+        Ok(())
+    }
+
+    /// Whether another map action fits. A full queue refuses with
+    /// [`MAP_CONTROLS_BUSY`], which the frontend may try again.
+    ///
+    /// [`MAP_CONTROLS_BUSY`]: dashboard::transport::MAP_CONTROLS_BUSY
+    pub(super) fn action_room(&self) -> Result<(), String> {
+        if self.actions.len() >= MAX_QUEUED_ACTIONS {
+            return Err(format!(
+                "{}; try again",
+                dashboard::transport::MAP_CONTROLS_BUSY
+            ));
+        }
         Ok(())
     }
 

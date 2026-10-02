@@ -17,8 +17,9 @@ export type Breakable = Span & { breakBefore?: boolean; startsSegment?: boolean 
 /** Whether a line breaks before this run even if the hours touch. */
 export const breaksBefore = (run: Breakable) => run.breakBefore === true || run.startsSegment === true;
 
-/** The run holding `hour`, by binary search over runs sorted by hour that never overlap. */
-export function runAt<T extends Span>(runs: readonly T[], hour: number): T | null {
+/** The index of the run holding `hour`, by binary search over runs sorted by hour
+ * that never overlap; -1 when none holds it. */
+export function runIndexAt(runs: readonly Span[], hour: number): number {
   let low = 0;
   let high = runs.length - 1;
   while (low <= high) {
@@ -26,9 +27,35 @@ export function runAt<T extends Span>(runs: readonly T[], hour: number): T | nul
     const run = runs[middle];
     if (hour < run.firstHour) high = middle - 1;
     else if (hour > run.lastHour) low = middle + 1;
-    else return run;
+    else return middle;
   }
-  return null;
+  return -1;
+}
+
+/** The run holding `hour`, by binary search over runs sorted by hour that never overlap. */
+export function runAt<T extends Span>(runs: readonly T[], hour: number): T | null {
+  const index = runIndexAt(runs, hour);
+  return index < 0 ? null : runs[index];
+}
+
+/** For each run, the first hour of the unbroken stretch it belongs to: no missing
+ * hour, line break or change of country since. Built once per series, in one pass. */
+export function stretchStarts(runs: readonly Breakable[]): number[] {
+  const starts: number[] = [];
+  runs.forEach((run, index) => {
+    const previous = runs[index - 1];
+    const continues = previous != null && !breaksBefore(run) && previous.lastHour + 1 === run.firstHour;
+    starts.push(continues ? starts[index - 1] : run.firstHour);
+  });
+  return starts;
+}
+
+/** The first hour of the unbroken stretch holding `hour`, or null when no run holds
+ * it, given the runs' `stretchStarts`. Two hours are in the same stretch, so a value
+ * may glide between them (`sameStretch`), exactly when both give the same hour. */
+export function stretchAt(runs: readonly Span[], starts: readonly number[], hour: number): number | null {
+  const index = runIndexAt(runs, Math.floor(hour));
+  return index < 0 ? null : starts[index];
 }
 
 export function valueAt(runs: readonly Run[], hour: number): number | null {
@@ -38,6 +65,8 @@ export function valueAt(runs: readonly Run[], hour: number): number | null {
 /** Unbroken stretches of runs overlapping [from, to]. Runs that touch hour to
  * hour join; any missing hour between them starts a new segment. */
 export function segments(runs: readonly Run[], from: number, to: number): Run[][] {
+  // An empty interval (a playhead before the view's start) draws nothing.
+  if (!(to >= from)) return [];
   const result: Run[][] = [];
   let current: Run[] = [];
   // The hour a fractional edge falls in is visible, as valueAt treats it.
@@ -247,12 +276,27 @@ export function sameStretch(runs: readonly Breakable[], from: number, to: number
  * fitted or looked up. A cut piece keeps its run's line break (a new country
  * identity) only where the run itself starts. */
 export function clipToSpans<T extends Breakable>(runs: readonly T[], spans: readonly Span[]): T[] {
+  // One pass over both, in hour order: linear in the runs and spans, so a history
+  // of tens of thousands of each (a country swapping ranks every hour) cuts at once.
+  const ordered = <S extends Span>(list: readonly S[]) =>
+    list.every((item, index) => index === 0 || list[index - 1].firstHour <= item.firstHour) ? list : [...list].sort((a, b) => a.firstHour - b.firstHour);
+  const sortedRuns = ordered(runs);
+  // Overlapping spans merge, so no hour is cut out twice; spans that only touch stay apart.
+  const merged: Span[] = [];
+  for (const span of ordered(spans)) {
+    const last = merged.at(-1);
+    if (last && span.firstHour <= last.lastHour) last.lastHour = Math.max(last.lastHour, span.lastHour);
+    else merged.push({ firstHour: span.firstHour, lastHour: span.lastHour });
+  }
   const clipped: T[] = [];
-  for (const run of runs) {
-    for (const span of spans) {
-      const first = Math.max(run.firstHour, span.firstHour);
-      const last = Math.min(run.lastHour, span.lastHour);
-      if (first > last) continue;
+  let runIndex = 0;
+  let spanIndex = 0;
+  while (runIndex < sortedRuns.length && spanIndex < merged.length) {
+    const run = sortedRuns[runIndex];
+    const span = merged[spanIndex];
+    const first = Math.max(run.firstHour, span.firstHour);
+    const last = Math.min(run.lastHour, span.lastHour);
+    if (first <= last) {
       const piece: T = { ...run, firstHour: first, lastHour: last };
       if (first !== run.firstHour) {
         if ('breakBefore' in piece) delete piece.breakBefore;
@@ -260,8 +304,11 @@ export function clipToSpans<T extends Breakable>(runs: readonly T[], spans: read
       }
       clipped.push(piece);
     }
+    // Move past whichever ends first; the other may still meet the next one.
+    if (run.lastHour < span.lastHour) runIndex++;
+    else spanIndex++;
   }
-  return clipped.sort((a, b) => a.firstHour - b.firstHour);
+  return clipped;
 }
 
 /** The value range of several run lists over [from, to], or null when none has a value there. */
@@ -290,4 +337,17 @@ export function lastSampleHour(runs: readonly Span[], at: number): number | null
 export function lineEndHour(runs: readonly Span[], from: number, at: number): number | null {
   const last = lastSampleHour(runs, Math.floor(at));
   return last != null && last >= Math.floor(from) ? last : null;
+}
+
+/** The hour each line is labelled: its last drawn hour within the view, capped
+ * where drawing stops (`until`, the playhead unless lines continue past it). A
+ * line absent there can still have
+ * an earlier end label; a line with no visible hours has none. */
+export function lineLabelHours(lines: readonly { tag: string; runs: readonly Span[] }[], from: number, to: number, until: number | null): Map<string, number> {
+  const hours = new Map<string, number>();
+  for (const line of lines) {
+    const hour = lineEndHour(line.runs, from, Math.min(to, until ?? to));
+    if (hour !== null) hours.set(line.tag, hour);
+  }
+  return hours;
 }

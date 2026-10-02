@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { assertLinear } from './assertLinear.ts';
 import { chartBottom, hitZone, keyedHour, plotFrame } from './frame.ts';
 import { keyedStop, keyStopList, keyStopMemo } from './hover.ts';
-import { assertLinear } from './linearTime.ts';
 import { barStrip, stripBarAt, stripColumns, stripKeyTargets, stripMiddle, stripRects } from './strip.ts';
 
 const FRAME = plotFrame(400, 260, { left: 40, right: 10, top: 10, bottom: 100 }, [1000, 2000], [0, 100], false, 60);

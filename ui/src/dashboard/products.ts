@@ -3,23 +3,32 @@ import type { DashboardClient, ProductReply, ProductRequest } from './client';
 import { validateProductReply } from './client.ts';
 import { ResourceCache } from './resourceCache.ts';
 import { forgetFlags } from './flagCache.ts';
+import { contentRevision, useContentRevision } from './contentRevision.ts';
+import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
 
 /** One shared, bounded cache of product replies per client. Identical requests
  * share one native round trip; playback reads the cached full-branch data. */
 const caches = new WeakMap<DashboardClient, ResourceCache<ProductReply<unknown>>>();
 function cache(client: DashboardClient): ResourceCache<ProductReply<unknown>> {
   let entry = caches.get(client);
-  if (!entry) { entry = new ResourceCache(128, 64 * 1024 * 1024, reply => JSON.stringify(reply).length * 2); caches.set(client, entry); }
+  if (!entry) {
+    entry = new ResourceCache(128, 64 * 1024 * 1024, reply => JSON.stringify(reply).length * 2);
+    caches.set(client, entry);
+  }
   return entry;
 }
 
-export function productKey(request: ProductRequest): string {
-  return JSON.stringify([request.sourceId, request.revision, request.product, request.params]);
+const contentProducts: ReadonlySet<string> = new Set(CONTENT_PRODUCTS);
+
+export function productKey(request: ProductRequest, content = 0): string {
+  const key: unknown[] = [request.sourceId, request.revision, request.product, request.params];
+  if (contentProducts.has(request.product)) key.push(content);
+  return JSON.stringify(key);
 }
 
 /** Load one product, validating the envelope and, when given, the payload. */
 export function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T): Promise<T> {
-  return cache(client).get(productKey(request), async shared => {
+  return cache(client).get(productKey(request, contentRevision(client).snapshot()), async shared => {
     const reply = validateProductReply(await client.product<unknown>(request, shared), request);
     return validate ? { ...reply, data: validate(reply.data) } : reply;
   }, signal).then(reply => reply.data as T);
@@ -47,7 +56,8 @@ export interface ProductState<T> { data?: T; error?: string; retry: () => void }
 
 /** Widgets read a product with this hook; a null request clears the state. */
 export function useProduct<T>(client: DashboardClient, request: ProductRequest | null, active: boolean, validate?: (data: unknown) => T): ProductState<T> {
-  const key = request ? productKey(request) : null;
+  const content = useContentRevision(client);
+  const key = request ? productKey(request, content) : null;
   const [state, setState] = useState<{ key: string; data?: T; error?: string }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {

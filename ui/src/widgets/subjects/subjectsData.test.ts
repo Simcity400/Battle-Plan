@@ -4,7 +4,7 @@ import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../genera
 import { laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, validateSubjectReply } from './subjectsData.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { LaneOptions } from './subjectsData';
-import { assertLinear } from '../../charts/linearTime.ts';
+import { assertLinear } from '../../charts/assertLinear.ts';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { laneRequests } from '../../charts/timeline/laneRequests.ts';
 

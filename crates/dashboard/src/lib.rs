@@ -95,22 +95,33 @@ pub fn typescript_contract() -> String {
         );
         text.push('\n');
     }
-    // The service's refusals that say nothing of the product, only that it had no
-    // room: a reader tries these again, and takes any other error as the product's answer.
-    let transient = transport::TRANSIENT_ERRORS
+    // The refusals that say nothing of the product, only that a host or the service had
+    // no room: a reader tries these again; other errors remain failures until retry
+    // or a content/configuration change. Each is named, so a frontend producer and tests use
+    // the constant, never their own text.
+    text.push_str(
+        "/** Refusals for want of room: a message starting with one may be tried again. */\n",
+    );
+    for (name, message) in transport::TRANSIENT_ERROR_NAMES {
+        text.push_str(&format!("export const {name} = {message:?};\n"));
+    }
+    let transient = transport::TRANSIENT_ERROR_NAMES
         .iter()
-        .map(|message| format!("{message:?}"))
+        .map(|(name, _)| *name)
         .collect::<Vec<_>>()
         .join(", ");
     text.push_str(&format!(
-        "/** Errors that only say the service had no room: the request may be tried again. */\nexport const TRANSIENT_ERRORS = [{transient}] as const;\n"
+        "/** Errors that only say there was no room: the request may be tried again. */\nexport const TRANSIENT_ERRORS = [{transient}] as const;\n"
     ));
-    for (name, message) in [
-        ("BROWSER_BRIDGE_BUSY", transport::BROWSER_BRIDGE_BUSY),
-        ("NATIVE_QUEUE_FULL", transport::NATIVE_QUEUE_FULL),
-    ] {
-        text.push_str(&format!("export const {name} = {message:?} as const;\n"));
-    }
+    let content_products = products::PRODUCTS
+        .iter()
+        .filter(|product| product.content_dependent)
+        .map(|product| format!("{:?}", product.key))
+        .collect::<Vec<_>>()
+        .join(", ");
+    text.push_str(&format!(
+        "/** Products whose replies depend on configured game content. */\nexport const CONTENT_PRODUCTS = [{content_products}] as const;\n"
+    ));
     text
 }
 

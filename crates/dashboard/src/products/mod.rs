@@ -7,6 +7,7 @@
 
 pub mod artwork;
 pub mod country_experience;
+pub mod country_factories;
 pub mod country_flags;
 pub mod country_fuel;
 pub mod country_groups;
@@ -61,6 +62,8 @@ impl LoadContext {
 
 pub trait Product: 'static {
     const KEY: &'static str;
+    /// Whether any reply field reads localisation, artwork or content definitions.
+    const CONTENT_DEPENDENT: bool;
     type Params: DeserializeOwned + TS + 'static;
     type Reply: Serialize + TS + 'static;
 
@@ -165,6 +168,7 @@ struct Envelope<'a, T: Serialize> {
 /// A product erased to its key and JSON entry points.
 pub struct Registered {
     pub key: &'static str,
+    pub content_dependent: bool,
     pub load:
         fn(&Source, &str, serde_json::Value, &LoadContext, &AtomicBool) -> Result<String, String>,
     pub types: fn() -> Vec<String>,
@@ -173,6 +177,7 @@ pub struct Registered {
 const fn register<P: Product>() -> Registered {
     Registered {
         key: P::KEY,
+        content_dependent: P::CONTENT_DEPENDENT,
         load: load_json::<P>,
         types: types::<P>,
     }
@@ -217,6 +222,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<stability_parts::StabilityParts>(),
     register::<country_measure::CountryMeasure>(),
     register::<country_fuel::CountryFuel>(),
+    register::<country_factories::CountryFactories>(),
     register::<occupied_states::OccupiedStates>(),
     register::<country_experience::CountryExperience>(),
     register::<idea_history::IdeaHistory>(),
@@ -234,6 +240,31 @@ pub fn find(key: &str) -> Option<&'static Registered> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recording_only_products_do_not_depend_on_content() {
+        for key in [
+            country_fuel::CountryFuel::KEY,
+            country_measure::CountryMeasure::KEY,
+        ] {
+            assert!(!find(key).unwrap().content_dependent);
+        }
+        // This product's values are recorded, but its building names/definitions
+        // also belong to the reply and must recover when content becomes available.
+        assert!(
+            find(country_factories::CountryFactories::KEY)
+                .unwrap()
+                .content_dependent
+        );
+        let contract = crate::typescript_contract();
+        for product in PRODUCTS.iter().filter(|product| product.content_dependent) {
+            let declaration = contract
+                .lines()
+                .find(|line| line.starts_with("export const CONTENT_PRODUCTS"))
+                .unwrap();
+            assert!(declaration.contains(&format!("{:?}", product.key)));
+        }
+    }
 
     #[test]
     fn product_keys_are_unique_and_exported_types_are_named_once() {
@@ -261,6 +292,7 @@ mod tests {
             "FixedRun",
             "MeasureReply",
             "FuelReply",
+            "CountryFactoriesReply",
             "ExperienceReply",
             "IdeaHistoryReply",
             "PartyHistoryReply",

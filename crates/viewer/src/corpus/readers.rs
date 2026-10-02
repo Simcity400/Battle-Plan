@@ -1265,8 +1265,8 @@ mod tests {
             name: "odd".into(),
             ..Default::default()
         };
-        raid.tooltip.refused = Some("tooltip \"x\" \\ Ã©".into());
-        assert_eq!(debug_refusals(&raid), ["tooltip \"x\" \\ Ã©"]);
+        raid.tooltip.refused = Some("tooltip \"x\" \\ é".into());
+        assert_eq!(debug_refusals(&raid), ["tooltip \"x\" \\ é"]);
         assert!(debug_refusals(&RaidType::default()).is_empty());
         #[derive(Debug)]
         #[allow(dead_code)]

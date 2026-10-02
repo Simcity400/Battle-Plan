@@ -428,6 +428,7 @@ struct Cache {
 
 impl Product for ResourceBalance {
     const KEY: &'static str = "resource-balance";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
     type Reply = ResourceBalanceReply;
 

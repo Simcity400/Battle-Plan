@@ -1,5 +1,6 @@
 import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/dashboard';
 import { clipToSpans } from '../charts/series.ts';
+import { compareTags } from './tagOrder.ts';
 import type { Run } from '../charts/series';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
 import type { Lineage } from './identity';
@@ -63,6 +64,16 @@ export function membershipChanges(runs: readonly MembershipRun[], firstHour: num
   return changes.sort((a, b) => a.hour - b.hour || a.tag.localeCompare(b.tag) || a.change.localeCompare(b.change));
 }
 
+/** How many countries a top-N group holds unless the user chooses. */
+export const DEFAULT_TOP = 10;
+
+/** The `count` countries with the highest values, highest first; a country with
+ * no value this hour is left out rather than ranked as zero. */
+export function topCountries(values: ReadonlyMap<string, number | null>, count: number): string[] {
+  return [...values].filter((entry): entry is [string, number] => entry[1] != null && Number.isFinite(entry[1]))
+    .sort((a, b) => b[1] - a[1] || compareTags(a[0], b[0])).slice(0, count).map(([tag]) => tag);
+}
+
 /** A group's name for headers and pickers. Faction names are the game's own. */
 export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undefined, countryName: (tag: string) => string): string {
   switch (group.type) {
@@ -74,7 +85,7 @@ export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undef
 }
 
 /** Whether `hour` falls in one of the membership runs; always true without them. */
-export function isMember(membership: readonly MembershipRun[] | undefined, hour: number): boolean {
+export function isMember(membership: readonly HourSpan[] | undefined, hour: number): boolean {
   return !membership || membership.some(run => run.firstHour <= hour && hour <= run.lastHour);
 }
 
@@ -147,6 +158,18 @@ export interface ResolvedCountries {
   dropped: number;
   /** Why no countries are shown, if none are. */
   reason: string | null;
+  /** For a top-N group: N, at most the widget's limit. The widget ranks every
+   * country itself at each hour (`rankedCandidates`), so `tags` is empty. */
+  top?: number;
+}
+
+/** The countries a ranked widget (a race) may show at `hour`, before it ranks them
+ * and keeps its count: every country (`all`) for a top-N group; else the chosen
+ * countries, or a group's members, those counted at each hour only while members. */
+export function rankedCandidates(resolved: ResolvedCountries, hour: number, all: readonly string[]): string[] {
+  if (resolved.top != null) return [...all];
+  if (!resolved.membership) return resolved.tags;
+  return resolved.tags.filter(tag => isMember(resolved.membership!.get(tag), hour));
 }
 
 /** The countries a multi-country widget draws: chosen tags, or a group's members
@@ -156,6 +179,8 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
     const tags = selection.kind === 'tags' ? selection.tags : fallback;
     return { tags: tags.slice(0, max), membership: null, unobserved: [], dropped: Math.max(0, tags.length - max), reason: tags.length ? null : 'Choose a country in the widget settings.' };
   }
+  // Top N needs no group history: the widget ranks by its own value.
+  if (selection.group.type === 'top') return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, top: Math.max(1, Math.min(max, selection.group.count)) };
   if (!groups) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null };
   const runs = groupRuns(groups, selection.group);
   if (!runs) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: 'This group is not in this campaign branch.' };

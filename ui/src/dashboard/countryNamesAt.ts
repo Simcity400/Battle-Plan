@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
-import { FactRequests, factsKey, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
+import { FAILED_FACT, FactRequests, factsKey, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
 import type { FactRead, FactSpec, NameAt } from './countryFacts';
+import { useContentRevision } from './contentRevision.ts';
 import type { BoundTrack } from './model';
 
 export { MAX_NAME_HOURS, nameKey };
@@ -25,22 +26,22 @@ export function useCountryFactsAt<V>(client: DashboardClient, track: Pick<BoundT
   return useMemo(() => held.pick(wanted), [held, key, version]);
 }
 
-/** Like `useCountryFactsAt`, but tells a read still going or failing (absent: it is
- * tried again) from one that completed without the fact (null): what was read is
- * known, and what the recording does not give is not, never an older value in its
- * place. A new `attempt` tries a failing read again at once. */
+/** Like `useCountryFactsAt`, but distinguishes pending (absent), failed
+ * (`FAILED_FACT`), and completed without a value (null). A new `attempt` retries
+ * failures at once; new content discards every dependent answer. */
 export function useCountryFactsRead<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  spec: FactSpec<V>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V | null> {
-  const { held, key, version } = useFactStore(client, track, wanted, active, spec, maxHours, attempt);
+  spec: FactSpec<V>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V | null | typeof FAILED_FACT> {
+  const { requests, key, version } = useFactStore(client, track, wanted, active, spec, maxHours, attempt);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  return useMemo(() => held.pickRead(wanted), [held, key, version]);
+  return useMemo(() => requests.pickRead(wanted), [requests, key, version]);
 }
 
 /** The store behind both hooks. */
 function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
   spec: FactSpec<V>, maxHours: number, attempt: number) {
   // Structured, so no tag (a mod's tags may hold any character) can blur two requests.
-  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, spec.product]) : '';
+  const content = useContentRevision(client);
+  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, spec.product, content]) : '';
   // The same countries in another order are the same request (`factsKey`).
   const key = factsKey(trackKey, wanted);
   const [version, setVersion] = useState(0);
@@ -69,7 +70,7 @@ function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'sourc
     // The key names every request; the arrays behind it are rebuilt each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, active, attempt, requests]);
-  return { held, key, version };
+  return { held, requests, key, version };
 }
 
 /** Names from `country-styles`, which names at most 64 countries per request. */

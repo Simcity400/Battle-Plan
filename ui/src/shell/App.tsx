@@ -19,6 +19,7 @@ import { useAppearance } from './appearance/useAppearance';
 import Backdrop from './appearance/Backdrop';
 import './shell.css';
 import { useReplayLibrary } from '../dashboard/replayLibrary';
+import { contentRevision } from '../dashboard/contentRevision';
 import type { ContentFolders, ReplayMetadata } from './api';
 import { hasMapOverlay, isMapOverlay } from './mapOverlays';
 import { useDiagnosticsShortcut } from './diagnosticsSetting';
@@ -155,6 +156,7 @@ export default function App() {
   const content = useRef<HTMLElement>(null);
   const native = useDesktopState(retry);
   const folders = desktopAvailable ? native.state?.mapDetails ?? null : browserFolders;
+  useEffect(() => { contentRevision(client).observe(folders); }, [client, folders?.game, folders?.user, folders?.contentReady]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!client.contentFolders) return;
     const controller = new AbortController();

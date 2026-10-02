@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hoverRevision } from './useHoverLabels.ts';
+import { FAILED_FACT } from './countryFacts.ts';
 import type { LookRead } from './looks';
 
 test('a tooltip revision changes with the question and with every answer, whatever the sizes', () => {
@@ -27,6 +28,11 @@ test('a tooltip revision changes with the question and with every answer, whatev
     at({ style: { name: 'Gamma', color: null }, flag: 'data:x' }),
     at({ style: { name: 'Gamma', color: [1, 2, 3] }, flag: 'data:x' }),
     at({ style: undefined, flag: 'data:x' }),
+    at({ style: FAILED_FACT, flag: undefined }),
+    at({ style: undefined, flag: FAILED_FACT }),
+    at({ style: FAILED_FACT, flag: null }),
+    at({ style: null, flag: FAILED_FACT }),
+    at({ style: FAILED_FACT, flag: FAILED_FACT }),
   ];
   assert.equal(new Set(revisions).size, revisions.length);
   // Nothing asked: an empty revision, and the same answers give the same revision.

@@ -320,6 +320,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn requests_past_capacity_are_refused_as_retryable_and_admitted_once_one_ends() {
+        let mut requests = Requests::default();
+        let receivers: Vec<_> = (0..MAX_PENDING)
+            .map(|index| requests.begin(&format!("read-{index}")).unwrap())
+            .collect();
+        let refusal = requests.begin("late").unwrap_err();
+        assert!(refusal.starts_with(dashboard::transport::CAPACITY_REACHED));
+        assert!(dashboard::transport::transient_error(&refusal));
+        // The desktop's other refusals are not for want of room.
+        assert!(!dashboard::transport::transient_error(CANCELLED));
+        drop(receivers);
+        requests.pending.remove("read-0");
+        assert!(requests.begin("late").is_ok());
+    }
+
+    #[test]
     fn cancellation_before_admission_cannot_create_an_orphaned_open() {
         let mut requests = Requests::default();
         requests.remember_cancel("open-1");

@@ -480,6 +480,7 @@ struct Cache {
 
 impl Product for StabilityParts {
     const KEY: &'static str = "stability-parts";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
     type Reply = StabilityPartsReply;
 

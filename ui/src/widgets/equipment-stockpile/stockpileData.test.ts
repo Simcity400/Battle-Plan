@@ -537,19 +537,19 @@ test('every group key a setting stores is storable, unresolved types and their a
 
 test('a type whose key a setting cannot store can be included and chosen for the chart', () => {
   const reply: EquipmentStockpileReply = { ...REPLY,
-    types: [...REPLY.types, { key: 'mod/rifles', name: 'Mod rifles', domain: 'land', needNote: null }],
-    variants: [...REPLY.variants, variant('90', 'mod/rifles_1', 'mod/rifles', [run(100, 130, 7)], [], [{ firstHour: 90, name: 'Mod rifle', known: true, design: 'feed' }])] };
-  const token = setToken('mod/rifles');
-  assert.equal(storableToken('mod/rifles'), false);
+    types: [...REPLY.types, { key: 'mod rifles', name: 'Mod rifles', domain: 'land', needNote: null }],
+    variants: [...REPLY.variants, variant('90', 'mod rifles_1', 'mod rifles', [run(100, 130, 7)], [], [{ firstHour: 90, name: 'Mod rifle', known: true, design: 'feed' }])] };
+  const token = setToken('mod rifles');
+  assert.equal(storableToken('mod rifles'), false);
   assert.ok(storableToken(token));
   // Included types store the token; read back, it limits the rows to the key.
   const included = contentSet(token).map(contentKey);
-  assert.deepEqual(stockGroups(reply, 'type', 110, included).map(group => group.key), ['mod/rifles']);
+  assert.deepEqual(stockGroups(reply, 'type', 110, included).map(group => group.key), ['mod rifles']);
   // The chart's chips store the same token, so the type can be chosen.
   for (const grouping of ['type', 'variant', 'domain'] as const) {
     const groups = stockGroups(reply, grouping, 110);
     const source = storedChoices(stockChoices(groups, 'group'));
-    const group = grouping === 'type' ? groups.find(item => item.key === 'mod/rifles')! : groups.find(item => item.variants.some(variant => variant.id === '90'))!;
+    const group = grouping === 'type' ? groups.find(item => item.key === 'mod rifles')! : groups.find(item => item.variants.some(variant => variant.id === '90'))!;
     const key = choiceKey(group, 110)!;
     const action = toggleChosen(source, [], [], setToken(key), 8);
     assert.ok('value' in action, `${grouping}: ${JSON.stringify(action)}`);

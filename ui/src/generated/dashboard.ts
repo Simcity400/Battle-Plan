@@ -446,6 +446,65 @@ dayHours: number,
  * In hour order.
  */
 reads: Array<FuelRead>, warnings: Array<string>, };
+export type FactoriesParams = { branchId: string, tags: Array<string>, top: FactoryTop | null, };
+export type FactoryCount = "free" | "built" | "topBar";
+export type FactoryTop = { count: number, mode: FactoryCount,
+/**
+ * The groups summed; none sums all three.
+ */
+groups: Array<FactoryGroupKey>, };
+export type FactoryGroupKey = "military" | "naval" | "civilian";
+export type FactoryPart = "total" | "controlled" | "owned" | "damaged" | "fromSubjects" | "toOverlord" | "fromOthers" | "toOthers" | "tradeExports" | "licenseExports" | "consumerGoods" | "contractPayments" | "specialProjects" | "licenseImports" | "tradeImports";
+export type FactoryField = { group: FactoryGroupKey, part: FactoryPart, };
+export type FactoryBuilding = {
+/**
+ * The content's building name.
+ */
+token: string,
+/**
+ * Its localised name; null when the content has none.
+ */
+name: string | null, };
+export type FactoryGroupInfo = { key: FactoryGroupKey,
+/**
+ * The content flag that counts a building in it.
+ */
+flag: string, buildings: Array<FactoryBuilding>, };
+export type FactoryRun = { firstHour: number, lastHour: number,
+/**
+ * The run follows a gap, an hour the tables could not tell or another
+ * country identity rather than continuing the previous run.
+ */
+startsSegment: boolean,
+/**
+ * Whole factories, one per [`CountryFactoriesReply::fields`] entry.
+ */
+values: Array<number>, };
+export type FactorySeries = { tag: string, runs: Array<FactoryRun>,
+/**
+ * Unbroken country identities from Countries and CountryLinks, never cut to top-N
+ * membership. Appearance samples must stay within the segment at their hour.
+ */
+segments: Array<HourSpan>,
+/**
+ * For a top-N reply, the hours the country was among the top N, in order;
+ * its runs are cut to them. Null for chosen countries.
+ */
+membership: Array<HourSpan> | null, };
+export type CountryFactoriesReply = { branchId: string,
+/**
+ * The three groups, with the content building types counted in each.
+ */
+groups: Array<FactoryGroupInfo>,
+/**
+ * What each position of a run's values holds.
+ */
+fields: Array<FactoryField>,
+/**
+ * The countries asked for that were recorded, or every country ever in the
+ * top N, by tag.
+ */
+series: Array<FactorySeries>, warnings: Array<string>, };
 export type OccupiedStatesParams = { branchId: string, };
 export type OccupiedValues = { name: string | null, nameMissing: string | null, owner: string | null, occupier: string | null,
 /**
@@ -1071,7 +1130,13 @@ runs: Array<SubjectRun>,
  * or starts next to one of these is a gap, not an end or a start.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
-/** Errors that only say the service had no room: the request may be tried again. */
-export const TRANSIENT_ERRORS = ["Dashboard request capacity reached", "Too many open dashboard source bindings", "The recording bridge is busy", "Native dashboard request queue is full"] as const;
-export const BROWSER_BRIDGE_BUSY = "The recording bridge is busy" as const;
-export const NATIVE_QUEUE_FULL = "Native dashboard request queue is full" as const;
+/** Refusals for want of room: a message starting with one may be tried again. */
+export const CAPACITY_REACHED = "Dashboard request capacity reached";
+export const TOO_MANY_SOURCES = "Too many open dashboard source bindings";
+export const BROWSER_BRIDGE_BUSY = "The recording bridge is busy";
+export const NATIVE_QUEUE_FULL = "Native dashboard request queue is full";
+export const MAP_CONTROLS_BUSY = "Map controls are busy";
+/** Errors that only say there was no room: the request may be tried again. */
+export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
+/** Products whose replies depend on configured game content. */
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "equipment-stockpile", "trade-flows", "subjects"] as const;

@@ -186,6 +186,7 @@ pub struct LandOwnersParams {}
 
 impl Product for LandOwnersProduct {
     const KEY: &'static str = "land-owners";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = LandOwnersParams;
     type Reply = LandOwners;
 

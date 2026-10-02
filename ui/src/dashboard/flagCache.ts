@@ -1,5 +1,6 @@
 import type { DashboardClient, ProductRequest } from './client';
 import { validateProductReply } from './client.ts';
+import { contentRevision } from './contentRevision.ts';
 import type { CountryFlagImage, CountryFlagParams, CountryFlagReply } from '../generated/dashboard';
 
 /** A list flag as the picker keeps it: pixels as bytes, not a JSON number array. */
@@ -74,16 +75,17 @@ export class FlagStore {
 
 /** Flags requested per product call; the product accepts at most this many tags. */
 export const FLAG_BATCH = 32;
-const stores = new WeakMap<DashboardClient, FlagStore>();
+const stores = new WeakMap<DashboardClient, { content: number; store: FlagStore }>();
 
 export function flagStore(client: DashboardClient): FlagStore {
-  let store = stores.get(client);
-  if (!store) { store = new FlagStore(FLAG_STORE_BYTES); stores.set(client, store); }
-  return store;
+  const content = contentRevision(client).snapshot();
+  let entry = stores.get(client);
+  if (!entry || entry.content !== content) { entry = { content, store: new FlagStore(FLAG_STORE_BYTES) }; stores.set(client, entry); }
+  return entry.store;
 }
 
 export function forgetFlags(client: DashboardClient, sourceId: string): void {
-  stores.get(client)?.deleteSource(sourceId);
+  stores.get(client)?.store.deleteSource(sourceId);
 }
 
 export interface FlagTarget { tag: string; branchId: string; hour: number }

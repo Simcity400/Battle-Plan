@@ -57,6 +57,7 @@ pub struct CountryStyleReply {
 
 impl Product for CountryStyles {
     const KEY: &'static str = "country-styles";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryStyleParams;
     type Reply = CountryStyleReply;
 

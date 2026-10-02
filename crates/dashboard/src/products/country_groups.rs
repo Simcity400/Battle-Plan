@@ -167,6 +167,7 @@ pub struct CountryGroupReply {
 
 impl Product for CountryGroups {
     const KEY: &'static str = "country-groups";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryGroupParams;
     type Reply = CountryGroupReply;
 

@@ -119,6 +119,7 @@ pub struct SubjectReply {
 
 impl Product for Subjects {
     const KEY: &'static str = "subjects";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = SubjectParams;
     type Reply = SubjectReply;
 

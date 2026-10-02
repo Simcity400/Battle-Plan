@@ -180,6 +180,43 @@ fn country_intel_is_dated_only_by_its_measured_walk() {
 }
 
 #[test]
+fn every_tag_is_tagged_in_one_pass_as_tagged_country_tags_it() {
+    use crate::metadata::{tagged_countries, tagged_country};
+    let country = |id, canonical_slot, tag: &[u8]| CountryRow {
+        id,
+        canonical_slot,
+        tag: tag.to_vec(),
+        ..Default::default()
+    };
+    // A second GER row the links resolve after one they do not, and a tag no link resolves.
+    let countries = [
+        country(5, 9, b"GER"),
+        country(9001, 7, b"GER"),
+        country(21, 8, b"ITA"),
+        country(33, 4, b"FRA"),
+    ];
+    let links = [
+        CountryLinkRow {
+            id: 21,
+            canonical_slot: 8,
+        },
+        CountryLinkRow {
+            id: 9001,
+            canonical_slot: 7,
+        },
+    ];
+    let tagged = tagged_countries(&countries, &links);
+    assert_eq!(tagged.len(), 3);
+    for tag in ["GER", "ITA", "FRA"] {
+        assert_eq!(
+            tagged[tag.as_bytes()],
+            tagged_country(&countries, &links, tag),
+            "{tag}"
+        );
+    }
+}
+
+#[test]
 fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothing_else() {
     use crate::metadata::slot_read;
     use crate::test_fixtures::slot_hour;

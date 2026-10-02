@@ -1,4 +1,5 @@
 use super::line_reader::read_lines;
+use super::pending::{MAX_QUEUED_ACTIONS, MAX_QUEUED_DATA, MAX_QUEUED_DATA_BYTES};
 use super::*;
 
 #[test]
@@ -201,4 +202,60 @@ fn hidden_map_defers_document_work_without_spinning() {
         pending.take_commands(true).as_slice(),
         [NativeCommand::Open { .. }, NativeCommand::Seek { .. }]
     ));
+}
+
+use dashboard::transport::{MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, transient_error};
+
+fn open(id: String) -> DataCommand {
+    DataCommand::Open {
+        id,
+        path: "a.battleplan".into(),
+        revision: "v1".into(),
+    }
+}
+
+#[test]
+fn a_full_data_queue_refuses_with_a_retryable_error_and_admits_again_once_sent() {
+    let mut pending = Pending::default();
+    for index in 0..MAX_QUEUED_DATA {
+        pending
+            .enqueue_data(open(format!("fill-{index}")), 100)
+            .unwrap();
+    }
+    // Full by count: the refusal says only that there was no room.
+    let refusal = pending.enqueue_data(open("late".into()), 100).unwrap_err();
+    assert_eq!(refusal, NATIVE_QUEUE_FULL);
+    assert!(transient_error(&refusal));
+    // Once the writer sends some, the same request is taken.
+    assert_eq!(pending.take_commands(false).len(), 4);
+    pending.enqueue_data(open("late".into()), 100).unwrap();
+    // Full by bytes: the same refusal.
+    let mut pending = Pending::default();
+    pending
+        .enqueue_data(open("large".into()), MAX_QUEUED_DATA_BYTES - 10)
+        .unwrap();
+    let refusal = pending.enqueue_data(open("next".into()), 11).unwrap_err();
+    assert!(transient_error(&refusal), "{refusal}");
+    // A cancel frees its own queued request's place.
+    pending
+        .enqueue_data(DataCommand::Cancel { id: "large".into() }, 11)
+        .unwrap();
+    assert_eq!(pending.data.len(), 1);
+}
+
+#[test]
+fn busy_map_controls_refuse_with_a_retryable_error() {
+    let mut pending = Pending::default();
+    for _ in 0..MAX_QUEUED_ACTIONS - 1 {
+        pending
+            .actions
+            .push_back(dashboard::protocol::MapAction::Inspect);
+    }
+    assert!(pending.action_room().is_ok());
+    pending
+        .actions
+        .push_back(dashboard::protocol::MapAction::Inspect);
+    let refusal = pending.action_room().unwrap_err();
+    assert!(refusal.starts_with(MAP_CONTROLS_BUSY));
+    assert!(transient_error(&refusal));
 }

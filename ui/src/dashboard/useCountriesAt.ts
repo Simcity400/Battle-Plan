@@ -8,6 +8,7 @@ import { lookHour } from './countryLooks.ts';
 import { nextLooks } from './looks.ts';
 import type { Look } from './looks';
 import type { BoundTrack } from './model';
+import { useContentRevision } from './contentRevision.ts';
 import { useThrottled } from './useThrottled.ts';
 
 /** How often names and flags follow a moving hour, in milliseconds. */
@@ -33,11 +34,12 @@ export type CountryAt = (tag: string) => { name: string; flag?: string };
  * gave replaces it, and a part it did not give is not known, never an older value.
  * Looks are held within one recorded stretch only (`lookHour`): an hour in a gap reads
  * nothing, and a moment past a gap starts afresh. A name not known falls back to the
- * recording's metadata name, else the tag; a flag not known shows none. `revision`
+ * opaque tag; a flag not known shows none. `revision`
  * changes as reads arrive, for a chart to redraw. `nameTags` may include every
  * lane being sorted by name; flag requests still use only `tags`. */
 export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, tags: readonly string[],
   hour: number, active: boolean, nameTags: readonly string[] = tags): { country: CountryAt; revision: number } {
+  const content = useContentRevision(client);
   const shownHour = useThrottled(Math.floor(hour), FOLLOW_MS);
   // The recorded stretch of the hour; none in a gap, where nothing is read.
   const stretch = track ? lookHour(track.branch, shownHour)?.stretch ?? null : null;
@@ -50,18 +52,17 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
   const styles = useCountryFactsRead(client, track, nameWanted, active, STYLES);
   const flags = useCountryFactsRead(client, track, wanted, active, FLAGS);
   // Held per track and recorded stretch, so no look crosses a gap.
-  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, stretch]) : '';
-  const shown = useRef<{ trackKey: string; looks: Map<string, Look> }>({ trackKey, looks: new Map() });
-  if (shown.current.trackKey !== trackKey) shown.current = { trackKey, looks: new Map() };
+  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, stretch, content]) : '';
+  const shown = useRef<{ trackKey: string; client: DashboardClient; looks: Map<string, Look> }>({ trackKey, client, looks: new Map() });
+  if (shown.current.trackKey !== trackKey || shown.current.client !== client) shown.current = { trackKey, client, looks: new Map() };
   const held = shown.current;
-  const metadata = useMemo(() => new Map((track?.source.metadata.countries ?? []).map(country => [country.tag, country.name])), [track?.source]);
   return useMemo(() => {
     // Merging what finished is idempotent, so a repeated render changes nothing.
     held.looks = nextLooks(held.looks, [...new Set([...nameWanted, ...wanted].map(item => item.tag))], tag => ({ style: styles.get(nameKey(shownHour, tag)), flag: flags.get(nameKey(shownHour, tag)) }));
     const looks = held.looks;
     return {
-      country: tag => ({ name: looks.get(tag)?.name || metadata.get(tag) || tag, flag: looks.get(tag)?.flag ?? undefined }),
+      country: tag => ({ name: looks.get(tag)?.name || tag, flag: looks.get(tag)?.flag ?? undefined }),
       revision: styles.size + flags.size * 1000 + looks.size * 1_000_000,
     };
-  }, [wanted, nameWanted, styles, flags, held, metadata, shownHour]);
+  }, [wanted, nameWanted, styles, flags, held, shownHour]);
 }

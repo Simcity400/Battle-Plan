@@ -495,6 +495,7 @@ fn equipment_warnings(types: &Database) -> Vec<String> {
 
 impl Product for EquipmentStockpile {
     const KEY: &'static str = "equipment-stockpile";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
     type Reply = EquipmentStockpileReply;
 

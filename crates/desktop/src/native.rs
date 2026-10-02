@@ -188,9 +188,7 @@ impl NativeHost {
         if !inner.status.ready || inner.shutting_down {
             return Err("The native map is not ready".into());
         }
-        if inner.pending.actions.len() >= 16 {
-            return Err("Map controls are busy; try again".into());
-        }
+        inner.pending.action_room()?;
         if let dashboard::protocol::MapAction::Unload { path } = &action {
             inner.forget_recording(path);
         }

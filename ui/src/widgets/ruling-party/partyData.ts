@@ -1,5 +1,7 @@
 import type { EventBadge } from '../../charts/badges';
 import { runAt } from '../../charts/series.ts';
+import { buildStack as buildStackOf, stackedSegments } from '../../charts/stack.ts';
+import type { StackModel } from '../../charts/stack';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import type { FixedRun, HourSpan, LeaderRun, PartyHistoryReply, PartySeries } from '../../generated/dashboard';
 
@@ -60,83 +62,13 @@ export function rulingAt(reply: PartyHistoryReply, hour: number): string | null 
   return reply.ruling.find(run => run.firstHour <= hour && hour <= run.lastHour)?.token ?? null;
 }
 
-/** Every hour where any band's value can change, with each band's stacked top
- * there; null where a band is unrecorded, and a break before an hour where a band
- * starts a new line (a new country identity). Built once per reply. */
-export interface StackModel { hours: number[]; tops: (number[] | null)[]; breakBefore: boolean[] }
-
+/** The bands stacked in order, each party's popularity as a plotting number
+ * (the kit's `buildStack`). */
 export function buildStack(list: readonly Band[], decimals: number): StackModel {
-  const boundaries = new Set<number>();
-  for (const band of list) {
-    for (const run of band.series.runs) {
-      boundaries.add(run.firstHour);
-      boundaries.add(run.lastHour);
-      // The hour after a run is sampled too, so a gap there breaks the bands.
-      boundaries.add(run.lastHour + 1);
-    }
-  }
-  const hours = [...boundaries].sort((a, b) => a - b);
-  const model: StackModel = { hours, tops: [], breakBefore: [] };
-  for (const hour of hours) {
-    let total = 0;
-    let known = true;
-    let fresh = false;
-    const tops: number[] = [];
-    for (const band of list) {
-      const run = runAt(band.series.runs, hour);
-      if (!run) { known = false; break; }
-      if (run.firstHour === hour && run.startsSegment) fresh = true;
-      total += fixedNumber(run.valueRaw, decimals);
-      tops.push(total);
-    }
-    model.tops.push(known ? tops : null);
-    model.breakBefore.push(fresh);
-  }
-  return model;
+  return buildStackOf(list.map(band => band.series.runs.map(run => ({ ...run, value: fixedNumber(run.valueRaw, decimals) }))));
 }
 
-/** The segments to draw between `from` and `to`: samples closer than `minHours`
- * merge, but every segment keeps its first and last sample, and an isolated
- * recorded hour draws as one hour wide. */
-export function stackedSegments(model: StackModel, from: number, to: number, minHours: number): { hours: number[]; tops: number[][] }[] {
-  const segments: { hours: number[]; tops: number[][] }[] = [];
-  let current: { hours: number[]; tops: number[][] } | null = null;
-  let pending: { hour: number; tops: number[] } | null = null;
-  const push = (hour: number, tops: number[]) => {
-    current!.hours.push(hour);
-    tops.forEach((top, index) => current!.tops[index].push(top));
-  };
-  const close = () => {
-    if (current && pending) push(pending.hour, pending.tops);
-    // One recorded hour holds its value until the next.
-    if (current && current.hours.length === 1) push(current.hours[0] + 1, current.tops.map(tops => tops[0]));
-    current = null;
-    pending = null;
-  };
-  // Start from the sample at or before `from`, so the visible start is covered.
-  let start = 0;
-  for (let low = 0, high = model.hours.length - 1; low <= high;) {
-    const middle = (low + high) >> 1;
-    if (model.hours[middle] <= from) { start = middle; low = middle + 1; } else high = middle - 1;
-  }
-  for (let index = start; index < model.hours.length && model.hours[index] <= to; index++) {
-    const hour = model.hours[index];
-    const tops = model.tops[index];
-    if (!tops || model.breakBefore[index]) close();
-    if (!tops) continue;
-    if (!current) {
-      current = { hours: [], tops: tops.map(() => []) };
-      segments.push(current);
-      push(hour, tops);
-      continue;
-    }
-    if (hour - current.hours.at(-1)! < minHours) { pending = { hour, tops }; continue; }
-    push(hour, tops);
-    pending = null;
-  }
-  close();
-  return segments;
-}
+export { stackedSegments };
 
 /** Ruling-party changes and elections as badges, and changes of leader when
  * `leaders` is set. A change next to a gap is a gap in the recording, not a change

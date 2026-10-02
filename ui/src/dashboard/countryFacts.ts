@@ -13,6 +13,9 @@ export interface NameAt { hour: number; tag: string }
 
 export const nameKey = (hour: number, tag: string) => JSON.stringify([hour, tag]);
 
+/** A failed read is unknown, distinct from an answered fact with no value. */
+export const FAILED_FACT = Symbol('failed fact');
+
 /** Most distinct hours one label set may ask about by default, and how many hours
  * no longer wanted a store keeps. */
 export const MAX_NAME_HOURS = 64;
@@ -133,7 +136,7 @@ export function planRequests<V>(store: HourStore<V>, wanted: readonly NameAt[], 
 /** Whether a failed request may be tried again: it was cancelled, the service could
  * not be reached (the browser's fetch fails with a TypeError), or the service refused
  * it for want of room (`TRANSIENT_ERRORS`, from the service's own messages). Any
- * other error is the product's answer, and asking again would give it again. */
+ * other error waits for an explicit retry or a change of content. */
 export function transientError(error: unknown): boolean {
   if (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') return true;
   if (error instanceof TypeError) return true;
@@ -141,9 +144,9 @@ export function transientError(error: unknown): boolean {
   return TRANSIENT_ERRORS.some(refusal => message.startsWith(refusal));
 }
 
-/** Reads a plan, reporting each chunk (null: its read failed); stops when aborted. */
+/** Reads a plan; null reports failure, with whether it may retry automatically. */
 export type FactRead<V> = (plan: readonly (readonly [number, readonly string[]])[], signal: AbortSignal,
-  onChunk: (hour: number, tags: readonly string[], found: ReadonlyMap<string, V> | null) => void) => Promise<void>;
+  onChunk: (hour: number, tags: readonly string[], found: ReadonlyMap<string, V> | null, retryable?: boolean) => void) => Promise<void>;
 
 /** Reads one store runs at once: a sweep of a tooltip across hours never piles up
  * requests past the desktop's limit. */
@@ -178,7 +181,7 @@ const REAL_CLOCK: FactClock = {
  * - Only a read that completed decides a fact: a country its answer lacks is read
  *   with nothing. A read that failed (the desktop out of room, a transport error)
  *   decides nothing: it is tried again while its hour is wanted, after a wait that
- *   doubles each time ([`retryDelay`]), and `retry` tries at once.
+ *   doubles each time ([`retryDelay`]). Product errors wait for `retry` or new content.
  * - Each read that ends starts the next queued, so nothing waits for a re-render.
  *
  * `cancel` (another track, nothing wanted, the widget off screen or gone) stops all. */
@@ -188,7 +191,7 @@ export class FactRequests<V> {
   /** The countries they read, by `nameKey`. */
   private readonly keys = new Set<string>();
   /** Failures in a row, and when each may be tried again, by `nameKey`. */
-  private readonly failures = new Map<string, { count: number; at: number }>();
+  private readonly failures = new Map<string, { hour: number; count: number; at: number }>();
   private wanted: readonly NameAt[] = [];
   private maxHours = MAX_NAME_HOURS;
   private perRequest = 1;
@@ -200,7 +203,7 @@ export class FactRequests<V> {
   private readonly changed: () => void;
   private readonly clock: FactClock;
 
-  /** `changed` is told whenever a read is recorded. */
+  /** `changed` is told whenever a read completes or fails. */
   constructor(store: HourStore<V>, read: FactRead<V>, changed: () => void, clock: FactClock = REAL_CLOCK) {
     this.store = store;
     this.read = read;
@@ -214,6 +217,16 @@ export class FactRequests<V> {
   /** How many reads are going. */
   get running(): number { return this.reading.size; }
 
+  /** Completed values, explicit missing values, and failures; pending reads are absent. */
+  pickRead(wanted: readonly NameAt[]): Map<string, V | null | typeof FAILED_FACT> {
+    const picked: Map<string, V | null | typeof FAILED_FACT> = this.store.pickRead(wanted);
+    for (const item of wanted) {
+      const key = nameKey(item.hour, item.tag);
+      if (this.failures.has(key)) picked.set(key, FAILED_FACT);
+    }
+    return picked;
+  }
+
   /** Makes `wanted` what is wanted: cancels reads of hours it no longer names and
    * starts what it needs that is neither read nor being read, as places free up.
    * Returns the requests started now. */
@@ -223,6 +236,9 @@ export class FactRequests<V> {
     this.perRequest = perRequest;
     const hours = new Set(wantedHours(wanted, maxHours));
     this.store.want(hours);
+    // Configuration failures wait for retry only while their hours are wanted;
+    // playback must not keep a failure for every hour it has passed.
+    for (const [key, failure] of this.failures) if (!hours.has(failure.hour)) this.failures.delete(key);
     for (const [id, read] of [...this.reading]) if (!hours.has(read.hour)) this.stop(id);
     return this.pump();
   }
@@ -273,7 +289,7 @@ export class FactRequests<V> {
     this.reading.set(id, { hour, tags, controller });
     for (const tag of tags) this.keys.add(nameKey(hour, tag));
     let reported = false;
-    const done = (found: ReadonlyMap<string, V> | null) => {
+    const done = (found: ReadonlyMap<string, V> | null, retryable = true) => {
       if (reported || controller.signal.aborted || !this.reading.has(id)) return;
       reported = true;
       this.stop(id, false);
@@ -284,18 +300,19 @@ export class FactRequests<V> {
         this.store.record(hour, tags, found);
         this.changed();
       } else {
-        // A failed read decides nothing; it is tried again after its wait.
+        // Product/configuration errors wait for retry; transient errors back off.
         const at = this.clock.now();
         for (const tag of tags) {
           const key = nameKey(hour, tag);
           const count = (this.failures.get(key)?.count ?? 0) + 1;
-          this.failures.set(key, { count, at: at + retryDelay(count) });
+          this.failures.set(key, { hour, count, at: retryable ? at + retryDelay(count) : Infinity });
         }
+        this.changed();
       }
       this.pump();
     };
     // A read that ends without reporting its chunk failed.
-    void this.read([[hour, tags]], controller.signal, (_hour, _tags, found) => done(found)).then(() => done(null), () => done(null));
+    void this.read([[hour, tags]], controller.signal, (_hour, _tags, found, retryable) => done(found, retryable)).then(() => done(null), () => done(null));
   }
 
   private stop(id: number, abort = true): void {
@@ -319,20 +336,18 @@ export interface FactSpec<V> {
 /** Reads a plan on the transient path, one request at a time, reporting each
  * chunk's values (null when its read failed: a gap or an error). Stops when aborted. */
 export async function readFacts<V>(client: DashboardClient, source: { sourceId: string; revision: string; branchId: string }, spec: FactSpec<V>,
-  plan: readonly (readonly [number, readonly string[]])[], signal: AbortSignal, onChunk: (hour: number, tags: readonly string[], found: ReadonlyMap<string, V> | null) => void): Promise<void> {
+  plan: readonly (readonly [number, readonly string[]])[], signal: AbortSignal, onChunk: (hour: number, tags: readonly string[], found: ReadonlyMap<string, V> | null, retryable?: boolean) => void): Promise<void> {
   for (const [hour, tags] of plan) {
     let found: ReadonlyMap<string, V> | null = null;
+    let retryable = false;
     try {
       const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product,
         params: spec.params(source.branchId, hour, tags) }, signal);
       found = spec.extract(data);
     } catch (error) {
-      // An error the product gave (the game folders not chosen, an hour not recorded)
-      // is its answer: it has nothing for these countries. Only a refusal for want of
-      // room, a cancelled request or a service out of reach is tried again.
-      if (!transientError(error)) found = new Map();
+      retryable = transientError(error);
     }
     if (signal.aborted) return;
-    onChunk(hour, tags, found);
+    onChunk(hour, tags, found, retryable);
   }
 }

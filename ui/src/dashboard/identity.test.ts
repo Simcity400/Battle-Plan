@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Lineage, joinTagChanges } from './identity.ts';
-import { assertLinear } from '../charts/linearTime.ts';
+import { assertLinear } from '../charts/assertLinear.ts';
 
 const run = (tag: string, firstHour: number, lastHour: number) => ({ tag, firstHour, lastHour });
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
 import { LEADER_GLYPH, UNNAMED, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld } from './factionsData.ts';
 import type { LaneOptions } from './factionsData';
-import { assertLinear } from '../../charts/linearTime.ts';
+import { assertLinear } from '../../charts/assertLinear.ts';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { laneRequests } from '../../charts/timeline/laneRequests.ts';
 

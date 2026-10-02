@@ -238,6 +238,7 @@ struct Cache {
 
 impl Product for CountryExperience {
     const KEY: &'static str = "country-experience";
+    const CONTENT_DEPENDENT: bool = false;
     type Params = ExperienceParams;
     type Reply = ExperienceReply;
 

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { badgeRows } from '../../charts/badges';
-import { dayLabel, drawStack } from '../../charts/draw';
+import { dayLabel, drawBands } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import { categoricalPalette } from '../../charts/palette';
@@ -65,7 +65,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
       const to = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       const hoursPerPixel = (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth);
       for (const segment of stackedSegments(stack!, frame.x[0], to, hoursPerPixel / 2)) {
-        drawStack(ctx, frame, tokens, segment.hours, segment.tops, list.map(band => band.color));
+        drawBands(ctx, frame, tokens, segment.hours, segment.bands, list.map(band => band.color));
       }
     },
     extent: () => [0, 100],

@@ -453,6 +453,7 @@ struct Cache {
 
 impl Product for TradeFlows {
     const KEY: &'static str = "trade-flows";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = TradeFlowParams;
     type Reply = TradeFlowsReply;
 

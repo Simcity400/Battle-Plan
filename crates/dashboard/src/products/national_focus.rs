@@ -433,6 +433,7 @@ pub struct State {
 
 impl Product for NationalFocus {
     const KEY: &'static str = "national-focus";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
     type Reply = FocusReply;
 

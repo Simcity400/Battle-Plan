@@ -1,5 +1,7 @@
 /* Chart pieces shared by every widget. */
-.time-chart { position: relative; width: 100%; height: 100%; min-height: 0; }
+.time-chart, .race-chart { position: relative; width: 100%; height: 100%; min-height: 0; }
+.race-chart canvas { display: block; width: 100%; height: 100%; }
+.race-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
 .time-chart canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .time-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
 .timeline-chart { position: relative; width: 100%; }

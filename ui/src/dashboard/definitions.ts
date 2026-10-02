@@ -4,7 +4,7 @@ import type { MapOptions } from '../shell/api';
 import type { DashboardClient, ReplayFile } from './client';
 import type { Campaign } from './campaigns';
 import type { MapViewsStore } from './geometry';
-import type { Alignment, BoundTrack, DashboardTemplate, TrackSpec, WidgetSpec, WidgetTime } from './model';
+import type { Alignment, BoundTrack, CountrySelection, DashboardTemplate, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import type { PlaybackController } from './playback';
 import type { OptionField, OptionValue } from './options';
 
@@ -82,6 +82,9 @@ export interface WidgetMeta {
    * `all`: the widget shows the whole world by default (every faction, every
    * overlord), and chosen countries or a group narrow it. */
   countries?: { max: number; ranked?: boolean; aggregate?: boolean; all?: boolean };
+  /** The countries a new or reset widget shows (the dashboard's country when absent),
+   * such as a race's top 10 of all countries. */
+  defaultCountries?: CountrySelection;
   /** The widget's own settings, grouped into the panel's sections. */
   options?: readonly OptionField[];
   /** Upgrades settings saved by an older `version`; null keeps them unchanged. */

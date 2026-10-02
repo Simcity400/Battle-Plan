@@ -115,6 +115,7 @@ pub struct MeasureReply {
 
 impl Product for CountryMeasure {
     const KEY: &'static str = "country-measure";
+    const CONTENT_DEPENDENT: bool = false;
     type Params = MeasureParams;
     type Reply = MeasureReply;
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertLinear } from '../linearTime.ts';
+import { assertLinear } from '../assertLinear.ts';
 import { bandHalf, bandHitAt, bandOutlines, laneBandLayouts, laneBands, laneStops } from './layout.ts';
 
 const toX = (hour: number) => hour;

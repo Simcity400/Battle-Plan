@@ -66,14 +66,14 @@ test('a campaign-scoped token differs between campaigns and stays storable', () 
 });
 
 test('a key a setting cannot store is chosen through its stored token', () => {
-  const keys: Record<string, number> = { 'mod/rifles': 1, infantry_equipment: 1 };
+  const keys: Record<string, number> = { 'mod rifles': 1, infantry_equipment: 1 };
   const source = storedChoices({ lines: key => keys[key] ?? 0, name: key => key, noun: 'equipment type' });
-  const token = setToken('mod/rifles');
-  assert.equal(storableToken('mod/rifles'), false);
+  const token = setToken('mod rifles');
+  assert.equal(storableToken('mod rifles'), false);
   assert.equal(source.lines(token), 1);
   // Chosen, it is stored as its token and read back as the key.
   const action = toggleChosen(source, [], ['infantry_equipment'], token, 8);
   assert.ok('value' in action, JSON.stringify(action));
-  assert.deepEqual(action.value.split(' ').map(contentKey), ['infantry_equipment', 'mod/rifles']);
-  assert.deepEqual(chosenShown(source, action.value.split(' '), 'infantry_equipment').map(contentKey), ['infantry_equipment', 'mod/rifles']);
+  assert.deepEqual(action.value.split(' ').map(contentKey), ['infantry_equipment', 'mod rifles']);
+  assert.deepEqual(chosenShown(source, action.value.split(' '), 'infantry_equipment').map(contentKey), ['infantry_equipment', 'mod rifles']);
 });

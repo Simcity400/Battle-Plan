@@ -99,7 +99,9 @@ fn completed_replies_still_occupy_admission_until_delivery() {
         .map(|index| pending.begin(format!("reply-{index}")).unwrap())
         .collect();
     assert!(pending.begin("over-capacity".into()).is_none());
-    let (rejection, _) = pending.errors.pop_front().unwrap();
+    let (rejection, message) = pending.errors.pop_front().unwrap();
+    assert_eq!(message, crate::transport::CAPACITY_REACHED);
+    assert!(crate::transport::transient_error(&message));
     drop(pending.finish(&rejection, false));
     drop(pending.finish(&requests[0], true));
     assert!(pending.begin("replacement".into()).is_some());

@@ -292,6 +292,7 @@ struct Cache {
 
 impl Product for OccupiedStates {
     const KEY: &'static str = "occupied-states";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = OccupiedStatesParams;
     type Reply = OccupiedStatesReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

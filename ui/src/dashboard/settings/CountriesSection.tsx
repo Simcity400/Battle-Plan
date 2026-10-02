@@ -4,6 +4,7 @@ import { Icon } from '../../components/Icons';
 import { Segmented } from '../../components/Segmented';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { defaultCountryTag, selectedTags } from '../countrySelection';
+import { DEFAULT_TOP } from '../groups';
 import { useCountryGroups } from '../useCountryGroups';
 import type { BoundTrack, CountryGroup, CountrySelection, GroupMembership, WidgetSpec } from '../model';
 import type { WidgetMeta, WidgetRuntime } from '../definitions';
@@ -89,7 +90,7 @@ function GroupFields({ selection, reference, runtime, limits, onChange }: {
         const choice = event.currentTarget.value;
         const next: CountryGroup = choice.startsWith('faction:') ? { type: 'faction', id: choice.slice(8) }
           : choice === 'war' ? { type: 'war', tag: defaultCountryTag(reference) ?? '' }
-            : choice === 'top' ? { type: 'top', count: 5 } : { type: 'humans' };
+            : choice === 'top' ? { type: 'top', count: Math.min(DEFAULT_TOP, limits.max) } : { type: 'humans' };
         if (next.type !== 'war' || next.tag) set({ group: next });
       }}>{kinds.map(kind => <option key={kind.value} value={kind.value}>{kind.label}</option>)}</select></label>
     {groups.error && <p className="field-hint" role="alert">Groups unavailable: {groups.error}</p>}

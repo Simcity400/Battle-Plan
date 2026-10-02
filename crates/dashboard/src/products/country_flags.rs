@@ -103,6 +103,7 @@ pub struct CountryFlagReply {
 
 impl Product for CountryFlags {
     const KEY: &'static str = "country-flags";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryFlagParams;
     type Reply = CountryFlagReply;
 

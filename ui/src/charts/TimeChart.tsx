@@ -75,6 +75,8 @@ export interface TimeChartProps {
   keyHours?: readonly number[];
   /** Drawn after the plot, unclipped: end labels and markers. */
   overlay?: (ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens) => void;
+  /** The drawn time range, including zoom/pan, for labels dated to visible ends. */
+  onViewChange?: (x: Range) => void;
   onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
   /** A click (not a drag) on the plot picks that hour, e.g. to open or move a breakdown. */
   onPick?: (hour: number) => void;
@@ -211,6 +213,7 @@ export default function TimeChart(props: TimeChartProps) {
       context.restore();
       if (p.strip && frame.strip) p.strip.draw(context, frame, tokens, { playhead: until });
       shown.current = { x, until };
+      p.onViewChange?.(x);
       if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
       if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
       const drawn = p.badges ? visibleBadges(p.badges, frame.x, until) : [];

@@ -5,6 +5,7 @@ import { Icon } from './Icons';
 import { CountryFlag } from './CountryFlag';
 import { forgetSettledProducts, loadProduct, loadTransientProduct } from '../dashboard/products';
 import { FlagStore, flagStore, loadListFlags } from '../dashboard/flagCache';
+import { useContentRevision } from '../dashboard/contentRevision';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import type { CountryFlagImage, CountryFlagParams, CountryFlagReply, CountryFlagSize, LandOwners } from '../generated/dashboard';
 import { COUNTRY_ROW_HEIGHT, countryChoices, filterChoices, moveIndex, revealRow, visibleRange } from './countryList';
@@ -40,7 +41,8 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const [active, setActive] = useState(-1);
   const [view, setView] = useState({ scrollTop: 0, height: LIST_HEIGHT });
   const [retry, setRetry] = useState(0);
-  const sourceKey = source ? `${source.id}:${source.revision}` : '';
+  const content = useContentRevision(client);
+  const sourceKey = source ? JSON.stringify([source.id, source.revision, content]) : '';
   const [roster, setRoster] = useState<{ key: string; countries: CountryMetadata[]; error: string | null; warning: string | null }>({ key: '', countries: [], error: null, warning: null });
   const loading = !!source && roster.key !== sourceKey;
   const choices = useMemo(() => roster.key === sourceKey ? countryChoices(roster.countries) : [], [roster, sourceKey]);

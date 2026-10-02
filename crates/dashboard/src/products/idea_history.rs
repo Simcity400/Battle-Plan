@@ -714,6 +714,7 @@ struct Cache {
 
 impl Product for IdeaHistory {
     const KEY: &'static str = "idea-history";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
     type Reply = IdeaHistoryReply;
 

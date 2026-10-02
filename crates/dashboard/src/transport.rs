@@ -15,22 +15,47 @@ use crate::ReplayMetadata;
 pub const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 
 /// The service had no room for the request: nothing is said of the product, and
-/// the request may be tried again (the desktop host's own refusal starts with it).
+/// the request may be tried again. The desktop host refuses past the same
+/// admission budget with a message starting with it.
 pub const CAPACITY_REACHED: &str = "Dashboard request capacity reached";
 /// Every source binding is taken: the request may be tried again once one is released.
 pub const TOO_MANY_SOURCES: &str = "Too many open dashboard source bindings";
 /// The browser adapter has no room until one of its pending requests finishes.
 pub const BROWSER_BRIDGE_BUSY: &str = "The recording bridge is busy";
-/// The desktop's native command queue has no room until its writer drains it.
+/// The desktop host's pipe to the native service is full (by count or bytes): the
+/// request may be tried again once queued requests have been sent.
 pub const NATIVE_QUEUE_FULL: &str = "Native dashboard request queue is full";
+/// The desktop host's map controls queue is full: the action may be tried again.
+pub const MAP_CONTROLS_BUSY: &str = "Map controls are busy";
+/// Every refusal for want of room that a host or the service may give, by its name in
+/// the frontend's contract. A producer's message starts with one of these, and each
+/// producer builds its message from the constant, never from its own text.
+pub const TRANSIENT_ERROR_NAMES: [(&str, &str); 5] = [
+    ("CAPACITY_REACHED", CAPACITY_REACHED),
+    ("TOO_MANY_SOURCES", TOO_MANY_SOURCES),
+    ("BROWSER_BRIDGE_BUSY", BROWSER_BRIDGE_BUSY),
+    ("NATIVE_QUEUE_FULL", NATIVE_QUEUE_FULL),
+    ("MAP_CONTROLS_BUSY", MAP_CONTROLS_BUSY),
+];
 /// The refusals a reader may try again, exported to the frontend's contract; any
 /// other error is the product's own answer.
-pub const TRANSIENT_ERRORS: [&str; 4] = [
-    CAPACITY_REACHED,
-    TOO_MANY_SOURCES,
-    BROWSER_BRIDGE_BUSY,
-    NATIVE_QUEUE_FULL,
-];
+pub const TRANSIENT_ERRORS: [&str; TRANSIENT_ERROR_NAMES.len()] = {
+    let mut texts = [""; TRANSIENT_ERROR_NAMES.len()];
+    let mut index = 0;
+    while index < texts.len() {
+        texts[index] = TRANSIENT_ERROR_NAMES[index].1;
+        index += 1;
+    }
+    texts
+};
+
+/// Whether an error only says there was no room, so the request may be tried again:
+/// it starts with one of [`TRANSIENT_ERRORS`]. The frontend classifies the same way.
+pub fn transient_error(message: &str) -> bool {
+    TRANSIENT_ERRORS
+        .iter()
+        .any(|refusal| message.starts_with(refusal))
+}
 /// JSON has already escaped control characters. Escaping its quotes/backslashes
 /// again uses at most twice this size, leaving room in the 64 KiB control frame.
 const FRAGMENT_BYTES: usize = 16 * 1024;
@@ -481,5 +506,46 @@ mod tests {
             io::ErrorKind::Interrupted
         );
         assert!(buffer.bytes.is_empty());
+    }
+
+    #[test]
+    fn the_contract_names_the_refusals_a_reader_may_try_again() {
+        use crate::transport::{
+            BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL,
+            TOO_MANY_SOURCES, TRANSIENT_ERROR_NAMES, TRANSIENT_ERRORS, transient_error,
+        };
+        let contract = crate::typescript_contract();
+        // Each refusal is exported by name, and the list is made of those names.
+        for (name, message) in TRANSIENT_ERROR_NAMES {
+            assert!(contract.contains(&format!("export const {name} = {message:?};")));
+        }
+        assert!(contract.contains(
+            "export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;"
+        ));
+        assert_eq!(
+            TRANSIENT_ERRORS,
+            [
+                CAPACITY_REACHED,
+                TOO_MANY_SOURCES,
+                BROWSER_BRIDGE_BUSY,
+                NATIVE_QUEUE_FULL,
+                MAP_CONTROLS_BUSY
+            ]
+        );
+        // Every refusal, alone or with a producer's advice after it, may be tried again;
+        // the product's own answers and other failures may not.
+        for refusal in TRANSIENT_ERRORS {
+            assert!(transient_error(refusal), "{refusal}");
+            assert!(transient_error(&format!("{refusal}. Retry this view.")));
+        }
+        for answer in [
+            "Choose the game and user folders in Settings first",
+            "Dashboard request cancelled",
+            "Source identity exhausted",
+            "Too many native map views",
+            "",
+        ] {
+            assert!(!transient_error(answer), "{answer}");
+        }
     }
 }

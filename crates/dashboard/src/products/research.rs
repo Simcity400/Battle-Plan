@@ -928,6 +928,7 @@ pub struct State {
 
 impl Product for Research {
     const KEY: &'static str = "research";
+    const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
     type Reply = ResearchReply;
 

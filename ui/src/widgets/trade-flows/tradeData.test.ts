@@ -144,14 +144,14 @@ test('choosing and laying out the flows grows about linearly with a world of cou
     const runs = (index: number): [number, number, string][] => Array.from({ length: 10 }, (_, read) => [read * 24, read * 24 + 23, String(100_000 + index + read)]);
     return { ...reply(), countries, flows: countries.flatMap((_, index) => [flow(index, (index + 1) % count, 1, runs(index)), flow(index, (index + 1) % count, 2, runs(index))]) };
   };
-  assertLinear(count => {
+  assertLinear('countries', count => {
     const data = decodeTrade(world(count));
     return () => {
       const flows = selectFlows(data, { kind: 'countries', tags: data.reply.countries.slice(0, count / 2), membership: null, between: false }, null);
       for (const measure of ['current', 'total', 'average'] as const) buildDiagram(flows, measure, 0, 200, 12);
       sideRanks(flows, 0, 239);
     };
-  }, 'countries', 1_500);
+  }, 1_500);
 });
 
 test('one scale all campaign: the most traded at once, the final total, the largest average', () => {

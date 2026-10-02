@@ -32,7 +32,7 @@ test('stacked segments break where any party is unrecorded', () => {
   assert.equal(segments.length, 2);
   assert.deepEqual(segments[0].hours, [100, 101, 102]);
   // Tops accumulate in band order: 50, then +40, then +10.
-  assert.deepEqual(segments[0].tops.map(tops => tops[0]), [50, 90, 100]);
+  assert.deepEqual(segments[0].bands.map(band => band.high[0]), [50, 90, 100]);
   assert.deepEqual(segments[1].hours, [104, 110]);
   // Thinning keeps each segment's last sample.
   assert.deepEqual(stackedSegments(buildStack(bands(REPLY, ['#111111']), 5), 100, 110, 50).map(segment => segment.hours), [[100, 102], [104, 110]]);
