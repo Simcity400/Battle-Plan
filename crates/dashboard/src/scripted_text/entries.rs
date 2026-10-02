@@ -5,6 +5,80 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) type StateNames = BTreeMap<u32, Result<String, String>>;
 
+#[derive(Clone)]
+pub(super) struct ActiveEntry {
+    name: String,
+    at: usize,
+    scopes_len: usize,
+    bare: bool,
+    variables: ScopeVariables,
+}
+
+struct EntryGuard<'a>(&'a ExpansionScopes, usize);
+
+impl Drop for EntryGuard<'_> {
+    fn drop(&mut self) {
+        self.0.active.borrow_mut().pop();
+        self.0.scopes.borrow_mut().truncate(self.1);
+        self.0.prev_distance.borrow_mut().truncate(self.1);
+    }
+}
+
+impl ActiveEntry {
+    fn matches(&self, name: &str, scopes: &ExpansionScopes, at: usize, bare: bool) -> bool {
+        if self.name != name || self.bare != bare || self.variables != scopes.variables.get() {
+            return false;
+        }
+        // Equivalent graphs have the same PREV distance to a different object or unknown link.
+        // This skips full graph walks for a growing PREV history.
+        if scopes.valid_links {
+            let distance = scopes.prev_distance.borrow();
+            if distance[self.at] != distance[at] {
+                return false;
+            }
+        }
+        let valid_links = scopes.valid_links;
+        let scopes = scopes.scopes.borrow();
+        if scopes[self.at].random_seed != scopes[at].random_seed {
+            return false;
+        }
+        // Compare reachable values and links, not allocation indices.
+        // ROOT/FROM/PREV can themselves be promoted (141A81250); only
+        // THIS's seed is read here (1410CDDF0 gives entries a fresh seed).
+        let mut pending = vec![(self.at, at)];
+        let mut seen = BTreeSet::new();
+        while let Some((left_at, right_at)) = pending.pop() {
+            if (valid_links && left_at == right_at) || !seen.insert((left_at, right_at)) {
+                continue;
+            }
+            let (left, right) = (scopes[left_at], scopes[right_at]);
+            if left.this != right.this {
+                return false;
+            }
+            for (a, b) in [
+                (left.root, right.root),
+                (left.from, right.from),
+                (left.prev, right.prev),
+            ] {
+                let linked = |at, link, len| match link {
+                    Link::Itself => Some(at),
+                    Link::Scope(to) if to < len => Some(to),
+                    _ => None,
+                };
+                match (
+                    linked(left_at, a, self.scopes_len),
+                    linked(right_at, b, scopes.len()),
+                ) {
+                    (Some(a), Some(b)) => pending.push((a, b)),
+                    (None, None) if a == b => {}
+                    _ => return false,
+                }
+            }
+        }
+        true
+    }
+}
+
 pub(crate) struct StateContent {
     pub defines: installed_content::defines::Defines,
     pub states: installed_content::states::States,
@@ -168,9 +242,12 @@ impl<'a> ScriptedText<'a> {
         &self,
         object: Object,
         name: &str,
-        scopes: &EventScopes,
+        scopes: &ExpansionScopes,
         active: usize,
     ) -> Result<String, String> {
+        if scopes.needs_large_stack() {
+            return self.on_large_stack(scopes, |scopes| self.entry(object, name, scopes, active));
+        }
         if !self.content.names.unknown.is_empty() {
             return Err(format!(
                 "{name}: scripted localisation definitions are uncertain: {}",
@@ -180,8 +257,30 @@ impl<'a> ScriptedText<'a> {
         let Some(entry) = self.content.names.entries.get(name.as_bytes()) else {
             return Ok(String::new());
         };
-        let (bound, at) = bound_scope(object, scopes, active);
+        let previous_len = scopes.scopes.borrow().len();
+        let at = bound_scope(object, scopes, active);
         let bare = object != Object::Event;
+        let repeated = scopes
+            .active
+            .borrow()
+            .iter()
+            .any(|entry| entry.matches(name, scopes, at, bare));
+        scopes.active.borrow_mut().push(ActiveEntry {
+            name: name.to_owned(),
+            at,
+            scopes_len: scopes.scopes.borrow().len(),
+            bare,
+            variables: scopes.variables.get(),
+        });
+        let _guard = EntryGuard(scopes, previous_len);
+        if repeated {
+            return Err(format!(
+                "scripted localisation {name}: cyclic entry invocation (1410CF560)"
+            ));
+        }
+        if scopes.active.borrow().len() + scopes.fresh_depth.get() > MAX_SCRIPTED_NESTING {
+            return Err(nesting_refusal(name));
+        }
         // 140A9CC20 checks alternatives in order; EndScopedVariableContext
         // (140535830) leaves the checked trigger's temps for a later value.
         let mut checked_trigger = false;
@@ -196,7 +295,7 @@ impl<'a> ScriptedText<'a> {
             }
             let trigger = &text.trigger;
             if !trigger.is_empty() {
-                let scopes = entry_scopes(&bound, at, bare);
+                let scopes = entry_scopes(scopes, at, bare);
                 evaluator = Some(Evaluator::new(self.world()?, None));
                 match evaluator.as_ref().unwrap().evaluate(trigger, scopes) {
                     Eval::False => continue,
@@ -215,9 +314,9 @@ impl<'a> ScriptedText<'a> {
                     let key = self
                         .random_key(
                             list,
-                            &bound,
+                            scopes,
                             at,
-                            entry_scopes(&bound, at, bare),
+                            entry_scopes(scopes, at, bare),
                             evaluator.as_ref(),
                             if checked_trigger {
                                 Temps::Fresh
@@ -235,18 +334,8 @@ impl<'a> ScriptedText<'a> {
             let text = self.localisation.localise(key).map_err(|e| e.to_string())?;
             // SScopeLocalizer (1402F6340) -> ExpandLocalizationWithEventScope
             // (1410CF560): a new context in the evaluation scope, from depth
-            // 0. An entry that reaches itself would not end, so nesting as
-            // deep as MAX_SCRIPTED_LOC_RECURSION is refused.
-            let depth = self.nested.get();
-            if depth >= self.content.recursion {
-                return Err(format!(
-                    "scripted localisation {name} is nested {depth} entries deep, and each restarts at depth 0 (1410CF560)"
-                ));
-            }
-            self.nested.set(depth + 1);
-            let expanded = self.process(&text, 0, &bound, at, Object::Event);
-            self.nested.set(depth);
-            return expanded;
+            // 0; ProcessString's own depth rule still applies.
+            return self.process(&text, 0, scopes, at, Object::Event);
         }
         // The shared empty CBoundLocalization at 143098438.
         Ok(String::new())
@@ -387,15 +476,15 @@ pub(crate) fn state_name_from(
 }
 
 /// The event scope 1410CD900 evaluates an entry in, as an index into the
-/// returned scopes. With no promotion it is the active scope itself
+/// expansion's scope arena. With no promotion it is the active scope itself
 /// (1410CE090 with +0x378); otherwise 1410CDDF0 binds the promoted object as
 /// THIS in a new scope with the active scope's ROOT (+0x18) and FROM
 /// (+0x20), and the active scope as PREV (+0x28); a country or state is set
 /// with clearing (14052DD00, 14052ECE0 with 1 -> 14052F3F0), so that scope
 /// carries no character.
-fn bound_scope(object: Object, scopes: &EventScopes, active: usize) -> (EventScopes, usize) {
+fn bound_scope(object: Object, scopes: &ExpansionScopes, active: usize) -> usize {
     let this = match object {
-        Object::Event => return (scopes.clone(), active),
+        Object::Event => return active,
         Object::Country(slot) => EventObject::Country(slot),
         Object::State(id) => EventObject::State(id.unwrap_or(crate::triggers::NULL_STATE)),
         Object::Character(id) => EventObject::Character(id),
@@ -403,21 +492,27 @@ fn bound_scope(object: Object, scopes: &EventScopes, active: usize) -> (EventSco
             unreachable!("1410CD900 does not bind these text kinds")
         }
     };
-    let current = scopes.scopes[active];
+    let current = scopes.scope(active);
     let carried = |link| match link {
         Link::Itself => Link::Scope(active),
         other => other,
     };
-    let mut bound = scopes.clone();
-    bound.scopes.push(EventScope {
+    let distance = if this != current.this {
+        Some(1)
+    } else {
+        scopes.prev_distance.borrow()[active].map(|distance| distance + 1)
+    };
+    let mut arena = scopes.scopes.borrow_mut();
+    let at = arena.len();
+    arena.push(EventScope {
         this,
         root: carried(current.root),
         from: carried(current.from),
         prev: Link::Scope(active),
         random_seed: super::random::scope_seed(424242),
     });
-    let at = bound.scopes.len() - 1;
-    (bound, at)
+    scopes.prev_distance.borrow_mut().push(distance);
+    at
 }
 
 /// The trigger scopes of event scope `at`, `bare` when its THIS was set with
@@ -425,7 +520,7 @@ fn bound_scope(object: Object, scopes: &EventScopes, active: usize) -> (EventSco
 /// (`crate::character_scope`). A link the caller cannot describe is unknown
 /// to the evaluator, so only a condition that reads it is unknown (`always`
 /// reads none, 1403CE520).
-fn entry_scopes(scopes: &EventScopes, at: usize, bare: bool) -> Scopes {
+fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> Scopes {
     let scope = |object| match object {
         EventObject::Country(slot) => Scope::Country(slot),
         EventObject::State(id) => Scope::State(id),
@@ -433,13 +528,13 @@ fn entry_scopes(scopes: &EventScopes, at: usize, bare: bool) -> Scopes {
         EventObject::UnitLeader(reference) => Scope::Leader(reference),
         EventObject::Character(id) => Scope::Character(id),
     };
-    let current = scopes.scopes[at];
+    let current = scopes.scope(at);
     let this = scope(current.this);
     let linked = |link| {
         scopes
             .linked(at, link, "")
             .ok()
-            .map(|to| scope(scopes.scopes[to].this))
+            .map(|to| scope(scopes.scope(to).this))
     };
     let (root, from, prev) = (
         linked(current.root),
@@ -457,10 +552,28 @@ fn entry_scopes(scopes: &EventScopes, at: usize, bare: bool) -> Scopes {
             prev: prev.is_none(),
         },
         bare,
-        target_state: scopes.variables.target_state,
-        target_province: scopes.variables.target_province,
-        target_leader: scopes.variables.target_leader,
+        target_state: scopes.variables.get().target_state,
+        target_province: scopes.variables.get().target_province,
+        target_leader: scopes.variables.get().target_leader,
     }
+}
+
+#[cfg(test)]
+#[test]
+fn entry_invocations_keep_the_original_bounds_of_unresolved_links() {
+    let scopes = ExpansionScopes::new(&EventScopes::new(vec![EventScope {
+        prev: Link::Scope(1),
+        ..EventScope::of(EventObject::Country(0))
+    }]));
+    let entry = ActiveEntry {
+        name: "X".into(),
+        at: 0,
+        scopes_len: 1,
+        bare: false,
+        variables: scopes.variables.get(),
+    };
+    bound_scope(Object::Country(1), &scopes, 0);
+    assert!(!entry.matches("X", &scopes, 0, false));
 }
 
 #[cfg(test)]

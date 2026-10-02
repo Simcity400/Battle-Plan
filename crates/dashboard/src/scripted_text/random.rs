@@ -61,7 +61,7 @@ impl<'a> ScriptedText<'a> {
     pub(super) fn random_key<'r>(
         &self,
         list: &'r RandomList,
-        bound: &EventScopes,
+        bound: &ExpansionScopes,
         at: usize,
         scopes: crate::triggers::Scopes,
         evaluator: Option<&Evaluator<'_, 'a>>,
@@ -91,7 +91,7 @@ impl<'a> ScriptedText<'a> {
                 )),
             },
             || {
-                let default = bound.scopes[at].random_seed;
+                let default = bound.scope(at).random_seed;
                 if list.seed.is_empty() {
                     return Ok(default);
                 }

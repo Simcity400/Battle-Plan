@@ -15,7 +15,12 @@ const PROPERTIES: [&str; 9] = [
 ];
 
 impl ScriptedText<'_> {
-    pub(super) fn balance(&self, slot: u32, name: &str) -> Result<Option<String>, String> {
+    pub(super) fn balance(
+        &self,
+        slot: u32,
+        name: &str,
+        scopes: &ExpansionScopes,
+    ) -> Result<Option<String>, String> {
         let Some(which) = PROPERTIES.iter().position(|p| named(p, name)) else {
             return Ok(None);
         };
@@ -68,8 +73,9 @@ impl ScriptedText<'_> {
             // 140A7E7B0 starts a fresh empty event; the range vf9 instead
             // receives a fresh country event (140A7E780).
             if which == 5 {
-                let context = ScriptedText::new(self.frame, self.localisation, self.content, slot);
-                return context.expand(&text).map(Some);
+                return self
+                    .expand_fresh_country(&text, slot, name, scopes)
+                    .map(Some);
             }
             if text.contains('[') && text.contains(']') {
                 return Err(format!(

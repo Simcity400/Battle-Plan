@@ -39,6 +39,16 @@ mod random;
 
 use properties::Party;
 
+// Our backstop, not a native limit: 1402F6340 -> 1410CF560 restarts each
+// scripted entry at ProcessString depth zero.
+const MAX_SCRIPTED_NESTING: usize = 10_000;
+
+fn nesting_refusal(name: &str) -> String {
+    format!(
+        "scripted localisation nesting the game could never finish (native stack exhaustion): {name}, beyond {MAX_SCRIPTED_NESTING} levels (1402F6340 -> 1410CF560)"
+    )
+}
+
 /// A context object of CContextLocalizationText.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Object {
@@ -136,17 +146,83 @@ impl EventScopes {
             variables: ScopeVariables::default(),
         }
     }
+}
 
-    /// The index of the scope that `link` of scope `at` names.
-    fn linked(&self, at: usize, link: Link, name: &str) -> Result<usize, String> {
-        match link {
-            Link::Itself => Ok(at),
-            Link::Scope(to) if to < self.scopes.len() => Ok(to),
-            Link::Scope(to) => Err(format!("{name}: event scope {to} is not given")),
-            Link::Unknown => Err(format!(
-                "{name}: the event scope's {name} link is not known here"
-            )),
+/// The index of the scope that `link` of scope `at` names.
+fn linked_scope(length: usize, at: usize, link: Link, name: &str) -> Result<usize, String> {
+    match link {
+        Link::Itself => Ok(at),
+        Link::Scope(to) if to < length => Ok(to),
+        Link::Scope(to) => Err(format!("{name}: event scope {to} is not given")),
+        Link::Unknown => Err(format!(
+            "{name}: the event scope's {name} link is not known here"
+        )),
+    }
+}
+
+/// One expansion's scopes, shared by nested entries without copying their history.
+#[derive(Clone)]
+struct ExpansionScopes {
+    scopes: std::cell::RefCell<Vec<EventScope>>,
+    variables: std::cell::Cell<ScopeVariables>,
+    active: std::cell::RefCell<Vec<entries::ActiveEntry>>,
+    prev_distance: std::cell::RefCell<Vec<Option<usize>>>,
+    valid_links: bool,
+    fresh_depth: std::cell::Cell<usize>,
+    on_large_stack: bool,
+}
+
+impl ExpansionScopes {
+    fn new(scopes: &EventScopes) -> Self {
+        let prev_distance = (0..scopes.scopes.len())
+            .map(|start| {
+                let this = scopes.scopes[start].this;
+                let mut at = start;
+                let mut distance = 0;
+                let mut seen = std::collections::BTreeSet::new();
+                loop {
+                    if !seen.insert(at) {
+                        return None;
+                    }
+                    distance += 1;
+                    let Ok(next) =
+                        linked_scope(scopes.scopes.len(), at, scopes.scopes[at].prev, "")
+                    else {
+                        return Some(distance);
+                    };
+                    at = next;
+                    if scopes.scopes[at].this != this {
+                        return Some(distance);
+                    }
+                }
+            })
+            .collect();
+        Self {
+            scopes: std::cell::RefCell::new(scopes.scopes.clone()),
+            variables: std::cell::Cell::new(scopes.variables),
+            active: std::cell::RefCell::new(Vec::new()),
+            prev_distance: std::cell::RefCell::new(prev_distance),
+            valid_links: scopes.scopes.iter().all(|scope| {
+                [scope.root, scope.from, scope.prev]
+                    .iter()
+                    .all(|link| !matches!(link, Link::Scope(to) if *to >= scopes.scopes.len()))
+            }),
+            fresh_depth: std::cell::Cell::new(0),
+            on_large_stack: false,
         }
+    }
+
+    fn scope(&self, at: usize) -> EventScope {
+        self.scopes.borrow()[at]
+    }
+
+    fn linked(&self, at: usize, link: Link, name: &str) -> Result<usize, String> {
+        linked_scope(self.scopes.borrow().len(), at, link, name)
+    }
+
+    fn needs_large_stack(&self) -> bool {
+        // Handoff early enough for ordinary caller stacks; shallow expansions stay local.
+        !self.on_large_stack && self.active.borrow().len() + self.fresh_depth.get() >= 8
     }
 }
 
@@ -225,10 +301,7 @@ pub struct ScriptedText<'a> {
     names: CountryNames<'a>,
     frame: &'a DecodedFrame,
     root: u32,
-    world: std::cell::OnceCell<Result<crate::triggers::World<'a>, String>>,
-    /// Entries whose text is being expanded in their own scope, outermost
-    /// first (1410CF560 restarts at depth 0).
-    nested: std::cell::Cell<i32>,
+    world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
 }
 
 /// `_strnicmp` at the exact length (142549958).
@@ -291,8 +364,7 @@ impl<'a> ScriptedText<'a> {
             names: CountryNames::read(frame, localisation),
             frame,
             root,
-            world: std::cell::OnceCell::new(),
-            nested: std::cell::Cell::new(0),
+            world: std::sync::OnceLock::new(),
         }
     }
 
@@ -310,7 +382,7 @@ impl<'a> ScriptedText<'a> {
         if scopes.scopes.is_empty() {
             return Err("scripted text needs an event scope".into());
         }
-        self.process(text, 0, scopes, 0, Object::Event)
+        self.expand_context(text, scopes, Object::Event)
     }
 
     /// An explicit province text context (kind 15, 1410CCE20), with the
@@ -330,13 +402,74 @@ impl<'a> ScriptedText<'a> {
         if !found && !complete::<tables::Provinces>(self.frame) {
             return Err(format!("province {province}: Provinces {gap}"));
         }
-        self.process(
-            text,
-            0,
-            scopes,
-            0,
-            Object::Province(found.then_some(province)),
-        )
+        self.expand_context(text, scopes, Object::Province(found.then_some(province)))
+    }
+
+    fn expand_context(
+        &self,
+        text: &str,
+        scopes: &EventScopes,
+        context: Object,
+    ) -> Result<String, String> {
+        if !text.contains('[') {
+            return Ok(text.to_owned());
+        }
+        let scopes = ExpansionScopes::new(scopes);
+        self.process(text, 0, &scopes, 0, context)
+    }
+
+    fn on_large_stack(
+        &self,
+        scopes: &ExpansionScopes,
+        expand: impl FnOnce(&ExpansionScopes) -> Result<String, String> + Send,
+    ) -> Result<String, String> {
+        let mut scopes = scopes.clone();
+        scopes.on_large_stack = true;
+        std::thread::scope(|thread_scope| {
+            std::thread::Builder::new()
+                .name("scripted-localisation".into())
+                // Reserve 64 KiB per backstop level for the entry's debug call frames.
+                .stack_size(MAX_SCRIPTED_NESTING * 64 * 1024)
+                .spawn_scoped(thread_scope, move || expand(&scopes))
+                .map_err(|error| {
+                    format!("scripted localisation expansion thread could not start: {error}")
+                })?
+                .join()
+                .map_err(|_| "scripted localisation expansion thread failed".to_owned())?
+        })
+    }
+
+    /// 140A7E780 expands in a fresh country event, within the same game world.
+    fn expand_fresh_country(
+        &self,
+        text: &str,
+        slot: u32,
+        name: &str,
+        scopes: &ExpansionScopes,
+    ) -> Result<String, String> {
+        if scopes.needs_large_stack() {
+            return self.on_large_stack(scopes, |scopes| {
+                self.expand_fresh_country(text, slot, name, scopes)
+            });
+        }
+        let depth = scopes.fresh_depth.get();
+        if scopes.active.borrow().len() + depth >= MAX_SCRIPTED_NESTING {
+            return Err(nesting_refusal(name));
+        }
+        let at = scopes.scopes.borrow().len();
+        scopes
+            .scopes
+            .borrow_mut()
+            .push(EventScope::of(EventObject::Country(slot)));
+        scopes.prev_distance.borrow_mut().push(None);
+        let variables = scopes.variables.replace(ScopeVariables::default());
+        scopes.fresh_depth.set(depth + 1);
+        let expanded = self.process(text, 0, scopes, at, Object::Event);
+        scopes.fresh_depth.set(depth);
+        scopes.variables.set(variables);
+        scopes.scopes.borrow_mut().truncate(at);
+        scopes.prev_distance.borrow_mut().truncate(at);
+        expanded
     }
 
     /// ProcessString with the context's saved event scope `start`.
@@ -344,7 +477,7 @@ impl<'a> ScriptedText<'a> {
         &self,
         text: &str,
         depth: i32,
-        scopes: &EventScopes,
+        scopes: &ExpansionScopes,
         start: usize,
         context: Object,
     ) -> Result<String, String> {
@@ -386,7 +519,7 @@ impl<'a> ScriptedText<'a> {
     fn bracket(
         &self,
         inner: &str,
-        scopes: &EventScopes,
+        scopes: &ExpansionScopes,
         start: usize,
         context: Object,
     ) -> Result<String, String> {
@@ -409,7 +542,7 @@ impl<'a> ScriptedText<'a> {
         &self,
         object: Object,
         segment: &str,
-        scopes: &EventScopes,
+        scopes: &ExpansionScopes,
         active: &mut usize,
     ) -> Result<Object, String> {
         // 1. The current kind's table.
@@ -481,7 +614,7 @@ impl<'a> ScriptedText<'a> {
         // 141A81250 on the active scope: THIS keeps it; ROOT, FROM and PREV
         // follow its +0x18, +0x20 and +0x28. The chosen scope becomes the
         // active one (+0x378) and its object the context.
-        let current = scopes.scopes[*active];
+        let current = scopes.scope(*active);
         for (name, link) in [
             ("THIS", Link::Itself),
             ("Root", current.root),
@@ -491,7 +624,7 @@ impl<'a> ScriptedText<'a> {
             if named(segment, name) {
                 let chosen = scopes.linked(*active, link, name)?;
                 *active = chosen;
-                return self.event_object(scopes.scopes[chosen].this, name);
+                return self.event_object(scopes.scope(chosen).this, name);
             }
         }
         // 3. A country tag (exact), a character of the current country, a
@@ -531,7 +664,7 @@ impl<'a> ScriptedText<'a> {
                 "{segment}: whether it is a country tag (140BA53F0) is unknown: Countries {gap}"
             ));
         }
-        if let Some(id) = self.character_named(object, segment, scopes.scopes[*active].this)? {
+        if let Some(id) = self.character_named(object, segment, scopes.scope(*active).this)? {
             return Ok(Object::Character(id));
         }
         let digits = segment.strip_prefix(['-', '+']).unwrap_or(segment);
@@ -602,12 +735,12 @@ impl<'a> ScriptedText<'a> {
         &self,
         object: Object,
         name: &str,
-        scopes: &EventScopes,
+        scopes: &ExpansionScopes,
         active: usize,
     ) -> Result<String, String> {
         let property = match object {
             Object::Event => self.date_property(name)?,
-            Object::Country(slot) => self.country_property(slot, name)?,
+            Object::Country(slot) => self.country_property(slot, name, scopes)?,
             Object::State(state) => {
                 const STATE: [&str; 4] = [
                     "GetName",
@@ -671,7 +804,12 @@ impl<'a> ScriptedText<'a> {
 
     /// The country table's properties (dispatcher 141A7B350), `None` for a
     /// name the table lacks.
-    fn country_property(&self, slot: u32, name: &str) -> Result<Option<String>, String> {
+    fn country_property(
+        &self,
+        slot: u32,
+        name: &str,
+        scopes: &ExpansionScopes,
+    ) -> Result<Option<String>, String> {
         let tag = self
             .scopes
             .tag(slot)
@@ -757,7 +895,7 @@ impl<'a> ScriptedText<'a> {
             self.manpower(slot)?.to_string()
         } else if is("GetAgency") {
             self.agency(slot)?
-        } else if let Some(text) = self.balance(slot, name)? {
+        } else if let Some(text) = self.balance(slot, name, scopes)? {
             text
         } else if is("GetFactionName") {
             self.faction_name(slot)?

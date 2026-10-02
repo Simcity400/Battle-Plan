@@ -28,6 +28,130 @@ fn rendered(
 }
 
 #[test]
+fn entry_invocations_detect_cycles_and_render_finite_scope_changes() {
+    let (catalogue, _folder) = tests::catalogue(
+        r#"entry = { name = Walk text = { trigger = { tag = GER } localization_key = DONE } text = { localization_key = NEXT } }
+           entry = { name = SelfLoop text = { localization_key = SELF } }
+           entry = { name = Loop text = { localization_key = LOOP } }
+           entry = { name = Other text = { localization_key = OTHER } }"#,
+        " DONE:0 \"done\"\n NEXT:0 \"step [FROM.Walk]\"\n SELF:0 \"[SelfLoop]\"\n LOOP:0 \"[Other]\"\n OTHER:0 \"[Loop]\"\n",
+    );
+    let content = catalogue.scripted_content().unwrap();
+    assert!(
+        content
+            .environment
+            .set(Ok(entries::Environment::synthetic()))
+            .is_ok()
+    );
+    let f = frame();
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    for entry in ["SelfLoop", "Loop"] {
+        let refusal = text.expand(&format!("[{entry}]")).unwrap_err();
+        assert!(
+            refusal.contains(&format!("{entry}: cyclic entry invocation")),
+            "{refusal}"
+        );
+    }
+    let count = usize::try_from(content.recursion).unwrap() + 10;
+    let scopes = EventScopes::new(
+        (0..count)
+            .map(|at| EventScope {
+                from: if at + 1 == count {
+                    Link::Itself
+                } else {
+                    Link::Scope(at + 1)
+                },
+                ..EventScope::of(EventObject::Country(if at + 1 == count { 0 } else { 1 }))
+            })
+            .collect(),
+    );
+    let expected = format!("{}done", "step ".repeat(count - 1));
+    assert_eq!(
+        text.expand_in("[Walk] [Walk]", &scopes),
+        Ok(format!("{expected} {expected}"))
+    );
+    let mut shorter = scopes.clone();
+    shorter.scopes[0].from = Link::Scope(2);
+    assert_eq!(
+        text.expand_in("[Walk]", &shorter),
+        Ok(format!("{}done", "step ".repeat(count - 2)))
+    );
+}
+
+#[test]
+fn entry_invocations_refuse_growing_history_at_the_backstop_without_stack_overflow() {
+    let (catalogue, _folder) = tests::catalogue(
+        "entry = { name = Grow text = { localization_key = GROW } }",
+        " GROW:0 \"[GER.Grow]\"\n",
+    );
+    let f = frame();
+    let text = ScriptedText::new(
+        &f,
+        &catalogue.localisation,
+        catalogue.scripted_content().unwrap(),
+        1,
+    );
+    // Each promotion appends a GER PREV node, ending at the original SOV scope.
+    let unknown = EventScopes::new(vec![EventScope {
+        prev: Link::Unknown,
+        ..EventScope::of(EventObject::Country(0))
+    }]);
+    for result in [text.expand("[Grow]"), text.expand_in("[Grow]", &unknown)] {
+        let refusal = result.unwrap_err();
+        assert!(refusal.contains(
+            "scripted localisation nesting the game could never finish (native stack exhaustion): Grow"
+        ));
+        assert!(refusal.contains(&format!("beyond {MAX_SCRIPTED_NESTING} levels")));
+        assert!(!refusal.contains("cyclic entry invocation"));
+    }
+}
+
+#[test]
+fn entry_invocations_guard_fresh_balance_contexts() {
+    let (catalogue, _folder) = tests::catalogue(
+        "entry = { name = Cross text = { localization_key = CROSS } }",
+        " CROSS:0 \"[ROOT.GetActiveRangeName]\"\n RANGE:0 \"[Cross]\"\n SELF_RANGE:0 \"[ROOT.GetActiveRangeName]\"\n",
+    );
+    let mut f = frame();
+    set::<tables::PowerBalanceMembers>(
+        &mut f,
+        vec![PowerBalanceMemberRow {
+            country: 100,
+            ..Default::default()
+        }],
+    );
+    for (range, text, reason) in [
+        (
+            b"RANGE".as_slice(),
+            "[Cross]",
+            "Cross: cyclic entry invocation",
+        ),
+        (
+            b"SELF_RANGE".as_slice(),
+            "[ROOT.GetActiveRangeName]",
+            "native stack exhaustion): GetActiveRangeName",
+        ),
+    ] {
+        set::<tables::PowerBalances>(
+            &mut f,
+            vec![PowerBalanceRow {
+                active_range: range.to_vec(),
+                ..Default::default()
+            }],
+        );
+        let refusal = ScriptedText::new(
+            &f,
+            &catalogue.localisation,
+            catalogue.scripted_content().unwrap(),
+            0,
+        )
+        .expand(text)
+        .unwrap_err();
+        assert!(refusal.contains(reason), "{refusal}");
+    }
+}
+
+#[test]
 fn province_text_uses_native_members_name_precedence_and_recorded_perspective() {
     use installed_content::movement::{MovementMap, ProvinceTerrain};
     let (catalogue, _folder) = tests::catalogue(

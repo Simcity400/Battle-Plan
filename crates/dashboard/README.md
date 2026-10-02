@@ -78,6 +78,8 @@ GetPowerBalanceModDesc renders the cached daily then weekly source values, with 
 
 MTTH evaluation tests obtain weight fields through the native tactic reader, so the modifier's own `factor` and `add` operands are read before its trigger conditions (140545820).
 
+Scripted entries restart ProcessString at depth zero and reject repeated effective contexts; growing histories and fresh-context nesting are refused at our 10,000-level backstop on a dedicated large-stack thread.
+
 `opinion@target` evaluates its country target in the native callback scope and reads the directed cached opinion from RelationOpinions, at that table's daily slice cadence. A missing nonzero row in a complete table means zero; country zero uses an unrecorded reserved relation slot and remains a named refusal. `num_owned_controlled_states` counts nonempty owned states whose recorded controller is the same country, including country aliases. Both callbacks precede stored keys; unavailable inputs remain unknown. MIO and special-project variable callbacks, outside-context residual temps and other unreproduced built-ins remain named, counted refusals.
 
 Explicit province text contexts use recorded province names, state ownership and perspective, with terrain from the recorded content stack. The native event scope cannot carry a province, and province text objects do not bind scripted entries.
