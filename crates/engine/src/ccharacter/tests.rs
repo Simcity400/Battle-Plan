@@ -1,0 +1,1599 @@
+use super::*;
+use crate::{
+    cadvisor, ccountry_leader, cgame_state, cprovince::UnitOrderWalk, memory::SliceMemory,
+};
+
+const GS: usize = 0x1000;
+const MANAGER: usize = 0x100;
+const FIRST: usize = 0x400;
+const SECOND: usize = 0x600;
+
+fn walk_all(
+    memory: &impl Memory,
+    rows: &mut [PortraitRow],
+    entries: &mut [crate::character_portrait_entry::Row],
+) -> UnitOrderWalk {
+    walk_portraits(memory, 0, GS, rows, entries, PortraitWalk::default())
+}
+
+fn u64_at(bytes: &mut [u8], at: usize, value: u64) {
+    bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+}
+fn u32_at(bytes: &mut [u8], at: usize, value: u32) {
+    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+fn string(bytes: &mut [u8], at: usize, value: &[u8]) {
+    assert!(value.len() <= 15);
+    bytes[at..at + 32].fill(0);
+    bytes[at..at + value.len()].copy_from_slice(value);
+    u64_at(bytes, at + 16, value.len() as u64);
+    u64_at(bytes, at + 24, 15);
+}
+fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+    u64_at(bytes, at, data as u64);
+    u32_at(bytes, at + 8, count);
+    u32_at(bytes, at + 12, count);
+}
+fn empty_tree(bytes: &mut [u8], character: usize, offset: usize, head: usize) {
+    u64_at(bytes, character + offset, head as u64);
+    u64_at(bytes, character + offset + 8, 0);
+    for offset in [0, 8, 16] {
+        u64_at(bytes, head + offset, head as u64);
+    }
+    bytes[head + 0x19] = 1;
+}
+fn fixture() -> Vec<u8> {
+    let mut bytes = vec![0; 0x2000];
+    u64_at(
+        &mut bytes,
+        GS + cgame_state::CHARACTER_MANAGER,
+        MANAGER as u64,
+    );
+    u64_at(&mut bytes, MANAGER, ccharacter_manager::VTABLE_RVA as u64);
+    array(
+        &mut bytes,
+        MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+        0x200,
+        1,
+    );
+    array(
+        &mut bytes,
+        MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS,
+        0x208,
+        1,
+    );
+    u64_at(&mut bytes, 0x200, FIRST as u64);
+    u64_at(&mut bytes, 0x208, SECOND as u64);
+    for (pointer, id, country, name, token) in [
+        (FIRST, 900_u32, 0_u32, &b"same name"[..], &b""[..]),
+        (SECOND, 22, 7, &b"same name"[..], &b"dynamic_token"[..]),
+    ] {
+        u64_at(&mut bytes, pointer, VTABLE_RVA as u64);
+        u32_at(&mut bytes, pointer + TYPE, REFERENCE_TYPE);
+        u32_at(&mut bytes, pointer + ID, id);
+        u32_at(&mut bytes, pointer + NAME_TOKEN_ID, (-1_i32) as u32);
+        u32_at(&mut bytes, pointer + COUNTRY, country);
+        string(&mut bytes, pointer + NAME, name);
+        string(&mut bytes, pointer + TOKEN, token);
+    }
+    empty_tree(&mut bytes, FIRST, LEADER_MAP_HEAD, 0x800);
+    empty_tree(&mut bytes, FIRST, ADVISOR_MAP_HEAD, 0x840);
+    empty_tree(&mut bytes, SECOND, LEADER_MAP_HEAD, 0x880);
+    empty_tree(&mut bytes, SECOND, ADVISOR_MAP_HEAD, 0x8c0);
+    bytes
+}
+fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+    SliceMemory { base: 0, bytes }
+}
+
+struct TracedMemory<'a> {
+    memory: SliceMemory<'a>,
+    guards: std::cell::Cell<usize>,
+    scalar_reads: std::cell::Cell<usize>,
+    reads: std::cell::RefCell<Vec<(usize, usize)>>,
+    fault: Option<usize>,
+}
+
+impl<'a> TracedMemory<'a> {
+    fn new(bytes: &'a [u8], fault: Option<usize>) -> Self {
+        Self {
+            memory: memory(bytes),
+            guards: std::cell::Cell::new(0),
+            scalar_reads: std::cell::Cell::new(0),
+            reads: std::cell::RefCell::new(Vec::new()),
+            fault,
+        }
+    }
+
+    fn field(&self, address: usize, output: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((address, output.len()));
+        if let Some(fault) = self.fault
+            && address <= fault
+            && fault < address.saturating_add(output.len())
+        {
+            self.memory.copy(address, &mut output[..fault - address]);
+            return false;
+        }
+        self.memory.copy(address, output)
+    }
+}
+
+impl Memory for TracedMemory<'_> {
+    fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
+        self.scalar_reads.set(self.scalar_reads.get() + 1);
+        let mut bytes = vec![0; size_of::<T>()];
+        if !self.copy(address, &mut bytes) {
+            return None;
+        }
+        crate::memory::scalar_from_bytes(&bytes)
+    }
+
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.guards.set(self.guards.get() + 1);
+        self.field(address, output)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        outputs: &mut [&mut [u8]; N],
+    ) -> usize {
+        if outputs.iter().any(|output| !output.is_empty()) {
+            self.guards.set(self.guards.get() + 1);
+        }
+        for (index, (address, output)) in addresses.into_iter().zip(outputs).enumerate() {
+            if !output.is_empty() && !self.field(address, output) {
+                return index;
+            }
+        }
+        N
+    }
+}
+
+#[test]
+fn roster_pointer_chunks_preserve_both_orders_and_never_publish_a_failed_prefix() {
+    let mut bytes = fixture();
+    array(
+        &mut bytes,
+        MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+        0x200,
+        33,
+    );
+    array(
+        &mut bytes,
+        MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS,
+        0x320,
+        2,
+    );
+    for index in 0..33 {
+        u64_at(&mut bytes, 0x200 + index * 8, FIRST as u64);
+    }
+    for index in 0..2 {
+        u64_at(&mut bytes, 0x320 + index * 8, SECOND as u64);
+    }
+    let roster = ccharacter_manager::Roster::read(&memory(&bytes), 0, GS).unwrap();
+    let traced = TracedMemory::new(&bytes, None);
+    let mut cursor = roster.cursor();
+    let mut entries = Vec::new();
+    while let Some(view) = cursor.next(&traced, [true, false, false, false]).unwrap() {
+        let entry = view.entry().unwrap();
+        entries.push((entry.roster, entry.ordinal, entry.id));
+    }
+    assert_eq!(entries.len(), 35);
+    assert_eq!(entries[0], (0, 0, 900));
+    assert_eq!(entries[32], (0, 32, 900));
+    assert_eq!(entries[33], (1, 0, 22));
+    assert_eq!(entries[34], (1, 1, 22));
+    assert_eq!(
+        traced
+            .reads
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|&(address, _)| (0x200..0x330).contains(&address))
+            .collect::<Vec<_>>(),
+        [(0x200, 256), (0x300, 8), (0x320, 16)]
+    );
+    let traced = TracedMemory::new(&bytes, Some(0x200 + 8));
+    let mut cursor = roster.cursor();
+    for _ in 0..2 {
+        assert!(matches!(
+            cursor.next(&traced, [true; 4]),
+            Err("character roster pointers unreadable")
+        ));
+    }
+    assert_eq!(&*traced.reads.borrow(), &[(0x200, 256)]);
+    for count in [0, 65] {
+        let mut bytes = fixture();
+        array(
+            &mut bytes,
+            MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+            0x1800,
+            count,
+        );
+        array(
+            &mut bytes,
+            MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS,
+            0x1b00,
+            2,
+        );
+        for index in 0..count {
+            u64_at(&mut bytes, 0x1800 + index as usize * 8, FIRST as u64);
+        }
+        for index in 0..2 {
+            u64_at(&mut bytes, 0x1b00 + index * 8, SECOND as u64);
+        }
+        let traced = TracedMemory::new(&bytes, None);
+        let roster = ccharacter_manager::Roster::read(&memory(&bytes), 0, GS).unwrap();
+        let mut cursor = roster.cursor();
+        let mut pages = Vec::new();
+        let mut page = ccharacter_manager::ViewPage::default();
+        while cursor.refill_page(&traced, &mut page, [true; 4]).unwrap() {
+            let entries = page
+                .by_ref()
+                .map(|view| view.unwrap().entry().unwrap())
+                .collect::<Vec<_>>();
+            pages.push((entries[0].roster, entries[0].ordinal, entries.len()));
+        }
+        if count == 0 {
+            assert_eq!(pages, [(1, 0, 2)]);
+        } else {
+            assert_eq!(pages, [(0, 0, 32), (0, 32, 32), (0, 64, 1), (1, 0, 2)]);
+        }
+    }
+}
+
+#[test]
+fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
+    use crate::character_advisor_node as node;
+    let mut bytes = fixture();
+    let head = 0x840;
+    let role_node = 0xa00;
+    let role = 0x1300;
+    u64_at(&mut bytes, FIRST + ADVISOR_MAP_SIZE, 1);
+    for offset in [0, 8, 16] {
+        u64_at(&mut bytes, head + offset, role_node as u64);
+        u64_at(&mut bytes, role_node + offset, head as u64);
+    }
+    u64_at(&mut bytes, role_node + node::ADVISOR, role as u64);
+    u32_at(&mut bytes, role_node + node::KEY_HASH, 17);
+    u64_at(&mut bytes, role, cadvisor::VTABLE_RVA as u64);
+    u64_at(&mut bytes, role + cadvisor::CHARACTER, FIRST as u64);
+    for (header, payload) in [
+        (role_node + node::KEY, 0x1a00),
+        (role + cadvisor::IDEA_TOKEN, 0x1a40),
+        (role + cadvisor::SLOT, 0x1a80),
+    ] {
+        u64_at(&mut bytes, header, payload as u64);
+        u64_at(&mut bytes, header + 16, 17);
+        u64_at(&mut bytes, header + 24, 17);
+        bytes[payload..payload + 17].copy_from_slice(b"literal bytes\xff123");
+    }
+    let entry = ccharacter_manager::Entry {
+        pointer: FIRST,
+        id: 900,
+        country: 0,
+        roster: 0,
+        ordinal: 0,
+    };
+    let mut rows = [cadvisor::Row::default(); 1];
+    let mut names = [0; 51];
+    let traced = TracedMemory::new(&bytes, None);
+    let result = cadvisor::walk_entry(&traced, 0, entry, &mut rows, &mut names);
+    assert_eq!(result.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(traced.guards.get(), 9);
+    assert_eq!(
+        traced
+            .reads
+            .borrow()
+            .iter()
+            .map(|&(_, len)| len)
+            .sum::<usize>(),
+        237
+    );
+    assert_eq!(&names[..17], b"literal bytes\xff123");
+    for (fault, untouched) in [
+        (role_node + node::KEY + 7, role),
+        (role + cadvisor::SLOT + 17, 0x1a00 + 17),
+        (0x1a00 + 17, 0x1a00),
+        (0x1a00 + 7, 0x1a40),
+    ] {
+        let traced = TracedMemory::new(&bytes, Some(fault));
+        let result = cadvisor::walk_entry(&traced, 0, entry, &mut rows, &mut names);
+        assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
+        assert_eq!(result.bytes_len, 0);
+        assert!(
+            !traced
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(address, _)| address == untouched)
+        );
+    }
+}
+
+#[test]
+fn copied_character_spans_preserve_first_fault_order() {
+    let bytes = fixture();
+    let memory = TracedMemory::new(&bytes, None);
+    let roster = ccharacter_manager::Roster::read(&memory, 0, GS).unwrap();
+    let view = roster.view(&memory, 0, [true; 4]).unwrap();
+    let mut failed = [0xaa; 8];
+    let mut later = [0xbb; 4];
+    assert_eq!(
+        view.copy_scattered([0x4000, FIRST + COUNTRY], &mut [&mut failed, &mut later]),
+        0
+    );
+    assert_eq!(later, [0xbb; 4]);
+    let scalar_before = memory.scalar_reads.get();
+    memory.reads.borrow_mut().clear();
+    assert_eq!(read::<u32>(&view, FIRST + ID), Some(900));
+    assert_eq!(read::<i32>(&view, FIRST + NAME_TOKEN_ID), Some(-1));
+    assert_eq!(read::<u32>(&view, FIRST + COUNTRY + 1), None);
+    assert_eq!(memory.scalar_reads.get(), scalar_before);
+    assert!(memory.reads.borrow().is_empty());
+    assert_eq!(read::<u32>(&view, SECOND + ID), Some(22));
+    assert_eq!(read::<u32>(&view, 0x4000), None);
+    assert_eq!(memory.scalar_reads.get(), scalar_before + 2);
+    assert_eq!(&*memory.reads.borrow(), &[(SECOND + ID, 4), (0x4000, 4)]);
+
+    for (fault, required) in [(None, [false; 4]), (Some(FIRST + COUNTRY), [true; 4])] {
+        let memory = TracedMemory::new(&bytes, fault);
+        let view = roster.view(&memory, 0, required).unwrap();
+        memory.reads.borrow_mut().clear();
+        let scalar_before = memory.scalar_reads.get();
+        assert_eq!(read::<u32>(&view, FIRST + COUNTRY), None);
+        assert_eq!(read::<[u8; 0]>(&view, 0), Some([]));
+        assert_eq!(memory.scalar_reads.get(), scalar_before);
+        assert!(memory.reads.borrow().is_empty());
+    }
+}
+
+#[test]
+fn gender_is_copied_once_and_failure_does_not_poison_roles() {
+    let mut bytes = fixture();
+    bytes[FIRST + GENDER..FIRST + GENDER + 4].copy_from_slice(&2_u32.to_le_bytes());
+    for fault in [None, Some(FIRST + GENDER)] {
+        let memory = TracedMemory::new(&bytes, fault);
+        let roster = ccharacter_manager::Roster::read(&memory, 0, GS).unwrap();
+        let view = roster.view(&memory, 0, [true; 4]).unwrap();
+        memory.reads.borrow_mut().clear();
+        assert_eq!(
+            read::<u32>(&view, FIRST + GENDER),
+            fault.is_none().then_some(2)
+        );
+        assert!(read::<u64>(&view, FIRST + UNIT_LEADER).is_some());
+        assert!(memory.reads.borrow().is_empty());
+    }
+}
+
+#[test]
+fn advisor_native_hash_order_can_reverse_literal_order() {
+    use crate::character_advisor_node as advisor_node;
+    let mut bytes = fixture();
+    let head = 0x840;
+    let left = 0xa00;
+    let root = 0xa60;
+    u64_at(&mut bytes, FIRST + ADVISOR_MAP_SIZE, 2);
+    u64_at(&mut bytes, head, left as u64);
+    u64_at(&mut bytes, head + 8, root as u64);
+    u64_at(&mut bytes, head + 16, root as u64);
+    for (node, parent, child, role, hash, key) in [
+        (left, root, head, 0x1300, 1_u32, &b"zulu"[..]),
+        (root, head, left, 0x1800, 2_u32, &b"alpha"[..]),
+    ] {
+        u64_at(&mut bytes, node, child as u64);
+        u64_at(&mut bytes, node + 8, parent as u64);
+        u64_at(&mut bytes, node + 16, head as u64);
+        string(&mut bytes, node + advisor_node::KEY, key);
+        u32_at(&mut bytes, node + advisor_node::KEY_HASH, hash);
+        u64_at(&mut bytes, node + advisor_node::ADVISOR, role as u64);
+        u64_at(&mut bytes, role, cadvisor::VTABLE_RVA as u64);
+        u64_at(&mut bytes, role + cadvisor::CHARACTER, FIRST as u64);
+        string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea");
+        string(&mut bytes, role + cadvisor::SLOT, key);
+    }
+    let mut rows = [cadvisor::Row::default(); 2];
+    let mut names = [0; 64];
+    let result = cadvisor::walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
+    assert_eq!(result.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(
+        &names[rows[0].key_start..rows[0].key_start + rows[0].key_len],
+        b"zulu"
+    );
+    assert_eq!(
+        &names[rows[1].key_start..rows[1].key_start + rows[1].key_len],
+        b"alpha"
+    );
+    assert_eq!(rows.map(|row| row.ordinal), [0, 1]);
+    u32_at(&mut bytes, root + advisor_node::KEY_HASH, 0);
+    assert_eq!(
+        cadvisor::walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
+        Outcome::Unavailable {
+            reason: "advisor role map hash order invalid"
+        }
+    );
+    u32_at(&mut bytes, root + advisor_node::KEY_HASH, 1);
+    assert_eq!(
+        cadvisor::walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
+        Outcome::Unavailable {
+            reason: "advisor role hash collision needs native locale comparison"
+        }
+    );
+}
+
+#[test]
+fn complete_rosters_keep_duplicate_names_negative_tokens_and_unrecruited_characters() {
+    let bytes = fixture();
+    let mut rows = [Row::default(); 2];
+    let mut names = [0_u8; 64];
+    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
+    assert_eq!(result.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(rows.map(|row| row.id), [900, 22]);
+    assert_eq!(
+        (rows[0].country, rows[0].name_token_id, rows[0].token_len),
+        (0, -1, 0)
+    );
+    assert_eq!((rows[0].roster, rows[1].roster), (0, 1));
+    assert_eq!(
+        &names[rows[1].token_start..rows[1].token_start + rows[1].token_len],
+        b"dynamic_token"
+    );
+    assert_eq!(result.bytes_len, result.required_bytes);
+}
+
+#[test]
+fn character_capacity_omits_whole_rows_and_reports_required_text() {
+    let bytes = fixture();
+    let mut rows = [Row::default(); 2];
+    let mut names = [0_u8; 9];
+    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
+    assert_eq!(
+        result.outcome,
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 1
+        }
+    );
+    assert_eq!(result.bytes_len, 9);
+    assert_eq!(result.required_bytes, 31);
+    assert_eq!(rows[0].id, 900);
+    let mut bad = bytes;
+    u32_at(&mut bad, SECOND + TYPE, 12);
+    assert!(matches!(
+        walk(&memory(&bad), 0, GS, &mut rows, &mut names).outcome,
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn duplicate_ids_reach_off_thread_validation_and_corrupt_strings_fail() {
+    let mut bytes = fixture();
+    let mut rows = [Row::default(); 2];
+    let mut names = [0; 64];
+    u32_at(&mut bytes, SECOND + ID, 900);
+    assert_eq!(
+        walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(rows.map(|row| row.id), [900, 900]);
+    u32_at(&mut bytes, SECOND + ID, 22);
+    u64_at(&mut bytes, SECOND + TOKEN + 16, 16);
+    assert!(matches!(
+        walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn row_capacity_stops_before_omitted_identity_and_heap_bytes_are_exact() {
+    let mut bytes = fixture();
+    u32_at(&mut bytes, SECOND + TYPE, 12);
+    let mut rows = [Row::default(); 1];
+    let mut names = [0; 64];
+    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
+    assert_eq!(
+        result.outcome,
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 1
+        }
+    );
+    assert_eq!(result.required_bytes, 9);
+    let raw = [0xff_u8, 0, 42, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    u64_at(&mut bytes, FIRST + NAME, 0x1a00);
+    u64_at(&mut bytes, FIRST + NAME + 16, raw.len() as u64);
+    u64_at(&mut bytes, FIRST + NAME + 24, 31);
+    bytes[0x1a00..0x1a10].copy_from_slice(&raw);
+    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
+    assert_eq!(result.bytes_len, 16);
+    assert_eq!(&names[..16], &raw);
+    bytes[0x1a10] = 1;
+    assert!(matches!(
+        walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
+        Outcome::Unavailable { .. }
+    ));
+}
+
+/// The template's tag, file, line and generated byte follow the names;
+/// a known identity for the same pointer is reused without a read, and a
+/// file that does not fit omits the row with its whole text demand.
+#[test]
+fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
+    use ccharacter_template as template;
+    const AT: usize = 0x2000;
+    const FILE: usize = 0x2400;
+    let path = b"common/characters/GER.txt";
+    let mut bytes = fixture();
+    bytes.resize(0x3000, 0);
+    u64_at(&mut bytes, SECOND + TEMPLATE, AT as u64);
+    u64_at(&mut bytes, AT, template::VTABLE_RVA as u64);
+    u32_at(&mut bytes, AT + template::TAG, 0x4242);
+    u64_at(&mut bytes, AT + template::SOURCE_FILE, FILE as u64);
+    u64_at(
+        &mut bytes,
+        AT + template::SOURCE_FILE + 16,
+        path.len() as u64,
+    );
+    u64_at(&mut bytes, AT + template::SOURCE_FILE + 24, 31);
+    bytes[FILE..FILE + path.len()].copy_from_slice(path);
+    u32_at(&mut bytes, AT + template::SOURCE_LINE, 12);
+    bytes[AT + template::GENERATED] = 1;
+    let mut rows = [Row::default(); 2];
+    let mut names = [0_u8; 64];
+    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
+    assert_eq!(result.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(result.bytes_len, 9 + 9 + 13 + path.len());
+    assert_eq!((rows[0].template, rows[0].template_file_len), (0, 0));
+    assert_eq!(rows[0].template_identity, template::Identity::default());
+    assert_eq!(rows[1].template, AT);
+    assert_eq!(
+        rows[1].template_identity,
+        template::Identity {
+            tag: 0x4242,
+            line: 12,
+            generated: 1
+        }
+    );
+    let file = rows[1].template_file_start..rows[1].template_file_start + path.len();
+    assert_eq!(&names[file], path);
+    // The sizing census asks for exactly what the walk used.
+    assert_eq!(
+        demand(&memory(&bytes), 0, GS),
+        Ok(Demand {
+            rows: 2,
+            bytes: result.bytes_len
+        })
+    );
+
+    // A known identity for this pointer is reused without reading it.
+    let traced = TracedMemory::new(&bytes, None);
+    let roster = ccharacter_manager::Roster::read(&traced, 0, GS).unwrap();
+    let entry = roster.at(&traced, 1).unwrap();
+    traced.reads.borrow_mut().clear();
+    let known = template::Identity {
+        tag: 7,
+        line: -1,
+        generated: 0,
+    };
+    let mut row = [Row::default()];
+    let result = walk_entry(
+        &traced,
+        0,
+        entry,
+        |pointer| {
+            (pointer == AT).then_some(template::Known {
+                identity: known,
+                file: b"",
+            })
+        },
+        &mut row,
+        &mut names,
+    );
+    assert_eq!(result.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(
+        (
+            row[0].template,
+            row[0].template_identity,
+            row[0].template_file_len
+        ),
+        (AT, known, 0)
+    );
+    assert!(
+        traced
+            .reads
+            .borrow()
+            .iter()
+            .all(|&(address, _)| !(AT..AT + 0x248).contains(&address)
+                && address != FILE + path.len())
+    );
+
+    // The file is text demand like the names.
+    let mut short = [0_u8; 9 + 13 + 4];
+    let result = walk_entry(&memory(&bytes), 0, entry, |_| None, &mut row, &mut short);
+    assert_eq!(
+        result.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 1
+        }
+    );
+    assert_eq!(result.required_bytes, 9 + 13 + path.len());
+
+    // An instance the loader never read keeps its constructor values.
+    u64_at(&mut bytes, AT + template::SOURCE_FILE, 0);
+    u64_at(&mut bytes, AT + template::SOURCE_FILE + 16, 0);
+    u64_at(&mut bytes, AT + template::SOURCE_FILE + 24, 15);
+    u32_at(&mut bytes, AT + template::SOURCE_LINE, u32::MAX);
+    bytes[AT + template::GENERATED] = 0;
+    let result = walk_entry(&memory(&bytes), 0, entry, |_| None, &mut row, &mut names);
+    assert_eq!(result.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(row[0].template_identity.line, -1);
+    assert_eq!(row[0].template_file_len, 0);
+
+    // Anything but a template fails the row.
+    u64_at(&mut bytes, AT, 0x1234);
+    assert_eq!(
+        walk_entry(&memory(&bytes), 0, entry, |_| None, &mut row, &mut names).outcome,
+        Outcome::Unavailable {
+            reason: "character template vtable mismatch"
+        }
+    );
+}
+
+#[test]
+fn role_walks_keep_distinct_ideologies_and_do_not_claim_advisor_appointment() {
+    let mut bytes = fixture();
+    let head = 0x800;
+    let root = 0x900;
+    let left = 0x940;
+    u64_at(&mut bytes, FIRST + LEADER_MAP_SIZE, 2);
+    u64_at(&mut bytes, head, left as u64);
+    u64_at(&mut bytes, head + 8, root as u64);
+    u64_at(&mut bytes, head + 16, root as u64);
+    for (node, parent, child, ideology, role) in [
+        (root, head, left, 3_i32, 0x1200),
+        (left, root, head, -7_i32, 0x1240),
+    ] {
+        u64_at(&mut bytes, node, child as u64);
+        u64_at(&mut bytes, node + 8, parent as u64);
+        u64_at(&mut bytes, node + 16, head as u64);
+        u32_at(&mut bytes, node + 0x20, ideology as u32);
+        u64_at(&mut bytes, node + 0x28, role as u64);
+        u64_at(&mut bytes, role, ccountry_leader::VTABLE_RVA as u64);
+        u64_at(&mut bytes, role + ccountry_leader::CHARACTER, FIRST as u64);
+    }
+    let mut leaders = [ccountry_leader::Row::default(); 2];
+    assert_eq!(
+        ccountry_leader::walk(&memory(&bytes), 0, GS, &mut leaders),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(leaders.map(|row| row.ideology), [-7, 3]);
+    let head = 0x840;
+    let node = 0xa00;
+    let role = 0x1300;
+    u64_at(&mut bytes, FIRST + ADVISOR_MAP_SIZE, 1);
+    for offset in [0, 8, 16] {
+        u64_at(&mut bytes, head + offset, node as u64);
+    }
+    for offset in [0, 8, 16] {
+        u64_at(&mut bytes, node + offset, head as u64);
+    }
+    string(&mut bytes, node + 0x20, b"role_key");
+    u64_at(&mut bytes, node + 0x48, role as u64);
+    u64_at(&mut bytes, role, cadvisor::VTABLE_RVA as u64);
+    u64_at(&mut bytes, role + cadvisor::CHARACTER, FIRST as u64);
+    string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea_token");
+    string(&mut bytes, role + cadvisor::SLOT, b"army_chief");
+    let mut advisors = [cadvisor::Row::default(); 1];
+    let mut names = [0; 64];
+    let result = cadvisor::walk(&memory(&bytes), 0, GS, &mut advisors, &mut names);
+    assert_eq!(result.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(
+        (
+            advisors[0].character,
+            advisors[0].country,
+            advisors[0].ordinal
+        ),
+        (900, 0, 0)
+    );
+    assert_eq!(
+        &names[advisors[0].idea_start..advisors[0].idea_start + advisors[0].idea_len],
+        b"idea_token"
+    );
+    u64_at(&mut bytes, role + cadvisor::CHARACTER, SECOND as u64);
+    assert!(matches!(
+        cadvisor::walk(&memory(&bytes), 0, GS, &mut advisors, &mut names).outcome,
+        Outcome::Unavailable { .. }
+    ));
+    u64_at(&mut bytes, root + 8, root as u64);
+    assert!(matches!(
+        ccountry_leader::walk(&memory(&bytes), 0, GS, &mut leaders),
+        Outcome::Unavailable { .. }
+    ));
+}
+#[test]
+fn view_pages_keep_native_boundaries_occurrences_and_failed_root_atomicity() {
+    let mut bytes = fixture();
+    array(
+        &mut bytes,
+        MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+        0x200,
+        33,
+    );
+    array(
+        &mut bytes,
+        MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS,
+        0x320,
+        2,
+    );
+    for index in 0..33 {
+        u64_at(&mut bytes, 0x200 + index * 8, FIRST as u64);
+    }
+    for index in 0..2 {
+        u64_at(&mut bytes, 0x320 + index * 8, SECOND as u64);
+    }
+    let roster = ccharacter_manager::Roster::read(&memory(&bytes), 0, GS).unwrap();
+    let traced = TracedMemory::new(&bytes, None);
+    let mut cursor = roster.cursor();
+    let mut entries = Vec::new();
+    let mut lengths = Vec::new();
+    let mut page = ccharacter_manager::ViewPage::default();
+    while cursor.refill_page(&traced, &mut page, [true; 4]).unwrap() {
+        let before = entries.len();
+        for view in page.by_ref() {
+            let entry = view.unwrap().entry().unwrap();
+            entries.push((entry.roster, entry.ordinal, entry.id));
+        }
+        lengths.push(entries.len() - before);
+    }
+    assert_eq!(lengths, [32, 1, 2]);
+    assert_eq!(entries.len(), 35);
+    assert_eq!(entries[0], (0, 0, 900));
+    assert_eq!(entries[32], (0, 32, 900));
+    assert_eq!(entries[33], (1, 0, 22));
+    assert_eq!(entries[34], (1, 1, 22));
+    assert_eq!(
+        traced
+            .reads
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|&(address, _)| (0x200..0x330).contains(&address))
+            .collect::<Vec<_>>(),
+        [(0x200, 256), (0x300, 8), (0x320, 16)]
+    );
+    assert_eq!(
+        traced
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(address, len)| address == FIRST && len == 16)
+            .count(),
+        33
+    );
+    let traced = TracedMemory::new(&bytes, Some(0x200 + 8));
+    let mut cursor = roster.cursor();
+    let mut page = ccharacter_manager::ViewPage::default();
+    for _ in 0..2 {
+        assert!(matches!(
+            cursor.refill_page(&traced, &mut page, [true; 4]),
+            Err("character roster pointers unreadable")
+        ));
+        assert!(page.next().is_none());
+    }
+    assert_eq!(&*traced.reads.borrow(), &[(0x200, 256)]);
+}
+
+#[test]
+fn view_pages_refill_hides_stale_slots_errors_and_prior_source_values() {
+    let mut full = fixture();
+    array(
+        &mut full,
+        MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+        0x200,
+        32,
+    );
+    array(
+        &mut full,
+        MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS,
+        0,
+        0,
+    );
+    for index in 0..32 {
+        u64_at(&mut full, 0x200 + index * 8, FIRST as u64);
+    }
+    let mut short = full.clone();
+    array(
+        &mut short,
+        MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+        0x200,
+        1,
+    );
+    u32_at(&mut short, FIRST + ID, 777);
+    let mut terminal = full.clone();
+    u64_at(&mut terminal, 0x208, SECOND as u64);
+    u32_at(&mut terminal, SECOND + TYPE, 0);
+    let mut empty = short.clone();
+    array(
+        &mut empty,
+        MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+        0,
+        0,
+    );
+
+    let full_memory = TracedMemory::new(&full, None);
+    let short_memory = TracedMemory::new(&short, None);
+    let terminal_memory = TracedMemory::new(&terminal, None);
+    let root_fault = TracedMemory::new(&short, Some(0x200));
+    let identity_fault = TracedMemory::new(&short, Some(FIRST));
+    let empty_memory = TracedMemory::new(&empty, None);
+    let roster = |bytes: &[u8]| ccharacter_manager::Roster::read(&memory(bytes), 0, GS).unwrap();
+    let mut page = ccharacter_manager::ViewPage::default();
+    assert!(
+        roster(&full)
+            .cursor()
+            .refill_page(&full_memory, &mut page, [true; 4])
+            .unwrap()
+    );
+    // Discard 31 unconsumed old entries. Only the newly admitted short
+    // prefix may be observed, even though its backing slots are retained.
+    assert_eq!(page.next().unwrap().unwrap().reference().1, 900);
+    assert!(
+        roster(&short)
+            .cursor()
+            .refill_page(&short_memory, &mut page, [true; 4])
+            .unwrap()
+    );
+    assert_eq!(page.next().unwrap().unwrap().reference().1, 777);
+    assert!(page.next().is_none());
+    assert!(
+        roster(&terminal)
+            .cursor()
+            .refill_page(&terminal_memory, &mut page, [true; 4])
+            .unwrap()
+    );
+    assert_eq!(page.next().unwrap().unwrap().reference().1, 900);
+    // The deferred identity error must also be cleared before a refill
+    // that fails at its first pointer-page read.
+    assert!(matches!(
+        roster(&short)
+            .cursor()
+            .refill_page(&root_fault, &mut page, [true; 4]),
+        Err("character roster pointers unreadable")
+    ));
+    assert!(page.next().is_none());
+    assert_eq!(&*root_fault.reads.borrow(), &[(0x200, 8)]);
+    assert!(
+        roster(&short)
+            .cursor()
+            .refill_page(&identity_fault, &mut page, [true; 4])
+            .unwrap()
+    );
+    assert!(matches!(
+        page.next(),
+        Some(Err("character identity unreadable"))
+    ));
+    assert!(page.next().is_none());
+    assert!(
+        roster(&full)
+            .cursor()
+            .refill_page(&full_memory, &mut page, [true; 4])
+            .unwrap()
+    );
+    assert!(
+        !roster(&empty)
+            .cursor()
+            .refill_page(&empty_memory, &mut page, [true; 4])
+            .unwrap()
+    );
+    assert!(page.next().is_none());
+    assert!(empty_memory.reads.borrow().is_empty());
+    assert!(
+        roster(&short)
+            .cursor()
+            .refill_page(&short_memory, &mut page, [true; 4])
+            .unwrap()
+    );
+    assert_eq!(page.next().unwrap().unwrap().reference().1, 777);
+    assert!(page.next().is_none());
+}
+
+#[test]
+fn view_pages_defer_later_fatal_slots_and_retain_independent_optional_fields() {
+    let mut bytes = fixture();
+    array(
+        &mut bytes,
+        MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+        0x200,
+        3,
+    );
+    array(
+        &mut bytes,
+        MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS,
+        0,
+        0,
+    );
+    for (index, pointer) in [FIRST, SECOND, FIRST].into_iter().enumerate() {
+        u64_at(&mut bytes, 0x200 + index * 8, pointer as u64);
+    }
+    for fault in [SECOND, SECOND + TYPE] {
+        let roster = ccharacter_manager::Roster::read(&memory(&bytes), 0, GS).unwrap();
+        let traced = TracedMemory::new(&bytes, Some(fault));
+        let mut page = ccharacter_manager::ViewPage::default();
+        assert!(
+            roster
+                .cursor()
+                .refill_page(&traced, &mut page, [true; 4])
+                .unwrap()
+        );
+        let first = page.next().unwrap().unwrap();
+        assert_eq!(first.reference().1, 900);
+        assert!(matches!(
+            page.next(),
+            Some(Err("character identity unreadable"))
+        ));
+        assert!(page.next().is_none());
+        assert_eq!(
+            traced
+                .reads
+                .borrow()
+                .iter()
+                .filter(|&&(address, len)| address == FIRST && len == 16)
+                .count(),
+            1
+        );
+    }
+    let roster = ccharacter_manager::Roster::read(&memory(&bytes), 0, GS).unwrap();
+    let traced = TracedMemory::new(&bytes, Some(FIRST + NAME + 32));
+    let mut page = ccharacter_manager::ViewPage::default();
+    assert!(
+        roster
+            .cursor()
+            .refill_page(&traced, &mut page, [true; 4])
+            .unwrap()
+    );
+    let first = page.next().unwrap().unwrap();
+    assert!(first.entry().is_ok());
+    assert!(matches!(
+        walk_entry(
+            &first,
+            0,
+            first.entry().unwrap(),
+            |_| None,
+            &mut [Row::default(); 1],
+            &mut [0; 64]
+        )
+        .outcome,
+        Outcome::Unavailable { .. }
+    ));
+    let second = page.next().unwrap().unwrap();
+    assert_eq!(second.reference().1, 22);
+    assert!(second.entry().is_ok());
+}
+#[test]
+fn hourly_portrait_holder_preserves_entry_order_and_requires_whole_character_capacity() {
+    let mut bytes = fixture();
+    array(&mut bytes, FIRST + PORTRAIT_DATA, 0x1800, 2);
+    for (index, size) in [1, 0].into_iter().enumerate() {
+        let at = 0x1800 + index * 0x38;
+        u32_at(&mut bytes, at, 2);
+        u32_at(&mut bytes, at + 4, size);
+        bytes[at + 8] = 255;
+        u32_at(&mut bytes, at + 12, 1);
+        string(
+            &mut bytes,
+            at + 16,
+            if index == 0 { b"a.dds" } else { b"b.dds" },
+        );
+    }
+    let mut rows = [PortraitRow::default(); 2];
+    let mut entries = [crate::character_portrait_entry::Row::default(); 2];
+    let result = walk_all(&memory(&bytes), &mut rows, &mut entries);
+    assert_eq!(result.outcome, Outcome::Rows { len: 2 });
+    assert_eq!([rows[0].character, rows[1].character], [22, 900]);
+    assert_eq!([entries[0].size, entries[1].size], [1, 0]);
+    assert_eq!(entries[0].is_set, 255);
+    let result = walk_all(&memory(&bytes), &mut rows, &mut entries[..1]);
+    assert_eq!(
+        result.outcome,
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 1
+        }
+    );
+    assert_eq!(result.required, 2);
+    u32_at(&mut bytes, FIRST + PORTRAIT_COUNT, 129);
+    assert!(matches!(
+        walk_all(&memory(&bytes), &mut rows, &mut entries).outcome,
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn portrait_census_and_walk_have_no_fixed_character_limit() {
+    use crate::memory::SliceMemory;
+    use ccharacter_manager::{PortraitCensus, PortraitIdentity};
+    // More characters than the old 65,536 bound. Each character owns an
+    // empty portrait header; objects are 16 bytes apart so the headers
+    // tile one zeroed region.
+    const CHARACTERS: usize = 70_000;
+    const OBJECTS: usize = 0x10_0000;
+    let bytes = vec![0; OBJECTS + PORTRAIT_DATA + CHARACTERS * 16];
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let identity = |index: usize| PortraitIdentity {
+        pointer: OBJECTS + index * 16,
+        character: index as u32 + 1,
+    };
+    let mut census = PortraitCensus::new(PortraitCensus::INITIAL_CAPACITY);
+    const { assert!(CHARACTERS > PortraitCensus::INITIAL_CAPACITY) };
+    let fill = |census: &mut PortraitCensus| {
+        census.begin(0, GS);
+        census.expect(CHARACTERS);
+        for index in 0..CHARACTERS {
+            census.push(identity(index));
+        }
+        census.finish(CHARACTERS);
+    };
+    fill(&mut census);
+    assert!(
+        census.rows(0, GS).is_none(),
+        "a short census is never published"
+    );
+    assert!(census.needs_growth());
+    census.grow();
+    assert!(!census.needs_growth());
+    fill(&mut census);
+    let rows = census.rows(0, GS).expect("grown census is complete");
+    assert_eq!(rows.len(), CHARACTERS);
+    assert_eq!(rows[CHARACTERS - 1], identity(CHARACTERS - 1));
+
+    let mut output = vec![PortraitRow::default(); CHARACTERS];
+    let walked = walk_portraits(
+        &memory,
+        0,
+        GS,
+        &mut output,
+        &mut [],
+        PortraitWalk {
+            census: Some(&census),
+            ..Default::default()
+        },
+    );
+    assert_eq!(walked.outcome, Outcome::Rows { len: CHARACTERS });
+    assert_eq!(output[CHARACTERS - 1].character, CHARACTERS as u32);
+    // Rows that do not fit are counted, not refused.
+    let walked = walk_portraits(
+        &memory,
+        0,
+        GS,
+        &mut output[..10],
+        &mut [],
+        PortraitWalk {
+            census: Some(&census),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        walked.outcome,
+        Outcome::Truncated {
+            len: 10,
+            unread_rows: (CHARACTERS - 10) as u32
+        }
+    );
+}
+
+#[test]
+fn shared_portrait_census_removes_only_common_reads_and_preserves_faults() {
+    use ccharacter_manager::{PortraitCensus, PortraitIdentity};
+    let mut bytes = fixture();
+    array(&mut bytes, FIRST + PORTRAIT_DATA, 0x1800, 1);
+    string(&mut bytes, 0x1810, b"portrait.dds");
+    let mut census = PortraitCensus::new(2);
+    census.begin(0, GS);
+    for (pointer, character) in [(FIRST, 900), (SECOND, 22)] {
+        census.push(PortraitIdentity { pointer, character });
+    }
+    census.finish(2);
+    let shared = TracedMemory::new(&bytes, None);
+    let mut rows = [PortraitRow::default(); 2];
+    let mut entries = [crate::character_portrait_entry::Row::default(); 2];
+    let capture = |memory: &TracedMemory<'_>,
+                   census: Option<&PortraitCensus>,
+                   rows: &mut [PortraitRow],
+                   entries: &mut [crate::character_portrait_entry::Row]| {
+        let walk = PortraitWalk {
+            census,
+            ..Default::default()
+        };
+        walk_portraits(memory, 0, GS, rows, entries, walk)
+    };
+    assert_eq!(
+        capture(&shared, Some(&census), &mut rows, &mut entries).outcome,
+        Outcome::Rows { len: 2 }
+    );
+    let reads = shared.reads.borrow().clone();
+    assert!(reads.iter().all(|&(at, _)| at == FIRST + PORTRAIT_DATA
+        || at == SECOND + PORTRAIT_DATA
+        || (0x1800..0x1838).contains(&at)));
+    for fault in reads.iter().map(|&(at, _)| Some(at)).chain([None]) {
+        for row_capacity in 0..=2 {
+            let direct = TracedMemory::new(&bytes, fault);
+            let shared = TracedMemory::new(&bytes, fault);
+            let mut expected_rows = [PortraitRow::default(); 2];
+            let mut expected_entries = [crate::character_portrait_entry::Row::default(); 2];
+            let mut actual_rows = expected_rows;
+            let mut actual_entries = expected_entries;
+            let expected = capture(
+                &direct,
+                None,
+                &mut expected_rows[..row_capacity],
+                &mut expected_entries,
+            );
+            let actual = capture(
+                &shared,
+                Some(&census),
+                &mut actual_rows[..row_capacity],
+                &mut actual_entries,
+            );
+            assert_eq!(
+                (actual.outcome, actual.len, actual.required),
+                (expected.outcome, expected.len, expected.required)
+            );
+            assert_eq!(actual_rows, expected_rows);
+            assert_eq!(actual_entries, expected_entries);
+            let portrait_reads: Vec<_> = direct
+                .reads
+                .borrow()
+                .iter()
+                .copied()
+                .filter(|&(at, _)| reads.iter().any(|&(portrait, _)| at == portrait))
+                .collect();
+            assert_eq!(*shared.reads.borrow(), portrait_reads);
+        }
+    }
+    // Incomplete and differently scoped sources are never admitted.
+    for scope in [(1, GS), (0, GS)] {
+        census.begin(scope.0, scope.1);
+        if scope.0 == 1 {
+            census.finish(0);
+        }
+        let direct = TracedMemory::new(&bytes, None);
+        let fallback = TracedMemory::new(&bytes, None);
+        capture(&direct, None, &mut rows, &mut entries);
+        capture(&fallback, Some(&census), &mut rows, &mut entries);
+        assert_eq!(*direct.reads.borrow(), *fallback.reads.borrow());
+    }
+    // Aliases remain separate occurrences and still fail duplicate identity validation.
+    census.begin(0, GS);
+    for _ in 0..2 {
+        census.push(PortraitIdentity {
+            pointer: FIRST,
+            character: 900,
+        });
+    }
+    census.finish(2);
+    let duplicate = TracedMemory::new(&bytes, None);
+    assert_eq!(
+        capture(&duplicate, Some(&census), &mut rows, &mut entries).outcome,
+        Outcome::Unavailable {
+            reason: "duplicate character portrait identity"
+        }
+    );
+    assert_eq!(
+        duplicate
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == FIRST + PORTRAIT_DATA)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn observed_portraits_reuse_only_certified_entries_and_verify_missed_writes() {
+    use crate::portrait_cache::{Cache, Changes};
+    use std::cell::Cell;
+    struct Observer {
+        generation: Cell<u64>,
+        verify: Cell<bool>,
+        enabled: Cell<bool>,
+        change_after: Cell<Option<usize>>,
+    }
+    impl Changes for Observer {
+        fn revision(&self, _: usize) -> Option<(u64, u64)> {
+            if !self.enabled.get() {
+                return None;
+            }
+            if let Some(remaining) = self.change_after.get() {
+                self.change_after.set(remaining.checked_sub(1));
+                if remaining == 0 {
+                    self.generation.set(self.generation.get() + 1);
+                }
+            }
+            Some((1, self.generation.get()))
+        }
+        fn verify(&self) -> bool {
+            self.verify.get()
+        }
+    }
+    let observer = Observer {
+        generation: Cell::new(1),
+        verify: Cell::new(false),
+        enabled: Cell::new(true),
+        change_after: Cell::new(None),
+    };
+    let mut bytes = fixture();
+    array(&mut bytes, FIRST + PORTRAIT_DATA, 0x1800, 1);
+    u32_at(&mut bytes, 0x1800, 2);
+    u32_at(&mut bytes, 0x1804, 1);
+    bytes[0x1808] = 1;
+    // Empty, valid inline descriptor.
+    u64_at(&mut bytes, 0x1800 + 0x10 + msvc_string::CAPACITY, 15);
+    let mut cache = Cache::new(2);
+    let mut rows = [PortraitRow::default(); 2];
+    let mut entries = [crate::character_portrait_entry::Row::default(); 2];
+    let capture = |source: &TracedMemory<'_>,
+                   cache: &mut Cache,
+                   rows: &mut [PortraitRow],
+                   entries: &mut [crate::character_portrait_entry::Row]| {
+        walk_portraits(
+            source,
+            0,
+            GS,
+            rows,
+            entries,
+            PortraitWalk {
+                observation: Some((cache, &observer)),
+                ..Default::default()
+            },
+        )
+    };
+    assert_eq!(
+        capture(
+            &TracedMemory::new(&bytes, None),
+            &mut cache,
+            &mut rows,
+            &mut entries
+        )
+        .outcome,
+        Outcome::Rows { len: 2 }
+    );
+    let expected = entries;
+    let warm = TracedMemory::new(&bytes, Some(0x1800));
+    assert_eq!(
+        capture(&warm, &mut cache, &mut rows, &mut entries).outcome,
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(cache.counts.reused_entries, 1);
+    assert_eq!(entries, expected);
+    assert!(!warm.reads.borrow().iter().any(|&(at, _)| at == 0x1800));
+
+    // Same address/count, actual in-place change, observed writer.
+    bytes[0x1808] = 7;
+    observer.generation.set(2);
+    assert_eq!(
+        capture(
+            &TracedMemory::new(&bytes, None),
+            &mut cache,
+            &mut rows,
+            &mut entries
+        )
+        .outcome,
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(entries[0].is_set, 7);
+    assert_eq!(cache.counts.reused_entries, 0);
+
+    // A missing notification must be exposed by diagnostic full reads.
+    observer.verify.set(true);
+    bytes[0x1808] = 9;
+    assert_eq!(
+        capture(
+            &TracedMemory::new(&bytes, None),
+            &mut cache,
+            &mut rows,
+            &mut entries
+        )
+        .outcome,
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(cache.counts.verified_entries, 1);
+    assert_eq!(cache.counts.mismatches, 1);
+    assert_eq!(entries[0].is_set, 9);
+
+    // Failure invalidates arena metadata; the next observation reads again.
+    let failed = capture(
+        &TracedMemory::new(&bytes, Some(0x1800)),
+        &mut cache,
+        &mut rows,
+        &mut entries,
+    );
+    assert!(matches!(failed.outcome, Outcome::Unavailable { .. }));
+    observer.verify.set(false);
+    capture(
+        &TracedMemory::new(&bytes, None),
+        &mut cache,
+        &mut rows,
+        &mut entries,
+    );
+    assert_eq!(cache.counts.reused_entries, 0);
+    assert_eq!(entries[0].is_set, 9);
+
+    // A writer overlapping a proposed hit must fail this acquisition;
+    // it cannot silently publish the retained descriptor or retry a read.
+    observer.change_after.set(Some(1));
+    let overlap = capture(
+        &TracedMemory::new(&bytes, None),
+        &mut cache,
+        &mut rows,
+        &mut entries,
+    );
+    assert_eq!(
+        overlap.outcome,
+        Outcome::Unavailable {
+            reason: "character portrait mutated during acquisition",
+        }
+    );
+
+    // Losing the observer always restores ordinary acquisition, including
+    // descriptor failures that a previously certified hit could avoid.
+    observer.enabled.set(false);
+    let unavailable = capture(
+        &TracedMemory::new(&bytes, Some(0x1800)),
+        &mut cache,
+        &mut rows,
+        &mut entries,
+    );
+    assert!(matches!(unavailable.outcome, Outcome::Unavailable { .. }));
+    assert_eq!(cache.counts.reused_entries, 0);
+}
+
+#[test]
+fn portrait_lookahead_preserves_primary_traces_faults_and_capacity() {
+    use std::cell::{Cell, RefCell};
+
+    struct Observed<'a> {
+        source: SliceMemory<'a>,
+        trace: RefCell<Vec<(usize, usize)>>,
+        guards: Cell<usize>,
+        fault: Option<usize>,
+        changed: Option<usize>,
+    }
+    impl Observed<'_> {
+        fn field(&self, address: usize, output: &mut [u8]) -> bool {
+            let ordinal = self.trace.borrow().len();
+            self.trace.borrow_mut().push((address, output.len()));
+            if self.fault == Some(ordinal) {
+                let prefix = output.len() / 2;
+                self.source.copy(address, &mut output[..prefix]);
+                return false;
+            }
+            let copied = self.source.copy(address, output);
+            if copied && self.changed == Some(ordinal) {
+                output[0] ^= 1;
+            }
+            copied
+        }
+    }
+    impl Memory for Observed<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.guards.set(self.guards.get() + 1);
+            self.field(address, output)
+        }
+
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            outputs: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.guards.set(self.guards.get() + 1);
+            for (index, (address, output)) in addresses.into_iter().zip(outputs).enumerate() {
+                if !output.is_empty() && !self.field(address, output) {
+                    return index;
+                }
+            }
+            N
+        }
+    }
+
+    let mut bytes = fixture();
+    bytes.resize(0x3000, 0);
+    let maximum = [0xa5; 256];
+    let literals: [&[u8]; 7] = [b"x", b"heap", b"", b"", b"\xff\0a", &maximum, b"tail"];
+    let heaps = [false, true, false, true, false, true, false];
+    array(&mut bytes, FIRST + PORTRAIT_DATA, 0x1800, 7);
+    for (index, literal) in literals.iter().enumerate() {
+        let entry = 0x1800 + index * 0x38;
+        u32_at(&mut bytes, entry, (index % 6) as u32);
+        u32_at(&mut bytes, entry + 4, (index % 2) as u32);
+        bytes[entry + 8] = 255;
+        u32_at(&mut bytes, entry + 12, (index % 2) as u32);
+        if heaps[index] {
+            let source = 0x2000 + index * 0x180;
+            u64_at(&mut bytes, entry + 0x10, source as u64);
+            u64_at(&mut bytes, entry + 0x20, literal.len() as u64);
+            u64_at(&mut bytes, entry + 0x28, 511);
+            bytes[source..source + literal.len()].copy_from_slice(literal);
+        } else {
+            string(&mut bytes, entry + 0x10, literal);
+        }
+    }
+
+    for (row_capacity, entry_capacity) in [(2, 7), (2, 6), (1, 7), (0, 7)] {
+        let mut expected = Vec::new();
+        let roster = [
+            (
+                GS + cgame_state::CHARACTER_MANAGER,
+                8,
+                "character manager unreadable or null",
+            ),
+            (MANAGER, 8, "character manager vtable mismatch"),
+            (
+                MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+                16,
+                "character roster unreadable or invalid",
+            ),
+            (
+                MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS,
+                16,
+                "character roster unreadable or invalid",
+            ),
+        ];
+        expected.extend(roster);
+        let mut changes = Vec::new();
+        let mut accepted = 0;
+        let mut used = 0;
+        for (index, character) in [FIRST, SECOND].into_iter().enumerate() {
+            expected.extend([
+                (
+                    0x200 + index * 8,
+                    8,
+                    "character roster pointer unreadable or null",
+                ),
+                (character, 16, "character identity unreadable"),
+                (character + COUNTRY, 4, "character country unreadable"),
+                (
+                    character + PORTRAIT_DATA,
+                    16,
+                    "character portrait header unreadable",
+                ),
+            ]);
+            let count = if index == 0 { 7 } else { 0 };
+            if accepted == row_capacity || count > entry_capacity - used {
+                continue;
+            }
+            for n in 0..count {
+                let entry = 0x1800 + n * 0x38;
+                let source = if heaps[n] {
+                    0x2000 + n * 0x180
+                } else {
+                    entry + 0x10
+                };
+                let invalid = "portrait identity invalid or exceeds256 bytes";
+                expected.extend([
+                    (entry, 16, "naval field unreadable"),
+                    (entry + 0x20, 8, invalid),
+                    (entry + 0x28, 8, invalid),
+                ]);
+                if heaps[n] {
+                    expected.push((entry + 0x10, 8, invalid));
+                }
+                changes.push((expected.len(), invalid));
+                expected.push((source + literals[n].len(), 1, invalid));
+                if !literals[n].is_empty() {
+                    expected.push((source, literals[n].len(), invalid));
+                }
+            }
+            accepted += 1;
+            used += count;
+        }
+        let spans: Vec<_> = expected
+            .iter()
+            .map(|&(address, len, _)| (address, len))
+            .collect();
+        let observe = |fault, changed| Observed {
+            source: memory(&bytes),
+            trace: RefCell::new(Vec::new()),
+            guards: Cell::new(0),
+            fault,
+            changed,
+        };
+        let mut rows = vec![PortraitRow::default(); row_capacity];
+        let mut entries = vec![crate::character_portrait_entry::Row::default(); entry_capacity];
+        let source = observe(None, None);
+        let result = walk_all(&source, &mut rows, &mut entries);
+        assert_eq!(*source.trace.borrow(), spans);
+        assert_eq!(source.guards.get(), spans.len() - 2 * used - 2);
+        assert_eq!((result.len, result.required), (used, 7));
+        assert_eq!(
+            result.outcome,
+            if accepted == 2 {
+                Outcome::Rows { len: accepted }
+            } else {
+                Outcome::Truncated {
+                    len: accepted,
+                    unread_rows: (2 - accepted) as u32,
+                }
+            }
+        );
+        if used == 7 {
+            for (entry, literal) in entries.iter().zip(literals) {
+                assert_eq!(entry.identity.as_bytes(), literal);
+            }
+        }
+        if accepted == 2 {
+            // 48 roster bytes, two complete characters at 44 bytes, and
+            // seven entries at 33 + L + 8H bytes / 4 + H + (L > 0)
+            // observations. Each descriptor/length/capacity batch saves two guards;
+            // each character's country/portrait-header batch saves one more.
+            assert_eq!(spans.len(), 48);
+            assert_eq!(spans.iter().map(|&(_, len)| len).sum::<usize>(), 659);
+            assert_eq!(source.guards.get(), 32);
+        }
+        for (ordinal, &(_, _, reason)) in expected.iter().enumerate() {
+            let source = observe(Some(ordinal), None);
+            let result = walk_all(&source, &mut rows, &mut entries);
+            assert_eq!(
+                result.outcome,
+                Outcome::Unavailable { reason },
+                "fault {ordinal}"
+            );
+            assert_eq!(*source.trace.borrow(), spans[..=ordinal], "fault {ordinal}");
+        }
+        for (ordinal, reason) in changes {
+            let source = observe(None, Some(ordinal));
+            let result = walk_all(&source, &mut rows, &mut entries);
+            assert_eq!(
+                result.outcome,
+                Outcome::Unavailable { reason },
+                "change {ordinal}"
+            );
+            assert_eq!(
+                *source.trace.borrow(),
+                spans[..=ordinal],
+                "change {ordinal}"
+            );
+        }
+    }
+    // The fused final two fields must retain the scalar prefix when a
+    // later address or span overflows, including a readable country word.
+    for pointer in [
+        0x1000,
+        usize::MAX - 160,
+        usize::MAX - 144,
+        usize::MAX - 143,
+        usize::MAX - 128,
+        usize::MAX - 108,
+        usize::MAX - 104,
+        usize::MAX - 103,
+        usize::MAX,
+    ] {
+        let bytes = [0; 160];
+        let observe = || Observed {
+            source: SliceMemory {
+                base: pointer,
+                bytes: &bytes,
+            },
+            trace: RefCell::new(Vec::new()),
+            guards: Cell::new(0),
+            fault: None,
+            changed: None,
+        };
+        let scalar = observe();
+        let expected = (|| {
+            read::<u32>(&scalar, at(pointer, COUNTRY)?).ok_or("character country unreadable")?;
+            let address = pointer
+                .checked_add(PORTRAIT_DATA)
+                .ok_or("character portrait address overflow")?;
+            read::<[u8; 16]>(&scalar, address).ok_or("character portrait header unreadable")
+        })();
+        let fused = observe();
+        assert_eq!(portrait_header(&fused, pointer), expected);
+        assert_eq!(*fused.trace.borrow(), *scalar.trace.borrow());
+    }
+}
