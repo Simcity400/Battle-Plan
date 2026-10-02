@@ -12,7 +12,7 @@ use crate::{
     ideas, modifiers,
     movement::{bitmap::NativeBitmap, records::engine_number},
     parser::{
-        self, Value,
+        self,
         native::{self, Shape},
     },
 };
@@ -168,7 +168,7 @@ pub struct Definitions {
     colors: HashMap<u32, u32>,
 }
 
-/// Reads `definition.csv` as the game does ([`definition_rows`]). Records the
+/// Reads `definition.csv` as the game does (`definition_rows`). Records the
 /// map does not model are refused by name: a kind other than `land`, `sea` or
 /// `lake`, and two records of one id.
 pub fn read_definitions(input: &[u8]) -> io::Result<Definitions> {
@@ -209,7 +209,7 @@ pub fn read_definitions(input: &[u8]) -> io::Result<Definitions> {
 }
 
 /// Each record's terrain name by id (`+0x08`, column seven, `unknown` when
-/// the row has none), from the rows [`definition_rows`] reads; two records of
+/// the row has none), from the rows `definition_rows` reads; two records of
 /// one id are refused, as [`read_definitions`] refuses them.
 pub fn province_terrains(input: &[u8]) -> io::Result<BTreeMap<u32, Vec<u8>>> {
     let mut terrains = BTreeMap::new();
@@ -227,7 +227,7 @@ pub fn parse_definitions(input: &[u8]) -> io::Result<BTreeMap<u32, ProvinceDefin
 }
 
 /// Resolves the provinces bitmap as `build_id_raster@141532390` does, through
-/// the native map bitmap loader ([`NativeBitmap`]) and the definitions' colour
+/// the native map bitmap loader (`NativeBitmap`) and the definitions' colour
 /// lookup. A colour no record claims is refused: the game invents a land
 /// province for it, which the map does not model.
 pub fn decode_provinces_bmp(input: &[u8], definitions: &Definitions) -> io::Result<ProvinceImage> {
@@ -256,54 +256,6 @@ pub fn decode_provinces_bmp(input: &[u8], definitions: &Definitions) -> io::Resu
         height: bitmap.height as u32,
         province_ids,
     })
-}
-
-/// Bare country-file colors and `rgb` use 0..255 components; `hsv` uses
-/// normalized components. Quantization occurs here for display, not recording.
-pub fn parse_color(value: &Value) -> io::Result<[u8; 3]> {
-    let (hsv, items) = match value {
-        Value::Block(items) => (false, items),
-        Value::Tagged { tag, items } if tag.eq_ignore_ascii_case(b"rgb") => (false, items),
-        Value::Tagged { tag, items } if tag.eq_ignore_ascii_case(b"hsv") => (true, items),
-        _ => {
-            return Err(invalid(
-                "color must be an RGB triple or normalized HSV triple",
-            ));
-        }
-    };
-    if items.len() != 3 || items.iter().any(|item| item.key.is_some()) {
-        return Err(invalid("color must have exactly three unkeyed components"));
-    }
-    let mut components = [0_f64; 3];
-    for (component, item) in components.iter_mut().zip(items) {
-        *component = item
-            .value
-            .scalar_str()
-            .ok_or_else(|| invalid("color component is not a number"))?
-            .parse()
-            .map_err(|_| invalid("color component is not a number"))?;
-        let limit = if hsv { 1.0 } else { 255.0 };
-        if !component.is_finite() || !(0.0..=limit).contains(component) {
-            return Err(invalid(format!("color component is outside 0..{limit}")));
-        }
-    }
-    if hsv {
-        let [h, s, v] = components;
-        let hue = if h == 1.0 { 0.0 } else { h * 6.0 };
-        let chroma = v * s;
-        let x = chroma * (1.0 - (hue % 2.0 - 1.0).abs());
-        let rgb = match hue as u8 {
-            0 => [chroma, x, 0.0],
-            1 => [x, chroma, 0.0],
-            2 => [0.0, chroma, x],
-            3 => [0.0, x, chroma],
-            4 => [x, 0.0, chroma],
-            _ => [chroma, 0.0, x],
-        };
-        Ok(rgb.map(|channel| ((channel + v - chroma) * 255.0).round() as u8))
-    } else {
-        Ok(components.map(|component| component.round() as u8))
-    }
 }
 
 fn apply_autonomy_colors(
@@ -441,7 +393,6 @@ pub fn load(layers: &ResolvedLayers) -> io::Result<MapData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser;
 
     fn bitmap(width: i32, height: i32, pixels: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0_u8; 54];
@@ -671,32 +622,5 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("unresolved"));
-    }
-
-    #[test]
-    fn hsv_primaries_and_rgb_ranges_are_explicit() {
-        for (input, expected) in [
-            (b"color=hsv{0 1 1}".as_slice(), [255, 0, 0]),
-            (b"color=HSV{1 1 1}", [255, 0, 0]),
-            (b"color=hsv{0.5 1 1}", [0, 255, 255]),
-            (b"color=hsv{0.2 0 0.5}", [128, 128, 128]),
-        ] {
-            assert_eq!(
-                parse_color(&parser::parse(input).unwrap().items[0].value).unwrap(),
-                expected
-            );
-        }
-        for invalid in [
-            "color=rgb{256 0 0}",
-            "color={-1 0 0}",
-            "color=hsv{0 1.1 1}",
-            "color=rgb{NaN 0 0}",
-            "color={1 2}",
-            "color={r=1 g=2 b=3}",
-        ] {
-            assert!(
-                parse_color(&parser::parse(invalid.as_bytes()).unwrap().items[0].value).is_err()
-            );
-        }
     }
 }

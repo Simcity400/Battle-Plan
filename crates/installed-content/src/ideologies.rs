@@ -68,7 +68,7 @@ impl Ideologies {
     }
 
     /// A group's `CIdeologyGroup+0x40` as its raw bits, the frame `1418C4B50` sets on a naval
-    /// counter's `counter_ideology` ([`number_groups`]): its place in the last `ideologies` block
+    /// counter's `counter_ideology` (`number_groups`): its place in the last `ideologies` block
     /// of its file that listed it, or `0xFFFFFFFF` (the constructor's, `14117C030`) when a later
     /// block of that file reset it (`140A38FE0`). `Ok(None)` when no file defines the group;
     /// `Err` when any file stops short (it could define the group first or shift its place).
