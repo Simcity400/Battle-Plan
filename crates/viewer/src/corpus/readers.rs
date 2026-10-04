@@ -126,6 +126,8 @@ fn classify(message: &str, default: Kind) -> Kind {
         Kind::Unsettled
     } else if message.contains("Deferred effect `") {
         Kind::Unsupported
+    } else if message.contains("native role defaults") {
+        Kind::Warning
     } else if MISREAD.iter().any(|words| message.contains(words)) {
         Kind::Misread
     } else if message.contains("refused") || message.contains("not registered") {

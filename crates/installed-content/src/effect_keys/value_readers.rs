@@ -32,6 +32,11 @@ impl LoopSource {
 
 #[derive(Clone, Copy)]
 enum Form {
+    One,
+    SkipIfOpen,
+    Current,
+    CurrentOrRaw,
+    CurrentOrKeys(LoopSource),
     ScalarOrKeys(LoopSource),
     StringOrKeys(LoopSource),
     Keys(LoopSource),
@@ -57,8 +62,23 @@ const EQUIPMENT_VARIANT_KEYS: u64 = 0x141411210;
 
 // A loop uses either the value reader itself or the class's slot-4 reader.
 const VALUE_READERS: &[(u64, Form)] = &[
+    // Slot-3 readers below use the already-held scalar token. Only the
+    // tooltip/mission readers enter a loop when that token is `{`.
+    (0x1402F0540, Form::SkipIfOpen), // remove unit leader: RecordError on `{`
+    (0x1403AB040, Form::One),        // set land/naval/air OOB: value text, no advance
+    (0x140495DC0, Form::One),        // add scientist trait: registry lookup of held token
+    (0x1403A91F0, Form::One),        // activate/deactivate advisor: value text
+    (0x1403A92B0, Form::CurrentOrKeys(LoopSource::Inline)), // mission tooltip
+    (0x1403A9C20, Form::Current),    // activate/remove decision
+    (0x1403A9EC0, Form::CurrentOrKeys(LoopSource::Inline)), // activate/remove mission
+    (0x1403AAA50, Form::One),        // recruit character: retained token
+    (0x1403AAFA0, Form::One),        // retire character: retained token
+    (0x1403AB900, Form::CurrentOrRaw), // show ideas tooltip
+    (0x1403ABD40, Form::Current),    // show unit leaders tooltip
+    (0x1403ACC80, Form::Current),    // unlock decision category tooltip
+    (0x140496070, Form::One),        // injure scientist: integer from retained token
     (0x1403A89E0, Form::ScalarOrKeys(LoopSource::ClassKey)), // randomize
-    (0x1403A9810, Form::Ideas), // raw resolved tokens, not ReadKeyOperatorValue
+    (0x1403A9810, Form::Ideas),      // raw resolved tokens, not ReadKeyOperatorValue
     (0x1403A9B40, Form::Keys(LoopSource::ClassKey)), // ReadScript thunk
     (0x1403A9C70, Form::ScalarOrKeys(LoopSource::Inline)), // puppet
     (0x1403AB080, Form::ScalarOrKeys(LoopSource::ClassKey)), // focus tree
@@ -104,6 +124,22 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
         .find(|(address, _)| *address == value)?
         .1;
     let (source, scalar) = match form {
+        Form::One => return Some(Shape::One),
+        Form::SkipIfOpen => return Some(Shape::SkipIfOpen),
+        Form::Current => return Some(Shape::Current),
+        Form::CurrentOrRaw => {
+            return Some(if field.opens() {
+                Shape::RawList
+            } else {
+                Shape::Current
+            });
+        }
+        Form::CurrentOrKeys(source) => {
+            if !field.opens() {
+                return Some(Shape::Current);
+            }
+            (source, ScalarRead::One)
+        }
         Form::Persistent(reader) => {
             own_reader(reader, field.key)?;
             return Some(Shape::EffectValueKeys(reader));
@@ -267,6 +303,16 @@ enum OwnReader {
 // Ordinary accepted fields take one string/bool/scoped-variable token;
 // unknowns use ReportUnexpectedToken/RecordError, including its skip.
 const OWN_KEYS: &[(u64, OwnReader)] = &[
+    // 1402F8640/680 ReadObjectFromParser 1424ABB40 on these tokens;
+    // 1403B49C0 reads character as a scoped variable. Other keys report.
+    (0x1402F8640, OwnReader::Keys(&["province", "country"])),
+    (0x1402F8680, OwnReader::Keys(&["target", "province"])),
+    (0x1403B49C0, OwnReader::Keys(&["character"])),
+    // 1403A9EC0 accepts mission (0x2CBA); 1403A92B0 also accepts
+    // desc (0x2994). Each accepted entry calls ReadStringInto 1424ABB50;
+    // an unknown entry calls ReportUnexpectedToken 1424AD100.
+    (0x1403A9EC0, OwnReader::Keys(&["mission"])),
+    (0x1403A92B0, OwnReader::Keys(&["mission", "desc"])),
     (0x1403AA3C0, OwnReader::Promotion),
     (0x1403AAC00, OwnReader::RemoveRole),
     (

@@ -33,6 +33,17 @@ fn effect_modifier_uses_recorded_registry_for_quoted_names() {
 }
 
 #[test]
+fn effect_modifier_builtin_needs_no_recorded_stack_name() {
+    let result = read(
+        b"body = { add_state_modifier = { modifier = { \"ARMY_ATTACK_FACTOR\" = { @seen = 3 name = marker } } } final = @seen",
+        &KeyNames::default(),
+    );
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "final"), b"3");
+    assert!(result.misreads.iter().all(|note| note.count.is_none()));
+}
+
+#[test]
 fn effect_modifier_unknown_registry_suffix_is_named() {
     let mut names = KeyNames::default();
     names.effects.modifiers_gap =

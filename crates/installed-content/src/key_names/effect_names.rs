@@ -38,18 +38,11 @@ impl EffectNames {
         };
         let (modifiers, _) = modifier_definitions::read(layers)?;
         let early_modifiers = token_names(modifiers.registered_names());
-        let builtin_gap = "built-in modifier token registry 140552CB0/14054A990 is not in the recorded content stack";
         let mut result = Self {
             modifiers: early_modifiers.clone(),
-            modifiers_gap: Some(
-                modifiers
-                    .gap()
-                    .or(sub_units.gap())
-                    .unwrap_or(builtin_gap)
-                    .to_owned(),
-            ),
+            modifiers_gap: modifiers.gap().or(sub_units.gap()).map(str::to_owned),
             early_modifiers,
-            early_modifiers_gap: Some(modifiers.gap().unwrap_or(builtin_gap).to_owned()),
+            early_modifiers_gap: modifiers.gap().map(str::to_owned),
             ..Self::default()
         };
         result
@@ -305,7 +298,34 @@ mod tests {
         assert_eq!(names.terrains_gap, None);
         assert_eq!(names.equipment_gap, None);
         assert_eq!(names.equipment_upgrades_gap, None);
-        assert!(names.modifiers_gap.is_some());
-        assert!(names.early_modifiers_gap.is_some());
+        assert_eq!(names.modifiers_gap, None);
+        assert_eq!(names.early_modifiers_gap, None);
+        let lookup = KeyNames {
+            effects: names,
+            ..KeyNames::default()
+        };
+        assert_eq!(
+            crate::modifiers::registered(b"ACTIVE_UNIT_MODIFIER", Some(&lookup)),
+            Some(true)
+        );
+        assert_eq!(
+            crate::modifiers::registered(b"Active_Script_Modifier", Some(&lookup)),
+            Some(true)
+        );
+        assert_eq!(
+            crate::modifiers::registered(b"ARMY_ATTACK_FACTOR", Some(&lookup)),
+            Some(true)
+        );
+        assert_eq!(
+            crate::modifiers::registered(b"absent_modifier", Some(&lookup)),
+            Some(false)
+        );
+        assert_eq!(
+            crate::modifiers::registered(
+                b"ACTIVE_UNIT_MODIFIER",
+                Some(&lookup.at(super::super::Point::IdeaTags))
+            ),
+            Some(false)
+        );
     }
 }

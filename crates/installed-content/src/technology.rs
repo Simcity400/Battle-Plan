@@ -56,6 +56,7 @@ fn parse_with_registry(
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
     let mut leading_limit = true;
+    let modifier_registry = &|key: &[u8]| modifiers::registered(key, Some(names));
     // CTechnologyDatabase 140ABCFC0 (EOF loop), CTechnologyTemplate
     // 140AC3960 / 140AC3C70. All dynamic content names come from layers.
     // CTechnologyDatabase::LoadDirectory (140AC1BA0) constructs each file's
@@ -160,7 +161,7 @@ fn parse_with_registry(
                 (Technology, _) => modifiers::shape(
                     modifiers::Node::Modifier,
                     field,
-                    modifiers::UNKNOWN,
+                    modifier_registry,
                     &mut undecided,
                 )
                 .map(Modifier),
@@ -174,7 +175,7 @@ fn parse_with_registry(
                 (Scalars | Building, _) => Shape::One, // 1413B04D0 and inline loops
                 (Mtth, _) => native::mean_time_to_happen(field),
                 (Modifier(node), _) => {
-                    modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided).map(Modifier)
+                    modifiers::shape(node, field, modifier_registry, &mut undecided).map(Modifier)
                 }
                 (Unit(node), _) => registry
                     .shape(node, field, &mut undecided, &mut refused)
@@ -585,18 +586,43 @@ mod tests {
         registry.units.insert(b"custom_unit".to_vec());
         registry.terrains.insert(b"custom_terrain".to_vec());
         let bytes = b"technologies={a={custom_unit={custom_terrain={attack=1}} enable_subunits={limit={always=yes} custom_unit} enable_equipments={one}}}";
+        let mut names = KeyNames::default();
+        names.effects.modifiers_gap = Some("unread modifier suffix".into());
         assert!(
-            parse_equipment(bytes, &KeyNames::default())
+            parse_equipment(bytes, &names)
                 .unwrap_err()
                 .to_string()
                 .contains("custom_unit")
         );
         assert_eq!(
-            parse_with_registry(bytes, &registry, &KeyNames::default())
-                .unwrap()
-                .0["a"]
-                .as_deref(),
+            parse_with_registry(bytes, &registry, &names).unwrap().0["a"].as_deref(),
             Some("one")
+        );
+    }
+
+    #[test]
+    fn modifier_registry_decides_unknown_block_recovery() {
+        let input = b"technologies={t={category_leg_infantry={@lost=2} enable_equipments={one}}} lost=@lost";
+        let mut names = KeyNames::default();
+        let units = units::Registry::default();
+        names.effects.modifiers_gap = Some("unread modifier suffix".into());
+        assert!(
+            parse_with_registry(input, &units, &names)
+                .unwrap_err()
+                .to_string()
+                .contains("category_leg_infantry")
+        );
+        names.effects.modifiers_gap = None;
+        let (links, _) = parse_with_registry(input, &units, &names).unwrap();
+        assert_eq!(links["t"].as_deref(), Some("one"));
+        assert_eq!(
+            modifiers::registered(b"category_leg_infantry", Some(&names)),
+            Some(false)
+        );
+        assert_eq!(modifiers::registered(b"IF", Some(&names)), Some(false));
+        assert_eq!(
+            modifiers::registered(b"ARMY_ATTACK_FACTOR", Some(&names)),
+            Some(true)
         );
     }
 

@@ -43,6 +43,126 @@ fn body<'a>(items: &'a [Item], key: &str) -> &'a [Item] {
         .unwrap()
 }
 
+// Each of these slot-3 readers was a Deferred effect on main for its scalar
+// route. A no-advance reader leaves the following assignment for its parent.
+macro_rules! scalar_slot3_case {
+    ($test:ident, $key:literal) => {
+        #[test]
+        fn $test() {
+            let input = format!(
+                "body = {{ {} = fixture add_stability = 0.1 }} tail = 3",
+                $key
+            );
+            let result = read(input.as_bytes());
+            assert!(result.unsettled.is_none(), "{result:?}");
+            assert!(
+                result
+                    .misreads
+                    .iter()
+                    .all(|note| !note.what.starts_with("Deferred effect")),
+                "{result:?}"
+            );
+            let effects = body(&result.items, "body");
+            assert_eq!(scalar(effects, $key), b"fixture");
+            assert_eq!(scalar(effects, "add_stability"), b"0.1");
+            assert_eq!(scalar(&result.items, "tail"), b"3");
+        }
+    };
+}
+scalar_slot3_case!(show_ideas_tooltip_scalar, "show_ideas_tooltip");
+scalar_slot3_case!(
+    unlock_decision_category_tooltip_scalar,
+    "unlock_decision_category_tooltip"
+);
+scalar_slot3_case!(activate_mission_scalar, "activate_mission");
+scalar_slot3_case!(remove_mission_scalar, "remove_mission");
+scalar_slot3_case!(retire_character_scalar, "retire_character");
+scalar_slot3_case!(
+    show_unit_leaders_tooltip_scalar,
+    "show_unit_leaders_tooltip"
+);
+scalar_slot3_case!(activate_decision_scalar, "activate_decision");
+scalar_slot3_case!(remove_decision_scalar, "remove_decision");
+scalar_slot3_case!(activate_advisor_scalar, "activate_advisor");
+scalar_slot3_case!(deactivate_advisor_scalar, "deactivate_advisor");
+scalar_slot3_case!(activate_mission_tooltip_scalar, "activate_mission_tooltip");
+scalar_slot3_case!(remove_unit_leader_scalar, "remove_unit_leader");
+scalar_slot3_case!(recruit_character_scalar, "recruit_character");
+scalar_slot3_case!(
+    injure_scientist_for_days_scalar,
+    "injure_scientist_for_days"
+);
+scalar_slot3_case!(add_scientist_trait_scalar, "add_scientist_trait");
+scalar_slot3_case!(capture_by_scalar, "capture_by");
+scalar_slot3_case!(
+    release_captured_generals_from_scalar,
+    "release_captured_generals_from"
+);
+scalar_slot3_case!(remove_scientist_role_scalar, "remove_scientist_role");
+scalar_slot3_case!(set_oob_scalar, "set_oob");
+scalar_slot3_case!(set_naval_oob_scalar, "set_naval_oob");
+scalar_slot3_case!(set_air_oob_scalar, "set_air_oob");
+
+#[test]
+fn newly_ported_slot3_block_routes() {
+    let result = read(b"body = { show_ideas_tooltip = { first second } activate_mission = { mission = a invalid = { @lost = 1 } } activate_mission_tooltip = { mission = b desc = c invalid = { @lost = 2 } } } lost = @lost");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert!(
+        result
+            .misreads
+            .iter()
+            .all(|note| !note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+    let effects = body(&result.items, "body");
+    assert_eq!(body(effects, "show_ideas_tooltip").len(), 2);
+    assert_eq!(scalar(body(effects, "activate_mission"), "mission"), b"a");
+    assert_eq!(
+        scalar(body(effects, "activate_mission_tooltip"), "desc"),
+        b"c"
+    );
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+}
+
+#[test]
+fn newly_ported_assignment_key_readers() {
+    let result = read(b"body={capture_by={country=fixture province=1 ignored={@lost=1}} release_captured_generals_from={target=fixture province=2 ignored={@lost=2}} remove_scientist_role={character=fixture ignored={@lost=3}}} lost=@lost");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert!(
+        result
+            .misreads
+            .iter()
+            .all(|note| !note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+    let effects = body(&result.items, "body");
+    assert_eq!(scalar(body(effects, "capture_by"), "country"), b"fixture");
+    assert_eq!(
+        scalar(body(effects, "release_captured_generals_from"), "target"),
+        b"fixture"
+    );
+    assert_eq!(
+        scalar(body(effects, "remove_scientist_role"), "character"),
+        b"fixture"
+    );
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+}
+
+#[test]
+fn remove_unit_leader_error_skips_a_block_value() {
+    // 1402F0540 sends a non-integer opening token to RecordError 1424ACF90.
+    let result = read(b"body={remove_unit_leader={@lost=3} add_stability=0.1} lost=@lost");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(body(&result.items, "body"), "add_stability"), b"0.1");
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+    assert!(
+        result
+            .misreads
+            .iter()
+            .all(|note| !note.what.starts_with("Deferred effect"))
+    );
+}
+
 // 141384F60 / 1413859E0 versus 141385790: legacy events refuse recipient,
 // set_from and set_root; the operative event accepts their scalar readers.
 #[test]

@@ -30,20 +30,7 @@ pub(super) fn shape(
     }
     // CModifier (1406031A0) / 1406042A0 also looks quoted names up as text
     // (FindTokenFromSsoString (1424A7060)), unlike the fixed equipment switch.
-    let registry = |key: &[u8]| {
-        let names = names?;
-        if names
-            .effects
-            .modifiers
-            .contains(&c_string(key).to_ascii_lowercase())
-        {
-            Some(true)
-        } else if names.effects.modifiers_gap.is_some() {
-            None
-        } else {
-            Some(false)
-        }
-    };
+    let registry = |key: &[u8]| modifiers::registered(key, names);
     let mut undecided = Vec::new();
     let result = modifiers::shape(node, field, &registry, &mut undecided);
     if let Some(note) = undecided.first() {
