@@ -1,0 +1,364 @@
+use super::*;
+
+/// Every printable ASCII character 7 wide and 14 tall, the space 4 wide, `.` 3 wide; `AV`
+/// kerns by -2.
+struct Mono;
+
+impl Glyphs for Mono {
+    fn own(&self, ch: char) -> Option<Glyph> {
+        let advance = match ch {
+            ' ' => 4,
+            '.' => 3,
+            ch if (' '..='~').contains(&ch) => 7,
+            _ => return None,
+        };
+        Some(Glyph {
+            ch,
+            advance,
+            width: advance,
+            height: if ch == ' ' { 0 } else { 14 },
+            xoffset: 0,
+            yoffset: 1,
+        })
+    }
+
+    fn kerning(&self, a: char, b: char) -> i32 {
+        if (a, b) == ('A', 'V') { -2 } else { 0 }
+    }
+
+    fn line_height(&self) -> i32 {
+        14
+    }
+}
+
+fn limits(width: i32) -> Limits {
+    Limits {
+        width,
+        height: i32::MAX,
+        border: [0; 2],
+        newlines: true,
+        ellipsis: false,
+        multiline: true,
+        special: true,
+        icons_add_height: false,
+    }
+}
+
+fn laid(text: &str, limits: Limits) -> (String, Vec<i32>) {
+    let chars: Vec<char> = text.chars().collect();
+    let laid = lay_out(&Mono, &|_| None, &chars, limits).unwrap();
+    (laid.text.iter().collect(), laid.widths)
+}
+
+/// Words move to the next line whole, a line's width drops only the last space's advance,
+/// and a single word wider than the box breaks inside it.
+#[test]
+fn lines_break_as_the_game_breaks_them() {
+    // "ab cd" is 7+7+4+7+7: "cd" does not fit in 25.
+    assert_eq!(laid("ab cd", limits(25)), ("ab \ncd".into(), vec![14, 14]));
+    // Two spaces: only the last one's advance is dropped from the width.
+    assert_eq!(
+        laid("ab  cd", limits(26)),
+        ("ab  \ncd".into(), vec![18, 14])
+    );
+    // One word: broken where the next glyph would reach the limit.
+    assert_eq!(laid("abcd", limits(15)), ("ab\ncd".into(), vec![14, 14]));
+    // A glyph wider than the box first makes an empty line.
+    assert_eq!(laid("a", limits(5)), ("\na".into(), vec![0, 7]));
+    // The border narrows the limit on both sides.
+    let mut bordered = limits(29);
+    bordered.border = [2, 0];
+    assert_eq!(laid("ab cd", bordered).1, vec![14, 14]);
+    // A line feed ends a line; kerning applies within a line.
+    assert_eq!(laid("AV\nx", limits(100)), ("AV\nx".into(), vec![12, 7]));
+}
+
+/// A single-line box stops at the first overflow or line feed; `truncate` ends it with three
+/// dots that fit where the last characters were.
+#[test]
+fn cut_text_ends_with_three_dots() {
+    let cut = |text: &str, width: i32| {
+        let chars: Vec<char> = text.chars().collect();
+        let laid = lay_out(
+            &Mono,
+            &|_| None,
+            &chars,
+            Limits {
+                width,
+                height: 20,
+                border: [0; 2],
+                newlines: false,
+                ellipsis: true,
+                multiline: false,
+                special: true,
+                icons_add_height: false,
+            },
+        )
+        .unwrap();
+        (laid.text.iter().collect::<String>(), laid.truncated)
+    };
+    // "abcdef" in 30: "abcd" fits (28); 2 left, three dots need 12: "cd" become dots.
+    assert_eq!(cut("abcdef", 30), ("ab...".into(), true));
+    // A line feed cuts a single-line box; two codepoints take no dots.
+    assert_eq!(cut("ab\ncd", 100), ("ab".into(), true));
+    assert_eq!(cut("abc\ncd", 100), ("abc...".into(), true));
+    assert_eq!(cut("abc", 100), ("abc".into(), false));
+    // Two codepoints or fewer get no dots.
+    assert_eq!(cut("abc", 15), ("ab".into(), true));
+}
+
+/// Special sequences take no break and the widths the game gives them; icons are their
+/// texture's width over their frames, found as `GFX_` and the stem or the bare stem; under
+/// `icons_add_height` an icon raises its line to its texture's height; a zero frame count
+/// divides by zero.
+#[test]
+fn special_sequences_have_their_widths() {
+    let sprite = |name: &[u8]| (name == b"flag_x").then_some(([60, 30], 3));
+    let chars: Vec<char> = format!("a{COLOR}Rb{ICON}flag_x|2 c").chars().collect();
+    let laid = lay_out(&Mono, &sprite, &chars, limits(1000)).unwrap();
+    assert_eq!(laid.widths, vec![7 + 7 + 20 + 7]);
+    assert_eq!(laid.heights, vec![14]);
+    let raised = lay_out(
+        &Mono,
+        &sprite,
+        &chars,
+        Limits {
+            icons_add_height: true,
+            ..limits(1000)
+        },
+    )
+    .unwrap();
+    assert_eq!(raised.heights, vec![30]);
+    let zero = |_: &[u8]| Some(([60, 30], 0));
+    assert!(lay_out(&Mono, &zero, &chars, limits(1000)).is_err());
+    assert_eq!(
+        special(&[ICON, 'a', '_', 'b', '£', 'c']),
+        Some((5, Special::Icon("a_b".into())))
+    );
+}
+
+/// `text_icon_lookup@14162E880`: `GFX_` and the stem, then the bare stem; the suffix's
+/// frame index.
+#[test]
+fn icon_names_split_at_the_first_bar() {
+    assert_eq!(
+        icon_lookup("flag_x|12|3"),
+        ([b"GFX_flag_x".to_vec(), b"flag_x".to_vec()], Some(0))
+    );
+    assert_eq!(icon_lookup("a|12").1, Some(11));
+    assert_eq!(icon_lookup("a|").1, Some(-1));
+    assert_eq!(icon_lookup("a|0").1, Some(-1));
+    assert_eq!(icon_lookup("a|4294967299").1, Some(2));
+    assert_eq!(icon_lookup("a|2147483648").1, Some(0));
+    assert_eq!(icon_lookup("a").1, None);
+}
+
+/// Kerning looks the original codepoint up, not its fallback's.
+#[test]
+fn kerning_reads_the_original_codepoint() {
+    struct Kerned;
+    impl Glyphs for Kerned {
+        fn own(&self, ch: char) -> Option<Glyph> {
+            Mono.own(ch)
+        }
+        fn kerning(&self, a: char, b: char) -> i32 {
+            match (a, b) {
+                ('A', '\u{e9}') => -3,
+                ('A', '?') => -1,
+                _ => 0,
+            }
+        }
+        fn line_height(&self) -> i32 {
+            14
+        }
+    }
+    let chars: Vec<char> = "A\u{e9}".chars().collect();
+    let laid = lay_out(&Kerned, &|_| None, &chars, limits(1000)).unwrap();
+    assert_eq!(laid.widths, vec![7 + 7 - 3]);
+}
+
+/// The draw's colour stack, and glyphs placed from the pen, kerning and offsets.
+#[test]
+fn the_draw_colours_and_places_glyphs() {
+    let chars: Vec<char> = format!("a{COLOR}Rb{COLOR}Gc{COLOR}!d{COLOR}!e\nAV")
+        .chars()
+        .collect();
+    let laid = lay_out(&Mono, &|_| None, &chars, limits(1000)).unwrap();
+    let font = BTreeMap::from([(b'R', [1.0, 0.0, 0.0, 1.0])]);
+    let global = BTreeMap::from([(b'G', [0.0, 1.0, 0.0, 1.0])]);
+    let colors = Colors {
+        own: [0.5, 0.5, 0.5, 1.0],
+        font: &font,
+        global: &global,
+    };
+    let pieces = draw(
+        &Mono,
+        &|_| None,
+        &laid,
+        true,
+        &Placement {
+            top: 10,
+            start: &|_, _| 100,
+        },
+        &colors,
+    )
+    .unwrap();
+    let glyph = |index: usize| match &pieces[index] {
+        Piece::Glyph { ch, at, color } => (*ch, *at, *color),
+        _ => panic!("not a glyph"),
+    };
+    let grey = packed([0.5, 0.5, 0.5, 1.0]);
+    assert_eq!(glyph(0), ('a', [100, 11], grey));
+    assert_eq!(glyph(1).2, [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(glyph(2).2, [0.0, 1.0, 0.0, 1.0]);
+    // `!` pops back to red, then (one left) pushes the text's own.
+    assert_eq!(glyph(3).2, [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(glyph(4).2, grey);
+    // The second line: down by its height, the pen restarted, `V` kerned.
+    assert_eq!(glyph(5).1, [100, 25]);
+    assert_eq!(glyph(6).1, [105, 25]);
+}
+
+/// An icon's frame quad (`14162EFE0`): the texture's width over its frames by its height,
+/// the frame's `u` span clamped above at 1 and not below; a flag 10 by 7 five below the
+/// glyph line, 12 on; an undefined icon takes nothing; currency reads uninitialised memory.
+#[test]
+fn icons_and_flags_draw_where_the_font_puts_them() {
+    let sprite = |name: &[u8]| (name == b"GFX_x").then_some(([30, 20], 3));
+    let chars: Vec<char> = format!("{ICON}x|3 {ICON}x| {FLAG}GER{ICON}y z")
+        .chars()
+        .collect();
+    let laid = lay_out(&Mono, &sprite, &chars, limits(1000)).unwrap();
+    let colors = Colors {
+        own: [1.0; 4],
+        font: &BTreeMap::new(),
+        global: &BTreeMap::new(),
+    };
+    let pieces = draw(
+        &Mono,
+        &sprite,
+        &laid,
+        true,
+        &Placement {
+            top: 10,
+            start: &|_, _| 100,
+        },
+        &colors,
+    )
+    .unwrap();
+    let third = 1.0f32 / 3.0;
+    assert_eq!(
+        pieces[0],
+        Piece::Icon {
+            sprite: b"GFX_x".to_vec(),
+            at: [100, 10 + 7 - 10],
+            size: [10, 20],
+            uv: [2.0 * third, 0.0, (3.0 * third).min(1.0), 1.0],
+        }
+    );
+    // An empty suffix is frame -1, not clamped.
+    assert!(matches!(&pieces[1], Piece::Icon { at, uv, .. }
+        if at[0] == 110 && uv[0] == -third && uv[2] == 0.0));
+    assert_eq!(
+        pieces[2],
+        Piece::Flag {
+            tag: "GER".into(),
+            at: [120, 10 + 5],
+            resolved: false,
+        }
+    );
+    assert_eq!(pieces[3], Piece::Undefined("y".into()));
+    assert!(matches!(
+        pieces[4],
+        Piece::Glyph {
+            ch: 'z',
+            at: [132, _],
+            ..
+        }
+    ));
+    let chars: Vec<char> = format!("a{CURRENCY}").chars().collect();
+    let laid = lay_out(&Mono, &sprite, &chars, limits(1000)).unwrap();
+    let placement = Placement {
+        top: 0,
+        start: &|_, _| 0,
+    };
+    let error = draw(&Mono, &sprite, &laid, true, &placement, &colors).unwrap_err();
+    assert!(error.contains("HEAP_ZERO_MEMORY"), "{error}");
+}
+
+#[test]
+fn resolved_flags_are_scoped_and_keep_the_full_atlas_key() {
+    let chars: Vec<_> = format!("a{RESOLVED_FLAG}SYN-Western_group, b{RESOLVED_FLAG}XYZ_other")
+        .chars()
+        .collect();
+    let key = |text: &[char]| {
+        ["SYN", "SYN-Western_group", "XYZ_other"]
+            .into_iter()
+            .map(|key| key.chars().collect::<Vec<_>>())
+            .filter(|key| text.starts_with(key))
+            .map(|key| key.len())
+            .max()
+    };
+    assert!(special(&chars[1..]).is_none());
+    let native = lay_out(&Mono, &|_| None, &chars, limits(1000)).unwrap();
+    let bound = lay_out_resolved_flags(&Mono, &|_| None, &chars, limits(1000), &key).unwrap();
+    assert_eq!(bound.text, chars);
+    assert_eq!(bound.widths, [49]);
+    assert!(native.widths[0] > bound.widths[0]);
+    let colors = Colors {
+        own: [1.0; 4],
+        font: &BTreeMap::new(),
+        global: &BTreeMap::new(),
+    };
+    let placement = Placement {
+        top: 10,
+        start: &|_, _| 100,
+    };
+    let pieces = draw(&Mono, &|_| None, &bound, true, &placement, &colors).unwrap();
+    let flags: Vec<_> = pieces
+        .iter()
+        .filter_map(|piece| match piece {
+            Piece::Flag { tag, at, resolved } => {
+                assert!(*resolved);
+                Some((tag.as_str(), *at))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        [("SYN-Western_group", [107, 15]), ("XYZ_other", [137, 15])]
+    );
+    assert!(pieces.iter().any(|piece| matches!(
+        piece,
+        Piece::Glyph {
+            ch: ',',
+            at: [119, _],
+            ..
+        }
+    )));
+    assert!(
+        draw(&Mono, &|_| None, &native, true, &placement, &colors)
+            .unwrap()
+            .iter()
+            .all(|piece| !matches!(piece, Piece::Flag { .. }))
+    );
+    let ignored = lay_out_resolved_flags(
+        &Mono,
+        &|_| None,
+        &chars,
+        Limits {
+            special: false,
+            ..limits(1000)
+        },
+        &key,
+    )
+    .unwrap();
+    assert_eq!(ignored.widths, native.widths);
+    assert!(
+        draw(&Mono, &|_| None, &ignored, false, &placement, &colors)
+            .unwrap()
+            .iter()
+            .all(|piece| !matches!(piece, Piece::Flag { .. }))
+    );
+}
