@@ -158,8 +158,7 @@ fn an_empty_authored_actor_roster_keeps_the_content_stack() {
 }
 
 /// Every palette index a shard carries is rebased onto the merged palette:
-/// the rig's range, each node's skin and rigid slots, and the vertices'
-/// weighted and rigid slots. A slot left behind indexes another entity's
+/// the rig's range and each node's skin and rigid slots. A slot left behind indexes another entity's
 /// joints, and `entity_animation` subtracts `rig.start` from the node's.
 #[test]
 fn merging_a_shard_rebases_every_palette_slot() {
@@ -170,7 +169,6 @@ fn merging_a_shard_rebases_every_palette_slot() {
         scale: 1.0,
         lod_distances: Vec::new(),
         native: Vec::new(),
-        lods: vec![Vec::new()],
         radius: 0.0,
         height: 0.0,
         own_radius: 0.0,
@@ -178,12 +176,6 @@ fn merging_a_shard_rebases_every_palette_slot() {
     };
     let mut shard = ModelLibrary {
         palette: vec![joint; 3],
-        vertices: vec![ModelVertex {
-            joints: [2, 0, 0, 0],
-            weights: [1.0, 0.0, 0.0, 0.0],
-            rigid_joint: 1 | !RIGID_SLOT,
-            ..ModelVertex::default()
-        }],
         meshes: vec![shard_mesh.clone()],
         rigs: vec![Arc::new(Rig {
             nodes: vec![entity_animation::Node {
@@ -214,8 +206,6 @@ fn merging_a_shard_rebases_every_palette_slot() {
     assert_eq!((rig.start, rig.end), (5, 8));
     assert_eq!(rig.nodes[0].rigid, 6);
     assert_eq!(rig.nodes[0].skin_base, Some(5));
-    assert_eq!(library.vertices[0].joints[0], 7);
-    assert_eq!(library.vertices[0].rigid_joint, 6 | !RIGID_SLOT);
     // The node's own slot is inside the rig's range, which is what
     // `Player::evaluate` indexes.
     assert!((rig.start..rig.end).contains(&(rig.nodes[0].rigid as usize)));
@@ -286,14 +276,7 @@ fn a_palette_joint_is_the_transform_transposed_into_rows() {
     let joint = PaletteJoint::from_transform(&transform);
     for point in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.3, -0.4, 0.5]] {
         let want = transform.transform_point(point);
-        let got = skinned(
-            &[joint],
-            &ModelVertex {
-                position: point,
-                weights: [1.0, 0.0, 0.0, 0.0],
-                ..ModelVertex::default()
-            },
-        );
+        let got = skinned(&[joint], point, &[(0, 1.0)], 0);
         assert!(
             got.iter()
                 .zip(want)
@@ -305,14 +288,9 @@ fn a_palette_joint_is_the_transform_transposed_into_rows() {
 
 #[test]
 fn a_vertex_with_no_weight_keeps_its_own_position() {
-    // This is the case that has to be exact rather than close: an
-    // unskinned mesh must reach the shader as the bytes the loader baked.
-    let vertex = ModelVertex {
-        position: [1.25, -0.5, 7.0],
-        ..ModelVertex::default()
-    };
-    assert_eq!(skinned(&[], &vertex), vertex.position);
-    assert_eq!(skinned(&[PaletteJoint::IDENTITY], &vertex), vertex.position);
+    let point = [1.25, -0.5, 7.0];
+    assert_eq!(skinned(&[], point, &[], 0), point);
+    assert_eq!(skinned(&[PaletteJoint::IDENTITY], point, &[], 0), point);
 }
 
 #[test]
@@ -328,12 +306,9 @@ fn weights_blend_the_joints_they_name() {
     let at = |weights: [f32; 4]| {
         skinned(
             &[left, right],
-            &ModelVertex {
-                position: [0.0, 1.0, 0.0],
-                joints: [0, 1, 0, 0],
-                weights,
-                ..ModelVertex::default()
-            },
+            [0.0, 1.0, 0.0],
+            &[(0, weights[0]), (1, weights[1])],
+            0,
         )
     };
     assert_eq!(at([1.0, 0.0, 0.0, 0.0]), [-10.0, 1.0, 0.0]);
@@ -342,15 +317,7 @@ fn weights_blend_the_joints_they_name() {
     // A slot naming a joint outside the palette contributes nothing rather
     // than reading past its end.
     assert_eq!(
-        skinned(
-            &[left],
-            &ModelVertex {
-                position: [0.0, 1.0, 0.0],
-                joints: [0, 99, 0, 0],
-                weights: [1.0, 1.0, 0.0, 0.0],
-                ..ModelVertex::default()
-            }
-        ),
+        skinned(&[left], [0.0, 1.0, 0.0], &[(0, 1.0), (99, 1.0)], 0),
         [-10.0, 1.0, 0.0]
     );
 }
@@ -394,7 +361,6 @@ fn library_with_one_mesh(radius: f32) -> ModelLibrary {
             scale: 1.0,
             lod_distances: Vec::new(),
             native: Vec::new(),
-            lods: vec![Vec::new()],
             radius,
             height: 1.0,
             own_radius: radius,
@@ -436,9 +402,17 @@ fn custom_material_source_reaches_native_geometry() {
         }],
         ..Default::default()
     };
-    let descriptor = native::descriptor(&decoded, &resolved, 0, |shape, sub| {
-        library.material(&layers, "gfx/models", shape, sub, &resolved)
-    })
+    let descriptor = native::descriptor(
+        &decoded,
+        &resolved,
+        0,
+        |_, sub| {
+            Ok(Arc::new(super::super::mesh_shader::Geometry::from_mesh(
+                sub, 1.,
+            )?))
+        },
+        |shape, sub| library.material(&layers, "gfx/models", shape, sub, &resolved),
+    )
     .unwrap();
     let part = &descriptor.lods[0][0];
     assert_eq!(part.material.shader.as_deref(), Some("AuthoredTechnique"));
@@ -661,8 +635,7 @@ fn meshless_buildings_use_shared_states_events_and_attachments() {
     )
     .unwrap();
     let slot = library.slot("emitter").unwrap();
-    assert!(library.vertices.is_empty() && library.indices.is_empty());
-    assert!(library.meshes[slot].lods.is_empty() && library.meshes[slot].native.is_empty());
+    assert!(library.meshes[slot].native.is_empty());
     assert_eq!(library.meshes[slot].attachments, 2);
     assert!(warnings[0].contains("entity emitter references pdxmesh lost"));
     assert_eq!(
@@ -745,7 +718,7 @@ fn undeclared_and_unloadable_meshes_keep_named_refusals() {
 }
 
 #[test]
-fn partial_stream_actor_reaches_both_composition_and_native_submission() {
+fn two_entities_share_a_partial_stream_mesh_and_keep_placed_vertices() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_partial_mesh_{}_{:?}",
         std::process::id(),
@@ -772,21 +745,82 @@ fn partial_stream_actor_reaches_both_composition_and_native_submission() {
         br#"objectTypes = {
             pdxmesh = { name = "frame_mesh" file = "frame.mesh" scale = 1 }
         }
-        entity = { name = "actor" pdxmesh = "frame_mesh" }"#,
+        entity = { name = "actor" pdxmesh = "frame_mesh" }
+        entity = { name = "actor_large" pdxmesh = "frame_mesh" scale = 2 }"#,
         "fixture.asset",
     )
     .unwrap();
-    let mut library = ModelLibrary::default();
-    let result = library.compose_entity(&layers, &descriptors, "actor");
+    let library = ModelLibrary::load(
+        &layers,
+        Decode::default(),
+        &descriptors,
+        &["actor".into(), "actor_large".into()],
+        &mut Vec::new(),
+    )
+    .unwrap();
     std::fs::remove_dir_all(&root).unwrap();
-    result.unwrap();
-    assert_eq!(library.meshes.len(), 1);
-    assert_eq!(library.meshes[0].lods[0].len(), 1);
-    let geometry = &library.meshes[0].native[0].lods[0][0].geometry;
+    assert_eq!(library.meshes.len(), 2);
+    assert_eq!(library.geometry_cache.len(), 1);
+    let first = &library.meshes[0].native[0].lods[0][0];
+    let second = &library.meshes[1].native[0].lods[0][0];
+    assert!(Arc::ptr_eq(&first.geometry, &second.geometry));
+    let geometry = &first.geometry;
     assert_eq!(geometry.stride, 24);
     assert_eq!(geometry.vertices.len(), 18);
-    assert_eq!(library.vertices[0].tangent, [4., 5., 6., 0.]);
-    assert_eq!(library.vertices[2].tangent, [0.; 4]);
+    assert_eq!(geometry.vertices[6..10], [4., 5., 6., 0.]);
+    for (slot, scale) in [(0, 1.0), (1, 2.0)] {
+        let actors = super::super::mesh_pose::actors(library.rig(slot), None, true).unwrap();
+        let world = actors[0].world;
+        for (vertex, raw) in [[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]]
+            .into_iter()
+            .enumerate()
+        {
+            // The pre-sharing bake used Transform::transform_point at this scale.
+            let old = mesh::Transform {
+                basis: [[scale, 0., 0.], [0., scale, 0.], [0., 0., scale]],
+                translation: [0.; 3],
+            }
+            .transform_point(raw);
+            let start = vertex * 6;
+            let local: [f32; 3] = geometry.vertices[start..start + 3].try_into().unwrap();
+            let placed: [f32; 3] = std::array::from_fn(|axis| {
+                world[0][axis] * local[0]
+                    + world[1][axis] * local[1]
+                    + world[2][axis] * local[2]
+                    + world[3][axis]
+            });
+            assert_eq!(placed, old);
+        }
+    }
+}
+
+#[test]
+fn an_attachment_cycle_is_counted_without_a_fixed_depth_limit() {
+    let descriptors = mesh::parse_descriptors(
+        br#"entity = { name = a attach = { root = b } }
+            entity = { name = b attach = { root = a } }"#,
+        "fixture.asset",
+    )
+    .unwrap();
+    let mut warnings = Vec::new();
+    let library = ModelLibrary::load(
+        &ResolvedLayers::default(),
+        Decode::default(),
+        &descriptors,
+        &["a".into()],
+        &mut warnings,
+    )
+    .unwrap();
+    assert_eq!(library.meshes[0].attachments, 1);
+    assert_eq!(
+        library.attachment_refusals["b -> a: attachment cycle through a"],
+        1
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("attachment cycle through a"))
+    );
 }
 
 fn at(x: f32, z: f32) -> ModelInstance {

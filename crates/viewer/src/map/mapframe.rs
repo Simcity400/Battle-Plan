@@ -463,7 +463,7 @@ fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
     )
     .unwrap();
     let slot = library.slot("emitter").unwrap();
-    assert!(library.meshes[slot].lods.is_empty());
+    assert_eq!(library.meshes[slot].radius, 0.0);
     let placed = ModelInstance {
         position: [3., 4., 5.],
         scale: 4.,

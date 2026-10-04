@@ -8,11 +8,24 @@ use shader_pipeline::{
     library::{Library, Selection},
 };
 
-#[derive(Clone, Debug, PartialEq)]
+pub(super) type GeometryKey = (String, u32, usize, usize);
+
+#[derive(Clone, PartialEq)]
 pub(super) struct Part {
-    pub geometry: mesh_shader::Geometry,
+    pub geometry: Arc<mesh_shader::Geometry>,
+    pub geometry_key: GeometryKey,
     pub material: mesh::Material,
     pub material_index: usize,
+}
+
+impl std::fmt::Debug for Part {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Part")
+            .field("geometry", &self.geometry_key)
+            .field("material", &self.material)
+            .field("material_index", &self.material_index)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,24 +64,31 @@ pub(super) fn descriptor(
     decoded: &mesh::Mesh,
     resolved: &mesh::ResolvedMesh<'_>,
     node: usize,
+    mut geometry: impl FnMut(GeometryKey, &mesh::SubMesh) -> io::Result<Arc<mesh_shader::Geometry>>,
     mut material_index: impl FnMut(&str, &mesh::SubMesh) -> io::Result<usize>,
 ) -> io::Result<Descriptor> {
     let mut records = Vec::new();
-    for shape in &decoded.shapes {
-        for sub in &shape.meshes {
+    for (shape_index, shape) in decoded.shapes.iter().enumerate() {
+        for (sub_index, sub) in shape.meshes.iter().enumerate() {
             if !super::super::mesh_effect::candidate(sub) {
                 continue;
             }
+            let geometry_key = (
+                resolved.definition.file.clone(),
+                resolved.definition.scale.to_bits(),
+                shape_index,
+                sub_index,
+            );
             records.push((
                 shape.lod,
                 Part {
-                    geometry: mesh_shader::Geometry::from_mesh(sub, resolved.definition.scale)
-                        .map_err(|error| {
-                            invalid(format!(
-                                "{} shape {:?} record {}: {error}",
-                                resolved.definition.file, shape.name, sub.child_index
-                            ))
-                        })?,
+                    geometry: geometry(geometry_key.clone(), sub).map_err(|error| {
+                        invalid(format!(
+                            "{} shape {:?} record {}: {error}",
+                            resolved.definition.file, shape.name, sub.child_index
+                        ))
+                    })?,
+                    geometry_key,
                     material: resolved.definition.material(&shape.name, sub),
                     material_index: material_index(&shape.name, sub)?,
                 },
@@ -213,7 +233,7 @@ impl Pending {
                     self.samplers.insert(slot, key);
                 }
             }
-            if resident.cpu_skin.is_some() {
+            if resident.geometry.cpu_skin.is_some() {
                 self.skin = Some(key);
             }
         }
@@ -260,8 +280,15 @@ impl Pending {
             stream.bind_texture(key / 2, stage(key), Some(texture), sampler);
         }
         let resident = &parts[&part];
-        retained.bind_vertex(0, resident.native_stride, resident.cpu_vertices.clone());
-        if let Some(skin) = self.skin.and_then(|part| parts[&part].cpu_skin.clone()) {
+        retained.bind_vertex(
+            0,
+            resident.geometry.native_stride,
+            resident.geometry.cpu_vertices.clone(),
+        );
+        if let Some(skin) = self
+            .skin
+            .and_then(|part| parts[&part].geometry.cpu_skin.clone())
+        {
             retained.bind_vertex(1, 16, skin);
         }
     }
@@ -275,6 +302,13 @@ struct Resident {
     pipeline: mesh_shader::Pass,
     /// The lit program's native binds, which later passes retain.
     retained: shader_scene::Program,
+    geometry: SharedGeometry,
+    caster_texture: bool,
+    blended: bool,
+}
+
+#[derive(Clone)]
+struct SharedGeometry {
     stride: u64,
     native_stride: u64,
     cpu_vertices: Arc<[u8]>,
@@ -282,8 +316,6 @@ struct Resident {
     /// Pooled geometry: vertex chunk and first vertex, index chunk and first index.
     vertices: (usize, i32),
     indices: (usize, u32),
-    caster_texture: bool,
-    blended: bool,
     /// One past the largest palette index the skin stream names.
     skin_bones: usize,
 }
@@ -292,6 +324,7 @@ pub(super) struct Renderer {
     library: Library,
     cache: shader_pipeline::gpu::Cache,
     parts: BTreeMap<Key, Resident>,
+    geometry: BTreeMap<GeometryKey, SharedGeometry>,
     queues: BTreeMap<(usize, usize), [bool; 2]>,
     /// Vertex pools by stream stride and skinning; the index pool.
     pools: BTreeMap<(u64, bool), Pool>,
@@ -584,6 +617,7 @@ impl ModelPass {
                 ),
                 cache: Default::default(),
                 parts: BTreeMap::new(),
+                geometry: BTreeMap::new(),
                 queues: BTreeMap::new(),
                 pools: BTreeMap::new(),
                 indices: Pool::default(),
@@ -748,28 +782,71 @@ impl ModelPass {
                                 )?;
                                 // Retained declarations bind 142250C70's compact stride.
                                 layouts[0].stride = source.geometry.stride;
-                                let stride = if source.geometry.uv1 { 56 } else { 48 };
-                                let skin: Option<&[u8]> = (!source.geometry.skin.is_empty())
-                                    .then(|| bytemuck::cast_slice(&source.geometry.skin));
-                                let packed = source.geometry.packed(source.geometry.uv1)?;
-                                let vertices = native
-                                    .pools
-                                    .entry((stride, skin.is_some()))
-                                    .or_default()
-                                    .place(
-                                        arena,
-                                        wgpu::BufferUsages::VERTEX,
-                                        [stride, 16],
-                                        [Some(bytemuck::cast_slice(&packed)), skin],
-                                        packed.len() as u64 * 4 / stride,
-                                    )?;
-                                let indices = native.indices.place(
-                                    arena,
-                                    wgpu::BufferUsages::INDEX,
-                                    [4, 0],
-                                    [Some(bytemuck::cast_slice(&source.geometry.indices)), None],
-                                    source.geometry.indices.len() as u64,
-                                )?;
+                                let geometry = match native.geometry.get(&source.geometry_key) {
+                                    Some(geometry) => geometry.clone(),
+                                    None => {
+                                        let stride = if source.geometry.uv1 { 56 } else { 48 };
+                                        let skin: Option<&[u8]> =
+                                            (!source.geometry.skin.is_empty()).then(|| {
+                                                bytemuck::cast_slice(&source.geometry.skin)
+                                            });
+                                        let packed = source.geometry.packed(source.geometry.uv1)?;
+                                        let vertices = native
+                                            .pools
+                                            .entry((stride, skin.is_some()))
+                                            .or_default()
+                                            .place(
+                                                arena,
+                                                wgpu::BufferUsages::VERTEX,
+                                                [stride, 16],
+                                                [Some(bytemuck::cast_slice(&packed)), skin],
+                                                packed.len() as u64 * 4 / stride,
+                                            )?;
+                                        let indices = native.indices.place(
+                                            arena,
+                                            wgpu::BufferUsages::INDEX,
+                                            [4, 0],
+                                            [
+                                                Some(bytemuck::cast_slice(
+                                                    &source.geometry.indices,
+                                                )),
+                                                None,
+                                            ],
+                                            source.geometry.indices.len() as u64,
+                                        )?;
+                                        let geometry = SharedGeometry {
+                                            stride,
+                                            native_stride: source.geometry.stride,
+                                            cpu_vertices: bytemuck::cast_slice(
+                                                &source.geometry.vertices,
+                                            )
+                                            .into(),
+                                            cpu_skin: skin.map(Into::into),
+                                            skin_bones: source
+                                                .geometry
+                                                .skin
+                                                .iter()
+                                                .flat_map(|v| v.indices)
+                                                .map(|i| usize::from(i) + 1)
+                                                .max()
+                                                .unwrap_or(0),
+                                            vertices: (
+                                                vertices.0,
+                                                i32::try_from(vertices.1)
+                                                    .map_err(io::Error::other)?,
+                                            ),
+                                            indices: (
+                                                indices.0,
+                                                u32::try_from(indices.1)
+                                                    .map_err(io::Error::other)?,
+                                            ),
+                                        };
+                                        native
+                                            .geometry
+                                            .insert(source.geometry_key.clone(), geometry.clone());
+                                        geometry
+                                    }
+                                };
                                 let effect = &selection.effect.source;
                                 let technique = &effect.techniques[selection.index];
                                 let mut state =
@@ -787,34 +864,10 @@ impl ModelPass {
                                         &effect.rasterizer(technique),
                                         &effect.depth_stencil(technique),
                                     ),
-                                    stride,
-                                    native_stride: source.geometry.stride,
-                                    cpu_vertices: bytemuck::cast_slice(&source.geometry.vertices)
-                                        .into(),
-                                    cpu_skin: (!source.geometry.skin.is_empty()).then(|| {
-                                        bytemuck::cast_slice(&source.geometry.skin).into()
-                                    }),
+                                    geometry,
                                     pipeline,
                                     caster_texture,
                                     blended,
-                                    skin_bones: source
-                                        .geometry
-                                        .skin
-                                        .iter()
-                                        .flat_map(|v| v.indices)
-                                        .map(|i| usize::from(i) + 1)
-                                        .max()
-                                        .unwrap_or(0),
-                                    vertices: (
-                                        vertices.0,
-                                        i32::try_from(vertices.1)
-                                            .map_err(|e| invalid(e.to_string()))?,
-                                    ),
-                                    indices: (
-                                        indices.0,
-                                        u32::try_from(indices.1)
-                                            .map_err(|e| invalid(e.to_string()))?,
-                                    ),
                                 });
                             }
                             let gpu = &native.parts[&key];
@@ -847,14 +900,14 @@ impl ModelPass {
                             let (vertex, pixel) = object.upload(userdata.is_some());
                             buffers[binding(1, Stage::Vertex) as usize] = Some(vertex);
                             buffers[binding(1, Stage::Pixel) as usize] = pixel;
-                            if gpu.cpu_skin.is_some() {
+                            if gpu.geometry.cpu_skin.is_some() {
                                 let pose = actor.pose.as_ref().map_err(|e| {
                                     invalid(format!(
                                         "Map shader {}: 1 refused skin {}: {e}",
                                         self.label, mesh.name
                                     ))
                                 })?;
-                                if gpu.skin_bones > pose.bones.len() {
+                                if gpu.geometry.skin_bones > pose.bones.len() {
                                     return Err(invalid(format!(
                                         "Map shader {}: 1 refused skin {}: vertex reads outside {} initialized bones",
                                         self.label,
@@ -886,26 +939,26 @@ impl ModelPass {
                             if same.is_none() {
                                 gpu.pipeline.begin(pass);
                             }
-                            let pool = (gpu.stride, gpu.cpu_skin.is_some());
-                            if bound_vertices != Some((pool, gpu.vertices.0)) {
-                                let chunk = &native.pools[&pool].chunks[gpu.vertices.0];
+                            let pool = (gpu.geometry.stride, gpu.geometry.cpu_skin.is_some());
+                            if bound_vertices != Some((pool, gpu.geometry.vertices.0)) {
+                                let chunk = &native.pools[&pool].chunks[gpu.geometry.vertices.0];
                                 for (slot, stream) in chunk.streams.iter().enumerate() {
                                     if let Some(stream) = stream {
                                         pass.set_vertex_buffer(slot as u32, stream.slice(..));
                                     }
                                 }
-                                bound_vertices = Some((pool, gpu.vertices.0));
+                                bound_vertices = Some((pool, gpu.geometry.vertices.0));
                             }
-                            if bound_indices != Some(gpu.indices.0) {
-                                let chunk = &native.indices.chunks[gpu.indices.0];
+                            if bound_indices != Some(gpu.geometry.indices.0) {
+                                let chunk = &native.indices.chunks[gpu.geometry.indices.0];
                                 let indices = chunk.streams[0].as_ref().expect("index stream");
                                 pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-                                bound_indices = Some(gpu.indices.0);
+                                bound_indices = Some(gpu.geometry.indices.0);
                             }
                             bindings.bind_after(pass, same.map(|(_, last)| last));
-                            let first = gpu.indices.1;
+                            let first = gpu.geometry.indices.1;
                             let count = source.geometry.indices.len() as u32;
-                            pass.draw_indexed(first..first + count, gpu.vertices.1, 0..1);
+                            pass.draw_indexed(first..first + count, gpu.geometry.vertices.1, 0..1);
                             previous = Some((key, bindings));
                             drawn += 1;
                         }

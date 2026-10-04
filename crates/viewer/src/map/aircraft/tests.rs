@@ -271,7 +271,19 @@ fn meshless_aircraft_use_the_shared_actor_player() {
         descriptors,
         ..Default::default()
     };
-    assert_eq!(plane_refusal(&roster, "plane", 0), None);
+    assert_eq!(plane_refusal(&roster, "plane", &BTreeSet::new()), None);
+}
+
+#[test]
+fn a_plane_attachment_cycle_is_refused_by_name() {
+    let roster = roster(
+        "entity = { name = plane attach = { root = child } }
+         entity = { name = child attach = { root = plane } }",
+    );
+    assert_eq!(
+        plane_refusal(&roster, "plane", &BTreeSet::new()),
+        Some("its attached entity child is refused: its attached entity plane is refused: attachment cycle through plane".into())
+    );
 }
 
 #[test]
@@ -450,7 +462,7 @@ fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration(
         "planes",
         &["hidden_parent_entity", "hidden_mesh", "hidden_animation"],
     );
-    let reason = |entity: &str| plane_refusal(&roster, entity, 0);
+    let reason = |entity: &str| plane_refusal(&roster, entity, &BTreeSet::new());
     let copied = format!("it {}", why());
     assert_eq!(reason("GER_plane_entity").as_deref(), Some(copied.as_str()));
     let mesh = format!("its mesh hidden_mesh {}", why());
@@ -535,14 +547,17 @@ fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
     }
     let why = format!("may be declared in {path}, which does not parse");
     assert_eq!(
-        plane_refusal(&roster, "GER_plane_entity", 0),
+        plane_refusal(&roster, "GER_plane_entity", &BTreeSet::new()),
         Some(format!("it {why}"))
     );
     assert_eq!(
-        plane_refusal(&roster, "JAP_plane_entity", 0),
+        plane_refusal(&roster, "JAP_plane_entity", &BTreeSet::new()),
         Some(format!("its mesh ger_mesh {why}"))
     );
-    assert_eq!(plane_refusal(&roster, "plane_entity", 0), None);
+    assert_eq!(
+        plane_refusal(&roster, "plane_entity", &BTreeSet::new()),
+        None
+    );
 
     // The loader's candidate filter admits the unreadable name, so the
     // ladder stops there instead of drawing the generic plane.
