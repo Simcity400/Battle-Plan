@@ -1,0 +1,691 @@
+use super::*;
+use crate::memory::SliceMemory;
+use std::cell::{Cell, RefCell};
+
+struct PacketMemory {
+    fields: Vec<(usize, Vec<u8>)>,
+    reads: RefCell<Vec<(usize, usize)>>,
+    scatters: Cell<usize>,
+    fault: Option<usize>,
+}
+
+impl PacketMemory {
+    fn new(fields: &[(usize, Vec<u8>)], fault: Option<usize>) -> Self {
+        Self {
+            fields: fields.to_vec(),
+            reads: RefCell::default(),
+            scatters: Cell::new(0),
+            fault,
+        }
+    }
+}
+
+impl Memory for PacketMemory {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let ordinal = self.reads.borrow().len();
+        self.reads.borrow_mut().push((address, output.len()));
+        if self.fault == Some(ordinal) {
+            let partial = output.len().div_ceil(2);
+            output[..partial].fill(0xed);
+            return false;
+        }
+        let Some((_, value)) = self
+            .fields
+            .iter()
+            .find(|(source, value)| *source == address && value.len() == output.len())
+        else {
+            return false;
+        };
+        output.copy_from_slice(value);
+        true
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.scatters.set(self.scatters.get() + 1);
+        for (ordinal, (address, destination)) in addresses.into_iter().zip(destinations).enumerate()
+        {
+            if !self.copy(address, destination) {
+                return ordinal;
+            }
+        }
+        N
+    }
+}
+
+#[test]
+fn packets_preserve_native_values_exact_spans_and_every_fault_prefix() {
+    let fields = [
+        (0x124c, vec![0xff]),
+        (0x124d, vec![0x80]),
+        (0x12ae, vec![0]),
+        (0x102e, vec![0x7f]),
+        (0x1600, i64::MIN.to_le_bytes().to_vec()),
+        (0x1610, i64::MAX.to_le_bytes().to_vec()),
+        (0x1040, (-1_i64).to_le_bytes().to_vec()),
+        (0x1058, 0_i64.to_le_bytes().to_vec()),
+        (0x1498, i32::MIN.to_le_bytes().to_vec()),
+        (0x0331_91c0, i32::MAX.to_le_bytes().to_vec()),
+        (0x0331_9394, (-1_i32).to_le_bytes().to_vec()),
+        (0x0331_94e0, (-987_654_i64).to_le_bytes().to_vec()),
+    ];
+    let values = [
+        0xff,
+        0x80,
+        0,
+        0x7f,
+        i64::MIN,
+        i64::MAX,
+        -1,
+        0,
+        i64::from(i32::MIN),
+        i64::from(i32::MAX),
+        -1,
+        -987_654,
+    ];
+    for supply in [false, true] {
+        let range = if supply { 4..12 } else { 0..4 };
+        let fields = &fields[range.clone()];
+        let trace: Vec<_> = fields
+            .iter()
+            .map(|(at, bytes)| (*at, bytes.len()))
+            .collect();
+        for fault in std::iter::once(None).chain((0..fields.len()).map(Some)) {
+            let memory = PacketMemory::new(fields, fault);
+            let result = if supply {
+                supply_scalars(&memory, 0, 0x1000).map(Vec::from)
+            } else {
+                formation_flags(&memory, 0x1000)
+                    .map(|flags| flags.into_iter().map(i64::from).collect())
+            };
+            let expected = fault.map_or_else(
+                || Ok(values[range.clone()].to_vec()),
+                |_| Err("reinforcement input unreadable"),
+            );
+            assert_eq!(result, expected);
+            assert_eq!(memory.scatters.get(), 1);
+            assert_eq!(
+                *memory.reads.borrow(),
+                trace[..fault.map_or(fields.len(), |n| n + 1)]
+            );
+        }
+    }
+}
+
+#[test]
+fn packet_failure_keeps_partial_field_and_later_destinations_untouched() {
+    let fields = [
+        (0, vec![0xcc; 4]),
+        (0x1000, vec![1, 2, 3, 4]),
+        (0x1010, vec![5, 6, 7, 8]),
+        (0x1020, vec![9, 10, 11, 12]),
+    ];
+    let memory = PacketMemory::new(&fields, Some(1));
+    let mut values = [[0xa5; 4]; 3];
+    assert_eq!(
+        copy_input_spans(
+            &memory,
+            [(0x1000, 0), (0x1000, 0x10), (0x1000, 0x20)],
+            &mut values.each_mut().map(|value| value.as_mut_slice()),
+        ),
+        Err("reinforcement input unreadable")
+    );
+    assert_eq!(values, [[1, 2, 3, 4], [0xed, 0xed, 0xa5, 0xa5], [0xa5; 4]]);
+    assert_eq!(*memory.reads.borrow(), [(0x1000, 4), (0x1010, 4)]);
+    let mut zero = [0; 4];
+    assert!(PacketMemory::new(&fields, None).copy(0, &mut zero));
+    assert_eq!(zero, [0xcc; 4]);
+    let memory = PacketMemory::new(&fields, None);
+    let mut values = [[0xa5; 4]; 3];
+    assert_eq!(
+        copy_input_spans(
+            &memory,
+            [(0x1000, 0), (usize::MAX, 1), (0x1000, 0x20)],
+            &mut values.each_mut().map(|value| value.as_mut_slice()),
+        ),
+        Err("reinforcement input unreadable")
+    );
+    assert_eq!(values, [[1, 2, 3, 4], [0xa5; 4], [0xa5; 4]]);
+    assert_eq!(*memory.reads.borrow(), [(0x1000, 4)]);
+    assert_eq!(memory.scatters.get(), 0);
+}
+
+struct Counted<T> {
+    inner: T,
+    copies: Cell<usize>,
+    bytes: Cell<usize>,
+}
+impl<T: Memory> Memory for Counted<T> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.copies.set(self.copies.get() + 1);
+        self.bytes.set(self.bytes.get() + output.len());
+        self.inner.copy(address, output)
+    }
+}
+
+#[test]
+fn raw_modifier_preserves_negative_values_absence_and_order() {
+    let mut bytes = vec![0_u8; 0x300];
+    bytes[0x10..0x18].copy_from_slice(&0x100_u64.to_le_bytes());
+    bytes[0x18..0x1c].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[0x1c..0x20].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[0x100..0x104].copy_from_slice(&5_u32.to_le_bytes());
+    bytes[0x108..0x110].copy_from_slice(&(-170_005_i64).to_le_bytes());
+    struct WithMetadata<'a>(&'a [u8]);
+    impl Memory for WithMetadata<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == crate::modifier_definition::TABLE_RVA {
+                output.copy_from_slice(&0x10000_u64.to_le_bytes());
+                return true;
+            }
+            if address
+                == 0x10000
+                    + 5 * crate::modifier_definition::STRIDE
+                    + crate::modifier_definition::FLAGS
+            {
+                output.fill(0);
+                output[..4].copy_from_slice(&7_u32.to_le_bytes());
+                return true;
+            }
+            SliceMemory {
+                base: 0,
+                bytes: self.0,
+            }
+            .copy(address, output)
+        }
+    }
+    let mut output = [ModifierTerm::default(); 3];
+    let mut len = 0;
+    let counted = Counted {
+        inner: WithMetadata(&bytes),
+        copies: Cell::new(0),
+        bytes: Cell::new(0),
+    };
+    append_modifiers(
+        &counted,
+        0,
+        &mut Sources::new(),
+        0x10,
+        4,
+        &[6, 5, 7],
+        &mut output,
+        &mut len,
+    )
+    .unwrap();
+    assert_eq!(len, 3);
+    assert_eq!(output[0].present, 0);
+    assert_eq!(output[1].raw, -170_005);
+    assert_eq!(output[1].metadata_flags, 7);
+    assert_eq!(output[1].scope, 4);
+    assert_eq!(output[2].key, 7);
+    assert_eq!((counted.copies.get(), counted.bytes.get()), (4, 52));
+    assert_eq!(
+        append_modifiers(
+            &WithMetadata(&bytes),
+            0,
+            &mut Sources::new(),
+            0x10,
+            0,
+            &[1],
+            &mut output,
+            &mut len
+        ),
+        Err("reinforcement modifier arena full")
+    );
+}
+
+/// A census that fails partway leaves the shared arena as it found it.
+#[test]
+fn a_failed_census_leaves_no_entries_in_the_arena() {
+    let mut bytes = vec![0_u8; 0x400];
+    let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    // Header at 0x100: data 0x200, capacity 3, count 3; the keys 5, 7, 6
+    // break the order at the third entry.
+    put(0x100, 0x200);
+    put(0x108, (3_u64 << 32) | 3);
+    for (index, key) in [5_u64, 7, 6].into_iter().enumerate() {
+        put(0x200 + index * 16, key);
+        put(0x208 + index * 16, 100 + index as u64);
+    }
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut arena = vec![(1, 1)];
+    assert_eq!(
+        census(&memory, 0x100, &mut arena),
+        Err("reinforcement modifier order invalid")
+    );
+    assert_eq!(arena, [(1, 1)]);
+}
+
+#[test]
+fn raw_shared_modifier_snapshot_avoids_native_recensus() {
+    struct Shared {
+        copies: Cell<usize>,
+    }
+    impl Memory for Shared {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.copies.set(self.copies.get() + 1);
+            if address == crate::modifier_definition::TABLE_RVA {
+                output.copy_from_slice(&0x10000_u64.to_le_bytes());
+                return true;
+            }
+            if address
+                == 0x10000
+                    + 5 * crate::modifier_definition::STRIDE
+                    + crate::modifier_definition::FLAGS
+            {
+                output.fill(0);
+                return true;
+            }
+            false
+        }
+        fn modifier_accumulator_value(
+            &self,
+            address: usize,
+            key: u32,
+        ) -> Option<Result<crate::modifier_accumulator::Value, &'static str>> {
+            assert_eq!(address, 0x99999);
+            Some(Ok(crate::modifier_accumulator::Value {
+                raw: if key == 5 { -654321 } else { 0 },
+                present: key == 5,
+            }))
+        }
+    }
+    let memory = Shared {
+        copies: Cell::new(0),
+    };
+    let mut output = [ModifierTerm::default(); 2];
+    let mut len = 0;
+    append_modifiers(
+        &memory,
+        0,
+        &mut Sources::new(),
+        0x99999,
+        1,
+        &[4, 5],
+        &mut output,
+        &mut len,
+    )
+    .unwrap();
+    assert_eq!(output[1].raw, -654321);
+    assert_eq!(output[0].present, 0);
+    assert_eq!(memory.copies.get(), 2);
+}
+
+#[test]
+fn transport_without_static_feature_preserves_branch_without_normal_dependencies() {
+    let mut bytes = vec![0_u8; 0x9000];
+    let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    put(0x1000, carmy::VTABLE_RVA as u64);
+    put(0x1000 + cunit::HANDLE, 0x1234_0000_0033);
+    put(0x1000 + cunit::STAT_BLOCK, 0x2000);
+    put(0x2000, crate::csub_unit_definition::VTABLE_RVA as u64);
+    put(0x1000 + cunit::LOCATION, 0x3000);
+    put(0x1000 + carmy::NAVAL_TRANSFER_MEMBERSHIP, 42);
+    put(0x1000 + cunit::LOGICAL_OWNER, 1);
+    put(0x3000, cprovince::VTABLE_RVA as u64);
+    put(0x3000 + cprovince::DEFINITION, 0x3800);
+    put(0x3000 + cprovince::ID, 14);
+    put(0x3800 + crate::province_definition::ID, 14);
+    put(0x3000 + cprovince::STRATEGIC_REGION, 0x4000);
+    put(0x4000, crate::cstrategic_region::VTABLE_RVA as u64);
+    put(0x4000 + crate::cstrategic_region::ID, 22);
+    put(0x7000 + cgame_state::WEATHER_MANAGER, 0x5000);
+    put(0x5000, crate::cweather_manager::VTABLE_RVA as u64);
+    put(0x7000 + cgame_state::COUNTRIES, 0x8000);
+    put(0x7000 + cgame_state::COUNTRIES + 8, 0x2_0000_0002);
+    put(0x8008, 0x6000);
+    put(0x7000 + cgame_state::COUNTRY_LINKS, 0x8100);
+    put(0x7000 + cgame_state::COUNTRY_LINKS + 8, 0x2_0000_0002);
+    put(0x8100, 0x1_0000_0000);
+    put(0x6000, ccountry::VTABLE_RVA as u64);
+    put(0x6000 + ccountry::ID, 1);
+    struct Source<'a>(&'a [u8]);
+    impl Memory for Source<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            assert_ne!(address, 0x1000 + carmy::STANDARD_TEMPLATE);
+            assert!(
+                ![
+                    0x124c, 0x124d, 0x12ae, 0x102e, 0x1600, 0x1610, 0x1040, 0x1058, 0x1498
+                ]
+                .contains(&address),
+                "naval transfer reached a normal land packet"
+            );
+            if [
+                crate::modifier_definition::ELIGIBILITY_CALLBACK_RVA,
+                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+            ]
+            .contains(&address)
+            {
+                output.fill(0);
+                return true;
+            }
+            SliceMemory {
+                base: 0,
+                bytes: self.0,
+            }
+            .copy(address, output)
+        }
+    }
+    let row = capture_context(
+        &Source(&bytes),
+        0,
+        0x7000,
+        &mut Sources::new(),
+        0x1000,
+        0x1234_0000_0033,
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut Vec::new(),
+        0,
+    )
+    .unwrap();
+    assert_eq!(row.flags[11], 2);
+    assert_eq!(row.ids[0], 14);
+    assert_eq!(row.ids[7], 22);
+    assert_eq!((row.modifier_count, row.transport_term_count), (0, 0));
+}
+
+#[test]
+fn acclimatization_retains_native_ties_and_active_reference_join() {
+    let mut bytes = vec![0_u8; 0x1000];
+    let object = 0x100 + carmy::ACCLIMATIZATION;
+    bytes[object + 8..object + 16].copy_from_slice(&0x800_u64.to_le_bytes());
+    bytes[object + 16..object + 20].copy_from_slice(&2_u32.to_le_bytes());
+    bytes[object + 20..object + 24].copy_from_slice(&2_u32.to_le_bytes());
+    bytes[object + 0x20..object + 0x28].copy_from_slice(&0x900_u64.to_le_bytes());
+    bytes[object + 0x38..object + 0x40].copy_from_slice(&123_i64.to_le_bytes());
+    for (index, pointer) in [0x900_u64, 0x920].into_iter().enumerate() {
+        bytes[0x800 + index * 16..0x808 + index * 16].copy_from_slice(&pointer.to_le_bytes());
+        bytes[0x808 + index * 16..0x810 + index * 16].copy_from_slice(&99_i64.to_le_bytes());
+    }
+    bytes[0x930..0x938].copy_from_slice(&(-500_i64).to_le_bytes());
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut row = ContextRow::default();
+    let mut terms = [AcclimatizationTerm::default(); 2];
+    acclimatization(&memory, 0x100, &mut row, &mut terms).unwrap();
+    assert_eq!(
+        terms,
+        [
+            AcclimatizationTerm {
+                weight: 99,
+                active: 1
+            },
+            AcclimatizationTerm {
+                weight: 99,
+                active: 0
+            }
+        ]
+    );
+    assert_eq!(row.scalar_values[0], 123);
+    assert_eq!(row.scalar_values[1], -500);
+    assert_eq!(
+        acclimatization(&memory, 0x100, &mut row, &mut terms[..1]),
+        Err("reinforcement acclimatization arena full")
+    );
+}
+
+/// Chunked sparse memory: a read succeeds only inside one written chunk,
+/// so every field the reader touches must be written explicitly.
+#[derive(Default)]
+struct Sparse(std::collections::BTreeMap<usize, Vec<u8>>);
+impl Sparse {
+    fn put(&mut self, at: usize, bytes: &[u8]) {
+        self.0.insert(at, bytes.to_vec());
+    }
+    fn u64(&mut self, at: usize, value: u64) {
+        self.put(at, &value.to_le_bytes());
+    }
+    fn u32(&mut self, at: usize, value: u32) {
+        self.put(at, &value.to_le_bytes());
+    }
+    fn array(&mut self, at: usize, data: usize, count: u32) {
+        let mut header = [0; 16];
+        header[..8].copy_from_slice(&(data as u64).to_le_bytes());
+        header[8..12].copy_from_slice(&count.to_le_bytes());
+        header[12..].copy_from_slice(&count.to_le_bytes());
+        self.put(at, &header);
+    }
+}
+impl Memory for Sparse {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let Some((start, bytes)) = self.0.range(..=address).next_back() else {
+            return false;
+        };
+        let offset = address - start;
+        match bytes.get(offset..offset + output.len()) {
+            Some(source) => {
+                output.copy_from_slice(source);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+const GAME: usize = 0x10_0000;
+const ARMY: usize = 0x20_0000;
+const HANDLE: u64 = 0x77;
+fn diplomacy_at(slot: usize) -> usize {
+    0x800_0000 + slot * 0x400
+}
+
+/// Owner plus `enemies` distinct countries (canonical slot == raw id).
+/// Enemies divisible by 7 are capitulated and by 11 have no fog network,
+/// so the retained terms keep native order with the native skips.
+fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
+    use crate::{
+        ccountry_intel, cdiplomacy_status, country_intel_row, cstatic_modifier, cstrategic_navy,
+        cstrategic_navy_manager, cstrategic_region, cweather_manager,
+        modifier_definition as metadata, province_definition,
+    };
+    const STATS: usize = 0x21_0000;
+    const LOCATION: usize = 0x22_0000;
+    const REGION: usize = 0x23_0000;
+    const WEATHER: usize = 0x24_0000;
+    const DEFINITIONS: usize = 0x25_0000;
+    const STATIC: usize = 0x26_0000;
+    const META: usize = 0x27_0000;
+    const NAVY_MANAGER: usize = 0x28_0000;
+    const NAVIES: usize = 0x29_0000;
+    const COUNTRIES: usize = 0x2a_0000;
+    const LINKS: usize = 0x2b_0000;
+    const ENEMIES: usize = 0x2c_0000;
+    const OWNER_ROWS: usize = 0x2d_0000;
+    let country = |slot: usize| 0x100_0000 + slot * 0x1000;
+    let intel = |slot: usize| 0x1000_0000 + slot * 0x100;
+    let intel_rows = |slot: usize| 0x1800_0000 + slot * 0x40;
+    let navy = |slot: usize| 0x2000_0000 + slot * 0x100;
+    let regional = |slot: usize| 0x3000_0000 + slot * 0x100;
+    let slots = enemies as usize + 2;
+    let mut m = Sparse::default();
+    m.u64(ARMY, carmy::VTABLE_RVA as u64);
+    m.u64(ARMY + cunit::HANDLE, HANDLE);
+    m.u64(ARMY + carmy::NAVAL_TRANSFER_MEMBERSHIP, 1);
+    m.u64(ARMY + cunit::STAT_BLOCK, STATS as u64);
+    m.u64(ARMY + cunit::LOCATION, LOCATION as u64);
+    m.u32(ARMY + cunit::LOGICAL_OWNER, 1);
+    m.u64(STATS, crate::csub_unit_definition::VTABLE_RVA as u64);
+    m.u64(LOCATION, cprovince::VTABLE_RVA as u64);
+    m.u64(LOCATION + cprovince::DEFINITION, LOCATION as u64 + 0x1000);
+    m.u32(LOCATION + cprovince::ID, 14);
+    m.u32(LOCATION + 0x1000 + province_definition::ID, 14);
+    m.u64(LOCATION + cprovince::STRATEGIC_REGION, REGION as u64);
+    m.u64(REGION, cstrategic_region::VTABLE_RVA as u64);
+    m.u32(REGION + cstrategic_region::ID, 22);
+    m.u64(GAME + cgame_state::WEATHER_MANAGER, WEATHER as u64);
+    m.u64(WEATHER, cweather_manager::VTABLE_RVA as u64);
+    m.array(WEATHER + cweather_manager::REGIONS, 0, 0);
+    m.u32(metadata::TRADE_FEATURE_FLAGS_RVA, 1 << 4);
+    m.u64(metadata::ELIGIBILITY_CALLBACK_RVA, 0);
+    m.u64(0x0331_7cc8, DEFINITIONS as u64);
+    m.u64(DEFINITIONS + 0xf8, STATIC as u64);
+    m.u64(STATIC, cstatic_modifier::VTABLE_RVA as u64);
+    m.array(STATIC + cstatic_modifier::ACCUMULATOR, 0, 0);
+    m.u64(metadata::TABLE_RVA, META as u64);
+    m.u32(
+        META + 0x29 * metadata::STRIDE + metadata::CATEGORY_MASK,
+        0xabc,
+    );
+    for (index, rva) in [0x0331_e100, 0x0331_d5b0, 0x0331_d620, 0x0331_e550]
+        .into_iter()
+        .enumerate()
+    {
+        m.put(rva, &(-(index as i64) - 1).to_le_bytes());
+    }
+    m.u64(
+        GAME + cgame_state::STRATEGIC_NAVY_MANAGER,
+        NAVY_MANAGER as u64,
+    );
+    m.u64(NAVY_MANAGER, cstrategic_navy_manager::VTABLE_RVA as u64);
+    m.array(
+        NAVY_MANAGER + cstrategic_navy_manager::NAVIES,
+        NAVIES,
+        slots as u32,
+    );
+    m.array(GAME + cgame_state::COUNTRIES, COUNTRIES, slots as u32);
+    m.array(GAME + cgame_state::COUNTRY_LINKS, LINKS, slots as u32);
+    let mut countries = vec![0; slots * 8];
+    let mut links = vec![0; slots * 4];
+    let mut navies = vec![0; slots * 8];
+    let mut owner_rows = vec![0; slots * country_intel_row::STRIDE];
+    let mut expected = Vec::new();
+    for slot in 1..slots {
+        let c = country(slot);
+        countries[slot * 8..slot * 8 + 8].copy_from_slice(&(c as u64).to_le_bytes());
+        links[slot * 4..slot * 4 + 4].copy_from_slice(&(slot as u32).to_le_bytes());
+        navies[slot * 8..slot * 8 + 8].copy_from_slice(&(navy(slot) as u64).to_le_bytes());
+        let row = slot * country_intel_row::STRIDE + country_intel_row::NAVY;
+        owner_rows[row..row + 8].copy_from_slice(&(1000 + slot as i64).to_le_bytes());
+        m.u64(c, ccountry::VTABLE_RVA as u64);
+        m.u32(c + ccountry::ID, slot as u32);
+        let fog = i32::from(slot % 11 != 0);
+        m.put(c + ccountry::FOG_NETWORK_TABLE_COUNT, &fog.to_le_bytes());
+        m.u64(c + ccountry::DIPLOMACY_STATUS, diplomacy_at(slot) as u64);
+        m.u64(c + ccountry::INTEL_TABLE, intel(slot) as u64);
+        m.u64(diplomacy_at(slot), cdiplomacy_status::VTABLE_RVA as u64);
+        m.u64(diplomacy_at(slot) + cdiplomacy_status::COUNTRY, c as u64);
+        let capitulated = u8::from(slot % 7 == 0);
+        m.put(
+            diplomacy_at(slot) + cdiplomacy_status::CAPITULATED,
+            &[capitulated],
+        );
+        m.u64(intel(slot), ccountry_intel::VTABLE_RVA as u64);
+        m.put(
+            intel(slot) + ccountry_intel::OWNER,
+            &(slot as i32).to_le_bytes(),
+        );
+        m.u64(navy(slot), cstrategic_navy::VTABLE_RVA as u64);
+        m.u64(
+            navy(slot) + cstrategic_navy::SECONDARY,
+            cstrategic_navy::SECONDARY_VTABLE_RVA as u64,
+        );
+        m.u32(navy(slot) + cstrategic_navy::OWNER, slot as u32);
+        m.array(
+            navy(slot) + cstrategic_navy::REGIONAL_OPERANDS,
+            regional(slot),
+            23,
+        );
+        let mut operands = vec![0; 23 * 8];
+        operands[22 * 8..].copy_from_slice(&(slot as i64 * 10).to_le_bytes());
+        m.put(regional(slot), &operands);
+        if slot == 1 {
+            m.array(c + ccountry::MODIFIER_ACCUMULATOR, 0, 0);
+            m.array(
+                diplomacy_at(slot) + cdiplomacy_status::ENEMY_COUNTRIES,
+                ENEMIES,
+                enemies,
+            );
+            m.array(intel(slot) + ccountry_intel::DATA, OWNER_ROWS, slots as u32);
+        } else {
+            m.array(intel(slot) + ccountry_intel::DATA, intel_rows(slot), 2);
+            let mut rows = vec![0; 2 * country_intel_row::STRIDE];
+            let row = country_intel_row::STRIDE + country_intel_row::NAVY;
+            rows[row..row + 8].copy_from_slice(&(-(slot as i64)).to_le_bytes());
+            m.put(intel_rows(slot), &rows);
+            if slot % 7 != 0 && slot % 11 != 0 {
+                expected.push(TransportTerm {
+                    country: slot as u32,
+                    regional_value: slot as i64 * 10,
+                    own_intel: 1000 + slot as i64,
+                    enemy_intel: -(slot as i64),
+                });
+            }
+        }
+    }
+    let raws: Vec<u8> = (2..slots as u32).flat_map(u32::to_le_bytes).collect();
+    m.put(ENEMIES, &raws);
+    m.put(COUNTRIES, &countries);
+    m.put(LINKS, &links);
+    m.put(NAVIES, &navies);
+    m.put(OWNER_ROWS, &owner_rows);
+    (m, expected)
+}
+
+#[test]
+fn transport_terms_follow_every_native_enemy_into_caller_storage() {
+    for enemies in [3, 5_000] {
+        let (memory, expected) = transport_fixture(enemies);
+        let sentinel = TransportTerm {
+            country: 0xdead,
+            ..TransportTerm::default()
+        };
+        // Earlier divisions' admitted terms stay untouched; this call writes
+        // from its start and grows the vector past its current length.
+        let mut terms = vec![sentinel; 4];
+        let row = capture_context(
+            &memory,
+            0,
+            GAME,
+            &mut Sources::new(),
+            ARMY,
+            HANDLE,
+            &mut [ModifierTerm::default(); 2],
+            &mut [],
+            &mut [],
+            &mut terms,
+            2,
+        )
+        .unwrap();
+        assert_eq!(row.flags[11], 2);
+        assert_eq!(row.scalar_values[25..30], [-1, -2, -3, -4, 0xabc]);
+        assert_eq!(row.transport_term_count, expected.len());
+        assert_eq!(terms[..2], [sentinel; 2]);
+        assert_eq!(terms[2..2 + expected.len()], expected[..]);
+        if enemies > 64 {
+            assert!(expected.len() > 64 && expected.len() < enemies as usize);
+        }
+    }
+}
+
+#[test]
+fn transport_enemy_failure_is_not_a_shorter_enemy_list() {
+    let (mut memory, _) = transport_fixture(5_000);
+    // A torn enemy late in a long list fails the whole context.
+    memory
+        .0
+        .remove(&(diplomacy_at(4_901) + crate::cdiplomacy_status::CAPITULATED));
+    let result = capture_context(
+        &memory,
+        0,
+        GAME,
+        &mut Sources::new(),
+        ARMY,
+        HANDLE,
+        &mut [ModifierTerm::default(); 2],
+        &mut [],
+        &mut [],
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(result, Err("reinforcement input unreadable"));
+}

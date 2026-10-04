@@ -1,0 +1,393 @@
+use super::*;
+use engine::{
+    air_mission, cair_base, cair_wing_pool, ccountry_air_container, cgame_state, cstrategic_region,
+    csub_unit_definition, cweather_manager, map_air_base_reference::BaseReference,
+    memory::SliceMemory, sweather_per_region,
+};
+use std::cell::Cell;
+
+const MODULE: usize = 0x4000_0000;
+const START: usize = 0x10_0000;
+const COUNTRY_SIZE: usize = 0x1500;
+/// `map_air_country_region_modifier`'s country map at CCountry+0x4D8.
+const COUNTRY_REGION_MAP: usize = 0x4d8;
+const REGION_COVERAGE: usize = 0x50;
+const REASSIGNMENT_PENALTY: usize = 0xc0;
+const REACHED: u32 = 16;
+/// `map_air_sortie_inputs`'s console override vector.
+const EFFICIENCY_OVERRIDES_RVA: usize = 0x0331_7208;
+
+/// A flat address space; every vtable is `MODULE + rva`.
+struct World {
+    bytes: Vec<u8>,
+}
+
+impl World {
+    fn alloc(&mut self, size: usize) -> usize {
+        let at = (START + self.bytes.len() + 0xf) & !0xf;
+        self.bytes.resize(at + size - START, 0);
+        at
+    }
+    fn put(&mut self, at: usize, value: &[u8]) {
+        self.bytes[at - START..at - START + value.len()].copy_from_slice(value);
+    }
+    fn q(&mut self, at: usize, value: u64) {
+        self.put(at, &value.to_le_bytes());
+    }
+    fn d(&mut self, at: usize, value: u32) {
+        self.put(at, &value.to_le_bytes());
+    }
+    fn vtable(&mut self, at: usize, rva: usize) {
+        self.q(at, (MODULE + rva) as u64);
+    }
+    fn array(&mut self, at: usize, data: usize, count: u32) {
+        self.q(at, data as u64);
+        self.d(at + 8, count);
+        self.d(at + 12, count);
+    }
+    /// One sorted key-0x11 accumulator entry.
+    fn accumulator(&mut self, at: usize, raw: i64) {
+        let entries = self.alloc(16);
+        self.d(entries, native::SORTIE_MODIFIER_KEY);
+        self.q(entries + 8, raw as u64);
+        self.array(at, entries, 1);
+    }
+}
+
+/// The world, and the module's empty console override vector.
+struct Route<'a> {
+    world: SliceMemory<'a>,
+}
+
+const NO_OVERRIDES: [u8; 16] = [0; 16];
+
+impl Memory for Route<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if address >= MODULE {
+            SliceMemory {
+                base: MODULE + EFFICIENCY_OVERRIDES_RVA,
+                bytes: &NO_OVERRIDES,
+            }
+            .copy(address, destination)
+        } else {
+            self.world.copy(address, destination)
+        }
+    }
+}
+
+/// Counts guarded calls as `LiveMemory` issues them: one per copy, per
+/// scattered batch and per record gather.
+struct Counting<'a> {
+    inner: Route<'a>,
+    reads: Cell<usize>,
+}
+
+impl<'a> Counting<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            inner: Route {
+                world: SliceMemory { base: START, bytes },
+            },
+            reads: Cell::new(0),
+        }
+    }
+    fn count(&self) {
+        self.reads.set(self.reads.get() + 1);
+    }
+}
+
+impl Memory for Counting<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.count();
+        self.inner.copy(address, destination)
+    }
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.count();
+        self.inner.copy_scattered(addresses, destinations)
+    }
+    fn copy_scattered_prefetched<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.count();
+        self.inner
+            .copy_scattered_prefetched(addresses, destinations)
+    }
+    fn copy_records(
+        &self,
+        sources: engine::memory::RecordSources<'_>,
+        layout: &engine::memory::RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        self.count();
+        self.inner.copy_records(sources, layout, destination)
+    }
+}
+
+struct Fixture {
+    world: World,
+    game_state: usize,
+    wings: Vec<WingIdentity>,
+    witnesses: Vec<BaseWitness>,
+}
+
+/// `missions` registered missions over `countries` countries, of which
+/// 300 fly with two volunteer hosts each, 170 regions, a base per four
+/// missions and a pool per eight, each mission reaching 16 provinces.
+fn fixture(missions: usize, countries: u32) -> Fixture {
+    const FLYING: u32 = 300;
+    const REGIONS: u32 = 170;
+    let mut world = World { bytes: Vec::new() };
+    let game_state = world.alloc(0x1000);
+    let slots = countries + 1;
+    let table = world.alloc(slots as usize * 8);
+    let links = world.alloc(slots as usize * 4);
+    world.array(game_state + cgame_state::COUNTRIES, table, slots);
+    world.array(game_state + cgame_state::COUNTRY_LINKS, links, slots);
+    let containers = world.alloc(slots as usize * 8);
+    for slot in 1..slots {
+        let country = world.alloc(COUNTRY_SIZE);
+        world.q(table + slot as usize * 8, country as u64);
+        world.d(links + slot as usize * 4, slot);
+        world.vtable(country, ccountry::VTABLE_RVA);
+        world.d(country + ccountry::ID, slot);
+        world.accumulator(country + ccountry::MODIFIER_ACCUMULATOR, 2_000);
+        // An empty country-region map: sentinel links to itself.
+        let map = country + COUNTRY_REGION_MAP;
+        let sentinel = world.alloc(16);
+        let buckets = world.alloc(16);
+        world.q(sentinel, sentinel as u64);
+        world.q(sentinel + 8, sentinel as u64);
+        world.q(buckets, sentinel as u64);
+        world.q(buckets + 8, sentinel as u64);
+        world.q(map + 0x08, sentinel as u64);
+        world.q(map + 0x18, buckets as u64);
+        world.q(map + 0x38, 1);
+        if slot <= FLYING {
+            let hosts = world.alloc(8);
+            world.d(hosts, (slot % countries) + 1);
+            world.d(hosts + 4, ((slot + 7) % countries) + 1);
+            world.array(country + ccountry::VOLUNTEER_HOSTS, hosts, 2);
+            let container = world.alloc(ccountry_air_container::SIZE);
+            world.vtable(container, ccountry_air_container::VTABLE_RVA);
+            world.d(container + ccountry_air_container::COUNTRY, slot);
+            for (offset, raw) in [
+                (ccountry_air_container::SUPPLY_RATIO_RAW, 90_000),
+                (ccountry_air_container::SORTIE_CAPACITY_FACTOR_RAW, 80_000),
+                (ccountry_air_container::FUEL_DEMAND_RAW, 1_000),
+                (ccountry_air_container::FUEL_ALLOCATED_RAW, 700),
+            ] {
+                world.q(container + offset, raw);
+            }
+            world.q(containers + slot as usize * 8, container as u64);
+        }
+    }
+    let manager = world.alloc(0x100);
+    world.q(game_state + cgame_state::WEATHER_MANAGER, manager as u64);
+    world.vtable(manager, cweather_manager::VTABLE_RVA);
+    let records = world.alloc((REGIONS as usize + 1) * sweather_per_region::STRIDE);
+    world.array(manager + cweather_manager::REGIONS, records, REGIONS + 1);
+    let mut regions = vec![0];
+    for id in 1..=REGIONS {
+        let record = records + id as usize * sweather_per_region::STRIDE;
+        world.vtable(record, sweather_per_region::VTABLE_RVA);
+        world.d(record + sweather_per_region::ID, id);
+        world.accumulator(record + sweather_per_region::MODIFIERS, -5_000);
+        let region = world.alloc(0x100);
+        world.vtable(region, cstrategic_region::VTABLE_RVA);
+        world.vtable(
+            region + cstrategic_region::SECONDARY,
+            cstrategic_region::SECONDARY_VTABLE_RVA,
+        );
+        regions.push(region);
+    }
+    let definitions: Vec<usize> = (0..20)
+        .map(|_| {
+            let definition = world.alloc(csub_unit_definition::AIR_FLAGS + 8);
+            world.vtable(definition, csub_unit_definition::VTABLE_RVA);
+            definition
+        })
+        .collect();
+    let pools: Vec<usize> = (0..missions.div_ceil(8))
+        .map(|index| {
+            let pool = world.alloc(cair_wing_pool::SIZE);
+            let definition = definitions[index % definitions.len()];
+            world.q(pool + cair_wing_pool::DEFINITION, definition as u64);
+            pool
+        })
+        .collect();
+    let mut witnesses: Vec<BaseWitness> = (0..missions.div_ceil(4))
+        .map(|index| {
+            let object = world.alloc(0x80);
+            world.array(object + cair_base::COUNTRY_CONTAINERS, containers, slots);
+            BaseWitness {
+                handle: ((index as u64 + 1) << 32) | u64::from(cair_base::TYPE),
+                base: Some(BaseReference {
+                    object,
+                    state: Some(index as u32 + 1),
+                    province: Some(index as u32 + 1),
+                    host: 0,
+                    kind: 0,
+                }),
+                host_owner: None,
+                host_without_task_force: false,
+            }
+        })
+        .collect();
+    witnesses.sort_unstable_by_key(|witness| witness.handle);
+    let wings = (0..missions)
+        .map(|index| {
+            let mission = world.alloc(0xd0);
+            let region = index as u32 % REGIONS + 1;
+            world.vtable(mission, air_mission::VTABLE_RVA);
+            world.q(
+                mission + air_mission::REGION,
+                regions[region as usize] as u64,
+            );
+            let reached = world.alloc(REACHED as usize * 16);
+            // Descending, so a sorted capture would show.
+            for entry in 0..REACHED {
+                world.d(reached + entry as usize * 16, 1_000 + (REACHED - entry) * 3);
+            }
+            world.array(
+                mission + air_mission::REACHED_PROVINCES_DATA,
+                reached,
+                REACHED,
+            );
+            world.q(mission + REGION_COVERAGE, 90_000);
+            world.q(mission + REASSIGNMENT_PENALTY, 10_000);
+            world.d(mission + air_mission::LAST_TARGET_PROVINCE, 1_000);
+            WingIdentity {
+                mission_pointer: mission,
+                pool: pools[index / 8],
+                wing: ((index as u64 + 1) << 32) | 54,
+                owner: index as u32 % FLYING + 1,
+                region: Some(region),
+                mission_mask: 1 << 4,
+                air_base: witnesses[index / 4].handle,
+                base_override: 0,
+                country_override: 0,
+            }
+        })
+        .collect();
+    Fixture {
+        world,
+        game_state,
+        wings,
+        witnesses,
+    }
+}
+
+fn capacities() -> Capacities {
+    Capacities {
+        missions: 8192,
+        reached: 1 << 17,
+        rows: 16_384,
+        keys: 65_536,
+        ..Capacities::default()
+    }
+}
+
+#[test]
+fn volunteer_hosts_past_capacity_truncate_until_grown() {
+    let mut capacity = Capacities {
+        hosts: 1,
+        ..capacities()
+    };
+    let mut sorties = Sorties::with_capacities(&capacity);
+    let fixture = fixture(8, 1_500);
+    let memory = Counting::new(&fixture.world.bytes);
+    let capture = |sorties: &mut Sorties| {
+        sorties.capture(
+            &memory,
+            MODULE,
+            fixture.game_state,
+            false,
+            fixture.wings.iter().map(Ok),
+            &fixture.witnesses,
+        )
+    };
+    // Two hosts do not fit: only the wings' own containers are read.
+    capture(&mut sorties);
+    assert!(matches!(sorties.outcome, Outcome::Truncated { .. }));
+    assert_eq!(sorties.containers.len, 8);
+    sorties.grow(&mut capacity);
+    assert_eq!(capacity.hosts, 2);
+    capture(&mut sorties);
+    assert_eq!(sorties.outcome, Outcome::Rows { len: 0 });
+    // Two bases, each with four owners and their hosts: nine slots apiece.
+    assert_eq!(sorties.containers.len, 18);
+    // Only the eight effective countries' rows carry fuel.
+    let rows = &sorties.containers.rows[..18];
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.fuel_demand_raw.is_some())
+            .count(),
+        8
+    );
+}
+
+#[test]
+fn reached_provinces_keep_the_native_order() {
+    let mut sorties = Sorties::with_capacities(&capacities());
+    let fixture = fixture(2, 16);
+    let memory = Counting::new(&fixture.world.bytes);
+    sorties.capture(
+        &memory,
+        MODULE,
+        fixture.game_state,
+        false,
+        fixture.wings.iter().map(Ok),
+        &fixture.witnesses,
+    );
+    let mission = sorties.missions.rows[0];
+    let reached =
+        &sorties.reached.rows[mission.reached_start..mission.reached_start + mission.reached_len];
+    let native: Vec<u32> = (0..REACHED)
+        .map(|entry| 1_000 + (REACHED - entry) * 3)
+        .collect();
+    assert_eq!(reached, native);
+}
+
+/// Prints guarded calls per hour and the best of five capture times;
+/// run with `--release --nocapture` to measure.
+#[test]
+fn sortie_cost_scales_with_missions_not_countries() {
+    let mut sorties = Sorties::with_capacities(&capacities());
+    for (missions, countries) in [
+        (1_000, 1_500),
+        (2_000, 1_500),
+        (5_000, 1_500),
+        (5_000, 5_000),
+    ] {
+        let fixture = fixture(missions, countries);
+        let memory = Counting::new(&fixture.world.bytes);
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            memory.reads.set(0);
+            let begin = std::time::Instant::now();
+            sorties.capture(
+                &memory,
+                MODULE,
+                fixture.game_state,
+                false,
+                fixture.wings.iter().map(Ok),
+                &fixture.witnesses,
+            );
+            best = best.min(begin.elapsed());
+        }
+        assert_eq!(sorties.outcome, Outcome::Rows { len: 0 });
+        assert_eq!(sorties.missions.len, missions);
+        let calls = memory.reads.get();
+        println!(
+            "{missions} missions, {countries} countries: {calls} guarded calls ({:.1}/mission), {best:?}",
+            calls as f64 / missions as f64,
+        );
+        assert!(calls <= 30 * missions, "{calls} guarded calls");
+    }
+}
