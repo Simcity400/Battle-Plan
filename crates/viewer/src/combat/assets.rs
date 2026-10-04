@@ -571,6 +571,7 @@ impl CombatContent {
 }
 
 impl Assets {
+    #[allow(clippy::too_many_arguments)] // The client's content, windows and texture stores.
     pub fn load(
         shared: &Arc<ResolvedLayers>,
         regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,

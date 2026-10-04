@@ -112,6 +112,7 @@ impl MapIcons {
     ///
     /// `decode` is the client's texture decode state
     /// ([`installed_content::settings::SettingsKeys::texture_decode`]), which the font pages load under.
+    #[allow(clippy::too_many_arguments)] // The content stack plus the client's settings.
     pub fn load(
         layers: &ResolvedLayers,
         defines: &installed_content::defines::Defines,

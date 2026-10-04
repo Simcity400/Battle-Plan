@@ -124,6 +124,7 @@ pub(super) fn bind(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // The group's recorded rows and text resources.
 fn group_tooltip(
     slots: &[u32],
     side: u8,
