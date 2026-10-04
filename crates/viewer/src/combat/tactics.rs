@@ -1142,7 +1142,7 @@ fn normalized_chances(weights: &[Option<i64>]) -> Vec<Option<i64>> {
 /// 141C5C1F0 tests the attacker's ordered primary country set. Its members
 /// may be seeded or retained after the current division roster changes.
 /// An unresolved raw country cannot prove that the viewer is on the defender.
-fn viewing_side(
+pub(super) fn viewing_side(
     attacker_primary: &[u32],
     aliases: &BTreeMap<u32, u32>,
     viewing_slot: u32,

@@ -91,20 +91,46 @@ pub struct Values {
     pub notes: Vec<String>,
 }
 
+/// Full accumulators of named static modifiers, in request order. An absent
+/// name is the native null object's empty accumulator (140550940).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Blocks {
+    pub blocks: Vec<Result<modifiers::Modifiers, Refusal>>,
+    pub notes: Vec<String>,
+}
+
 /// Reads each request, in request order, from the effective definitions of
 /// the content stack.
 pub fn read(layers: &ResolvedLayers, requests: &[Request<'_>]) -> io::Result<Values> {
-    let mut files = Vec::new();
-    for path in layers.directory_files(DIRECTORY, ".txt")? {
-        let bytes = layers.read_uncovered(&path)?;
-        files.push((path, bytes));
-    }
+    let files = layer_files(layers)?;
     Ok(resolve(
         files
             .iter()
             .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
         requests,
     ))
+}
+
+/// Reads full CStaticModifier+0x10 accumulators (1406039B0) for native
+/// description formatting (14054E050). Definitions and stopped files follow
+/// the same precedence and refusal rules as [`read`].
+pub fn read_blocks(layers: &ResolvedLayers, names: &[&str]) -> io::Result<Blocks> {
+    let files = layer_files(layers)?;
+    Ok(resolve_blocks(
+        files
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
+        names,
+    ))
+}
+
+fn layer_files(layers: &ResolvedLayers) -> io::Result<Vec<(String, Vec<u8>)>> {
+    let mut files = Vec::new();
+    for path in layers.directory_files(DIRECTORY, ".txt")? {
+        let bytes = layers.read_uncovered(&path)?;
+        files.push((path, bytes));
+    }
+    Ok(files)
 }
 
 /// One file as `140600CF0` reads it: its definitions up to the stop, and the
@@ -171,14 +197,47 @@ fn resolve<'a>(
     files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
     requests: &[Request<'_>],
 ) -> Values {
-    let mut values: Vec<Resolved> = vec![Ok(0); requests.len()];
+    // 140600CF0/140550940: one block lookup establishes the native file and
+    // bucket precedence; scalar callers select their key from that block.
+    let names: Vec<_> = requests.iter().map(|request| request.modifier).collect();
+    let Blocks { blocks, notes } = resolve_blocks(files, &names);
+    let values = blocks
+        .into_iter()
+        .zip(requests)
+        .map(|(block, request)| {
+            block
+                .map(|block| {
+                    let name = request.key.to_ascii_lowercase();
+                    block
+                        .values
+                        .iter()
+                        .find(|value| value.name == name)
+                        .map_or(0, |value| value.value)
+                })
+                .map_err(|mut refusal| {
+                    refusal.key = request.key.to_owned();
+                    refusal
+                })
+        })
+        .collect();
+    Values { values, notes }
+}
+
+/// `140600CF0` inserts each definition at the front of its hash bucket;
+/// `140550940` finds the first exact name. A later file can replace a stopped
+/// file's unknown definition, while a stop shadows every earlier candidate.
+fn resolve_blocks<'a>(
+    files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+    names: &[&str],
+) -> Blocks {
+    let mut blocks = vec![Ok(modifiers::Modifiers::default()); names.len()];
     let mut notes = Vec::new();
     for (path, bytes) in files {
         let file = read_file(bytes);
-        let refuse = |request: &Request<'_>, reason: String| Refusal {
+        let refuse = |name: &str, reason: String| Refusal {
             file: path.to_owned(),
-            modifier: request.modifier.to_owned(),
-            key: request.key.to_owned(),
+            modifier: name.to_owned(),
+            key: "<whole block>".to_owned(),
             reason,
         };
         for definition in &file.definitions {
@@ -189,48 +248,42 @@ fn resolve<'a>(
                 .filter(|item| item.keyword_is("key") || item.keyword_is("tag"))
                 .map(|item| item.value.scalar().unwrap_or_default())
                 .collect();
-            for (value, request) in values.iter_mut().zip(requests) {
-                let modifier = request.modifier.as_bytes();
+            for (block, &requested) in blocks.iter_mut().zip(names) {
+                let modifier = requested.as_bytes();
                 if !renamed.is_empty() && (name == modifier || renamed.contains(&modifier)) {
-                    *value = Err(refuse(
-                        request,
+                    *block = Err(refuse(
+                        requested,
                         format!(
                             "definition {} has a key or tag field, which renames it after it is bucketed under its first name (1406039B0, 140600CF0); the bucket layout that decides the lookup is not modelled",
                             String::from_utf8_lossy(name)
                         ),
                     ));
                 } else if name == modifier {
-                    *value = stored(items, request.key).map_err(|reason| refuse(request, reason));
+                    *block = stored_block(items).map_err(|reason| refuse(requested, reason));
                 }
             }
         }
         if let Some(stop) = &file.stop {
-            for (value, request) in values.iter_mut().zip(requests) {
-                *value = Err(refuse(
-                    request,
+            for (block, &requested) in blocks.iter_mut().zip(names) {
+                *block = Err(refuse(
+                    requested,
                     format!("{stop}; any definition the rest of the file makes is unknown"),
                 ));
             }
         }
         notes.extend(file.notes.iter().map(|note| format!("{path}: {note}")));
     }
-    Values { values, notes }
+    Blocks { blocks, notes }
 }
 
-/// The requested key's value in one definition's accumulator.
-fn stored(items: &[Item], key: &str) -> Result<i64, String> {
+fn stored_block(items: &[Item]) -> Result<modifiers::Modifiers, String> {
     let definition = modifiers::targeted(items).modifiers;
     if let Some(cause) = definition.unheld.cause() {
         return Err(format!(
             "the definition holds text the port cannot keep: {cause}"
         ));
     }
-    let name = key.to_ascii_lowercase();
-    Ok(definition
-        .values
-        .iter()
-        .find(|modifier| modifier.name == name)
-        .map_or(0, |modifier| modifier.value))
+    Ok(definition)
 }
 
 #[cfg(test)]
@@ -262,6 +315,77 @@ mod tests {
             .into_iter()
             .next()
             .unwrap()
+    }
+
+    fn blocks(files: &[(&str, &str)]) -> Blocks {
+        resolve_blocks(
+            files.iter().map(|(path, text)| (*path, text.as_bytes())),
+            &["weather_rain_light", "weather_snow"],
+        )
+    }
+
+    #[test]
+    fn full_blocks_keep_last_definition_hidden_values_and_custom_tooltips() {
+        let read = blocks(&[
+            (
+                "common/modifiers/a.txt",
+                "weather_rain_light = { attack = 0.1 }",
+            ),
+            (
+                "common/modifiers/b.txt",
+                "weather_rain_light = {
+                    attack = 0.2 hidden_modifier = { defence = -0.3 }
+                    custom_modifier_tooltip = weather_help
+                    attack = 0.4 added_modifier = { speed = 0.9 }
+                }",
+            ),
+        ]);
+        let rain = read.blocks[0].as_ref().unwrap();
+        assert_eq!(
+            rain.values
+                .iter()
+                .map(|value| (value.name.as_str(), value.value))
+                .collect::<Vec<_>>(),
+            [("attack", 40_000), ("defence", -30_000)]
+        );
+        assert!(rain.hidden.contains("defence"));
+        assert_eq!(rain.tooltips(), ["weather_help"]);
+        assert_eq!(rain.children.len(), 1);
+        // The native null object has an empty accumulator (140550940).
+        assert_eq!(read.blocks[1], Ok(modifiers::Modifiers::default()));
+    }
+
+    #[test]
+    fn full_blocks_refuse_stopped_files_until_a_later_definition_replaces_them() {
+        let stopped = blocks(&[(
+            "common/modifiers/a.txt",
+            "weather_rain_light = { attack = 0.1 }
+             other = { attack = { unresolved = yes } }
+             weather_snow = { defence = 0.2 }",
+        )]);
+        for (block, name) in stopped
+            .blocks
+            .iter()
+            .zip(["weather_rain_light", "weather_snow"])
+        {
+            let refused = block.as_ref().unwrap_err();
+            assert_eq!(refused.file, "common/modifiers/a.txt");
+            assert_eq!(refused.modifier, name);
+            assert_eq!(refused.key, "<whole block>");
+            assert!(refused.reason.contains("the rest of the file"));
+        }
+        let replaced = blocks(&[
+            (
+                "common/modifiers/a.txt",
+                "other = { attack = { unresolved = yes } }",
+            ),
+            (
+                "common/modifiers/b.txt",
+                "weather_rain_light = { attack = 0.5 }",
+            ),
+        ]);
+        assert_eq!(replaced.blocks[0].as_ref().unwrap().values[0].value, 50_000);
+        assert!(replaced.blocks[1].is_err());
     }
 
     #[test]

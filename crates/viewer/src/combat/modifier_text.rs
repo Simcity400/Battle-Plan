@@ -325,9 +325,32 @@ impl Block {
         Ok(false)
     }
 
+    /// Weather-event entries in the naval window use 140552B00 with
+    /// include mask 1 and exclude mask 0 (141D8A3B0). It scans every
+    /// accumulator entry, including hidden ones, for a nonzero effective
+    /// value whose definition category mask (+0x64) includes bit 0 and
+    /// whose feature selector (+0x68) is eligible (140551820).
+    pub(super) fn has_category_one(&self, definitions: &Definitions<'_>) -> Result<bool, Refusal> {
+        for (&index, &raw) in &self.values {
+            let row = definitions.row(index)?;
+            if row.category_mask & 1 == 0 {
+                continue;
+            }
+            let value = if row.flags & CLAMP != 0 {
+                raw.clamp(0, ONE)
+            } else {
+                raw
+            };
+            if value != 0 && definitions.eligible(row)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// 14054E050 with the trait description's arguments: precision 2, no
-    /// colour, "\n" separators, every category, `scale`, and `prefix` before
-    /// each line's name.
+    /// colour, "\n" separators, `include_mask`, `scale`, and `prefix` before
+    /// each line's name. 14054F6D0 tests the definition's +0x64 category.
     pub(super) fn describe(
         &self,
         definitions: &Definitions<'_>,
@@ -335,6 +358,7 @@ impl Block {
         loc: &Localisation,
         scale: i64,
         prefix: &str,
+        include_mask: u32,
     ) -> Result<String, Refusal> {
         let mut text = String::new();
         let mut marker = 0;
@@ -350,9 +374,12 @@ impl Block {
                 raw
             };
             let value = mul(value, scale);
-            // 14054F6D0: shown or nonzero, in an included category (all of
-            // them) that no excluded mask (none) removes, and eligible.
-            if !((row.flags & SHOW_ZERO != 0 || value != 0) && row.category_mask != 0 && eligible) {
+            // 14054F6D0: shown or nonzero, in an included category that
+            // no excluded mask (none) removes, and eligible.
+            if !((row.flags & SHOW_ZERO != 0 || value != 0)
+                && row.category_mask & include_mask != 0
+                && eligible)
+            {
                 continue;
             }
             if self.hidden.contains(&index) {
@@ -524,7 +551,7 @@ mod tests {
         };
         assert_eq!(
             block
-                .describe(&definitions, &NoIcons, &loc, ONE, "")
+                .describe(&definitions, &NoIcons, &loc, ONE, "", u32::MAX)
                 .unwrap(),
             "B Tanks: \u{11}R-10%\u{11}!\nCustom"
         );
@@ -538,7 +565,7 @@ mod tests {
         };
         assert_eq!(
             block
-                .describe(&definitions, &NoIcons, &loc, ONE, "")
+                .describe(&definitions, &NoIcons, &loc, ONE, "", u32::MAX)
                 .unwrap(),
             "Custom"
         );
@@ -550,7 +577,7 @@ mod tests {
         };
         assert!(
             block
-                .describe(&definitions, &NoIcons, &loc, ONE, "")
+                .describe(&definitions, &NoIcons, &loc, ONE, "", u32::MAX)
                 .is_err()
         );
         // Each line takes the prefix before its name.
@@ -565,10 +592,35 @@ mod tests {
         };
         assert_eq!(
             prefixed
-                .describe(&definitions, &NoIcons, &loc, ONE, "  ")
+                .describe(&definitions, &NoIcons, &loc, ONE, "  ", u32::MAX)
                 .unwrap(),
             "  A: \u{11}G+10%\u{11}!\n  A: \u{11}G+10%\u{11}!"
         );
+    }
+
+    #[test]
+    fn weather_icon_requires_a_nonzero_effective_category_one_entry() {
+        let mut rows = vec![row(0, 0); 3];
+        for (index, row) in rows.iter_mut().enumerate() {
+            row.index = index as u32;
+        }
+        rows[0].category_mask = 2;
+        rows[1].flags = CLAMP;
+        rows[2].feature_selector = 4;
+        rows[2].eligibility = 1;
+        let definitions = Definitions::from_parts(&rows, &[], Some(0));
+        let block = Block {
+            values: BTreeMap::from([(0, 10_000), (1, -10_000), (2, 10_000)]),
+            hidden: BTreeSet::from([2]),
+            ..Block::default()
+        };
+        assert!(!block.has_category_one(&definitions).unwrap());
+        let definitions = Definitions::from_parts(&rows, &[], Some(4));
+        assert!(block.has_category_one(&definitions).unwrap());
+        let mut visible = block;
+        visible.values.insert(1, 10_000);
+        let definitions = Definitions::from_parts(&rows, &[], None);
+        assert!(visible.has_category_one(&definitions).unwrap());
     }
 
     /// One CModifier entry `key = value` as the file's reader returns it.
@@ -644,7 +696,7 @@ mod tests {
             ..Block::default()
         };
         let text = block
-            .describe(&definitions, &NoIcons, &loc, ONE, "")
+            .describe(&definitions, &NoIcons, &loc, ONE, "", u32::MAX)
             .unwrap();
         assert!(text.starts_with("Three"), "{text}");
     }
@@ -680,7 +732,7 @@ mod tests {
         // "a" hashes to bucket 4 and "b" to 5: slot order, not read order.
         assert_eq!(
             described
-                .describe(&definitions, &NoIcons, &loc, ONE, "")
+                .describe(&definitions, &NoIcons, &loc, ONE, "", u32::MAX)
                 .unwrap(),
             "A\nB"
         );

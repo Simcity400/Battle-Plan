@@ -57,6 +57,7 @@ fn region(id: u32, provinces: &[u32]) -> (u32, StrategicRegion) {
             name_key: format!("STRATEGICREGION_{id}"),
             provinces: provinces.to_vec(),
             naval_terrain: None,
+            static_modifiers: false,
         },
     )
 }

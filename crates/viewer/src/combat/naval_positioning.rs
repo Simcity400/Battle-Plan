@@ -284,6 +284,9 @@ mod tests {
         Defines {
             summary_fixed: [0; 14],
             summary_integer: [0; 3],
+            silhouette_planes: [0; 6],
+            screen_cap_reduction_factor: 0,
+            plane_stacking_penalty_effect: 0,
             sortie_stance_ratios: vec![ONE],
             base_carrier_sortie_efficiency: ONE,
             selected_sortie_initial_time: 24,

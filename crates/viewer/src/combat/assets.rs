@@ -46,6 +46,11 @@ pub struct Assets {
     /// `None`, with a warning, when the content's defines do not load.
     pub naval_defines: Option<installed_content::naval_combat_defines::Defines>,
     pub(super) naval_air_groups: super::naval_air_groups::Content,
+    /// 141D8A3B0's six weather-event static accumulators, in event order.
+    pub(super) naval_weather_modifiers: Vec<Result<installed_content::modifiers::Modifiers, String>>,
+    /// Effective strategic templates that declare custom sea modifiers.
+    pub(super) custom_sea_regions: BTreeSet<u32>,
+    pub(super) naval_terrain: Result<super::naval_terrain::Content, String>,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
     /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF` (1415B06C0),
@@ -285,6 +290,17 @@ impl Assets {
             ));
         self.tactics.trigger_names()
     }
+}
+
+/// 1415938B0 reads `static_modifiers` from each strategic template. A later
+/// template for an ID replaces the earlier one (140AB1200).
+fn custom_sea_regions(
+    regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
+) -> BTreeSet<u32> {
+    regions
+        .iter()
+        .filter_map(|(&id, region)| region.static_modifiers.then_some(id))
+        .collect()
 }
 
 fn prepared_size(
@@ -557,6 +573,7 @@ impl CombatContent {
 impl Assets {
     pub fn load(
         shared: &Arc<ResolvedLayers>,
+        regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
         defines: &Defines,
         interface: &crate::map::sprites::Interface,
         flags: &Arc<FlagAtlas>,
@@ -775,8 +792,9 @@ impl Assets {
         if uncovered_portraits {
             warnings.push("Combat portraits and inline icons under gfx/leaders and gfx/texticons are outside this recording's content hash coverage; their visual identity is UNVERIFIED without a covered content manifest.".into());
         }
+        let equipment = installed_content::equipment::Database::load(layers)?;
         let (convoy_weapon_bound, misreads) =
-            super::naval_environment::convoy_weapon_bound(layers)?;
+            super::naval_environment::convoy_weapon_bound_from_database(&equipment);
         warnings.extend(misreads.into_iter().map(|misread| {
             format!(
                 "Convoy equipment content: {misread}; the weapon bound follows the game's reading."
@@ -796,7 +814,57 @@ impl Assets {
                 None
             }
         };
-        let naval_air_groups = super::naval_air_groups::Content::load(layers, &mut warnings);
+        let naval_air_groups =
+            super::naval_air_groups::Content::load(layers, &mut warnings, equipment);
+        // 141D8A3B0's six modifiers share 140600CF0's registered names.
+        let weather_modifiers = &super::naval_environment::WEATHER_MODIFIERS;
+        let naval_weather_modifiers = match installed_content::static_modifiers::read_blocks(
+            layers,
+            weather_modifiers,
+        ) {
+            Ok(blocks) => {
+                warnings.extend(blocks.notes.into_iter().map(|note| {
+                    format!(
+                        "Naval weather static modifiers: {note}; values follow the game's reading."
+                    )
+                }));
+                let mut refused = 0;
+                let modifiers = blocks
+                    .blocks
+                    .into_iter()
+                    .map(|block| {
+                        block.map_err(|refusal| {
+                            refused += 1;
+                            format!(
+                                "{} in {}: {}",
+                                refusal.modifier, refusal.file, refusal.reason
+                            )
+                        })
+                    })
+                    .collect();
+                if refused > 0 {
+                    warnings.push(format!(
+                        "Naval weather static modifiers: {refused} of {} full accumulators refused.",
+                        weather_modifiers.len()
+                    ));
+                }
+                modifiers
+            }
+            Err(error) => {
+                warnings.push(format!(
+                    "Naval weather static modifiers ({}): {error}; all {} full accumulators unavailable.",
+                    installed_content::static_modifiers::DIRECTORY,
+                    weather_modifiers.len()
+                ));
+                weather_modifiers
+                    .map(|name| Err(format!("{name}: {error}")))
+                    .into_iter()
+                    .collect()
+            }
+        };
+        let custom_sea_regions = custom_sea_regions(regions);
+        let naval_terrain =
+            super::naval_terrain::Content::load(layers, defines).map_err(|error| error.to_string());
         Ok(Self {
             native_windows: native_windows.clone(),
             gui,
@@ -809,6 +877,9 @@ impl Assets {
             convoy_weapon_bound,
             naval_defines,
             naval_air_groups,
+            naval_weather_modifiers,
+            custom_sea_regions,
+            naval_terrain,
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),
             naval_name_defines: ["BATTLE_NAME_VP_FACTOR", "BATTLE_NAME_VP_CUTOFF"]
@@ -831,6 +902,24 @@ impl Assets {
 mod tests {
     use super::*;
     use installed_content::image::native::Decode;
+
+    #[test]
+    fn custom_sea_declarations_follow_effective_strategic_templates() {
+        let root = std::env::temp_dir().join(format!("hoi4_custom_sea_{}", std::process::id()));
+        let directory = root.join("map/strategicregions");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("a.txt"),
+            b"strategic_region = { id = 1 name = ONE provinces = { 1 } static_modifiers = { x = y } }\nstrategic_region = { id = 2 name = TWO provinces = { 2 } static_modifiers = { x = y } }").unwrap();
+        std::fs::write(
+            directory.join("z.txt"),
+            b"strategic_region = { id = 1 name = REPLACED provinces = { 1 } }",
+        )
+        .unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let regions = installed_content::regions::read(&layers).unwrap();
+        assert_eq!(custom_sea_regions(&regions.regions), BTreeSet::from([2]));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn combat_native_assets_follow_global_templates_and_scrollbars() {
@@ -958,6 +1047,7 @@ mod tests {
         .unwrap();
         let assets = Assets::load(
             &shared,
+            &BTreeMap::new(),
             &Defines::new().unwrap(),
             &interface,
             &flags,

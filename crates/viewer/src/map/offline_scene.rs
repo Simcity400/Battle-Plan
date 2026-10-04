@@ -101,12 +101,14 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     )?;
     eprintln!("Content scene: interface assets");
     let map_data = installed_content::map::load(layers)?;
+    let regions = installed_content::regions::read(layers)?.regions;
     // No settings.txt here: the constructor's 1280 x 720 frame (`142212BD0`), which decides
     // only which resources the map-icon windows load.
     let icons = sprites::MapIcons::load(
         layers,
         &defines,
         &map_data,
+        &regions,
         &input.language,
         [map_data.width, map_data.height],
         [1280, 720],

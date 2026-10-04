@@ -57,6 +57,7 @@ fn strategic_regions() -> BTreeMap<u32, StrategicRegion> {
             name_key: "STRATEGICREGION_4".into(),
             provinces: vec![5],
             naval_terrain: None,
+            static_modifiers: false,
         },
     )])
 }

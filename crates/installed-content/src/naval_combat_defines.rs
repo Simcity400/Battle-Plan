@@ -41,10 +41,25 @@ const SUMMARY_INTEGER_KEYS: [(&str, &str); 3] = [
     ("NNavy", "NAVAL_COMBAT_PLANE_MIN_STACKING_PENALTY"),
 ];
 
+/// 141C557D0 reads these six integer weights in category order. Each is
+/// loaded from NNavy by the matching content stack, never from vanilla values.
+const SILHOUETTE_PLANE_KEYS: [&str; 6] = [
+    "SHIP_SILHOUETTE_VALUE_PLANES_CAPITAL",   // 14331D884
+    "SHIP_SILHOUETTE_VALUE_PLANES_SCREEN",    // 14331D90C
+    "SHIP_SILHOUETTE_VALUE_PLANES_CARRIER",   // 14331D9B0
+    "SHIP_SILHOUETTE_VALUE_PLANES_SUPPORT",   // 14331DA30
+    "SHIP_SILHOUETTE_VALUE_PLANES_CONVOY",    // 14331DAAC
+    "SHIP_SILHOUETTE_VALUE_PLANES_SUBMARINE", // 14331DB3C
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Defines {
     pub summary_fixed: [i64; 14],
     pub summary_integer: [i32; 3],
+    pub silhouette_planes: [i32; 6],
+    /// 141C557D0 and 14160C430 respectively, from the pinned NNavy globals.
+    pub screen_cap_reduction_factor: i64,
+    pub plane_stacking_penalty_effect: i64,
     /// Native `CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO`, indexed by the live
     /// task force's mission/stance value. A missing index remains unavailable.
     pub sortie_stance_ratios: Vec<i64>,
@@ -84,6 +99,10 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
         let value = integer(numbers, section, key)?;
         *out = if index == 0 { value.max(0) } else { value };
     }
+    let mut silhouette_planes = [0; 6];
+    for (out, key) in silhouette_planes.iter_mut().zip(SILHOUETTE_PLANE_KEYS) {
+        *out = integer(numbers, "NNavy", key)?;
+    }
 
     // 14092C600 -> 142059CF0 converts each array member to signed fixed5.
     // Native 141963700 uses the live task force's mission as this array index.
@@ -96,6 +115,10 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
     Ok(Defines {
         summary_fixed,
         summary_integer,
+        silhouette_planes,
+        screen_cap_reduction_factor: numbers.fixed5("NNavy", "SCREEN_CAP_REDUCTION_FACTOR")?, // 14331CC30
+        plane_stacking_penalty_effect: numbers
+            .fixed5("NNavy", "NAVAL_COMBAT_PLANE_STACKING_PENALTY_EFFECT")?, // 143318F68
         base_carrier_sortie_efficiency: numbers
             .fixed5("NNavy", "BASE_CARRIER_SORTIE_EFFICIENCY")?,
         selected_sortie_initial_time: integer(numbers, "NNavy", "SELECTED_SORTIE_INITIAL_TIME")?
@@ -147,6 +170,9 @@ mod tests {
         let definitions = Defines {
             summary_fixed: [0; 14],
             summary_integer: [0; 3],
+            silhouette_planes: [0; 6],
+            screen_cap_reduction_factor: 0,
+            plane_stacking_penalty_effect: 0,
             sortie_stance_ratios: vec![0, 25_000],
             base_carrier_sortie_efficiency: 50_000,
             selected_sortie_initial_time: 24,
@@ -154,5 +180,34 @@ mod tests {
         assert_eq!(definitions.mission_factor(1), Some(25_000));
         assert_eq!(definitions.mission_factor(2), None);
         assert_eq!(definitions.mission_factor(-1), None);
+    }
+
+    #[test]
+    fn silhouette_and_stacking_defines_follow_authored_values() {
+        let numbers = NumericDefines::new().unwrap();
+        let mut script = String::from("NDefines = { NNavy = {}, NAir = {} }\n");
+        for &(section, key) in &SUMMARY_FIXED_KEYS {
+            script.push_str(&format!("NDefines.{section}.{key} = 1\n"));
+        }
+        for &(section, key) in &SUMMARY_INTEGER_KEYS {
+            script.push_str(&format!("NDefines.{section}.{key} = 1\n"));
+        }
+        for (index, key) in SILHOUETTE_PLANE_KEYS.iter().enumerate() {
+            script.push_str(&format!("NDefines.NNavy.{key} = {}\n", index + 2));
+        }
+        script.push_str(
+            "NDefines.NNavy.SCREEN_CAP_REDUCTION_FACTOR = 0.02\n\
+             NDefines.NNavy.NAVAL_COMBAT_PLANE_STACKING_PENALTY_EFFECT = 0.005\n\
+             NDefines.NNavy.CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO = { 1 }\n\
+             NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY = 1\n\
+             NDefines.NNavy.SELECTED_SORTIE_INITIAL_TIME = 1\n",
+        );
+        numbers
+            .load("common/defines/test.lua", script.as_bytes())
+            .unwrap();
+        let read = from_numbers(&numbers).unwrap();
+        assert_eq!(read.silhouette_planes, [2, 3, 4, 5, 6, 7]);
+        assert_eq!(read.screen_cap_reduction_factor, 2_000);
+        assert_eq!(read.plane_stacking_penalty_effect, 500);
     }
 }

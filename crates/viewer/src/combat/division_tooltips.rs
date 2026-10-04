@@ -1237,14 +1237,7 @@ pub(super) fn bind(
     let map = &document.map;
     let kinds = |province| map.definitions.get(&province).map(|row| row.kind);
     let countries = rows::<tables::Countries>(frame)?;
-    let viewing_tag = countries
-        .rows()
-        .iter()
-        .find(|country| country.canonical_slot == vision.ours())
-        .ok_or("the viewing country has no Countries row")
-        .and_then(|country| {
-            std::str::from_utf8(&country.tag).map_err(|_| "the viewing country's tag is not UTF-8")
-        });
+    let viewing_tag = super::text::viewing_tag(countries.rows(), vision);
     let (icons, loc) = (&document.icons.combat, &document.names.localisation);
     let movement_sources: BTreeMap<_, _> = movements
         .rows()

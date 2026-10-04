@@ -11,7 +11,10 @@ use super::{
 };
 use crate::{
     document::Document,
-    map::tables::{Available, rows},
+    map::{
+        perspective::Vision,
+        tables::{Available, rows},
+    },
 };
 use installed_content::{
     division_names::{Database, Unresolved},
@@ -29,13 +32,14 @@ pub(super) fn bind(
     frame: &DecodedFrame,
     selection: Selection,
     flags: &BTreeMap<u32, String>,
+    vision: &Vision,
 ) -> io::Result<()> {
     match selection {
         Selection::Land(id) => {
             land(out, document, frame, id, flags)?;
             super::land_details::bind(out, document, frame, id)
         }
-        Selection::Naval(id) => naval(out, document, frame, id, flags),
+        Selection::Naval(id) => naval(out, document, frame, id, flags, vision),
         Selection::NavalResult(_) => Ok(()),
     }
 }
@@ -1023,16 +1027,31 @@ fn naval(
     frame: &DecodedFrame,
     id: u64,
     flags: &BTreeMap<u32, String>,
+    vision: &Vision,
 ) -> io::Result<()> {
     let details = rows::<tables::NavalCombatDetails>(frame)?;
     if let Some(detail) = details.rows().iter().find(|r| r.combat == id) {
         out.warnings
             .retain(|s| !s.starts_with("Combat UI: NavalCombatDetails/"));
-        fill(
-            &mut out.values,
-            "header_container/progress_attacker",
-            detail.progress as f32 / 100_000.0,
-        );
+        let links = rows::<tables::CountryLinks>(frame)?;
+        let aliases: BTreeMap<_, _> = links
+            .rows()
+            .iter()
+            .map(|r| (r.id, r.canonical_slot))
+            .collect();
+        // 1417DA6E6..1417DA74A: the viewing country is compared with every
+        // attacker primary country (+0x38). A match shows the defender skin;
+        // otherwise the attacker skin. Both widgets receive the same progress.
+        match naval_progress_skin(&detail.sides[0].summary.countries, &aliases, vision.ours()) {
+            Ok(shown) => bind_naval_progress(&mut out.values, shown, detail.progress),
+            Err(reason) => out.withhold(
+                &[
+                    "header_container/progress_attacker",
+                    "header_container/progress_defender",
+                ],
+                format!("Naval combat {id} progress skin is hidden: {reason}."),
+            ),
+        }
         // The window recomputes positioning, screening and anti-air from live operands on
         // every refresh; the combat's stored copies lag them.
         let combat_ships = rows::<tables::NavalCombatShips>(frame)?;
@@ -1231,9 +1250,38 @@ fn naval(
                 );
             }
         }
-        out.warnings.push("Naval: progress, recomputed screening, positioning and AA, ordered side flags and commander name/skills are bound. Air groups, perspective-dependent progress skin and tooltips remain unported; the environment binder supplies recorded weather and weapon summaries. Phase has no separate scalar widget in navalcombat.gui; retreat/engagement operands are not relabelled as a guessed phase.".into());
+        out.warnings.push("Naval: the perspective progress skin, recomputed screening, positioning and AA, ordered side flags and commander name/skills are bound. Forward active air groups and their carrier-grid entries are bound from recorded variants and the stacked equipment registry. Hover capture gaps are reported as counted refusals beside their affected widgets. Phase has no separate scalar widget in navalcombat.gui; retreat/engagement operands are not relabelled as a guessed phase.".into());
     }
     Ok(())
+}
+
+/// 1417DA6E6..1417DA74A selects the opposite-named skin when the viewing
+/// country is in the attacker set. Raw links must be resolved to canonical
+/// slots before comparison (`tactics::viewing_side`, 1406D7F90).
+fn naval_progress_skin(
+    attackers: &[u32],
+    aliases: &BTreeMap<u32, u32>,
+    viewer: u32,
+) -> Result<&'static str, String> {
+    super::tactics::viewing_side(attackers, aliases, viewer).map(|side| {
+        if side == 0 {
+            "progress_defender"
+        } else {
+            "progress_attacker"
+        }
+    })
+}
+
+fn bind_naval_progress(values: &mut Values, shown: &str, progress: i64) {
+    let hidden = if shown == "progress_attacker" {
+        "progress_defender"
+    } else {
+        "progress_attacker"
+    };
+    hide(values, &format!("header_container/{hidden}"));
+    let key = format!("header_container/{shown}");
+    show(values, &key);
+    fill(values, &key, progress as f32 / 100_000.0);
 }
 
 crate::combat::text::tooltip_keys! {
@@ -1266,6 +1314,38 @@ crate::combat::text::tooltip_keys! {
 mod tests {
     use super::*;
     use crate::combat::binding::NoIcons;
+
+    #[test]
+    fn naval_progress_uses_opposite_skin_for_attacker_perspective() {
+        let aliases = BTreeMap::from([(12, 120), (34, 340), (56, 560)]);
+        let mut values = Values::new();
+        let attacker = naval_progress_skin(&[12, 34], &aliases, 340).unwrap();
+        bind_naval_progress(&mut values, attacker, 65_000);
+        assert!(values["header_container/progress_attacker"].hidden);
+        assert!(!values["header_container/progress_defender"].hidden);
+        assert_eq!(
+            values["header_container/progress_defender"].fill,
+            Some(0.65)
+        );
+        let defender = naval_progress_skin(&[12, 34], &aliases, 560).unwrap();
+        bind_naval_progress(&mut values, defender, 35_000);
+        assert!(!values["header_container/progress_attacker"].hidden);
+        assert!(values["header_container/progress_defender"].hidden);
+        assert_eq!(
+            values["header_container/progress_attacker"].fill,
+            Some(0.35)
+        );
+        assert_eq!(
+            naval_progress_skin(&[], &aliases, 340),
+            Ok("progress_attacker")
+        );
+        assert!(naval_progress_skin(&[12, 78], &aliases, 560).is_err());
+        assert_eq!(
+            naval_progress_skin(&[340, 78], &aliases, 340),
+            Err("the viewing country's combat side is unavailable: attacker primary country 340 has no CountryLinks row".to_owned())
+        );
+        assert!(naval_progress_skin(&[12], &aliases, 560).is_ok());
+    }
 
     /// The BM_ keys are the executable's: a missing one is refused, never
     /// shown as its own text, and the delayed key is named. Border factors

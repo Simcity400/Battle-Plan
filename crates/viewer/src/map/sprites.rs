@@ -21,7 +21,11 @@
 //! Depth is off and the batch runs after every world pass, so it always wins
 //! against the terrain, the water and the country names.
 
-use std::{collections::HashMap, io, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    io,
+    sync::Arc,
+};
 
 #[cfg(test)]
 pub(super) mod oracle;
@@ -112,6 +116,7 @@ impl MapIcons {
         layers: &ResolvedLayers,
         defines: &installed_content::defines::Defines,
         map: &installed_content::map::MapData,
+        regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
         language: &str,
         map_size: [u32; 2],
         gui_viewport: [u32; 2],
@@ -193,6 +198,7 @@ impl MapIcons {
         }
         let combat = crate::combat::Assets::load(
             &shared,
+            regions,
             defines,
             &interface,
             &counters.large_flags,

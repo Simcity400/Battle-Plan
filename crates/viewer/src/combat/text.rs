@@ -1,9 +1,14 @@
 //! Text shared by combat windows and ordinary-map hovers. Call sites own native keys and scopes.
 use dashboard::scripted_text::stored_text;
 use installed_content::localisation::{Argument as Arg, Localisation};
+use replay::rows::CountryRow;
 
 // One declaration supplies the producer's keys and the preload inventory.
 macro_rules! tooltip_keys {
+    ($list:ident; $($key:ident = $text:literal),* $(,)?) => {
+        $(const $key: &str = $text;)*
+        pub(super) const $list: &[&str] = &[$($key),*];
+    };
     ($($key:ident = $text:literal),* $(,)?) => {
         $(const $key: &str = $text;)*
         pub(super) const TOOLTIP_KEYS: &[&str] = &[$($key),*];
@@ -75,6 +80,21 @@ pub(crate) fn country_localised(
         },
         &[],
     )
+}
+
+/// The raw simulation tag for the viewing canonical slot. Combat text uses
+/// this tag for LocalizeForCurrentCountry@140BBA630, never a cosmetic alias.
+pub(super) fn viewing_tag<'a>(
+    countries: &'a [CountryRow],
+    vision: &crate::map::perspective::Vision,
+) -> Result<&'a str, &'static str> {
+    countries
+        .iter()
+        .find(|country| country.canonical_slot == vision.ours())
+        .ok_or("the viewing country has no Countries row")
+        .and_then(|country| {
+            std::str::from_utf8(&country.tag).map_err(|_| "the viewing country's tag is not UTF-8")
+        })
 }
 
 /// 141580360 preserves signed integer limits, including an invalid interval.

@@ -9,16 +9,365 @@ use crate::{
         perspective::{SharingUnknown, Vision},
         tables::rows,
     },
+    table_access::TokenNames,
 };
 use replay::{
     frame::DecodedFrame,
-    rows::{NavalCombatShipRow, NavalResultShip, tables},
+    rows::{NavalCombatPlane, NavalCombatShipRow, NavalResultShip, VariantDefinitionRow, tables},
 };
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet},
     io,
 };
+
+struct AirGroup<'a> {
+    side: u8,
+    model: usize,
+    owner: u32,
+    planes: Vec<&'a NavalCombatPlane>,
+}
+
+/// 1417D9C60 visits the forward groups' active-air arrays before the ship
+/// arrays. 1417D9510 joins a plane with the first entry having the same
+/// CEquipmentType+0x418 registration ID and equivalent country.
+fn air_group_slot(groups: &[AirGroup<'_>], side: u8, model: usize, owner: u32) -> Option<usize> {
+    groups
+        .iter()
+        .position(|group| group.side == side && group.model == model && group.owner == owner)
+}
+
+fn display_air_plane(plane: &NavalCombatPlane) -> bool {
+    plane.source == 0
+        && plane.group_index != u32::MAX
+        && plane.variant != 0
+        && plane.carrier_state & 4 == 0
+}
+
+fn air_count_label(side: u8, tag: &str, current: i32, maximum: i32, low: bool) -> String {
+    let colour = if low { 'R' } else { 'W' };
+    if side == 0 {
+        format!(
+            "\u{11}{colour} {}{} {current}/{maximum}\u{11}!",
+            super::INLINE_FLAG,
+            tag
+        )
+    } else {
+        format!(
+            "\u{11}{colour} {current}/{maximum} {}{}\u{11}!",
+            super::INLINE_FLAG,
+            tag
+        )
+    }
+}
+
+fn air_icon_widget(name: Option<String>, side: u8) -> Widget {
+    Widget {
+        hidden: name.is_none(),
+        sprite: name,
+        // 1417CEAF0's side byte is 1 for left and 0 for right; 1417DAA40
+        // sends byte+1 to CIcon. Native GUI bound frames are one based.
+        frame: Some(if side == 0 { 2 } else { 1 }),
+        // 1417DAA40's hover needs frozen CFEXAir presentation strings absent
+        // from the hour; prevent the authored seed from masquerading as it.
+        hover_owned: true,
+        ..Widget::default()
+    }
+}
+
+fn push_air_entry(
+    out: &mut Bindings,
+    heights: &mut BTreeMap<(u8, &str), f32>,
+    side: u8,
+    name: Option<String>,
+    size: [f32; 2],
+    label: Option<String>,
+) {
+    let mut values = Values::new();
+    for key in [
+        "bar_str",
+        "bar_org",
+        "icon_hidden",
+        "escape_progress",
+        "escape_icon_left",
+        "escape_icon_right",
+        "pride",
+        "desc_left",
+        "desc_right",
+    ] {
+        hide(&mut values, key);
+    }
+    values.insert("icon".into(), air_icon_widget(name, side));
+    if let Some(label) = label {
+        let count_key = if side == 0 { "desc_left" } else { "desc_right" };
+        text(&mut values, count_key, label);
+        values.entry(count_key.into()).or_default().hidden = false;
+    }
+    let wnd = if side == 0 { "left" } else { "right" };
+    let grid = format!("battle_window/top_wnd/{wnd}_wnd/grid_carrier");
+    let height = heights.entry((side, "carrier")).or_default();
+    out.naval_entries.push(NavalEntry {
+        side,
+        unknown: false,
+        grid,
+        offset: [combat_box_x(size[0]), *height],
+        size,
+        values,
+        battle_slots: Vec::new(),
+    });
+    *height += size[1] + 3.0;
+}
+
+fn air_entries(
+    out: &mut Bindings,
+    document: &Document,
+    frame: &DecodedFrame,
+    id: u64,
+    flags: &BTreeMap<u32, String>,
+    aliases: &BTreeMap<u32, u32>,
+    heights: &mut BTreeMap<(u8, &str), f32>,
+) -> io::Result<()> {
+    let details = rows::<tables::NavalCombatDetails>(frame)?;
+    let Some(detail) = details.rows().iter().find(|row| row.combat == id) else {
+        if !details.is_complete() {
+            out.refuse(format!(
+                "Naval combat {id} air entries are omitted: NavalCombatDetails is incomplete."
+            ));
+        }
+        return Ok(());
+    };
+    let variants = rows::<tables::VariantDefinitions>(frame)?;
+    let by_variant: BTreeMap<_, _> = variants.rows().iter().map(|row| (row.id, row)).collect();
+    let countries = rows::<tables::Countries>(frame)?;
+    let by_country: BTreeMap<_, _> = countries.rows().iter().map(|row| (row.id, row)).collect();
+    let tokens = TokenNames::new(frame)?;
+    let database = document.icons.combat.naval_air_groups.equipment();
+    let wings = rows::<tables::AirWings>(frame)?;
+    let bases = rows::<tables::AirBases>(frame)?;
+    let ship_rows = rows::<tables::NavalCombatShips>(frame)?;
+    let ship_models = rows::<tables::ShipModels>(frame)?;
+    let live_ships = rows::<tables::Ships>(frame)?;
+    let members: Vec<_> = ship_rows
+        .rows()
+        .iter()
+        .filter(|row| row.combat == id)
+        .collect();
+    let models = ship_models
+        .is_complete()
+        .then(|| super::keyed::Keyed::new(ship_models.rows(), |row| row.ship))
+        .flatten();
+    let joins = super::naval_air_groups::CarrierJoins::new(
+        ship_rows.is_complete().then_some(members.as_slice()),
+        bases.is_complete().then_some(bases.rows()),
+        live_ships.is_complete().then_some(live_ships.rows()),
+        models,
+    );
+    let wing_index = wings
+        .is_complete()
+        .then(|| super::keyed::Keyed::new(wings.rows(), |row| row.id))
+        .flatten();
+    let base_index = bases
+        .is_complete()
+        .then(|| super::keyed::Keyed::new(bases.rows(), |row| row.id))
+        .flatten();
+    let mut groups = Vec::<AirGroup<'_>>::new();
+    for (side, side_detail) in detail.sides.iter().enumerate() {
+        for plane in side_detail
+            .planes
+            .iter()
+            .filter(|plane| display_air_plane(plane))
+        {
+            let model = (|| {
+                let variant: &VariantDefinitionRow =
+                    by_variant.get(&plane.variant).copied().ok_or_else(|| {
+                        format!("variant {} has no VariantDefinitions row", plane.variant)
+                    })?;
+                let name = tokens
+                    .name(variant.equipment_token)
+                    .map_err(|error| error.to_string())?;
+                let database = database.ok_or("the stacked equipment database is unavailable")?;
+                let index = database.get(name.as_bytes()).ok_or_else(|| {
+                    format!("equipment type {name} is absent from the stacked content")
+                })?;
+                let archetype = database.equipment[index].archetype.unwrap_or(index);
+                let archetype_name = tokens
+                    .name(variant.archetype_token)
+                    .map_err(|error| error.to_string())?;
+                if !database.equipment[archetype]
+                    .name
+                    .eq_ignore_ascii_case(archetype_name.as_bytes())
+                {
+                    return Err(format!(
+                        "variant {} archetype {archetype_name} differs from the stacked equipment archetype",
+                        variant.id
+                    ));
+                }
+                Ok::<_, String>(index)
+            })();
+            let model = match model {
+                Ok(model) => model,
+                Err(reason) => {
+                    out.refuse(format!(
+                        "Naval combat {id} air plane {} is omitted: {reason}.",
+                        plane.index
+                    ));
+                    continue;
+                }
+            };
+            let Some(&owner) = aliases.get(&plane.country) else {
+                out.refuse(format!("Naval combat {id} air plane {} is omitted: country {} has no CountryLinks equivalence row.", plane.index, plane.country));
+                continue;
+            };
+            if let Some(slot) = air_group_slot(&groups, side as u8, model, owner) {
+                groups[slot].planes.push(plane);
+            } else {
+                groups.push(AirGroup {
+                    side: side as u8,
+                    model,
+                    owner,
+                    planes: vec![plane],
+                });
+            }
+        }
+    }
+    let Some(database) = database else {
+        return Ok(());
+    };
+    for group in groups {
+        let first = group.planes[0];
+        let definition = &database.equipment[group.model];
+        let archetype = &database.equipment[definition.archetype.unwrap_or(group.model)];
+        let archetype_name = std::str::from_utf8(&archetype.name);
+        let sprite_name = std::str::from_utf8(&definition.sprite);
+        let tag = match by_country
+            .get(&first.country)
+            .ok_or_else(|| format!("country {} has no Countries row", first.country))
+            .and_then(|row| {
+                std::str::from_utf8(&row.tag)
+                    .map_err(|_| format!("country {} tag is not UTF-8", first.country))
+            }) {
+            Ok(tag) if !tag.contains('\0') => tag,
+            Ok(_) => {
+                out.refuse(format!(
+                    "Naval combat {id} air group model {} is omitted: country {} tag contains NUL.",
+                    group.model + 1,
+                    first.country
+                ));
+                continue;
+            }
+            Err(reason) => {
+                out.refuse(format!(
+                    "Naval combat {id} air group model {} is omitted: {reason}.",
+                    group.model + 1
+                ));
+                continue;
+            }
+        };
+        let mut candidates = Vec::new();
+        if let Ok(name) = &archetype_name {
+            candidates.push(format!("GFX_navalcombat_air_icon_{tag}_{name}"));
+        }
+        if let Ok(name) = archetype_name {
+            candidates.push(format!("GFX_navalcombat_air_icon_{name}"));
+        }
+        if let Ok(name) = sprite_name {
+            candidates.push(format!("GFX_navalcombat_air_icon_{name}"));
+        }
+        // 1417DAA40's country, archetype, definition.sprite cascade is tested
+        // against the effective .gfx registry, never a vanilla name list.
+        let found = candidates.into_iter().find_map(|name| {
+            document
+                .icons
+                .combat
+                .sprite_size(&name)
+                .map(|size| (name, size))
+        });
+        let (name, size) = if let Some((name, size)) = found {
+            (Some(name), size)
+        } else {
+            // 1417DAA40 with lStack_350 == 0 hides only CIcon. The row and
+            // its counts retain the navalcombat.gui template's own size.
+            out.refuse(format!("Naval combat {id} air group model {} icon is hidden: no stacked naval air icon resolves from its country, archetype and definition sprite.", group.model + 1));
+            let size = document
+                .icons
+                .combat
+                .native_windows
+                .gui_type(b"navalcombat_ship_entry")
+                .and_then(|entry| crate::map::native_gui::container_frame(entry, None).ok())
+                .map(|frame| frame.size.map(|value| value as f32));
+            if size.is_none() {
+                out.refuse(format!("Naval combat {id} air group model {} layout is unavailable: navalcombat_ship_entry has no native GUI frame.", group.model + 1));
+            }
+            let size = size.unwrap_or_default();
+            (None, size)
+        };
+        out.refuse(format!("Naval combat {id} air group model {} hover is withheld: hourly CFEXAir+0x88 presentation name and +0xA8 ordered string vector (+0xB4 count) are absent from NavalCombatDetails (1417DAA40/1417D2430).", group.model + 1));
+        // 1417DAA40 sums current and max(initial,current) in signed i32.
+        let current = group
+            .planes
+            .iter()
+            .fold(0_i32, |sum, plane| sum.wrapping_add(plane.current_planes));
+        let maximum = group.planes.iter().fold(0_i32, |sum, plane| {
+            sum.wrapping_add(plane.initial_planes.max(plane.current_planes))
+        });
+        let low_efficiency = (|| {
+            for plane in &group.planes {
+                // 1417DAA40 reads CFEXAir+0x40, the active second wing
+                // vector. A missing resolved wing or base is skipped by the
+                // native reference walk; incomplete tables make it unknown.
+                for handle in &plane.wings[1] {
+                    let wings = wing_index
+                        .as_ref()
+                        .ok_or("AirWings is incomplete or has duplicate handles")?;
+                    let bases = base_index
+                        .as_ref()
+                        .ok_or("AirBases is incomplete or has duplicate handles")?;
+                    let Some(wing) = wings.get(*handle) else {
+                        continue;
+                    };
+                    let Some(base) = bases.get(wing.air_base) else {
+                        continue;
+                    };
+                    if base.state.is_some() {
+                        continue;
+                    }
+                    let efficiency = super::naval_air_groups::display_efficiency(
+                        plane,
+                        &detail.sides[group.side as usize],
+                        group.side,
+                        detail.duration,
+                        &joins,
+                        &document.icons.combat.naval_air_groups,
+                        document.icons.combat.naval_defines.as_ref(),
+                    )
+                    .ok_or("141965010 efficiency operands are unavailable")?;
+                    if efficiency < 50_000 {
+                        return Ok::<_, &'static str>(true);
+                    }
+                }
+            }
+            Ok(false)
+        })();
+        let label = if let (Some(tag), Ok(low)) = (flags.get(&first.country), low_efficiency) {
+            Some(air_count_label(group.side, tag, current, maximum, low))
+        } else {
+            out.refuse(format!(
+                "Naval combat {id} air group model {} count/flag is withheld: {}.",
+                group.model + 1,
+                match low_efficiency {
+                    Err(reason) => reason.to_owned(),
+                    Ok(_) => format!(
+                        "country {} has no content-resolved tag and flag",
+                        first.country
+                    ),
+                }
+            ));
+            None
+        };
+        push_air_entry(out, heights, group.side, name, size, label);
+    }
+    Ok(())
+}
 
 pub(super) fn bind(
     out: &mut Bindings,
@@ -195,6 +544,7 @@ fn active(
     });
     out.naval_entries.clear();
     let mut heights = BTreeMap::<(u8, &str), f32>::new();
+    air_entries(out, document, frame, id, flags, &aliases, &mut heights)?;
     for (key, members) in groups {
         let first = members[0];
         let name = if key.unknown {
@@ -346,10 +696,13 @@ fn active(
             combat_box_x(asset[0])
         };
         out.naval_entries.push(NavalEntry {
+            side: key.side,
+            unknown: key.unknown,
             grid,
             offset: [offset_x, *height],
             size: asset,
             values,
+            battle_slots: members.iter().map(|row| row.battle_slot).collect(),
         });
         *height += asset[1] + 3.0 + if escaping.is_empty() { 0.0 } else { 8.0 };
     }
@@ -684,6 +1037,147 @@ fn result_flags(values: &mut Values, ships: &[&NavalResultShip], flags: &BTreeMa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forward_land_and_carrier_air_share_the_native_group_rule() {
+        let make = |source| NavalCombatPlane {
+            source: 0,
+            group_index: 2,
+            variant: 31,
+            efficiency: replay::rows::NavalCombatAirEfficiency {
+                source,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let land = make(2);
+        let carrier = make(3);
+        assert!(display_air_plane(&land));
+        assert!(display_air_plane(&carrier));
+        let groups = [AirGroup {
+            side: 0,
+            model: 7,
+            owner: 4,
+            planes: vec![&land],
+        }];
+        assert_eq!(air_group_slot(&groups, 0, 7, 4), Some(0));
+        assert_eq!(air_group_slot(&groups, 0, 8, 4), None);
+        assert_eq!(air_group_slot(&groups, 1, 7, 4), None);
+        assert_eq!(air_group_slot(&groups, 0, 7, 5), None);
+        let mut retired = carrier.clone();
+        retired.carrier_state = 4;
+        assert!(!display_air_plane(&retired));
+        let mut paired = carrier.clone();
+        paired.group_index = u32::MAX;
+        assert!(!display_air_plane(&paired));
+    }
+
+    #[test]
+    fn air_count_uses_current_over_max_and_native_side_colour_order() {
+        assert_eq!(
+            air_count_label(0, "AAA", 3, 7, false),
+            format!("\u{11}W {}AAA 3/7\u{11}!", super::super::INLINE_FLAG)
+        );
+        assert_eq!(
+            air_count_label(1, "BBB", 2, 9, true),
+            format!("\u{11}R 2/9 {}BBB\u{11}!", super::super::INLINE_FLAG)
+        );
+    }
+
+    #[test]
+    fn air_icon_frames_and_missing_hover_are_explicit() {
+        let left = air_icon_widget(Some("GFX_test_air".into()), 0);
+        let right = air_icon_widget(Some("GFX_test_air".into()), 1);
+        assert_eq!(left.frame, Some(2));
+        assert_eq!(right.frame, Some(1));
+        assert!(left.hover_owned && right.hover_owned);
+        assert!(left.tooltip.is_none() && right.tooltip.is_none());
+        let missing = air_icon_widget(None, 0);
+        assert!(missing.hidden && missing.sprite.is_none());
+    }
+
+    #[test]
+    fn air_entries_bind_before_carrier_ships_on_both_grids() {
+        let mut out = Bindings::default();
+        let mut heights = BTreeMap::new();
+        push_air_entry(
+            &mut out,
+            &mut heights,
+            0,
+            Some("GFX_air_left".into()),
+            [40.0, 20.0],
+            Some("3/5".into()),
+        );
+        push_air_entry(
+            &mut out,
+            &mut heights,
+            1,
+            Some("GFX_air_right".into()),
+            [42.0, 24.0],
+            Some("2/8".into()),
+        );
+        for side in 0..2 {
+            out.naval_entries.push(NavalEntry {
+                side,
+                unknown: false,
+                grid: format!(
+                    "battle_window/top_wnd/{}_wnd/grid_carrier",
+                    if side == 0 { "left" } else { "right" }
+                ),
+                offset: [0.0, heights[&(side, "carrier")]],
+                size: [40.0, 20.0],
+                values: Values::new(),
+                battle_slots: vec![1],
+            });
+        }
+        for side in 0..2 {
+            let air = out
+                .naval_entries
+                .iter()
+                .position(|entry| entry.side == side && entry.battle_slots.is_empty())
+                .unwrap();
+            let ship = out
+                .naval_entries
+                .iter()
+                .position(|entry| entry.side == side && !entry.battle_slots.is_empty())
+                .unwrap();
+            assert!(air < ship, "side {side} ship precedes its air group");
+        }
+        assert_eq!(
+            out.naval_entries[0].grid,
+            "battle_window/top_wnd/left_wnd/grid_carrier"
+        );
+        assert_eq!(
+            out.naval_entries[1].grid,
+            "battle_window/top_wnd/right_wnd/grid_carrier"
+        );
+        assert_eq!(out.naval_entries[0].values["icon"].frame, Some(2));
+        assert_eq!(out.naval_entries[1].values["icon"].frame, Some(1));
+        assert_eq!(
+            out.naval_entries[0].values["desc_left"].text.as_deref(),
+            Some("3/5")
+        );
+        assert!(!out.naval_entries[0].values["desc_left"].hidden);
+        assert_eq!(
+            out.naval_entries[1].values["desc_right"].text.as_deref(),
+            Some("2/8")
+        );
+        assert!(!out.naval_entries[1].values["desc_right"].hidden);
+        assert_eq!(heights[&(0, "carrier")], 23.0);
+        assert_eq!(heights[&(1, "carrier")], 27.0);
+        push_air_entry(
+            &mut out,
+            &mut heights,
+            0,
+            None,
+            [1.0, 3.0],
+            Some("4/7".into()),
+        );
+        let missing = out.naval_entries.last().unwrap();
+        assert!(missing.values["icon"].hidden);
+        assert!(missing.values["icon"].sprite.is_none());
+        assert_eq!(missing.values["desc_left"].text.as_deref(), Some("4/7"));
+    }
     #[test]
     fn organisation_uses_default_leader_and_recorded_hq_terms() {
         use replay::rows::{NavalShipModifierSource, NavalShipModifierTerm};

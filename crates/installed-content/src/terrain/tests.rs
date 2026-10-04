@@ -16,7 +16,7 @@ fn category(definitions: &TerrainDefinitions, index: u8) -> Option<&[u8]> {
 #[test]
 fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
     let definitions = database(&[
-        "categories={ ocean={ naval_range=1.25 custom_hull={ naval_range=0.5 } custom_hull={ naval_range=-0.2 } } }",
+        "categories={ ocean={ minimum_seazone_dominance=250 units={ attack=-0.1 } naval_range=1.25 custom_hull={ naval_range=0.5 units={ movement=-0.2 } } custom_hull={ naval_range=-0.2 units={ defence=0.3 } } } }",
     ]);
     let terrain = &definitions.categories[0];
     assert_eq!(terrain.modifiers.values[0].value, 125_000);
@@ -24,6 +24,11 @@ fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
     assert_eq!(terrain.classes[0].0, b"custom_hull");
     assert_eq!(terrain.classes[0].1.values[0].value, 50_000);
     assert_eq!(terrain.classes[1].1.values[0].value, -20_000);
+    assert_eq!(terrain.minimum_seazone_dominance, 25_000_000);
+    assert_eq!(terrain.common_adjuster.attack, -10_000);
+    assert_eq!(terrain.class_adjusters.len(), 2);
+    assert_eq!(terrain.class_adjusters[0].movement, -20_000);
+    assert_eq!(terrain.class_adjusters[1].defence, 30_000);
     // 14142C780 / 1409DB450 retain the first class bucket on repeated names;
     // 14142C5C0 adds the common raw value before the effective getter.
     assert_eq!(
