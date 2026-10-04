@@ -18,6 +18,7 @@ use std::{
     io,
 };
 mod units;
+pub(crate) use units::{StatKey, equipment_pool_roster, equipment_pool_shape, stat_key};
 
 /// Each technology's single unconditional equipment link, when known.
 pub type EquipmentLinks = BTreeMap<String, Option<String>>;

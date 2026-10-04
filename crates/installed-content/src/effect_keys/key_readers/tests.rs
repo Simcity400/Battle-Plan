@@ -276,3 +276,11 @@ fn setup_effect_missing_operators_follow_the_native_stale_value() {
         assert!(result.misreads.iter().all(|note| note.count.is_none()));
     }
 }
+
+mod character_and_province;
+mod registries;
+mod registry_and_strategy;
+mod root_forms;
+mod scalar_and_iterator;
+mod scope_and_building;
+mod unit_bonus_and_helpers;

@@ -2,13 +2,14 @@
 use std::{collections::BTreeSet, io};
 
 use crate::{
-    ResolvedLayers,
+    ResolvedLayers, equipment,
     fields::invalid,
     modifiers,
     parser::{
         self, Item,
         native::{self, Field, Shape},
     },
+    tokens::Token,
 };
 
 #[derive(Default)]
@@ -33,6 +34,91 @@ pub(super) enum Node {
     Modules,
     ModuleAmounts,
     Modifier(modifiers::Node),
+}
+
+/// SSubUnitStats::vf4 (141415770/141415B80) shared by technology units
+/// and CAddUnitBonusEffect. The fixed equipment stats are 1413D22A0.
+pub(crate) enum StatKey {
+    Scalar,
+    Transport,
+    Adjuster,
+    Pool,
+    Battalion,
+    Unknown,
+}
+
+pub(crate) fn stat_key(key: Option<&[u8]>, terrains: &BTreeSet<Vec<u8>>) -> StatKey {
+    let Some(key) = key else {
+        return StatKey::Unknown;
+    };
+    if key == b"transport" {
+        return StatKey::Transport;
+    }
+    if crate::equipment::stat_index(key).is_some()
+        || matches!(
+            key,
+            b"combat_width"
+                | b"sprite"
+                | b"priority"
+                | b"ai_priority"
+                | b"own_equipment_fuel_consumption_mult"
+        )
+    {
+        return StatKey::Scalar;
+    }
+    if matches!(key, b"need" | b"need_equipment") {
+        return StatKey::Pool;
+    }
+    if key == b"battalion_mult" {
+        return StatKey::Battalion;
+    }
+    if matches!(key, b"night" | b"amphibious" | b"river" | b"fort" | b"snow")
+        || terrains.contains(key)
+    {
+        return StatKey::Adjuster;
+    }
+    StatKey::Unknown
+}
+
+/// GetTypeByToken (1409EB9F0 -> 1409DC660) uses the equipment name index,
+/// including aliases installed by RegisterType (1409ECF30).
+pub(crate) fn equipment_pool_roster(database: &equipment::Database) -> BTreeSet<Vec<u8>> {
+    database
+        .registered_names()
+        .filter_map(|name| match Token::c_str(name) {
+            Token::Name(name) => Some(name),
+            Token::Rejected => None,
+        })
+        .collect()
+}
+
+/// CEquipmentArcheTypePool::vf4 (140FFC070): a found equipment type reads
+/// Fixed5; a miss reports the token and skips a current opening value.
+pub(crate) fn equipment_pool_shape(
+    field: &Field<'_>,
+    roster: Option<(&BTreeSet<Vec<u8>>, Option<&str>)>,
+) -> Shape<()> {
+    let Some(key) = field.keyword() else {
+        return Shape::Skip;
+    };
+    if !field.skips_block() {
+        return Shape::Skip;
+    }
+    let Some((names, gap)) = roster else {
+        return Shape::Unsettled(
+            "CEquipmentArcheTypePool 140FFC070: equipment names were not supplied".into(),
+        );
+    };
+    if names.contains(&key) {
+        Shape::One
+    } else if let Some(why) = gap {
+        Shape::Unsettled(format!(
+            "CEquipmentArcheTypePool 140FFC070: whether `{}` names equipment is unknown: {why}",
+            String::from_utf8_lossy(&key)
+        ))
+    } else {
+        Shape::Skip
+    }
 }
 
 /// The unprojected scalar readers all consume one token. A block in the
@@ -106,26 +192,25 @@ impl Registry {
             (Part, _) => Shape::Skip,
             (Modules, Some(b"any")) => Shape::Object(ModuleAmounts),
             (Modules | ModuleAmounts, _) => scalar(field, refused),
-            (Unit | Stats, Some(b"need" | b"need_equipment")) => Shape::Object(Pool),
-            (Unit | Stats, Some(b"battalion_mult")) => Shape::Object(Battalion),
-            (Unit | Stats, Some(b"transport")) => {
-                if field.skips_block() {
-                    refused
-                        .push("unit transport: unsupported block-valued equipment lookup".into());
+            (Unit | Stats, key) => match stat_key(key, &self.terrains) {
+                StatKey::Scalar => Shape::One,
+                StatKey::Transport => {
+                    if field.skips_block() {
+                        refused.push(
+                            "unit transport: unsupported block-valued equipment lookup".into(),
+                        );
+                    }
+                    Shape::Current
                 }
-                Shape::Current
-            }
-            (Unit | Stats, Some(key))
-                if matches!(key, b"night" | b"amphibious" | b"river" | b"fort" | b"snow")
-                    || self.terrains.contains(key) =>
-            {
-                Shape::Object(Adjuster)
-            }
-            (Unit | Stats, _) => scalar(field, refused),
+                StatKey::Adjuster => Shape::Object(Adjuster),
+                StatKey::Pool => Shape::Object(Pool),
+                StatKey::Battalion => Shape::Object(Battalion),
+                StatKey::Unknown if matches!(node, Stats) => Shape::Skip,
+                StatKey::Unknown => scalar(field, refused),
+            },
             (Adjuster, Some(b"attack" | b"defence" | b"movement")) => Shape::One,
             (Adjuster, _) => Shape::Skip,
-            (Pool, Some(key)) if self.equipment.contains(key) => Shape::One,
-            (Pool, _) => Shape::Skip,
+            (Pool, _) => equipment_pool_shape(field, Some((&self.equipment, None))).map(|()| Pool),
             // SSupportCategoryStatMultiplier 1414157A0: category/bools,
             // then numeric stats. Unknown stats report without block skip.
             (Battalion, _) => scalar(field, refused),
@@ -196,11 +281,7 @@ impl Registry {
         // (1409EB9F0): every registered type's name.
         let equipment = crate::equipment::Database::load_complete(layers)?;
         let mut registry = Self {
-            equipment: equipment
-                .equipment
-                .iter()
-                .map(|equipment| parser::c_string(&equipment.name).to_ascii_lowercase())
-                .collect(),
+            equipment: equipment_pool_roster(&equipment),
             terrains: crate::terrain::read_definitions(layers)?
                 .categories
                 .into_iter()

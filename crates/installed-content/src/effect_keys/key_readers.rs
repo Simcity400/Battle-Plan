@@ -1,6 +1,7 @@
 //! ReadScript's slot-4 readers. Static own-key lists and their fallback
-//! come from captures/astra/effect-key-readers/port_data.py, using hoi4re
-//! dumps from extract.py and the factory/vtable inventory in
+//! come from captures/astra/effect-key-readers-2/extract_tables.py and
+//! its cited per-range extraction scripts, using hoi4re dumps and the
+//! factory/vtable inventory in
 //! captures/astra/key-validity/classes.py. Addresses accompany the rows.
 
 use super::{READ_EFFECT, READ_SCRIPT};
@@ -9,6 +10,9 @@ use super::{READ_EFFECT, READ_SCRIPT};
 /// before the registry; both read with CIfEffect's key reader.
 pub(super) const ELSE_TOKEN: u32 = 0x36D3;
 pub(super) const ELSE_IF_TOKEN: u32 = 0x38ED;
+/// CPoliticalPartyEffect child constructed at 14032CA40 and dispatched by
+/// ReadScript (140534280) with this token.
+const POLITICAL_PARTY_TOKEN: u32 = 0x3009;
 #[cfg(test)]
 mod tests;
 use crate::{
@@ -23,21 +27,53 @@ use crate::{
 #[derive(Clone, Copy)]
 enum ValueReader {
     One,
+    Current,
+    SkipIfOpen,
     ValueList,
+    ValueListOrSkip,
     ValueListIfOpen,
+    ValueListIfOpenElseCurrent,
+    ValueListExceptAll,
+    RawList,
+    RawText,
     Localization,
     Limit,
     Province,
+    Trigger,
+    Effect,
+    Resource,
+    Comparison,
+    Building,
+    Collection,
+    ScopeSelectorChain,
+    Gender,
+    Ledger,
+    ProvinceId,
+    ProvinceVictoryPoint,
+    MtthModifier,
+    OptionalAssetsList,
+    Specialization,
+    Object(Helper),
+    ObjectIfOpen(Helper),
+    ObjectOrSkip(Helper),
 }
 
 #[derive(Clone, Copy)]
 enum Fallback {
-    /// CEffect::ReadEffect (1405345D0).
     Effect,
-    /// ReportUnexpectedToken (1424AD100 -> 1424ACF90), with its skip.
     Only,
-    /// Dynamic name assignment or a report without a skip (1424ACD40).
     One,
+    Reader(Helper),
+    Object(Helper),
+    AIStrategy,
+    Popularities,
+    RandomListMember,
+    UnitBonus,
+    PoliticalPartyScript,
+    EquipmentStatRegistry,
+    ModifierRegistry,
+    EquipmentUpgrade,
+    MeanTimeToHappen,
 }
 
 #[derive(Clone, Copy)]
@@ -46,191 +82,14 @@ enum KeyReader {
     Variable,
     DivideVariable,
     Conditional,
+    GenerateCharacter,
 }
 
-// CRemoveBuildingEffect@14031BFE0 delegates level to CScopedVariable
-// (140539440), which consumes one token, and tags to 140309360's raw
-// resolved array only on `{`. Unknown keys use ReportUnexpectedToken.
-const READER_14031BFE0: KeyReader = KeyReader::Keys(
-    &[
-        ("type", ValueReader::One),
-        ("state", ValueReader::One),
-        ("province", ValueReader::One),
-        ("level", ValueReader::One),
-        ("tags", ValueReader::ValueListIfOpen),
-    ],
-    Fallback::Only,
-);
-// CSetOrAddVictoryPointsEffect@1403AE5F0: both operands call the embedded
-// CScopedVariable::Read (140539440); unknown keys are reported and skipped.
-const READER_1403AE5F0: KeyReader = KeyReader::Keys(
-    &[("province", ValueReader::One), ("value", ValueReader::One)],
-    Fallback::Only,
-);
-// 14051BEC0 and 14051BBB0 accept every key as a strategic-location name
-// and read its one ParseTokenInt32 value (1424B0080), without error skip.
-const STRATEGIC_LOCATIONS: KeyReader = KeyReader::Keys(&[], Fallback::One);
-
-// BEGIN EXTRACTED TABLE
-const READER_1403ADCF0: KeyReader = KeyReader::Keys(
-    &[
-        ("tooltip", ValueReader::Localization),
-        ("limit", ValueReader::Limit),
-        ("visible_when_empty", ValueReader::One),
-        ("display_individual_scopes", ValueReader::One),
-        ("random_select_amount", ValueReader::One),
-    ],
-    Fallback::Effect,
-);
-const READER_1403AEEE0: KeyReader = KeyReader::Keys(
-    &[
-        ("target", ValueReader::One),
-        ("modifier", ValueReader::One),
-        ("days", ValueReader::One),
-    ],
-    Fallback::Only,
-);
-const READER_140323D80: KeyReader = KeyReader::Keys(&[("popup", ValueReader::One)], Fallback::One);
-const READER_14031D4D0: KeyReader = KeyReader::Keys(
-    &[
-        ("type", ValueReader::One),
-        ("province", ValueReader::Province),
-        ("level", ValueReader::One),
-        ("instant_build", ValueReader::One),
-    ],
-    Fallback::Only,
-);
-const READER_1403ADE50: KeyReader = KeyReader::Keys(
-    &[
-        ("tooltip", ValueReader::Localization),
-        ("limit", ValueReader::Limit),
-        ("prioritize", ValueReader::ValueList),
-        ("visible_when_empty", ValueReader::One),
-    ],
-    Fallback::Effect,
-);
-const READER_140323AC0: KeyReader = KeyReader::Keys(
-    &[
-        ("name", ValueReader::One),
-        ("category", ValueReader::One),
-        ("technology", ValueReader::One),
-        ("bonus", ValueReader::One),
-        ("ahead_reduction", ValueReader::One),
-        ("uses", ValueReader::One),
-    ],
-    Fallback::Effect,
-);
-const READER_1403B5EB0: KeyReader = KeyReader::Keys(
-    &[
-        ("idea", ValueReader::One),
-        ("months", ValueReader::One),
-        ("days", ValueReader::One),
-        ("years", ValueReader::One),
-    ],
-    Fallback::Effect,
-);
-const READER_1403B5280: KeyReader = KeyReader::Keys(
-    &[
-        ("name", ValueReader::One),
-        ("ideology", ValueReader::One),
-        ("long_name", ValueReader::One),
-    ],
-    Fallback::Only,
-);
-const READER_14049E3D0: KeyReader = KeyReader::Keys(
-    &[
-        ("type", ValueReader::One),
-        ("amount", ValueReader::One),
-        ("producer", ValueReader::One),
-        ("variant_name", ValueReader::One),
-    ],
-    Fallback::Only,
-);
-const READER_1403B0B70: KeyReader = KeyReader::Keys(
-    &[
-        ("min", ValueReader::One),
-        ("max", ValueReader::One),
-        ("var", ValueReader::One),
-    ],
-    Fallback::One,
-);
-const READER_1403B04D0: KeyReader = KeyReader::Keys(
-    &[
-        ("size", ValueReader::One),
-        ("index", ValueReader::One),
-        ("value", ValueReader::One),
-        ("array", ValueReader::One),
-    ],
-    Fallback::One,
-);
-const READER_1403AD9F0: KeyReader = KeyReader::Keys(
-    &[
-        ("modifier", ValueReader::One),
-        ("days", ValueReader::One),
-        ("scope", ValueReader::One),
-    ],
-    Fallback::Only,
-);
-const KEY_READERS: &[(u32, KeyReader)] = &[
-    (0x274E, READER_14031BFE0),              // remove_building, 14031BFE0
-    (0x275C, READER_1403ADCF0),              // every_country, 1403ADCF0
-    (0x2769, READER_1403ADCF0),              // every_neighbor_country, 1403ADCF0
-    (0x277C, READER_1403ADCF0),              // every_enemy_country, 1403ADCF0
-    (0x27B3, KeyReader::Variable),           // set_variable, 1403B6640
-    (0x27C3, KeyReader::Conditional),        // if, 141385BA0
-    (0x27C8, READER_1403AEEE0),              // add_opinion_modifier, 1403AEEE0
-    (0x27F6, STRATEGIC_LOCATIONS),           // strategic_province_location, 14051BEC0
-    (0x2803, STRATEGIC_LOCATIONS),           // strategic_state_location, 14051BBB0
-    (0x28DB, READER_1403ADCF0),              // every_subject_country, 1403ADCF0
-    (0x292A, READER_1403ADCF0),              // every_faction_member, 1403ADCF0
-    (0x3028, READER_140323D80),              // set_technology, 140323D80
-    (0x319F, READER_14031D4D0),              // add_building_construction, 14031D4D0
-    (0x31C9, READER_1403ADE50),              // random_state, 1403ADE50
-    (0x31CA, READER_1403ADE50),              // random_owned_state, 1403ADE50
-    (0x31CB, READER_1403ADE50),              // random_neighbor_state, 1403ADE50
-    (0x31CD, READER_1403ADCF0),              // every_state, 14031B220
-    (0x31CE, READER_1403ADCF0),              // every_owned_state, 14031B220
-    (0x31CF, READER_1403ADCF0),              // every_neighbor_state, 14031B220
-    (0x33E2, READER_140323AC0),              // add_tech_bonus, 140323AC0
-    (0x3462, READER_1403B5EB0),              // add_timed_idea, 1403B5EB0
-    (0x34EA, READER_1403B5280),              // set_party_name, 1403B5280
-    (0x357F, READER_1403AEEE0),              // reverse_add_opinion_modifier, 1403AEEE0
-    (0x360C, READER_1403ADE50),              // random_owned_controlled_state, 1403ADE50
-    (0x3678, READER_1403ADCF0),              // every_other_country, 1403ADCF0
-    (0x36C2, READER_14049E3D0),              // add_equipment_to_stockpile, 14049E3D0
-    (ELSE_TOKEN, KeyReader::Conditional),    // else, 141385BA0
-    (0x37DB, READER_14031D4D0),              // set_building_level, 14031D4D0
-    (ELSE_IF_TOKEN, KeyReader::Conditional), // else_if, 141385BA0
-    (0x38F8, KeyReader::Variable),           // add_to_variable, 1403B6640
-    (0x38F9, KeyReader::Variable),           // subtract_from_variable, 1403B6640
-    (0x38FA, KeyReader::Variable),           // multiply_variable, 1403B6640
-    (0x38FB, KeyReader::Variable),           // divide_variable, 1403B6640
-    (0x391A, READER_14031D4D0),              // add_offsite_building, 14031D4D0
-    (0x3977, KeyReader::Variable),           // add_to_temp_variable, 1403B6640
-    (0x3978, KeyReader::Variable),           // subtract_from_temp_variable, 1403B6640
-    (0x3979, KeyReader::Variable),           // multiply_temp_variable, 1403B6640
-    (0x397A, KeyReader::DivideVariable),     // divide_temp_variable, 1403B2580
-    (0x397B, KeyReader::Variable),           // set_temp_variable, 1403B6640
-    (0x397E, READER_1403B0B70),              // clamp_variable, 1403B0DD0
-    (0x397F, READER_1403B0B70),              // clamp_temp_variable, 1403B0B70
-    (0x39D7, READER_1403B5EB0),              // modify_timed_idea, 1403B5EB0
-    (0x3BA1, READER_1403B04D0),              // add_to_array, 1403B04D0
-    (0x3BA2, READER_1403B04D0),              // remove_from_array, 1403B04D0
-    (0x3BA7, READER_1403B04D0),              // add_to_temp_array, 1403B04D0
-    (0x3BA8, READER_1403B04D0),              // remove_from_temp_array, 1403B04D0
-    (0x3C02, READER_1403AD9F0),              // remove_dynamic_modifier, 1403AD9F0
-    (0x3C03, READER_1403AD9F0),              // add_dynamic_modifier, 1403AD9F0
-    (0x3C3C, READER_1403AE5F0),              // add_victory_points, 1403AE5F0
-    (0x3C3D, READER_1403AE5F0),              // set_victory_points, 1403AE5F0
-    (0x4094, READER_1403ADCF0),              // every_allied_country, 1403ADCF0
-    (0x4A61, READER_1403ADCF0),              // every_controlled_state, 14031B220
-    (0x4A8E, READER_1403ADCF0),              // every_occupied_country, 1403ADCF0
-    (0x4B5F, READER_1403ADE50),              // random_controlled_state, 1403ADE50
-    (0x4DF8, READER_1403ADCF0),              // every_core_state, 14031B220
-    (0x4DF9, READER_1403ADE50),              // random_core_state, 1403ADE50
-    (0x4E0C, READER_1403ADCF0),              // every_possible_country, 1403ADCF0
-];
-// END EXTRACTED TABLE
+mod ai_strategy;
+mod data;
+mod registries;
+mod unit_bonus;
+use data::{Helper, KEY_READERS};
 
 fn reader(token: u32) -> Option<KeyReader> {
     KEY_READERS
@@ -287,7 +146,11 @@ pub(crate) enum Node {
     Keys,
     Limit,
     Province,
+    Helper(Helper),
     Trigger(combat_tactics::Node),
+    UnitBonus(unit_bonus::Node),
+    Registry(crate::modifiers::Node),
+    AI(ai_strategy::Node),
 }
 
 enum Limit {
@@ -296,12 +159,21 @@ enum Limit {
     Unknown(String),
 }
 
+enum Generated {
+    Before,
+    Active,
+    Collision,
+}
+
 pub(crate) struct Shaper<'n> {
     token: u32,
     names: Option<&'n KeyNames>,
     triggers: combat_tactics::Shaper<'n>,
+    ai: ai_strategy::Shaper<'n>,
     limit: Limit,
     expression: bool,
+    generated: Generated,
+    local_generated: std::collections::BTreeSet<crate::tokens::Token>,
 }
 
 impl<'n> Shaper<'n> {
@@ -310,8 +182,11 @@ impl<'n> Shaper<'n> {
             token,
             names,
             triggers: combat_tactics::Shaper::new(names),
+            ai: ai_strategy::Shaper::new(names),
             limit: Limit::Empty,
             expression: false,
+            generated: Generated::Before,
+            local_generated: Default::default(),
         }
     }
 
@@ -320,9 +195,13 @@ impl<'n> Shaper<'n> {
         let key = keyword.as_deref();
         match node {
             Node::Trigger(node) => self.triggers.shape(node, field).map(Node::Trigger),
+            Node::UnitBonus(node) => {
+                unit_bonus::shape(self.names, node, field).map(Node::UnitBonus)
+            }
+            Node::Registry(node) => registries::shape(self.names, node, field).map(Node::Registry),
+            Node::AI(node) => self.ai.shape(node, field).map(Node::AI),
             Node::Limit => {
-                // CAndTrigger +0x14: LoadKey adds a child as the trigger
-                // dispatch decides, including malformed registered values.
+                // CAndTrigger +0x14: LoadKey adds a child as dispatch decides.
                 let load = key_names::load_key(self.names, field);
                 if !matches!(self.limit, Limit::Children) {
                     match load {
@@ -337,18 +216,12 @@ impl<'n> Shaper<'n> {
                     .shape(combat_tactics::Node::Trigger, field)
                     .map(Node::Trigger)
             }
-            // CBuildingConstructionEffect@14031D4D0's province loop:
-            // own keys only, invalid comparison operators RecordError.
+            // CBuildingConstructionEffect@14031D4D0's own-only province loop.
             Node::Province => match key {
                 Some(b"level") if !matches!(field.operator, Operator::Less | Operator::Greater) => {
                     Shape::Skip
                 }
-                Some(b"limit_to_victory_point")
-                    if c_string(&field.value.text) != b"yes"
-                        && !matches!(field.operator, Operator::Less | Operator::Greater) =>
-                {
-                    Shape::Skip
-                }
+                Some(b"limit_to_victory_point") if !victory_point(field) => Shape::Skip,
                 Some(
                     b"id"
                     | b"level"
@@ -364,56 +237,309 @@ impl<'n> Shaper<'n> {
                 ) => Shape::One,
                 _ => Shape::Skip,
             },
-            Node::Keys => match reader(self.token).expect("ported effect key reader") {
-                KeyReader::Conditional => match key {
-                    // CIfEffect@141385BA0 rejects a limit on else, and a
-                    // second limit while the embedded CAnd has children.
-                    Some(b"limit") if self.token == ELSE_TOKEN => Shape::Skip,
-                    Some(b"limit") => self.limit(),
-                    _ => super::shape(self.names, field).map(|()| Node::Keys),
-                },
-                // CVariableEffect@1403B6640: var and tooltip are scalar;
-                // value and shorthand variable names select CExpression
-                // (14032B3D0 -> 141405ED0) on an opening value.
-                KeyReader::Variable | KeyReader::DivideVariable => {
-                    if matches!(key, Some(b"var" | b"tooltip"))
-                        || (matches!(reader(self.token), Some(KeyReader::DivideVariable))
-                            && key == Some(b"if_zero"))
-                    {
-                        return Shape::One;
-                    }
-                    if field.opens() {
-                        self.expression = true;
-                        Shape::Expression
-                    } else if self.expression {
-                        Shape::Unsettled("CVariableEffect 1403B6640: scalar value after an expression calls std::_Throw_bad_variant_access (1403BA3C0)".into())
-                    } else {
-                        Shape::One
-                    }
+            Node::Helper(helper) => self.keys(data::helper(helper), field),
+            Node::Keys => self.keys(reader(self.token).expect("ported effect key reader"), field),
+        }
+    }
+
+    fn keys(&mut self, reader: KeyReader, field: &Field<'_>) -> Shape<Node> {
+        let keyword = field.keyword();
+        let key = keyword.as_deref();
+        match reader {
+            KeyReader::Conditional => match key {
+                Some(b"limit") if self.token == ELSE_TOKEN => Shape::Skip,
+                Some(b"limit") => self.limit(),
+                _ => self.effect(field),
+            },
+            // CVariableEffect@1403B6640; divide-temp@1403B2580.
+            KeyReader::Variable | KeyReader::DivideVariable => {
+                if matches!(key, Some(b"var" | b"tooltip"))
+                    || (matches!(reader, KeyReader::DivideVariable) && key == Some(b"if_zero"))
+                {
+                    return Shape::One;
                 }
-                KeyReader::Keys(keys, fallback) => {
-                    if let Some((_, value)) =
-                        keys.iter().find(|(name, _)| key == Some(name.as_bytes()))
-                    {
-                        return match value {
-                            ValueReader::One => Shape::One,
-                            ValueReader::ValueList => Shape::ValueList,
-                            ValueReader::ValueListIfOpen if field.opens() => Shape::ValueList,
-                            ValueReader::ValueListIfOpen => Shape::One,
-                            ValueReader::Localization => Shape::ObjectIfOpen(Node::Trigger(
-                                combat_tactics::Node::BoundLocalization,
-                            )),
-                            ValueReader::Limit => self.limit(),
-                            ValueReader::Province => Shape::ObjectIfOpen(Node::Province),
-                        };
+                if field.opens() {
+                    self.expression = true;
+                    Shape::Expression
+                } else if self.expression {
+                    Shape::Unsettled("CVariableEffect 1403B6640: scalar value after an expression calls std::_Throw_bad_variant_access (1403BA3C0)".into())
+                } else {
+                    Shape::One
+                }
+            }
+            KeyReader::GenerateCharacter => self.generate(field),
+            KeyReader::Keys(keys, fallback) => {
+                if let Some((_, value)) = keys.iter().find(|(name, _)| key == Some(name.as_bytes()))
+                {
+                    return self.value(*value, field);
+                }
+                match fallback {
+                    Fallback::Effect => self.effect(field),
+                    Fallback::Only => Shape::Skip,
+                    Fallback::One => Shape::One,
+                    Fallback::Reader(helper) => self.shape(Node::Helper(helper), field),
+                    Fallback::Object(helper) => Shape::Object(Node::Helper(helper)),
+                    Fallback::AIStrategy => self
+                        .ai
+                        .shape(ai_strategy::Node::Strategy, field)
+                        .map(Node::AI),
+                    Fallback::Popularities => {
+                        registries::popularities(self.names, field).map(|()| Node::Keys)
                     }
-                    match fallback {
-                        Fallback::Effect => super::shape(self.names, field).map(|()| Node::Keys),
-                        Fallback::Only => Shape::Skip,
-                        Fallback::One => Shape::One,
+                    Fallback::RandomListMember if c_string(&field.key.text).is_empty() => {
+                        Shape::Skip
+                    }
+                    Fallback::RandomListMember => {
+                        Shape::Object(Node::Helper(Helper::RandomListMember))
+                    }
+                    Fallback::UnitBonus => {
+                        unit_bonus::shape(self.names, unit_bonus::Node::Bonus, field)
+                            .map(Node::UnitBonus)
+                    }
+                    Fallback::PoliticalPartyScript => Shape::EffectKeys(POLITICAL_PARTY_TOKEN),
+                    Fallback::EquipmentStatRegistry => {
+                        registries::shape(self.names, crate::modifiers::Node::EquipmentBonus, field)
+                            .map(Node::Registry)
+                    }
+                    Fallback::ModifierRegistry => {
+                        registries::shape(self.names, crate::modifiers::Node::Modifier, field)
+                            .map(Node::Registry)
+                    }
+                    Fallback::EquipmentUpgrade => self.upgrade(field),
+                    Fallback::MeanTimeToHappen => crate::parser::native::mean_time_to_happen(field),
+                }
+            }
+        }
+    }
+
+    fn effect(&self, field: &Field<'_>) -> Shape<Node> {
+        super::shape(self.names, field).map(|()| Node::Keys)
+    }
+
+    fn value(&mut self, value: ValueReader, field: &Field<'_>) -> Shape<Node> {
+        use ValueReader::*;
+        match value {
+            One => Shape::One,
+            Current => Shape::Current,
+            SkipIfOpen => Shape::SkipIfOpen,
+            ValueList => Shape::ValueList,
+            ValueListOrSkip => {
+                if field.opens() {
+                    Shape::ValueList
+                } else {
+                    Shape::Skip
+                }
+            }
+            ValueListIfOpen => {
+                if field.opens() {
+                    Shape::ValueList
+                } else {
+                    Shape::One
+                }
+            }
+            ValueListIfOpenElseCurrent => {
+                if field.opens() {
+                    Shape::ValueList
+                } else {
+                    Shape::Current
+                }
+            }
+            ValueListExceptAll => {
+                if field.value.is_keyword("all") {
+                    Shape::One
+                } else {
+                    Shape::ValueList
+                }
+            }
+            RawList => Shape::RawList,
+            RawText => Shape::RawText,
+            Localization => {
+                Shape::ObjectIfOpen(Node::Trigger(combat_tactics::Node::BoundLocalization))
+            }
+            Limit => self.limit(),
+            Province => Shape::ObjectIfOpen(Node::Province),
+            Trigger => Shape::Body(Node::Trigger(combat_tactics::Node::Trigger)),
+            Effect => Shape::Effect,
+            Object(helper) => Shape::Object(Node::Helper(helper)),
+            ObjectIfOpen(Helper::ProvinceTarget) if !field.opens() => self.value(ProvinceId, field),
+            ObjectIfOpen(helper) => Shape::ObjectIfOpen(Node::Helper(helper)),
+            ObjectOrSkip(helper) => Shape::ObjectOrSkip(Node::Helper(helper)),
+            MtthModifier => Shape::MtthModifier,
+            Collection => {
+                Shape::ObjectIfOpen(Node::Trigger(combat_tactics::Node::KeyReader(0x140A0FC90)))
+            }
+            Comparison => {
+                use crate::parser::native::Kind;
+                if matches!(field.value.kind, Kind::Less | Kind::Greater)
+                    || field.value.lookup().is_some_and(|word| {
+                        [
+                            "less_than",
+                            "greater_than",
+                            "less_than_or_equals",
+                            "greater_than_or_equals",
+                            "equals",
+                            "not_equals",
+                        ]
+                        .iter()
+                        .any(|choice| word.eq_ignore_ascii_case(choice.as_bytes()))
+                    })
+                {
+                    Shape::One
+                } else {
+                    Shape::Skip
+                }
+            }
+            Resource if !field.skips_block() => Shape::Skip,
+            Resource => match self.names {
+                None => named_refusal("add_resource", "1403AF090: no resource database names"),
+                Some(names) => {
+                    if names
+                        .counts
+                        .resources
+                        .contains(&c_string(&field.value.text).to_ascii_lowercase())
+                    {
+                        Shape::One
+                    } else {
+                        Shape::Skip
                     }
                 }
             },
+            Building if !field.skips_block() => Shape::Skip,
+            Building => match self.names {
+                None => named_refusal(
+                    "construct_building",
+                    "1403B3640: no building database names",
+                ),
+                Some(names) => {
+                    if field
+                        .value
+                        .lookup()
+                        .is_some_and(|name| names.counts.is_building(name))
+                    {
+                        Shape::One
+                    } else {
+                        Shape::Skip
+                    }
+                }
+            },
+            Specialization => self.specialization(field),
+            // ParseScopeSelector (1403AD690) accepts only these segments when dotted.
+            ScopeSelectorChain => {
+                let text = c_string(&field.value.text).to_ascii_lowercase();
+                if !text.contains(&b'.')
+                    || text
+                        .split(|c| *c == b'.')
+                        .all(|part| matches!(part, b"from" | b"root" | b"prev"))
+                {
+                    Shape::One
+                } else {
+                    Shape::Skip
+                }
+            }
+            // Gender (1413DAFA0) reads CURRENT IDs: male/female/undefined.
+            Gender => {
+                if ["male", "female", "undefined"]
+                    .iter()
+                    .any(|word| field.current.is_keyword(word))
+                {
+                    Shape::Current
+                } else {
+                    Shape::Skip
+                }
+            }
+            Ledger => crate::ideas::ledger_shape(field),
+            ProvinceVictoryPoint => {
+                if victory_point(field) {
+                    Shape::One
+                } else {
+                    Shape::Skip
+                }
+            }
+            ProvinceId => {
+                if field.value.is_number() {
+                    Shape::One
+                } else if c_string(&field.value.text).is_empty() {
+                    Shape::Skip
+                } else {
+                    Shape::One
+                }
+            }
+            OptionalAssetsList => Shape::ObjectList(Node::Helper(Helper::OptionalEquipmentAsset)),
+        }
+    }
+
+    fn upgrade(&self, field: &Field<'_>) -> Shape<Node> {
+        if !field.skips_block() {
+            return Shape::Skip;
+        }
+        let Some(name) = field.key.lookup() else {
+            return Shape::Skip;
+        };
+        let Some(names) = self.names else {
+            return named_refusal(
+                "equipment upgrades",
+                "140F79C80: no equipment database names",
+            );
+        };
+        if names
+            .effects
+            .equipment_upgrades
+            .contains(&name.to_ascii_lowercase())
+        {
+            Shape::One
+        } else if let Some(gap) = &names.effects.equipment_upgrades_gap {
+            named_refusal("equipment upgrades", &format!("140F79C80: {gap}"))
+        } else {
+            Shape::Skip
+        }
+    }
+
+    fn specialization(&self, field: &Field<'_>) -> Shape<Node> {
+        if !field.skips_block() {
+            return Shape::Skip;
+        }
+        let Some(name) = field.value.lookup() else {
+            return Shape::Skip;
+        };
+        if name.eq_ignore_ascii_case(b"all") {
+            return Shape::One;
+        }
+        Shape::Reported {
+            report: format!(
+                "Deferred effect specialization `{}` (140496280/140496160): block consumption needs the specialization registry",
+                String::from_utf8_lossy(name)
+            ),
+            read: Box::new(Shape::Unsettled(
+                "specialization block needs the unavailable specialization registry".into(),
+            )),
+        }
+    }
+
+    // CGenerateCharacterEffect@1403B2F70 registers token_base immediately
+    // in the generated map (+0x60), distinct from authored characters (+0x40).
+    fn generate(&mut self, field: &Field<'_>) -> Shape<Node> {
+        if matches!(self.generated, Generated::Collision) {
+            return Shape::SkipIfOpen;
+        }
+        if field.keyword_is("token_base") {
+            let text = c_string(&field.value.text).to_ascii_lowercase();
+            let claim = crate::tokens::Token::c_str(&text);
+            if claim.is_rejected() {
+                return Shape::Reported {
+                    report: "Deferred effect generate_character token_base (1403B2F70): dynamic token 0 may already be claimed outside this effect read".into(),
+                    read: Box::new(Shape::Unsettled("generate_character token_base 0 needs claims from other reads to choose template reading or skipping".into())),
+                };
+            }
+            self.generated = if self.local_generated.insert(claim) {
+                Generated::Active
+            } else {
+                Generated::Collision
+            };
+            Shape::One
+        } else if matches!(self.generated, Generated::Before) {
+            Shape::One
+        } else {
+            self.shape(Node::Helper(Helper::CharacterTemplate), field)
         }
     }
 
@@ -425,5 +551,17 @@ impl<'n> Shaper<'n> {
                 "effect limit: native key reader reads a later limit only into an empty CAndTrigger; whether the first holds a child is unknown: {why}"
             )),
         }
+    }
+}
+
+fn victory_point(field: &Field<'_>) -> bool {
+    c_string(&field.value.text) == b"yes"
+        || matches!(field.operator, Operator::Less | Operator::Greater)
+}
+
+fn named_refusal(what: &str, why: &str) -> Shape<Node> {
+    Shape::Reported {
+        report: format!("Deferred effect {what}: {why}"),
+        read: Box::new(Shape::Unsettled(format!("{what}: {why}"))),
     }
 }

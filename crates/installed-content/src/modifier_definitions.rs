@@ -19,7 +19,10 @@ use crate::{
     },
     script_files,
 };
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 /// A definition as 1405FF750 registers it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,9 +72,22 @@ pub struct ModifierDefinitions {
     /// By name folded: add_dynamic_token (1424A65A0 -> 1424A5EE0) folds A-Z
     /// and compares without case (StringView_CompareNoCase 1424B6750).
     by_name: BTreeMap<Vec<u8>, ModifierDefinition>,
+    /// Native token names, including byte names the display projection
+    /// cannot hold as text (1406025E0 -> 1405FF750).
+    registered: BTreeSet<Vec<u8>>,
+    /// An unread suffix may register further modifier names.
+    gap: Option<String>,
 }
 
 impl ModifierDefinitions {
+    pub(crate) fn registered_names(&self) -> impl Iterator<Item = &[u8]> {
+        self.registered.iter().map(Vec::as_slice)
+    }
+
+    pub(crate) fn gap(&self) -> Option<&str> {
+        self.gap.as_deref()
+    }
+
     /// The definition a modifier key names, whatever its case.
     pub fn get(&self, key: &str) -> Option<&ModifierDefinition> {
         self.by_name.get(&key.as_bytes().to_ascii_lowercase())
@@ -187,6 +203,24 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<Str
     let mut result = ModifierDefinitions::default();
     for path in script_files::paths(layers, "common/modifier_definitions/", Some(".txt")) {
         let read = read_file(&layers.read(&path)?);
+        // The native registrar takes the raw key's C string after its
+        // body returns. Keep that identity even when the display fields
+        // cannot represent its byte spelling as UTF-8.
+        let complete = if read.unsettled.is_some() {
+            read.items.len().saturating_sub(1)
+        } else {
+            read.items.len()
+        };
+        for entry in &read.items[..complete] {
+            if let crate::tokens::Token::Name(name) =
+                crate::tokens::Token::c_str(entry.key.as_deref().unwrap_or_default())
+            {
+                result.registered.insert(name);
+            }
+        }
+        if let Some(gap) = &read.unsettled {
+            result.gap.get_or_insert_with(|| format!("{path} {gap}"));
+        }
         warnings.extend(
             read.misreads
                 .iter()

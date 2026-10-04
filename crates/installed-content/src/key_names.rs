@@ -42,6 +42,8 @@ use crate::{
     trigger_keys::{self, CountTriggerNames, Dispatch, Dispatched, Key, Reader, ScopeStep},
 };
 
+mod effect_names;
+
 /// The content names a trigger key is read against, at one point of the
 /// load.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -66,6 +68,7 @@ pub struct KeyNames {
     /// (140471900) and non_damaged_building_level (140472210);
     /// None when repeated declarations disagree.
     pub province_buildings: BTreeMap<Vec<u8>, Option<bool>>,
+    pub(crate) effects: effect_names::EffectNames,
     /// The sub-unit database after `common/units` (14018F865), for effect
     /// division-template placement (140B937A0 / 1403AF6B0). None at an
     /// earlier load point whose final roster is unavailable.
@@ -183,6 +186,7 @@ impl KeyNames {
             province_buildings: BTreeMap::new(),
             sub_units: Some(crate::unit_leader::sub_units(layers)?),
             template_columns: Some(template_columns(layers)),
+            ..Self::default()
         };
         // A stack without a building file declares no building.
         if layers.paths().any(buildings::is_building_file) {
@@ -204,6 +208,7 @@ impl KeyNames {
                     .insert(name.as_bytes().to_ascii_lowercase(), flag);
             }
         }
+        names.effects = effect_names::EffectNames::read(layers, &names)?;
         Ok(names)
     }
 
@@ -219,6 +224,14 @@ impl KeyNames {
                 names.sub_units = None;
                 names.counts = CountTriggerNames::default();
                 names.province_buildings.clear();
+                names.effects.terrains.clear();
+                names.effects.terrains_gap = None;
+                names.effects.equipment.clear();
+                names.effects.equipment_gap = None;
+                names.effects.equipment_upgrades.clear();
+                names.effects.equipment_upgrades_gap = None;
+                names.effects.modifiers = names.effects.early_modifiers.clone();
+                names.effects.modifiers_gap = names.effects.early_modifiers_gap.clone();
             }
             Point::BeforeBuildings => {
                 names.sub_units = None;
