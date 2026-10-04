@@ -620,6 +620,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fire_packet_passes_one_atlas_tile_and_neutral_tint_to_native_shader() {
+        // 1423E5CD0 keeps a birth tile; 14227F420 uploads it with the atlas
+        // dimensions.
+        let mut emitter = super::super::tests::activation_test_emitter();
+        emitter.render.tiles = [2, 2];
+        emitter.render.shader = "ParticleAdditive".into();
+        let mut simulation = Simulation::cold(&emitter, 7, [0.; 3], 0.);
+        simulation.tick(&emitter, 1. / 60.);
+        let particle = &mut simulation.particles[0];
+        particle.tile = [1, 0, 0, 0];
+        particle.color = [200., 200., 200., 255.];
+
+        let packet = DrawPacket::weather(&emitter, &simulation, [0.; 3], 1.);
+        assert_eq!(packet.descriptor.technique(), "ParticleAdditive");
+        assert_eq!(packet.instances.len(), 1);
+        assert_eq!(packet.instances[0].tile, [1, 0, 0, 0]);
+        assert_eq!(packet.instances[0].color, [200, 200, 200, 255]);
+        let buffers = packet.constants.buffers(&[], &[[0.; 4]; 4]);
+        let object = &buffers[&binding(3, Stage::Vertex)];
+        assert_eq!(&object[72..80], bytemuck::bytes_of(&[2_f32, 2.]));
+    }
+
+    #[test]
     fn instance_ring_appends_in_place_keeps_tails_unknown_and_discards_at_exact_capacity() {
         let instance = |value: f32| Instance {
             position_size: [value; 4],
