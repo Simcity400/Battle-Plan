@@ -430,7 +430,7 @@ fn interface(
             }
         }
     }
-    // The tree reader retained for combat windows and the remaining map icons.
+    // Audit the tree reader independently; production combat and map windows use native GUI.
     let values = log.values.clone();
     if let Some(failed) = log.read("gui.tree", || {
         Ok(layers

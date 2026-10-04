@@ -1,4 +1,4 @@
-//! Preserve authored odd-size DDS extents which WebGPU cannot upload as BC textures.
+//! CPU RGBA8 decoding for division-template icon preparation.
 use installed_content::image::{Rgba8Image, dds};
 use std::io;
 
@@ -61,15 +61,6 @@ fn block_pixels(block: &[u8], format: dds::TextureFormat) -> [[u8; 4]; 16] {
         }
     }
     pixels
-}
-
-pub(super) fn uploadable(texture: dds::Texture) -> io::Result<dds::Texture> {
-    if texture.format.block_bytes().is_none()
-        || (texture.width.is_multiple_of(4) && texture.height.is_multiple_of(4))
-    {
-        return Ok(texture);
-    }
-    rgba8(&texture)
 }
 
 /// Decodes a BC1/BC2/BC3 texture's base level to RGBA8 at its exact extent;
@@ -150,7 +141,7 @@ mod tests {
                 data: vec![0, 248, 224, 7, 4, 0, 0, 0],
             }]],
         };
-        let result = uploadable(texture).unwrap();
+        let result = rgba8(&texture).unwrap();
         assert_eq!((result.width, result.height), (2, 1));
         assert_eq!(result.base().data, [255, 0, 0, 255, 0, 255, 0, 255]);
     }

@@ -1,81 +1,48 @@
 //! Only combat-window assets; all interface bytes pass through the resolved layers.
-use super::layout::Node;
 use crate::map::{
-    counters::FlagAtlas,
+    counters::{FlagAtlas, NativeWindows},
     lazy_icons::{LazyImages, LazyTextures, Lookup},
-    sprites::SpriteSheet,
-    text,
+    native_gui::{self, Sheets},
+    native_resources::GuiResources,
+    sprites::{NO_TEXTURE, SpriteSheet},
 };
 use installed_content::{
     ResolvedLayers,
     defines::Defines,
-    flags::FlagSet,
-    gfx, gui,
-    gui::native::{fonts::TextColors, sprites::SpriteKind},
-    image::{dds, tga},
+    gui,
+    gui::native::{
+        resources::{self, Registry},
+        sprites::{Plain, SpriteFacts, SpriteKind, Sprites},
+    },
+    image::dds,
 };
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 /// Combat portrait textures kept resident at once beyond the ones on screen.
 const COMBAT_PORTRAIT_CAPACITY: usize = 256;
 
-/// One wanted sprite's file reads, resolved up front so the merge below
-/// keeps the warning order and texture ids of the serial load.
-enum WantedSprite {
-    Skip,
-    Warn(String),
-    /// A leader portrait: decoded the first time a window draws it.
-    Lazy(String),
-    Load {
-        first: String,
-        second: Option<String>,
-    },
-}
-
-/// Portraits and inline icons resolve outside the verified layers.
-fn is_uncovered(path: &str) -> bool {
-    path.starts_with("gfx/leaders/") || path.starts_with("gfx/texticons/")
-}
-#[derive(Clone)]
-pub struct Sprite {
-    pub sheet: SpriteSheet,
-    pub second: Option<SpriteSheet>,
-    pub size: [f32; 2],
-    pub vertical: bool,
-    pub progress: bool,
-    /// `effectFile = gfx/FX/progress_startend.lua`: three stacked bands.
-    pub start_end: bool,
-    /// `corneredTileSpriteType` `borderSize` in texels, and `tilingCenter`.
-    pub border: Option<[f32; 2]>,
-    pub tiling_center: bool,
-}
 pub struct Assets {
-    pub windows: BTreeMap<String, Node>,
-    sprites: BTreeMap<String, Sprite>,
+    pub(crate) native_windows: NativeWindows,
+    pub(crate) gui: GuiResources,
+    window_sprites: BTreeSet<Vec<u8>>,
+    flag_selectors: Mutex<BTreeMap<String, usize>>,
     /// Leader portrait sprites by name: their texture and declaration, drawn
     /// once `portraits` has decoded the texture.
-    lazy_sprites: BTreeMap<String, (String, Declaration, Flags)>,
+    lazy_sprites: BTreeMap<String, (String, Plain)>,
     portraits: Arc<LazyImages>,
-    pub fonts: BTreeMap<String, text::Font>,
+    portrait_failures: Arc<Mutex<BTreeMap<String, (Option<native_gui::RefusalKind>, String)>>>,
     /// The normal set, decoded as windows draw it.
     flags: Arc<FlagAtlas>,
-    /// The counters' small set, which inline markers draw from.
-    small_flags: Arc<FlagAtlas>,
-    /// The small flag cell every [`Flag::inline`] is drawn at.
-    pub inline_flag_size: [f32; 2],
     /// The range of convoy weapon values the content allows, fixed5.
     pub convoy_weapon_bound: Result<[i64; 2], String>,
     /// The naval combat defines the window's positioning, screening and anti-air read;
     /// `None`, with a warning, when the content's defines do not load.
     pub naval_defines: Option<installed_content::naval_combat_defines::Defines>,
     pub(super) naval_air_groups: super::naval_air_groups::Content,
-    /// The global `textcolors` table, as the game's last block read left it.
-    pub text_colors: TextColors,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
     /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF` (1415B06C0),
@@ -94,47 +61,203 @@ pub struct Assets {
     pub(crate) tooltip_defines: Result<super::tooltip_painter::TooltipDefines, String>,
     pub warnings: Vec<String>,
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Flag {
-    pub texture: usize,
-    pub uv: [f32; 4],
-    pub inline: Option<(usize, [f32; 4])>,
-}
-
 impl Assets {
-    /// A declared sprite, or a leader portrait once its texture has decoded;
-    /// one not decoded yet is queued and draws nothing for that frame.
-    pub fn sprite(&self, name: &str) -> Option<Cow<'_, Sprite>> {
-        if let Some(sprite) = self.sprites.get(name) {
-            return Some(Cow::Borrowed(sprite));
+    /// ReloadGui@1415C5900 / 1417D7450 resolve combat templates in the global registry.
+    pub(crate) fn native_templates(&self) -> impl Iterator<Item = &gui::native::Element> {
+        native_templates(&self.native_windows)
+    }
+
+    pub(crate) fn window_sprites(&self) -> &BTreeSet<Vec<u8>> {
+        &self.window_sprites
+    }
+
+    pub(crate) fn flag_index(&self, key: &str) -> Result<i32, String> {
+        let mut indices = self
+            .flag_selectors
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let next = indices
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| "resolved flag selector count overflow".to_owned())?;
+        let index = *indices.entry(key.to_owned()).or_insert(next);
+        i32::try_from(index)
+            .map_err(|_| format!("resolved flag selector {index} exceeds the native i32 operand"))
+    }
+
+    pub(crate) fn load_gui(
+        &mut self,
+        layers: &ResolvedLayers,
+        localisation: &installed_content::localisation::Localisation,
+        images: &mut Vec<dds::Texture>,
+    ) -> io::Result<Vec<String>> {
+        let mut assets = native_window_assets(&self.native_windows, localisation);
+        assets.extend(super::tooltip_assets(self.native_templates(), localisation));
+        self.window_sprites.extend(assets.sprites.iter().cloned());
+        assets.sprites.retain(|name| {
+            std::str::from_utf8(name)
+                .ok()
+                .is_none_or(|name| !self.lazy_sprites.contains_key(name))
+        });
+        self.gui.load(layers, &assets, images)?;
+        let mut warnings: Vec<_> = self
+            .gui
+            .missing_textures()
+            .into_iter()
+            .map(|(name, why)| format!("Combat UI: texture {name}: {why} (1 missing_texture)."))
+            .collect();
+        for name in &assets.fonts {
+            let Some(font) = self.gui.font(name) else {
+                warnings.push(format!(
+                    "Combat UI: font {} is unavailable (1 missing_font).",
+                    String::from_utf8_lossy(name)
+                ));
+                continue;
+            };
+            for fnt in &font.glyphs.missing {
+                warnings.push(format!(
+                    "Combat UI: font {}: missing font file {fnt} (1 missing_font_file).",
+                    String::from_utf8_lossy(name)
+                ));
+            }
+            for (page, loaded) in font.glyphs.pages.iter().zip(&font.pages) {
+                if loaded.is_none() {
+                    warnings.push(format!("Combat UI: font {}: page {} did not load; its glyphs advance and draw nothing (1 missing_font_page).",
+                        String::from_utf8_lossy(name), String::from_utf8_lossy(page)));
+                }
+            }
+            if font.glyphs.glyphs.is_empty() {
+                warnings.push(format!(
+                    "Combat UI: font {} loads no characters (1 empty_font).",
+                    String::from_utf8_lossy(name)
+                ));
+            }
+            if font.glyphs.line_height.is_none() || font.glyphs.base.is_none() {
+                warnings.push(format!("Combat UI: font {} has no first-file lineHeight or base (1 missing_font_metrics).", String::from_utf8_lossy(name)));
+            }
+            for (kind, why) in &font.refusals {
+                warnings.push(format!(
+                    "Combat UI: font {}: {why} (1 {}).",
+                    String::from_utf8_lossy(name),
+                    kind.name()
+                ));
+            }
         }
-        let (first, declaration, flags) = self.lazy_sprites.get(name)?;
-        let Lookup::Loaded { texture, size } = self.portraits.get(first) else {
-            return None;
+        Ok(warnings)
+    }
+
+    pub(crate) fn native_sprite(&self, name: &[u8]) -> Option<native_gui::SpriteInfo> {
+        let mut info = self.gui.sprite(name)?;
+        let Some((path, _)) = std::str::from_utf8(name)
+            .ok()
+            .and_then(|name| self.lazy_sprites.get(name))
+        else {
+            if self
+                .gui
+                .registry()
+                .sprite(name)?
+                .kind
+                .plain()
+                .is_some_and(|plain| plain.frames < 0)
+            {
+                info.refusals.push((
+                    native_gui::RefusalKind::MissingResource,
+                    format!(
+                        "negative_frame_count: noOfFrames is {} (1 refusal)",
+                        info.frames
+                    ),
+                ));
+            }
+            return Some(info);
         };
-        let sheet = SpriteSheet {
-            name: first.clone(),
-            texture,
-            frames: 1,
-            size,
-        };
-        Some(Cow::Owned(build_sprite(
-            name,
-            declaration,
-            *flags,
-            sheet,
-            None,
-        )))
+        match self.portraits.get(path) {
+            Lookup::Loaded { size, .. } => info.texture = size.map(|value| value as i32),
+            Lookup::Pending => {
+                info.missing = Some("portrait texture is queued for native decoding".into());
+                info.hit = native_gui::Hit::Through;
+            }
+            Lookup::Failed => {
+                info.hit = native_gui::Hit::Through;
+                let failures = self
+                    .portrait_failures
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if let Some((kind, why)) = failures.get(path) {
+                    info.missing = Some(why.clone());
+                    if let Some(kind) = kind {
+                        info.refusals.push((*kind, why.clone()));
+                    }
+                } else {
+                    info.refusals.push((
+                        native_gui::RefusalKind::MissingResource,
+                        format!("portrait texture {path} failed without a recorded decode reason"),
+                    ));
+                }
+            }
+        }
+        Some(info)
+    }
+
+    /// Preserve the producers' bound dimensions while the native walk owns actual geometry.
+    pub(crate) fn sprite_size(&self, name: &str) -> Option<[f32; 2]> {
+        let info = self.native_sprite(name.as_bytes())?;
+        if self.lazy_sprites.contains_key(name) {
+            if info.missing.is_some() || !info.refusals.is_empty() {
+                return None;
+            }
+            return Some([
+                info.texture[0] as f32 / info.frames.max(1) as f32,
+                info.texture[1] as f32,
+            ]);
+        }
+        prepared_size(&self.gui, name.as_bytes(), &info)
+    }
+
+    /// Sheets for only the portrait names the frame reaches; lazy IDs are never reused.
+    pub(crate) fn portrait_sheets<'a>(
+        &self,
+        names: impl IntoIterator<Item = &'a [u8]>,
+    ) -> BTreeMap<Vec<u8>, SpriteSheet> {
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let (path, plain) = self.lazy_sprites.get(std::str::from_utf8(name).ok()?)?;
+                let Lookup::Loaded { texture, size } = self.portraits.peek(path) else {
+                    return None;
+                };
+                Some((
+                    name.to_vec(),
+                    SpriteSheet {
+                        name: String::from_utf8_lossy(name).into_owned(),
+                        texture,
+                        frames: plain.frames.max(1) as u32,
+                        size,
+                    },
+                ))
+            })
+            .collect()
     }
 
     /// Whether `name` is a sprite a window can draw: a declared one, or a
     /// leader portrait whose texture is not known to be unreadable.
     pub fn has_sprite(&self, name: &str) -> bool {
-        self.sprites.contains_key(name)
-            || self
-                .lazy_sprites
-                .get(name)
-                .is_some_and(|(first, _, _)| self.portraits.peek(first) != Lookup::Failed)
+        if let Some((path, _)) = self.lazy_sprites.get(name) {
+            return self.portraits.peek(path) != Lookup::Failed;
+        }
+        self.gui
+            .sprite(name.as_bytes())
+            .is_some_and(|info| prepared_size(&self.gui, name.as_bytes(), &info).is_some())
+    }
+
+    /// One metadata lookup for an inline icon's drawable frame count.
+    pub(super) fn drawable_sprite(&self, name: &[u8]) -> Option<native_gui::SpriteInfo> {
+        let info = self.native_sprite(name)?;
+        let name = std::str::from_utf8(name).ok()?;
+        if let Some((path, _)) = self.lazy_sprites.get(name) {
+            (self.portraits.peek(path) != Lookup::Failed).then_some(info)
+        } else {
+            prepared_size(&self.gui, name.as_bytes(), &info).map(|_| info)
+        }
     }
 
     /// Whether a normal-set flag file exists for `key` and is not known to be
@@ -159,217 +282,157 @@ impl Assets {
             ));
         self.tactics.trigger_names()
     }
+}
 
-    /// The normal-set flag of `key`, queued when not decoded yet.
-    pub fn flag(&self, key: &str) -> Option<Flag> {
-        let (texture, uv) = self.flags.get(key)?;
-        Some(Flag {
-            texture,
-            uv,
-            inline: self.inline_flag(key),
-        })
+fn prepared_size(
+    gui: &GuiResources,
+    name: &[u8],
+    info: &native_gui::SpriteInfo,
+) -> Option<[f32; 2]> {
+    if info.missing.is_some()
+        || !info.refusals.is_empty()
+        || gui
+            .registry()
+            .sprite(name)?
+            .kind
+            .plain()
+            .is_some_and(|plain| plain.frames < 0)
+    {
+        return None;
     }
-
-    /// The small flag an inline marker draws for `key`.
-    ///
-    /// A group flag falls back to its tag's plain flag. The tag is the key's
-    /// first three bytes because `CCountryDatabase::load_tags` (`14070e900`)
-    /// accepts only tags of exactly three bytes.
-    pub fn inline_flag(&self, key: &str) -> Option<(usize, [f32; 4])> {
-        if !self.has_flag(key) {
-            return None;
+    let sheet = gui.sheet(name)?;
+    if sheet.texture == NO_TEXTURE
+        || gui
+            .mask(name)
+            .is_some_and(|sheet| sheet.texture == NO_TEXTURE)
+    {
+        return None;
+    }
+    match info.kind {
+        native_gui::SpriteKind::Progress { size, .. }
+        | native_gui::SpriteKind::CorneredTile { size, .. }
+        | native_gui::SpriteKind::Tile { size } => Some(size.map(|value| value as f32)),
+        native_gui::SpriteKind::Resizeable => {
+            let SpriteKind::Resizeable(sprite) = &gui.registry().sprite(name)?.kind else {
+                return None;
+            };
+            Some(sprite.size.map(|value| value as f32))
         }
-        match key.get(..3) {
-            Some(tag) if tag != key => self.small_flags.resolve(&[key, tag]),
-            _ => self.small_flags.resolve(&[key]),
-        }
+        _ => Some(sheet.frame_size()),
     }
 }
 
-/// A sprite declaration's `horizontal = no` and `tilingCenter = yes`.
-#[derive(Clone, Copy, Debug)]
-struct Flags {
-    vertical: bool,
-    tiling_center: bool,
-}
-
-/// A combat sprite declaration or a bare texture.
-#[derive(Clone, Debug)]
-struct Declaration {
-    /// The kind's texture, else its `textureFile1`.
-    first: Option<String>,
-    /// `textureFile2`.
-    second: Option<String>,
-    frames: u32,
-    progress: bool,
-    /// `size`, each axis the sheet's frame size when the declaration does not give it.
-    size: Option<[Option<f32>; 2]>,
-    /// `effectFile = gfx/FX/progress_startend.lua`.
-    start_end: bool,
-    /// A cornered tile's `borderSize`.
-    border: Option<[f32; 2]>,
-    /// The flags, or which one the game reads as the declaration's own fields.
-    flags: Result<Flags, String>,
-}
-
-impl Declaration {
-    /// A declared sprite, from the fields its kind's reader stores.
-    fn sprite(sprite: &gfx::SpriteType) -> Self {
-        let text = |bytes: &[u8]| {
-            std::str::from_utf8(bytes)
-                .ok()
-                .filter(|text| !text.is_empty())
-                .map(path)
+fn sprite_warnings(gui: &GuiResources, names: &BTreeSet<Vec<u8>>) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for name in names {
+        let display = String::from_utf8_lossy(name);
+        let Some(info) = gui.sprite(name) else {
+            warnings.push(format!(
+                "Combat UI: sprite {display} is unavailable (1 missing_sprite)."
+            ));
+            continue;
         };
-        let start_end = |effect: &[u8]| effect.ends_with(b"progress_startend.lua");
-        let size = |size: &[i32; 2]| Some(size.map(|axis| Some(axis as f32)));
-        let mut declaration = Self::texture(sprite.texture.clone());
-        declaration.frames = sprite.frames;
-        match &sprite.facts.kind {
-            SpriteKind::Plain(plain) | SpriteKind::FrameAnimated { plain, .. } => {
-                declaration.start_end = start_end(&plain.effect_file);
+        if !info.refusals.is_empty() {
+            for (kind, why) in &info.refusals {
+                warnings.push(format!(
+                    "Combat UI: sprite {display}: {why} (1 {}).",
+                    kind.name()
+                ));
             }
-            SpriteKind::Tile { plain, size: tile } => {
-                declaration.start_end = start_end(&plain.effect_file);
-                declaration.size = size(tile);
-            }
-            SpriteKind::MaskedShield { shield, .. } => {
-                declaration.first = declaration.first.or_else(|| text(&shield.texture1));
-                declaration.second = text(&shield.texture2);
-                declaration.start_end = start_end(&shield.effect_file);
-            }
-            SpriteKind::CorneredTile(tile) => {
-                declaration.size = size(&tile.size);
-                declaration.start_end = start_end(&tile.effect_file);
-                declaration.border = Some(tile.border.map(|axis| axis as f32));
-                declaration.flags = Ok(Flags {
-                    vertical: false,
-                    tiling_center: tile.tiling_center,
-                });
-            }
-            SpriteKind::Progress(progress) => {
-                declaration.first = text(&progress.texture1);
-                declaration.second = text(&progress.texture2);
-                declaration.progress = true;
-                declaration.size = size(&progress.size);
-                declaration.start_end = start_end(&progress.effect_file);
-                declaration.flags = Ok(Flags {
-                    vertical: !progress.horizontal,
-                    tiling_center: false,
-                });
-            }
-            SpriteKind::CircularProgress(circular) => {
-                declaration.first = text(&circular.texture1);
-                declaration.second = text(&circular.texture2);
-            }
-            SpriteKind::Text(text) => declaration.start_end = start_end(&text.effect_file),
-            SpriteKind::Resizeable(resizeable) => declaration.size = size(&resizeable.size),
-            SpriteKind::LineChart(chart) => declaration.size = size(&chart.size),
-            // A pie chart's `size` is one number, not the `{ x y }` this painter takes.
-            SpriteKind::PieChart(_) => {}
-        }
-        declaration
-    }
-
-    /// One texture drawn whole.
-    fn texture(first: Option<String>) -> Self {
-        Self {
-            first,
-            second: None,
-            frames: 1,
-            progress: false,
-            size: None,
-            start_end: false,
-            border: None,
-            flags: Ok(Flags {
-                vertical: false,
-                tiling_center: false,
-            }),
+        } else if let Some(why) = info.missing {
+            warnings.push(format!(
+                "Combat UI: sprite {display}: {why} (1 missing_texture)."
+            ));
+        } else if gui
+            .registry()
+            .sprite(name)
+            .and_then(|facts| facts.kind.plain())
+            .is_some_and(|plain| plain.frames < 0)
+        {
+            warnings.push(format!(
+                "Combat UI: sprite {display}: noOfFrames is {} (1 negative_frame_count).",
+                info.frames
+            ));
+        } else if gui
+            .sheet(name)
+            .is_none_or(|sheet| sheet.texture == NO_TEXTURE)
+            || gui
+                .mask(name)
+                .is_some_and(|sheet| sheet.texture == NO_TEXTURE)
+        {
+            warnings.push(format!("Combat UI: sprite {display} requires loaded base and secondary textures (1 missing_texture)."));
         }
     }
+    warnings
 }
 
-/// One combat sprite from its declaration and its first texture's sheet.
-fn build_sprite(
-    name: &str,
-    declaration: &Declaration,
-    flags: Flags,
-    mut sheet: SpriteSheet,
-    second: Option<SpriteSheet>,
-) -> Sprite {
-    sheet.frames = declaration.frames;
-    sheet.name = name.to_owned();
-    let frame = sheet.frame_size();
-    let size = declaration.size.map_or(frame, |size| {
-        [0, 1].map(|axis| size[axis].unwrap_or(frame[axis]))
-    });
-    Sprite {
-        sheet,
-        second,
-        size,
-        vertical: flags.vertical,
-        progress: declaration.progress,
-        start_end: declaration.start_end,
-        border: declaration.border,
-        tiling_center: flags.tiling_center,
-    }
+// Initialize@1415C6AB0 / 1417D81B0; retained entry templates share their registry.
+const WINDOW_TEMPLATES: &[&[u8]] = &[
+    b"naval_region_modifier_entry",
+    b"landcombatview",
+    b"division_combat_attacker_entry",
+    b"division_combat_defender_entry",
+    b"reserve_combat_entry",
+    b"tactics_list_view",
+    b"tactics_list_entry",
+    b"global_modifier_icon_entry",
+    b"modifier_icon_entry",
+    b"navalcombatview",
+    b"navalcombat_ship_entry",
+    b"navalcombatresultswindow",
+    b"naval_combat_results_attacker_survivor_entry",
+    b"naval_combat_results_defender_survivor_entry",
+    b"naval_combat_results_attacker_lost_line_entry",
+    b"naval_combat_results_defender_lost_line_entry",
+    b"naval_combat_results_attacker_lost_ship_entry",
+    b"naval_combat_results_defender_lost_ship_entry",
+    b"naval_combat_results_attacker_air_entry",
+    b"naval_combat_results_defender_air_entry",
+    b"naval_combat_results_attacker_air_lost_line_entry",
+    b"naval_combat_results_defender_air_lost_line_entry",
+    b"naval_combat_results_attacker_lost_air_entry",
+    b"naval_combat_results_defender_lost_air_entry",
+    b"unit_leader_trait_entry",
+];
+
+fn native_templates(windows: &NativeWindows) -> impl Iterator<Item = &gui::native::Element> {
+    WINDOW_TEMPLATES
+        .iter()
+        .filter_map(|name| windows.gui_type(name))
 }
+
+fn native_window_assets(
+    windows: &NativeWindows,
+    localisation: &installed_content::localisation::Localisation,
+) -> native_gui::Assets {
+    let mut assets = native_gui::Assets::default();
+    for root in native_templates(windows) {
+        assets.extend(native_gui::assets_in(
+            root,
+            &|name| windows.gui_type(name),
+            localisation,
+        ));
+    }
+    assets
+}
+
 fn path(raw: &str) -> String {
     raw.split(['/', '\\'])
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("/")
 }
-fn decode_image(layers: &ResolvedLayers, path: &str, uncovered: bool) -> io::Result<dds::Texture> {
-    // Shipped declarations retain .tga names after their textures were converted to DDS.
-    // Resolve only a declared asset's same-stem replacement, through the verified layer index.
-    let replacement = path.rsplit_once('.').map(|(stem, _)| format!("{stem}.dds"));
-    let read = |path: &str| {
-        if uncovered {
-            layers.read_uncovered(path)
-        } else {
-            layers.read(path)
-        }
-    };
-    let bytes = match read(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            read(replacement.as_deref().unwrap_or(path))?
-        }
-        result => result?,
-    };
-    if bytes.starts_with(b"DDS ") {
-        Ok(super::texture::uploadable(dds::decode(&bytes)?)?)
-    } else {
-        Ok(dds::Texture::from_rgba8(tga::decode(&bytes).map_err(
-            |error| io::Error::new(error.kind(), format!("combat texture {path}: {error}")),
-        )?))
-    }
-}
-fn load_image(
-    layers: &ResolvedLayers,
-    path: &str,
-    images: &mut Vec<dds::Texture>,
-    uncovered: bool,
-) -> io::Result<SpriteSheet> {
-    let texture = decode_image(layers, path, uncovered)?;
-    let sheet = SpriteSheet {
-        name: path.into(),
-        texture: images.len(),
-        frames: 1,
-        size: [texture.width, texture.height],
-    };
-    images.push(texture);
-    Ok(sheet)
-}
-fn collect(node: &Node, sprites: &mut BTreeSet<String>, fonts: &mut BTreeSet<String>) {
-    if let Some(name) = gui::sprite(&node.items) {
-        sprites.insert(name.into());
-    }
-    if let Some(name) = gui::font(&node.items) {
-        fonts.insert(name.into());
-    }
-    for child in &node.children {
-        collect(child, sprites, fonts);
+
+/// Plain texture type defaults from CSpriteType::constructor (142229DE0).
+fn texture_sprite(name: String, texture: String) -> SpriteFacts {
+    SpriteFacts {
+        name: name.into_bytes(),
+        load_type: 0,
+        kind: SpriteKind::Plain(Plain {
+            texture: texture.into_bytes(),
+            ..Plain::default()
+        }),
+        refusals: Vec::new(),
     }
 }
 
@@ -384,35 +447,6 @@ fn portrait_paths(items: &[installed_content::parser::Item], paths: &mut BTreeSe
         if let Some(children) = item.value.items() {
             portrait_paths(children, paths);
         }
-    }
-}
-fn expand_gui(document: &mut installed_content::parser::Document) {
-    use installed_content::parser::Value;
-    let variables: BTreeMap<_, _> = document
-        .items
-        .iter()
-        .filter_map(|item| {
-            let key = item.key.as_ref()?;
-            key.starts_with(b"@")
-                .then(|| (key.clone(), item.value.clone()))
-        })
-        .collect();
-    fn walk(value: &mut Value, variables: &BTreeMap<Vec<u8>, Value>) {
-        match value {
-            Value::Scalar(key) => {
-                if let Some(v) = variables.get(key) {
-                    *value = v.clone();
-                }
-            }
-            Value::Block(items) | Value::Tagged { items, .. } => {
-                for item in items {
-                    walk(&mut item.value, variables);
-                }
-            }
-        }
-    }
-    for item in &mut document.items {
-        walk(&mut item.value, &variables);
     }
 }
 /// What the combat interface reads from the content alone, before any
@@ -522,17 +556,23 @@ impl Assets {
         shared: &Arc<ResolvedLayers>,
         defines: &Defines,
         interface: &crate::map::sprites::Interface,
-        small: &Arc<FlagAtlas>,
-        language: &str,
+        flags: &Arc<FlagAtlas>,
+        client: (&str, [u32; 2], &NativeWindows),
         images: &mut Vec<dds::Texture>,
         lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
+        let (language, map_size, native_windows) = client;
         let layers: &ResolvedLayers = shared;
-        let mut declarations: BTreeMap<String, Declaration> = interface
-            .sprites
-            .iter()
-            .map(|(name, sprite)| (name.clone(), Declaration::sprite(sprite)))
-            .collect();
+        for name in WINDOW_TEMPLATES {
+            if native_windows.gui_type(name).is_none() {
+                return Err(super::invalid(format!(
+                    "Combat UI: no .gui file declares {} (1 missing_gui_type)",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+        }
+        let mut files = interface.registry.files.clone();
+        let mut direct = Sprites::default();
         // Inventory literal portrait references once per content set, never by
         // decoding every historical hour. DDS compression stays intact on upload.
         // Each file as the characters reader reads it (the reader replay).
@@ -551,7 +591,7 @@ impl Assets {
         }
         for texture in direct_portraits {
             let key = format!("combat_portrait:{texture}");
-            declarations.insert(key, Declaration::texture(Some(texture)));
+            direct.sprites.push(texture_sprite(key, texture));
         }
         let content = CombatContent::read(layers, defines)?;
         let content_warnings: Vec<String> = content.warnings().collect();
@@ -567,73 +607,19 @@ impl Assets {
         // Each proven tactic's picture declares its texture; the widgets look
         // it up through the registry.
         for (key, texture) in tactics.pictures() {
-            declarations.insert(key.to_owned(), Declaration::texture(Some(texture)));
+            direct.sprites.push(texture_sprite(key.to_owned(), texture));
         }
-        let mut windows = BTreeMap::new();
-        for (file, names) in [
-            (
-                "interface/naval_strategic_region_view.gui",
-                vec!["naval_region_modifier_entry"],
-            ),
-            (
-                "interface/landcombat.gui",
-                vec![
-                    "landcombatview",
-                    "division_combat_attacker_entry",
-                    "division_combat_defender_entry",
-                    "reserve_combat_entry",
-                    "tactics_list_view",
-                    "tactics_list_entry",
-                    "global_modifier_icon_entry",
-                    "modifier_icon_entry",
-                ],
-            ),
-            (
-                "interface/navalcombat.gui",
-                vec!["navalcombatview", "navalcombat_ship_entry"],
-            ),
-            (
-                "interface/navalcombatresultswindow.gui",
-                vec![
-                    "navalcombatresultswindow",
-                    "naval_combat_results_attacker_survivor_entry",
-                    "naval_combat_results_defender_survivor_entry",
-                    "naval_combat_results_attacker_lost_line_entry",
-                    "naval_combat_results_defender_lost_line_entry",
-                    "naval_combat_results_attacker_lost_ship_entry",
-                    "naval_combat_results_defender_lost_ship_entry",
-                    "naval_combat_results_attacker_air_entry",
-                    "naval_combat_results_defender_air_entry",
-                    "naval_combat_results_attacker_air_lost_line_entry",
-                    "naval_combat_results_defender_air_lost_line_entry",
-                    "naval_combat_results_attacker_lost_air_entry",
-                    "naval_combat_results_defender_lost_air_entry",
-                ],
-            ),
-            (
-                "interface/unitleaderwindow.gui",
-                vec!["unit_leader_trait_entry"],
-            ),
-        ] {
-            let mut document = gui::read(layers, file)?;
-            expand_gui(&mut document);
-            for name in names {
-                let items = gui::find(&document, "containerWindowType", name)
-                    .ok_or_else(|| super::invalid(format!("{file} has no {name}")))?;
-                windows.insert(name.into(), Node::new("containerWindowType", items));
-            }
-        }
-        let core = gui::read(layers, "interface/core.gui")?;
-        for name in ["left_vertical_slider", "right_vertical_slider"] {
-            let items = gui::find(&core, "extendedScrollbarType", name)
-                .ok_or_else(|| super::invalid(format!("core.gui has no {name}")))?;
-            windows.insert(name.into(), Node::new("extendedScrollbarType", items));
-        }
+        files.push(("combat runtime textures".into(), direct));
+        let registry = Registry::from_files(files);
         let mut wanted = BTreeSet::new();
-        let mut wanted_fonts = BTreeSet::new();
-        for node in windows.values() {
-            collect(node, &mut wanted, &mut wanted_fonts);
-        }
+        // Construction finds scrollbar and listbox templates through all .gui files (142247660).
+        let native_assets = native_window_assets(native_windows, &Default::default());
+        wanted.extend(
+            native_assets
+                .sprites
+                .iter()
+                .filter_map(|name| std::str::from_utf8(name).ok().map(str::to_owned)),
+        );
         // Trait-tree connectors also start with GFX_trait_. Load only the
         // sprites of the traits append_trait (140AD7890) registers, by their
         // first spelling, instead of that editor UI. A name that is not UTF-8
@@ -641,144 +627,139 @@ impl Assets {
         for name in traits.spellings() {
             wanted.insert(format!("GFX_trait_{name}"));
         }
-        for name in declarations.keys().filter(|name| {
-            name.starts_with("GFX_terrain_")
-                || name.starts_with("GFX_navalcombat_ship_icon_")
-                || (name.starts_with("GFX_unit_")
-                    && (name.ends_with("_icon_medium") || name.ends_with("_icon_medium_black")))
-                || name.starts_with("combat_tactic:")
-                || name.starts_with("combat_portrait:")
-                || declarations[*name]
-                    .first
-                    .as_ref()
-                    .is_some_and(|p| p.starts_with("gfx/leaders/"))
-                || name == &"GFX_organization_texticon"
-                || name == &"GFX_strenght_texticon"
-                || name == &"GFX_modifiers_weather_icons"
-                || (name.starts_with("GFX_div_templ_") && name.ends_with("_large"))
-                || name == &"GFX_flag_small2_not_masked"
-        }) {
-            wanted.insert(name.clone());
-        }
-        let mut sprites = BTreeMap::new();
         let mut warnings = content_warnings;
-        let mut decoded = BTreeMap::new();
-        let mut uncovered_portraits = false;
-        // Resolve every wanted sprite's reads up front; the first textures
-        // decode on scoped threads below and the merge keeps the serial
-        // warning order and texture ids.
-        let mut planned = Vec::new();
-        let mut first_paths = Vec::new();
-        for name in wanted {
-            if name == "GFX_tiled_window_transparent" || name == "GFX_flag_small2" {
-                planned.push((name, WantedSprite::Skip));
-                continue;
-            }
-            let Some(declaration) = declarations.get(&name) else {
-                // Why no drawable declaration: none, or a refused one.
-                let why = interface.sprites.lookup(&name).err().unwrap_or_default();
-                let warning = format!("Combat UI: {why}; its widget stays empty.");
-                planned.push((name, WantedSprite::Warn(warning)));
-                continue;
-            };
-            let Some(first) = declaration.first.clone() else {
-                let warning = format!("Combat UI: {name} has no texture; widget stays empty.");
-                planned.push((name, WantedSprite::Warn(warning)));
-                continue;
-            };
-            if is_uncovered(&first) {
-                uncovered_portraits = true;
-            }
-            let second = declaration.second.clone();
-            // A plain leader portrait decodes on first draw: a content set can
-            // declare one for every character of thousands of countries.
-            if !declaration.progress && second.is_none() && first.starts_with("gfx/leaders/") {
-                planned.push((name, WantedSprite::Lazy(first)));
-                continue;
-            }
-            if !first_paths.contains(&first) {
-                first_paths.push(first.clone());
-            }
-            planned.push((name, WantedSprite::Load { first, second }));
+        for (file, refusal) in native_windows.reader_failures() {
+            warnings.push(format!("Combat UI: {file}: {refusal} (1 gui_reader)."));
         }
-        // First textures decode on a bounded pool; the merge keeps the serial
-        // warning order and texture ids.
-        let mut firsts: BTreeMap<String, io::Result<dds::Texture>> =
-            crate::parallel::map(&first_paths, |path| {
-                (path.clone(), decode_image(layers, path, is_uncovered(path)))
-            })
-            .into_iter()
-            .collect();
+        for root in native_templates(native_windows) {
+            for refusal in root.subtree_refusals() {
+                warnings.push(format!("Combat UI: {refusal} (1 gui_reader)."));
+            }
+        }
+        for sprite in installed_content::gui::native::sprites::registry(&registry.files).values() {
+            let name = &sprite.name;
+            let portrait = sprite
+                .kind
+                .plain()
+                .is_some_and(|plain| plain.texture.starts_with(b"gfx/leaders/"));
+            if name.starts_with(b"GFX_terrain_")
+                || name.starts_with(b"GFX_navalcombat_ship_icon_")
+                || (name.starts_with(b"GFX_unit_")
+                    && (name.ends_with(b"_icon_medium") || name.ends_with(b"_icon_medium_black")))
+                || name.starts_with(b"combat_tactic:")
+                || name.starts_with(b"combat_portrait:")
+                || portrait
+                || [
+                    b"GFX_organization_texticon".as_slice(),
+                    b"GFX_strenght_texticon",
+                    b"GFX_modifiers_weather_icons",
+                    b"GFX_flag_small2_not_masked",
+                ]
+                .contains(&name.as_slice())
+                || (name.starts_with(b"GFX_div_templ_") && name.ends_with(b"_large"))
+            {
+                // Resource identifiers stay byte-for-byte in the native loader.
+                // The producer's existing text names cannot address other bytes.
+                match std::str::from_utf8(name) {
+                    Ok(name) => {
+                        wanted.insert(name.to_owned());
+                    }
+                    Err(_) => warnings.push(format!(
+                        "Combat UI: sprite name {name:?} cannot be addressed by the text-valued combat bindings; its widget stays empty (1 refusal)."
+                    )),
+                }
+            }
+        }
         let mut lazy_sprites = BTreeMap::new();
-        for (name, sprite) in planned {
-            let (first, second) = match sprite {
-                WantedSprite::Skip => continue,
-                WantedSprite::Warn(warning) => {
-                    warnings.push(warning);
-                    continue;
-                }
-                WantedSprite::Lazy(first) => {
-                    let declaration = declarations[&name].clone();
-                    match declaration.flags.clone() {
-                        Ok(flags) => {
-                            lazy_sprites.insert(name, (first, declaration, flags));
-                        }
-                        Err(reason) => warnings.push(format!(
-                            "Combat UI: declared sprite {name}: {reason}; widget stays empty."
-                        )),
-                    }
-                    continue;
-                }
-                WantedSprite::Load { first, second } => (first, second),
-            };
-            let declaration = declarations
-                .get(&name)
-                .expect("wanted sprite declared up front");
-            let flags = match declaration.flags.clone() {
-                Ok(flags) => flags,
-                Err(reason) => {
-                    warnings.push(format!(
-                        "Combat UI: declared sprite {name}: {reason}; widget stays empty."
-                    ));
-                    continue;
-                }
-            };
-            let sheet = match decoded.get(&first).cloned() {
-                Some(sheet) => sheet,
-                None => {
-                    match firsts
-                        .remove(&first)
-                        .expect("combat sprite decoded up front")
-                    {
-                        Ok(texture) => {
-                            let sheet = SpriteSheet {
-                                name: first.clone(),
-                                texture: images.len(),
-                                frames: 1,
-                                size: [texture.width, texture.height],
-                            };
-                            images.push(texture);
-                            decoded.insert(first.clone(), sheet.clone());
-                            sheet
-                        }
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                            warnings.push(format!("Combat UI: declared sprite {name} has no texture {first}; widget stays empty."));
-                            continue;
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-            };
-            let second = second
-                .map(|p| load_image(layers, &p, images, false))
-                .transpose()?;
-            let sprite = build_sprite(&name, declaration, flags, sheet, second);
-            sprites.insert(name, sprite);
+        let window_sprites = native_assets.sprites.clone();
+        let mut resident = native_gui::Assets {
+            sprites: native_assets.sprites,
+            fonts: native_assets.fonts,
+            textures: native_assets.textures,
+        };
+        let mut uncovered_portraits = false;
+        for name in &wanted {
+            if let Some(facts) = registry.sprite(name.as_bytes()) {
+                let texture = match &facts.kind {
+                    SpriteKind::MaskedShield { shield, .. } => Some(shield.texture1.as_slice()),
+                    SpriteKind::CorneredTile(tile) => Some(tile.texture.as_slice()),
+                    SpriteKind::Progress(progress) => Some(progress.texture1.as_slice()),
+                    SpriteKind::CircularProgress(progress) => Some(progress.texture1.as_slice()),
+                    SpriteKind::Text(text) => Some(text.texture.as_slice()),
+                    _ => facts.kind.plain().map(|plain| plain.texture.as_slice()),
+                };
+                uncovered_portraits |= texture.is_some_and(|texture| {
+                    texture.starts_with(b"gfx/leaders/") || texture.starts_with(b"gfx/texticons/")
+                });
+            }
+            if let Some(facts) = registry.sprite(name.as_bytes())
+                && let SpriteKind::Plain(plain) = &facts.kind
+                && plain.texture.starts_with(b"gfx/leaders/")
+                && plain.masking_texture.is_empty()
+                && (plain.legacy_lazy_load || plain.animations.is_empty())
+                && plain.frames >= 0
+                && facts.refusals.is_empty()
+                && let Ok(first) = std::str::from_utf8(&plain.texture)
+            {
+                uncovered_portraits = true;
+                lazy_sprites.insert(name.clone(), (first.to_owned(), plain.clone()));
+                resident.sprites.remove(name.as_bytes());
+            } else {
+                resident.sprites.insert(name.as_bytes().to_vec());
+            }
         }
+        // SelectLanguageFamily@14228DCC0 compares the complete l_ language key.
+        let mut gui = GuiResources::new(
+            registry,
+            format!("l_{language}").as_bytes(),
+            map_size,
+            interface.decode,
+        );
+        gui.load(layers, &resident, images)?;
+        for name in lazy_sprites.keys() {
+            gui.load_lazy_plain(layers, name.as_bytes())
+                .map_err(super::invalid)?;
+        }
+        warnings.extend(sprite_warnings(&gui, &resident.sprites));
         let reader = Arc::clone(shared);
+        let decode = interface.decode;
+        let portrait_failures = Arc::new(Mutex::new(BTreeMap::new()));
+        let failures = Arc::clone(&portrait_failures);
         let portraits = LazyImages::new(
             "combat portrait",
-            Arc::new(move |path: &str| decode_image(&reader, path, true)),
+            Arc::new(move |path: &str| {
+                match resources::stack_texture(&reader, path.as_bytes(), decode) {
+                    Ok(Ok(texture)) => Ok(texture.image),
+                    Ok(Err(why)) => {
+                        let kind = if why.native_failure() {
+                            None
+                        } else if matches!(why, resources::NoTexture::Device { .. }) {
+                            Some(native_gui::RefusalKind::MissingInput)
+                        } else {
+                            Some(native_gui::RefusalKind::UndefinedRead)
+                        };
+                        let reason = why.to_string();
+                        failures
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(path.to_owned(), (kind, reason.clone()));
+                        Err(io::Error::new(io::ErrorKind::InvalidData, reason))
+                    }
+                    Err(error) => {
+                        failures
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(
+                                path.to_owned(),
+                                (
+                                    Some(native_gui::RefusalKind::MissingResource),
+                                    error.to_string(),
+                                ),
+                            );
+                        Err(error)
+                    }
+                }
+            }),
             COMBAT_PORTRAIT_CAPACITY,
             lazy,
         );
@@ -791,50 +772,6 @@ impl Assets {
         if uncovered_portraits {
             warnings.push("Combat portraits and inline icons under gfx/leaders and gfx/texticons are outside this recording's content hash coverage; their visual identity is UNVERIFIED without a covered content manifest.".into());
         }
-        let fonts = wanted_fonts
-            .into_iter()
-            .map(|name| {
-                Ok((
-                    name.clone(),
-                    text::load(layers, interface, &name, language, images)?,
-                ))
-            })
-            .collect::<io::Result<BTreeMap<_, _>>>()?;
-        for font in fonts.values() {
-            warnings.extend(
-                font.logged
-                    .iter()
-                    .map(|note| format!("Combat UI: {note}, as in the game.")),
-            );
-        }
-        // 14162FC20: maskedShieldType defaults to the normal flag atlas; the
-        // medium one is a different ordinary-sprite path. Bake only the point
-        // sampled shield alpha at twice its resolution, preserving native2:1
-        // linear minification and keeping the authored overlay a separate draw.
-        let mask = tga::decode(&layers.read("gfx/interface/shield_small_mask.tga")?)?;
-        let cell = FlagSet::Normal.cell(defines)?;
-        let flags = crate::map::counters::flag_set(
-            shared,
-            FlagSet::Normal,
-            cell,
-            move |image| {
-                let [cell_width, cell_height] = cell.map(|side| side as usize);
-                let [mask_width, mask_height] = [mask.width as usize, mask.height as usize];
-                for row in 0..cell_height {
-                    for column in 0..cell_width {
-                        let at = (row * mask_height / cell_height * mask_width
-                            + column * mask_width / cell_width)
-                            * 4
-                            + 3;
-                        image.pixels[(row * cell_width + column) * 4 + 3] = mask.pixels[at];
-                    }
-                }
-            },
-            lazy,
-        )?;
-        // The inline markers draw from the counters' small set: the same
-        // `gfx/flags/small` files at the same defines cell, decoded once.
-        let small_cell = small.cell_size();
         let (convoy_weapon_bound, misreads) =
             super::naval_environment::convoy_weapon_bound(layers)?;
         warnings.extend(misreads.into_iter().map(|misread| {
@@ -858,18 +795,17 @@ impl Assets {
         };
         let naval_air_groups = super::naval_air_groups::Content::load(layers, &mut warnings);
         Ok(Self {
-            windows,
-            sprites,
+            native_windows: native_windows.clone(),
+            gui,
+            window_sprites,
+            flag_selectors: Mutex::default(),
             lazy_sprites,
             portraits,
-            fonts,
-            flags,
-            small_flags: Arc::clone(small),
-            inline_flag_size: small_cell.map(|side| side as f32),
+            portrait_failures,
+            flags: Arc::clone(flags),
             convoy_weapon_bound,
             naval_defines,
             naval_air_groups,
-            text_colors: interface.registry.text_colors.clone(),
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),
             naval_name_defines: ["BATTLE_NAME_VP_FACTOR", "BATTLE_NAME_VP_CUTOFF"]
@@ -885,5 +821,291 @@ impl Assets {
             tooltip_defines,
             warnings,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use installed_content::image::native::Decode;
+
+    #[test]
+    fn combat_native_assets_follow_global_templates_and_scrollbars() {
+        let windows = NativeWindows::of(gui::native::Guis {
+            files: vec![
+                (
+                    "first.gui".into(),
+                    gui::native::read(
+                        br#"guiTypes = {
+                        containerWindowType = { name = "unit_counter_navy" }
+                        containerWindowType = { name = "naval_combat_mapicon" }
+                        containerWindowType = { name = "landcombatview"
+                            iconType = { name = "old" spriteType = "GFX_old" }
+                        }
+                    }"#,
+                    ),
+                ),
+                (
+                    "mod.gui".into(),
+                    gui::native::read(
+                        br#"@art = "GFX_mod"
+                    guiTypes = {
+                        containerWindowType = { name = "landcombatview"
+                            verticalScrollbar = "mod_scroll"
+                            iconType = { name = "new" spriteType = @art }
+                        }
+                        extendedScrollbarType = { name = "mod_scroll"
+                            slider = { name = "s" spriteType = "GFX_mod_slider" }
+                        }
+                    }"#,
+                    ),
+                ),
+            ],
+        })
+        .unwrap();
+        let assets = native_window_assets(&windows, &Default::default());
+        assert!(assets.sprites.contains(b"GFX_mod".as_slice()));
+        assert!(assets.sprites.contains(b"GFX_mod_slider".as_slice()));
+        assert!(!assets.sprites.contains(b"GFX_old".as_slice()));
+    }
+
+    fn tga(width: u16, height: u16) -> Vec<u8> {
+        let mut bytes = vec![0; 18];
+        bytes[2] = 2;
+        bytes[12..14].copy_from_slice(&width.to_le_bytes());
+        bytes[14..16].copy_from_slice(&height.to_le_bytes());
+        bytes[16] = 32;
+        bytes[17] = 8;
+        bytes.resize(18 + usize::from(width) * usize::from(height) * 4, 255);
+        bytes
+    }
+
+    #[test]
+    fn combat_fonts_select_the_native_language_family() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_combat_font_language_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        for directory in ["interface", "gfx/fonts", "map", "common/terrain"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        std::fs::write(
+            root.join("map/default.map"),
+            br#"definitions = "x" provinces = "x"
+            terrain = "x" rivers = "x" heightmap = "x" tree_definition = "x""#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("common/terrain/fixture.txt"),
+            b"categories = { fixture = {} }",
+        )
+        .unwrap();
+        std::fs::write(root.join("common/combat_tactics.txt"), b"").unwrap();
+        std::fs::write(
+            root.join("interface/fonts.gfx"),
+            br#"bitmapfonts = {
+            bitmapfont = { name = "fixture_font" path = "gfx/fonts/base" }
+            bitmapfont_override = { name = "fixture_font" fontfiles = { "gfx/fonts/native" }
+                languages = { "l_fixture" } }
+        }"#,
+        )
+        .unwrap();
+        for (name, height) in [("base", 11), ("native", 23)] {
+            std::fs::write(root.join(format!("gfx/fonts/{name}.fnt")), format!(
+                "info face=\"fixture\" size={height}\ncommon lineHeight={height} base=5 scaleW=2 scaleH=2 pages=1\n\
+                 page id=0 file=\"x.tga\"\nchars count=1\n\
+                 char id=65 x=0 y=0 width=1 height=1 xoffset=0 yoffset=0 xadvance=1 page=0 chnl=15\n"
+            )).unwrap();
+            std::fs::write(root.join(format!("gfx/fonts/{name}.tga")), tga(2, 2)).unwrap();
+        }
+        let shared = Arc::new(ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap());
+        let registry = Registry::load(&shared).unwrap();
+        let interface = crate::map::sprites::Interface {
+            sprites: installed_content::gfx::SpriteSet::new(&registry.files),
+            registry,
+            decode: Decode::default(),
+        };
+        let mut declaration = String::from("guiTypes = {");
+        for name in WINDOW_TEMPLATES
+            .iter()
+            .copied()
+            .chain([b"unit_counter_navy".as_slice(), b"naval_combat_mapicon"])
+        {
+            let text = if name == b"landcombatview" {
+                r#"instantTextBoxType = { name = "fixture_text" font = "fixture_font" }"#
+            } else {
+                ""
+            };
+            declaration.push_str(&format!(
+                "containerWindowType = {{ name = \"{}\" {text} }}\n",
+                std::str::from_utf8(name).unwrap()
+            ));
+        }
+        declaration.push('}');
+        let windows = NativeWindows::read(declaration.as_bytes(), [640, 480]).unwrap();
+        let lazy = LazyTextures::new();
+        let flags = crate::map::counters::flag_set(
+            &shared,
+            installed_content::flags::FlagSet::Normal,
+            [1, 1],
+            |_| {},
+            &lazy,
+        )
+        .unwrap();
+        let assets = Assets::load(
+            &shared,
+            &Defines::new().unwrap(),
+            &interface,
+            &flags,
+            ("fixture", [10, 10], &windows),
+            &mut Vec::new(),
+            &lazy,
+        )
+        .unwrap();
+        assert_eq!(
+            assets.gui.font(b"fixture_font").unwrap().glyphs.line_height,
+            Some(23)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn combat_resources_use_native_texture_resolution_and_shared_pages() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_combat_resources_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(root.join("gfx")).unwrap();
+        // The native resolver sniffs bytes and prefers the same stem's .dds.
+        std::fs::write(root.join("gfx/portrait.tga"), tga(8, 6)).unwrap();
+        std::fs::write(root.join("gfx/portrait.dds"), tga(10, 4)).unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let read = Sprites {
+            sprites: vec![
+                texture_sprite("combat_portrait:test".into(), "gfx/portrait.tga".into()),
+                texture_sprite("combat_tactic:test".into(), "gfx/portrait.tga".into()),
+            ],
+            ..Sprites::default()
+        };
+        let mut gui = GuiResources::new(
+            Registry::from_files(vec![("runtime".into(), read)]),
+            b"l_english",
+            [10, 10],
+            Decode::default(),
+        );
+        let assets = native_gui::Assets {
+            sprites: [
+                b"combat_portrait:test".to_vec(),
+                b"combat_tactic:test".to_vec(),
+            ]
+            .into(),
+            ..native_gui::Assets::default()
+        };
+        let mut images = Vec::new();
+        gui.load(&layers, &assets, &mut images).unwrap();
+        let portrait = gui.sprite(b"combat_portrait:test").unwrap();
+        assert_eq!(portrait.texture, [10, 4]);
+        assert_eq!(
+            gui.sheet(b"combat_portrait:test").unwrap().texture,
+            gui.sheet(b"combat_tactic:test").unwrap().texture
+        );
+        assert_eq!(images.len(), 1);
+        assert_eq!(
+            resources::stack_texture(&layers, b"gfx/portrait.tga", Decode::default())
+                .unwrap()
+                .unwrap()
+                .image
+                .width,
+            10
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn combat_resources_name_undefined_texture_reads() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_combat_refused_texture_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(root.join("gfx")).unwrap();
+        // FreeImage's ICO sniff reads six bytes from this three-byte file.
+        std::fs::write(root.join("gfx/portrait.dds"), [0, 0, 1]).unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let read = Sprites {
+            sprites: vec![texture_sprite(
+                "combat_portrait:test".into(),
+                "gfx/portrait.dds".into(),
+            )],
+            ..Sprites::default()
+        };
+        let mut gui = GuiResources::new(
+            Registry::from_files(vec![("runtime".into(), read)]),
+            b"l_english",
+            [10, 10],
+            Decode::default(),
+        );
+        let assets = native_gui::Assets {
+            sprites: [b"combat_portrait:test".to_vec()].into(),
+            ..native_gui::Assets::default()
+        };
+        gui.load(&layers, &assets, &mut Vec::new()).unwrap();
+        let warnings = sprite_warnings(&gui, &assets.sprites);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("1 undefined_read"), "{warnings:?}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_combat_unusable_sheets_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(root.join("gfx")).unwrap();
+        std::fs::write(root.join("gfx/one.tga"), tga(10, 4)).unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let read = installed_content::gui::native::sprites::read_sprites(
+            br#"spriteTypes = {
+                spriteType = { name = "GFX_negative" textureFile = "gfx/one.tga" noOfFrames = -2 }
+                progressBarType = { name = "GFX_missing" textureFile1 = "gfx/one.tga"
+                    textureFile2 = "gfx/missing.tga" size = { x = 10 y = 4 } }
+                resizeableSpriteType = { name = "GFX_resized" textureFile = "gfx/one.tga"
+                    size = { x = 40 y = 20 } }
+            }"#,
+        );
+        let mut gui = GuiResources::new(
+            Registry::from_files(vec![("runtime".into(), read)]),
+            b"l_english",
+            [10, 10],
+            Decode::default(),
+        );
+        let assets = native_gui::Assets {
+            sprites: [
+                b"GFX_negative".to_vec(),
+                b"GFX_missing".to_vec(),
+                b"GFX_resized".to_vec(),
+            ]
+            .into(),
+            ..native_gui::Assets::default()
+        };
+        gui.load(&layers, &assets, &mut Vec::new()).unwrap();
+        assert_eq!(
+            prepared_size(&gui, b"GFX_resized", &gui.sprite(b"GFX_resized").unwrap()),
+            Some([40.0, 20.0])
+        );
+        for (name, kind) in [
+            (b"GFX_negative".as_slice(), "negative_frame_count"),
+            (b"GFX_missing", "missing_texture"),
+        ] {
+            assert!(prepared_size(&gui, name, &gui.sprite(name).unwrap()).is_none());
+            let warnings = sprite_warnings(&gui, &[name.to_vec()].into());
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].contains(&format!("1 {kind}")), "{warnings:?}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

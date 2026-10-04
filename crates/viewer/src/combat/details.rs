@@ -155,7 +155,7 @@ fn fraction(value: i64, maximum: i64) -> f32 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Unnamed {
     CustomNotText,
-    /// The name holds a control the painter does not draw ([`displayable`]).
+    /// The name holds a control the native text layout does not draw ([`displayable`]).
     Control(String),
     /// CArmy's constructor 140C5DD30 builds its member with 1409B3070 (type
     /// 0), and SetTemplate/SelectFakeIntelDivisionTemplate bind it to a
@@ -200,7 +200,7 @@ fn division_name(row: &LandCombatDivisionRow, names: &Database) -> Result<String
 }
 
 /// [`division_name`] as the entry draws it: the text path (1422894D0) reads
-/// its control bytes, so one the painter does not draw is refused.
+/// its control bytes, so one the native text layout does not draw is refused.
 fn shown_name(
     row: &LandCombatDivisionRow,
     names: &Database,
@@ -1014,7 +1014,6 @@ fn land(
     if detail.is_none() {
         out.warnings.push("LandCombatDetails unavailable: recorded LandCombatDivisions names, HP/org bars, commitment roles and defence/breakthrough remain bound independently, as do LandCombatModifiers icons. Side attack bonuses, selected commanders, tactics, CAS, maximum width and heading remain unknown; division commanders do not substitute for selected-side commanders.".into());
     }
-    out.warnings.push("Land window: names, bars, roles and modifier kinds bind without the parent-detail table. Defence/breakthrough uses recorded scales and truncates to whole units, as observed in reference07. Side-dependent attack, selected commander skill, CAS, the committed/reserve array order and the derived division icons require LandCombatDetails. Reinforcement and modifier tooltips, learning traits and possible-tactics menus remain unported; unsupported widgets stay empty/dash.".into());
     Ok(())
 }
 

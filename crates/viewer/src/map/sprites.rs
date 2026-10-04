@@ -194,8 +194,8 @@ impl MapIcons {
             &shared,
             defines,
             &interface,
-            &counters.flags,
-            language,
+            &counters.large_flags,
+            (language, map_size, &counters.windows),
             &mut images,
             &lazy,
         )?;
@@ -228,12 +228,16 @@ impl MapIcons {
         layers: &ResolvedLayers,
         localisation: &installed_content::localisation::Localisation,
     ) -> io::Result<Vec<String>> {
-        let warnings = self.counters.load_gui(
+        let mut warnings = self.counters.load_gui(
             layers,
             localisation,
-            crate::combat::tooltip_assets(&self.combat.windows, localisation),
+            crate::combat::tooltip_assets(self.combat.native_templates(), localisation),
             &mut self.images,
         )?;
+        warnings.extend(
+            self.combat
+                .load_gui(layers, localisation, &mut self.images)?,
+        );
         if self.images.len() >= DYNAMIC_BASE {
             return Err(invalid("more static icon pages than texture ids"));
         }
@@ -476,29 +480,6 @@ impl Batch {
             uv: sheet.frame_uv(frame),
             color,
             rotation: 0.0,
-            layer: self.layer,
-            shade: 0.0,
-            exact: None,
-        });
-    }
-
-    // counters
-    /// Adds one sprite frame rotated clockwise about its own centre.
-    pub fn rotated(
-        &mut self,
-        sheet: &SpriteSheet,
-        frame: u32,
-        at: [f32; 2],
-        size: [f32; 2],
-        rotation: f32,
-        color: [f32; 4],
-    ) {
-        self.quads.push(Quad {
-            texture: sheet.texture,
-            rect: [at[0], at[1], size[0], size[1]],
-            uv: sheet.frame_uv(frame),
-            color,
-            rotation,
             layer: self.layer,
             shade: 0.0,
             exact: None,

@@ -28,6 +28,40 @@
 
 use super::native_gui::Texture;
 
+/// Small atlas keys may fall back to the plain three-byte tag (load_tags@14070E900).
+pub(crate) fn resolved_flag_cell(
+    atlas: &super::counters::FlagAtlas,
+    key: &str,
+    small: bool,
+) -> Option<Texture> {
+    let cell = if small {
+        match key.get(..3) {
+            Some(tag) if tag != key => atlas.resolve(&[key, tag]),
+            _ => atlas.get(key),
+        }
+    } else {
+        atlas.get(key)
+    };
+    cell.map(|(texture, uv)| Texture {
+        texture,
+        uv,
+        size: atlas.cell_size().map(|value| value as i32),
+    })
+}
+
+/// A producer-resolved key keeps its selected art; DrawInlineFlag@14162EC30 uses 10x7.
+pub(crate) fn resolved_text_flag(
+    atlas: &super::counters::FlagAtlas,
+    key: &[u8],
+) -> Result<Option<Texture>, String> {
+    let key = std::str::from_utf8(key)
+        .map_err(|_| format!("resolved_text_flag: atlas key {key:?} is not UTF-8"))?;
+    Ok(resolved_flag_cell(atlas, key, true).map(|cell| Texture {
+        size: [10, 7],
+        ..cell
+    }))
+}
+
 /// One atlas record as the draw reads it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FlagRecord {
@@ -119,6 +153,93 @@ pub fn shield_flag(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolved_flag_keys_match_indexed_punctuation_and_longest_prefix() {
+        use crate::map::{
+            atlas_pages::CellPages,
+            lazy_icons::{LazyFlags, LazyTextures},
+        };
+        use std::{collections::BTreeMap, sync::Arc};
+        let textures = LazyTextures::new();
+        let atlas = LazyFlags::new(
+            BTreeMap::from([
+                ("SYN".into(), "plain".into()),
+                ("SYN-Western_group".into(), "cosmetic".into()),
+                ("SYN_éclair".into(), "unicode".into()),
+            ]),
+            CellPages::plan([14, 9], 64, "flag keys").unwrap(),
+            Arc::new(|_| None),
+            &textures,
+        );
+        for (text, expected) in [
+            ("SYN-Western_group, text", Some(17)),
+            ("SYN, text", Some(3)),
+            ("SYN_éclair!", Some(10)),
+            ("UNKNOWN, text", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                atlas.key_prefix(&text.chars().collect::<Vec<_>>()),
+                expected,
+                "{text}"
+            );
+        }
+        assert_eq!(atlas.loaded(), 0);
+        assert_eq!(atlas.rejected(), 0);
+    }
+
+    #[test]
+    fn resolved_small_flags_keep_plain_fallback_and_native_draw_extent() {
+        use crate::map::{
+            atlas_pages::CellPages,
+            lazy_icons::{LazyFlags, LazyTextures},
+        };
+        use std::{collections::BTreeMap, sync::Arc};
+        let textures = LazyTextures::new();
+        textures.set_background(false);
+        let cell = [14, 9];
+        let atlas = LazyFlags::new(
+            BTreeMap::from([
+                ("SYN".into(), "plain".into()),
+                ("SYN_group".into(), "missing".into()),
+            ]),
+            CellPages::plan(cell, 64, "resolved flags").unwrap(),
+            Arc::new(move |path| {
+                (path == "plain").then(|| installed_content::image::Rgba8Image {
+                    width: cell[0],
+                    height: cell[1],
+                    pixels: vec![255; (cell[0] * cell[1] * 4) as usize],
+                })
+            }),
+            &textures,
+        );
+        assert!(atlas.get("SYN").is_none());
+        assert!(textures.settle());
+        let (texture, uv) = atlas.get("SYN").unwrap();
+        let expected = Some(Texture {
+            texture,
+            uv,
+            size: [10, 7],
+        });
+        assert_eq!(
+            resolved_flag_cell(&atlas, "SYN_group", true),
+            Some(Texture {
+                size: cell.map(|value| value as i32),
+                ..expected.unwrap()
+            })
+        );
+        assert_eq!(resolved_text_flag(&atlas, b"SYN_group").unwrap(), expected);
+        assert!(textures.settle());
+        assert_eq!(atlas.rejected(), 1);
+        assert_eq!(resolved_text_flag(&atlas, b"SYN_group").unwrap(), expected);
+        assert!(resolved_text_flag(&atlas, b"ABSENT").unwrap().is_none());
+        assert!(
+            resolved_text_flag(&atlas, &[0xFF])
+                .unwrap_err()
+                .starts_with("resolved_text_flag:")
+        );
+    }
 
     /// Two countries in the database, `GER` in slot 3 and `ITA` in slot 9; a small atlas of
     /// five records whose record 2 is invalid and record 4 has no page.

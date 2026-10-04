@@ -1689,7 +1689,7 @@ fn entry_values(
 
 /// A refused popup field, as a refused window binding (binding::Bindings::
 /// bind): its text and sprite cleared and the widget hidden, so neither the
-/// authored .gui sprite nor the painter's placeholder shows, and the reason
+/// authored .gui sprite nor the native walk's placeholder shows, and the reason
 /// reported by name.
 fn withhold(values: &mut Values, key: &str, unavailable: &mut BTreeSet<String>, reason: String) {
     let widget = values.entry(key.into()).or_default();

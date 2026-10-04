@@ -7,10 +7,14 @@ use super::{
     HoverText, Selection, Values,
     binding::{Bindings, TextIcons, builtin, token},
     land_details::{Conditions, condition_gap, conditions, division_width},
-    layout::{Node, string},
 };
-use crate::{document::Document, map::perspective::Vision, table_access::rows};
+use crate::{
+    document::Document,
+    map::{counters::NativeWindows, perspective::Vision},
+    table_access::rows,
+};
 use installed_content::{
+    gui::native::{self, Element},
     localisation::{Argument, Localisation},
     unit_leader::Skills,
 };
@@ -156,22 +160,28 @@ pub(crate) fn keys() -> impl Iterator<Item = std::borrow::Cow<'static, str>> {
 }
 
 /// Authored hovers from the same nodes the combat binder uses.
-pub(crate) fn authored_assets(
-    windows: &BTreeMap<String, Node>,
+pub(crate) fn authored_assets<'a>(
+    windows: impl IntoIterator<Item = &'a Element>,
     localisation: &Localisation,
 ) -> crate::map::native_gui::Assets {
-    fn collect(node: &Node, loc: &Localisation, assets: &mut crate::map::native_gui::Assets) {
-        for child in &node.children {
-            for field in ["pdx_tooltip", "pdx_tooltip_delayed"] {
-                if let Some(key) = string(&child.items, field) {
-                    assets.add_localised(loc, key.as_bytes());
+    fn collect(node: &Element, loc: &Localisation, assets: &mut crate::map::native_gui::Assets) {
+        for child in node.nested() {
+            for (hash, key) in [
+                (child.common.tooltip, &child.common.tooltip_key),
+                (
+                    child.common.delayed_tooltip,
+                    &child.common.delayed_tooltip_key,
+                ),
+            ] {
+                if hash != 0 && native::tooltip_hash(key) == hash {
+                    assets.add_localised(loc, key);
                 }
             }
             collect(child, loc, assets);
         }
     }
     let mut assets = crate::map::native_gui::Assets::default();
-    for window in windows.values() {
+    for window in windows {
         collect(window, localisation, &mut assets);
     }
     assets
@@ -207,48 +217,111 @@ pub(super) fn counted_hover(
     }
 }
 
-/// What the authored seed reads: the localiser, the painter's icons and the
+/// What the authored seed reads: the localiser, the native text icons and the
 /// combat windows an entry template names.
 struct Gui<'a> {
     icons: &'a dyn TextIcons,
     loc: &'a Localisation,
-    windows: &'a BTreeMap<String, Node>,
+    windows: &'a NativeWindows,
+}
+
+fn authored_key<'a>(
+    hash: u64,
+    key: &'a [u8],
+    path: &str,
+    field: &str,
+) -> Result<Option<&'a str>, String> {
+    if hash == 0 && key.is_empty() {
+        return Ok(None);
+    }
+    if native::tooltip_hash(key) != hash {
+        return Err(format!(
+            "authored_tooltip_hash_mismatch: {path}'s {field} hash {hash:#018x} does not match its stored key {key:?}"
+        ));
+    }
+    if hash == 0 {
+        return Ok(None);
+    }
+    std::str::from_utf8(installed_content::parser::c_string(key))
+        .map(Some)
+        .map_err(|_| {
+            format!("authored_tooltip_undecodable_key: {path}'s {field} key {key:?} is not UTF-8")
+        })
+}
+
+fn authored_hover(
+    gui: &Gui<'_>,
+    hash: u64,
+    key: &[u8],
+    path: &str,
+    field: &str,
+    refused: &mut BTreeMap<String, usize>,
+) -> Option<HoverText> {
+    let token = match authored_key(hash, key, path, field) {
+        Ok(Some(token)) => token,
+        Ok(None) => return None,
+        Err(reason) => {
+            *refused.entry(reason).or_default() += 1;
+            return None;
+        }
+    };
+    counted_hover(builtin(gui.icons, gui.loc, token, &[]), refused)
 }
 
 /// Authored `pdx_tooltip`/`pdx_tooltip_delayed` keys of every widget, the
 /// text it is created with: a widget whose hovers a dynamic builder owns
-/// keeps the builder's text or refusal. A key the localisation lacks, or
-/// whose text the localiser or the painter cannot produce as the game does
-/// ([`builtin`]), is counted in `refused` by key, immediate or delayed alike.
+/// keeps the builder's text or refusal. Missing localisation keeps the key's
+/// text; an invalid stored hash/key or text [`builtin`] cannot produce is
+/// counted in `refused`, immediate or delayed alike.
 fn authored(
     gui: &Gui<'_>,
-    node: &Node,
+    node: &Element,
     path: &str,
     values: &mut Values,
     refused: &mut BTreeMap<String, usize>,
 ) {
-    let (icons, loc) = (gui.icons, gui.loc);
-    for child in &node.children {
+    for child in node.nested() {
         let key = if path.is_empty() {
-            child.name.clone()
+            child.name().into_owned()
         } else {
-            format!("{path}/{}", child.name)
+            format!("{path}/{}", child.name())
         };
+        // Native lookup folds ASCII case (14254F1D0); keep the producer's path and hover ownership.
+        let key = values
+            .get_key_value(&key)
+            .map(|(path, _)| path)
+            .or_else(|| values.keys().find(|path| path.eq_ignore_ascii_case(&key)))
+            .cloned()
+            .unwrap_or(key);
         let owned = values.get(&key).is_some_and(|widget| widget.hover_owned);
-        if !owned && let Some(token) = string(&child.items, "pdx_tooltip") {
-            values.entry(key.clone()).or_default().tooltip =
-                counted_hover(builtin(icons, loc, token, &[]), refused);
+        if !owned && (child.common.tooltip != 0 || !child.common.tooltip_key.is_empty()) {
+            values.entry(key.clone()).or_default().tooltip = authored_hover(
+                gui,
+                child.common.tooltip,
+                &child.common.tooltip_key,
+                &key,
+                "pdx_tooltip",
+                refused,
+            );
         }
-        if !owned && let Some(token) = string(&child.items, "pdx_tooltip_delayed") {
-            values.entry(key.clone()).or_default().tooltip_description =
-                counted_hover(builtin(icons, loc, token, &[]), refused);
+        if !owned
+            && (child.common.delayed_tooltip != 0 || !child.common.delayed_tooltip_key.is_empty())
+        {
+            values.entry(key.clone()).or_default().tooltip_description = authored_hover(
+                gui,
+                child.common.delayed_tooltip,
+                &child.common.delayed_tooltip_key,
+                &key,
+                "pdx_tooltip_delayed",
+                refused,
+            );
         }
         authored(gui, child, &key, values, refused);
         if let Some(name) = values
             .get(&key)
             .and_then(|widget| widget.entry_template.clone())
         {
-            let Some(template) = gui.windows.get(&name) else {
+            let Some(template) = gui.windows.gui_type(name.as_bytes()) else {
                 *refused
                     .entry(format!(
                         "{key}'s entry template {name} is not in the combat interface files, so its entries' authored hovers are not bound"
@@ -583,9 +656,9 @@ pub(super) fn bind(
     let gui = Gui {
         icons: assets,
         loc: &document.names.localisation,
-        windows: &assets.windows,
+        windows: &assets.native_windows,
     };
-    match assets.windows.get("landcombatview") {
+    match assets.native_windows.gui_type(b"landcombatview") {
         Some(window) => authored(&gui, window, "", &mut out.values, &mut refused),
         None => out.warnings.push(format!(
             "Land combat {id}: the combat interface files declare no landcombatview window, so no authored hover is bound."
@@ -597,7 +670,7 @@ pub(super) fn bind(
             1 => "division_combat_defender_entry",
             _ => "reserve_combat_entry",
         };
-        match assets.windows.get(name) {
+        match assets.native_windows.gui_type(name.as_bytes()) {
             Some(node) => {
                 for (_, entry) in entries {
                     authored(&gui, node, "", entry, &mut refused);
@@ -886,23 +959,25 @@ mod tests {
     use super::*;
     use crate::combat::binding::NoIcons;
 
+    fn windows(body: &[u8]) -> NativeWindows {
+        let mut bytes = b"guiTypes = { containerWindowType = { name = unit_counter_navy } containerWindowType = { name = naval_combat_mapicon } ".to_vec();
+        bytes.extend_from_slice(body);
+        bytes.extend_from_slice(b" }");
+        NativeWindows::read(&bytes, [1280, 720]).unwrap()
+    }
+
     #[test]
     fn authored_tooltip_icons_follow_the_bound_nodes() {
-        let items = installed_content::parser::parse(
-            br#"name = w pdx_tooltip = OTHER
-                buttonType = { name = b pdx_tooltip = MAIN pdx_tooltip_delayed = DELAYED }"#,
-        )
-        .unwrap()
-        .items;
-        let windows = [("w".into(), Node::new("containerWindowType", &items))]
-            .into_iter()
-            .collect();
+        let windows = windows(
+            br#"containerWindowType = { name = w pdx_tooltip = OTHER
+                buttonType = { name = b pdx_tooltip = MAIN pdx_tooltip_delayed = DELAYED } }"#,
+        );
         let localisation = loc(&[
             ("MAIN", "£main"),
             ("DELAYED", "£delayed"),
             ("OTHER", "£unused"),
         ]);
-        let assets = authored_assets(&windows, &localisation);
+        let assets = authored_assets([windows.gui_type(b"w").unwrap()], &localisation);
         assert!(assets.sprites.contains(b"GFX_main".as_slice()));
         assert!(assets.sprites.contains(b"GFX_delayed".as_slice()));
         assert!(!assets.sprites.contains(b"GFX_unused".as_slice()));
@@ -1179,20 +1254,15 @@ mod tests {
     /// widget keeps the seed.
     #[test]
     fn authored_seeds_never_replace_a_dynamic_hover_or_its_refusal() {
-        let document = installed_content::parser::parse(
+        let windows = windows(
             br#"containerWindowType = { name = view
                 buttonType = { name = dynamic pdx_tooltip = AUTHORED }
                 buttonType = { name = refused pdx_tooltip = AUTHORED pdx_tooltip_delayed = AUTHORED }
                 buttonType = { name = plain pdx_tooltip = AUTHORED }
             }"#,
-        )
-        .unwrap();
-        let window = Node::new(
-            "containerWindowType",
-            document.items[0].value.items().unwrap(),
         );
+        let window = windows.gui_type(b"view").unwrap();
         let loc = loc(&[("AUTHORED", "Authored"), ("DYNAMIC", "Dynamic")]);
-        let windows = BTreeMap::new();
         let gui = Gui {
             icons: &NoIcons,
             loc: &loc,
@@ -1201,7 +1271,7 @@ mod tests {
         let mut values = Values::new();
         set_hover(&mut values, "dynamic", hover_text("Dynamic"), None);
         let mut refused = BTreeMap::new();
-        authored(&gui, &window, "", &mut values, &mut refused);
+        authored(&gui, window, "", &mut values, &mut refused);
         // A refusal after the seed clears it too.
         refuse_hovers(&mut values, ["refused"]);
         let hover = |key: &str| {
@@ -1215,6 +1285,110 @@ mod tests {
         assert_eq!(hover("refused"), (None, None));
         assert_eq!(hover("plain"), (Some("Authored".into()), None));
         assert!(refused.is_empty());
+    }
+
+    #[test]
+    fn authored_seeds_resolve_case_without_aliasing_dynamic_hovers() {
+        let windows = windows(
+            br#"containerWindowType = { name = view
+            buttonType = { name = Dynamic pdx_tooltip = AUTHORED }
+            buttonType = { name = Refused pdx_tooltip = AUTHORED pdx_tooltip_delayed = AUTHORED }
+            containerWindowType = { name = Rows }
+        }
+        containerWindowType = { name = entry
+            buttonType = { name = Dynamic pdx_tooltip = AUTHORED }
+        }"#,
+        );
+        let loc = loc(&[("AUTHORED", "Authored")]);
+        let gui = Gui {
+            icons: &NoIcons,
+            loc: &loc,
+            windows: &windows,
+        };
+        let mut values = Values::new();
+        set_hover(&mut values, "dynamic", hover_text("Dynamic"), None);
+        refuse_hovers(&mut values, ["refused"]);
+        let mut entry = Values::new();
+        set_hover(&mut entry, "DYNAMIC", hover_text("Entry"), None);
+        let rows = values.entry("rows".into()).or_default();
+        rows.entry_template = Some("entry".into());
+        rows.entries.push(entry);
+        let mut refused = BTreeMap::new();
+        authored(
+            &gui,
+            windows.gui_type(b"view").unwrap(),
+            "",
+            &mut values,
+            &mut refused,
+        );
+        assert_eq!(values.len(), 3);
+        assert_eq!(values["dynamic"].tooltip.as_deref(), Some("Dynamic"));
+        assert!(values["refused"].tooltip.is_none());
+        assert!(values["refused"].tooltip_description.is_none());
+        assert_eq!(values["rows"].entries[0].len(), 1);
+        assert_eq!(
+            values["rows"].entries[0]["DYNAMIC"].tooltip.as_deref(),
+            Some("Entry")
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+    }
+
+    #[test]
+    fn authored_tooltip_hashes_preserve_fallback_and_count_invalid_keys() {
+        let windows = windows(
+            br#"containerWindowType = { name = view
+            buttonType = { name = fallback tooltipText = MISSING }
+            buttonType = { name = delayed delayedTooltipText = DELAYED }
+            buttonType = { name = empty pdx_tooltip = "" }
+            buttonType = { name = corrupt pdx_tooltip = MAIN }
+            buttonType = { name = undecodable pdx_tooltip = MAIN }
+            buttonType = { name = zero_corrupt pdx_tooltip = MAIN }
+        }"#,
+        );
+        let mut window = windows.gui_type(b"view").unwrap().clone();
+        assert_eq!(window.children[0].common.tooltip_key, b"MISSING");
+        assert_eq!(
+            window.children[0].common.tooltip,
+            native::tooltip_hash(b"MISSING")
+        );
+        window.children[3].common.tooltip ^= 1;
+        window.children[4].common.tooltip_key = vec![0xFF];
+        window.children[4].common.tooltip = native::tooltip_hash(&[0xFF]);
+        window.children[5].common.tooltip = 0;
+        let localisation = loc(&[("DELAYED", "Description")]);
+        let gui = Gui {
+            icons: &NoIcons,
+            loc: &localisation,
+            windows: &windows,
+        };
+        let mut values = Values::new();
+        let mut refused = BTreeMap::new();
+        authored(&gui, &window, "", &mut values, &mut refused);
+        assert_eq!(values["fallback"].tooltip.as_deref(), Some("MISSING"));
+        assert_eq!(
+            values["delayed"].tooltip_description.as_deref(),
+            Some("Description")
+        );
+        assert!(values["empty"].tooltip.is_none());
+        assert!(values["corrupt"].tooltip.is_none());
+        assert!(values["undecodable"].tooltip.is_none());
+        assert!(values["zero_corrupt"].tooltip.is_none());
+        assert_eq!(refused.values().copied().sum::<usize>(), 3);
+        assert!(
+            refused
+                .keys()
+                .any(|reason| reason.starts_with("authored_tooltip_hash_mismatch: corrupt"))
+        );
+        assert!(
+            refused
+                .keys()
+                .any(|reason| reason.starts_with("authored_tooltip_undecodable_key: undecodable"))
+        );
+        assert!(
+            refused
+                .keys()
+                .any(|reason| reason.starts_with("authored_tooltip_hash_mismatch: zero_corrupt"))
+        );
     }
 
     #[test]

@@ -205,7 +205,7 @@ fn active(
                 String::from_utf8_lossy(&first.sprite)
             )
         };
-        let Some(asset) = document.icons.combat.sprite(&name) else {
+        let Some(asset) = document.icons.combat.sprite_size(&name) else {
             out.warnings.push(format!(
                 "NavalCombatShips slot {}: declared sprite {name} is unavailable; row omitted.",
                 first.battle_slot
@@ -242,7 +242,7 @@ fn active(
                 first.owner,
                 members.len(),
                 key.side,
-                asset.size[0],
+                asset[0],
                 flags,
             );
             let live: Vec<_> = members
@@ -259,7 +259,7 @@ fn active(
                     &mut values,
                     "bar_str",
                     ratio as f32 / 100_000.0,
-                    asset.size[0],
+                    asset[0],
                     document,
                 );
                 // A refused ship organisation family was reported once above.
@@ -275,7 +275,7 @@ fn active(
                                 &mut values,
                                 "bar_org",
                                 ratio as f32 / 100_000.0,
-                                asset.size[0],
+                                asset[0],
                                 document,
                             );
                         }
@@ -291,7 +291,7 @@ fn active(
                     &mut values,
                     "icon_hidden",
                     "GFX_navalcombat_ship_hidden",
-                    asset.size[0],
+                    asset[0],
                     document,
                 );
             }
@@ -301,7 +301,7 @@ fn active(
                     &mut values,
                     "pride",
                     "GFX_NV_icon_pride_small",
-                    asset.size[0],
+                    asset[0],
                     document,
                 );
             }
@@ -316,7 +316,7 @@ fn active(
                 &mut values,
                 "escape_progress",
                 ratio as f32 / 100_000.0,
-                asset.size[0],
+                asset[0],
                 document,
             );
             let icon = if key.side == 0 {
@@ -328,7 +328,7 @@ fn active(
             // 1417DBBE0 places the escape icon at the bar's final x plus the
             // icon's authored x; CENTER_UP alone would add half the ship width.
             values.entry(icon.into()).or_default().offset[0] =
-                escape_bar_x(asset.size[0], document) - asset.size[0] / 2.0;
+                escape_bar_x(asset[0], document) - asset[0] / 2.0;
         }
         let wnd = if key.side == 0 { "left" } else { "right" };
         let grid = match key.column {
@@ -343,15 +343,15 @@ fn active(
         let offset_x = if key.column == "sunk" {
             0.0
         } else {
-            combat_box_x(asset.size[0])
+            combat_box_x(asset[0])
         };
         out.naval_entries.push(NavalEntry {
             grid,
             offset: [offset_x, *height],
-            size: asset.size,
+            size: asset,
             values,
         });
-        *height += asset.size[1] + 3.0 + if escaping.is_empty() { 0.0 } else { 8.0 };
+        *height += asset[1] + 3.0 + if escaping.is_empty() { 0.0 } else { 8.0 };
     }
     out.warnings
         .retain(|w| !w.starts_with("NavalCombatShips: live HP/org bars"));
@@ -380,8 +380,8 @@ pub(super) fn escape_bar_x(width: f32, document: &Document) -> f32 {
     let bar = document
         .icons
         .combat
-        .sprite("GFX_naval_combat_escape_bar")
-        .map_or(54.0, |s| s.size[0]);
+        .sprite_size("GFX_naval_combat_escape_bar")
+        .map_or(54.0, |s| s[0]);
     (width / 2.0).trunc() - (bar / 2.0).trunc() - 1.0
 }
 fn fixed_ratio(value: i64, maximum: i64) -> i128 {
@@ -447,10 +447,10 @@ fn bar(values: &mut Values, key: &str, value: f32, width: f32, document: &Docume
     center_icon(values, key, name, width, document);
 }
 fn center_icon(values: &mut Values, key: &str, name: &str, width: f32, document: &Document) {
-    if let Some(asset) = document.icons.combat.sprite(name) {
+    if let Some(asset) = document.icons.combat.sprite_size(name) {
         // CENTER_UP already contributes width/2. Native retains authored x.
         values.entry(key.into()).or_default().offset[0] =
-            (width / 2.0).trunc() - width / 2.0 - (asset.size[0] / 2.0).trunc();
+            (width / 2.0).trunc() - width / 2.0 - (asset[0] / 2.0).trunc();
     }
 }
 /// 1417DBBE0: the attacker's left column writes the country flag into

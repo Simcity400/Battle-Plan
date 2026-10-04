@@ -970,6 +970,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &options.perspective,
                     None,
                     false,
+                    options.presentation_time,
+                    true,
                 )?;
                 document.icons.lazy.settle();
                 if document.icons.lazy.version() == before {

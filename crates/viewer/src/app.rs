@@ -1863,7 +1863,12 @@ impl Viewer {
             .map(|hours| hours.engaged(&self.perspective.country))
             .transpose()
             .map_err(|error| error.to_string())?;
-        // Hit tests only: the frame's second layout below collects the hovers.
+        let animation_time = self
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.time)
+            .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
+        // Hit tests and drawing use the same GUI clock (CGraphics+0x32590).
         let combat_geometry = self
             .combat
             .draw(
@@ -1871,6 +1876,8 @@ impl Viewer {
                 extent,
                 &self.perspective,
                 engaged.as_deref(),
+                false,
+                animation_time,
                 false,
             )
             .map_err(|error| error.to_string())?;
@@ -1911,8 +1918,7 @@ impl Viewer {
                         .and_then(|window| window.scroll_action(point))
                 })
             {
-                self.combat.scroll[side] =
-                    self.combat.scroll[side].saturating_add_signed(direction as isize);
+                self.combat.scroll(side, direction, false);
             }
             if response.dragged() && self.combat.dragging {
                 let delta = response.drag_delta();
@@ -1936,10 +1942,10 @@ impl Viewer {
                         .sum::<f32>()
                 });
                 if scroll < 0.0 {
-                    self.combat.scroll[side] = self.combat.scroll[side].saturating_add(1);
+                    self.combat.scroll(side.clone(), 1, true);
                 }
                 if scroll > 0.0 {
-                    self.combat.scroll[side] = self.combat.scroll[side].saturating_sub(1);
+                    self.combat.scroll(side, -1, true);
                 }
             }
         }
@@ -2068,11 +2074,6 @@ impl Viewer {
         // still frame `--dump` renders, or at its explicit sequence clock. The
         // window runs one presentation clock: the map scene and the map-icon
         // windows' GUI clock (`Time`, `CGraphics+0x32590`) share it.
-        let animation_time = self
-            .capture
-            .as_ref()
-            .and_then(|c| c.time)
-            .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         // A background flag or portrait load repaints the window, which then
         // lays the overlay out again with what it decoded.
         if !document.icons.lazy.has_wake() {
@@ -2246,8 +2247,13 @@ impl Viewer {
                 &self.perspective,
                 engaged.as_deref(),
                 true,
+                animation_time,
+                true,
             )
             .map_err(|error| error.to_string())?;
+        if self.combat.gui_active() {
+            ui.ctx().request_repaint();
+        }
         if build_warnings {
             warnings.extend(self.combat.warnings(document));
         }

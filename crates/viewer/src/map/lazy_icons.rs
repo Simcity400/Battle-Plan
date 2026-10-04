@@ -337,6 +337,28 @@ impl LazyFlags {
         self.index.contains_key(key) && !matches!(lock(&self.state).cells.get(key), Some(None))
     }
 
+    /// Longest indexed key at the start of producer text, without decoding its artwork.
+    pub fn key_prefix(&self, text: &[char]) -> Option<usize> {
+        use std::ops::Bound::{Included, Unbounded};
+        let mut prefix = String::new();
+        let mut found = None;
+        for (index, ch) in text.iter().enumerate() {
+            prefix.push(*ch);
+            let Some((key, _)) = self
+                .index
+                .range::<str, _>((Included(prefix.as_str()), Unbounded))
+                .next()
+                .filter(|(key, _)| key.starts_with(&prefix))
+            else {
+                break;
+            };
+            if key == &prefix {
+                found = Some(index + 1);
+            }
+        }
+        found
+    }
+
     /// The first readable candidate's page texture and rectangle.
     ///
     /// Candidates run in the engine's order (`<TAG>_<group>`, then `<TAG>`);

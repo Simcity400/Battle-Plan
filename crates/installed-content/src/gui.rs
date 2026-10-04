@@ -394,7 +394,7 @@ pub fn window_texts(
             }
             let bytes = match field {
                 "text" => &text_box.text,
-                "pdx_tooltip" => &child.common.tooltip_text,
+                "pdx_tooltip" => &child.common.tooltip_key,
                 _ => {
                     return Err(format!(
                         "{name} in {window} ({path}): unsupported text field {field}"

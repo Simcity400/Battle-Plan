@@ -235,7 +235,7 @@ pub(crate) fn draw<R: native_gui::Resources + native_gui::Sheets>(
     time: f32,
 ) -> std::collections::BTreeMap<String, usize> {
     let mut refused = std::collections::BTreeMap::new();
-    let layout = match native_gui::text_sprites::tooltip(resources, value, time) {
+    let layout = match native_gui::text_sprites::tooltip(resources, value, time, true) {
         Ok(layout) => layout,
         Err(why) => {
             gui_windows::count_refused(&mut refused, "ToolTip", &why);

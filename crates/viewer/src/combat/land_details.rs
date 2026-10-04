@@ -561,10 +561,10 @@ pub(super) fn bind(
         "GFX_landcombat_progress",
         "GFX_land_battle_heading_indicator_strip",
     ]
-    .map(|name| document.icons.combat.sprite(name).ok_or(name));
+    .map(|name| document.icons.combat.sprite_size(name).ok_or(name));
     match (bar, icon) {
         (Ok(bar), Ok(icon)) => {
-            let (frame, x) = heading(scores, progress, bar.size[0], icon.size[0]);
+            let (frame, x) = heading(scores, progress, bar[0], icon[0]);
             let widget = out.values.entry("combat_heading".into()).or_default();
             widget.hidden = false;
             widget.frame = Some(frame);
