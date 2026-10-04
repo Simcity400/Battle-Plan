@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use crate::{ResolvedLayers, parser};
+use crate::{ResolvedLayers, crt, parser};
 
 use super::{Material, SubMesh, Transform, invalid, parse};
 
@@ -175,10 +175,15 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
         return None;
     }
     let mut data = EntityGameData::default();
+    // CReader::ReadFloat@1424AB9D0 and ReadScriptSignedInt32@1424AB970 use CRT scans.
     for field in fields {
         match field.key.as_deref() {
             Some(b"texture_anim_speed") => {
-                let Some(speed) = field.value.scalar_str().and_then(|v| v.parse().ok()) else {
+                let Some(speed) = field
+                    .value
+                    .scalar_str()
+                    .and_then(|v| crt::scan_f32(v.as_bytes()))
+                else {
                     return Some(Err(
                         "entity texture_anim_speed is not a literal float".into()
                     ));
@@ -205,7 +210,11 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
                             "entity atlas_size component labels are out of native order".into(),
                         ));
                     }
-                    let Some(value) = value.value.scalar_str().and_then(|v| v.parse().ok()) else {
+                    let Some(value) = value
+                        .value
+                        .scalar_str()
+                        .and_then(|v| crt::scan_i32(v.as_bytes()).stored())
+                    else {
                         return Some(Err(
                             "entity atlas_size component is not a literal integer".into()
                         ));
@@ -264,7 +273,7 @@ pub struct EntityEvent {
 
 fn number(items: &[parser::Item], key: &[u8], fallback: f32) -> f32 {
     text(items, key)
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| crt::scan_f32(v.as_bytes()))
         .unwrap_or(fallback)
 }
 
@@ -1032,7 +1041,7 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
         name,
         file,
         scale: text(items, b"scale")
-            .and_then(|value| value.trim().parse().ok())
+            .and_then(|value| crt::scan_f32(value.as_bytes()))
             .unwrap_or(1.0),
         settings,
         animations,
@@ -1155,7 +1164,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         mesh: text(items, b"pdxmesh").map(unquote),
         unbound_mesh: None,
         clone: text(items, b"clone").map(unquote),
-        scale: text(items, b"scale").and_then(|value| value.trim().parse().ok()),
+        scale: text(items, b"scale").and_then(|value| crt::scan_f32(value.as_bytes())),
         attachments,
         default_state: text(items, b"default_state").map(unquote),
         // 14233BF40: +0x414; +0x415 marks authorship even on failure.
@@ -1175,7 +1184,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                         .and_then(|i| i.value.items())
                         .unwrap_or(&[])
                         .iter()
-                        .filter_map(|i| i.value.scalar_str()?.parse::<f32>().ok())
+                        .filter_map(|i| crt::scan_f32(i.value.scalar_str()?.as_bytes()))
                         .collect::<Vec<_>>();
                     std::array::from_fn::<_, 3, _>(|i| values.get(i).copied().unwrap_or(0.0))
                 };
@@ -1184,7 +1193,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                 let y = Transform::from_trs([0.0; 3], [0.0, r[1].sin(), 0.0, r[1].cos()], 1.0);
                 let z = Transform::from_trs([0.0; 3], [0.0, 0.0, r[2].sin(), r[2].cos()], 1.0);
                 let scale = text(fields, b"scale")
-                    .and_then(|value| value.trim().parse::<f32>().ok())
+                    .and_then(|value| crt::scan_f32(value.as_bytes()))
                     .unwrap_or(1.0);
                 let mut transform = y.compose(&x).compose(&z).compose(&Transform::from_trs(
                     [0.0; 3],

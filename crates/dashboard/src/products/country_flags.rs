@@ -255,7 +255,7 @@ impl ShieldStyle {
             ))
         })?;
         let mut warnings = Vec::new();
-        let name = installed_content::gui::window_button_sprite(
+        let name = installed_content::gui::native::window_button_sprite(
             &catalogue.guis,
             TOP_BAR,
             PLAYER_FLAG,

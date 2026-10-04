@@ -430,31 +430,6 @@ fn interface(
             }
         }
     }
-    // Audit the tree reader independently; production combat and map windows use native GUI.
-    let values = log.values.clone();
-    if let Some(failed) = log.read("gui.tree", || {
-        Ok(layers
-            .descriptor_paths("interface", &[".gui"])?
-            .into_iter()
-            .filter_map(|path| {
-                let read = installed_content::gui::read(layers, &path);
-                if let Some(writer) = &values {
-                    writer.write(
-                        "gui.tree",
-                        &(&path, read.as_ref().map_err(|error| error.to_string())),
-                    );
-                }
-                let error = read.err()?;
-                Some((path, error.to_string()))
-            })
-            .collect::<Vec<_>>())
-    }) {
-        for (file, error) in failed {
-            let kind = classify(&error, Kind::ReaderError);
-            log.diagnostics
-                .push(Diagnostic::in_file("gui.tree", kind, &file, error));
-        }
-    }
     if let Some(roster) = log.read("mesh.roster", || layers.descriptor_roster()) {
         log.notes("mesh.roster", Kind::Logged, &roster.logged);
         for unreadable in &roster.unreadable {

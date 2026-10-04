@@ -63,11 +63,21 @@ fn block_pixels(block: &[u8], format: dds::TextureFormat) -> [[u8; 4]; 16] {
     pixels
 }
 
-/// Decodes a BC1/BC2/BC3 texture's base level to RGBA8 at its exact extent;
-/// an uncompressed one is returned as it is.
+/// Decodes a BC1/BC2/BC3 texture's base level to RGBA8 at its exact extent.
+/// Formats without a supported CPU expansion are refused by name.
 pub(crate) fn rgba8(texture: &dds::Texture) -> io::Result<dds::Texture> {
-    let Some(block_size) = texture.format.block_bytes() else {
-        return Ok(texture.clone());
+    let block_size = match texture.format {
+        dds::TextureFormat::Bc1 => 8,
+        dds::TextureFormat::Bc2 | dds::TextureFormat::Bc3 => 16,
+        dds::TextureFormat::Rgba8 => return Ok(texture.clone()),
+        dds::TextureFormat::Bc7 { .. } => {
+            return Err(super::invalid("BC7 has no counter-icon CPU expansion"));
+        }
+        dds::TextureFormat::B5G6R5 | dds::TextureFormat::B5G5R5A1 => {
+            return Err(super::invalid(
+                "16-bit format has no counter-icon CPU expansion",
+            ));
+        }
     };
     if texture.faces != 1 {
         return Err(super::invalid(
@@ -144,5 +154,27 @@ mod tests {
         let result = rgba8(&texture).unwrap();
         assert_eq!((result.width, result.height), (2, 1));
         assert_eq!(result.base().data, [255, 0, 0, 255, 0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn formats_without_cpu_expansion_are_refused() {
+        for format in [
+            dds::TextureFormat::B5G6R5,
+            dds::TextureFormat::B5G5R5A1,
+            dds::TextureFormat::Bc7 { srgb: false },
+        ] {
+            let texture = dds::Texture {
+                format,
+                width: 4,
+                height: 4,
+                faces: 1,
+                mips: vec![vec![dds::MipLevel {
+                    width: 4,
+                    height: 4,
+                    data: vec![0; format.level_bytes(4, 4).unwrap()],
+                }]],
+            };
+            assert!(rgba8(&texture).is_err(), "{format:?}");
+        }
     }
 }

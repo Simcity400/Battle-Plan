@@ -94,14 +94,6 @@ impl Diagnostic {
         }
     }
 
-    /// A diagnostic in `file`, whose message names it already.
-    pub fn in_file(reader: &str, kind: Kind, file: &str, message: String) -> Self {
-        Self {
-            file: Some(file.to_owned()),
-            ..Self::new(reader, kind, message)
-        }
-    }
-
     /// A diagnostic about what a message names before its first `: `,
     /// counted by the rest, in `file` when it is known.
     pub fn split(reader: &str, kind: Kind, file: Option<&str>, message: &str) -> Self {

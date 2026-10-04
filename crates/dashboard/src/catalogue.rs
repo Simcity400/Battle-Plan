@@ -617,8 +617,13 @@ pub(crate) mod tests {
         };
         let mut warnings = Vec::new();
         assert_eq!(
-            installed_content::gui::window_button_sprite(&guis, "TOPBAR", "PLAYER_FLAG", &mut warnings)
-                .unwrap(),
+            installed_content::gui::native::window_button_sprite(
+                &guis,
+                "TOPBAR",
+                "PLAYER_FLAG",
+                &mut warnings
+            )
+            .unwrap(),
             "GFX_inherited"
         );
         assert!(warnings.is_empty(), "{warnings:?}");

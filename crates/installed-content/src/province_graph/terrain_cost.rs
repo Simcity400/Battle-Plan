@@ -240,9 +240,9 @@ impl TerrainCosts {
                             for item in values {
                                 let scalar = scalar_with_vars(&item.value, variables)
                                     .ok_or_else(|| invalid("terrain color is not an integer"))?;
-                                let index = std::str::from_utf8(&scalar)
-                                    .ok()
-                                    .and_then(|text| text.parse::<i32>().ok())
+                                // ReadScriptSignedInt32@1424AB970 uses the CRT %i scanner.
+                                let index = crate::crt::scan_i32(&scalar)
+                                    .stored()
                                     .filter(|index| *index >= 0)
                                     .ok_or_else(|| {
                                         invalid("terrain color is not a nonnegative i32")
@@ -464,6 +464,14 @@ mod tests {
         let unused =
             definitions(&["categories={bad={movement_cost=broken}} terrain={a={color={1}}}"]);
         assert_eq!(unused.cost(1).unwrap(), 0);
+    }
+
+    #[test]
+    fn palette_indices_follow_the_crt_prefix_scan() {
+        let terrain = definitions(&[
+            "categories={x={movement_cost=2}} terrain={a={type=x color={\"1tail\"}}}",
+        ]);
+        assert_eq!(terrain.cost(1).unwrap(), 200_000);
     }
 
     #[test]

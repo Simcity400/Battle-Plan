@@ -163,7 +163,7 @@ struct Icons {
 
 fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
     let mut warnings = Vec::new();
-    let name = installed_content::gui::window_button_sprite(
+    let name = installed_content::gui::native::window_button_sprite(
         view.guis,
         RESOURCE_ROW,
         RESOURCE_ICON,

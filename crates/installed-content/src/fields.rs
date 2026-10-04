@@ -3,9 +3,12 @@
 //! Every reader names the field it could not read, so a content error points at
 //! the key rather than at a byte offset in a file the caller no longer holds.
 
-use std::{io, str::FromStr};
+use std::io;
 
-use crate::parser::{Item, Value};
+use crate::{
+    crt,
+    parser::{Item, Value},
+};
 
 pub(crate) fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -18,20 +21,12 @@ pub(crate) fn text<'a>(value: &'a Value, what: &str) -> io::Result<&'a str> {
         .ok_or_else(|| invalid(format!("{what} is not a text scalar")))
 }
 
-/// A scalar parsed as an integer, with no rounding and no default.
-pub(crate) fn integer<T: FromStr>(value: &Value, what: &str) -> io::Result<T> {
-    let scalar = text(value, what)?;
-    scalar
-        .parse()
-        .map_err(|_| invalid(format!("{what} is not an integer: {scalar:?}")))
-}
-
 /// A scalar parsed as a finite decimal number.
-pub(crate) fn number(value: &Value, what: &str) -> io::Result<f64> {
+pub(crate) fn number(value: &Value, what: &str) -> io::Result<f32> {
     let scalar = text(value, what)?;
-    let parsed: f64 = scalar
-        .parse()
-        .map_err(|_| invalid(format!("{what} is not a number: {scalar:?}")))?;
+    // CReader::ReadFloat@1424AB9D0 uses the CRT %f scanner (14029D000).
+    let parsed = crt::scan_f32(scalar.as_bytes())
+        .ok_or_else(|| invalid(format!("{what} is not a number: {scalar:?}")))?;
     if !parsed.is_finite() {
         return Err(invalid(format!("{what} is not finite: {scalar:?}")));
     }
@@ -79,13 +74,19 @@ pub(crate) fn require<'a>(items: &'a [Item], key: &str, what: &str) -> io::Resul
 }
 
 /// An unkeyed list of scalars, as `provinces = { 1 2 3 }` stores them.
-pub(crate) fn scalar_list<T: FromStr>(value: &Value, what: &str) -> io::Result<Vec<T>> {
+pub(crate) fn scalar_list(value: &Value, what: &str) -> io::Result<Vec<u32>> {
     let mut list = Vec::new();
     for item in block(value, what)? {
         if item.key.is_some() {
             return Err(invalid(format!("{what} holds a keyed entry")));
         }
-        list.push(integer(&item.value, what)?);
+        let scalar = item
+            .value
+            .scalar()
+            .ok_or_else(|| invalid(format!("{what} holds a non-scalar entry")))?;
+        // CAdjacencyRule::vf4@141536C50 uses ReadScriptInt32Array@1401F91B0: a zeroed slot
+        // is appended before ReadScriptSignedInt32@1424AB970 scans each token.
+        list.push(crt::scan_i32(scalar).stored().unwrap_or(0) as u32);
     }
     Ok(list)
 }
@@ -111,15 +112,10 @@ mod tests {
     #[test]
     fn scalars_are_read_without_defaults_and_name_their_field() {
         let items = items(b"a = 5 b = yes c = 1.5 d = { 1 2 3 } a = 7 e = { x = 1 }");
-        assert_eq!(
-            integer::<u32>(all(&items, b"a").next().unwrap(), "a").unwrap(),
-            5
-        );
-        assert_eq!(integer::<u32>(last(&items, b"a").unwrap(), "a").unwrap(), 7);
         assert!(boolean(last(&items, b"b").unwrap(), "b").unwrap());
         assert_eq!(number(last(&items, b"c").unwrap(), "c").unwrap(), 1.5);
         assert_eq!(
-            scalar_list::<u32>(last(&items, b"d").unwrap(), "d").unwrap(),
+            scalar_list(last(&items, b"d").unwrap(), "d").unwrap(),
             vec![1, 2, 3]
         );
         assert_eq!(all(&items, b"a").count(), 2);
@@ -134,6 +130,13 @@ mod tests {
     }
 
     #[test]
+    fn numeric_fields_use_the_crt_prefix_scan() {
+        let items = items(b"n = { \"12tail\" } f = \"1.25tail\"");
+        assert_eq!(scalar_list(last(&items, b"n").unwrap(), "n").unwrap(), [12]);
+        assert_eq!(number(last(&items, b"f").unwrap(), "f").unwrap(), 1.25);
+    }
+
+    #[test]
     fn wrong_shapes_and_values_are_refused_rather_than_coerced() {
         let items = items(b"a = maybe b = { x = 1 } c = 1e999 d = five e = { } f = 2");
         assert!(
@@ -142,22 +145,21 @@ mod tests {
                 .to_string()
                 .contains("not yes or no")
         );
-        assert!(integer::<u32>(last(&items, b"b").unwrap(), "b").is_err());
         assert!(
             number(last(&items, b"c").unwrap(), "c")
                 .unwrap_err()
                 .to_string()
                 .contains("not finite")
         );
-        assert!(integer::<u32>(last(&items, b"d").unwrap(), "d").is_err());
+        assert!(scalar_list(last(&items, b"d").unwrap(), "d").is_err());
         assert!(
-            scalar_list::<u32>(last(&items, b"b").unwrap(), "b")
+            scalar_list(last(&items, b"b").unwrap(), "b")
                 .unwrap_err()
                 .to_string()
                 .contains("keyed entry")
         );
         assert_eq!(
-            scalar_list::<u32>(last(&items, b"e").unwrap(), "e").unwrap(),
+            scalar_list(last(&items, b"e").unwrap(), "e").unwrap(),
             Vec::<u32>::new()
         );
         assert!(block(last(&items, b"f").unwrap(), "f").is_err());

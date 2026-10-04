@@ -74,6 +74,26 @@ fn entity_shader_data_retains_allocation_defaults_and_authored_fields() {
     assert!(source.entities["bad"].game_data.as_ref().unwrap().is_err());
 }
 
+#[test]
+fn entity_numeric_fields_follow_the_crt_prefix_scan() {
+    let descriptors = parse_descriptors(
+        br#"entity = { name = e scale = "1.25tail"
+            game_data = { texture_anim_speed = "0.5tail" atlas_size = { "6tail" "2tail" } }
+        }"#,
+        "gfx/test.asset",
+    )
+    .unwrap();
+    let entity = descriptors.inherit("e").unwrap();
+    assert_eq!(entity.scale, Some(1.25));
+    assert_eq!(
+        entity.game_data.unwrap().as_ref().unwrap(),
+        &EntityGameData {
+            texture_anim_speed: 0.5,
+            atlas_size: [6, 2],
+        }
+    );
+}
+
 fn native_skeleton_root(skeletons: Vec<Vec<Node>>) -> Node {
     Node {
         children: vec![Node {

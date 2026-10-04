@@ -29,6 +29,7 @@ pub(super) mod oracle;
 use eframe::wgpu;
 use installed_content::{
     ResolvedLayers, gfx,
+    gui::native::resources,
     image::{dds, native::Decode},
 };
 
@@ -258,9 +259,10 @@ pub fn load_sheet(
     layers: &ResolvedLayers,
     sprites: &gfx::SpriteSet,
     name: &str,
+    decode: Decode,
     images: &mut Vec<dds::Texture>,
 ) -> io::Result<SpriteSheet> {
-    let (texture, frames, size) = decode_sheet(layers, sprites, name)?;
+    let (texture, frames, size) = decode_sheet(layers, sprites, name, decode)?;
     let id = images.len();
     images.push(texture);
     Ok(SpriteSheet {
@@ -277,14 +279,17 @@ pub fn decode_sheet(
     layers: &ResolvedLayers,
     sprites: &gfx::SpriteSet,
     name: &str,
+    decode: Decode,
 ) -> io::Result<(dds::Texture, u32, [u32; 2])> {
     let sprite = sprites.lookup(name).map_err(invalid)?;
     let path = sprite
         .texture
         .as_deref()
         .ok_or_else(|| invalid(format!("sprite {name} names no texturefile")))?;
-    let bytes = layers.read(path)?;
-    let texture = dds::decode(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
+    // CSpriteType::load_base_texture@14222B2A0 uses DecodeTextureImage@1423F9A50.
+    let texture = resources::stack_texture(layers, path.as_bytes(), decode)?
+        .map_err(|why| invalid(format!("sprite {name}: {why}")))?;
+    let texture = texture.image;
     if sprite.frames == 0 || texture.width < sprite.frames {
         return Err(invalid(format!(
             "sprite {name} declares {} frames for a {} texel wide strip",
@@ -2305,6 +2310,41 @@ pub const DISABLED: [f32; 4] = [1.0, 1.0, 1.0, -1.0];
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counter_sheet_uses_the_native_texture_decoder_and_client_setting() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_counter_native_texture_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("gfx")).unwrap();
+        std::fs::write(
+            root.join("gfx/test.tga"),
+            super::super::test_tga_rgba8(3, 2),
+        )
+        .unwrap();
+        let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
+        let sprites = gfx::SpriteSet::new(&[(
+            "interface/test.gfx".into(),
+            installed_content::gui::native::sprites::read_sprites(
+                b"spriteTypes = { spriteType = { name = GFX_test texturefile = gfx/test.tga } }",
+            ),
+        )]);
+        let plain = decode_sheet(&layers, &sprites, "GFX_test", Decode::default()).unwrap();
+        let padded = decode_sheet(
+            &layers,
+            &sprites,
+            "GFX_test",
+            Decode {
+                force_pow2_textures: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(plain.2, [3, 2]);
+        assert_eq!(padded.2, [4, 2]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn strip(frames: u32, width: u32) -> SpriteSheet {
         SpriteSheet {

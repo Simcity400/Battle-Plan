@@ -12,7 +12,7 @@
 use std::{collections::BTreeMap, io};
 
 use crate::{
-    ResolvedLayers,
+    ResolvedLayers, crt,
     fields::{all, block, invalid, last, number, require, text},
     parser,
 };
@@ -95,9 +95,13 @@ impl RenderDescriptor {
                     }
                     Some(b"x" | b"y") => {
                         let index = usize::from(item.key.as_deref() == Some(b"y"));
-                        out.tiles[index] = text(&item.value, "particle texture tiles")?
-                            .parse()
-                            .map_err(|_| invalid("particle texture tiles require signed int32"))?;
+                        // ReadScriptSignedInt32@1424AB970 uses the CRT %i scanner.
+                        out.tiles[index] =
+                            crt::scan_i32(text(&item.value, "particle texture tiles")?.as_bytes())
+                                .stored()
+                                .ok_or_else(|| {
+                                    invalid("particle texture tiles require signed int32")
+                                })?;
                     }
                     _ => {}
                 }
@@ -192,7 +196,7 @@ impl Catalog {
                 let name = text(require(fields, "name", "pdxparticle")?, "pdxparticle name")?;
                 let kind = text(require(fields, "type", "pdxparticle")?, "pdxparticle type")?;
                 let scale = match last(fields, b"scale") {
-                    Some(value) => number(value, "pdxparticle scale")? as f32,
+                    Some(value) => number(value, "pdxparticle scale")?,
                     None => 1.0,
                 };
                 if !scale.is_finite() || scale <= 0.0 {
@@ -281,12 +285,13 @@ fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
             0
         } else {
             //SSubsystemReader constructor14231BB90 leaves +6E8 uninitialized.
-            let value: i32 = text(
+            let value = text(
                 require(fields, "max_amount", "particle capacity")?,
                 "max_amount",
-            )?
-            .parse()
-            .map_err(|_| invalid("particle max_amount requires int32"))?;
+            )?;
+            let value = crt::scan_i32(value.as_bytes())
+                .stored()
+                .ok_or_else(|| invalid("particle max_amount requires int32"))?;
             usize::try_from(value).map_err(|_| invalid("negative particle max_amount"))?
         };
         //1423DD4E0 adds parent_count*child_count at every recursive level.
@@ -364,6 +369,23 @@ mod tests {
                 .to_string()
                 .contains("max_amount")
         );
+    }
+
+    #[test]
+    fn particle_numbers_follow_the_crt_prefix_scan() {
+        let document = parser::parse(br#"texture = { x = "2tail" y = "3tail" }"#).unwrap();
+        assert_eq!(
+            RenderDescriptor::read(&document.items).unwrap().tiles,
+            [2, 3]
+        );
+        let mut catalog = Catalog::default();
+        catalog
+            .add_particles(
+                br#"particle = { name = p subsystem = { max_amount = "4tail" } }"#,
+                "fixture",
+            )
+            .unwrap();
+        assert_eq!(catalog.max_particles(), 4);
     }
 
     #[test]

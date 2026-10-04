@@ -388,7 +388,7 @@ fn a_mod_resource_takes_its_frame_through_a_file_variable() {
 /// `window_button_sprite` for `resources_info_entry` → `resources_icon`.
 fn resource_icon(stack: &Stack) -> (std::io::Result<String>, Vec<String>) {
     let mut warnings = Vec::new();
-    let sprite = crate::gui::window_button_sprite(
+    let sprite = crate::gui::native::window_button_sprite(
         &crate::gui::native::read_layers(&stack.layers(&[])).unwrap(),
         "resources_info_entry",
         "resources_icon",
@@ -564,7 +564,7 @@ fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
     );
     let flag = |stack: &Stack| {
         let mut warnings = Vec::new();
-        let sprite = crate::gui::window_button_sprite(
+        let sprite = crate::gui::native::window_button_sprite(
             &crate::gui::native::read_layers(&stack.layers(&[])).unwrap(),
             "topbar",
             "player_flag",
@@ -642,7 +642,7 @@ fn a_gui_button_is_the_first_direct_button_of_its_name_in_its_own_window() {
          iconType = { name = player_flag spriteType = GFX_mod_icon } }",
     );
     let flag = |stack: &Stack| {
-        crate::gui::window_button_sprite(
+        crate::gui::native::window_button_sprite(
             &crate::gui::native::read_layers(&stack.layers(&[])).unwrap(),
             "topbar",
             "player_flag",
