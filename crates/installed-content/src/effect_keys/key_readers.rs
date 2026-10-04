@@ -7,8 +7,8 @@ use super::{READ_EFFECT, READ_SCRIPT};
 
 /// The `else` and `else_if` keyword tokens ReadEffect (1405345D0) tests
 /// before the registry; both read with CIfEffect's key reader.
-const ELSE_TOKEN: u32 = 0x36D3;
-const ELSE_IF_TOKEN: u32 = 0x38ED;
+pub(super) const ELSE_TOKEN: u32 = 0x36D3;
+pub(super) const ELSE_IF_TOKEN: u32 = 0x38ED;
 #[cfg(test)]
 mod tests;
 use crate::{

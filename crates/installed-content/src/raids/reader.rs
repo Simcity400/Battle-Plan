@@ -6,6 +6,7 @@ use crate::{
         Document,
         native::{self, Shape},
     },
+    scope::ScopeKind,
 };
 use std::{collections::BTreeSet, io};
 
@@ -311,8 +312,14 @@ pub(super) fn document(
                 Shape::Object(Outcome)
             }
             (Outcome, Some(b"division_effects" | b"actor_effects" | b"victim_effects")) => {
-                Shape::Effect
-            } // 141577C10
+                if field.keyword_is("division_effects") {
+                    // Raid outcome reader 141577C10 passes unit scope at 141577D04.
+                    Shape::EffectIn(ScopeKind::Unit.bit())
+                } else {
+                    // 141577C10 passes raid-instance scope at 141577CEC/141577CD7.
+                    Shape::EffectIn(ScopeKind::RaidInstance.bit())
+                }
+            }
             (Outcome, Some(b"custom_sound" | b"destroy_additional_equipment")) => Shape::One,
             (Outcome, Some(b"visual_effect")) => Shape::Object(Visual),
             (Visual, Some(b"animation" | b"entity")) => Shape::One, // 141578280

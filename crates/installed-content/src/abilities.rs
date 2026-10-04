@@ -17,6 +17,7 @@ use crate::{
     fields::{block, invalid},
     modifiers,
     parser::native::{self, Shape},
+    scope::ScopeKind,
 };
 
 /// Static token 0x165, the token CUnitAdjuster's constructor leaves in +8
@@ -59,6 +60,8 @@ fn apply_with_terrain(
     }
     let mut undecided = Vec::new();
     let mut declared = 0;
+    // CAbility constructor140FF44E0 and type dispatch140FF5EC0.
+    let mut ability_scopes = Vec::new();
     let mut adjusters: BTreeMap<usize, Vec<Vec<u8>>> = BTreeMap::new();
     // 140606A40: file and ability loops. CAbility::parse_key 140FF5EC0
     // ignores unknown fields without skipping; invalid type values record
@@ -74,13 +77,16 @@ fn apply_with_terrain(
             Node::File => Shape::Skip,
             Node::Abilities => {
                 declared += 1;
+                // CAbility::CAbility 140FF44E0 seeds +2EC to country at 140FF46B6.
+                ability_scopes.push(ScopeKind::Country.bit());
                 Shape::Object(Node::Ability(declared))
             }
             Node::Ability(ability) => match field.keyword().as_deref() {
                 Some(b"allowed") => Shape::Trigger,
                 Some(b"ai_will_do") => Shape::Object(Node::Mtth),
                 Some(b"one_time_effect" | b"hourly_effect" | b"daily_effect" | b"end_effect") => {
-                    Shape::Effect
+                    // CAbility::parse_key 140FF5EC0 passes the current +2EC to slot 3.
+                    Shape::EffectIn(ability_scopes[ability - 1])
                 }
                 Some(b"country_modifiers" | b"leader_modifiers") => {
                     Shape::Object(Node::Modifier(modifiers::Node::Modifier))
@@ -88,9 +94,18 @@ fn apply_with_terrain(
                 Some(b"unit_modifiers") => Shape::Object(Node::UnitModifiers(ability)),
                 Some(b"type") => match field.value_keyword().as_deref() {
                     Some(
-                        b"army_leader" | b"navy_leader" | b"target" | b"state" | b"country"
-                        | b"air_zone" | b"naval_zone",
-                    ) => Shape::One,
+                        kind @ (b"army_leader" | b"navy_leader" | b"target" | b"state" | b"country"
+                        | b"air_zone" | b"naval_zone"),
+                    ) => {
+                        // CAbility::parse_key 140FF5EC0 updates +2EC at each type.
+                        ability_scopes[ability - 1] = match kind {
+                            b"army_leader" | b"navy_leader" => ScopeKind::Character.bit(),
+                            b"state" => ScopeKind::State.bit(),
+                            b"air_zone" | b"naval_zone" => ScopeKind::StrategicRegion.bit(),
+                            _ => ScopeKind::Country.bit(),
+                        };
+                        Shape::One
+                    }
                     _ => Shape::Skip,
                 },
                 _ => Shape::One,
@@ -317,5 +332,24 @@ mod tests {
         let mut sprites = AbilitySprites::default();
         apply(b"# no abilities in this layer\n", &mut sprites).unwrap();
         assert!(sprites.by_token.is_empty());
+    }
+
+    #[test]
+    fn value_effect_scopes_follow_ability_type_in_authored_order() {
+        let mut sprites = AbilitySprites::default();
+        let notes = apply_with_terrain(br#"
+        ability={
+            before={one_time_effect={remove_unit_leader_role={@before=3 character=fixture}} type=army_leader icon=@before}
+            character={type=army_leader daily_effect={remove_unit_leader_role={@hidden=7 character=fixture}} icon=@hidden}
+            reset={type=army_leader type=country end_effect={remove_unit_leader_role={@after=5 character=fixture}} icon=@after}
+        }
+    "#, &mut sprites, &BTreeSet::new(), &KeyNames::default()).unwrap();
+        assert_eq!(sprites.sprite(b"before"), Some("3_animated"));
+        assert_eq!(sprites.sprite(b"character"), Some("@hidden_animated"));
+        assert_eq!(sprites.sprite(b"reset"), Some("5_animated"));
+        assert!(
+            !notes.iter().any(|note| note.contains("Deferred effect")),
+            "{notes:?}"
+        );
     }
 }

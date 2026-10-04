@@ -288,8 +288,19 @@ impl ScopeKind {
     ];
 
     /// The kind's bit in an accepted-scope mask.
-    pub fn bit(self) -> u32 {
+    pub const fn bit(self) -> u32 {
         1 << (self as u32 + 1)
+    }
+
+    /// The mask accepting every native scope kind.
+    pub const fn all_bits() -> u32 {
+        let mut bits = 0;
+        let mut index = 0;
+        while index < Self::ALL.len() {
+            bits |= Self::ALL[index].bit();
+            index += 1;
+        }
+        bits
     }
 }
 
@@ -322,6 +333,7 @@ mod tests {
         assert_eq!(ScopeKind::State.bit(), 0x2);
         assert_eq!(ScopeKind::Country.bit(), 0x4);
         assert_eq!(ScopeKind::Faction.bit(), 0x2000);
+        assert_eq!(ScopeKind::all_bits(), 0x3FFE);
         let country_only = |kind| kind == ScopeKind::Country;
         assert!(TriggerScopes(0).accepts(|_| false));
         assert!(TriggerScopes(0x4).accepts(country_only));

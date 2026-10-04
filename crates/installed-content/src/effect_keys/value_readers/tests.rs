@@ -4,6 +4,7 @@ use crate::{
         Item,
         native::{self, Read, Shape},
     },
+    scope::ScopeKind,
 };
 
 fn read(text: &[u8]) -> Read {
@@ -14,7 +15,7 @@ fn read(text: &[u8]) -> Read {
         Some(&KeyNames::default()),
         &mut |(), field| {
             if field.keyword_is("body") {
-                Shape::Effect
+                Shape::EffectIn(ScopeKind::Country.bit())
             } else {
                 Shape::One
             }
@@ -355,4 +356,1242 @@ fn randomize_value_reader_tracks_distribution_in_authored_order() {
         assert_eq!(scalar(&result.items, "also_lost"), b"@also_lost", "{class}");
         assert_eq!(scalar(&result.items, "seen"), b"3", "{class}");
     }
+}
+
+// 1403B1C60 / 1403B1FE0 -> 140A2C820: every first generator assigns
+// a nonzero kind, including its scalar route. A later generator is skipped.
+#[test]
+fn reached_value_wargoals_reject_duplicate_generators_after_scalar() {
+    for class in ["create_wargoal", "declare_war_on"] {
+        let text = format!(
+            "body = {{ {class} = {{ generator = ROOT generator = {{ @lost = 2 }} @seen = 3 target = @seen }} }} lost = @lost seen = @seen"
+        );
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(scalar(&result.items, "lost"), b"@lost", "{class}");
+        assert_eq!(scalar(&result.items, "seen"), b"3", "{class}");
+        let fields = body(body(&result.items, "body"), class);
+        assert_eq!(fields[0].value.scalar(), Some(b"ROOT".as_slice()));
+        assert!(fields[1].value.items().unwrap().is_empty(), "{result:?}");
+    }
+}
+
+// 1401F91B0 resolves each raw array entry and never registers definitions.
+// Reaching the block route also sets the duplicate-generator guard.
+#[test]
+fn reached_value_wargoals_reject_duplicate_generators_after_array() {
+    for class in ["create_wargoal", "declare_war_on"] {
+        let text = format!(
+            "@alias = 6 body = {{ {class} = {{ generator = {{ @alias 7 }} generator = {{ @lost = 2 }} @seen = 3 target = @seen }} }} lost = @lost seen = @seen"
+        );
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(scalar(&result.items, "lost"), b"@lost", "{class}");
+        assert_eq!(scalar(&result.items, "seen"), b"3", "{class}");
+        let fields = body(body(&result.items, "body"), class);
+        let entries = fields[0].value.items().unwrap();
+        assert_eq!(entries.len(), 2, "{result:?}");
+        assert!(entries.iter().all(|item| item.key.is_none()));
+        assert_eq!(entries[0].value.scalar(), Some(b"6".as_slice()));
+        assert_eq!(entries[1].value.scalar(), Some(b"7".as_slice()));
+        assert!(fields[1].value.items().unwrap().is_empty(), "{result:?}");
+    }
+}
+
+// The integer array writes each entry into CReader+0xC0, but never its
+// closing token. A key whose would-be operator is `}` keeps that last value.
+#[test]
+fn reached_value_wargoal_arrays_preserve_the_last_value_slot() {
+    for class in ["create_wargoal", "declare_war_on"] {
+        let text =
+            format!("body = {{ {class} = {{ generator = {{ 1 2 }} target }} }} }} final = 1");
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(
+            scalar(body(body(&result.items, "body"), class), "target"),
+            b"2",
+            "{class}: {result:?}"
+        );
+        assert_eq!(scalar(&result.items, "final"), b"1", "{class}");
+    }
+}
+
+// Failed integer conversion reports through 1424ACEE0 / 1424ACD40 and
+// does not skip an opening token. The first close ends this raw array.
+#[test]
+fn reached_value_wargoal_arrays_keep_raw_nested_openings() {
+    for class in ["create_wargoal", "declare_war_on"] {
+        let text = format!(
+            "body = {{ {class} = {{ generator = {{ 1 {{ @raw = 2 }} @seen = 4 target = @seen }} }} raw = @raw seen = @seen"
+        );
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(scalar(&result.items, "raw"), b"@raw", "{class}");
+        assert_eq!(scalar(&result.items, "seen"), b"4", "{class}");
+        let fields = body(body(&result.items, "body"), class);
+        assert_eq!(scalar(fields, "target"), b"4", "{class}");
+        let entries = body(fields, "generator");
+        assert_eq!(entries.len(), 5, "{class}: {result:?}");
+        assert!(entries.iter().all(|item| item.key.is_none()));
+        for (entry, expected) in entries.iter().zip([
+            b"1".as_slice(),
+            b"{".as_slice(),
+            b"@raw".as_slice(),
+            b"=".as_slice(),
+            b"2".as_slice(),
+        ]) {
+            assert_eq!(entry.value.scalar(), Some(expected), "{class}");
+        }
+    }
+}
+
+// The open-brace token cannot identify a wargoal type. Native lookup
+// failure calls RecordError@1424ACF90, which skips that current block.
+#[test]
+fn reached_value_wargoal_type_blocks_are_skipped() {
+    for class in ["create_wargoal", "declare_war_on", "remove_wargoal"] {
+        let text = format!(
+            "body = {{ {class} = {{ type = {{ @lost = 2 }} @seen = 3 target = @seen }} }} lost = @lost seen = @seen"
+        );
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(scalar(&result.items, "lost"), b"@lost", "{class}");
+        assert_eq!(scalar(&result.items, "seen"), b"3", "{class}");
+        let fields = body(body(&result.items, "body"), class);
+        assert!(body(fields, "type").is_empty(), "{class}: {result:?}");
+        assert_eq!(scalar(fields, "target"), b"3", "{class}");
+    }
+}
+
+// 14049E600 old_prioritised calls raw SkipCurrentBlock@1424AD1A0,
+// ignoring @ references. In particular an alias for `{` is not a brace
+// in this raw scan. The synthetic definition's own braces deliberately
+// remain ordinary top-level tokens before the effect body starts.
+#[test]
+fn reached_value_equipment_old_prioritised_skips_raw_tokens() {
+    let result = read(
+        b"@open = { } anchor = 0 body = { send_equipment = { old_prioritised = { @open @unresolved @lost = 2 } amount = 3 } } lost = @lost final = 1",
+    );
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+    assert_eq!(scalar(&result.items, "final"), b"1");
+    let fields = body(body(&result.items, "body"), "send_equipment");
+    assert!(body(fields, "old_prioritised").is_empty(), "{result:?}");
+    assert_eq!(scalar(fields, "amount"), b"3");
+}
+
+// 1403B6280 -> 1403A8A00 reads raw signed integers without defining @raw.
+#[test]
+fn reached_value_transfer_leaders_are_a_raw_integer_array() {
+    let result = read(
+        b"@alias = 6 body = { transfer_units_fraction = { keep_unit_leaders = { @alias @raw = 2 } size = 0.5 } } raw = @raw final = 1",
+    );
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "raw"), b"@raw");
+    assert_eq!(scalar(&result.items, "final"), b"1");
+    let fields = body(body(&result.items, "body"), "transfer_units_fraction");
+    assert_eq!(scalar(fields, "size"), b"0.5");
+    let entries = body(fields, "keep_unit_leaders");
+    assert_eq!(entries.len(), 4, "{result:?}");
+    assert!(entries.iter().all(|item| item.key.is_none()));
+    assert_eq!(entries[0].value.scalar(), Some(b"6".as_slice()));
+    assert_eq!(entries[1].value.scalar(), Some(b"@raw".as_slice()));
+    assert_eq!(entries[2].value.scalar(), Some(b"=".as_slice()));
+    assert_eq!(entries[3].value.scalar(), Some(b"2".as_slice()));
+}
+
+// The array retains its last entry in +0xC0 for a following operatorless
+// scalar field; this distinguishes it from a list that preserves the `{`.
+#[test]
+fn reached_value_transfer_arrays_preserve_the_last_value_slot() {
+    let result = read(
+        b"body = { transfer_units_fraction = { keep_unit_leaders = { 1 2 } size } } } final = 1",
+    );
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(
+        scalar(
+            body(body(&result.items, "body"), "transfer_units_fraction"),
+            "size"
+        ),
+        b"2"
+    );
+    assert_eq!(scalar(&result.items, "final"), b"1");
+}
+
+// CAndTrigger's LoadBody keeps the caller's loaded country names. Its
+// unknown child uses trigger RecordError rather than defining that block.
+#[test]
+fn reached_value_transfer_leader_filter_uses_current_names_and_trigger_dispatch() {
+    let mut names = KeyNames::default();
+    names.countries.insert(b"XYZ".to_vec());
+    let result = native::read(
+        b"body = { transfer_units_fraction = { keep_unit_leaders_trigger = { XYZ = { invalid_trigger = { @lost = 2 } @seen = 3 always = yes } } size = 0.5 } } lost = @lost seen = @seen final = 1",
+        native::Mode::KeepMark,
+        native::Top::File(()),
+        Some(&names),
+        &mut |(), field| {
+            if field.keyword_is("body") {
+                Shape::Effect
+            } else {
+                Shape::One
+            }
+        },
+    );
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    assert_eq!(scalar(&result.items, "final"), b"1");
+    let fields = body(body(&result.items, "body"), "transfer_units_fraction");
+    assert_eq!(scalar(fields, "size"), b"0.5");
+    let country = body(body(fields, "keep_unit_leaders_trigger"), "XYZ");
+    assert!(body(country, "invalid_trigger").is_empty(), "{result:?}");
+    assert_eq!(scalar(country, "always"), b"yes");
+}
+
+// 14031B3B0 / 14031BA90 tail-jump central ReadEffect for non-own keys.
+// remove_ideas must therefore use its token-array reader, not a key loop.
+#[test]
+fn reached_value_resistance_blocks_keep_effect_fallback() {
+    for (class, own_key) in [
+        ("add_resistance_target", "amount"),
+        ("force_enable_resistance", "clear"),
+        ("force_disable_resistance", "clear"),
+    ] {
+        let text = format!(
+            "body = {{ {class} = {{ {own_key} = yes remove_ideas = {{ @raw = 2 }} @seen = 3 occupier = @seen }} }} raw = @raw seen = @seen"
+        );
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(scalar(&result.items, "raw"), b"@raw", "{class}");
+        assert_eq!(scalar(&result.items, "seen"), b"3", "{class}");
+        let fields = body(body(&result.items, "body"), class);
+        assert_eq!(scalar(fields, own_key), b"yes", "{class}");
+        assert_eq!(scalar(fields, "occupier"), b"3", "{class}");
+        let entries = body(fields, "remove_ideas");
+        assert_eq!(entries.len(), 3, "{class}: {result:?}");
+        assert!(entries.iter().all(|item| item.key.is_none()));
+    }
+}
+
+// 141385770 / 1404964D0 -> 14048FD40, callbacks 140496850,
+// 140496090 and 140496970: statement assignments never define variables.
+#[test]
+fn reached_value_project_iteration_output_uses_statement_callbacks() {
+    let result = read(b"body = { complete_special_project = { project = authored iteration_output = { reward reward = option @not_defined = 7 { @hidden = 9 } } invalid = { @unknown = 6 } @seen = 3 state = @seen scientist = somebody show_modifiers = yes } } not_defined = @not_defined hidden = @hidden unknown = @unknown seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "not_defined"), b"@not_defined");
+    assert_eq!(scalar(&result.items, "hidden"), b"@hidden");
+    assert_eq!(scalar(&result.items, "unknown"), b"@unknown");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    let statements = body(
+        body(body(&result.items, "body"), "complete_special_project"),
+        "iteration_output",
+    );
+    assert!(statements[0].key.is_none(), "{result:?}");
+    assert_eq!(statements[0].value.scalar(), Some(b"reward".as_slice()));
+    assert_eq!(scalar(statements, "reward"), b"option");
+    assert_eq!(scalar(statements, "@not_defined"), b"7");
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 140496970 validates assignment tokens but never skips an assigned {.
+// Its textual closing brace ends the statement reader instead.
+#[test]
+fn reached_value_project_iteration_assignment_brace_keeps_one_token() {
+    let result = read(b"body = { complete_special_project = { project = authored iteration_output = { reward = { @not_defined = 2 } @seen = 3 state = @seen } } not_defined = @not_defined seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "not_defined"), b"@not_defined");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    let project = body(body(&result.items, "body"), "complete_special_project");
+    assert_eq!(scalar(project, "state"), b"3");
+    assert_eq!(scalar(body(project, "iteration_output"), "reward"), b"{");
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 1404964D0 calls 14048FD40 even for scalar iteration_output. Its
+// statement loop consumes the first }, then the project and effect do.
+#[test]
+fn reached_value_project_iteration_scalar_reads_the_statement_tail() {
+    let result = read(b"body = { complete_special_project = { project = authored iteration_output = ignored reward = option @not_defined = 2 } @seen = 3 state = @seen } } not_defined = @not_defined seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "not_defined"), b"@not_defined");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    let project = body(body(&result.items, "body"), "complete_special_project");
+    assert_eq!(scalar(project, "state"), b"3");
+    let statements = body(project, "iteration_output");
+    assert_eq!(scalar(statements, "reward"), b"option");
+    assert_eq!(scalar(statements, "@not_defined"), b"2");
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 1403A9B50 / 1403B1040: originator_name is CBoundLocalization,
+// constructed at +0x80 by 14033C850 and read through 142390E40.
+#[test]
+fn reached_value_focus_originator_binds_localization_arguments() {
+    let result = read(b"body = { complete_national_focus = { focus = authored originator_name = { localization_key = ROOT argument = { localization_key = { @seen = 4 child = KEY } } } } seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "seen"), b"4");
+    let focus = body(body(&result.items, "body"), "complete_national_focus");
+    assert_eq!(scalar(focus, "focus"), b"authored");
+    let argument = body(body(focus, "originator_name"), "argument");
+    assert_eq!(scalar(argument, "localization_key"), b"{");
+    assert_eq!(scalar(argument, "child"), b"KEY");
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 1403B1040 / 1403B1480 / 14051ECD0 delegate non-own keys to
+// CEffect::ReadEffect, which reaches the event's error skip.
+#[test]
+fn reached_value_focus_agency_and_doctrine_keep_effect_fallback() {
+    for (class, own_fields) in [
+        (
+            "complete_national_focus",
+            "focus = authored use_side_message = yes",
+        ),
+        (
+            "create_intelligence_agency",
+            "name = authored icon = mod_icon",
+        ),
+        (
+            "set_sub_doctrine",
+            "folder = authored sub_doctrine = authored track = 1",
+        ),
+    ] {
+        let text = format!(
+            "body = {{ {class} = {{ {own_fields} country_event = {{ invalid = {{ @lost = 2 }} @seen = 3 days = @seen }} invalid = {{ @also_lost = 4 }} }} }} lost = @lost also_lost = @also_lost seen = @seen"
+        );
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(scalar(&result.items, "lost"), b"@lost", "{class}");
+        assert_eq!(scalar(&result.items, "also_lost"), b"@also_lost", "{class}");
+        assert_eq!(scalar(&result.items, "seen"), b"3", "{class}");
+        let event = body(body(body(&result.items, "body"), class), "country_event");
+        assert_eq!(scalar(event, "days"), b"3", "{class}");
+        assert!(
+            !result
+                .misreads
+                .iter()
+                .any(|note| note.what.starts_with("Deferred effect")),
+            "{class}: {result:?}"
+        );
+    }
+}
+
+// 14051ECD0 lookup failure reports through 1424ACD40 without a skip.
+// The { token remains one value, and the key loop reads its contents.
+#[test]
+fn reached_value_doctrine_database_failure_does_not_skip_a_brace() {
+    let result =
+        read(b"body = { set_sub_doctrine = { folder = { @seen = 3 track = 1 } } seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    let doctrine = body(body(&result.items, "body"), "set_sub_doctrine");
+    assert_eq!(scalar(doctrine, "folder"), b"{");
+    assert_eq!(scalar(doctrine, "track"), b"1");
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 14051BBB0 runs its ReadKeyOperatorValue loop unconditionally: a
+// scalar opening value still consumes following keys through the next }.
+#[test]
+fn reached_value_strategic_location_scalar_runs_the_key_loop() {
+    let result = read(
+        b"body = { strategic_state_location = ignored @seen = 3 arbitrary = 1 } } seen = @seen",
+    );
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    let location = body(body(&result.items, "body"), "strategic_state_location");
+    assert_eq!(scalar(location, "arbitrary"), b"1");
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 14051BBB0 logs unknown location names without RecordError's skip;
+// an unknown { value is therefore one token and its children are keys.
+#[test]
+fn reached_value_strategic_location_unknown_brace_is_one_value() {
+    let result = read(b"body = { strategic_state_location = { missing_location = { @seen = 3 other = 1 } } seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    let location = body(body(&result.items, "body"), "strategic_state_location");
+    assert_eq!(scalar(location, "missing_location"), b"{");
+    assert_eq!(scalar(location, "other"), b"1");
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 1403ABDF0: six scalar own fields, unknown keys ReportUnexpectedToken
+// and skip. Participant-scope validation in 1403B6B90 reads no extra token.
+#[test]
+fn reached_value_peace_conference_rejects_unknown_fields() {
+    let result = read(b"body = { start_peace_conference = { tooltip = authored message = authored tag = ROOT winner_scope = ALL loser_scope = LIMITED_FACTION score_factor = 1 invalid = { @lost = 2 } @seen = 3 score_factor = @seen } } lost = @lost seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    let conference = body(body(&result.items, "body"), "start_peace_conference");
+    assert_eq!(scalar(conference, "winner_scope"), b"ALL");
+    assert_eq!(scalar(conference, "loser_scope"), b"LIMITED_FACTION");
+    assert_eq!(scalar(conference, "score_factor"), b"1");
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// Scratch fragment for effect_keys/value_readers/tests.rs. Uses its existing
+// read/scalar/body helpers. No new public API or invented enclosing scope.
+
+// 1403A9510: scalar reference, or inline ideology/trait fields.
+#[test]
+fn reached_value_country_trait_scalar_and_inline_keys() {
+    for class in ["add_country_leader_trait", "remove_country_leader_trait"] {
+        let text = format!(
+            "@alias = authored_trait body = {{ {class} = @alias {class} = {{ ideology = authored_ideology trait = authored_trait invalid = {{ @lost = 2 }} @seen = 3 trait = @seen }} }} lost = @lost seen = @seen"
+        );
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(scalar(&result.items, "lost"), b"@lost", "{class}");
+        assert_eq!(scalar(&result.items, "seen"), b"3", "{class}");
+        assert_eq!(
+            body(&result.items, "body")[0].value.scalar(),
+            Some(b"authored_trait".as_slice())
+        );
+        assert!(
+            !result
+                .misreads
+                .iter()
+                .any(|note| note.what.starts_with("Deferred effect")),
+            "{class}: {result:?}"
+        );
+    }
+}
+
+// 1403AC650 / 1402F0810: accepted lookup failures call 1424ACD40,
+// which reports without skipping. Unknown fields call 1424ACF90's skip.
+#[test]
+fn reached_value_swap_traits_keep_lookup_tokens_and_skip_unknowns() {
+    for class in ["swap_ruler_traits", "swap_country_leader_traits"] {
+        let text = format!(
+            "body = {{ {class} = {{ remove = authored_trait add = authored_trait invalid = {{ @lost = 2 }} @seen = 3 add = @seen }} }} lost = @lost seen = @seen"
+        );
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(scalar(&result.items, "lost"), b"@lost", "{class}");
+        assert_eq!(scalar(&result.items, "seen"), b"3", "{class}");
+        assert!(
+            !result
+                .misreads
+                .iter()
+                .any(|note| note.what.starts_with("Deferred effect")),
+            "{result:?}"
+        );
+
+        // remove takes `{` alone. Its contents are fields of the same
+        // inline loop, and the inner `}` ends that loop.
+        let one = read(format!("body = {{ {class} = {{ remove = {{ @escaped = 4 add = authored_trait }} }} escaped = @escaped").as_bytes());
+        assert!(one.unsettled.is_none(), "{class}: {one:?}");
+        assert_eq!(scalar(&one.items, "escaped"), b"4", "{class}");
+        assert_eq!(
+            scalar(body(body(&one.items, "body"), class), "remove"),
+            b"{",
+            "{class}"
+        );
+
+        let wrong_scalar = read(format!("body = {{ {class} = no }} final = 1").as_bytes());
+        assert!(
+            wrong_scalar
+                .misreads
+                .iter()
+                .any(|note| note.what.contains("requires a block")),
+            "{wrong_scalar:?}"
+        );
+        assert!(
+            !wrong_scalar
+                .misreads
+                .iter()
+                .any(|note| note.what.starts_with("Deferred effect")),
+            "{wrong_scalar:?}"
+        );
+        assert_eq!(scalar(&wrong_scalar.items, "final"), b"1");
+    }
+}
+
+// 1402F0520 -> ReadStringList 1401426E0, rather than a key loop.
+#[test]
+fn reached_value_random_trait_reads_resolved_string_tokens() {
+    let result = read(b"@alias = authored_trait body = { add_random_trait = { @lost = 2 @alias } add_random_trait = yes } lost = @lost");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+    let items = body(&result.items, "body");
+    let list = items[0].value.items().unwrap();
+    assert_eq!(list.len(), 4, "{result:?}");
+    assert!(list.iter().all(|item| item.key.is_none()));
+    assert_eq!(list[3].value.scalar(), Some(b"authored_trait".as_slice()));
+    assert_eq!(items[1].value.scalar(), Some(b"yes".as_slice()));
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 1403AA100 -> 1403B0B20 / 1403B3880. Constructors choose the
+// accepted country field: 14033C480 / 14033E4B0 / 140342130.
+#[test]
+fn reached_value_operative_keys_follow_each_class_constructor() {
+    for (class, own, rejected) in [
+        ("capture_operative", "captured_by", "killed_by"),
+        ("kill_operative", "killed_by", "turned_by"),
+        ("turn_operative", "turned_by", "captured_by"),
+    ] {
+        let text = format!(
+            "body = {{ {class} = {{ {own} = authored_country operative = authored_operative {rejected} = {{ @lost = 2 }} @seen = 3 {own} = @seen }} }} lost = @lost seen = @seen"
+        );
+        let result = read(text.as_bytes());
+        assert!(result.unsettled.is_none(), "{class}: {result:?}");
+        assert_eq!(scalar(&result.items, "lost"), b"@lost", "{class}");
+        assert_eq!(scalar(&result.items, "seen"), b"3", "{class}");
+        assert!(
+            !result
+                .misreads
+                .iter()
+                .any(|note| note.what.starts_with("Deferred effect")),
+            "{class}: {result:?}"
+        );
+
+        // Both accepted operands dispatch CScopedVariable::vf3
+        // (140539440), which takes one token and does not skip a block.
+        let one = read(format!("body = {{ {class} = {{ {own} = {{ @escaped = 4 operative = authored_operative }} }} escaped = @escaped").as_bytes());
+        assert!(one.unsettled.is_none(), "{class}: {one:?}");
+        assert_eq!(scalar(&one.items, "escaped"), b"4", "{class}");
+        assert_eq!(
+            scalar(body(body(&one.items, "body"), class), own),
+            b"{",
+            "{class}"
+        );
+    }
+    // Same slots as kill/turn, but no reached block and not ported in this
+    // round: table membership must not accidentally cover this class.
+    let refused = read(b"body = { free_operative = { operative = authored_operative } }");
+    assert!(
+        refused
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect `free_operative`")),
+        "{refused:?}"
+    );
+}
+
+// 1403A9BB0 -> 1403B14C0 -> 140C11620 -> 140C0C950.
+// nationalities and traits are raw token loops, not definitions;
+// gender (1413DAFA0) rejects a block through RecordError's skip.
+#[test]
+fn reached_value_create_operative_uses_raw_lists_and_gender_skip() {
+    let result = read(b"@alias = authored_token body = { create_operative_leader = { nationalities = { @lost = 2 @alias } traits = { @also_lost = 5 @alias } gender = { @gender_lost = 7 } name = authored_name female = yes skill = 1 portrait_path = authored_path picture = authored_picture gfx = authored_gfx bypass_recruitment = yes available_to_spy_master = yes portrait_tag_override = authored_country invalid = { @bad = 9 } @seen = 3 name = @seen } } lost = @lost also_lost = @also_lost gender_lost = @gender_lost bad = @bad seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    for key in ["lost", "also_lost", "gender_lost", "bad"] {
+        assert_eq!(
+            scalar(&result.items, key),
+            format!("@{key}").as_bytes(),
+            "{key}: {result:?}"
+        );
+    }
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    let operative = body(body(&result.items, "body"), "create_operative_leader");
+    for key in ["nationalities", "traits"] {
+        let list = body(operative, key);
+        assert_eq!(list.len(), 4, "{key}: {result:?}");
+        assert!(list.iter().all(|item| item.key.is_none()));
+        assert_eq!(list[3].value.scalar(), Some(b"authored_token".as_slice()));
+    }
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// The inherited traits reader starts its raw loop regardless of `{`;
+// it consumes the following lexer tokens and does not define @names.
+#[test]
+fn reached_value_create_operative_traits_loop_even_after_scalar() {
+    let result = read(b"body = { create_operative_leader = { traits = authored_trait @lost = 2 name = authored_name } } lost = @lost");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    // The unconditional raw list consumes the operative close; the
+    // following lost field is consequently in the outer effect body.
+    assert_eq!(scalar(body(&result.items, "body"), "lost"), b"@lost");
+    let list = body(
+        body(body(&result.items, "body"), "create_operative_leader"),
+        "traits",
+    );
+    assert_eq!(list.len(), 6, "{result:?}");
+    assert!(list.iter().all(|item| item.key.is_none()));
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 1403AA3C0, non-character parse scope: ideology/character One;
+// other own-loop keys ReportUnexpectedToken skip.
+#[test]
+fn reached_value_promote_character_uses_inline_keys() {
+    let result = read(b"body = { promote_character = authored_character promote_character = { ideology = authored_ideology character = authored_character invalid = { @lost = 2 } @seen = 3 ideology = @seen } } lost = @lost seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    assert_eq!(
+        body(&result.items, "body")[0].value.scalar(),
+        Some(b"authored_character".as_slice())
+    );
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 1403AAC00, ordinary country-scope scalar and character-only loop.
+// Scope-8 invalid/block paths have zero corpus reach and require native
+// enclosing-context support; this fixture does not invent that context.
+#[test]
+fn reached_value_remove_role_uses_scalar_or_character_inline_keys() {
+    let result = read(b"body = { remove_unit_leader_role = authored_character remove_unit_leader_role = { character = authored_character invalid = { @lost = 2 } @seen = 3 character = @seen } } lost = @lost seen = @seen");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    assert_eq!(
+        body(&result.items, "body")[0].value.scalar(),
+        Some(b"authored_character".as_slice())
+    );
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// Append to effect_keys/value_readers/tests.rs: baseline-compatible APIs only.
+// Each fixture uses synthetic recorded content; no production vanilla unit facts.
+const TEMPLATE_TEST_UNITS: &[u8] = br#"
+sub_units = {
+    fixture_line = { type = infantry }
+    fixture_support = { type = support }
+}
+"#;
+
+fn read_with_synthetic_units(text: &[u8]) -> Read {
+    read_with_synthetic_units_and_widths(text, TEMPLATE_TEST_UNITS, Some([3; 3]))
+}
+
+fn read_with_synthetic_units_and_widths(
+    text: &[u8],
+    units: &[u8],
+    widths: Option<[i32; 3]>,
+) -> Read {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            // Only this uniquely created fixture root is removed.
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = std::env::temp_dir().join(format!(
+        "hoi4-effect-value-template-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    // Refuse an existing root; never replace somebody else's directory.
+    fs::create_dir(&root).unwrap();
+    let fixture = Fixture(root);
+    let write = |path: &str, bytes: &[u8]| {
+        let path = fixture.0.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    };
+    write("common/units/effect_test.txt", units);
+    write(
+        "common/country_tags/effect_test.txt",
+        b"AAA = \"history/countries/AAA.txt\"",
+    );
+    if let Some([line, support, regimental]) = widths {
+        // Native define registrations 140906D10 / 140907130 / 140909230.
+        let lua = format!(
+            "NDefines = {{ NMilitary = {{ MAX_DIVISION_BRIGADE_WIDTH = {line}, MAX_DIVISION_SUPPORT_WIDTH = {support}, MAX_REGIMENTAL_SUPPORT_WIDTH = {regimental} }} }}"
+        );
+        write("common/defines/effect_test.lua", lua.as_bytes());
+    }
+    let layers = crate::ResolvedLayers::from_folders(&[(&fixture.0, &[])]).unwrap();
+    let names = KeyNames::read(&layers).unwrap();
+    super::super::tests::read(text, &names)
+}
+
+fn assert_template_read_is_ported(result: &Read) {
+    assert!(result.unsettled.is_none(), "{result:?}");
+    assert!(
+        !result
+            .misreads
+            .iter()
+            .any(|note| note.what.starts_with("Deferred effect")),
+        "{result:?}"
+    );
+}
+
+// 1403A97C0 -> CPersistent1424A9730; no token-3 guard.
+#[test]
+fn template_value_reader_starts_its_persistent_loop_after_a_scalar() {
+    let result = read(b"body={division_template=none name=T priority=2} add_stability=0} final=9");
+    assert_template_read_is_ported(&result);
+    let effects = body(&result.items, "body");
+    let template = body(effects, "division_template");
+    assert_eq!(scalar(template, "name"), b"T");
+    assert_eq!(scalar(template, "priority"), b"2");
+    assert_eq!(scalar(effects, "add_stability"), b"0");
+    assert_eq!(scalar(&result.items, "final"), b"9");
+}
+
+// 140B937A0 uses live subunit mask bit24, then raw point140B847D0.
+#[test]
+fn template_unit_points_accept_the_recorded_line_and_support_categories() {
+    let result = read_with_synthetic_units(
+        br#"
+        body={division_template={name=T
+            regiments={fixture_line={0 1}}
+            support={fixture_support={x=0 y=1}}
+            regimental_support={fixture_support={x=1 y=0}}
+        } add_stability=0} final=9
+    "#,
+    );
+    assert_template_read_is_ported(&result);
+    let template = body(body(&result.items, "body"), "division_template");
+    let point = body(body(template, "regiments"), "fixture_line");
+    assert_eq!(point.len(), 2);
+    assert!(point.iter().all(|item| item.key.is_none()));
+    assert_eq!(point[0].value.scalar(), Some(b"0".as_slice()));
+    assert_eq!(point[1].value.scalar(), Some(b"1".as_slice()));
+    // A named point may preserve x/y Item keys for reader identity.
+    assert!(!body(body(template, "support"), "fixture_support").is_empty());
+    assert!(!body(body(template, "regimental_support"), "fixture_support").is_empty());
+    assert_eq!(scalar(&result.items, "final"), b"9");
+}
+
+// Null subunit / wrong mask RecordError1424ACF90 skips the current block.
+#[test]
+fn template_unit_points_skip_unknown_quoted_and_wrong_category_units() {
+    let result = read_with_synthetic_units(
+        br#"
+        body={division_template={name=T
+            regiments={
+                "fixture_line"={@quoted=1}
+                fixture_missing={@missing=2}
+                fixture_support={@wrong_line=3}
+                fixture_line={x=0 y=0}
+            }
+            support={fixture_line={@wrong_support=4}}
+            regimental_support={fixture_line={@wrong_regimental=5}}
+        } add_stability=0}
+        quoted=@quoted missing=@missing wrong_line=@wrong_line
+        wrong_support=@wrong_support wrong_regimental=@wrong_regimental
+    "#,
+    );
+    assert_template_read_is_ported(&result);
+    for key in [
+        "quoted",
+        "missing",
+        "wrong_line",
+        "wrong_support",
+        "wrong_regimental",
+    ] {
+        assert_eq!(
+            scalar(&result.items, key),
+            format!("@{key}").as_bytes(),
+            "{key}"
+        );
+    }
+    assert_eq!(scalar(body(&result.items, "body"), "add_stability"), b"0");
+}
+
+// Point140B847D0 reads raw tokens, resolves references but defines no @name.
+#[test]
+fn template_points_do_not_define_variables_and_skip_bad_component_blocks() {
+    let result = read_with_synthetic_units(
+        br#"
+        body={division_template={
+            regiments={fixture_line={@raw=7 1}}
+            support={fixture_support={"x"={@hidden=4} x=0 y=0}}
+            name=T
+        } add_stability=0} raw=@raw hidden=@hidden
+    "#,
+    );
+    assert_template_read_is_ported(&result);
+    assert_eq!(scalar(&result.items, "raw"), b"@raw");
+    assert_eq!(scalar(&result.items, "hidden"), b"@hidden");
+    let template = body(body(&result.items, "body"), "division_template");
+    let point = body(body(template, "regiments"), "fixture_line");
+    assert_eq!(point.len(), 2);
+    assert_eq!(point[0].value.scalar(), Some(b"7".as_slice()));
+    assert_eq!(point[1].value.scalar(), Some(b"1".as_slice()));
+    assert_eq!(scalar(template, "name"), b"T");
+}
+
+// CID14220AA30 reports unknown with1424ACEE0 ->1424ACD40: NO block skip.
+// The close after type ends CID; the close after name ends division_template.
+#[test]
+fn template_cid_unknown_field_leaves_its_block_as_cid_fields() {
+    let result = read(
+        br#"
+        body={division_template={parent={
+            not_a_cid_field={@seen=3 type=1}
+            name=T
+        } add_stability=0} seen=@seen
+    "#,
+    );
+    assert_template_read_is_ported(&result);
+    let effects = body(&result.items, "body");
+    let template = body(effects, "division_template");
+    assert_eq!(scalar(template, "name"), b"T");
+    assert_eq!(scalar(body(template, "parent"), "type"), b"1");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    assert_eq!(scalar(effects, "add_stability"), b"0");
+}
+
+// 140B937A0 not_allowed_equipment: unknown is One; equipment is persistent
+// reference141411210; equipment_variant_index3643 is CID14220AA30.
+#[test]
+fn template_equipment_lists_use_nested_reference_and_cid_grammars() {
+    let result = read(
+        br#"
+        body={division_template={name=T not_allowed_equipment={
+            equipment={type=infantry version=1 creator=AAA create_if_missing=yes
+                version_name=V license_creator=AAA unknown={@hidden=9}}
+            equipment_variant_index={type=1 id=2}
+            mystery={@seen=3 equipment={type=armor version=2}}
+            priority=4
+        } add_stability=0} seen=@seen hidden=@hidden
+    "#,
+    );
+    assert_template_read_is_ported(&result);
+    let effects = body(&result.items, "body");
+    let template = body(effects, "division_template");
+    let list = body(template, "not_allowed_equipment");
+    let reference = body(list, "equipment");
+    assert_eq!(scalar(reference, "version"), b"1");
+    assert_eq!(scalar(reference, "version_name"), b"V");
+    assert_eq!(scalar(body(list, "equipment_variant_index"), "id"), b"2");
+    assert_eq!(scalar(list, "mystery"), b"{");
+    assert_eq!(scalar(template, "priority"), b"4");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    assert_eq!(scalar(&result.items, "hidden"), b"@hidden");
+    assert_eq!(scalar(effects, "add_stability"), b"0");
+}
+
+// forbidden_equipment_types only reads token4A47. Unknown has no report/skip.
+#[test]
+fn template_forbidden_equipment_unknown_field_reads_one_value_only() {
+    let result = read(
+        br#"
+        body={division_template={forbidden_equipment_types={
+            mystery={@seen=3 token=fixture_equipment}
+            name=T
+        } add_stability=0} seen=@seen
+    "#,
+    );
+    assert_template_read_is_ported(&result);
+    let effects = body(&result.items, "body");
+    let template = body(effects, "division_template");
+    let list = body(template, "forbidden_equipment_types");
+    assert_eq!(scalar(list, "mystery"), b"{");
+    assert_eq!(scalar(list, "token"), b"fixture_equipment");
+    assert_eq!(scalar(template, "name"), b"T");
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    assert_eq!(scalar(effects, "add_stability"), b"0");
+}
+
+// Shared ReadScript thunk1403A9B40, key1403B1090, nested template140B937A0.
+#[test]
+fn colonial_template_reads_its_nested_template_and_skips_inherited_body() {
+    let result = read_with_synthetic_units(
+        br#"
+        body={create_colonial_division_template={subject=AAA division_template={
+            name=T inherit={@hidden=4}
+            regiments={fixture_line={x=0 y=0}}
+        }} add_stability=0} hidden=@hidden
+    "#,
+    );
+    assert_template_read_is_ported(&result);
+    let effects = body(&result.items, "body");
+    let colonial = body(effects, "create_colonial_division_template");
+    assert_eq!(scalar(colonial, "subject"), b"AAA");
+    assert_eq!(scalar(body(colonial, "division_template"), "name"), b"T");
+    assert_eq!(scalar(&result.items, "hidden"), b"@hidden");
+    assert_eq!(scalar(effects, "add_stability"), b"0");
+}
+
+// Add-unit key1403AF6B0 uses scalar column1424B00A0, not point140B847D0.
+#[test]
+fn add_template_units_take_scalar_columns_with_the_live_categories() {
+    let result = read_with_synthetic_units(
+        br#"
+        body={add_units_to_division_template={template_name=T
+            regiments={fixture_line=1}
+            support={fixture_support=0}
+            regimental_support={fixture_support=1}
+            unknown={@hidden=7}
+        } add_stability=0} hidden=@hidden
+    "#,
+    );
+    assert_template_read_is_ported(&result);
+    let effects = body(&result.items, "body");
+    let add = body(effects, "add_units_to_division_template");
+    assert_eq!(scalar(add, "template_name"), b"T");
+    assert_eq!(scalar(body(add, "regiments"), "fixture_line"), b"1");
+    assert_eq!(scalar(body(add, "support"), "fixture_support"), b"0");
+    assert_eq!(
+        scalar(body(add, "regimental_support"), "fixture_support"),
+        b"1"
+    );
+    assert_eq!(scalar(&result.items, "hidden"), b"@hidden");
+    assert_eq!(scalar(effects, "add_stability"), b"0");
+}
+
+// Synthetic width3 settles native parsed column0 <3; its block is NOT skipped.
+#[test]
+fn add_template_units_do_not_read_block_columns_as_grid_points() {
+    let result = read_with_synthetic_units(
+        br#"
+        body={add_units_to_division_template={
+            regiments={fixture_line={@seen=7 x=0 y=0}
+            template_name=T
+        } add_stability=0} seen=@seen
+    "#,
+    );
+    assert_template_read_is_ported(&result);
+    let effects = body(&result.items, "body");
+    let add = body(effects, "add_units_to_division_template");
+    assert_eq!(scalar(body(add, "regiments"), "fixture_line"), b"{");
+    assert_eq!(scalar(add, "template_name"), b"T");
+    assert_eq!(scalar(&result.items, "seen"), b"7");
+    assert_eq!(scalar(effects, "add_stability"), b"0");
+}
+
+// Native defines0 makes parsed column0 invalid; RecordError skips its block.
+#[test]
+fn add_template_unit_column_errors_follow_the_recorded_width_defines() {
+    let result = read_with_synthetic_units_and_widths(
+        br#"body={add_units_to_division_template={template_name=T
+            regiments={fixture_line={@line=1}}
+            support={fixture_support={@support=2}}
+            regimental_support={fixture_support={@regimental=3}}
+        } add_stability=0} line=@line support=@support regimental=@regimental"#,
+        TEMPLATE_TEST_UNITS,
+        Some([0; 3]),
+    );
+    assert_template_read_is_ported(&result);
+    for key in ["line", "support", "regimental"] {
+        assert_eq!(scalar(&result.items, key), format!("@{key}").as_bytes());
+    }
+    assert_eq!(scalar(body(&result.items, "body"), "add_stability"), b"0");
+}
+
+#[test]
+fn template_support_classification_follows_native_subunit_type_forms() {
+    let units = br#"
+        @category = support
+        sub_units = {
+            numeric_scalar = { type = 16777216 }
+            numeric_list = { type = { 16777216 } }
+            alias_scalar = { type = @category }
+            alias_list = { type = { @category } }
+            quoted_value = { type = "support" }
+            reset_unit = { type = support }
+            repeated_type = { type = infantry type = support }
+        }
+        sub_units = { reset_unit = { } }
+    "#;
+    let result = read_with_synthetic_units_and_widths(
+        br#"body={division_template={support={
+            numeric_scalar={@num_scalar=1}
+            numeric_list={@num_list=2}
+            alias_scalar={@alias_scalar=3}
+            quoted_value={@quoted_value=4}
+            reset_unit={@reset_unit=5}
+            alias_list={x=0 y=0}
+            repeated_type={x=1 y=0}
+        } name=T} add_stability=0}
+        num_scalar=@num_scalar num_list=@num_list alias_scalar=@alias_scalar
+        quoted_value=@quoted_value reset_unit=@reset_unit"#,
+        units,
+        Some([3; 3]),
+    );
+    assert_template_read_is_ported(&result);
+    let template = body(body(&result.items, "body"), "division_template");
+    let support = body(template, "support");
+    for key in [
+        "numeric_scalar",
+        "numeric_list",
+        "alias_scalar",
+        "quoted_value",
+        "reset_unit",
+    ] {
+        assert!(body(support, key).is_empty(), "{key}: {result:?}");
+    }
+    assert_eq!(body(support, "alias_list").len(), 2);
+    assert_eq!(body(support, "repeated_type").len(), 2);
+    for key in [
+        "num_scalar",
+        "num_list",
+        "alias_scalar",
+        "quoted_value",
+        "reset_unit",
+    ] {
+        assert_eq!(scalar(&result.items, key), format!("@{key}").as_bytes());
+    }
+}
+
+fn read_scoped_effect(text: &[u8], scope: Option<u32>, names: &KeyNames) -> Read {
+    native::read(
+        text,
+        native::Mode::KeepMark,
+        native::Top::File(()),
+        Some(names),
+        &mut |(), field| {
+            if field.keyword_is("body") {
+                scope.map_or(Shape::Effect, Shape::EffectIn)
+            } else {
+                Shape::One
+            }
+        },
+    )
+}
+
+#[test]
+fn character_scope_value_readers_skip_different_blocks_from_country_scope() {
+    for scope in [ScopeKind::Country.bit(), ScopeKind::Character.bit()] {
+        let result = read_scoped_effect(
+            b"body={promote_character={character={@promoted=7} ideology=fixture}} spare=0 promoted=@promoted",
+            Some(scope), &KeyNames::default(),
+        );
+        assert_template_read_is_ported(&result);
+        assert_eq!(
+            scalar(&result.items, "promoted"),
+            if scope == ScopeKind::Character.bit() {
+                b"@promoted".as_slice()
+            } else {
+                b"7"
+            }
+        );
+        let result = read_scoped_effect(
+            b"body={remove_unit_leader_role={character=fixture @removed=3 character=fixture}} removed=@removed",
+            Some(scope), &KeyNames::default(),
+        );
+        assert_template_read_is_ported(&result);
+        assert_eq!(
+            scalar(&result.items, "removed"),
+            if scope == ScopeKind::Character.bit() {
+                b"@removed".as_slice()
+            } else {
+                b"3"
+            }
+        );
+    }
+}
+
+#[test]
+fn character_role_scalar_yes_is_case_sensitive_and_rejects_current_blocks() {
+    let result = read_scoped_effect(
+        b"body={add_stability=YES remove_unit_leader_role {@lost=7}} lost=@lost",
+        Some(ScopeKind::Character.bit()),
+        &KeyNames::default(),
+    );
+    assert_template_read_is_ported(&result);
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+    assert!(
+        result
+            .misreads
+            .iter()
+            .any(|note| note.what.contains("requires exact yes"))
+    );
+    let result = read_scoped_effect(
+        b"body={add_stability=yes remove_unit_leader_role {@seen=7 add_stability=0} seen=@seen",
+        Some(ScopeKind::Character.bit()),
+        &KeyNames::default(),
+    );
+    assert_template_read_is_ported(&result);
+    assert_eq!(scalar(&result.items, "seen"), b"7");
+}
+
+#[test]
+fn unknown_effect_scope_has_named_counted_refusals_for_sensitive_blocks() {
+    let result = read_scoped_effect(
+        b"body={remove_unit_leader_role={character=fixture}}",
+        None,
+        &KeyNames::default(),
+    );
+    assert!(result.misreads.iter().any(|note| {
+        note.what
+            .starts_with("Deferred effect `remove_unit_leader_role`")
+            && note.count == Some(1)
+    }));
+    // Current opens even though the retained value is the ideology scalar.
+    let result = read_scoped_effect(
+        b"body={promote_character={ideology=fixture character {@lost=7}}}",
+        None,
+        &KeyNames::default(),
+    );
+    assert!(result.unsettled.is_some());
+    assert!(result.misreads.iter().any(|note| {
+        note.what
+            .starts_with("Deferred effect `promote_character.character`")
+            && note.count == Some(1)
+    }));
+}
+
+#[test]
+fn target_scope_zero_replaces_character_scope_and_restores_the_parent() {
+    for target in [
+        "ROOT",
+        "THIS",
+        "PREV",
+        "FROM",
+        "event_target:fixture",
+        "var:fixture",
+    ] {
+        let text = format!(
+            "body={{{target}={{remove_unit_leader_role={{character=fixture @seen=3 character=fixture}}}} promote_character={{character={{@lost=7}} ideology=fixture}}}} seen=@seen lost=@lost"
+        );
+        let result = read_scoped_effect(
+            text.as_bytes(),
+            Some(ScopeKind::Character.bit()),
+            &KeyNames::default(),
+        );
+        assert_template_read_is_ported(&result);
+        assert_eq!(scalar(&result.items, "seen"), b"3", "{target}: {result:?}");
+        assert_eq!(
+            scalar(&result.items, "lost"),
+            b"@lost",
+            "{target}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn iterator_scope_force_restores_character_parent_scope() {
+    let result = read_scoped_effect(
+        b"body={every_country={remove_unit_leader_role={character=fixture @seen=3 character=fixture}} promote_character={character={@lost=7} ideology=fixture}} seen=@seen lost=@lost",
+        Some(ScopeKind::Character.bit()), &KeyNames::default(),
+    );
+    assert_template_read_is_ported(&result);
+    assert_eq!(scalar(&result.items, "seen"), b"3");
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+}
+
+#[test]
+fn content_targets_and_registered_effect_precedence_select_native_scope() {
+    let names = KeyNames {
+        countries: [b"XYZ".to_vec()].into(),
+        characters: [b"fixture_character".to_vec(), b"hidden_effect".to_vec()].into(),
+        ..Default::default()
+    };
+    let result = read_scoped_effect(
+        b"body={fixture_character={remove_unit_leader_role={@lost=7 character=fixture}} XYZ={remove_unit_leader_role={@country=3 character=fixture}} hidden_effect={remove_unit_leader_role={@registered=5 character=fixture}}} lost=@lost country=@country registered=@registered",
+        Some(4), &names,
+    );
+    assert_template_read_is_ported(&result);
+    assert_eq!(scalar(&result.items, "lost"), b"@lost");
+    assert_eq!(scalar(&result.items, "country"), b"3");
+    assert_eq!(scalar(&result.items, "registered"), b"5");
+}
+
+#[test]
+fn template_point_overflow_refuses_an_uninitialized_native_label_by_name() {
+    let result = read_with_synthetic_units(
+        b"body={division_template={regiments={fixture_line={0 1 2 3 x=4}}}}",
+    );
+    let refused = result.unsettled.unwrap();
+    assert!(refused.what.contains("fixture_line"), "{refused:?}");
+    assert!(
+        refused
+            .what
+            .contains("beyond the initialized x/y/z/w labels"),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn project_iteration_empty_assigned_key_keeps_one_value() {
+    let result = read(b"body={complete_special_project={iteration_output={\"\"={@seen=3 reward=fixture} state=1}} seen=@seen");
+    assert_template_read_is_ported(&result);
+    // The empty assignment uses the assignment callback, never the anonymous-block skip.
+    assert_eq!(scalar(&result.items, "seen"), b"@seen");
+    let iterations = body(
+        body(body(&result.items, "body"), "complete_special_project"),
+        "iteration_output",
+    );
+    assert_eq!(iterations[0].key.as_deref(), Some(b"".as_slice()));
+    assert_eq!(iterations[0].value.scalar(), Some(b"{".as_slice()));
+    assert!(
+        iterations
+            .iter()
+            .any(|item| item.key.as_deref() == Some(b"@seen"))
+    );
 }

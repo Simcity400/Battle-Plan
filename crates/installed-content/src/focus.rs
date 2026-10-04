@@ -8,6 +8,7 @@ use crate::{
         Item,
         native::{self, Shape},
     },
+    scope::ScopeKind,
 };
 use std::{collections::BTreeMap, io};
 
@@ -159,7 +160,13 @@ pub fn parse(
                     Some(b"completion_reward_joint_originator" | b"completion_reward_joint_member"),
                 )
                 | (Continuous, Some(b"select_effect" | b"cancel_effect" | b"daily_reward")) => {
-                    Shape::Effect
+                    if field.keyword_is("complete_tooltip") {
+                        // CNationalFocus::ReadToken 1402D76A0 passes zero at 1402D7D01.
+                        Shape::EffectIn(0)
+                    } else {
+                        // 1402D76A0, 140DE1F10 and 1406B67D0 pass country scope.
+                        Shape::EffectIn(ScopeKind::Country.bit())
+                    }
                 }
                 (Continuous, Some(b"modifier")) => {
                     Shape::Object(Modifier(modifiers::Node::Modifier))

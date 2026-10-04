@@ -11,6 +11,7 @@ use crate::{
         self, Item, fold_token,
         native::{self, Shape},
     },
+    scope::ScopeKind,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -58,11 +59,13 @@ fn parse_with_registry(
     // 140AC3960 / 140AC3C70. All dynamic content names come from layers.
     // CTechnologyDatabase::LoadDirectory (140AC1BA0) constructs each file's
     // lexer in mode 0 (1424A6370).
-    let read = native::read(
+    // CTechnologyTemplate::vf4 140AC3C70 passes country scope at 140AC582B.
+    let read = native::read_in_effect_scope(
         input,
         native::Mode::KeepMark,
         native::Top::File(File),
         Some(names),
+        ScopeKind::Country.bit(),
         &mut |node, field| {
             match (node, field.keyword().as_deref()) {
                 (File, Some(b"technologies")) => Shape::Object(Technologies),

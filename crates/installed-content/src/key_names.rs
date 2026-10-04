@@ -66,6 +66,13 @@ pub struct KeyNames {
     /// (140471900) and non_damaged_building_level (140472210);
     /// None when repeated declarations disagree.
     pub province_buildings: BTreeMap<Vec<u8>, Option<bool>>,
+    /// The sub-unit database after `common/units` (14018F865), for effect
+    /// division-template placement (140B937A0 / 1403AF6B0). None at an
+    /// earlier load point whose final roster is unavailable.
+    pub sub_units: Option<crate::unit_leader::SubUnits>,
+    /// Regiments, support and regimental-support column widths from the
+    /// recorded NMilitary defines (140906D10 / 140907130 / 140909230).
+    pub template_columns: Option<Result<[i32; 3], String>>,
 }
 
 /// Where in 14018B610 a trigger body is read, for the names loaded by then.
@@ -174,6 +181,8 @@ impl KeyNames {
             aliases: crate::tag_aliases::names(layers)?,
             characters: crate::characters::tokens(layers)?,
             province_buildings: BTreeMap::new(),
+            sub_units: Some(crate::unit_leader::sub_units(layers)?),
+            template_columns: Some(template_columns(layers)),
         };
         // A stack without a building file declares no building.
         if layers.paths().any(buildings::is_building_file) {
@@ -207,10 +216,12 @@ impl KeyNames {
                 names.scripted_effects.clear();
                 names.aliases.clear();
                 names.characters.clear();
+                names.sub_units = None;
                 names.counts = CountTriggerNames::default();
                 names.province_buildings.clear();
             }
             Point::BeforeBuildings => {
+                names.sub_units = None;
                 names.counts.buildings.clear();
                 names.province_buildings.clear();
             }
@@ -242,6 +253,21 @@ impl KeyNames {
             scope => ScopeStep::Scope(scope),
         }
     }
+}
+
+/// LuaTable_ReadInt32 (14205B690), registered at 140906D10, 140907130 and
+/// 140909230 for 1403AF6B0's unsigned column comparisons. Missing/non-number
+/// leaves take the getter's zero; a missing table or failed script is refused.
+fn template_columns(layers: &ResolvedLayers) -> Result<[i32; 3], String> {
+    let read = || -> io::Result<[i32; 3]> {
+        let defines = crate::defines::read(layers)?;
+        Ok([
+            defines.int32("NMilitary", "MAX_DIVISION_BRIGADE_WIDTH")?,
+            defines.int32("NMilitary", "MAX_DIVISION_SUPPORT_WIDTH")?,
+            defines.int32("NMilitary", "MAX_REGIMENTAL_SUPPORT_WIDTH")?,
+        ])
+    };
+    read().map_err(|why| format!("division-template column defines: {why}"))
 }
 
 /// The country tags CCountryDatabase (14070F430) registers: every
@@ -382,6 +408,7 @@ mod tests {
                 key: &key,
                 value: &value,
                 fresh: true,
+                effect_scope: None,
                 operator: crate::parser::Operator::Equals,
                 current: &value,
             },
