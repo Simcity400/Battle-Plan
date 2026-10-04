@@ -1,67 +1,6 @@
 //! CPU RGBA8 decoding for division-template icon preparation.
-use installed_content::image::{Rgba8Image, dds};
+use installed_content::image::{Rgba8Image, dds, rgba::bc_block};
 use std::io;
-
-fn rgb565(value: u16) -> [u8; 4] {
-    let [r, g, b] = [
-        (value >> 11) as u8,
-        ((value >> 5) & 63) as u8,
-        (value & 31) as u8,
-    ];
-    [
-        (r << 3) | (r >> 2),
-        (g << 2) | (g >> 4),
-        (b << 3) | (b >> 2),
-        255,
-    ]
-}
-
-fn block_pixels(block: &[u8], format: dds::TextureFormat) -> [[u8; 4]; 16] {
-    use dds::TextureFormat::{Bc1, Bc2};
-    let offset = if format == Bc1 { 0 } else { 8 };
-    let first = u16::from_le_bytes(block[offset..offset + 2].try_into().unwrap());
-    let second = u16::from_le_bytes(block[offset + 2..offset + 4].try_into().unwrap());
-    let mut colors = [rgb565(first), rgb565(second), [0; 4], [0; 4]];
-    if format == Bc1 && first <= second {
-        colors[2] = std::array::from_fn(|c| {
-            ((u16::from(colors[0][c]) + u16::from(colors[1][c])) / 2) as u8
-        });
-    } else {
-        colors[2] = std::array::from_fn(|c| {
-            ((2 * u16::from(colors[0][c]) + u16::from(colors[1][c])) / 3) as u8
-        });
-        colors[3] = std::array::from_fn(|c| {
-            ((u16::from(colors[0][c]) + 2 * u16::from(colors[1][c])) / 3) as u8
-        });
-    }
-    let indices = u32::from_le_bytes(block[offset + 4..offset + 8].try_into().unwrap());
-    let mut pixels = std::array::from_fn(|i| colors[((indices >> (2 * i)) & 3) as usize]);
-    if format == Bc1 {
-        return pixels;
-    }
-    if format == Bc2 {
-        let alpha = u64::from_le_bytes(block[..8].try_into().unwrap());
-        for (i, pixel) in pixels.iter_mut().enumerate() {
-            pixel[3] = (((alpha >> (4 * i)) & 15) * 17) as u8;
-        }
-    } else {
-        let mut alpha = [block[0], block[1], 0, 0, 0, 0, 0, 255];
-        let steps = if alpha[0] > alpha[1] { 7 } else { 5 };
-        for i in 1..steps {
-            alpha[i + 1] = (((steps - i) as u16 * u16::from(alpha[0])
-                + i as u16 * u16::from(alpha[1]))
-                / steps as u16) as u8;
-        }
-        let indices = block[2..8]
-            .iter()
-            .enumerate()
-            .fold(0_u64, |v, (i, byte)| v | (u64::from(*byte) << (8 * i)));
-        for (i, pixel) in pixels.iter_mut().enumerate() {
-            pixel[3] = alpha[((indices >> (3 * i)) & 7) as usize];
-        }
-    }
-    pixels
-}
 
 /// Decodes a BC1/BC2/BC3 texture's base level to RGBA8 at its exact extent.
 /// Formats without a supported CPU expansion are refused by name.
@@ -95,7 +34,7 @@ pub(crate) fn rgba8(texture: &dds::Texture) -> io::Result<dds::Texture> {
     pixels.resize(length, 0);
     let columns = texture.width.div_ceil(4);
     for (index, block) in texture.base().data.chunks_exact(block_size).enumerate() {
-        for (i, pixel) in block_pixels(block, texture.format).into_iter().enumerate() {
+        for (i, pixel) in bc_block(block, texture.format).into_iter().enumerate() {
             let x = (index as u32 % columns) * 4 + i as u32 % 4;
             let y = (index as u32 / columns) * 4 + i as u32 / 4;
             if x < texture.width && y < texture.height {
@@ -121,11 +60,11 @@ mod tests {
         let mut block = [0; 16];
         block[10..12].copy_from_slice(&0xffff_u16.to_le_bytes());
         block[12..].fill(0xff);
-        assert_eq!(block_pixels(&block[8..], Bc1)[0], [0; 4]);
+        assert_eq!(bc_block(&block[8..], Bc1)[0], [0; 4]);
         block[..8].fill(0xff);
-        assert_eq!(block_pixels(&block, Bc2)[0], [170, 170, 170, 255]);
+        assert_eq!(bc_block(&block, Bc2)[0], [170, 170, 170, 255]);
         block[..8].fill(0);
-        assert_eq!(block_pixels(&block, Bc2)[0], [170, 170, 170, 0]);
+        assert_eq!(bc_block(&block, Bc2)[0], [170, 170, 170, 0]);
     }
 
     #[test]
@@ -133,7 +72,7 @@ mod tests {
         let mut block = [0; 16];
         block[1] = 255;
         block[2] = 6 | (7 << 3);
-        let pixels = block_pixels(&block, Bc3);
+        let pixels = bc_block(&block, Bc3);
         assert_eq!(pixels[0][3], 0);
         assert_eq!(pixels[1][3], 255);
     }
