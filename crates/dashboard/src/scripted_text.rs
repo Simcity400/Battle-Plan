@@ -556,7 +556,12 @@ impl<'a> ScriptedText<'a> {
                     return Ok(self.overlord(slot)?.map_or(object, Object::Country));
                 }
                 if named(segment, "FactionLeader") {
-                    return Ok(self.faction_leader(slot)?.map_or(object, Object::Country));
+                    // PromoteScope (141A7DC60) keeps the context when the
+                    // country has no faction.
+                    return Ok(self
+                        .scopes
+                        .faction_leader(slot)?
+                        .map_or(object, Object::Country));
                 }
             }
             Object::State(state) => {
@@ -1027,32 +1032,6 @@ impl<'a> ScriptedText<'a> {
     fn faction_member(&self, slot: u32) -> Result<Option<&'a FactionMemberRow>, String> {
         self.country_row::<tables::FactionMembers>(slot, |row| row.country)
             .map_err(|reason| format!("the faction of country slot {slot} is unknown: {reason}"))
-    }
-
-    /// The first member (ordinal 0, the faction's +0x58) of the country's
-    /// faction, `None` without a faction (141A7DC60 then leaves the context
-    /// unchanged).
-    fn faction_leader(&self, slot: u32) -> Result<Option<u32>, String> {
-        let Some(member) = self.faction_member(slot)? else {
-            return Ok(None);
-        };
-        let (members, gap) = rows::<tables::FactionMembers>(self.frame);
-        let leader = members
-            .iter()
-            .find(|row| row.faction == member.faction && row.ordinal == 0)
-            .ok_or_else(|| {
-                format!(
-                    "faction {} has no first member: FactionMembers {gap}",
-                    member.faction
-                )
-            })?;
-        let (_, links) = rows::<tables::CountryLinks>(self.frame);
-        self.scopes.slot(leader.country).map(Some).ok_or_else(|| {
-            format!(
-                "the leader link {} of faction {} resolves to no country: CountryLinks {links}",
-                leader.country, member.faction
-            )
-        })
     }
 
     fn state_country(&self, id: u32, owner: bool) -> Result<Object, String> {

@@ -10,7 +10,7 @@ use installed_content::scope::{Keyword, Names, Scope, ScopeKind};
 use installed_content::tag_aliases::{TagAlias, TagAliases};
 use replay::{
     frame::{DecodedFrame, TableView},
-    rows::{TableSchema, tables},
+    rows::{FactionMemberRow, TableSchema, tables},
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -103,6 +103,10 @@ pub struct RecordedScopes {
     capitals: BTreeMap<u32, i32>,
     /// Canonical slot to raw overlord link (`CountryAppearance.overlord`).
     overlords: BTreeMap<u32, i32>,
+    /// Faction membership with each member's order (`CFaction+0x58`).
+    faction_members: Vec<FactionMemberRow>,
+    faction_members_complete: bool,
+    links_complete: bool,
     /// Character script token, folded as the lexer folds a token (the
     /// lookup is by token ID), to its ids with their countries' slots
     /// (`Characters.name_token_id` through `LexicalTokens`).
@@ -170,6 +174,10 @@ impl RecordedScopes {
             .iter()
             .map(|link| (link.id, link.canonical_slot))
             .collect();
+        let links_complete = matches!(
+            &*frame.tables[tables::CountryLinks::ID.index()],
+            TableView::Complete(_)
+        );
         let countries_complete = matches!(
             &*frame.tables[tables::Countries::ID.index()],
             TableView::Complete(_)
@@ -207,6 +215,12 @@ impl RecordedScopes {
             .iter()
             .filter_map(|row| Some((*links.get(&row.country)?, row.overlord)))
             .collect();
+        let (faction_members, gap) = table::<tables::FactionMembers>(frame);
+        gaps.insert("FactionMembers", gap);
+        let faction_members_complete = matches!(
+            &*frame.tables[tables::FactionMembers::ID.index()],
+            TableView::Complete(_)
+        );
         let (counters, gap) = table::<tables::CountryCounterInputs>(frame);
         gaps.insert("CountryCounterInputs", gap);
         let owned = counters
@@ -249,6 +263,9 @@ impl RecordedScopes {
             states,
             capitals,
             overlords,
+            faction_members: faction_members.to_vec(),
+            faction_members_complete,
+            links_complete,
             characters: by_token,
             characters_complete,
             owned,
@@ -438,6 +455,53 @@ impl RecordedScopes {
     /// A raw country link's canonical slot.
     pub fn slot(&self, link: u32) -> Option<u32> {
         self.links.get(&link).copied()
+    }
+
+    /// The first country of this country's faction. `None` means it has no
+    /// faction; an incomplete membership or link read remains unknown.
+    /// The game takes the first `CFaction+0x58` member (14146BB30,
+    /// 1403D9390); FactionMembers records that order as `ordinal`.
+    pub fn faction_leader(&self, slot: u32) -> Result<Option<u32>, String> {
+        let Some(member) = self
+            .faction_members
+            .iter()
+            .find(|row| self.slot(row.country) == Some(slot))
+        else {
+            let gap = &self.gaps["FactionMembers"];
+            if !self.faction_members_complete {
+                return Err(format!(
+                    "the faction of country slot {slot} is unknown: FactionMembers {gap}"
+                ));
+            }
+            if !self.links_complete
+                && let Some(row) = self
+                    .faction_members
+                    .iter()
+                    .find(|row| self.slot(row.country).is_none())
+            {
+                return Err(format!(
+                    "the faction of country slot {slot} is unknown: a FactionMembers row's country link {} resolves to no country: CountryLinks {}",
+                    row.country, self.gaps["CountryLinks"]
+                ));
+            }
+            return Ok(None);
+        };
+        let leader = self
+            .faction_members
+            .iter()
+            .find(|row| row.faction == member.faction && row.ordinal == 0)
+            .ok_or_else(|| {
+                format!(
+                    "faction {} has no first member: FactionMembers {}",
+                    member.faction, self.gaps["FactionMembers"]
+                )
+            })?;
+        self.slot(leader.country).map(Some).ok_or_else(|| {
+            format!(
+                "the leader link {} of faction {} resolves to no country: CountryLinks {}",
+                leader.country, member.faction, self.gaps["CountryLinks"]
+            )
+        })
     }
 
     /// Parses `text` as the game's event target reader does
@@ -634,9 +698,23 @@ impl RecordedScopes {
                     self.describe(other)
                 ))),
             },
-            Keyword::FactionLeader => Err(Missing(format!(
-                "{name}: the faction leader is not recorded (FactionMembers holds membership and order only)"
-            ))),
+            // 14146BB30 clears the target's validity when no faction exists;
+            // 14138F160 then makes the context trigger false. A directly
+            // carried faction comes from scope:faction, which is refused by
+            // name before this keyword in the current viewer contexts.
+            Keyword::FactionLeader => match this()? {
+                Target::Country(slot) => match self.faction_leader(slot).map_err(Missing)? {
+                    Some(leader) => Ok(Target::Country(leader)),
+                    None => Err(Nothing(format!(
+                        "{name}: {} has no faction",
+                        self.describe(Target::Country(slot))
+                    ))),
+                },
+                other => Err(Nothing(format!(
+                    "{name}: {} has no faction",
+                    self.describe(other)
+                ))),
+            },
             Keyword::Occupied | Keyword::Character | Keyword::Operation | Keyword::Opponent => {
                 Err(Missing(format!(
                     "{name}: this scope is set by the running script and is not recorded"
@@ -1016,10 +1094,6 @@ pub(crate) mod tests {
             ),
             ("mio:GER_tank", "mio:GER_tank: mio scopes are not recorded"),
             (
-                "faction_leader",
-                "faction_leader: the faction leader is not recorded",
-            ),
-            (
                 "65",
                 "state 65 has no recorded States row: the complete table has no row for it",
             ),
@@ -1046,6 +1120,47 @@ pub(crate) mod tests {
             scopes.resolve_text("capital_scope", false, &Context::country(0)),
             Err(Unresolved::Missing("capital_scope: country GER has no recorded Politics row: the table is unavailable: not sampled".into()))
         );
+    }
+
+    /// The event-target selector (14146BB30) takes the faction's first
+    /// member; without a faction it clears the target's validity.
+    #[test]
+    fn faction_leader_scope_uses_the_first_member_and_clears_an_absent_target() {
+        use replay::rows::FactionMemberRow;
+
+        let mut frame = frame();
+        *frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(vec![
+                FactionMemberRow {
+                    country: 200,
+                    faction: 5,
+                    ordinal: 1,
+                },
+                FactionMemberRow {
+                    country: 100,
+                    faction: 5,
+                    ordinal: 0,
+                },
+            ]));
+        let scopes = RecordedScopes::read(&frame, Arc::default());
+        assert_eq!(scopes.faction_leader(1), Ok(Some(0)));
+        assert_eq!(
+            scopes.resolve_text("faction_leader", false, &Context::country(1)),
+            Ok(Target::Country(0))
+        );
+        assert_eq!(
+            scopes.resolve_text("faction_leader.PREV", false, &Context::country(1)),
+            Ok(Target::Country(1))
+        );
+
+        *frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(Vec::new()));
+        let scopes = RecordedScopes::read(&frame, Arc::default());
+        assert_eq!(scopes.faction_leader(1), Ok(None));
+        assert!(matches!(
+            scopes.resolve_text("faction_leader", false, &Context::country(1)),
+            Err(Unresolved::Nothing(_))
+        ));
     }
 
     /// A three-byte name that is no country tag but a tag alias
