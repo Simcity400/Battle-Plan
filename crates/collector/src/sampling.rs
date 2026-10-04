@@ -1,13 +1,13 @@
 //! The sole game-thread callback. Buffers are allocated before publication to its free queue.
 
 mod divisions;
-use divisions::{fail_divisions_capture, supply_division_census_sources};
 pub(crate) use divisions::{
     DivisionsCopyContext, DivisionsCopyReport, DivisionsJob, copy_divisions_core_refresh,
     copy_divisions_inputs_refresh, decode_divisions_payload,
 };
 #[cfg(test)]
 pub(crate) use divisions::{copy_divisions_refresh, divisions_test_kit};
+use divisions::{fail_divisions_capture, supply_division_census_sources};
 
 use crate::{
     acquisition_factions, acquisition_jobs as acquisition, acquisition_states, acquisition_wars,

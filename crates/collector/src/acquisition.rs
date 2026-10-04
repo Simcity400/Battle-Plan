@@ -610,14 +610,16 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             } else if !queued
                 && !state.stop
                 && state.active < self.shared.thread_ids.len()
-                && *spin_until.get_or_insert_with(|| std::time::Instant::now() + JOIN_SPIN)
-                    > std::time::Instant::now()
+                && spin_until.is_none_or(|deadline| deadline > std::time::Instant::now())
             {
                 // A worker is running this ticket and another worker is idle,
                 // so a CPU is spare: spin on this ticket only, outside the
                 // lock, then recheck under the lock. Queued tickets, a busy
-                // pool and a spent budget park as before.
-                let deadline = spin_until.expect("spin deadline set");
+                // pool and a spent budget park as before. The first pass always
+                // spins: its budget starts here, so a preemption between
+                // setting and checking the deadline cannot skip the spin.
+                let deadline =
+                    *spin_until.get_or_insert_with(|| std::time::Instant::now() + JOIN_SPIN);
                 state.counters.spins = state.counters.spins.saturating_add(1);
                 drop(state);
                 let published = &self.shared.published[ticket.slot];

@@ -367,10 +367,7 @@ mod tests {
     #[test]
     fn callers_are_classified_semantically_and_unknown_is_preserved() {
         assert_eq!(land_cause(LAND_COMBAT_RETURN), Cause::LandCombat);
-        assert_eq!(
-            land_cause(NAVAL_TRANSPORT_RETURN),
-            Cause::NavalTransport
-        );
+        assert_eq!(land_cause(NAVAL_TRANSPORT_RETURN), Cause::NavalTransport);
         assert_eq!(land_cause(IMMEDIATE_RETURN), Cause::Immediate);
         assert_eq!(land_cause(LAND_COMBAT_RETURN + 1), Cause::Unknown);
         for (source, expected) in AIR_CAUSES {

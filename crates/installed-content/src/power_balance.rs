@@ -3,7 +3,9 @@
 //! Ranges append, with template ranges before side ranges (140A7F510).
 
 use crate::{
-    ResolvedLayers, gui::native::FormattedLocalization, ideas, modifiers,
+    ResolvedLayers,
+    gui::native::FormattedLocalization,
+    ideas, modifiers,
     parser::{
         self, Item,
         native::{self, Shape},

@@ -18,7 +18,7 @@ use super::{
     LoadContext, Product,
     equipment::{
         Domain, EQUIPMENT_DECIMALS, StockVariantName, Texts,
-        production::{self, CostTotal, Named, ScannedProduced, TagHistory},
+        production::{self, CostTotal, Entry, Named, ScannedProduced, TagHistory},
     },
     validate_tag,
 };
@@ -115,12 +115,15 @@ fn append(
     Ok(())
 }
 
+/// Delivered IC at each read that changed it.
+type CostSeries = Vec<(u32, CostTotal)>;
+
 /// Groups sparse entry changes; reads with no delivery still carry exact zero.
 fn histories(
     track: &TagHistory,
     refits: bool,
-) -> io::Result<(BTreeMap<u64, Vec<(u32, CostTotal)>>, Vec<(u32, CostTotal)>)> {
-    let mut events: BTreeMap<u32, Vec<((u64, bool), CostTotal)>> = BTreeMap::new();
+) -> io::Result<(BTreeMap<u64, CostSeries>, CostSeries)> {
+    let mut events: BTreeMap<u32, Vec<(Entry, CostTotal)>> = BTreeMap::new();
     let mut count = 0;
     for (entry, list) in &track.cost_changes {
         if !refits && entry.1 {
@@ -136,7 +139,7 @@ fn histories(
     }
     let mut current = BTreeMap::new();
     let mut variants: BTreeMap<u64, CostTotal> = BTreeMap::new();
-    let mut grouped: BTreeMap<u64, Vec<(u32, CostTotal)>> = BTreeMap::new();
+    let mut grouped: BTreeMap<u64, CostSeries> = BTreeMap::new();
     let mut totals = Vec::new();
     let mut sum = CostTotal::default();
     for (sample, changed) in events {

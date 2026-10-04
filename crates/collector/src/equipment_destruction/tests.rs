@@ -336,7 +336,10 @@ fn failed_prepare_observations_skip_growth_without_losing_the_branch() {
     assert_eq!(DESIGNS.load(Ordering::Acquire), initial_designs);
     assert!(!POISONED.load(Ordering::SeqCst));
     assert_eq!(HOURLY_PEAK_EVENTS.load(Ordering::Relaxed), 1);
-    assert_eq!(HOURLY_PEAK_CAPACITY.load(Ordering::Relaxed), initial_capacity);
+    assert_eq!(
+        HOURLY_PEAK_CAPACITY.load(Ordering::Relaxed),
+        initial_capacity
+    );
     let mut out = [Entry::default(); 1];
     assert_eq!(drain(&mut out).unwrap(), 1);
     assert_eq!(out[0], entry);

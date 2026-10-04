@@ -185,17 +185,15 @@ fn apply_cost(
     let Some(identity) = state.identity else {
         return Ok(());
     };
-    let reason = reason.or_else(|| {
-        if delta < 0 {
-            Some(ProductionSpendingUnknown::OutputInexact)
-        } else if delta == 0 {
-            None
-        } else {
-            match cost {
-                Some(raw) if raw >= 0 => None,
-                Some(_) => Some(ProductionSpendingUnknown::InvalidCost),
-                None => Some(ProductionSpendingUnknown::MissingCost),
-            }
+    let reason = reason.or(if delta < 0 {
+        Some(ProductionSpendingUnknown::OutputInexact)
+    } else if delta == 0 {
+        None
+    } else {
+        match cost {
+            Some(raw) if raw >= 0 => None,
+            Some(_) => Some(ProductionSpendingUnknown::InvalidCost),
+            None => Some(ProductionSpendingUnknown::MissingCost),
         }
     });
     if delta == 0 && reason.is_none() {

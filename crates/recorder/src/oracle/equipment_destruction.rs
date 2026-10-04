@@ -93,12 +93,13 @@ mod tests {
                 .keys()
                 .any(|reason| reason.contains("Saves serialize remaining pools"))
         );
-        *frame.tables[TableId::EquipmentDestruction.index()] = TableView::Complete(
-            TableRows::EquipmentDestruction(vec![EquipmentDestructionRow {
-                cause: EquipmentDestructionCause::Unknown,
-                ..row.clone()
-            }]),
-        );
+        *frame.tables[TableId::EquipmentDestruction.index()] =
+            TableView::Complete(TableRows::EquipmentDestruction(vec![
+                EquipmentDestructionRow {
+                    cause: EquipmentDestructionCause::Unknown,
+                    ..row.clone()
+                },
+            ]));
         compare(&frame, &mut Report::default()).unwrap();
         for bad in [
             EquipmentDestructionRow {
