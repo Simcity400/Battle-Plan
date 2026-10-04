@@ -1,0 +1,893 @@
+use super::*;
+use crate::{cpdx_array, memory::SliceMemory};
+
+fn put(bytes: &mut [u8], offset: usize, data: &[u8]) {
+    bytes[offset..offset + data.len()].copy_from_slice(data);
+}
+
+fn states_with_holes() -> Vec<u8> {
+    let mut bytes = vec![0_u8; 0x1000];
+    put(&mut bytes, cgame_state::STATES, &0x1300_u64.to_le_bytes());
+    put(
+        &mut bytes,
+        cgame_state::STATES + cpdx_array::CAPACITY,
+        &5_u32.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        cgame_state::STATES + cpdx_array::COUNT,
+        &4_u32.to_le_bytes(),
+    );
+    // Slot zero is reserved even if occupied; slot two is a null hole.
+    // Slot four is spare capacity and must not be read.
+    for (slot, pointer) in [(0, u64::MAX), (1, 0x1400), (3, 0x1600), (4, u64::MAX)] {
+        put(&mut bytes, 0x300 + slot * 8, &pointer.to_le_bytes());
+    }
+    for (offset, id, owner, controller) in [
+        (0x400, 1_u32, 0_u32, 0xffff_fffe_u32),
+        (0x600, 3_u32, 0x8000_0001_u32, 0_u32),
+    ] {
+        put(&mut bytes, offset, &(VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, offset + ID, &id.to_le_bytes());
+        put(&mut bytes, offset + OWNER, &owner.to_le_bytes());
+        put(&mut bytes, offset + CONTROLLER, &controller.to_le_bytes());
+    }
+    bytes
+}
+
+/// Sparse address space, because the movement defines live at module RVAs
+/// far above the census fixture.
+struct MapMemory(std::collections::BTreeMap<usize, u8>);
+impl Memory for MapMemory {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        for (index, byte) in destination.iter_mut().enumerate() {
+            match self.0.get(&(address + index)) {
+                Some(&value) => *byte = value,
+                None => return false,
+            }
+        }
+        true
+    }
+}
+impl MapMemory {
+    fn put(&mut self, address: usize, data: &[u8]) {
+        self.0
+            .extend(data.iter().enumerate().map(|(i, &b)| (address + i, b)));
+    }
+}
+
+/// An MSVC string at `at`: inline up to 15 bytes, else on the heap at
+/// `heap`, terminated either way.
+fn put_string(memory: &mut MapMemory, at: usize, heap: usize, text: &[u8]) {
+    use crate::msvc_string::{CAPACITY, INLINE_CAPACITY, LENGTH};
+    let mut header = [0_u8; 32];
+    if text.len() as u64 <= INLINE_CAPACITY {
+        header[..text.len()].copy_from_slice(text);
+        header[CAPACITY..CAPACITY + 8].copy_from_slice(&INLINE_CAPACITY.to_le_bytes());
+    } else {
+        header[..8].copy_from_slice(&(heap as u64).to_le_bytes());
+        header[CAPACITY..CAPACITY + 8].copy_from_slice(&(text.len() as u64).to_le_bytes());
+        memory.put(heap, text);
+        memory.put(heap + text.len(), &[0]);
+    }
+    header[LENGTH..LENGTH + 8].copy_from_slice(&(text.len() as u64).to_le_bytes());
+    memory.put(at, &header);
+}
+
+/// `count` states at slots 1..=count, each with the given two names.
+fn named_states(count: usize, names: &dyn Fn(usize) -> (Vec<u8>, Vec<u8>)) -> MapMemory {
+    let mut memory = MapMemory(std::collections::BTreeMap::new());
+    const SLOTS: usize = 0x10_0000;
+    memory.put(cgame_state::STATES, &(SLOTS as u64).to_le_bytes());
+    let slots = (count + 1) as u32;
+    memory.put(
+        cgame_state::STATES + cpdx_array::CAPACITY,
+        &slots.to_le_bytes(),
+    );
+    memory.put(
+        cgame_state::STATES + cpdx_array::COUNT,
+        &slots.to_le_bytes(),
+    );
+    memory.put(SLOTS, &0_u64.to_le_bytes());
+    for index in 1..=count {
+        let state = 0x20_0000 + index * 0x1000;
+        memory.put(SLOTS + index * 8, &(state as u64).to_le_bytes());
+        memory.put(state, &(VTABLE_RVA as u64).to_le_bytes());
+        memory.put(state + ID, &(index as u32).to_le_bytes());
+        memory.put(state + PRIMARY_DISPLAY_NAME, &[0; 0xd0]);
+        let (custom, owner) = names(index);
+        put_string(
+            &mut memory,
+            state + PRIMARY_DISPLAY_NAME,
+            state + 0x900,
+            &custom,
+        );
+        put_string(
+            &mut memory,
+            state + SECONDARY_DISPLAY_NAME,
+            state + 0xa00,
+            &owner,
+        );
+    }
+    memory
+}
+
+fn census_rows(count: usize) -> Vec<Row> {
+    (1..=count)
+        .map(|id| Row {
+            id: id as u32,
+            ..Row::default()
+        })
+        .collect()
+}
+
+/// Both display names copy exactly, inline and heap alike; an empty one is
+/// an empty span; a row that does not fit ends the prefix while every row
+/// counts toward the required size; a fault or an unreadable census
+/// denies the table.
+#[test]
+fn both_display_names_are_copied_exactly_with_off_thread_growth() {
+    let long = b"Sjoelland og Lolland-Falster".to_vec();
+    let memory = named_states(3, &|index| match index {
+        1 => (Vec::new(), b"Hovedstaden".to_vec()),
+        2 => (long.clone(), Vec::new()),
+        _ => (b"Nord".to_vec(), b"Nordjylland Amt".to_vec()),
+    });
+    let mut rows = census_rows(3);
+    let mut arena = vec![0_u8; 256];
+    let walk = read_names(&memory, 0, Outcome::Rows { len: 3 }, &mut rows, &mut arena);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    let text = |span: NameSpan| &arena[span.start..span.start + span.len];
+    assert_eq!(text(rows[0].custom_name), b"");
+    assert_eq!(text(rows[0].owner_name), b"Hovedstaden");
+    assert_eq!(text(rows[1].custom_name), long.as_slice());
+    assert_eq!(text(rows[1].owner_name), b"");
+    assert_eq!(text(rows[2].custom_name), b"Nord");
+    assert_eq!(text(rows[2].owner_name), b"Nordjylland Amt");
+    let total = 11 + long.len() + 4 + 15;
+    assert_eq!((walk.bytes_len, walk.required_bytes), (total, total));
+    // Too small an arena keeps the prefix that fits and asks for the rest.
+    let mut small = vec![0_u8; 20];
+    let mut rows = census_rows(3);
+    let walk = read_names(&memory, 0, Outcome::Rows { len: 3 }, &mut rows, &mut small);
+    assert_eq!(
+        walk.outcome,
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 2
+        }
+    );
+    assert_eq!(walk.required_bytes, total);
+    // A census already short of rows keeps its own omitted count.
+    let mut rows = census_rows(3);
+    let walk = read_names(
+        &memory,
+        0,
+        Outcome::Truncated {
+            len: 3,
+            unread_rows: 4,
+        },
+        &mut rows,
+        &mut arena,
+    );
+    assert_eq!(
+        walk.outcome,
+        Outcome::Truncated {
+            len: 3,
+            unread_rows: 4
+        }
+    );
+    let unavailable = Outcome::Unavailable { reason: "census" };
+    assert_eq!(
+        read_names(&memory, 0, unavailable, &mut census_rows(3), &mut arena).outcome,
+        unavailable
+    );
+    // A torn heap string denies the table rather than guessing.
+    let mut broken = named_states(1, &|_| (long.clone(), Vec::new()));
+    broken.0.remove(&(0x20_1000 + 0x900 + long.len()));
+    assert!(matches!(
+        read_names(
+            &broken,
+            0,
+            Outcome::Rows { len: 1 },
+            &mut census_rows(1),
+            &mut arena
+        )
+        .outcome,
+        Outcome::Unavailable { .. }
+    ));
+}
+
+/// The cost at twice the states 1,500 countries hold (3,000 states, each
+/// with two heap names): reads per state and wall time are reported.
+#[test]
+fn display_name_cost_at_three_thousand_states() {
+    const STATES: usize = 3_000;
+    let memory = named_states(STATES, &|index| {
+        (
+            format!("Renamed state number {index:05}").into_bytes(),
+            format!("Owner qualified name {index:05}").into_bytes(),
+        )
+    });
+    // Dense bytes, so the timing is the walk's and not the fixture's.
+    let end = memory.0.keys().next_back().map_or(0, |last| last + 1);
+    let mut dense = vec![0_u8; end];
+    for (&address, &byte) in &memory.0 {
+        dense[address] = byte;
+    }
+    let dense = SliceMemory {
+        base: 0,
+        bytes: &dense,
+    };
+    struct Counted<'a>(&'a SliceMemory<'a>, std::cell::Cell<usize>);
+    impl Memory for Counted<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.1.set(self.1.get() + 1);
+            self.0.copy(address, destination)
+        }
+    }
+    let counted = Counted(&dense, std::cell::Cell::new(0));
+    let mut rows = census_rows(STATES);
+    let mut arena = vec![0_u8; STATES * 64];
+    let started = std::time::Instant::now();
+    let walk = read_names(
+        &counted,
+        0,
+        Outcome::Rows { len: STATES },
+        &mut rows,
+        &mut arena,
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(walk.outcome, Outcome::Rows { len: STATES });
+    assert_eq!(walk.required_bytes, STATES * 52);
+    // The root, then per state: slot, one 0xD0 header read, and a
+    // terminator and payload read for each heap string.
+    assert_eq!(counted.1.get(), 1 + STATES * 6);
+    eprintln!(
+        "state display names: {STATES} states, {} bytes, {} reads, {elapsed:?}",
+        walk.bytes_len,
+        counted.1.get()
+    );
+}
+
+#[test]
+fn movement_infrastructure_is_read_per_state_over_the_census() {
+    use crate::{cbuilding_database, cbuilding_template};
+    let mut memory = MapMemory(std::collections::BTreeMap::new());
+    memory.put(cgame_state::STATES, &0x2000_u64.to_le_bytes());
+    memory.put(
+        cgame_state::STATES + cpdx_array::CAPACITY,
+        &2_u32.to_le_bytes(),
+    );
+    memory.put(
+        cgame_state::STATES + cpdx_array::COUNT,
+        &2_u32.to_le_bytes(),
+    );
+    memory.put(0x2000, &0_u64.to_le_bytes());
+    memory.put(0x2008, &0x3000_u64.to_le_bytes());
+    memory.put(0x3000, &(VTABLE_RVA as u64).to_le_bytes());
+    memory.put(0x3000 + ID, &1_u32.to_le_bytes());
+    memory.put(cbuilding_database::SINGLETON_RVA, &0x4000_u64.to_le_bytes());
+    memory.put(0x4000 + 0x3b0, &0x5000_u64.to_le_bytes());
+    memory.put(0x5000 + cbuilding_template::SCOPE, &5_i32.to_le_bytes());
+    // A disabled lookup keeps the healthy level at zero.
+    memory.put(0x5000 + cbuilding_template::LOOKUP_ENABLED_CANDIDATE, &[0]);
+    memory.put(0x0331_aac0, &(-10_000_i64).to_le_bytes());
+    let census = Outcome::Rows { len: 1 };
+    let mut rows = [Row {
+        id: 1,
+        ..Row::default()
+    }];
+    assert_eq!(
+        read_movement_infrastructure(&memory, 0, 0, census, &mut rows),
+        census
+    );
+    assert_eq!(rows[0].movement_infrastructure, -50_000);
+    // A later hourly pass acquires both changed globals and new faults.
+    memory.put(0x0331_aac0, &(-12_000_i64).to_le_bytes());
+    assert_eq!(
+        read_movement_infrastructure(&memory, 0, 0, census, &mut rows),
+        census
+    );
+    assert_eq!(rows[0].movement_infrastructure, -60_000);
+    memory.0.remove(&0x0331_aac0);
+    assert!(matches!(
+        read_movement_infrastructure(&memory, 0, 0, census, &mut rows),
+        Outcome::Unavailable { .. }
+    ));
+    memory.put(0x0331_aac0, &(-10_000_i64).to_le_bytes());
+
+    // An unreadable census, an absent slot and a broken state each deny the
+    // term rather than recording a plausible zero.
+    let unavailable = Outcome::Unavailable { reason: "census" };
+    assert_eq!(
+        read_movement_infrastructure(&memory, 0, 0, unavailable, &mut rows),
+        unavailable
+    );
+    let mut missing = [Row {
+        id: 7,
+        ..Row::default()
+    }];
+    assert!(matches!(
+        read_movement_infrastructure(&memory, 0, 0, census, &mut missing),
+        Outcome::Unavailable { .. }
+    ));
+    memory.put(0x3000, &0_u64.to_le_bytes());
+    assert!(matches!(
+        read_movement_infrastructure(&memory, 0, 0, census, &mut rows),
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn infrastructure_globals_keep_cold_faults_and_lazy_ordinal_acquisition() {
+    use crate::{cbuilding_database, cbuilding_status, cbuilding_template};
+    use std::cell::RefCell;
+    struct Traced<'a> {
+        memory: &'a MapMemory,
+        reads: RefCell<Vec<(usize, usize)>>,
+        fault: Option<usize>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let ordinal = self.reads.borrow().len();
+            self.reads.borrow_mut().push((address, output.len()));
+            self.fault != Some(ordinal) && self.memory.copy(address, output)
+        }
+    }
+    let mut memory = MapMemory(std::collections::BTreeMap::new());
+    let first = 0x3000;
+    let second = 0x6000;
+    let definition = 0x5000;
+    memory.put(first, &(VTABLE_RVA as u64).to_le_bytes());
+    memory.put(second, &(VTABLE_RVA as u64).to_le_bytes());
+    memory.put(cbuilding_database::SINGLETON_RVA, &0x4000_u64.to_le_bytes());
+    memory.put(0x4000 + 0x3b0, &(definition as u64).to_le_bytes());
+    memory.put(definition + cbuilding_template::SCOPE, &5_i32.to_le_bytes());
+    memory.put(
+        definition + cbuilding_template::LOOKUP_ENABLED_CANDIDATE,
+        &[1],
+    );
+    memory.put(
+        definition + cbuilding_template::DATABASE_ORDINAL,
+        &0_u32.to_le_bytes(),
+    );
+    memory.put(
+        first + BUILDING_STATUS + cbuilding_status::BUILDING_INDEX_COUNT,
+        &0_i32.to_le_bytes(),
+    );
+    let indices = second + BUILDING_STATUS + cbuilding_status::BUILDING_INDICES;
+    memory.put(indices, &0x7000_u64.to_le_bytes());
+    memory.put(indices + 8, &1_u32.to_le_bytes());
+    memory.put(indices + 12, &1_u32.to_le_bytes());
+    memory.put(0x7000, &cbuilding_status::NO_BUILDING_INDEX.to_le_bytes());
+    memory.put(0x0331_aac0, &(-10_000_i64).to_le_bytes());
+    let cold = [
+        (first, 8),
+        (cbuilding_database::SINGLETON_RVA, 8),
+        (0x4000 + 0x3b0, 8),
+        (definition + cbuilding_template::SCOPE, 4),
+        (definition + cbuilding_template::LOOKUP_ENABLED_CANDIDATE, 1),
+        (
+            first + BUILDING_STATUS + cbuilding_status::BUILDING_INDEX_COUNT,
+            4,
+        ),
+        (0x0331_aac0, 8),
+    ];
+    for fault in 0..cold.len() {
+        let traced = Traced {
+            memory: &memory,
+            reads: RefCell::new(Vec::new()),
+            fault: Some(fault),
+        };
+        let mut shared = None;
+        assert!(movement_infrastructure_shared(&traced, 0, first, &mut shared).is_err());
+        assert!(shared.is_none());
+        assert_eq!(*traced.reads.borrow(), cold[..=fault]);
+    }
+    let traced = Traced {
+        memory: &memory,
+        reads: RefCell::new(Vec::new()),
+        fault: None,
+    };
+    let mut shared = None;
+    assert_eq!(
+        movement_infrastructure_shared(&traced, 0, first, &mut shared),
+        Ok(-50_000)
+    );
+    assert_eq!(*traced.reads.borrow(), cold);
+    assert_eq!(shared.as_ref().unwrap().ordinal, None);
+    traced.reads.borrow_mut().clear();
+    assert_eq!(
+        movement_infrastructure_shared(&traced, 0, second, &mut shared),
+        Ok(-50_000)
+    );
+    assert_eq!(
+        *traced.reads.borrow(),
+        [
+            (second, 8),
+            (indices + 12, 4),
+            (indices, 16),
+            (definition + cbuilding_template::DATABASE_ORDINAL, 4),
+            (0x7000, 4),
+        ]
+    );
+    traced.reads.borrow_mut().clear();
+    assert_eq!(
+        movement_infrastructure_shared(&traced, 0, second, &mut shared),
+        Ok(-50_000)
+    );
+    assert_eq!(
+        *traced.reads.borrow(),
+        [(second, 8), (indices + 12, 4), (indices, 16), (0x7000, 4)]
+    );
+}
+
+#[test]
+fn state_slots_and_native_country_tags_are_preserved() {
+    let bytes = states_with_holes();
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut rows = [Row::default(); 5];
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(
+        &rows[..2],
+        &[
+            Row {
+                id: 1,
+                owner: 0,
+                controller: 0xffff_fffe,
+                ..Row::default()
+            },
+            Row {
+                id: 3,
+                owner: 0x8000_0001,
+                controller: 0,
+                ..Row::default()
+            },
+        ]
+    );
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows[..1]),
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 1,
+        }
+    );
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut []),
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 2,
+        }
+    );
+}
+
+#[test]
+fn country_tag_scatter_keeps_raw_words_and_ordered_failure_prefixes() {
+    use std::cell::{Cell, RefCell};
+    struct Observed {
+        calls: Cell<usize>,
+        reads: RefCell<Vec<(usize, usize)>>,
+        fault: Option<usize>,
+    }
+    impl Observed {
+        fn new(fault: Option<usize>) -> Self {
+            Self {
+                calls: Cell::new(0),
+                reads: RefCell::default(),
+                fault,
+            }
+        }
+        fn field(&self, address: usize, output: &mut [u8]) -> bool {
+            let ordinal = self.reads.borrow().len();
+            self.reads.borrow_mut().push((address, output.len()));
+            if self.fault == Some(ordinal) {
+                output[0] = 0xff;
+                return false;
+            }
+            output.copy_from_slice(
+                &(if ordinal == 0 {
+                    0x8000_0001_u32
+                } else {
+                    0xffff_fffe_u32
+                })
+                .to_le_bytes(),
+            );
+            true
+        }
+    }
+    impl Memory for Observed {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.calls.set(self.calls.get() + 1);
+            self.field(address, output)
+        }
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            output: &mut [&mut [u8]; N],
+        ) -> usize {
+            struct Fields<'a>(&'a Observed);
+            impl Memory for Fields<'_> {
+                fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                    self.0.field(address, output)
+                }
+            }
+            self.calls.set(self.calls.get() + 1);
+            Fields(self).copy_scattered(addresses, output)
+        }
+    }
+    let serial = |memory: &Observed, pointer: usize| -> Result<[u32; 2], &'static str> {
+        let at = |offset| pointer.checked_add(offset).ok_or("state address overflow");
+        let owner = read::<u32>(memory, at(OWNER)?).ok_or("state owner unreadable")?;
+        let controller =
+            read::<u32>(memory, at(CONTROLLER)?).ok_or("state controller unreadable")?;
+        Ok([owner, controller])
+    };
+    for pointer in [
+        0x1400,
+        usize::MAX - CONTROLLER,
+        usize::MAX - CONTROLLER + 1,
+        usize::MAX - OWNER + 1,
+    ] {
+        for fault in [None, Some(0), Some(1)] {
+            let actual = Observed::new(fault);
+            let expected = Observed::new(fault);
+            let result = read_country_tags(&actual, pointer);
+            assert_eq!(result, serial(&expected, pointer));
+            assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
+            if pointer.checked_add(CONTROLLER).is_none() {
+                assert_eq!(actual.calls.get(), expected.calls.get());
+            } else {
+                assert_eq!(actual.calls.get(), 1);
+            }
+            if pointer == 0x1400 && fault.is_none() {
+                assert_eq!(result, Ok([0x8000_0001, 0xffff_fffe]));
+                assert_eq!(
+                    *actual.reads.borrow(),
+                    [(pointer + OWNER, 4), (pointer + CONTROLLER, 4)]
+                );
+                assert_eq!(expected.calls.get(), 2);
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_state_rows_never_publish_a_successful_prefix() {
+    for (offset, replacement, reason) in [
+        (0x600, 0_u32, "state vtable mismatch"),
+        (0x600 + ID, 1_u32, "state id differs from slot"),
+        (0x600 + ID, 0_u32, "state id differs from slot"),
+    ] {
+        let mut bytes = states_with_holes();
+        put(&mut bytes, offset, &replacement.to_le_bytes());
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut rows = [Row::default(); 5];
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut rows),
+            Outcome::Unavailable { reason }
+        );
+    }
+    struct Fault<'a> {
+        memory: SliceMemory<'a>,
+        address: usize,
+    }
+    impl Memory for Fault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address <= self.address && self.address < address.saturating_add(output.len()) {
+                return false;
+            }
+            self.memory.copy(address, output)
+        }
+    }
+    for (offset, reason) in [
+        (ID, "state id unreadable"),
+        (OWNER, "state owner unreadable"),
+        (CONTROLLER, "state controller unreadable"),
+        (MANPOWER_AVAILABLE, "state manpower available unreadable"),
+    ] {
+        let bytes = states_with_holes();
+        let memory = Fault {
+            memory: SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            },
+            address: 0x1600 + offset,
+        };
+        let mut rows = [Row::default(); 5];
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut rows),
+            Outcome::Unavailable { reason }
+        );
+    }
+    let mut bytes = states_with_holes();
+    put(&mut bytes, cgame_state::STATES, &0x1fe8_u64.to_le_bytes());
+    put(&mut bytes, 0xff0, &0x1400_u64.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut rows = [Row::default(); 5];
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Unavailable {
+            reason: "table pointer unreadable",
+        }
+    );
+}
+
+#[test]
+fn invalid_or_empty_state_tables_are_unavailable() {
+    for (capacity, count, reason) in [
+        (4_u32, 5_u32, "state array unreadable or invalid"),
+        (u32::MAX, 4, "state array unreadable or invalid"),
+        (4, u32::MAX, "state array unreadable or invalid"),
+        (0, 0, "state table has no state slots"),
+        (1, 1, "state table has no state slots"),
+    ] {
+        let mut bytes = states_with_holes();
+        put(
+            &mut bytes,
+            cgame_state::STATES + cpdx_array::CAPACITY,
+            &capacity.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            cgame_state::STATES + cpdx_array::COUNT,
+            &count.to_le_bytes(),
+        );
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut rows = [Row::default(); 5];
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut rows),
+            Outcome::Unavailable { reason }
+        );
+    }
+    let mut bytes = states_with_holes();
+    bytes[0x308..0x320].fill(0);
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut []),
+        Outcome::Unavailable {
+            reason: "state table has no readable states",
+        }
+    );
+}
+
+#[test]
+fn shared_state_sources_preserve_sparse_identity_and_native_flag_bytes() {
+    let mut bytes = states_with_holes();
+    bytes.resize(0x1000, 0);
+    bytes[0x400 + DEMILITARIZED] = 2;
+    bytes[0x600 + DEMILITARIZED] = 255;
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut rows = [Row::default(); 2];
+    let mut sources = Vec::new();
+    let parent = walk_with(&memory, 0, 0x1000, &mut rows, |source| sources.push(source));
+    assert_eq!(
+        sources,
+        [
+            Source {
+                pointer: 0x1400,
+                id: 1
+            },
+            Source {
+                pointer: 0x1600,
+                id: 3
+            }
+        ]
+    );
+    let mut flags = [FlagRow::default(); 2];
+    assert_eq!(
+        read_flags(&memory, 0, 0x1000, &sources, parent, &mut flags),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(
+        flags,
+        [
+            FlagRow {
+                state: 1,
+                demilitarized: 2
+            },
+            FlagRow {
+                state: 3,
+                demilitarized: 255
+            }
+        ]
+    );
+    assert_eq!(
+        read_flags(&memory, 0, 0x1000, &sources, parent, &mut flags[..1]),
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 1
+        }
+    );
+    sources.clear();
+    let parent = walk_with(&memory, 0, 0x1000, &mut rows[..1], |source| {
+        sources.push(source)
+    });
+    assert_eq!(sources.len(), 1);
+    assert_eq!(
+        read_flags(&memory, 0, 0x1000, &sources, parent, &mut flags),
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 1
+        }
+    );
+    assert_eq!(
+        read_flags(&memory, 0, 0x1000, &sources, parent, &mut []),
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 2
+        }
+    );
+}
+
+#[test]
+fn flags_reject_stale_sources_faults_and_incomplete_censuses() {
+    let mut bytes = states_with_holes();
+    bytes.resize(0x1000, 0);
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut flags = [FlagRow::default(); 2];
+    let valid = [
+        Source {
+            pointer: 0x1400,
+            id: 1,
+        },
+        Source {
+            pointer: 0x1600,
+            id: 3,
+        },
+    ];
+    for sources in [
+        [valid[0], valid[0]],
+        [valid[0], Source { pointer: 0, id: 3 }],
+        [
+            valid[0],
+            Source {
+                pointer: 0x1600,
+                id: 2,
+            },
+        ],
+        [
+            valid[0],
+            Source {
+                pointer: 0x1600,
+                id: 4,
+            },
+        ],
+    ] {
+        assert!(matches!(
+            read_flags(
+                &memory,
+                0,
+                0x1000,
+                &sources,
+                Outcome::Rows { len: 2 },
+                &mut flags
+            ),
+            Outcome::Unavailable { .. }
+        ));
+    }
+    for parent in [
+        Outcome::Rows { len: 0 },
+        Outcome::Rows { len: 3 },
+        Outcome::Truncated {
+            len: 2,
+            unread_rows: 0,
+        },
+        Outcome::Unavailable {
+            reason: "census fault",
+        },
+    ] {
+        assert!(matches!(
+            read_flags(&memory, 0, 0x1000, &valid, parent, &mut flags),
+            Outcome::Unavailable { .. }
+        ));
+    }
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes[..0x600 + DEMILITARIZED],
+    };
+    assert_eq!(
+        read_flags(
+            &memory,
+            0,
+            0x1000,
+            &valid,
+            Outcome::Rows { len: 2 },
+            &mut flags
+        ),
+        Outcome::Unavailable {
+            reason: "state demilitarized byte unreadable"
+        }
+    );
+}
+
+#[test]
+fn state_census_and_flags_keep_primary_read_order_without_terminal_rereads() {
+    use std::cell::RefCell;
+    struct Traced<'a> {
+        memory: SliceMemory<'a>,
+        reads: RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, destination.len()));
+            self.memory.copy(address, destination)
+        }
+    }
+    let mut bytes = states_with_holes();
+    bytes.resize(0x1000, 0);
+    bytes[0x400 + DEMILITARIZED] = 2;
+    bytes[0x600 + DEMILITARIZED] = 255;
+    let memory = Traced {
+        memory: SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        },
+        reads: RefCell::new(Vec::new()),
+    };
+    let mut sources = Vec::new();
+    let parent = walk_with(&memory, 0, 0x1000, &mut [Row::default(); 2], |source| {
+        sources.push(source)
+    });
+    assert_eq!(parent, Outcome::Rows { len: 2 });
+    let mut expected = vec![
+        (0x1000 + cgame_state::STATES, 16),
+        (0x1308, 8),
+        (0x1310, 8),
+        (0x1318, 8),
+    ];
+    for pointer in [0x1400, 0x1600] {
+        expected.extend([
+            (pointer, 8),
+            (pointer + ID, 4),
+            (pointer + OWNER, 4),
+            (pointer + CONTROLLER, 4),
+            (pointer + MANPOWER_AVAILABLE, 4),
+        ]);
+    }
+    assert_eq!(*memory.reads.borrow(), expected);
+    memory.reads.borrow_mut().clear();
+    let mut flags = [FlagRow::default(); 2];
+    assert_eq!(
+        read_flags(&memory, 0, 0x1000, &sources, parent, &mut flags),
+        parent
+    );
+    assert_eq!(
+        flags.map(|row| (row.state, row.demilitarized)),
+        [(1, 2), (3, 255)]
+    );
+    let mut expected = vec![(0x1000 + cgame_state::STATES, 16)];
+    for source in &sources {
+        expected.extend([
+            (0x1300 + source.id as usize * 8, 8),
+            (source.pointer, 8),
+            (source.pointer + ID, 4),
+            (source.pointer + DEMILITARIZED, 1),
+        ]);
+    }
+    assert_eq!(*memory.reads.borrow(), expected);
+}
