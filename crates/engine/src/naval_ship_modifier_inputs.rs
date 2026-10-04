@@ -37,9 +37,15 @@ pub struct SourceRow {
     pub selector: u32,
     pub reference: u64,
     pub weights: [i64; 2],
+    /// 140C2B000 adds terrain adjuster +0x20 to the speed modifier.
+    /// Populated only for scopes 20 and 25.
+    pub movement: i64,
     /// Doctrine country modifiers selected by141956CB0/141956D40.
     pub dynamic_keys: [u32; 2],
     pub terms: [usize; 2],
+    /// Transient identity for sharing owned term spans within this callback.
+    /// Never projected to replay. 140C29020 reads source +0x10.
+    pub accumulator: usize,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +158,28 @@ impl<M: Memory> Capture<'_, '_, M> {
         self.buffers.required[0] = self.buffers.required[0]
             .checked_add(1)
             .ok_or("naval weapon source demand overflow")?;
+        // 140C29020 passes the accumulator at source+0x10. Adjacent ships
+        // often reach the same country and task-force accumulators. Share a
+        // recent owned term span within this hourly callback, while retaining
+        // every source occurrence in native order. Bound the search because
+        // each ship's own accumulator is unique.
+        if let Some(accumulator) = accumulator {
+            if let Some(previous) = self.buffers.sources.get(..source).and_then(|rows| {
+                rows.iter()
+                    .rev()
+                    .take(64)
+                    .find(|previous| previous.accumulator == accumulator)
+            }) {
+                row.accumulator = accumulator;
+                row.terms = previous.terms;
+                self.buffers.sources.truncate(source);
+                self.buffers.sources.push(row);
+                self.buffers.lengths[0] = source
+                    .checked_add(1)
+                    .ok_or("naval weapon source length overflow")?;
+                return Ok(());
+            }
+        }
         let data = accumulator
             .map(|p| array(self.memory, p, 0, 16))
             .transpose()?;
@@ -167,6 +195,7 @@ impl<M: Memory> Capture<'_, '_, M> {
             .checked_add(1)
             .ok_or("naval weapon source length overflow")?;
         row.terms = [first, count];
+        row.accumulator = accumulator.unwrap_or(0);
         self.buffers.terms.truncate(first);
         if let Some(entries) = data {
             use crate::modifier_definition as md;
@@ -594,6 +623,7 @@ pub(crate) fn read(
                     field(memory, terrain_adjuster, 0x10)?,
                     field(memory, terrain_adjuster, 0x18)?,
                 ],
+                movement: field(memory, terrain_adjuster, 0x20)?,
                 ..Default::default()
             },
             None,
@@ -617,6 +647,7 @@ pub(crate) fn read(
                             field(memory, adjuster, 0x10)?,
                             field(memory, adjuster, 0x18)?,
                         ],
+                        movement: field(memory, adjuster, 0x20)?,
                         ..Default::default()
                     },
                     None,

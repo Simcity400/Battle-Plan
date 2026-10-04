@@ -17,10 +17,12 @@ mod keyed;
 pub(crate) mod land_details;
 pub(crate) mod modifier_text;
 mod naval_air_groups;
+mod naval_air_tooltips;
 mod naval_anti_air;
 pub(crate) mod naval_check;
 mod naval_details;
 mod naval_environment;
+mod naval_escape;
 mod naval_positioning;
 mod naval_screening;
 mod naval_ship_tooltips;
@@ -161,6 +163,8 @@ fn keep_list_order(next: &mut [(u64, Values)], shown: &[(u64, Values)]) {
 
 #[derive(Default)]
 pub struct Window {
+    /// Viewer playback state for the in-game idler PAUSED virtual (140DC3DB0).
+    playing: bool,
     pub selection: Option<Selection>,
     pub offset: [f32; 2],
     pub dragging: bool,
@@ -185,6 +189,7 @@ struct Scope {
     selection: Selection,
     perspective: crate::map::perspective::Choice,
     viewer: u32,
+    playing: bool,
 }
 
 impl Scope {
@@ -197,6 +202,7 @@ impl Scope {
             && self.selection == now.selection
             && self.perspective == now.perspective
             && self.viewer == now.viewer
+            && self.playing == now.playing
             && self.hour <= now.hour
     }
 }
@@ -316,6 +322,11 @@ fn hold(
     Some((contents, note))
 }
 impl Window {
+    /// The native speed-above-3 night picture asks whether the UI is paused
+    /// (140B387D0 -> CInGameIdler slot +0x2E8, 140DC3DB0).
+    pub(crate) fn set_playing(&mut self, playing: bool) {
+        self.playing = playing;
+    }
     /// What the open window cannot show exactly: its bindings' gaps and the
     /// combat artwork's. Built on request, never per frame; empty when no
     /// window is open.
@@ -469,6 +480,7 @@ impl Window {
                 cached.covered,
             ) == (branch, hour, selection, covered)
                 && cached.at.perspective == *perspective
+                && cached.at.playing == self.playing
         }) {
             let vision = document.vision(perspective)?;
             let now = Scope {
@@ -477,6 +489,7 @@ impl Window {
                 selection,
                 perspective: perspective.clone(),
                 viewer: vision.ours(),
+                playing: self.playing,
             };
             let flags = combat_flags(document.frame()?, vision.ours(), engaged)?;
             let cached = match update(selection, &flags) {
@@ -505,7 +518,8 @@ impl Window {
                         .cached
                         .as_ref()
                         .map_or(1, |cached| cached.generation.wrapping_add(1));
-                    let mut bindings = Bindings::read(document, selection, &vision, &flags)?;
+                    let mut bindings =
+                        Bindings::read(document, selection, &vision, &flags, !self.playing)?;
                     if let Some((read, previous)) = self
                         .cached
                         .as_ref()
@@ -746,6 +760,7 @@ mod tests {
             selection: super::Selection::Naval(2),
             perspective: crate::map::perspective::Choice::default(),
             viewer,
+            playing: false,
         }
     }
 

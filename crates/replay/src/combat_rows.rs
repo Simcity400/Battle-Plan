@@ -438,6 +438,10 @@ value_struct!(NavalCombatAirWingKill {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatPlane {
+    /// CSubUnitDefinition+0x58C indices for the +0x40 wing references,
+    /// aligned by occurrence. MAX means the historical wing no longer resolves.
+    /// 141963460/140F4A4B0 derive the hover's localized short-name list.
+    pub wing_types: Vec<u32>,
     pub source: u8,
     /// Side forward-group ordinal, or MAX for a paired-only group.
     pub group_index: u32,
@@ -461,10 +465,14 @@ pub struct NavalCombatPlane {
     pub kills: Vec<NavalCombatAirWingKill>,
     pub efficiency: NavalCombatAirEfficiency,
 }
-value_struct!(NavalCombatPlane { source: u8, group_index: u32, index: u32, carrier_slot: i32, carrier_member_present: u8, carrier_state: u32, air_base: u64, wings: [Vec<u64>;2], initial_planes: i32, current_planes: i32, casualties: i32, time_duration: i32, country: u32, date: i32, flags: [u8; 2], variant: u64, naval_hits: Vec<NavalCombatHit>, air_hits: [Vec<NavalCombatAirHit>;2], kills: Vec<NavalCombatAirWingKill>, efficiency: NavalCombatAirEfficiency });
+value_struct!(NavalCombatPlane { wing_types: Vec<u32>, source: u8, group_index: u32, index: u32, carrier_slot: i32, carrier_member_present: u8, carrier_state: u32, air_base: u64, wings: [Vec<u64>;2], initial_planes: i32, current_planes: i32, casualties: i32, time_duration: i32, country: u32, date: i32, flags: [u8; 2], variant: u64, naval_hits: Vec<NavalCombatHit>, air_hits: [Vec<NavalCombatAirHit>;2], kills: Vec<NavalCombatAirWingKill>, efficiency: NavalCombatAirEfficiency });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatSideDetails {
+    pub damage_history: [[i64; 6]; 6],
+    pub original_health: i64,
+    pub total_damage: i64,
+    pub damage_by_type: Vec<NavalDamageSource>,
     pub commander: u64,
     pub engaged: u8,
     pub retreating: u8,
@@ -481,7 +489,18 @@ pub struct NavalCombatSideDetails {
     /// Engaged-flag derivation compares these handles hour over hour.
     pub units: Vec<u64>,
 }
-value_struct!(NavalCombatSideDetails { commander: u64, engaged: u8, retreating: u8, capital_screening: i64, carrier_screening: i64, positioning: i64, anti_air: i64, planes: Vec<NavalCombatPlane>, summary: NavalCombatSummaryInputs, commander_inputs: Option<NavalCommanderInputs>, units: Vec<u64> });
+value_struct!(NavalCombatSideDetails { damage_history: [[i64; 6]; 6], original_health: i64, total_damage: i64, damage_by_type: Vec<NavalDamageSource>, commander: u64, engaged: u8, retreating: u8, capital_screening: i64, carrier_screening: i64, positioning: i64, anti_air: i64, planes: Vec<NavalCombatPlane>, summary: NavalCombatSummaryInputs, commander_inputs: Option<NavalCommanderInputs>, units: Vec<u64> });
+
+/// One source-token total in the native +0x288 map's iteration order.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NavalDamageSource {
+    pub token: u32,
+    pub damage: i64,
+}
+value_struct!(NavalDamageSource {
+    token: u32,
+    damage: i64
+});
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatDamage {
@@ -551,10 +570,11 @@ pub struct NavalShipModifierSource {
     pub selector: u32,
     pub reference: u64,
     pub weights: [i64; 2],
+    pub movement: i64,
     pub dynamic_keys: [u32; 2],
     pub terms: Vec<NavalShipModifierTerm>,
 }
-value_struct!(NavalShipModifierSource { scope: u8, index: u32, selector: u32, reference: u64, weights: [i64; 2], dynamic_keys: [u32; 2], terms: Vec<NavalShipModifierTerm> });
+value_struct!(NavalShipModifierSource { scope: u8, index: u32, selector: u32, reference: u64, weights: [i64; 2], movement: i64, dynamic_keys: [u32; 2], terms: Vec<NavalShipModifierTerm> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalShipWeaponContext {
@@ -735,11 +755,17 @@ pub struct NavalCombatDetailsRow {
     pub duration: i32,
     pub progress: i64,
     pub sides: [NavalCombatSideDetails; 2],
+    /// SWeatherPerRegion+0x30 active i16 values, little endian, in this
+    /// live combat's strategic template order (140F0CF40, 141D8A3B0).
+    pub custom_sea: Option<Vec<u8>>,
+    /// 0 complete; 1 guarded custom-grid read failed. No diagnostic text is
+    /// serialized per combat (140F0CF40, 141D8A3B0).
+    pub custom_sea_error: u8,
 }
 typed_codec!(NavalCombatDetailsRow, 64, |row| row.combat as u128,
  |key| Self { combat: key as u64, ..Default::default() },
- |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, day: read_value(Kind::I32, input)?, duration: read_value(Kind::I32, input)?, progress: read_value(Kind::I64, input)?, sides: read_value(Kind::Opaque, input)? }),
- { 0 => (province): U32, 1 => (day): I32, 2 => (duration): I32, 3 => (progress): I64, 4 => (sides): Opaque }, |row| { let _ = row; Ok(()) });
+ |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, day: read_value(Kind::I32, input)?, duration: read_value(Kind::I32, input)?, progress: read_value(Kind::I64, input)?, sides: read_value(Kind::Opaque, input)?, custom_sea: read_value(Kind::Opaque, input)?, custom_sea_error: read_value(Kind::U8, input)? }),
+ { 0 => (province): U32, 1 => (day): I32, 2 => (duration): I32, 3 => (progress): I64, 4 => (sides): Opaque, 5 => (custom_sea): Opaque, 6 => (custom_sea_error): U8 }, |row| { if row.custom_sea.as_ref().is_some_and(|sea| sea.len() % 2 != 0) { return Err(invalid("odd custom sea i16 bytes")); } if row.custom_sea_error > 1 || (row.custom_sea.is_some() == (row.custom_sea_error != 0)) { return Err(invalid("custom sea capture status conflicts with values")); } Ok(()) });
 
 /// Ordered wing-handle occurrences in the native dense CAirBase+0x48 walk for
 /// a base referenced by naval combat. Repeated handles are meaningful. Every
@@ -782,6 +808,7 @@ pub struct NavalCombatShipRow {
     pub evacuation_state: i32,
     pub detection_state: i32,
     pub escape_progress: i64,
+    pub escape_speed_base: i64,
     pub last_target: NavalCombatLastTarget,
     pub received_damage: [i64; 6],
     pub live_ship: u8,
@@ -798,8 +825,8 @@ pub struct NavalCombatShipRow {
 }
 typed_codec!(NavalCombatShipRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.battle_slot as u128,
  |key| Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32, ..Default::default() },
- |key, input| Ok(Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32, ship: read_value(Kind::U64, input)?, owner: read_value(Kind::U32, input)?, state: read_value(Kind::U32, input)?, member_source: read_value(Kind::U8, input)?, group_index: read_value(Kind::U32, input)?, member_index: read_value(Kind::U32, input)?, convoy: read_value(Kind::U64, input)?, subunit_index: read_value(Kind::I32, input)?, formation_type: read_value(Kind::I32, input)?, build_cost_ic: read_value(Kind::I64, input)?, cached_strength_ratio: read_value(Kind::I64, input)?, pride: read_value(Kind::U8, input)?, is_convoy: read_value(Kind::U8, input)?, name: read_value(Kind::Bytes, input)?, type_name: read_value(Kind::Bytes, input)?, sprite: read_value(Kind::Bytes, input)?, sunk_by: read_value(Kind::Bytes, input)?, variant: read_value(Kind::U64, input)?, arrival_hours: read_value(Kind::I32, input)?, received_criticals: read_value(Kind::I32, input)?, evacuation_state: read_value(Kind::I32, input)?, detection_state: read_value(Kind::I32, input)?, escape_progress: read_value(Kind::I64, input)?, last_target: read_value(Kind::Opaque, input)?, received_damage: read_value(Kind::Opaque, input)?, live_ship: read_value(Kind::U8, input)?, live_convoy: read_value(Kind::U8, input)?, strength: read_value(Kind::I64, input)?, organisation: read_value(Kind::I64, input)?, base_organisation: read_value(Kind::I64, input)?, maximum_hit_points: read_value(Kind::I64, input)?, formation_flags: read_value(Kind::U64, input)?, weapon_context: read_value(Kind::Opaque, input)?, damage_entries: read_value(Kind::Opaque, input)?, air_hits: read_value(Kind::Opaque, input)?, naval_hits: read_value(Kind::Opaque, input)? }),
- { 0 => (ship): U64, 1 => (owner): U32, 2 => (state): U32, 3 => (member_source): U8, 4 => (group_index): U32, 5 => (member_index): U32, 6 => (convoy): U64, 7 => (subunit_index): I32, 8 => (formation_type): I32, 9 => (build_cost_ic): I64, 10 => (cached_strength_ratio): I64, 11 => (pride): U8, 12 => (is_convoy): U8, 13 => (name): Bytes, 14 => (type_name): Bytes, 15 => (sprite): Bytes, 16 => (sunk_by): Bytes, 17 => (variant): U64, 18 => (arrival_hours): I32, 19 => (received_criticals): I32, 20 => (evacuation_state): I32, 21 => (detection_state): I32, 22 => (escape_progress): I64, 23 => (last_target): Opaque, 24 => (received_damage): Opaque, 25 => (live_ship): U8, 26 => (live_convoy): U8, 27 => (strength): I64, 28 => (organisation): I64, 29 => (base_organisation): I64, 30 => (maximum_hit_points): I64, 31 => (formation_flags): U64, 32 => (weapon_context): Opaque, 33 => (damage_entries): Opaque, 34 => (air_hits): Opaque, 35 => (naval_hits): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
+ |key, input| Ok(Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32, ship: read_value(Kind::U64, input)?, owner: read_value(Kind::U32, input)?, state: read_value(Kind::U32, input)?, member_source: read_value(Kind::U8, input)?, group_index: read_value(Kind::U32, input)?, member_index: read_value(Kind::U32, input)?, convoy: read_value(Kind::U64, input)?, subunit_index: read_value(Kind::I32, input)?, formation_type: read_value(Kind::I32, input)?, build_cost_ic: read_value(Kind::I64, input)?, cached_strength_ratio: read_value(Kind::I64, input)?, pride: read_value(Kind::U8, input)?, is_convoy: read_value(Kind::U8, input)?, name: read_value(Kind::Bytes, input)?, type_name: read_value(Kind::Bytes, input)?, sprite: read_value(Kind::Bytes, input)?, sunk_by: read_value(Kind::Bytes, input)?, variant: read_value(Kind::U64, input)?, arrival_hours: read_value(Kind::I32, input)?, received_criticals: read_value(Kind::I32, input)?, evacuation_state: read_value(Kind::I32, input)?, detection_state: read_value(Kind::I32, input)?, escape_progress: read_value(Kind::I64, input)?, escape_speed_base: read_value(Kind::I64, input)?, last_target: read_value(Kind::Opaque, input)?, received_damage: read_value(Kind::Opaque, input)?, live_ship: read_value(Kind::U8, input)?, live_convoy: read_value(Kind::U8, input)?, strength: read_value(Kind::I64, input)?, organisation: read_value(Kind::I64, input)?, base_organisation: read_value(Kind::I64, input)?, maximum_hit_points: read_value(Kind::I64, input)?, formation_flags: read_value(Kind::U64, input)?, weapon_context: read_value(Kind::Opaque, input)?, damage_entries: read_value(Kind::Opaque, input)?, air_hits: read_value(Kind::Opaque, input)?, naval_hits: read_value(Kind::Opaque, input)? }),
+ { 0 => (ship): U64, 1 => (owner): U32, 2 => (state): U32, 3 => (member_source): U8, 4 => (group_index): U32, 5 => (member_index): U32, 6 => (convoy): U64, 7 => (subunit_index): I32, 8 => (formation_type): I32, 9 => (build_cost_ic): I64, 10 => (cached_strength_ratio): I64, 11 => (pride): U8, 12 => (is_convoy): U8, 13 => (name): Bytes, 14 => (type_name): Bytes, 15 => (sprite): Bytes, 16 => (sunk_by): Bytes, 17 => (variant): U64, 18 => (arrival_hours): I32, 19 => (received_criticals): I32, 20 => (evacuation_state): I32, 21 => (detection_state): I32, 22 => (escape_progress): I64, 23 => (escape_speed_base): I64, 24 => (last_target): Opaque, 25 => (received_damage): Opaque, 26 => (live_ship): U8, 27 => (live_convoy): U8, 28 => (strength): I64, 29 => (organisation): I64, 30 => (base_organisation): I64, 31 => (maximum_hit_points): I64, 32 => (formation_flags): U64, 33 => (weapon_context): Opaque, 34 => (damage_entries): Opaque, 35 => (air_hits): Opaque, 36 => (naval_hits): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatResultDetailsRow {
@@ -836,5 +863,6 @@ opaque_value!([i64; 3]);
 opaque_value!([i64; 4]);
 opaque_value!([i64; 5]);
 opaque_value!([i64; 6]);
+opaque_value!([[i64; 6]; 6]);
 opaque_value!([u32; 2]);
 opaque_value!([u32; 4]);

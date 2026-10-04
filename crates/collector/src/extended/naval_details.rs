@@ -7,8 +7,8 @@ use crate::{
 };
 use engine::naval_air_efficiency_inputs;
 use engine::{
-    Memory, cfex_air, cfex_damage_entry, cfex_member, cnaval_combat, naval_combat_air_hit,
-    naval_combat_air_base_wings, naval_combat_hit, naval_ship_modifier_inputs, walk::Outcome,
+    Memory, cfex_air, cfex_damage_entry, cfex_member, cnaval_combat, naval_combat_air_base_wings,
+    naval_combat_air_hit, naval_combat_hit, naval_ship_modifier_inputs, walk::Outcome,
 };
 use replay::{
     frame::TableView,
@@ -42,6 +42,10 @@ pub struct Capacities {
     dense_bases: usize,
     dense_wings: usize,
     side_units: usize,
+    custom_sea: usize,
+    damage_sources: usize,
+    wing_types: usize,
+    plane_wings: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -62,6 +66,10 @@ impl Default for Capacities {
             dense_bases: 128,
             dense_wings: 1024,
             side_units: 256,
+            custom_sea: 256,
+            damage_sources: 256,
+            wing_types: 1024,
+            plane_wings: 2048,
         }
     }
 }
@@ -86,6 +94,10 @@ pub struct Captured {
     base_handles: naval_combat_air_base_wings::UniqueHandles,
     /// Each side's task-force handles (`CCombatant+0x20`), grown after the hour.
     side_units: Arena<u64>,
+    custom_sea: Arena<i16>,
+    damage_sources: Arena<(u32, i64)>,
+    wing_types: Arena<u32>,
+    plane_wings: Arena<u64>,
     /// Side country tags; grown by the worker at admission, retained on recycle.
     summary_countries: Vec<u32>,
     summary_countries_len: usize,
@@ -110,6 +122,10 @@ impl Captured {
             dense_bases: 0,
             dense_wings: 0,
             side_units: 0,
+            custom_sea: 0,
+            damage_sources: 0,
+            wing_types: 0,
+            plane_wings: 0,
         })
     }
 
@@ -133,6 +149,10 @@ impl Captured {
             dense_wings: Arena::new(c.dense_wings),
             base_handles: naval_combat_air_base_wings::UniqueHandles::with_capacity(c.dense_bases),
             side_units: Arena::new(c.side_units),
+            custom_sea: Arena::new(c.custom_sea),
+            damage_sources: Arena::new(c.damage_sources),
+            wing_types: Arena::new(c.wing_types),
+            plane_wings: Arena::new(c.plane_wings),
             summary_countries: Vec::new(),
             summary_countries_len: 0,
         }
@@ -154,6 +174,10 @@ impl Captured {
         self.dense_wings.reset();
         self.base_handles.clear();
         self.side_units.reset();
+        self.custom_sea.reset();
+        self.damage_sources.reset();
+        self.wing_types.reset();
+        self.plane_wings.reset();
         self.summary_countries_len = 0;
         self.required_groups = 0;
     }
@@ -164,13 +188,6 @@ impl Captured {
             + self.air.allocated_bytes()
             + self.hits.allocated_bytes()
             + self.planes.allocated_bytes()
-            + self
-                .planes
-                .first
-                .iter()
-                .flat_map(|plane| &plane.wings)
-                .map(|wings| wings.capacity() * size_of::<u64>())
-                .sum::<usize>()
             + self.plane_air.allocated_bytes()
             + self.plane_hits.allocated_bytes()
             + self.plane_kills.allocated_bytes()
@@ -181,6 +198,10 @@ impl Captured {
             + self.dense_wings.allocated_bytes()
             + self.base_handles.allocated_bytes()
             + self.side_units.allocated_bytes()
+            + self.custom_sea.allocated_bytes()
+            + self.damage_sources.allocated_bytes()
+            + self.wing_types.allocated_bytes()
+            + self.plane_wings.allocated_bytes()
             + self.groups.capacity() * size_of::<usize>()
             + self.summary_countries.capacity() * size_of::<u32>()
     }
@@ -213,12 +234,19 @@ impl Captured {
         self.dense_bases.grow(&mut c.dense_bases);
         self.dense_wings.grow(&mut c.dense_wings);
         if self.base_handles.len() >= c.dense_bases.saturating_sub(c.dense_bases / 4) {
-            grow_capacity(&mut c.dense_bases, self.base_handles.len().saturating_add(1));
+            grow_capacity(
+                &mut c.dense_bases,
+                self.base_handles.len().saturating_add(1),
+            );
         }
         if self.base_handles.capacity() < c.dense_bases {
             self.base_handles.reserve(c.dense_bases);
         }
         self.side_units.grow(&mut c.side_units);
+        self.custom_sea.grow(&mut c.custom_sea);
+        self.damage_sources.grow(&mut c.damage_sources);
+        self.wing_types.grow(&mut c.wing_types);
+        self.plane_wings.grow(&mut c.plane_wings);
     }
 
     /// Select only bases used by native naval-combat calculations in this
@@ -302,6 +330,18 @@ impl Captured {
             side_units_required: 0,
             summary_countries: &mut self.summary_countries,
             summary_countries_len: 0,
+            custom_sea: &mut self.custom_sea.first,
+            custom_sea_len: 0,
+            custom_sea_required: 0,
+            damage_sources: &mut self.damage_sources.first,
+            damage_sources_len: 0,
+            damage_sources_required: 0,
+            wing_types: &mut self.wing_types.first,
+            wing_types_len: 0,
+            wing_types_required: 0,
+            plane_wings: &mut self.plane_wings.first,
+            plane_wings_len: 0,
+            plane_wings_required: 0,
             weapon_sources: &mut self.weapon_sources.first,
             weapon_terms: &mut self.weapon_terms.first,
             weapon_lengths: [0; 2],
@@ -345,6 +385,14 @@ impl Captured {
         self.weapon_terms.len = buffers.weapon_lengths[1];
         self.weapon_terms.required = buffers.weapon_required[1];
         self.summary_countries_len = buffers.summary_countries_len;
+        self.custom_sea.len = buffers.custom_sea_len;
+        self.custom_sea.required = buffers.custom_sea_required;
+        self.damage_sources.len = buffers.damage_sources_len;
+        self.damage_sources.required = buffers.damage_sources_required;
+        self.wing_types.len = buffers.wing_types_len;
+        self.wing_types.required = buffers.wing_types_required;
+        self.plane_wings.len = buffers.plane_wings_len;
+        self.plane_wings.required = buffers.plane_wings_required;
         self.required_groups = first.capture.required_group_capacity;
         let dense_started = qpc();
         read_phase.select(TABLES[2]);
@@ -386,7 +434,21 @@ impl Captured {
                     day: r.day,
                     duration: r.duration,
                     progress: r.progress,
-                    sides: r.sides.map(|s| rows::NavalCombatSideDetails {
+                    custom_sea: r.custom_sea.map(|span| {
+                        range(&self.custom_sea.first, span)
+                            .iter()
+                            .flat_map(|value| value.to_le_bytes())
+                            .collect()
+                    }),
+                    custom_sea_error: u8::from(r.custom_sea_error.is_some()),
+                    sides: r.sides.each_ref().map(|s| rows::NavalCombatSideDetails {
+                        damage_history: s.damage_history,
+                        original_health: s.original_health,
+                        total_damage: s.total_damage,
+                        damage_by_type: range(&self.damage_sources.first, s.damage_by_type)
+                            .iter()
+                            .map(|&(token, damage)| rows::NavalDamageSource { token, damage })
+                            .collect(),
                         commander: s.commander,
                         commander_inputs: range(&self.commanders.first, s.commander_inputs)
                             .first()
@@ -401,8 +463,7 @@ impl Captured {
                         summary: rows::NavalCombatSummaryInputs {
                             recent_join_penalty: s.summary.recent_join_penalty,
                             escort_bonus: s.summary.escort_bonus,
-                            countries: range(&self.summary_countries, s.summary.countries)
-                                .to_vec(),
+                            countries: range(&self.summary_countries, s.summary.countries).to_vec(),
                             secondary_countries: range(
                                 &self.summary_countries,
                                 s.summary.secondary_countries,
@@ -421,6 +482,7 @@ impl Captured {
                         planes: range(&self.planes.first, s.planes)
                             .iter()
                             .map(|p| rows::NavalCombatPlane {
+                                wing_types: range(&self.wing_types.first, p.wing_types).to_vec(),
                                 source: p.source,
                                 group_index: p.group_index,
                                 index: p.index,
@@ -430,7 +492,9 @@ impl Captured {
                                 air_base: p.air_base,
                                 casualties: p.casualties,
                                 time_duration: p.time_duration,
-                                wings: p.wings.clone(),
+                                wings: p
+                                    .wings
+                                    .map(|span| range(&self.plane_wings.first, span).to_vec()),
                                 initial_planes: p.initial_planes,
                                 current_planes: p.current_planes,
                                 country: p.country,
@@ -514,6 +578,7 @@ impl Captured {
             evacuation_state: r.evacuation_state,
             detection_state: r.detection_state,
             escape_progress: r.escape_progress,
+            escape_speed_base: r.escape_speed_base,
             received_damage: r.received_damage,
             live_ship: r.live_ship,
             strength: r.strength,
@@ -555,6 +620,7 @@ impl Captured {
                         reference: s.reference,
                         dynamic_keys: s.dynamic_keys,
                         weights: s.weights,
+                        movement: s.movement,
                         terms: range(&self.weapon_terms.first, s.terms)
                             .iter()
                             .map(|t| rows::NavalShipModifierTerm {
@@ -680,6 +746,7 @@ pub(super) fn naval_hit(v: &naval_combat_hit::Row) -> rows::NavalCombatHit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn dense_base_selection_uses_only_active_forward_planes_and_live_carrier_ships() {
         let mut c = Captured::with_capacities(&Capacities::default());
@@ -804,6 +871,7 @@ mod tests {
             dense_bases: 1,
             dense_wings: 1,
             side_units: 1,
+            ..Capacities::default()
         };
         let mut captured = Captured::with_capacities(&capacity);
         captured.details.rows[0].combat = 42;
@@ -879,20 +947,40 @@ mod tests {
         c.weapon_sources.len = 1;
         c.weapon_terms.len = 1;
         c.details.rows[0].combat = 42;
+        c.details.rows[0].custom_sea = Some([0, 3]);
+        c.custom_sea.first[..3].copy_from_slice(&[-3, 0, 4]);
+        c.custom_sea.len = 3;
+        c.details.rows[0].sides[0].original_health = 12_000;
+        c.details.rows[0].sides[0].damage_history[2][3] = 750;
+        c.details.rows[0].sides[0].damage_by_type = [0, 1];
+        c.damage_sources.first[0] = (17, 750);
+        c.damage_sources.len = 1;
         c.details.rows[0].sides[0].planes = [0, 1];
+        c.planes.first[0].wing_types = [0, 2];
+        c.wing_types.first[..2].copy_from_slice(&[17, 23]);
+        c.wing_types.len = 2;
         c.planes.first[0].air_hits[0] = [0, 1];
         c.planes.first[0].naval_hits = [0, 1];
         c.plane_air.first[0].variant = 111;
         c.plane_hits.first[0].target_slot = 12;
         const WINGS: usize = 257;
-        c.planes.first[0].wings[0] = (1..=WINGS as u64).collect();
+        c.planes.first[0].wings[0] = [0, WINGS];
+        for (slot, value) in c.plane_wings.first[..WINGS]
+            .iter_mut()
+            .zip(1..=WINGS as u64)
+        {
+            *slot = value;
+        }
+        c.plane_wings.len = WINGS;
         c.ships.rows[0].member.combat = 42;
         c.ships.rows[0].member.battle_slot = 5;
+        c.ships.rows[0].escape_speed_base = 19_000;
         c.ships.rows[0].air_hits[0] = [0, 1];
         c.ships.rows[0].naval_hits = [0, 1];
         c.ships.rows[0].weapon_context.sources = [0, 1];
         c.weapon_sources.first[0].scope = 3;
         c.weapon_sources.first[0].reference = 0x1234_0000_5678;
+        c.weapon_sources.first[0].movement = -123;
         c.weapon_sources.first[0].terms = [0, 1];
         c.weapon_terms.first[0].key = 12;
         c.weapon_terms.first[0].raw = -456;
@@ -909,7 +997,18 @@ mod tests {
         assert_eq!(details[0].sides[0].planes[0].air_hits[0][0].variant, 111);
         assert_eq!(details[0].sides[0].planes[0].naval_hits[0].target_slot, 12);
         assert_eq!(details[0].sides[0].planes[0].wings[0].len(), WINGS);
-        assert_eq!(details[0].sides[0].planes[0].wings[0][WINGS - 1], WINGS as u64);
+        assert_eq!(
+            details[0].sides[0].planes[0].wings[0][WINGS - 1],
+            WINGS as u64
+        );
+        assert_eq!(
+            details[0].custom_sea.as_deref(),
+            Some(&[253, 255, 0, 0, 4, 0][..])
+        );
+        assert_eq!(details[0].sides[0].original_health, 12_000);
+        assert_eq!(details[0].sides[0].damage_history[2][3], 750);
+        assert_eq!(details[0].sides[0].damage_by_type[0].token, 17);
+        assert_eq!(details[0].sides[0].planes[0].wing_types, [17, 23]);
         assert_eq!(ships[0].air_hits[0][0].variant, 222);
         assert_eq!(ships[0].naval_hits[0].target_slot, 34);
         assert_eq!(ships[0].weapon_context.sources[0].scope, 3);
@@ -918,5 +1017,11 @@ mod tests {
             0x1234_0000_5678
         );
         assert_eq!(ships[0].weapon_context.sources[0].terms[0].raw, -456);
+        assert_eq!(ships[0].escape_speed_base, 19_000);
+        assert_eq!(ships[0].weapon_context.sources[0].movement, -123);
     }
 }
+
+#[cfg(test)]
+#[path = "naval_details_scale_tests.rs"]
+mod scale_tests;

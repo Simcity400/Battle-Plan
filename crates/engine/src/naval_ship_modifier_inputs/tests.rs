@@ -268,7 +268,7 @@ fn terrain_buckets_exceed_65536() {
 }
 
 #[test]
-fn native_modifier_sources_grow_without_changing_values_occurrences_or_reads() {
+fn native_modifier_sources_share_owned_terms_per_accumulator() {
     use crate::modifier_definition as md;
     let source_reads = [
         (0x1800, 16),
@@ -305,20 +305,19 @@ fn native_modifier_sources_grow_without_changing_values_occurrences_or_reads() {
             .unwrap();
         }
         cap.source(SourceRow::default(), None).unwrap();
-        assert_eq!(lengths, [3, 4]);
-        assert_eq!(required, [3, 4]);
+        assert_eq!(lengths, [3, 2]);
+        assert_eq!(required, [3, 2]);
         for (index, source) in sources[..2].iter().enumerate() {
             assert_eq!(source.scope, 2);
             assert_eq!(source.index, index as u32);
-            assert_eq!(source.terms, [index * 2, 2]);
+            assert_eq!(source.terms, [0, 2]);
         }
-        assert_eq!(sources[2].terms, [4, 0]);
+        assert_eq!(sources[2].terms, [2, 0]);
         assert_eq!([terms[0].raw, terms[1].raw], [i64::MIN, i64::MAX]);
         assert_eq!([terms[0].key, terms[1].key], [0x2a, 0x2b]);
         assert_eq!(terms[0].metadata_flags, 0x81234567);
-        assert_eq!(&terms[..2], &terms[2..4]);
-        assert_eq!((memory.calls.get(), memory.copied.get()), (10, 176));
-        assert_eq!(*memory.reads.borrow(), source_reads.repeat(2));
+        assert_eq!((memory.calls.get(), memory.copied.get()), (5, 88));
+        assert_eq!(*memory.reads.borrow(), source_reads);
     }
 }
 

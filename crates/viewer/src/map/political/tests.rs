@@ -58,6 +58,7 @@ fn strategic_regions() -> BTreeMap<u32, StrategicRegion> {
             provinces: vec![5],
             naval_terrain: None,
             static_modifiers: false,
+            static_modifier_names: Vec::new(),
         },
     )])
 }

@@ -2239,6 +2239,7 @@ impl Viewer {
             .map(|hours| hours.engaged(&self.perspective.country))
             .transpose()
             .map_err(|error| error.to_string())?;
+        self.combat.set_playing(self.playing);
         let drawn = self
             .combat
             .draw(

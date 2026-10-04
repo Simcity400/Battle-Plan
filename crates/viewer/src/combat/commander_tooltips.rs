@@ -77,6 +77,9 @@ fn int_defines(defines: &Defines, category: &str, names: [&str; 3]) -> Result<[i
 }
 
 impl Content {
+    pub(super) fn sub_units(&self) -> Result<&installed_content::unit_leader::SubUnits, &str> {
+        self.sub_units.as_ref().map_err(String::as_str)
+    }
     /// The commander content, and the `leader_skills` the same files'
     /// readers hold, which the leader skill hover reads.
     /// `sub_units` is the one sub-unit database read

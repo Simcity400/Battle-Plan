@@ -65,6 +65,13 @@ pub struct Defines {
     pub sortie_stance_ratios: Vec<i64>,
     pub base_carrier_sortie_efficiency: i64,
     pub selected_sortie_initial_time: i32,
+    /// 1417D1A90's optional light/heavy-gun piercing explanation, in the
+    /// mutable NNavy arrays the matching content stack loads.
+    pub piercing_thresholds: Vec<i64>,
+    pub piercing_critical_values: Vec<i64>,
+    /// 141609460's three on-hover consequences of low positioning, in
+    /// attack, anti-air and submarine-reveal order.
+    pub positioning_impacts: [i64; 3],
 }
 
 impl Defines {
@@ -80,6 +87,15 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
 }
 
 pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
+    let piercing_thresholds = numbers.fixed5_array("NNavy", "NAVY_PIERCING_THRESHOLDS")?;
+    let piercing_critical_values =
+        numbers.fixed5_array("NNavy", "NAVY_PIERCING_THRESHOLD_CRITICAL_VALUES")?;
+    if piercing_thresholds.len() != piercing_critical_values.len() || piercing_thresholds.len() < 2
+    {
+        return Err(invalid(
+            "NNavy piercing threshold arrays differ or have fewer than two entries",
+        ));
+    }
     let mut summary_fixed = [0; 14];
     for (index, (out, (section, key))) in
         summary_fixed.iter_mut().zip(SUMMARY_FIXED_KEYS).enumerate()
@@ -123,6 +139,13 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
             .fixed5("NNavy", "BASE_CARRIER_SORTIE_EFFICIENCY")?,
         selected_sortie_initial_time: integer(numbers, "NNavy", "SELECTED_SORTIE_INITIAL_TIME")?
             .max(0),
+        piercing_thresholds,
+        piercing_critical_values,
+        positioning_impacts: [
+            numbers.fixed5("NNavy", "DAMAGE_PENALTY_ON_MINIMUM_POSITIONING")?, // 143319930
+            numbers.fixed5("NNavy", "AA_EFFICIENCY_PENALTY_ON_MINIMUM_POSITIONING")?, // 143319B08
+            numbers.fixed5("NNavy", "SUBMARINE_REVEAL_ON_MINIMUM_POSITIONING")?, // 143319BC8
+        ],
         sortie_stance_ratios,
     })
 }
@@ -176,6 +199,9 @@ mod tests {
             sortie_stance_ratios: vec![0, 25_000],
             base_carrier_sortie_efficiency: 50_000,
             selected_sortie_initial_time: 24,
+            piercing_thresholds: vec![100_000, 50_000],
+            piercing_critical_values: vec![50_000, 0],
+            positioning_impacts: [0; 3],
         };
         assert_eq!(definitions.mission_factor(1), Some(25_000));
         assert_eq!(definitions.mission_factor(2), None);
@@ -200,7 +226,12 @@ mod tests {
              NDefines.NNavy.NAVAL_COMBAT_PLANE_STACKING_PENALTY_EFFECT = 0.005\n\
              NDefines.NNavy.CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO = { 1 }\n\
              NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY = 1\n\
-             NDefines.NNavy.SELECTED_SORTIE_INITIAL_TIME = 1\n",
+             NDefines.NNavy.SELECTED_SORTIE_INITIAL_TIME = 1\n\
+             NDefines.NNavy.NAVY_PIERCING_THRESHOLDS = { 2 1 }\n\
+             NDefines.NNavy.NAVY_PIERCING_THRESHOLD_CRITICAL_VALUES = { 2 1 }\n\
+             NDefines.NNavy.DAMAGE_PENALTY_ON_MINIMUM_POSITIONING = 0.1\n\
+             NDefines.NNavy.AA_EFFICIENCY_PENALTY_ON_MINIMUM_POSITIONING = 0.2\n\
+             NDefines.NNavy.SUBMARINE_REVEAL_ON_MINIMUM_POSITIONING = 0.3\n",
         );
         numbers
             .load("common/defines/test.lua", script.as_bytes())
@@ -209,5 +240,6 @@ mod tests {
         assert_eq!(read.silhouette_planes, [2, 3, 4, 5, 6, 7]);
         assert_eq!(read.screen_cap_reduction_factor, 2_000);
         assert_eq!(read.plane_stacking_penalty_effect, 500);
+        assert_eq!(read.positioning_impacts, [10_000, 20_000, 30_000]);
     }
 }

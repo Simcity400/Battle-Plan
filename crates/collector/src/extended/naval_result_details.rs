@@ -247,7 +247,8 @@ impl Captured {
                             index: v.index,
                             selector: v.selector,
                             reference: v.reference,
-                            weights: v.weights,
+                        weights: v.weights,
+                        movement: v.movement,
                             dynamic_keys: v.dynamic_keys,
                             terms: range(&self.terms.first, v.terms)
                                 .iter()

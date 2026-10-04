@@ -774,6 +774,14 @@ fn modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
 
 fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::NavalCombatDetails>()?;
+    let tokens = if rows
+        .iter()
+        .any(|row| row.sides.iter().any(|side| !side.damage_by_type.is_empty()))
+    {
+        lexical_tokens(frame, r)?
+    } else {
+        TokenNames::new()
+    };
     let countries = country_context(frame)?;
     let actual: BTreeSet<_> = rows.iter().map(|x| x.combat).collect();
     let expected: BTreeSet<_> = save.naval_combats.keys().copied().collect();
@@ -802,6 +810,95 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         );
         for (side, actual) in row.sides.iter().enumerate() {
             let label = format!("{label}:{side}");
+            equal(
+                r,
+                format!("{label} total_initial_strength"),
+                Some(actual.original_health),
+                saved.details.original_health[side]
+                    .as_ref()
+                    .map(|value| value.raw),
+            );
+            equal(
+                r,
+                format!("{label} total_damage_dealt"),
+                Some(actual.total_damage),
+                saved.details.total_damage[side]
+                    .as_ref()
+                    .map(|value| value.raw),
+            );
+            match &saved.details.damage_history[side] {
+                Some(values) => {
+                    equal(
+                        r,
+                        format!("{label} damage_dealt_by_gun_types count"),
+                        actual.damage_history.len() * actual.damage_history[0].len(),
+                        values.len(),
+                    );
+                    for (index, (actual, saved)) in actual
+                        .damage_history
+                        .iter()
+                        .flatten()
+                        .zip(values)
+                        .enumerate()
+                    {
+                        equal(
+                            r,
+                            format!("{label} damage_dealt_by_gun_types {index}"),
+                            *actual,
+                            saved.raw,
+                        );
+                    }
+                }
+                None => r.difference(
+                    format!("{label} damage_dealt_by_gun_types"),
+                    "present",
+                    "absent",
+                ),
+            }
+            match &saved.details.damage_by_type[side] {
+                Some(saved) => {
+                    equal(
+                        r,
+                        format!("{label} damage_dealt_by_ship_types count"),
+                        actual.damage_by_type.len(),
+                        saved.len(),
+                    );
+                    let mut named = BTreeMap::new();
+                    let mut missing = Vec::new();
+                    for source in &actual.damage_by_type {
+                        match tokens.get(&source.token) {
+                            Some(name) if !name.contains(&0) => {
+                                if named.insert(*name, source.damage).is_some() {
+                                    return Err(invalid(
+                                        "duplicate naval damage source token spelling",
+                                    ));
+                                }
+                            }
+                            _ => missing.push(source.token),
+                        }
+                    }
+                    if missing.is_empty() {
+                        let saved: BTreeMap<_, _> = saved
+                            .iter()
+                            .map(|(name, damage)| (name.as_slice(), damage.raw))
+                            .collect();
+                        equal(
+                            r,
+                            format!("{label} damage_dealt_by_ship_types"),
+                            named,
+                            saved,
+                        );
+                    } else {
+                        r.limitation("Naval damage source token has no recorded lexical spelling or contains an interior NUL; the source map cannot be compared by name", format!("{label} tokens {missing:?}"));
+                    }
+                }
+                None => equal(
+                    r,
+                    format!("{label} damage_dealt_by_ship_types absent"),
+                    actual.damage_by_type.is_empty(),
+                    true,
+                ),
+            }
             // 1413CC0D0 inserts only positive, canonically distinct roster owners.
             let mut seen = BTreeSet::new();
             if actual
@@ -911,7 +1008,7 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         }
     }
     r.compared("NavalCombatDetails", rows.len());
-    r.limitation("Compared against the save: the combat census; province, progress, day and duration; per side the ordered task-force `unit` list, the stored positioning and anti-air, the recent-join penalty (absent read as zero) and escort bonus, the commander handle when the save names a leader, the commander's category, skill, experience, traits and component skills from the saved character, and retreat truthiness; per serialized forward group, the ordered air and airs_to_delete planes with their count, group/index, carrier slot (absent read as -1), air base where saved, both wing lists, initial/current planes, casualties, time duration, country, date, both flags as booleans, ordered naval hits and first air-hit vector. Not compared though the save stores them: each plane's names list, name and damage multiplier (CFEXAir::vf2@14196A2E0 writes +0xA8, +0x88 and +0xC0), which this table does not record because no replay consumer reads them. Not compared because the save has no counterpart: capital and carrier screening, the engaged byte, the primary country list, the secondary roster-owner list (checked only as positive and distinct), the summary modifier cells, their definition metadata, feature flags and callback, each plane's carrier-member presence (the serializer writes the +0x18 slot, not the +0x10 member pointer), carrier state, variant, wing kills, every sortie-efficiency operand (source, pool flags, mission, container and crowding, night, raw modifiers and the definition metadata of keys 0x22, 0x23, 0x24 and 0x1B6), the second air-hit vector, source-2 planes and planes of paired-only groups outside the serialized forward groups. The serializer omits an unresolved air-base reference, so its raw handle is not compared; a null or invalid leader omission does not prove raw null identity; boolean serialization loses nonzero byte distinctions. Matching fields do not validate tick freshness", "NavalCombatDetails");
+    r.limitation("Compared against the save: the combat census; province, progress, day and duration; per side the ordered task-force `unit` list, the stored positioning and anti-air, the recent-join penalty (absent read as zero) and escort bonus, the commander handle when the save names a leader, the commander's category, skill, experience, traits and component skills from the saved character, and retreat truthiness; per side original health, total damage, the 6x6 damage history and ordered source-token totals; per serialized forward group, the ordered air and airs_to_delete planes with their count, group/index, carrier slot (absent read as -1), air base where saved, both wing lists, initial/current planes, casualties, time duration, country, date, both flags as booleans, ordered naval hits and first air-hit vector. Not compared though the save stores it: each plane's damage multiplier (CFEXAir::vf2@14196A2E0 writes +0xC0), which this table does not record because no replay consumer reads it. Not compared because the save has no counterpart: capital and carrier screening, the engaged byte, the primary country list, the secondary roster-owner list (checked only as positive and distinct), the summary modifier cells, their definition metadata, feature flags and callback, each plane's carrier-member presence (the serializer writes the +0x18 slot, not the +0x10 member pointer), carrier state, variant, wing kills, every sortie-efficiency operand (source, pool flags, mission, container and crowding, night, raw modifiers and the definition metadata of keys 0x22, 0x23, 0x24 and 0x1B6), the second air-hit vector, source-2 planes and planes of paired-only groups outside the serialized forward groups. The save's frozen air-hover name and ordered names are localized presentation caches, so they are not compared with the viewer's new-language derivation. Custom sea grid entries are live-only and have no save counterpart. The serializer omits an unresolved air-base reference, so its raw handle is not compared; a null or invalid leader omission does not prove raw null identity; boolean serialization loses nonzero byte distinctions. Matching fields do not validate tick freshness", "NavalCombatDetails");
     Ok(())
 }
 
@@ -1277,6 +1374,9 @@ fn plane_values(
     b: &save::combat_details::NavalPlane,
     links: &BTreeMap<u32, &CountryRow>,
 ) -> io::Result<()> {
+    // 1419660C0/141963460 create these two localized presentation caches.
+    // The viewer derives them in its language from air-base and wing inputs;
+    // the save's frozen recording-language bytes are not a row comparator.
     equal(
         r,
         format!("{label} group/index"),

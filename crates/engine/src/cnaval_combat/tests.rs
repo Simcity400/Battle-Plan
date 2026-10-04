@@ -94,6 +94,9 @@ impl World {
         ] {
             world.u64(side, (IMAGE + cnaval_combatant::VTABLE_RVA) as u64);
             world.u64(side + cnaval_combatant::COMBAT, BODY as u64);
+            let sentinel = if side == ATTACKING { 0xa680 } else { 0xa6a0 };
+            world.u64(side + 0x290, sentinel as u64);
+            world.u64(sentinel, sentinel as u64);
             // Capacity differs from count, exercising the corrected D0/D4 header.
             world.array(side + cnaval_combatant::GROUPS, roots, 2, 1);
             world.u64(roots, group as u64);
@@ -178,6 +181,31 @@ fn detail_world() -> World {
     world
 }
 
+#[test]
+fn unreadable_custom_sea_grid_does_not_withhold_live_combat_details() {
+    const REGION: usize = 0xb000;
+    const TEMPLATE: usize = 0xc000;
+    let mut world = detail_world();
+    world.0.resize(0xd000 - GS, 0);
+    world.u64(FRONT + cprovince::STRATEGIC_REGION, REGION as u64);
+    world.u64(
+        REGION,
+        (IMAGE + crate::cstrategic_region::VTABLE_RVA) as u64,
+    );
+    world.u32(REGION + crate::cstrategic_region::ID, 94);
+    world.u64(REGION + 0x30, TEMPLATE as u64);
+    world.u64(TEMPLATE, (IMAGE + 0x029c_5260) as u64);
+    world.u32(TEMPLATE + 0x140, 1);
+    world.u32(TEMPLATE + 0x144, 1);
+    let (capture, row, _, _, _) = walk_whole(&world, 0);
+    assert_eq!(capture.combats, Outcome::Rows { len: 1 });
+    assert_eq!(row.custom_sea, None);
+    assert_eq!(
+        row.custom_sea_error,
+        Some("weather manager pointer unreadable or absent")
+    );
+}
+
 /// A side's task forces (`CCombatant+0x20`) are read in stored order into the caller's
 /// arena. A short arena leaves the row for the next hour with the demand reported, and an
 /// entry that is not a task force refuses the table.
@@ -227,6 +255,18 @@ fn side_units_keep_stored_order_and_report_their_demand() {
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
+            custom_sea: &mut [0; 64],
+            custom_sea_len: 0,
+            custom_sea_required: 0,
+            damage_sources: &mut [(0, 0); 64],
+            damage_sources_len: 0,
+            damage_sources_required: 0,
+            wing_types: &mut [0; 512],
+            wing_types_len: 0,
+            wing_types_required: 0,
+            plane_wings: &mut [0; 1024],
+            plane_wings_len: 0,
+            plane_wings_required: 0,
         };
         let combats = walk_details_timed(
             &DetailMemory(world.memory()),
@@ -242,7 +282,7 @@ fn side_units_keep_stored_order_and_report_their_demand() {
         .combats;
         (
             combats,
-            details[0].sides.map(|side| side.units),
+            details[0].sides.clone().map(|side| side.units),
             buffers.side_units_len,
             buffers.side_units_required,
         )
@@ -286,12 +326,17 @@ fn null_commander_never_falls_back_to_the_last_leader() {
     let details = |memory: &DetailMemory<'_>| {
         let (mut countries, mut units) = (Vec::new(), vec![0; 64]);
         let (mut countries_len, mut units_len, mut units_required) = (0, 0, 0);
+        let (mut damage_sources, mut damage_sources_len, mut damage_sources_required) =
+            ([(0, 0); 64], 0, 0);
         let mut arenas = cnaval_combatant::SideArenas {
             countries: &mut countries,
             countries_len: &mut countries_len,
             units: &mut units,
             units_len: &mut units_len,
             units_required: &mut units_required,
+            damage_sources: &mut damage_sources,
+            damage_sources_len: &mut damage_sources_len,
+            damage_sources_required: &mut damage_sources_required,
         };
         cnaval_combatant::details(memory, IMAGE, GS, BODY, [&side, &opponent], &mut arenas)
     };
@@ -355,6 +400,18 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
         side_units_required: 0,
         summary_countries: &mut Vec::new(),
         summary_countries_len: 0,
+        custom_sea: &mut [0; 64],
+        custom_sea_len: 0,
+        custom_sea_required: 0,
+        damage_sources: &mut [(0, 0); 64],
+        damage_sources_len: 0,
+        damage_sources_required: 0,
+        wing_types: &mut [0; 512],
+        wing_types_len: 0,
+        wing_types_required: 0,
+        plane_wings: &mut [0; 1024],
+        plane_wings_len: 0,
+        plane_wings_required: 0,
     };
     let mut tick = 0;
     let timed = walk_details_timed(
@@ -499,6 +556,18 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
+            custom_sea: &mut [0; 64],
+            custom_sea_len: 0,
+            custom_sea_required: 0,
+            damage_sources: &mut [(0, 0); 64],
+            damage_sources_len: 0,
+            damage_sources_required: 0,
+            wing_types: &mut [0; 512],
+            wing_types_len: 0,
+            wing_types_required: 0,
+            plane_wings: &mut [0; 1024],
+            plane_wings_len: 0,
+            plane_wings_required: 0,
         };
         let result = capture_details(
             &memory,
@@ -604,6 +673,18 @@ fn side_external_planes_keep_their_first_group_owner() {
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
+            custom_sea: &mut [0; 64],
+            custom_sea_len: 0,
+            custom_sea_required: 0,
+            damage_sources: &mut [(0, 0); 64],
+            damage_sources_len: 0,
+            damage_sources_required: 0,
+            wing_types: &mut [0; 512],
+            wing_types_len: 0,
+            wing_types_required: 0,
+            plane_wings: &mut [0; 1024],
+            plane_wings_len: 0,
+            plane_wings_required: 0,
         };
         let result = capture_details(
             &DetailMemory(world.memory()),
@@ -927,6 +1008,18 @@ fn a_registry_past_4096_combats_is_walked_whole_and_truncates_by_demand() {
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
+            custom_sea: &mut [0; 64],
+            custom_sea_len: 0,
+            custom_sea_required: 0,
+            damage_sources: &mut [(0, 0); 64],
+            damage_sources_len: 0,
+            damage_sources_required: 0,
+            wing_types: &mut [0; 512],
+            wing_types_len: 0,
+            wing_types_required: 0,
+            plane_wings: &mut [0; 1024],
+            plane_wings_len: 0,
+            plane_wings_required: 0,
         };
         capture_details(
             &memory,
@@ -995,6 +1088,18 @@ fn walk_whole(
         side_units_required: 0,
         summary_countries: &mut Vec::new(),
         summary_countries_len: 0,
+        custom_sea: &mut [0; 64],
+        custom_sea_len: 0,
+        custom_sea_required: 0,
+        damage_sources: &mut [(0, 0); 64],
+        damage_sources_len: 0,
+        damage_sources_required: 0,
+        wing_types: &mut [0; 512],
+        wing_types_len: 0,
+        wing_types_required: 0,
+        plane_wings: &mut [0; 1024],
+        plane_wings_len: 0,
+        plane_wings_required: 0,
     };
     let capture = capture_details(
         &DetailMemory(world.memory()),
@@ -1007,7 +1112,7 @@ fn walk_whole(
     );
     let (len, required) = (buffers.planes_len, buffers.planes_required);
     ships.truncate(capture.participants.len());
-    (capture, rows[0], ships, len, required)
+    (capture, rows[0].clone(), ships, len, required)
 }
 
 /// CNavalCombatant::Serialize@14160FF40 and CFEXGroup::Serialize@141C58360 walk the forward
@@ -1093,15 +1198,20 @@ fn active_wing_vectors_exceed_256() {
     const PLANE: usize = 0xa900;
     const ARRAY: usize = 0xc000;
     let mut world = World::new();
-    world.0.resize(ARRAY + COUNT * 8 - GS, 0);
+    world.0.resize(ARRAY + COUNT * 16 - GS, 0);
     world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA) as u64);
     world.u64(PLANE + 8, GROUP_A as u64);
-    for offset in [0x28, 0x40] {
-        world.array(PLANE + offset, ARRAY, COUNT as u32, COUNT as u32);
-    }
+    world.array(PLANE + 0x28, ARRAY, COUNT as u32, COUNT as u32);
+    world.array(PLANE + 0x40, ARRAY + COUNT * 8, COUNT as u32, COUNT as u32);
     for index in 0..COUNT {
         world.u64(ARRAY + index * 8, index as u64 + 1);
     }
+    let mut wing_types = [0; COUNT];
+    let mut wing_types_len = 0;
+    let mut wing_types_required = 0;
+    let mut plane_wings = [0; COUNT * 2];
+    let mut plane_wings_len = 0;
+    let mut plane_wings_required = 0;
     let row = crate::cfex_air::read(
         &SliceMemory {
             base: GS,
@@ -1110,15 +1220,23 @@ fn active_wing_vectors_exceed_256() {
         IMAGE,
         PLANE,
         GROUP_A,
+        &mut wing_types,
+        &mut wing_types_len,
+        &mut wing_types_required,
+        &mut plane_wings,
+        &mut plane_wings_len,
+        &mut plane_wings_required,
     )
     .unwrap();
     assert_eq!(
-        row.wings,
-        [
-            (1..=COUNT as u64).collect::<Vec<_>>(),
-            (1..=COUNT as u64).collect()
-        ]
+        row.wings
+            .map(|span| plane_wings[span[0]..span[0] + span[1]].to_vec()),
+        [(1..=COUNT as u64).collect::<Vec<_>>(), vec![0; COUNT]]
     );
+    assert_eq!(row.wing_types, [0, COUNT]);
+    assert_eq!(wing_types_required, COUNT);
+    assert_eq!(plane_wings_required, COUNT * 2);
+    assert_eq!(&wing_types[..wing_types_len], &[u32::MAX; COUNT]);
 }
 
 #[test]

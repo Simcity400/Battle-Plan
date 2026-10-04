@@ -37,6 +37,19 @@ pub(super) struct Inputs<'a> {
     pub air: [Air; 2],
 }
 
+/// Fresh 141609460 terms in the order its optional tooltip describes them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Terms {
+    pub value: i64,
+    pub base: i64,
+    pub escort: i64,
+    pub detection: i64,
+    pub ship_ratio: i64,
+    pub carrier_ratio: i64,
+    pub recent_join: i64,
+    pub early_defender: bool,
+}
+
 fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
@@ -139,30 +152,53 @@ fn carrier_ratio_penalty(input: &Inputs<'_>, defines: &Defines) -> i64 {
 /// Native `141609460` without its optional localized tooltip construction.
 /// `None` denotes a modifier callback or operand that cannot be resolved.
 pub(super) fn displayed(input: &Inputs<'_>, defines: &Defines) -> Option<i64> {
+    displayed_terms(input, defines).map(|terms| terms.value)
+}
+
+pub(super) fn displayed_terms(input: &Inputs<'_>, defines: &Defines) -> Option<Terms> {
     let mut value = defines.summary_fixed[0];
     let summary = &input.side.summary;
+    let early_defender = !summary.countries.is_empty()
+        && input.defender
+        && input.duration < defines.summary_integer[1];
     if !summary.countries.is_empty() {
         // 141609643-14160964C: key 0x1B2 with the side's own commander
         // (combatant+0x110, loaded at 14160960B).
         value = value.wrapping_add(summary_modifiers(summary, 3, 2)?);
-        if input.defender && input.duration < defines.summary_integer[1] {
+        if early_defender {
             // 1416094B1-1416094B8 keep the opposing combatant's +0x110
             // commander; 14160969A-1416096B5 pass it for key 0x5A.
             value = value.wrapping_add(summary_modifiers(summary, 4, 0)?);
         }
         value = value.wrapping_add(summary.escort_bonus);
     }
-    value = value.wrapping_add(detection_bonus(
+    let detection = detection_bonus(
         input.surface_detection[0],
         input.surface_detection[1],
         defines,
-    ));
-    value = value.wrapping_sub(ship_ratio_penalty(input, defines)?);
-    value = value.wrapping_sub(carrier_ratio_penalty(input, defines));
+    );
+    value = value.wrapping_add(detection);
+    let ship_ratio = ship_ratio_penalty(input, defines)?;
+    value = value.wrapping_sub(ship_ratio);
+    let carrier_ratio = carrier_ratio_penalty(input, defines);
+    value = value.wrapping_sub(carrier_ratio);
     if summary.recent_join_penalty > 0 {
         value = value.wrapping_sub(summary.recent_join_penalty);
     }
-    Some(value.clamp(0, ONE))
+    Some(Terms {
+        value: value.clamp(0, ONE),
+        base: defines.summary_fixed[0],
+        escort: if summary.countries.is_empty() {
+            0
+        } else {
+            summary.escort_bonus
+        },
+        detection,
+        ship_ratio,
+        carrier_ratio,
+        recent_join: summary.recent_join_penalty.max(0),
+        early_defender,
+    })
 }
 
 /// `14160C660` counts each qualifying forward member slot, even when its ship
@@ -199,6 +235,26 @@ pub(super) fn positioning_values(
     content: &naval_air_groups::Content,
     defines: Option<&Defines>,
 ) -> [Option<i64>; 2] {
+    positioning_terms_values(
+        detail, ships, models, bases, live_ships, dense, content, defines,
+    )
+    .map(|terms| terms.map(|terms| terms.value))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "same recorded operands as positioning_values"
+)]
+pub(super) fn positioning_terms_values(
+    detail: &NavalCombatDetailsRow,
+    ships: Option<&[NavalCombatShipRow]>,
+    models: Option<Keyed<'_, ShipModelRow>>,
+    bases: Option<&[AirBaseRow]>,
+    live_ships: Option<&[ShipRow]>,
+    dense: Option<DenseBases<'_>>,
+    content: &naval_air_groups::Content,
+    defines: Option<&Defines>,
+) -> [Option<Terms>; 2] {
     let (Some(ships), Some(defines)) = (ships, defines) else {
         return [None; 2];
     };
@@ -251,7 +307,7 @@ pub(super) fn positioning_values(
         } else {
             PositioningAir::default()
         };
-        displayed(
+        displayed_terms(
             &Inputs {
                 side: &detail.sides[side],
                 opponent: &detail.sides[opposite],
@@ -290,6 +346,9 @@ mod tests {
             sortie_stance_ratios: vec![ONE],
             base_carrier_sortie_efficiency: ONE,
             selected_sortie_initial_time: 24,
+            piercing_thresholds: Vec::new(),
+            piercing_critical_values: Vec::new(),
+            positioning_impacts: [0; 3],
         }
     }
 

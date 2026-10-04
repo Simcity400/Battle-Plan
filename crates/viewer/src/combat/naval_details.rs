@@ -1,7 +1,8 @@
 //! Native naval member grouping and retained ship-result categories (format 22).
 use super::{
-    Selection, Values, Widget,
+    HoverText, Selection, Values, Widget,
     binding::{Bindings, NavalEntry, fill, hide, sprite, text},
+    tooltips::{hover_text, set_hover},
 };
 use crate::{
     document::Document,
@@ -13,7 +14,10 @@ use crate::{
 };
 use replay::{
     frame::DecodedFrame,
-    rows::{NavalCombatPlane, NavalCombatShipRow, NavalResultShip, VariantDefinitionRow, tables},
+    rows::{
+        AirBaseRow, AirWingRow, CountryRow, NavalCombatPlane, NavalCombatShipRow, NavalResultShip,
+        VariantDefinitionRow, tables,
+    },
 };
 use std::{
     cmp::Reverse,
@@ -44,6 +48,113 @@ fn display_air_plane(plane: &NavalCombatPlane) -> bool {
         && plane.carrier_state & 4 == 0
 }
 
+/// 1419660C0 obtains +0x88 from CAirBase::GetDisplayName@140C44FC0:
+/// CState::display_name@1409CC380 for a state base, otherwise the host
+/// CShip::GetName@140C29A20. 141963460 builds distinct +0xA8 short names
+/// from the ordered +0x40 wings via 140F4A4B0/140BBAA50.
+/// I: 1419663F0 only appends wings and 141966030 rebuilds the list; no
+/// +0x40 removal path is known that would leave a stale +0xA8 name.
+fn air_presentation(
+    document: &Document,
+    frame: &DecodedFrame,
+    plane: &NavalCombatPlane,
+    wings: &BTreeMap<u64, &AirWingRow>,
+    bases: &BTreeMap<u64, &AirBaseRow>,
+    countries: &BTreeMap<u32, &CountryRow>,
+    ships: &BTreeMap<u64, &NavalCombatShipRow>,
+) -> Result<(String, String), String> {
+    let loc = &document.names.localisation;
+    let base = bases
+        .get(&plane.air_base)
+        .copied()
+        .ok_or_else(|| format!("CFEXAir base {} has no AirBases row", plane.air_base))?;
+    let name = if let Some(id) = base.state {
+        let states = rows::<tables::States>(frame).map_err(|error| error.to_string())?;
+        if !states.is_complete() {
+            return Err("States is incomplete for the naval air-base name".into());
+        }
+        let state = states
+            .rows()
+            .iter()
+            .find(|row| row.id == id)
+            .ok_or_else(|| format!("naval air base state {id} has no States row"))?;
+        super::text::state_name(
+            loc,
+            &document.recorded_language,
+            id,
+            &state.custom_name,
+            &state.owner_name,
+            || {
+                let key = document
+                    .state_name_keys
+                    .get(&id)
+                    .ok_or_else(|| format!("naval air base state {id} has no content definition"))?
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                super::text::localise(loc, key, &[])
+            },
+        )?
+    } else if base.host == 0 {
+        String::new()
+    } else {
+        let ship = ships
+            .get(&base.host)
+            .copied()
+            .filter(|row| row.live_ship != 0)
+            .ok_or_else(|| {
+                format!(
+                    "naval air-base host ship {} has no recorded combat name",
+                    base.host
+                )
+            })?;
+        dashboard::scripted_text::stored_text(
+            loc,
+            &document.recorded_language,
+            &ship.name,
+            "naval air-base host CShip::GetName",
+        )?
+    };
+    if plane.wings[1].len() != plane.wing_types.len() {
+        return Err("CFEXAir wing handles and type indices differ in length".into());
+    }
+    let sub_units = document
+        .icons
+        .combat
+        .commander_tooltips
+        .sub_units()
+        .map_err(str::to_owned)?;
+    let mut names = Vec::<String>::new();
+    for (&handle, &index) in plane.wings[1].iter().zip(&plane.wing_types) {
+        if index == u32::MAX {
+            return Err(format!(
+                "historical CFEXAir wing {handle} no longer resolves to its type"
+            ));
+        }
+        let wing = wings
+            .get(&handle)
+            .copied()
+            .ok_or_else(|| format!("CFEXAir wing {handle} has no AirWings row"))?;
+        let selector = if wing.country_override > 0 {
+            wing.country_override as u32
+        } else {
+            wing.owner
+        };
+        let country = countries.get(&selector).copied().ok_or_else(|| {
+            format!("CFEXAir wing {handle} country {selector} has no Countries row")
+        })?;
+        let tag = std::str::from_utf8(&country.tag)
+            .map_err(|_| format!("CFEXAir wing {handle} country tag is not UTF-8"))?;
+        let key = sub_units
+            .name(index)
+            .ok_or_else(|| format!("CFEXAir wing {handle} subunit index {index} is absent"))??;
+        let short = super::naval_air_tooltips::wing_short_name(loc, tag, key)?;
+        if !names.contains(&short) {
+            names.push(short);
+        }
+    }
+    Ok((name, names.join(", ")))
+}
+
 fn air_count_label(side: u8, tag: &str, current: i32, maximum: i32, low: bool) -> String {
     let colour = if low { 'R' } else { 'W' };
     if side == 0 {
@@ -68,8 +179,7 @@ fn air_icon_widget(name: Option<String>, side: u8) -> Widget {
         // 1417CEAF0's side byte is 1 for left and 0 for right; 1417DAA40
         // sends byte+1 to CIcon. Native GUI bound frames are one based.
         frame: Some(if side == 0 { 2 } else { 1 }),
-        // 1417DAA40's hover needs frozen CFEXAir presentation strings absent
-        // from the hour; prevent the authored seed from masquerading as it.
+        // 1417DAA40 sets this dynamic hover after constructing the row.
         hover_owned: true,
         ..Widget::default()
     }
@@ -82,6 +192,7 @@ fn push_air_entry(
     name: Option<String>,
     size: [f32; 2],
     label: Option<String>,
+    hover: Option<HoverText>,
 ) {
     let mut values = Values::new();
     for key in [
@@ -98,6 +209,7 @@ fn push_air_entry(
         hide(&mut values, key);
     }
     values.insert("icon".into(), air_icon_widget(name, side));
+    set_hover(&mut values, "icon", hover, None);
     if let Some(label) = label {
         let count_key = if side == 0 { "desc_left" } else { "desc_right" };
         text(&mut values, count_key, label);
@@ -125,6 +237,7 @@ fn air_entries(
     id: u64,
     flags: &BTreeMap<u32, String>,
     aliases: &BTreeMap<u32, u32>,
+    vision: &Vision,
     heights: &mut BTreeMap<(u8, &str), f32>,
 ) -> io::Result<()> {
     let details = rows::<tables::NavalCombatDetails>(frame)?;
@@ -170,6 +283,12 @@ fn air_entries(
         .is_complete()
         .then(|| super::keyed::Keyed::new(bases.rows(), |row| row.id))
         .flatten();
+    let presentation_wings: BTreeMap<_, _> = wings.rows().iter().map(|row| (row.id, row)).collect();
+    let presentation_bases: BTreeMap<_, _> = bases.rows().iter().map(|row| (row.id, row)).collect();
+    let mut presentation_ships = BTreeMap::new();
+    for row in ship_rows.rows().iter().filter(|row| row.live_ship != 0) {
+        presentation_ships.entry(row.ship).or_insert(row);
+    }
     let mut groups = Vec::<AirGroup<'_>>::new();
     for (side, side_detail) in detail.sides.iter().enumerate() {
         for plane in side_detail
@@ -233,6 +352,18 @@ fn air_entries(
     let Some(database) = database else {
         return Ok(());
     };
+    let stacking_penalty =
+        super::tactics::viewing_side(&detail.sides[0].summary.countries, aliases, vision.ours())
+            .and_then(|side| {
+                out.naval_penalties[side]
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "the perspective carrier penalty has not been evaluated".to_owned()
+                    })?
+                    .as_ref()
+                    .map(|values| values.0)
+                    .map_err(Clone::clone)
+            });
     for group in groups {
         let first = group.planes[0];
         let definition = &database.equipment[group.model];
@@ -301,7 +432,144 @@ fn air_entries(
             let size = size.unwrap_or_default();
             (None, size)
         };
-        out.refuse(format!("Naval combat {id} air group model {} hover is withheld: hourly CFEXAir+0x88 presentation name and +0xA8 ordered string vector (+0xB4 count) are absent from NavalCombatDetails (1417DAA40/1417D2430).", group.model + 1));
+        let hover = stacking_penalty
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|penalty| {
+                let prefix = if first.wings[1].is_empty() || first.efficiency.source != 3 {
+                    String::new()
+                } else {
+                    let (sortie_efficiency, _, _) =
+                        super::naval_air_groups::display_efficiency_parts(
+                            first,
+                            &detail.sides[group.side as usize],
+                            group.side,
+                            detail.duration,
+                            &joins,
+                            &document.icons.combat.naval_air_groups,
+                            document.icons.combat.naval_defines.as_ref(),
+                        )
+                        .ok_or("141963700 carrier efficiency operands are unavailable")?;
+                    let defines = document
+                        .icons
+                        .combat
+                        .naval_defines
+                        .as_ref()
+                        .ok_or("matching carrier sortie defines are unavailable")?;
+                    let mut member_breakdown = String::new();
+                    if first.carrier_member_present != 0 && sortie_efficiency != 100_000 {
+                        for (lane, key) in [(0, 0x24), (1, 0x1b6)] {
+                            if lane == 1 && first.efficiency.pool_type_flags & 0x1_0000_0400 == 0 {
+                                continue;
+                            }
+                            out.refuse(format!("Naval combat {id} side {} carrier air group {} sortie key {key:#x} country, ship, doctrine, critical and HQ modifier breakdown is pending capture-on-change (141963700, 140C29020, 14054D0F0).", group.side, first.index));
+                            let screening = super::naval_air_groups::display_screening_extra(
+                                first,
+                                &detail.sides[group.side as usize],
+                                group.side,
+                                &joins,
+                                &document.icons.combat.naval_air_groups,
+                                lane,
+                            )
+                            .ok_or("carrier sortie screening breakdown is unavailable")?;
+                            member_breakdown.push_str(&super::naval_air_tooltips::screening_line(
+                                screening,
+                                &document.names.localisation,
+                                &document.icons.combat,
+                            )?);
+                        }
+                    }
+                    super::naval_air_tooltips::efficiency_prefix(
+                        first,
+                        sortie_efficiency,
+                        defines.base_carrier_sortie_efficiency,
+                        &member_breakdown,
+                        &document.names.localisation,
+                        &document.icons.combat,
+                    )?
+                };
+                let mut efficiency_suffixes = Vec::with_capacity(group.planes.len());
+                for plane in &group.planes {
+                    if plane.efficiency.source != 3 || plane.wings[1].is_empty() {
+                        efficiency_suffixes.push(String::new());
+                        continue;
+                    }
+                    // 1417D2430 chooses the first +0x40 wing whose resolved air
+                    // base has no +0x68 state before asking 141965010 for text.
+                    let wings = wing_index.as_ref().ok_or("AirWings are incomplete")?;
+                    let bases = base_index.as_ref().ok_or("AirBases are incomplete")?;
+                    let eligible = plane.wings[1].iter().any(|handle| {
+                        wings
+                            .get(*handle)
+                            .and_then(|wing| bases.get(wing.air_base))
+                            .is_some_and(|base| base.state.is_none())
+                    });
+                    if !eligible {
+                        efficiency_suffixes.push(String::new());
+                        continue;
+                    }
+                    let (_, final_efficiency, organisation_ratio) =
+                        super::naval_air_groups::display_efficiency_parts(
+                            plane,
+                            &detail.sides[group.side as usize],
+                            group.side,
+                            detail.duration,
+                            &joins,
+                            &document.icons.combat.naval_air_groups,
+                            document.icons.combat.naval_defines.as_ref(),
+                        )
+                        .ok_or("141965010 carrier efficiency operands are unavailable")?;
+                    efficiency_suffixes.push(super::naval_air_tooltips::carrier_org_suffix(
+                        final_efficiency,
+                        organisation_ratio,
+                        &document.names.localisation,
+                        &document.icons.combat,
+                    )?);
+                }
+                if !wings.is_complete()
+                    || !bases.is_complete()
+                    || !countries.is_complete()
+                    || !ship_rows.is_complete()
+                {
+                    return Err("naval air presentation input tables are incomplete".into());
+                }
+                let presentations = group
+                    .planes
+                    .iter()
+                    .map(|plane| {
+                        air_presentation(
+                            document,
+                            frame,
+                            plane,
+                            &presentation_wings,
+                            &presentation_bases,
+                            &by_country,
+                            &presentation_ships,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                super::naval_air_tooltips::group_hover(
+                    &group.planes,
+                    &presentations,
+                    &efficiency_suffixes,
+                    &prefix,
+                    frame.hour,
+                    *penalty,
+                    &document.recorded_language,
+                    &document.names.localisation,
+                    &document.icons.combat,
+                )
+            });
+        let hover = match hover {
+            Ok(hover) => hover_text(&hover),
+            Err(reason) => {
+                out.refuse(format!(
+                    "Naval combat {id} air group model {} hover is withheld: {reason}.",
+                    group.model + 1
+                ));
+                None
+            }
+        };
         // 1417DAA40 sums current and max(initial,current) in signed i32.
         let current = group
             .planes
@@ -364,7 +632,7 @@ fn air_entries(
             ));
             None
         };
-        push_air_entry(out, heights, group.side, name, size, label);
+        push_air_entry(out, heights, group.side, name, size, label, hover);
     }
     Ok(())
 }
@@ -544,7 +812,16 @@ fn active(
     });
     out.naval_entries.clear();
     let mut heights = BTreeMap::<(u8, &str), f32>::new();
-    air_entries(out, document, frame, id, flags, &aliases, &mut heights)?;
+    air_entries(
+        out,
+        document,
+        frame,
+        id,
+        flags,
+        &aliases,
+        vision,
+        &mut heights,
+    )?;
     for (key, members) in groups {
         let first = members[0];
         let name = if key.unknown {
@@ -1085,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn air_icon_frames_and_missing_hover_are_explicit() {
+    fn air_icon_frames_and_dynamic_hover_are_explicit() {
         let left = air_icon_widget(Some("GFX_test_air".into()), 0);
         let right = air_icon_widget(Some("GFX_test_air".into()), 1);
         assert_eq!(left.frame, Some(2));
@@ -1107,6 +1384,7 @@ mod tests {
             Some("GFX_air_left".into()),
             [40.0, 20.0],
             Some("3/5".into()),
+            Some("Air left".into()),
         );
         push_air_entry(
             &mut out,
@@ -1115,6 +1393,7 @@ mod tests {
             Some("GFX_air_right".into()),
             [42.0, 24.0],
             Some("2/8".into()),
+            Some("Air right".into()),
         );
         for side in 0..2 {
             out.naval_entries.push(NavalEntry {
@@ -1154,6 +1433,14 @@ mod tests {
         assert_eq!(out.naval_entries[0].values["icon"].frame, Some(2));
         assert_eq!(out.naval_entries[1].values["icon"].frame, Some(1));
         assert_eq!(
+            out.naval_entries[0].values["icon"].tooltip.as_deref(),
+            Some("Air left")
+        );
+        assert_eq!(
+            out.naval_entries[1].values["icon"].tooltip.as_deref(),
+            Some("Air right")
+        );
+        assert_eq!(
             out.naval_entries[0].values["desc_left"].text.as_deref(),
             Some("3/5")
         );
@@ -1172,11 +1459,53 @@ mod tests {
             None,
             [1.0, 3.0],
             Some("4/7".into()),
+            None,
         );
         let missing = out.naval_entries.last().unwrap();
         assert!(missing.values["icon"].hidden);
         assert!(missing.values["icon"].sprite.is_none());
         assert_eq!(missing.values["desc_left"].text.as_deref(), Some("4/7"));
+    }
+
+    #[test]
+    fn recorded_air_hover_reaches_the_air_icon_binding() {
+        use crate::combat::binding::NoIcons;
+        let mut loc: installed_content::localisation::Localisation = [(
+            "NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER".to_owned(),
+            "$MOD$ from $FROM$".to_owned(),
+        )]
+        .into_iter()
+        .collect();
+        loc.language = "english".into();
+        let plane = NavalCombatPlane {
+            ..Default::default()
+        };
+        let built = super::super::naval_air_tooltips::group_hover(
+            &[&plane],
+            &[("Mediterranean".to_owned(), "Spitfire, Hurricane".to_owned())],
+            &[String::new()],
+            "",
+            0,
+            100_000,
+            "english",
+            &loc,
+            &NoIcons,
+        )
+        .unwrap();
+        let mut out = Bindings::default();
+        push_air_entry(
+            &mut out,
+            &mut BTreeMap::new(),
+            0,
+            Some("GFX_air".into()),
+            [40.0, 20.0],
+            Some("0/0".into()),
+            hover_text(&built),
+        );
+        assert_eq!(
+            out.naval_entries[0].values["icon"].tooltip.as_deref(),
+            Some("Spitfire, Hurricane from Mediterranean")
+        );
     }
     #[test]
     fn organisation_uses_default_leader_and_recorded_hq_terms() {

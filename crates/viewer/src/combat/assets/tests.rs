@@ -15,7 +15,14 @@ fn custom_sea_declarations_follow_effective_strategic_templates() {
     .unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let regions = installed_content::regions::read(&layers).unwrap();
-    assert_eq!(custom_sea_regions(&regions.regions), BTreeSet::from([2]));
+    assert_eq!(
+        regions.regions.get(&1).unwrap().static_modifier_names,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        regions.regions.get(&2).unwrap().static_modifier_names,
+        ["x"]
+    );
     std::fs::remove_dir_all(&root).unwrap();
 }
 

@@ -45,11 +45,18 @@ pub struct Assets {
     /// The naval combat defines the window's positioning, screening and anti-air read;
     /// `None`, with a warning, when the content's defines do not load.
     pub naval_defines: Option<installed_content::naval_combat_defines::Defines>,
+    /// 14195C7D0's NNavy operands, loaded from the matching content stack.
+    pub(super) naval_escape_defines: Result<super::naval_escape::Defines, String>,
+    pub(super) naval_escape_screening: super::naval_escape::Screening,
     pub(super) naval_air_groups: super::naval_air_groups::Content,
     /// 141D8A3B0's six weather-event static accumulators, in event order.
     pub(super) naval_weather_modifiers: Vec<Result<installed_content::modifiers::Modifiers, String>>,
-    /// Effective strategic templates that declare custom sea modifiers.
-    pub(super) custom_sea_regions: BTreeSet<u32>,
+    /// 140600CF0's +0x100/+0x108 full screening bonus blocks, formatted by
+    /// 14160A7B0 through 14054E050 at the freshly computed screening scale.
+    pub(super) naval_screening_modifiers: [Result<installed_content::modifiers::Modifiers, String>; 2],
+    /// Effective named static blocks of the strategic templates' custom sea grid.
+    pub(super) naval_custom_sea_modifiers:
+        BTreeMap<String, Result<installed_content::modifiers::Modifiers, String>>,
     pub(super) naval_terrain: Result<super::naval_terrain::Content, String>,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
@@ -290,17 +297,6 @@ impl Assets {
             ));
         self.tactics.trigger_names()
     }
-}
-
-/// 1415938B0 reads `static_modifiers` from each strategic template. A later
-/// template for an ID replaces the earlier one (140AB1200).
-fn custom_sea_regions(
-    regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
-) -> BTreeSet<u32> {
-    regions
-        .iter()
-        .filter_map(|(&id, region)| region.static_modifiers.then_some(id))
-        .collect()
 }
 
 fn prepared_size(
@@ -815,6 +811,8 @@ impl Assets {
                 None
             }
         };
+        let naval_escape_defines = super::naval_escape::Defines::read(defines);
+        let naval_escape_screening = super::naval_escape::Screening::load(layers);
         let naval_air_groups =
             super::naval_air_groups::Content::load(layers, &mut warnings, equipment);
         // 141D8A3B0's six modifiers share 140600CF0's registered names.
@@ -863,7 +861,73 @@ impl Assets {
                     .collect()
             }
         };
-        let custom_sea_regions = custom_sea_regions(regions);
+        let screening_names = ["screening_bonus", "capital_screening_bonus"]; // 140600CF0
+        let naval_screening_modifiers =
+            match installed_content::static_modifiers::read_blocks(layers, &screening_names) {
+                Ok(blocks) => {
+                    warnings.extend(
+                        blocks
+                            .notes
+                            .into_iter()
+                            .map(|note| format!("Naval screening static modifiers: {note}")),
+                    );
+                    let mut blocks = blocks.blocks.into_iter();
+                    std::array::from_fn(|_| {
+                        blocks
+                            .next()
+                            .expect("one result per requested static block")
+                            .map_err(|refusal| {
+                                format!(
+                                    "{} in {}: {}",
+                                    refusal.modifier, refusal.file, refusal.reason
+                                )
+                            })
+                    })
+                }
+                Err(error) => std::array::from_fn(|index| {
+                    Err(format!(
+                        "{} in {}: {error}",
+                        screening_names[index],
+                        installed_content::static_modifiers::DIRECTORY
+                    ))
+                }),
+            };
+        let custom_names: Vec<String> = regions
+            .values()
+            .flat_map(|region| region.static_modifier_names.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let naval_custom_sea_modifiers = if custom_names.is_empty() {
+            BTreeMap::new()
+        } else {
+            let names: Vec<&str> = custom_names.iter().map(String::as_str).collect();
+            match installed_content::static_modifiers::read_blocks(layers, &names) {
+                Ok(blocks) => {
+                    warnings.extend(
+                        blocks
+                            .notes
+                            .into_iter()
+                            .map(|note| format!("Naval custom sea static modifiers: {note}")),
+                    );
+                    custom_names
+                        .into_iter()
+                        .zip(blocks.blocks.into_iter().map(|block| {
+                            block.map_err(|refusal| {
+                                format!(
+                                    "{} in {}: {}",
+                                    refusal.modifier, refusal.file, refusal.reason
+                                )
+                            })
+                        }))
+                        .collect()
+                }
+                Err(error) => custom_names
+                    .into_iter()
+                    .map(|name| (name.clone(), Err(format!("{name}: {error}"))))
+                    .collect(),
+            }
+        };
         let naval_terrain =
             super::naval_terrain::Content::load(layers, defines).map_err(|error| error.to_string());
         Ok(Self {
@@ -877,9 +941,12 @@ impl Assets {
             flags: Arc::clone(flags),
             convoy_weapon_bound,
             naval_defines,
+            naval_escape_defines,
+            naval_escape_screening,
             naval_air_groups,
             naval_weather_modifiers,
-            custom_sea_regions,
+            naval_screening_modifiers,
+            naval_custom_sea_modifiers,
             naval_terrain,
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),

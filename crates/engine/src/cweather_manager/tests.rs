@@ -1,6 +1,40 @@
 use super::*;
 use crate::memory::SliceMemory;
 
+#[test]
+fn custom_sea_reads_only_the_live_regions_ordered_active_words() {
+    const IMAGE: usize = 0x1400_0000;
+    const START: usize = 0x1000;
+    const MANAGER: usize = 0x1100;
+    const ROWS: usize = 0x1400;
+    const VALUES: usize = 0x1a00;
+    let mut bytes = vec![0_u8; 0x1000];
+    let mut put = |address: usize, value: &[u8]| {
+        bytes[address - START..address - START + value.len()].copy_from_slice(value);
+    };
+    put(MANAGER, &((IMAGE + VTABLE_RVA) as u64).to_le_bytes());
+    put(MANAGER + REGIONS, &(ROWS as u64).to_le_bytes());
+    put(MANAGER + REGIONS_COUNT, &3_i32.to_le_bytes());
+    let selected = ROWS + 2 * sweather_per_region::STRIDE;
+    put(
+        selected,
+        &((IMAGE + sweather_per_region::VTABLE_RVA) as u64).to_le_bytes(),
+    );
+    put(selected + sweather_per_region::ID, &2_i32.to_le_bytes());
+    put(selected + 0x30, &(VALUES as u64).to_le_bytes());
+    for (index, value) in [1_i16, 0, -3, 8].into_iter().enumerate() {
+        put(VALUES + index * 2, &value.to_le_bytes());
+    }
+    let memory = SliceMemory {
+        base: START,
+        bytes: &bytes,
+    };
+    let reader = Reader::with_manager(&memory, IMAGE, MANAGER).unwrap();
+    assert_eq!(reader.custom_sea(2, 4), Ok(vec![1, 0, -3, 8]));
+    assert_eq!(reader.custom_sea(2, 0), Ok(vec![]));
+    assert!(reader.custom_sea(3, 4).is_err());
+}
+
 struct ViewSource<'a> {
     memory: SliceMemory<'a>,
     enabled: bool,

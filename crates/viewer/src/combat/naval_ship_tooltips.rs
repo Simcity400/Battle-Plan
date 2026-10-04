@@ -12,7 +12,10 @@ use crate::{
 use installed_content::localisation::{Argument, Localisation};
 use replay::{
     frame::DecodedFrame,
-    rows::{NavalCombatShipRow, VariantDefinitionRow, tables},
+    rows::{
+        ModifierDefinitionRow, NavalCombatDetailsRow, NavalCombatShipRow, VariantDefinitionRow,
+        tables,
+    },
 };
 use std::{collections::BTreeMap, io};
 
@@ -22,6 +25,12 @@ struct VariantContext<'a> {
     tokens: Result<TokenNames<'a>, String>,
     countries: BTreeMap<u32, &'a replay::rows::CountryRow>,
     appearances: Result<BTreeMap<u32, &'a replay::rows::CountryAppearanceRow>, String>,
+    escape: EscapeContext<'a>,
+}
+
+struct EscapeContext<'a> {
+    details: Result<&'a [NavalCombatDetailsRow], String>,
+    definitions: Result<&'a [ModifierDefinitionRow], String>,
 }
 
 // Executable localisation keys used by 1417D3220, 1417DBBE0, 1415B3FB0,
@@ -40,6 +49,14 @@ super::text::tooltip_keys! {
     NAVAL_COMBAT_SHIP_TOOLTIP = "NAVAL_COMBAT_SHIP_TOOLTIP",
     NAVAL_COMBAT_SHIP_STRENGTH = "NAVAL_COMBAT_SHIP_STRENGTH",
     NAVAL_COMBAT_SHIP_ORGANIZATION_FACTOR = "NAVAL_COMBAT_SHIP_ORGANIZATION_FACTOR",
+    ESCAPE_PROGRESS = "ESCAPE_PROGRESS",
+    CHANCE_TO_ESCAPE = "CHANCE_TO_ESCAPE",
+    BASE_ESCAPE_SPEED = "BASE_ESCAPE_SPEED",
+    ESCAPE_SPEED_COMBAT_DURATION = "ESCAPE_SPEED_COMBAT_DURATION",
+    ESCAPE_SPEED_FROM_SHIP_SPEED = "ESCAPE_SPEED_FROM_SHIP_SPEED",
+    HIDDEN_SUBS_ESCAPE_BONUS = "HIDDEN_SUBS_ESCAPE_BONUS",
+    SUBS_ESCAPE_BONUS = "SUBS_ESCAPE_BONUS",
+    SCREENING_VALUE = "SCREENING_VALUE",
     NAVAL_COMBAT_HOURS_TO_ARRIVE = "NAVAL_COMBAT_HOURS_TO_ARRIVE",
     NAVAL_COMBAT_RECEIVED_CRITICALS = "NAVAL_COMBAT_RECEIVED_CRITICALS",
     CARRIER_PLANES_EVAC_STATUS_DESTROYED = "CARRIER_PLANES_EVAC_STATUS_DESTROYED",
@@ -82,6 +99,26 @@ pub(super) fn bind(
         appearances: rows::<tables::CountryAppearance>(frame)
             .map(|rows| rows.rows().iter().map(|row| (row.country, row)).collect())
             .map_err(|error| error.to_string()),
+        escape: EscapeContext {
+            details: rows::<tables::NavalCombatDetails>(frame)
+                .map_err(|error| error.to_string())
+                .and_then(|read| {
+                    if read.is_complete() {
+                        Ok(read.rows())
+                    } else {
+                        Err("NavalCombatDetails is incomplete".into())
+                    }
+                }),
+            definitions: rows::<tables::ModifierDefinitions>(frame)
+                .map_err(|error| error.to_string())
+                .and_then(|read| {
+                    if read.is_complete() {
+                        Ok(read.rows())
+                    } else {
+                        Err("ModifierDefinitions is incomplete".into())
+                    }
+                }),
+        },
     };
     let icons = &document.icons.combat;
     let loc = &document.names.localisation;
@@ -107,7 +144,17 @@ pub(super) fn bind(
             )
         };
         match built {
-            Ok(text) => set_hover(&mut entry.values, "icon", hover_text(&text), None),
+            Ok(text) => {
+                set_hover(&mut entry.values, "icon", hover_text(&text), None);
+                if !entry.unknown {
+                    for slot in &entry.battle_slots {
+                        if let Some(row) = by_slot.get(&(side, *slot)).filter(|row| row.state == 8)
+                        {
+                            refusals.push(escape_breakdown_refusal(row));
+                        }
+                    }
+                }
+            }
             Err(reasons) => {
                 set_hover(&mut entry.values, "icon", None, None);
                 for reason in reasons {
@@ -122,6 +169,18 @@ pub(super) fn bind(
         out.refuse(refusal);
     }
     Ok(())
+}
+
+fn escape_breakdown_refusal(row: &NavalCombatShipRow) -> String {
+    let missing = if row.live_ship != 0 {
+        "country, ship, doctrine, critical and HQ modifier breakdown"
+    } else {
+        "convoy escape chance and country/weather/terrain/commander modifier breakdown"
+    };
+    format!(
+        "Naval combat {} side {} slot {} {missing} is pending capture-on-change (14195C7D0, 14195EEC0, 14054D0F0).",
+        row.combat, row.side, row.battle_slot
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // The group's recorded rows and text resources.
@@ -267,12 +326,6 @@ fn member_tooltip(
     context: Option<&VariantContext<'_>>,
     recorded_language: Option<&str>,
 ) -> Result<String, String> {
-    if row.state == 8 {
-        return Err(format!(
-            "side {} slot {} state-8 escape chance needs 14195C7D0's uncaptured variant bonus definitions (+0xD0), saved named bonuses (+0xE8), creator/origin bonuses, dynamic +0x498/+0x4A4 and critical multipliers +0x58/+0x64 (hourly)",
-            row.side, row.battle_slot
-        ));
-    }
     let (name, kind) = if row.ship != 0 || row.live_ship != 0 {
         let language = recorded_language.ok_or_else(|| {
             format!(
@@ -394,6 +447,7 @@ fn member_tooltip(
         1 => FEX_STATE_WAITING,
         2 => FEX_STATE_FIGHTING,
         4 => FEX_STATE_ON_THE_WAY,
+        8 => FEX_STATE_ESCAPING,
         16 => FEX_STATE_RUN_AWAY,
         32 => FEX_STATE_SUNK,
         _ => {
@@ -445,9 +499,164 @@ fn member_tooltip(
             &[("NUM", Argument::Int32(row.arrival_hours))],
         )?);
     }
+    if row.state == 8 {
+        let context = context.ok_or_else(|| {
+            format!(
+                "side {} slot {} has no naval escape tooltip context",
+                row.side, row.battle_slot,
+            )
+        })?;
+        text.push_str(&escape_description(row, icons, loc, context)?);
+    }
     criticals_and_damage(&mut text, row, icons, loc)?;
     air_hits(&mut text, row, variants, icons, loc, context)?;
     Ok(text)
+}
+
+/// 1417D3220 appends the stored escape progress, the on-demand 14195C7D0
+/// chance where its source terms are recorded. Numeric defines come from the
+/// content stack; child descriptions are pending capture-on-change.
+fn escape_description(
+    row: &NavalCombatShipRow,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+    context: &VariantContext<'_>,
+) -> Result<String, String> {
+    let details = context.escape.details.as_ref().map_err(Clone::clone)?;
+    let combat = details
+        .iter()
+        .find(|detail| detail.combat == row.combat)
+        .ok_or_else(|| format!("naval combat {} has no detail row for escape", row.combat))?;
+    let side = combat
+        .sides
+        .get(row.side as usize)
+        .ok_or_else(|| format!("naval combat {} has no side {}", row.combat, row.side))?;
+    let definitions = if row.live_ship != 0 {
+        context
+            .escape
+            .definitions
+            .as_ref()
+            .map_err(Clone::clone)?
+            .iter()
+            .map(|definition| (definition.index, definition))
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    let assets = &context.document.icons.combat;
+    let defines = assets.naval_escape_defines.as_ref().map_err(Clone::clone)?;
+    let keys: &[u32] = if row.live_ship != 0 {
+        if row.formation_flags & (1 << 7) != 0 {
+            &[0x5c]
+        } else if combat.duration > defines.initial_duration {
+            &[0x5b, 0x59]
+        } else {
+            &[0x5b]
+        }
+    } else if row.live_convoy != 0 {
+        &[0x5d]
+    } else {
+        return Err(format!(
+            "side {} slot {} state-8 has no live ship or convoy",
+            row.side, row.battle_slot
+        ));
+    };
+    let mut modifiers = 0_i64;
+    let mut by_key = Vec::new();
+    for &key in keys.iter().filter(|_| row.live_ship != 0) {
+        let (total, screening) = super::naval_escape::modifier_value(
+            row,
+            side,
+            key,
+            &assets.naval_escape_screening,
+            &definitions,
+        )?;
+        modifiers = modifiers.wrapping_add(total);
+        by_key.push((key, screening));
+    }
+    let speed_modifier = if row.live_ship != 0 {
+        super::naval_environment::modifier_default_leader(
+            &row.weapon_context,
+            engine::modifier_keys::NAVAL_SPEED_FACTOR,
+        )
+        .ok_or_else(|| {
+            format!(
+                "side {} slot {} naval speed modifier sources are unsupported",
+                row.side, row.battle_slot
+            )
+        })?
+    } else {
+        0
+    };
+    let parts =
+        super::naval_escape::chance(row, combat.duration, modifiers, speed_modifier, defines);
+    escape_text(row, parts, &by_key, row.live_ship != 0, icons, loc)
+}
+
+/// 14195C7D0's recorded state-8 lines in native order. A convoy's modifier
+/// roots were supplied only by the retired tree capture, so its chance waits.
+fn escape_text(
+    row: &NavalCombatShipRow,
+    parts: super::naval_escape::Parts,
+    by_key: &[(u32, i64)],
+    chance_supported: bool,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+) -> Result<String, String> {
+    let mut out = String::new();
+    out.push('\n');
+    out.push_str(&builtin(
+        icons,
+        loc,
+        ESCAPE_PROGRESS,
+        &[("NUM", Argument::Fixed5(row.escape_progress))],
+    )?);
+    out.push('\n');
+    if chance_supported {
+        out.push_str(&builtin(
+            icons,
+            loc,
+            CHANCE_TO_ESCAPE,
+            &[("NUM", Argument::Fixed5(parts.total))],
+        )?);
+        out.push('\n');
+    }
+    let line = |key, value| builtin(icons, loc, key, &[("NUM", Argument::Fixed5(value))]);
+    if parts.base != 0 {
+        out.push_str("  ");
+        out.push_str(&line(BASE_ESCAPE_SPEED, parts.base)?);
+        out.push('\n');
+    }
+    if parts.duration != 0 {
+        out.push_str("  ");
+        out.push_str(&line(ESCAPE_SPEED_COMBAT_DURATION, parts.duration)?);
+        out.push('\n');
+    }
+    for &(_, screening) in by_key {
+        if screening != 0 {
+            out.push_str("  ");
+            out.push_str(&line(SCREENING_VALUE, screening)?);
+            out.push('\n');
+        }
+    }
+    if parts.ship_speed != 0 {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("  ");
+        out.push_str(&line(ESCAPE_SPEED_FROM_SHIP_SPEED, parts.ship_speed)?);
+        out.push('\n');
+    }
+    if row.detection_state == 0 {
+        out.push_str("  ");
+        out.push_str(&line(HIDDEN_SUBS_ESCAPE_BONUS, parts.detection)?);
+        out.push('\n');
+    } else if row.live_ship != 0 && row.formation_flags & (1 << 7) != 0 {
+        out.push_str("  ");
+        out.push_str(&line(SUBS_ESCAPE_BONUS, parts.detection)?);
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// 1417D3220 resolves evacuation state +0x128, then reads its
@@ -607,12 +816,99 @@ mod tests {
     use super::*;
     use crate::combat::binding::NoIcons;
 
+    #[test]
+    fn escaping_member_section_has_native_newlines_and_source_order() {
+        let localisation: Localisation = [
+            ("ESCAPE_PROGRESS", "Progress|"),
+            ("CHANCE_TO_ESCAPE", "Chance|"),
+            ("BASE_ESCAPE_SPEED", "Base|"),
+            ("ESCAPE_SPEED_COMBAT_DURATION", "Duration|"),
+            ("ESCAPE_SPEED_FROM_SHIP_SPEED", "Speed|"),
+            ("HIDDEN_SUBS_ESCAPE_BONUS", "Hidden|"),
+        ]
+        .into_iter()
+        .map(|(key, text)| (key.to_owned(), text.to_owned()))
+        .collect();
+        let row = NavalCombatShipRow {
+            state: 8,
+            live_ship: 1,
+            detection_state: 0,
+            escape_progress: 50_000,
+            ..Default::default()
+        };
+        let parts = super::super::naval_escape::Parts {
+            base: 10_000,
+            duration: 20_000,
+            modifiers: 0,
+            ship_speed: 630,
+            detection: 5_000,
+            total: 35_630,
+        };
+        assert_eq!(
+            escape_text(&row, parts, &[], true, &NoIcons, &localisation).unwrap(),
+            "\nProgress|\nChance|\n  Base|\n  Duration|\n  Speed|\n  Hidden|\n"
+        );
+    }
+
+    #[test]
+    fn convoy_escape_keeps_stored_lines_without_inventing_a_chance() {
+        // Deliberately no CHANCE_TO_ESCAPE localisation: that unrecorded
+        // value must not be formatted, even as a zero/default chance.
+        let localisation: Localisation = [
+            ("ESCAPE_PROGRESS", "Progress $NUM$"),
+            ("BASE_ESCAPE_SPEED", "Base $NUM$"),
+            ("ESCAPE_SPEED_COMBAT_DURATION", "Duration $NUM$"),
+            ("ESCAPE_SPEED_FROM_SHIP_SPEED", "Speed $NUM$"),
+            ("HIDDEN_SUBS_ESCAPE_BONUS", "Hidden $NUM$"),
+        ]
+        .into_iter()
+        .map(|(key, text)| (key.to_owned(), text.to_owned()))
+        .collect();
+        let row = NavalCombatShipRow {
+            combat: 42,
+            side: 1,
+            battle_slot: 7,
+            state: 8,
+            live_convoy: 1,
+            detection_state: 0,
+            escape_progress: 50_000,
+            ..Default::default()
+        };
+        let parts = super::super::naval_escape::Parts {
+            base: 10_000,
+            duration: 20_000,
+            modifiers: 0,
+            ship_speed: 630,
+            detection: 5_000,
+            total: 35_630,
+        };
+        let text = escape_text(&row, parts, &[], false, &NoIcons, &localisation).unwrap();
+        assert_eq!(
+            text,
+            "\nProgress 0.50\n  Base 0.10\n  Duration 0.20\n  Speed 0.00\n  Hidden 0.05\n"
+        );
+
+        let mut out = Bindings::default();
+        set_hover(&mut out.values, "icon", hover_text(&text), None);
+        let refusal = escape_breakdown_refusal(&row);
+        out.refuse(refusal.clone());
+        out.refuse(refusal.clone());
+        assert_eq!(out.refused()[&refusal], 2);
+        assert!(refusal.contains("convoy escape chance"));
+        assert!(refusal.contains("pending capture-on-change"));
+        assert_eq!(
+            out.values["icon"].tooltip.as_deref(),
+            Some("Progress 0.50\n  Base 0.10\n  Duration 0.20\n  Speed 0.00\n  Hidden 0.05")
+        );
+    }
+
     fn loc() -> Localisation {
         [
             ("SHIP_AND_TYPE", "$SHIP$:$TYPE$"),
             ("NAVAL_COMBAT_SHIP_TOOLTIP", "$FLAG$ $NAME$ $STATUS$|"),
             ("FEX_STATE_FIGHTING", "fighting"),
             ("FEX_STATE_ON_THE_WAY", "incoming"),
+            ("FEX_STATE_ESCAPING", "escaping"),
             ("FEX_STATE_SUNK", "sunk"),
             ("SHIP_SUNK_BY", "sunk by $NAME$"),
             ("NAVAL_COMBAT_SHIP_STRENGTH", "S$STR$|"),
@@ -665,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_ship_text_draws_in_recorded_language_and_escape_is_refused() {
+    fn cached_ship_text_draws_in_recorded_language_and_escape_requires_context() {
         let ship = NavalCombatShipRow {
             side: 1,
             battle_slot: 9,
@@ -718,6 +1014,8 @@ mod tests {
         assert!(!live_text.contains("sunk by the carrier"));
         let mut escaping = ship;
         escaping.state = 8;
+        escaping.live_convoy = 1;
+        escaping.base_organisation = 100_000;
         let reason = member_tooltip(
             &escaping,
             "AAA",
@@ -728,7 +1026,7 @@ mod tests {
             Some("english"),
         )
         .unwrap_err();
-        assert!(reason.contains("14195C7D0"));
+        assert!(reason.contains("naval escape tooltip context"), "{reason}");
     }
 
     #[test]

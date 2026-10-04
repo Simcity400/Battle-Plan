@@ -66,6 +66,49 @@ fn air_base_wing_rows_must_be_exactly_the_referenced_bases_in_the_air_censuses()
 
 use replay::rows::{LandCombatCommanderTimedTrait, LandCombatSideDetails};
 
+#[test]
+fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
+    let date = installed_content::save::SavedDate::parse(b"1936.1.1.1").unwrap();
+    let mut saved = installed_content::save::combat_details::NavalPlane {
+        source: 0,
+        group_index: 0,
+        index: 0,
+        names: vec![b"Spitfire".to_vec(), b"Hurricane".to_vec()],
+        carrier: None,
+        air_base: None,
+        wings: [Vec::new(), Vec::new()],
+        initial: 0,
+        current: 0,
+        casualties: 0,
+        time_duration: 0,
+        country: b"---".to_vec(),
+        date,
+        flags: [false; 2],
+        name: b"Mediterranean".to_vec(),
+        damage_mult: installed_content::save::Decimal::parse(b"1").unwrap(),
+        naval_hits: Vec::new(),
+        air_hits: Vec::new(),
+    };
+    let row = replay::rows::NavalCombatPlane {
+        carrier_slot: -1,
+        date: date.engine_hour().unwrap(),
+        ..Default::default()
+    };
+    let compare = |saved: &installed_content::save::combat_details::NavalPlane| {
+        let mut report = Report::default();
+        plane_values(&mut report, "plane", &row, saved, &BTreeMap::new()).unwrap();
+        report.differences
+    };
+    assert!(compare(&saved).is_empty());
+    saved.name = b"Atlantic".to_vec();
+    saved.names.swap(0, 1);
+    assert!(compare(&saved).is_empty());
+    saved.current = 1;
+    let differences = compare(&saved);
+    assert_eq!(differences.len(), 1, "{differences:?}");
+    assert!(differences[0].contains("plane current:"));
+}
+
 /// Each side's task forces compare with the saved `unit` list in writer order.
 #[test]
 fn naval_side_units_compare_with_the_saved_unit_list_in_order() {
@@ -201,7 +244,10 @@ fn null_naval_commander_is_a_limitation_only_at_an_observed_load_hour() {
                 duration: Some(0),
                 progress: Some(zero.clone()),
                 leaders: [Some(leader), None],
-                escort_bonus: [Some(zero.clone()), Some(zero)],
+                escort_bonus: [Some(zero.clone()), Some(zero.clone())],
+                original_health: [Some(zero.clone()), Some(zero.clone())],
+                total_damage: [Some(zero.clone()), Some(zero.clone())],
+                damage_history: [Some(vec![zero.clone(); 36]), Some(vec![zero; 36])],
                 ..Default::default()
             },
         },

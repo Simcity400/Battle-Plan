@@ -4,6 +4,8 @@ use crate::{Memory, cnaval_combatant::field};
 pub const VTABLE_RVA: usize = 0x02a2_3ed8;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
+    /// 141AC3720 reads the stored variant speed at +0x208.
+    pub speed: i64,
     pub strength: i64,
     pub organisation: i64,
     pub maximum_strength: i64,
@@ -16,6 +18,7 @@ pub(crate) fn read(
     base: usize,
     pointer: usize,
     handle: u64,
+    wants_speed: bool,
 ) -> Result<Row, &'static str> {
     if field::<u64>(memory, pointer, 0)?
         != base
@@ -34,10 +37,58 @@ pub(crate) fn read(
         return Err("convoy ship variant identity mismatch");
     }
     let row = Row {
+        speed: if wants_speed {
+            field(memory, variant, 0x208)?
+        } else {
+            0
+        },
         strength: field(memory, pointer, 0x20)?,
         organisation: field(memory, pointer, 0x28)?,
         maximum_strength: field(memory, variant, 0x2e8)?,
         maximum_organisation: field(memory, variant, 0x2e0)?,
     };
     Ok(row)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    #[test]
+    fn convoy_speed_comes_from_stored_variant_at_208() {
+        let mut bytes = [0_u8; 0x500];
+        let put = |bytes: &mut [u8], at: usize, value: u64| {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        put(&mut bytes, 0x80, VTABLE_RVA as u64);
+        put(&mut bytes, 0x88, 0x9876);
+        put(&mut bytes, 0x98, 0x200);
+        put(
+            &mut bytes,
+            0x200,
+            crate::cequipment_variant::VTABLE_RVA as u64,
+        );
+        put(&mut bytes, 0x408, 321_000);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(read(&memory, 0, 0x80, 0x9876, true).unwrap().speed, 321_000);
+        assert_eq!(read(&memory, 0, 0x80, 0x9876, false).unwrap().speed, 0);
+        put(&mut bytes, 0x200, 0);
+        assert_eq!(
+            read(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes
+                },
+                0,
+                0x80,
+                0x9876,
+                true
+            ),
+            Err("convoy ship variant identity mismatch")
+        );
+    }
 }

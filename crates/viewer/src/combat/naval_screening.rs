@@ -13,15 +13,18 @@ pub(super) struct Screening {
     pub capital: i64,
     /// Capitals protecting carriers and convoys (the carrier GUI percentage).
     pub carrier: i64,
+    /// The zero-screen country correction was positive. 14160A7B0 appends
+    /// its 0x1B3 breakdown even when this is false and the branch ran.
+    pub country_bonus_applied: bool,
 }
 
 #[derive(Default)]
-struct Census {
-    capitals: i64,
-    screens: i64,
-    carriers: i64,
-    convoys: i64,
-    eligible_submarines: i64,
+pub(super) struct Census {
+    pub capitals: i64,
+    pub screens: i64,
+    pub carriers: i64,
+    pub convoys: i64,
+    pub eligible_submarines: i64,
 }
 
 // 140551820: absent or feature-ineligible modifiers contribute zero. Metadata
@@ -50,7 +53,7 @@ fn modifier(summary: &NavalCombatSummaryInputs, source: usize, key: usize) -> Op
 // 14047BDE0 divides signed fixed5 by ONE and rounds upward only when a
 // positive remainder was truncated. Thus negative fractional demand rounds
 // toward zero, as the native routine does.
-fn ceil_fixed(value: i64) -> i64 {
+pub(super) fn ceil_fixed(value: i64) -> i64 {
     value / ONE + i64::from(value > 0 && value % ONE != 0)
 }
 
@@ -89,7 +92,7 @@ fn efficiency(count: i64, demand: i64, factor: i64) -> i64 {
 /// 14160A7B0 calls 141C55600 with state mask 0xB and detection parameter 1.
 /// Parameter 1 bypasses the detection filter. Only registered forward groups
 /// enter either census; a live ship and convoy reference are tested separately.
-fn census(
+pub(super) fn census(
     combat: u64,
     side: u8,
     ships: &[NavalCombatShipRow],
@@ -176,12 +179,14 @@ pub(super) fn calculate(
             ),
     );
     let mut capital = efficiency(counts.screens, screen_demand, factor);
+    let mut country_bonus_applied = false;
     if capital == 0 && !summary.countries.is_empty() && counts.eligible_submarines == 0 {
         let bonus =
             modifier(summary, 0, 3).ok_or("convoy screening modifier callback is unsupported")?;
         if bonus > 0 {
             // Native applies this after the first clamp, with no second cap.
             capital = capital.wrapping_add(bonus);
+            country_bonus_applied = true;
         }
     }
     let capital_demand = ceil_fixed(
@@ -191,7 +196,11 @@ pub(super) fn calculate(
             .wrapping_add(counts.carriers.wrapping_mul(defines.summary_fixed[10])),
     );
     let carrier = efficiency(counts.capitals, capital_demand, factor);
-    Ok(Screening { capital, carrier })
+    Ok(Screening {
+        capital,
+        carrier,
+        country_bonus_applied,
+    })
 }
 
 #[cfg(test)]
@@ -209,6 +218,9 @@ mod tests {
             sortie_stance_ratios: Vec::new(),
             base_carrier_sortie_efficiency: 0,
             selected_sortie_initial_time: 0,
+            piercing_thresholds: Vec::new(),
+            piercing_critical_values: Vec::new(),
+            positioning_impacts: [0; 3],
         }
     }
 
@@ -248,7 +260,8 @@ mod tests {
             calculate(0, 0, &detail, &[], &models(&[]), &defines()),
             Ok(Screening {
                 capital: ONE,
-                carrier: ONE
+                carrier: ONE,
+                country_bonus_applied: false,
             })
         );
         assert_eq!(ceil_fixed(100_001), 2);
@@ -275,7 +288,8 @@ mod tests {
             calculate(0, 0, &side, &ships, &models(&[]), &authored),
             Ok(Screening {
                 capital: 10_000,
-                carrier: 40_000
+                carrier: 40_000,
+                country_bonus_applied: false,
             })
         );
         assert_eq!(efficiency(2, 3, 70_000), 46_666);
@@ -298,7 +312,8 @@ mod tests {
             ),
             Ok(Screening {
                 capital: 1_000,
-                carrier: ONE
+                carrier: ONE,
+                country_bonus_applied: false,
             })
         );
     }
@@ -413,7 +428,8 @@ mod tests {
             ),
             Ok(Screening {
                 capital: 120_000,
-                carrier: ONE
+                carrier: ONE,
+                country_bonus_applied: true,
             })
         );
         let submarine = member(2, 1 << 7);
