@@ -4,7 +4,7 @@ impl Database {
     /// [`Database::apply`] as a result: its notes, or its refusal.
     fn applied(&mut self, bytes: &[u8]) -> io::Result<Vec<String>> {
         match self.apply(bytes, &KeyNames::default()) {
-            (notes, None) => Ok(notes),
+            (notes, None) => Ok(notes.into_iter().map(|(_, message)| message).collect()),
             (_, Some(refusal)) => Err(invalid(refusal)),
         }
     }

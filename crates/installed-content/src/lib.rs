@@ -81,3 +81,42 @@ pub use content::{
     GatherOptions, GatheredContent, HashStats, ResolveOptions, ResolvedContent, ResolvedLayer,
     ResolvedLayers, gather, resolve,
 };
+
+/// Severity assigned where a content reader creates a diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DiagnosticKind {
+    /// Text the tree parser cannot parse.
+    ParseFailure,
+    /// The native reader reports a field and continues.
+    Misread,
+    /// Reading stops before the rest of a file can be determined.
+    Unsettled,
+    /// The port does not model this form.
+    Unsupported,
+    /// A definition or lookup cannot be used.
+    Refused,
+    /// The game logs an error and continues.
+    Logged,
+    /// Another content note that does not prevent its use.
+    Warning,
+}
+
+/// A diagnostic's producer-assigned kind and unchanged message.
+pub type Diagnostic = (DiagnosticKind, String);
+
+/// How a consumer takes a producer's diagnostic.
+pub trait DiagnosticMessage: Sized {
+    fn from_diagnostic(note: Diagnostic) -> Self;
+}
+
+impl DiagnosticMessage for Diagnostic {
+    fn from_diagnostic(note: Diagnostic) -> Self {
+        note
+    }
+}
+
+impl DiagnosticMessage for String {
+    fn from_diagnostic((_, message): Diagnostic) -> Self {
+        message
+    }
+}

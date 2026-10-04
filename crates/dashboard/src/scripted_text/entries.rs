@@ -103,7 +103,7 @@ pub(crate) fn read_state_content(
         defines,
         states,
         names,
-        warnings,
+        warnings: warnings.into_iter().map(|(_, message)| message).collect(),
     })
 }
 

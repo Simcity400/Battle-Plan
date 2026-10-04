@@ -43,15 +43,18 @@ enum Node {
 pub fn parse_equipment(
     input: &[u8],
     names: &KeyNames,
-) -> io::Result<(EquipmentLinks, Vec<String>)> {
-    parse_with_registry(input, &units::Registry::default(), names)
+) -> io::Result<(EquipmentLinks, Vec<crate::Diagnostic>)> {
+    parse_with_registry(input, &units::Registry::default(), names).map_err(|(_, error)| error)
 }
 
 fn parse_with_registry(
     input: &[u8],
     registry: &units::Registry,
     names: &KeyNames,
-) -> io::Result<(EquipmentLinks, Vec<String>)> {
+) -> Result<
+    (EquipmentLinks, Vec<(crate::DiagnosticKind, String)>),
+    (crate::DiagnosticKind, io::Error),
+> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -184,13 +187,16 @@ fn parse_with_registry(
         },
     );
     if let Some(cause) = read.unsettled {
-        return Err(invalid(format!("technology: {cause}")));
+        return Err((cause.kind, invalid(format!("technology: {cause}"))));
     }
     if let Some(cause) = refused.first() {
-        return Err(invalid(cause));
+        return Err((crate::DiagnosticKind::Refused, invalid(cause)));
     }
     if let Some(cause) = undecided.first() {
-        return Err(invalid(format!("technology: {cause}")));
+        return Err((
+            crate::DiagnosticKind::Unsettled,
+            invalid(format!("technology: {cause}")),
+        ));
     }
     let mut result = BTreeMap::new();
     for root in read
@@ -202,7 +208,12 @@ fn parse_with_registry(
             let token = std::str::from_utf8(crate::parser::c_string(
                 technology.key.as_deref().unwrap_or_default(),
             ))
-            .map_err(|_| invalid("technology token is not UTF-8"))?;
+            .map_err(|_| {
+                (
+                    crate::DiagnosticKind::Refused,
+                    invalid("technology token is not UTF-8"),
+                )
+            })?;
             let mut unlocks: Vec<String> = Vec::new();
             let mut conditional = false;
             for field in technology.value.items().unwrap_or_default() {
@@ -226,9 +237,12 @@ fn parse_with_registry(
                                 && values[4].value.scalar() == Some(b"=")
                                 && values[5].number();
                         if !valid {
-                            return Err(invalid(format!(
-                                "technology {token} folder position: unsupported vector form"
-                            )));
+                            return Err((
+                                crate::DiagnosticKind::Unsupported,
+                                invalid(format!(
+                                    "technology {token} folder position: unsupported vector form"
+                                )),
+                            ));
                         }
                     }
                 }
@@ -245,13 +259,18 @@ fn parse_with_registry(
                     if equipment.value_keyword().as_deref() == Some("limit")
                         || matches!(equipment.kind, native::Kind::Open | native::Kind::Equals)
                     {
-                        return Err(invalid(format!(
-                            "technology {token} enable_equipments: unsupported conditional or nested unlock"
-                        )));
+                        return Err((
+                            crate::DiagnosticKind::Unsupported,
+                            invalid(format!(
+                                "technology {token} enable_equipments: unsupported conditional or nested unlock"
+                            )),
+                        ));
                     }
-                    let name = equipment.value.read_str().map_err(|e| {
-                        invalid(format!("technology {token} enable_equipments: {e}"))
-                    })?;
+                    let name = equipment
+                        .value
+                        .read_str()
+                        .map_err(|e| invalid(format!("technology {token} enable_equipments: {e}")))
+                        .map_err(|error| (crate::DiagnosticKind::Refused, error))?;
                     if !unlocks.iter().any(|old| old.eq_ignore_ascii_case(name)) {
                         unlocks.push(name.into());
                     }
@@ -265,13 +284,19 @@ fn parse_with_registry(
     }
     Ok((
         result,
-        read.misreads.iter().map(ToString::to_string).collect(),
+        read.misreads
+            .iter()
+            .map(|note| (note.kind, note.to_string()))
+            .collect(),
     ))
 }
 
 pub fn read_equipment(
     layers: &ResolvedLayers,
-) -> io::Result<(BTreeMap<String, String>, Vec<String>)> {
+) -> io::Result<(
+    BTreeMap<String, String>,
+    Vec<(crate::DiagnosticKind, String)>,
+)> {
     let registry = units::Registry::read(layers)?;
     let names = layers.key_names()?;
     let mut result = BTreeMap::new();
@@ -281,10 +306,15 @@ pub fn read_equipment(
         match parse_with_registry(&layers.read(&path)?, &registry, &names) {
             Ok((definitions, notes)) => {
                 result.extend(definitions);
-                warnings.extend(notes.into_iter().map(|note| format!("{path}: {note}")));
+                warnings.extend(
+                    notes
+                        .into_iter()
+                        .map(|(kind, note)| (kind, format!("{path}: {note}"))),
+                );
             }
-            Err(error) => warnings.push(format!(
-                "Technology equipment links unavailable in {path}: {error}"
+            Err((kind, error)) => warnings.push((
+                kind,
+                format!("Technology equipment links unavailable in {path}: {error}"),
             )),
         }
     }
@@ -578,6 +608,14 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("enable_equipments.limit"));
+        let kind = parse_with_registry(
+            b"technologies={a={enable_equipments={limit={always=no} one two}}}",
+            &units::Registry::default(),
+            &KeyNames::default(),
+        )
+        .unwrap_err()
+        .0;
+        assert_eq!(kind, crate::DiagnosticKind::Unsettled);
     }
 
     #[test]
@@ -609,6 +647,7 @@ mod tests {
         assert!(
             parse_with_registry(input, &units, &names)
                 .unwrap_err()
+                .1
                 .to_string()
                 .contains("category_leg_infantry")
         );

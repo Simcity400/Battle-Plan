@@ -368,7 +368,13 @@ impl Catalogue {
             .unwrap_or_else(|error| error.into_inner())
             .lines("texts are");
         if let Some(Ok(scripted)) = self.scripted.get() {
-            lines.extend(scripted.names.warnings.iter().cloned());
+            lines.extend(
+                scripted
+                    .names
+                    .warnings
+                    .iter()
+                    .map(|(_, message)| message.clone()),
+            );
             if let Some(Ok(environment)) = scripted.environment.get() {
                 lines.extend(environment.warnings.iter().cloned());
             }

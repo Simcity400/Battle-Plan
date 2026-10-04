@@ -130,19 +130,19 @@ fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
     );
     let refused = warnings
         .iter()
-        .find(|w| w.contains("failed native numeric conversion") && w.contains("mod_law"))
+        .find(|w| w.1.contains("failed native numeric conversion") && w.1.contains("mod_law"))
         .expect("refused forms are counted");
     for named in [
         "mod_law: removal_cost = [?scripted]",
         "mod_law: stability_factor = [?mod_value]",
     ] {
-        assert!(refused.contains(named), "{named} in {refused}");
+        assert!(refused.1.contains(named), "{named} in {refused:?}");
     }
-    assert!(refused.contains("2 content values"), "{refused}");
+    assert!(refused.1.contains("2 content values"), "{refused:?}");
     assert!(
         warnings
             .iter()
-            .any(|w| w.contains("mod_council: cost = @council_cost")),
+            .any(|w| w.1.contains("mod_council: cost = @council_cost")),
         "{warnings:?}"
     );
 }
@@ -187,7 +187,7 @@ fn a_mod_ideology_brings_its_colour_and_a_replaced_folder_drops_the_base_ones() 
     assert!(
         warnings
             .iter()
-            .any(|w| w.contains("mystic") && w.contains("packed colour 16711680")),
+            .any(|w| w.1.contains("mystic") && w.1.contains("packed colour 16711680")),
         "{warnings:?}"
     );
     // replace_path hides every base ideology.
@@ -233,7 +233,11 @@ fn every_portrait_role_the_engine_accepts_is_read_and_others_are_refused_by_name
             "GFX_scholar_small".into()
         ))
     );
-    let refused = warnings.join("; ");
+    let refused = warnings
+        .iter()
+        .map(|(_, message)| message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         refused.contains("MOD_wrong: portrait role `airforce` is not one the game reads"),
         "{refused}"
@@ -380,7 +384,7 @@ fn a_mod_resource_takes_its_frame_through_a_file_variable() {
     assert!(
         warnings
             .iter()
-            .any(|w| w.contains("mod_gas: icon_frame = @missing")),
+            .any(|w| w.1.contains("mod_gas: icon_frame = @missing")),
         "{warnings:?}"
     );
 }
@@ -777,7 +781,7 @@ fn resource_and_modifier_integer_notes_do_not_count_misread_blocks_as_scans() {
         assert!(
             notes
                 .iter()
-                .all(|note| !note.contains("numeric conversion")),
+                .all(|note| !note.1.contains("numeric conversion")),
             "{notes:?}"
         );
     }
@@ -802,7 +806,7 @@ fn resource_and_modifier_integer_notes_do_not_count_misread_blocks_as_scans() {
         assert!(
             notes
                 .iter()
-                .any(|note| note.contains(&format!("{key} = \u{fffd}"))),
+                .any(|note| note.1.contains(&format!("{key} = \u{fffd}"))),
             "{notes:?}"
         );
     }
@@ -970,5 +974,34 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
             .map(|r| (r.token.as_str(), r.icon_frame))
             .collect::<Vec<_>>(),
         [("oil", Some(1)), ("oil", None), ("oil", Some(5))]
+    );
+}
+
+#[test]
+fn name_reader_kinds_follow_logged_fields() {
+    let stack = Stack::new("name_kinds");
+    stack.write(
+        &stack.addon(),
+        "common/units/names_divisions/mod.txt",
+        "Mod = { type = unknown_type prefix = { lost } }",
+    );
+    let layers = stack.layers(&[]);
+    let (_, notes) = crate::division_names::read(&layers).unwrap();
+    assert!(
+        notes
+            .iter()
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Logged)
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread)
+    );
+    let groups = crate::raids::names::Groups::read(&layers).unwrap();
+    assert!(
+        groups
+            .warnings
+            .iter()
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Logged)
     );
 }

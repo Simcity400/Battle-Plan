@@ -175,7 +175,7 @@ fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
         .clone()
         .ok_or_else(|| crate::invalid(format!("{name} has no texture")))?;
     let (resources, notes) = installed_content::resources::read(view.layers)?;
-    warnings.extend(notes);
+    warnings.extend(notes.into_iter().map(|(_, message)| message));
     let mut icon_frames: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
     for resource in resources {
         icon_frames

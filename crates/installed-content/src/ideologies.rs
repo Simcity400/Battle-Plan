@@ -351,17 +351,21 @@ pub fn parse(input: &[u8]) -> Vec<Ideology> {
 
 /// Every ideology group in native file order (1401886F0): one CReader per
 /// enumerated file. The first file defining a group owns it (140A38190).
-pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<String>)> {
+pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result = Ideologies::default();
     for path in script_files::paths(layers, "common/ideologies/", None) {
         result.coverage.next_file();
         let (read, undecided, refused) = read_file_in(&layers.read(&path)?, &path, &result.frames);
-        warnings.extend(refused);
+        warnings.extend(
+            refused
+                .into_iter()
+                .map(|message| (crate::DiagnosticKind::Refused, message)),
+        );
         warnings.extend(
             read.misreads
                 .iter()
-                .map(|misread| format!("Ideologies in {path}: {misread}.")),
+                .map(|misread| (misread.kind, format!("Ideologies in {path}: {misread}."))),
         );
         // A modifier block the registry decides, or a block the port cannot
         // settle, leaves the rest of the file unknown: every group the file
@@ -369,13 +373,17 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<String>)> {
         let (_, unheld) = groups(&read.items);
         let stop = undecided
             .first()
-            .map(ToString::to_string)
-            .or_else(|| read.unsettled.as_ref().map(ToString::to_string))
-            .or(unheld);
-        if let Some(cause) = &stop {
-            warnings.push(format!(
+            .map(|cause| (crate::DiagnosticKind::Unsettled, cause.to_string()))
+            .or_else(|| {
+                read.unsettled
+                    .as_ref()
+                    .map(|cause| (cause.kind, cause.to_string()))
+            })
+            .or_else(|| unheld.map(|cause| (crate::DiagnosticKind::Unsettled, cause)));
+        if let Some((kind, cause)) = &stop {
+            warnings.push((*kind, format!(
                 "Ideologies in {path} are unknown from {cause}; every group it could declare is refused."
-            ));
+            )));
             result.coverage.gap(&path, cause.clone());
         }
         number_groups(&path, &read.items, &mut result.frames);
@@ -415,9 +423,9 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<String>)> {
     }
     for group in &result.groups {
         if let Err(cause) = &group.color {
-            warnings.push(format!(
-                "Ideology {}'s colour is refused: {cause}.",
-                group.token
+            warnings.push((
+                crate::DiagnosticKind::Refused,
+                format!("Ideology {}'s colour is refused: {cause}.", group.token),
             ));
         }
     }

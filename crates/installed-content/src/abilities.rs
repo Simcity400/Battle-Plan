@@ -31,7 +31,7 @@ pub struct AbilitySprites {
     pub by_token: BTreeMap<Vec<u8>, String>,
     /// Native reading notes and counted deferred effect warnings, with
     /// file/line context when loaded through the recorded stack.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<crate::Diagnostic>,
 }
 
 impl AbilitySprites {
@@ -45,7 +45,7 @@ fn apply_with_terrain(
     sprites: &mut AbilitySprites,
     terrains: &BTreeSet<Vec<u8>>,
     names: &KeyNames,
-) -> io::Result<Vec<String>> {
+) -> io::Result<Vec<crate::Diagnostic>> {
     /// Each declaration is a new CAbility (140606A40 -> 140FF44E0), its
     /// adjusters (+0x538) shared by all its `unit_modifiers` blocks.
     #[derive(Clone, Copy)]
@@ -190,7 +190,11 @@ fn apply_with_terrain(
                 .insert(token.to_vec(), format!("{base}_animated"));
         }
     }
-    Ok(document.misreads.iter().map(ToString::to_string).collect())
+    Ok(document
+        .misreads
+        .iter()
+        .map(|note| (note.kind, note.to_string()))
+        .collect())
 }
 
 /// Every effective `common/abilities/*.txt` in the byte order the database
@@ -217,9 +221,9 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
     for path in paths {
         let notes = apply_with_terrain(&layers.read(&path)?, &mut sprites, &terrains, &names)
             .map_err(|error| invalid(format!("{path}: {error}")))?;
-        sprites
-            .warnings
-            .extend(notes.into_iter().map(|note| format!("{path}: {note}")));
+        for (kind, note) in notes {
+            sprites.warnings.push((kind, format!("{path}: {note}")));
+        }
     }
     Ok(sprites)
 }
@@ -227,6 +231,23 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ability_notes_keep_native_kind() {
+        let notes = apply_with_terrain(
+            b"ability = { a = { duration = { x = 1 } } }",
+            &mut AbilitySprites::default(),
+            &BTreeSet::new(),
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread),
+            "{notes:?}"
+        );
+    }
 
     fn apply(input: &[u8], sprites: &mut AbilitySprites) -> io::Result<()> {
         let notes = apply_with_terrain(input, sprites, &BTreeSet::new(), &KeyNames::default())?;
@@ -348,7 +369,7 @@ mod tests {
         assert_eq!(sprites.sprite(b"character"), Some("@hidden_animated"));
         assert_eq!(sprites.sprite(b"reset"), Some("5_animated"));
         assert!(
-            !notes.iter().any(|note| note.contains("Deferred effect")),
+            !notes.iter().any(|note| note.1.contains("Deferred effect")),
             "{notes:?}"
         );
     }

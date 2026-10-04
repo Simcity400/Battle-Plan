@@ -62,7 +62,7 @@ impl Context {
         let (definitions, point_days, technology_equipment) = match kind {
             Kind::Focus => {
                 let (definitions, definition_warnings) = installed_content::focus::read(layers)?;
-                warnings.extend(definition_warnings);
+                warnings.extend(definition_warnings.into_iter().map(|(_, message)| message));
                 (
                     definitions,
                     installed_content::focus::point_days(layers)?,
@@ -72,7 +72,7 @@ impl Context {
             Kind::Technology => {
                 let (equipment, technology_warnings) =
                     installed_content::technology::read_equipment(layers)?;
-                warnings.extend(technology_warnings);
+                warnings.extend(technology_warnings.into_iter().map(|(_, message)| message));
                 (BTreeMap::new(), None, equipment)
             }
         };

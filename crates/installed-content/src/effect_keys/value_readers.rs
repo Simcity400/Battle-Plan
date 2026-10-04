@@ -179,6 +179,7 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
                     Shape::One
                 } else {
                     Shape::Reported {
+                        kind: crate::DiagnosticKind::Misread,
                         report: "remove_unit_leader_role in character scope requires exact yes; native ReportUnexpectedToken (1403AAC00 -> 1424AD100)".into(),
                         read: Box::new(Shape::Skip),
                     }
@@ -204,6 +205,7 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
         ScalarRead::One => Some(Shape::One),
         ScalarRead::Deferred => None,
         ScalarRead::Block => Some(Shape::Reported {
+            kind: crate::DiagnosticKind::Misread,
             report: format!(
                 "effect value reader {value:#X} requires a block; native RecordError (1424ACF90)"
             ),
@@ -793,6 +795,7 @@ impl<'n, 'c> Shaper<'n, 'c> {
                         Some(scope) if scope == ScopeKind::Character.bit() => Shape::Skip,
                         Some(_) => Shape::One,
                         None if field.skips_block() => Shape::Reported {
+                            kind: crate::DiagnosticKind::Unsupported,
                             report: format!("Deferred effect `promote_character.character`: value reader {address:#X}; parse scope unavailable"),
                             read: Box::new(Shape::Unsettled("promote_character.character: character scope skips the current block; other scopes read one value (1403AA3C0)".into())),
                         },
@@ -870,6 +873,7 @@ impl<'n, 'c> Shaper<'n, 'c> {
                 }
             }
             OwnValue::InvalidBlock if field.opens() => Shape::Reported {
+                kind: crate::DiagnosticKind::Misread,
                 report: "invalid war goal: {".into(),
                 read: Box::new(Shape::Skip),
             },
@@ -878,11 +882,13 @@ impl<'n, 'c> Shaper<'n, 'c> {
             OwnValue::RawSkipIfOpen => Shape::One,
             OwnValue::ValueListRequired if field.opens() => Shape::ValueList,
             OwnValue::ValueListRequired => Shape::Reported {
+                kind: crate::DiagnosticKind::Misread,
                 report: "Unexpected token: integer array requires a block".into(),
                 read: Box::new(Shape::Skip),
             },
             OwnValue::RawListRequired if field.opens() => Shape::RawList,
             OwnValue::RawListRequired => Shape::Reported {
+                kind: crate::DiagnosticKind::Misread,
                 report:
                     "nationalities requires a block; native RecordError (1403B14C0 -> 1424ACF90)"
                         .into(),
@@ -909,12 +915,14 @@ impl<'n, 'c> Shaper<'n, 'c> {
                     Shape::One
                 } else {
                     Shape::Reported {
+                        kind: crate::DiagnosticKind::Misread,
                         report: report.into(),
                         read: Box::new(Shape::Skip),
                     }
                 }
             }
             OwnValue::Deferred(reader) => Shape::Reported {
+                kind: crate::DiagnosticKind::Unsupported,
                 report: format!(
                     "Deferred effect `{}.{}`: inherited reader {reader:#X}; by-key reading retained",
                     String::from_utf8_lossy(self.class.c_str()),
@@ -929,6 +937,7 @@ impl<'n, 'c> Shaper<'n, 'c> {
         if field.keyword_is("generator") {
             if self.generator_seen {
                 return Shape::Reported {
+                    kind: crate::DiagnosticKind::Misread,
                     report: "generator used twice".into(),
                     read: Box::new(Shape::Skip),
                 };

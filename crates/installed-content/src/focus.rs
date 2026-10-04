@@ -76,7 +76,13 @@ pub fn parse(
     input: &[u8],
     database: Database,
     names: &KeyNames,
-) -> io::Result<(BTreeMap<String, FocusDefinition>, Vec<String>)> {
+) -> Result<
+    (
+        BTreeMap<String, FocusDefinition>,
+        Vec<(crate::DiagnosticKind, String)>,
+    ),
+    (crate::DiagnosticKind, io::Error),
+> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -267,13 +273,16 @@ pub fn parse(
         },
     );
     if let Some(cause) = document.unsettled {
-        return Err(invalid(format!("focus: {cause}")));
+        return Err((cause.kind, invalid(format!("focus: {cause}"))));
     }
     if let Some(cause) = undecided.first() {
-        return Err(invalid(format!("focus: {cause}")));
+        return Err((
+            crate::DiagnosticKind::Unsettled,
+            invalid(format!("focus: {cause}")),
+        ));
     }
     if let Some(cause) = refused.first() {
-        return Err(invalid(cause));
+        return Err((crate::DiagnosticKind::Refused, invalid(cause)));
     }
     // 1402C7A50 accepts the two-number or x/y forms; ReadIntPoint
     // (140A3D660, inlay windows) only `x = n y = n`, as it consumes a fixed
@@ -313,7 +322,7 @@ pub fn parse(
         }
         Ok(())
     }
-    vectors(&document.items, false)?;
+    vectors(&document.items, false).map_err(|error| (crate::DiagnosticKind::Unsupported, error))?;
     fn collect(items: &[Item], output: &mut BTreeMap<String, FocusDefinition>) -> io::Result<()> {
         for item in items {
             let Some(children) = item.value.items() else {
@@ -373,10 +382,14 @@ pub fn parse(
         .into_iter()
         .filter(|item| roots.iter().any(|root| item.keyword_is(root)))
         .collect();
-    collect(&own, &mut result)?;
+    collect(&own, &mut result).map_err(|error| (crate::DiagnosticKind::Refused, error))?;
     Ok((
         result,
-        document.misreads.iter().map(ToString::to_string).collect(),
+        document
+            .misreads
+            .iter()
+            .map(|note| (note.kind, note.to_string()))
+            .collect(),
     ))
 }
 
@@ -395,9 +408,13 @@ pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
         .filter(|days| days.is_finite() && *days > 0.0))
 }
 
+/// Reader diagnostics with severity retained from their creation sites.
 pub fn read(
     layers: &ResolvedLayers,
-) -> io::Result<(BTreeMap<String, FocusDefinition>, Vec<String>)> {
+) -> io::Result<(
+    BTreeMap<String, FocusDefinition>,
+    Vec<(crate::DiagnosticKind, String)>,
+)> {
     let mut paths = layers
         .paths()
         .filter(|p| {
@@ -419,11 +436,16 @@ pub fn read(
         match parse(&layers.read(&path)?, database, &names) {
             Ok((definitions, notes)) => {
                 result.extend(definitions);
-                warnings.extend(notes.into_iter().map(|note| format!("{path}: {note}")));
+                warnings.extend(
+                    notes
+                        .into_iter()
+                        .map(|(kind, note)| (kind, format!("{path}: {note}"))),
+                );
             }
-            Err(error) => {
-                warnings.push(format!("Focus definitions unavailable in {path}: {error}"))
-            }
+            Err((kind, error)) => warnings.push((
+                kind,
+                format!("Focus definitions unavailable in {path}: {error}"),
+            )),
         }
     }
     Ok((result, warnings))
@@ -438,7 +460,9 @@ mod tests {
         database: Database,
         names: &KeyNames,
     ) -> io::Result<BTreeMap<String, FocusDefinition>> {
-        super::parse(input, database, names).map(|(definitions, _)| definitions)
+        super::parse(input, database, names)
+            .map(|(definitions, _)| definitions)
+            .map_err(|(_, error)| error)
     }
 
     #[test]
@@ -457,14 +481,18 @@ free_operative = { operative = a } free_operative = { operative = b }
         assert!(definitions.contains_key("test"));
         let warning = warnings
             .iter()
-            .find(|warning| warning.contains("Deferred effect `free_operative`"))
+            .find(|(_, warning)| warning.contains("Deferred effect `free_operative`"))
             .unwrap();
+        let warning = &warning.1;
         assert!(
             warning.contains("common/national_focus/gap.txt: line 3:"),
             "{warning}"
         );
         assert!(warning.contains("key reader 0x1403B3880"), "{warning}");
         assert!(warning.contains("count: 2"), "{warning}");
+        assert!(read(&layers)?.1.iter().any(|(kind, message)| *kind
+            == crate::DiagnosticKind::Unsupported
+            && message == warning));
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

@@ -7,6 +7,30 @@ fn doc(bytes: &[u8]) -> io::Result<parser::Document> {
     reader::document(bytes, EQUIPMENT, &KeyNames::default(), &mut Vec::new())
 }
 
+#[test]
+fn raid_reader_notes_keep_native_kinds() {
+    let mut notes = Vec::new();
+    reader::document(
+        b"types = { a = { unit_model = { type = x } success_levels = { success = { actor_effects = { injure_scientist_for_days = 1 } } } } }",
+        EQUIPMENT,
+        &KeyNames::default(),
+        &mut notes,
+    )
+    .unwrap();
+    assert!(
+        notes
+            .iter()
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread),
+        "{notes:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Unsupported),
+        "{notes:?}"
+    );
+}
+
 const TYPES: &[u8] = br#"
 types = {
     facility_strike = {
@@ -245,7 +269,7 @@ fn launch_buildings_resolve_types_and_tags_in_database_order() {
         catalog
             .misreads
             .iter()
-            .any(|note| note.contains("state building depot"))
+            .any(|note| note.1.contains("state building depot"))
     );
 }
 
@@ -266,9 +290,11 @@ fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
     assert_eq!(catalog.types.len(), 1);
     assert_eq!(catalog.types[0].unit_model.scale_raw, 200_000);
     assert_eq!(notes.len(), 2, "{notes:?}");
-    assert!(notes[0].contains("categories has no block"), "{notes:?}");
+    assert!(notes[0].1.contains("categories has no block"), "{notes:?}");
     assert!(
-        notes[1].contains("unit_model field type is reported and skipped (14157FB30"),
+        notes[1]
+            .1
+            .contains("unit_model field type is reported and skipped (14157FB30"),
         "{notes:?}"
     );
 }
@@ -295,6 +321,10 @@ fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
     );
     assert_eq!(catalog.uncertain[0].name, "later");
     assert!(catalog.uncertain[0].reason.contains("equipment tank"));
+    assert_eq!(
+        catalog.uncertain[0].kind,
+        crate::DiagnosticKind::Unsupported
+    );
     // A block under an undecided key is read by whether it is a type.
     let block = reader::document(
         b"types = { later = { essential_equipment = { tank = { 3 } } } }",
@@ -354,7 +384,7 @@ fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
         "equipment tank",
     ] {
         assert!(
-            notes.iter().any(|note| note.contains(reported)),
+            notes.iter().any(|note| note.1.contains(reported)),
             "{reported}: {notes:?}"
         );
     }
@@ -387,6 +417,7 @@ fn a_name_declared_twice_or_thrice_is_refused_once() {
     assert_eq!(catalog.uncertain.len(), 1);
     assert_eq!(catalog.uncertain[0].name, "a");
     assert_eq!(catalog.uncertain[0].declarations.len(), 3);
+    assert_eq!(catalog.uncertain[0].kind, crate::DiagnosticKind::Refused);
 }
 
 #[test]

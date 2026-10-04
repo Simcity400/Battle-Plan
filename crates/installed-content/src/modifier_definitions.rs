@@ -197,7 +197,7 @@ fn definitions(items: &[Item]) -> Vec<Result<ModifierDefinition, NotText>> {
 
 /// Every scripted modifier definition, the first registration of a name
 /// kept (1405FF750).
-pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<String>)> {
+pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<crate::Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut scans = crate::modifiers::ScanFailures::default();
     let mut result = ModifierDefinitions::default();
@@ -221,11 +221,12 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<Str
         if let Some(gap) = &read.unsettled {
             result.gap.get_or_insert_with(|| format!("{path} {gap}"));
         }
-        warnings.extend(
-            read.misreads
-                .iter()
-                .map(|misread| format!("Modifier definitions in {path}: {misread}.")),
-        );
+        warnings.extend(read.misreads.iter().map(|misread| {
+            (
+                misread.kind,
+                format!("Modifier definitions in {path}: {misread}."),
+            )
+        }));
         for entry in &read.items {
             for field in entry.value.items().unwrap_or_default() {
                 if field.keyword_is("precision") {
@@ -241,26 +242,31 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<Str
                     match result.register(definition) {
                         Registered::New => {}
                         Registered::Taken => repeated.push(token),
-                        Registered::Rejected => warnings.push(format!(
+                        Registered::Rejected => warnings.push((crate::DiagnosticKind::Refused, format!(
                             "Modifier definition {token} in {path} not registered: a name starting with a digit or `-` is refused (1424A65A0)."
-                        )),
+                        ))),
                     }
                 }
                 // A name the port cannot hold is no key a modifier the port
                 // reads can name ([`crate::modifiers`] refuses the same).
-                Err(refused) => warnings.push(format!(
-                    "Modifier definition in {path} not read: its name is {refused}."
+                Err(refused) => warnings.push((
+                    crate::DiagnosticKind::Refused,
+                    format!("Modifier definition in {path} not read: its name is {refused}."),
                 )),
             }
         }
         if !repeated.is_empty() {
-            warnings.push(format!(
+            warnings.push((crate::DiagnosticKind::Warning, format!(
                 "Modifier definitions in {path} already registered keep their first definition (1405FF750): {}.",
                 repeated.join(", ")
-            ));
+            )));
         }
     }
-    warnings.extend(scans.warning());
+    warnings.extend(
+        scans
+            .warning()
+            .map(|message| (crate::DiagnosticKind::Misread, message)),
+    );
     Ok((result, warnings))
 }
 

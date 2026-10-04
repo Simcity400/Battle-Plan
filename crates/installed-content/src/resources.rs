@@ -23,10 +23,15 @@ pub struct Resource {
 }
 
 pub fn parse(input: &[u8]) -> io::Result<Vec<Resource>> {
-    parse_file(input).map(|(resources, _)| resources)
+    parse_file(input)
+        .map(|(resources, _)| resources)
+        .map_err(|(_, error)| error)
 }
 
-fn parse_file(input: &[u8]) -> io::Result<(Vec<Resource>, Vec<String>)> {
+fn parse_file(
+    input: &[u8],
+) -> Result<(Vec<Resource>, Vec<(crate::DiagnosticKind, String)>), (crate::DiagnosticKind, io::Error)>
+{
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -68,10 +73,13 @@ fn parse_file(input: &[u8]) -> io::Result<(Vec<Resource>, Vec<String>)> {
         },
     );
     if let Some(cause) = read.unsettled {
-        return Err(invalid(format!("resources: {cause}")));
+        return Err((cause.kind, invalid(format!("resources: {cause}"))));
     }
     if let Some(cause) = undecided.first() {
-        return Err(invalid(format!("resources: {cause}")));
+        return Err((
+            crate::DiagnosticKind::Unsettled,
+            invalid(format!("resources: {cause}")),
+        ));
     }
     let mut resources = Vec::new();
     let mut scans = modifiers::ScanFailures::default();
@@ -81,9 +89,12 @@ fn parse_file(input: &[u8]) -> io::Result<(Vec<Resource>, Vec<String>)> {
         .filter(|item| item.keyword_is("resources"))
     {
         for item in root.value.items().unwrap_or_default() {
-            let token = item
-                .key_str()
-                .map_err(|error| invalid(format!("resource name: {error}")))?;
+            let token = item.key_str().map_err(|error| {
+                (
+                    crate::DiagnosticKind::Refused,
+                    invalid(format!("resource name: {error}")),
+                )
+            })?;
             // Constructor 140BBB090 initializes +0xDC to zero. Each %i
             // scan (1424AB970 -> 1424B02C0) retains it on a failed scan.
             let mut icon_frame = 0;
@@ -103,8 +114,16 @@ fn parse_file(input: &[u8]) -> io::Result<(Vec<Resource>, Vec<String>)> {
             });
         }
     }
-    let mut warnings: Vec<String> = read.misreads.iter().map(ToString::to_string).collect();
-    warnings.extend(scans.warning());
+    let mut warnings: Vec<_> = read
+        .misreads
+        .iter()
+        .map(|note| (note.kind, note.to_string()))
+        .collect();
+    warnings.extend(
+        scans
+            .warning()
+            .map(|message| (crate::DiagnosticKind::Misread, message)),
+    );
     Ok((resources, warnings))
 }
 
@@ -112,7 +131,9 @@ fn parse_file(input: &[u8]) -> io::Result<(Vec<Resource>, Vec<String>)> {
 /// another resource, as the game keeps it: its loader
 /// (`CStrategicResourceDatabase::load_file@140AB2ED0`) interns each declared key
 /// and appends a new item and key without looking for an earlier one.
-pub fn read(layers: &ResolvedLayers) -> io::Result<(Vec<Resource>, Vec<String>)> {
+pub fn read(
+    layers: &ResolvedLayers,
+) -> io::Result<(Vec<Resource>, Vec<(crate::DiagnosticKind, String)>)> {
     let mut warnings = Vec::new();
     let mut result: Vec<Resource> = Vec::new();
     for path in script_files::paths(layers, "common/resources/", Some(".txt")) {
@@ -122,10 +143,12 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Vec<Resource>, Vec<String>)>
                 warnings.extend(
                     notes
                         .into_iter()
-                        .map(|note| format!("Resources in {path}: {note}")),
+                        .map(|(kind, note)| (kind, format!("Resources in {path}: {note}"))),
                 );
             }
-            Err(error) => warnings.push(format!("Resources unavailable in {path}: {error}")),
+            Err((kind, error)) => {
+                warnings.push((kind, format!("Resources unavailable in {path}: {error}")))
+            }
         }
     }
     Ok((result, warnings))

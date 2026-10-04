@@ -1191,6 +1191,7 @@ fn class_shape(readers: (u64, u64), field: &Field<'_>) -> Shape<()> {
             }
             let name = field.keyword().unwrap_or_default();
             Shape::Reported {
+                kind: crate::DiagnosticKind::Unsupported,
                 report: format!(
                     "Deferred effect `{}`: value reader {value_reader:#X}, key reader {key_reader:#X}; by-key reading retained",
                     String::from_utf8_lossy(&name)

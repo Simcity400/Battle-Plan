@@ -112,7 +112,7 @@ pub(super) fn document(
     bytes: &[u8],
     equipment: super::Equipment<'_>,
     names: &KeyNames,
-    notes: &mut Vec<String>,
+    notes: &mut Vec<(crate::DiagnosticKind, String)>,
 ) -> io::Result<Document> {
     use Node::*;
     let mut reported = Vec::new();
@@ -340,7 +340,15 @@ pub(super) fn document(
     if let Some(cause) = read.unsettled {
         return Err(invalid(format!("raids: {cause}")));
     }
-    notes.extend(reported);
-    notes.extend(read.misreads.iter().map(ToString::to_string));
+    notes.extend(
+        reported
+            .into_iter()
+            .map(|message| (crate::DiagnosticKind::Misread, message)),
+    );
+    notes.extend(
+        read.misreads
+            .iter()
+            .map(|note| (note.kind, note.to_string())),
+    );
     Ok(Document { items: read.items })
 }

@@ -10,7 +10,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-/// What kind of diagnostic a reader gave, from the channel it came through.
+/// What kind of diagnostic a reader gave, from its channel or producer tag.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -30,6 +30,20 @@ pub enum Kind {
     Logged,
     /// Any other note a reader returns about the content.
     Warning,
+}
+
+impl From<installed_content::DiagnosticKind> for Kind {
+    fn from(kind: installed_content::DiagnosticKind) -> Self {
+        match kind {
+            installed_content::DiagnosticKind::ParseFailure => Self::ParseFailure,
+            installed_content::DiagnosticKind::Misread => Self::Misread,
+            installed_content::DiagnosticKind::Unsettled => Self::Unsettled,
+            installed_content::DiagnosticKind::Unsupported => Self::Unsupported,
+            installed_content::DiagnosticKind::Refused => Self::Refused,
+            installed_content::DiagnosticKind::Logged => Self::Logged,
+            installed_content::DiagnosticKind::Warning => Self::Warning,
+        }
+    }
 }
 
 impl Kind {

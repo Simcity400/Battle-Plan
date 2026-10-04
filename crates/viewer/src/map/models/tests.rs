@@ -494,8 +494,17 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
     assert!(
         warnings
             .iter()
-            .any(|line| line.contains("plane (1 sound events refused)"))
+            .any(|(kind, line)| *kind == installed_content::DiagnosticKind::Warning
+                && line.contains("plane (1 sound events refused)"))
     );
+    if !meshed {
+        assert!(
+            warnings
+                .iter()
+                .any(|(kind, line)| *kind == installed_content::DiagnosticKind::Warning
+                    && line.contains("geometry-less entities"))
+        );
+    }
     let scenario = descriptors.inherit("scenario").unwrap();
     let mut requests = super::super::aircraft::scenario_requests(
         &scenario.states["default"][0].events,
@@ -637,9 +646,13 @@ fn meshless_buildings_use_shared_states_events_and_attachments() {
     let slot = library.slot("emitter").unwrap();
     assert!(library.meshes[slot].native.is_empty());
     assert_eq!(library.meshes[slot].attachments, 2);
-    assert!(warnings[0].contains("entity emitter references pdxmesh lost"));
+    assert!(
+        warnings[0]
+            .1
+            .contains("entity emitter references pdxmesh lost")
+    );
     assert_eq!(
-        warnings[1],
+        warnings[1].1,
         "Entity audio playback is unavailable: emitter (1 sound events refused)."
     );
     let mut pass = ModelPass::new(&library, "buildings");
@@ -819,7 +832,7 @@ fn an_attachment_cycle_is_counted_without_a_fixed_depth_limit() {
     assert!(
         warnings
             .iter()
-            .any(|warning| warning.contains("attachment cycle through a"))
+            .any(|(_, warning)| warning.contains("attachment cycle through a"))
     );
 }
 

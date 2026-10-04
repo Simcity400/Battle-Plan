@@ -356,7 +356,12 @@ fn a_roster_whose_every_plane_is_refused_keeps_each_reason() {
         ])
     );
     assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].contains(&format!("one_entity ({refused}); two_entity")));
+    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
+    assert!(
+        warnings[0]
+            .1
+            .contains(&format!("one_entity ({refused}); two_entity"))
+    );
     let ladder = candidates("", "one", "", "");
     assert_eq!(
         resolve_entity(&ladder, |entity| library.slot(entity), &unusable),
@@ -506,8 +511,17 @@ fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration(
     // No layer holds the clean plane's mesh file, so it is refused as
     // not loaded rather than drawn.
     assert_eq!(unusable["clean_plane_entity"], NOT_LOADED);
-    assert!(warnings[0].contains(&format!("GER_plane_entity ({copied})")));
-    assert!(warnings[0].contains(&format!("hidden_mesh_plane_entity ({mesh})")));
+    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
+    assert!(
+        warnings[0]
+            .1
+            .contains(&format!("GER_plane_entity ({copied})"))
+    );
+    assert!(
+        warnings[0]
+            .1
+            .contains(&format!("hidden_mesh_plane_entity ({mesh})"))
+    );
 
     // A country plane whose parent is refused stops the ladder, and each
     // wing it would draw is counted under that reason.
@@ -573,7 +587,12 @@ fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
         &mut warnings,
     )
     .unwrap();
-    assert!(warnings[0].contains(&format!("GER_plane_entity (it {why})")));
+    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
+    assert!(
+        warnings[0]
+            .1
+            .contains(&format!("GER_plane_entity (it {why})"))
+    );
     let generic = |entity: &str| (entity == "plane_entity").then_some(4);
     let ladder = candidates("GER", "plane", "", "");
     let mut refusals = Refusals::default();
@@ -928,7 +947,8 @@ fn regions_skip_undefined_provinces_and_count_duplicates() {
     );
     assert_eq!(fractions[&8], RegionFractions::default());
     assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].contains("list 2 provinces"));
+    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Warning);
+    assert!(warnings[0].1.contains("list 2 provinces"));
 }
 
 mod scans;

@@ -38,6 +38,7 @@ pub(super) fn shape(
             .and_then(|names| names.effects.modifiers_gap.as_deref())
             .unwrap_or("the enclosing reader supplied no recorded modifier roster");
         Shape::Reported {
+            kind: crate::DiagnosticKind::Unsupported,
             report: format!("Deferred effect modifier registry: {note}; {gap}"),
             read: Box::new(Shape::Unsettled(format!(
                 "{note}; modifier registry gap: {gap}"

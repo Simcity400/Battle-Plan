@@ -68,6 +68,7 @@ pub(super) fn shape(names: Option<&KeyNames>, node: Node, field: &Field<'_>) -> 
                 StatKey::Scalar => return Shape::One,
                 StatKey::Transport if field.skips_block() => {
                     return Shape::Reported {
+                        kind: crate::DiagnosticKind::Unsupported,
                         report: "Deferred effect SSubUnitStats transport (141415B80): block-valued equipment lookup".into(),
                         read: Box::new(Shape::Unsettled("SSubUnitStats transport block needs the equipment lookup's error path".into())),
                     };

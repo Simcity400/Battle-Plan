@@ -446,6 +446,7 @@ impl<'n> Shaper<'n> {
             return Shape::Skip;
         }
         Shape::Reported {
+            kind: crate::DiagnosticKind::Unsupported,
             report: "Deferred effect CAddAIStrategyEffect AI area (14061A540): block consumption needs the AI-area registry".into(),
             read: Box::new(Shape::Unsettled("AI area block needs the unavailable registry".into())),
         }
@@ -459,6 +460,7 @@ impl<'n> Shaper<'n> {
         }
         let what = if region { "strategic region" } else { "state" };
         Shape::Reported {
+            kind: crate::DiagnosticKind::Unsupported,
             report: format!(
                 "Deferred effect CAddAIStrategyEffect {what} (1406565D0): block consumption needs the indexed registry"
             ),

@@ -84,139 +84,30 @@ impl Log {
             .push(Diagnostic::about(reader, kind, &subject.to_string(), why));
     }
 
-    /// Each message of a channel that mixes kinds, classified by its words
-    /// ([`classify`]), else `default`.
+    /// Each message of a channel with the producer's declared kind.
     fn notes<'a>(
         &mut self,
         reader: &str,
-        default: Kind,
+        kind: Kind,
         messages: impl IntoIterator<Item = &'a String>,
     ) {
         for message in messages {
-            self.note(reader, classify(message, default), message.clone());
+            self.note(reader, kind, message.clone());
+        }
+    }
+
+    fn typed(&mut self, reader: &str, messages: impl IntoIterator<Item = installed_content::Diagnostic>) {
+        for (kind, message) in messages {
+            self.note(reader, kind.into(), message);
         }
     }
 }
 
-/// The kind a mixed channel's message names in the readers' own wording:
-/// a tree parse failure, where a file's reading stops short, where it
-/// leaves the text, or a refusal.
-fn classify(message: &str, default: Kind) -> Kind {
-    const UNSETTLED: [&str; 7] = [
-        "cannot be followed",
-        "cannot be determined",
-        "is unknown from",
-        "the rest of the file",
-        "everything after it",
-        "unavailable in",
-        "cannot settle",
-    ];
-    const MISREAD: [&str; 4] = [
-        "read as the game reads it",
-        "follows the game's reading",
-        "follow the game's reading",
-        "leaves the text",
-    ];
-    // The tree parser's error (parser.rs `invalid`) and its repair of a file
-    // that ends inside a block.
-    if message.contains("Clausewitz text at byte") || message.contains("ends inside an open block")
-    {
-        Kind::ParseFailure
-    } else if UNSETTLED.iter().any(|words| message.contains(words)) {
-        Kind::Unsettled
-    } else if message.contains("Deferred effect `") {
-        Kind::Unsupported
-    } else if message.contains("native role defaults") {
-        Kind::Warning
-    } else if MISREAD.iter().any(|words| message.contains(words)) {
-        Kind::Misread
-    } else if message.contains("refused") || message.contains("not registered") {
-        Kind::Refused
-    } else {
-        default
+fn raid_type_notes(log: &mut Log, raid: &installed_content::raids::RaidType) {
+    let subject = format!("raid {}", raid.name);
+    if let Some(why) = &raid.tooltip.refused {
+        log.about("raids", Kind::Refused, &subject, why);
     }
-}
-
-/// The `Debug` string literal starting at `body` (after its opening
-/// quote), its escapes undone, and where it ends.
-fn debug_string(text: &str, body: usize) -> (String, usize) {
-    let mut out = String::new();
-    let mut chars = text[body..].char_indices();
-    while let Some((offset, c)) = chars.next() {
-        match c {
-            '"' => return (out, body + offset + 1),
-            '\\' => match chars.next().map(|(_, c)| c) {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some('r') => out.push('\r'),
-                Some('0') => out.push('\0'),
-                Some('u') => {
-                    let code: String = chars
-                        .by_ref()
-                        .map(|(_, c)| c)
-                        .skip(1)
-                        .take_while(|&c| c != '}')
-                        .collect();
-                    out.extend(u32::from_str_radix(&code, 16).ok().and_then(char::from_u32));
-                }
-                Some(other) => out.push(other),
-                None => {}
-            },
-            other => out.push(other),
-        }
-    }
-    (out, text.len())
-}
-
-/// Every refusal a reader's value holds, found in its `Debug` text by the
-/// names the readers give them: an `Unsupported`, `Unknown` or `Err` text,
-/// and a `refused`, `unsupported` or `lost` field that holds one. A value
-/// whose type grows another refusal-bearing field of those names is covered
-/// without a change here.
-fn debug_refusals(value: &impl std::fmt::Debug) -> Vec<String> {
-    const MARKERS: [&str; 6] = [
-        "Unsupported(\"",
-        "Unknown(\"",
-        "Err(\"",
-        "refused: Some(\"",
-        "unsupported: Some(\"",
-        "lost: Some(\"",
-    ];
-    let text = format!("{value:?}");
-    let mut found = Vec::new();
-    let mut at = 0;
-    while let Some((start, marker)) = MARKERS
-        .iter()
-        .filter_map(|marker| Some((text[at..].find(marker)? + at, marker)))
-        .min()
-    {
-        let (string, end) = debug_string(&text, start + marker.len());
-        found.push(string);
-        at = end;
-    }
-    found
-}
-
-/// The texts of every `notes` list a reader's value holds, found in its
-/// `Debug` text, so a reader that grows one (as the strategic regions'
-/// deletions and replacements do) is covered without a change here.
-fn debug_notes(value: &impl std::fmt::Debug) -> Vec<String> {
-    const MARKER: &str = "notes: [";
-    let text = format!("{value:?}");
-    let mut found = Vec::new();
-    let mut at = 0;
-    while let Some(start) = text[at..].find(MARKER) {
-        at += start + MARKER.len();
-        while text[at..].starts_with('"') {
-            let (string, end) = debug_string(&text, at + 1);
-            found.push(string);
-            at = end;
-            if text[at..].starts_with(", ") {
-                at += 2;
-            }
-        }
-    }
-    found
 }
 
 /// A native GUI reader's refusal in `file`: a walk the game does not define
@@ -448,12 +339,14 @@ fn interface(
             let values = log.values.clone();
             log.read("particles.emitters", || {
                 for object in catalog.objects() {
+                    let mut kind = Kind::Refused;
                     let read = catalog.resolve(object).and_then(|particle| {
                         if let Some(writer) = &values {
                             writer.write("particles.emitters", &(object, &particle));
                         }
                         let document =
-                            installed_content::parser::parse(&layers.read_uncovered(&particle.path)?)?;
+                            installed_content::parser::parse(&layers.read_uncovered(&particle.path)?)
+                                .inspect_err(|_| kind = Kind::ParseFailure)?;
                         if let Some(writer) = &values {
                             writer.write("particles.emitters", &(object, &document));
                         }
@@ -486,15 +379,15 @@ fn interface(
                         );
                     }
                     if let Err(error) = read {
-                        refused.push((object.to_owned(), error.to_string()));
+                        refused.push((object.to_owned(), kind, error.to_string()));
                     }
                 }
                 Ok(())
             });
-            for (object, why) in refused {
+            for (object, kind, why) in refused {
                 log.about(
                     "particles.emitters",
-                    classify(&why, Kind::Refused),
+                    kind,
                     format_args!("pdxparticle {object}"),
                     &why,
                 );
@@ -503,7 +396,7 @@ fn interface(
         None => log.not_run(&["weather", "particles.emitters"], "particles"),
     }
     if let Some(abilities) = log.read("abilities", || installed_content::abilities::read(layers)) {
-        log.notes("abilities", Kind::Misread, &abilities.warnings);
+        log.typed("abilities", abilities.warnings);
     }
     log.read("ambient", || installed_content::ambient::read(layers));
     interface
@@ -516,8 +409,14 @@ struct Map {
         installed_content::terrain::DefaultMap,
     )>,
     buildings: Option<installed_content::buildings::Buildings>,
-    ideologies: Option<(installed_content::ideologies::Ideologies, Vec<String>)>,
-    resources: Option<(Vec<installed_content::resources::Resource>, Vec<String>)>,
+    ideologies: Option<(
+        installed_content::ideologies::Ideologies,
+        Vec<(installed_content::DiagnosticKind, String)>,
+    )>,
+    resources: Option<(
+        Vec<installed_content::resources::Resource>,
+        Vec<(installed_content::DiagnosticKind, String)>,
+    )>,
     data: Option<installed_content::map::MapData>,
     regions: Option<BTreeMap<u32, installed_content::regions::StrategicRegion>>,
 }
@@ -546,7 +445,7 @@ fn map(
     }
     let regions = log.read("regions", || installed_content::regions::read(layers));
     if let Some(regions) = &regions {
-        log.notes("regions", Kind::Warning, &debug_notes(regions));
+        log.notes("regions", Kind::Warning, &regions.notes);
     }
     let regions = regions.map(|database| database.regions);
     log.read("adjacencies", || installed_content::adjacencies::read(layers));
@@ -614,11 +513,11 @@ fn map(
     }
     let resources = log.read("resources", || installed_content::resources::read(layers));
     if let Some((_, warnings)) = &resources {
-        log.notes("resources", Kind::Warning, warnings);
+        log.typed("resources", warnings.clone());
     }
     let ideologies = log.read("ideologies", || installed_content::ideologies::read(layers));
     if let Some((_, warnings)) = &ideologies {
-        log.notes("ideologies", Kind::Misread, warnings);
+        log.typed("ideologies", warnings.clone());
     }
     const NEEDS_DEFINES: [&str; 3] = ["movement", "dashboard.resource_bonuses", "states"];
     let Some(defines) = defines else {
@@ -663,7 +562,7 @@ fn map(
         installed_content::states::read(layers, defines, &data.definitions)
     }) {
         Some((states, warnings)) => {
-            log.notes("states", Kind::Misread, &warnings);
+            log.typed("states", warnings);
             for (id, state) in states.definitions() {
                 for why in [
                     state.name_key.as_ref().err(),
@@ -717,7 +616,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some((_, warnings)) = log.read("modifier_definitions", || {
         installed_content::modifier_definitions::read(layers)
     }) {
-        log.notes("modifier_definitions", Kind::Misread, &warnings);
+        log.typed("modifier_definitions", warnings);
     }
     // The officer corps groups (NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU)
     // the dashboard hands the idea reader.
@@ -739,11 +638,11 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     };
     match ideas {
         Some((_, advisors, warnings)) => {
-            log.notes("ideas", Kind::Misread, &warnings);
+            log.typed("ideas", warnings);
             if let Some((_, warnings)) = log.read("characters", || {
                 installed_content::characters::read(layers, advisors)
             }) {
-                log.notes("characters", Kind::Misread, &warnings);
+                log.typed("characters", warnings);
             }
         }
         None => log.not_run(&["characters"], "ideas"),
@@ -795,13 +694,13 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some((_, warnings)) =
         log.read("leader_traits", || installed_content::leader_traits::read(layers))
     {
-        log.notes("leader_traits", Kind::Misread, &warnings);
+        log.typed("leader_traits", warnings);
     }
     if let Some(names) = log.read("names", || installed_content::names::read(layers)) {
         log.notes("names", Kind::Unsettled, &names.unknown);
     }
     if let Some((_, warnings)) = log.read("focus", || installed_content::focus::read(layers)) {
-        log.notes("focus", Kind::Misread, &warnings);
+        log.typed("focus", warnings);
     }
     if let Some(None) = log.read("focus.point_days", || installed_content::focus::point_days(layers)) {
         log.note(
@@ -813,7 +712,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some((_, warnings)) = log.read("technology", || {
         installed_content::technology::read_equipment(layers)
     }) {
-        log.notes("technology", Kind::Misread, &warnings);
+        log.typed("technology", warnings);
     }
 }
 
@@ -841,10 +740,10 @@ fn units(
             log.note("equipment.groups", Kind::Unsettled, lost.clone());
         }
     }
-    if let Some((_, warnings)) =
-        log.read("division_names", || installed_content::division_names::read(layers))
-    {
-        log.notes("division_names", Kind::Misread, &warnings);
+    if let Some((_, warnings)) = log.read("division_names", || {
+        installed_content::division_names::read::<installed_content::Diagnostic>(layers)
+    }) {
+        log.typed("division_names", warnings);
     }
     match &map.terrain {
         Some((definitions, _)) => {
@@ -862,9 +761,9 @@ fn units(
                     .cloned()
             };
             if let Some(leaders) = log.read("unit_leader", || {
-                installed_content::unit_leader::Leaders::load(layers, &spelling)
+                installed_content::unit_leader::Leaders::<installed_content::Diagnostic>::load(layers, &spelling)
             }) {
-                log.notes("unit_leader", Kind::Misread, &leaders.misreads);
+                log.typed("unit_leader", leaders.misreads);
                 log.notes(
                     "unit_leader",
                     Kind::Unsupported,
@@ -910,7 +809,7 @@ fn units(
                     &mut warnings,
                 )
             });
-            log.notes("viewer.unit_models", Kind::Warning, &warnings);
+            log.typed("viewer.unit_models", warnings);
             for (file, why) in assets.map(|assets| assets.refusals()).unwrap_or_default() {
                 log.diagnostics.push(Diagnostic::split(
                     "viewer.unit_models",
@@ -997,8 +896,7 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some(names) = log.read("scripted_localisation", || {
         installed_content::scripted_localisation::names(layers)
     }) {
-        // `warnings` repeats each of `unknown`.
-        log.notes("scripted_localisation", Kind::Misread, &names.warnings);
+        log.typed("scripted_localisation", names.warnings);
     }
     if let Some(database) = log.read("combat_tactics", || installed_content::combat_tactics::read(layers)) {
         log.notes("combat_tactics", Kind::Unsettled, &database.unsupported);
@@ -1022,32 +920,18 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         for uncertain in &catalog.uncertain {
             log.about(
                 "raids",
-                Kind::Refused,
+                uncertain.kind.into(),
                 format_args!("raid {}", uncertain.name),
                 &uncertain.reason,
             );
         }
-        // Every refusal each type, uncertain declaration and category holds.
-        let subjects = catalog
-            .types
-            .iter()
-            .map(|raid| (format!("raid {}", raid.name), debug_refusals(raid)))
-            .chain(catalog.uncertain.iter().flat_map(|uncertain| {
-                uncertain
-                    .declarations
-                    .iter()
-                    .map(|raid| (format!("raid {}", raid.name), debug_refusals(raid)))
-            }))
-            .chain(catalog.categories.values().map(|category| {
-                (
-                    format!("raid category {}", category.name),
-                    debug_refusals(category),
-                )
-            }));
-        for (subject, refusals) in subjects.collect::<Vec<_>>() {
-            for why in refusals {
-                log.about("raids", classify(&why, Kind::Refused), &subject, &why);
-            }
+        for raid in catalog.types.iter().chain(
+            catalog
+                .uncertain
+                .iter()
+                .flat_map(|uncertain| &uncertain.declarations),
+        ) {
+            raid_type_notes(log, raid);
         }
     }
     if let Some(groups) = log.read("raids.names", || {
@@ -1055,7 +939,7 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     }) {
         // Each refused file names itself and its line in its warning; the
         // groups it declares or could declare are refused by name.
-        log.notes("raids.names", Kind::Misread, &groups.warnings);
+        log.typed("raids.names", groups.warnings.iter().cloned());
         for (name, why) in groups.refused() {
             log.about(
                 "raids.names",
@@ -1106,12 +990,12 @@ fn viewer_map_assets(
     log.read("viewer.trains", || {
         crate::map::trains::TrainAssets::load(layers, decode, defines, &mut warnings)
     });
-    log.notes("viewer.trains", Kind::Warning, &warnings);
+    log.typed("viewer.trains", warnings);
     let mut warnings = Vec::new();
     log.read("viewer.bridges", || {
         crate::map::railways::Bridges::load(layers, decode, defines, &mut warnings)
     });
-    log.notes("viewer.bridges", Kind::Warning, &warnings);
+    log.typed("viewer.bridges", warnings);
     let mut warnings = Vec::new();
     if let Some(orders) = log.read("viewer.orders", || {
         crate::map::orders::OrderAssets::load(layers, decode, defines, &mut warnings)
@@ -1119,7 +1003,7 @@ fn viewer_map_assets(
     {
         log.note("viewer.orders", Kind::Refused, why.clone());
     }
-    log.notes("viewer.orders", Kind::Warning, &warnings);
+    log.typed("viewer.orders", warnings);
     let Some(data) = &map.data else {
         log.not_run(
             &["viewer.aircraft", "viewer.map_buildings", "viewer.raids"],
@@ -1149,7 +1033,7 @@ fn viewer_map_assets(
                     ));
                 }
             }
-            log.notes("viewer.aircraft", Kind::Warning, &warnings);
+            log.typed("viewer.aircraft", warnings);
         }
         None => log.not_run(&["viewer.aircraft"], "regions"),
     }
@@ -1163,7 +1047,7 @@ fn viewer_map_assets(
             &mut warnings,
         )
     });
-    log.notes("viewer.map_buildings", Kind::Warning, &warnings);
+    log.typed("viewer.map_buildings", warnings);
     let Some(registry) = registry else {
         log.not_run(&["viewer.raids"], "gui.resources");
         return;
@@ -1171,7 +1055,7 @@ fn viewer_map_assets(
     if let Some(raids) = log.read("viewer.raids", || {
         crate::map::raids::RaidAssets::load(layers, defines, data, registry)
     }) {
-        log.notes("viewer.raids", Kind::Warning, &raids.warnings);
+        log.typed("viewer.raids", raids.warnings.iter().cloned());
         log.notes("viewer.raids", Kind::Refused, &raids.refusals());
     }
 }
@@ -1185,7 +1069,7 @@ mod tests {
     fn counted_effect_warnings_reach_the_corpus_report() {
         let warning = "common/national_focus/gap.txt: line 3: Deferred effect `set_capital`: value reader 0x140534280, key reader 0x1403B4F40; by-key reading retained (count: 2)".to_owned();
         let mut log = Log::default();
-        log.notes("focus", Kind::Misread, &[warning]);
+        log.typed("focus", [(installed_content::DiagnosticKind::Unsupported, warning)]);
         assert_eq!(log.diagnostics.len(), 1);
         let note = &log.diagnostics[0];
         assert_eq!(note.kind, Kind::Unsupported);
@@ -1193,6 +1077,24 @@ mod tests {
         assert_eq!(note.line, Some(3));
         assert!(note.message.contains("key reader 0x1403B4F40"));
         assert!(note.message.contains("count: 2"));
+    }
+
+    #[test]
+    fn warning_words_do_not_change_kind() {
+        let mut log = Log::default();
+        log.notes(
+            "viewer.unit_models",
+            Kind::Warning,
+            &[
+                "entity E is not registered".to_owned(),
+                "sound events refused".to_owned(),
+            ],
+        );
+        assert!(
+            log.diagnostics
+                .iter()
+                .all(|note| note.kind == Kind::Warning)
+        );
     }
 
     #[test]
@@ -1236,56 +1138,21 @@ mod tests {
         );
     }
 
-    /// A value read without error still holds its refusals: a raid's
-    /// refused tooltip, and every marked variant and field, nested or not,
-    /// each with its text as the reader gave it.
     #[test]
-    fn every_nested_refusal_of_a_read_value_is_found() {
+    fn raid_tooltip_kinds_follow_their_fields() {
         let mut raid = RaidType {
             name: "odd".into(),
             ..Default::default()
         };
         raid.tooltip.refused = Some("tooltip \"x\" \\ é".into());
-        assert_eq!(debug_refusals(&raid), ["tooltip \"x\" \\ é"]);
-        assert!(debug_refusals(&RaidType::default()).is_empty());
-        #[derive(Debug)]
-        #[allow(dead_code)]
-        enum Arrow {
-            Kind(u8),
-            Unsupported(String),
-        }
-        #[derive(Debug)]
-        #[allow(dead_code)]
-        struct Read {
-            arrows: Vec<Arrow>,
-            lost: Option<String>,
-            role: Result<u8, String>,
-        }
-        let read = Read {
-            arrows: vec![Arrow::Kind(1), Arrow::Unsupported("zeppelin".into())],
-            lost: Some("line 3".into()),
-            role: Err("no role".into()),
-        };
-        assert_eq!(debug_refusals(&read), ["zeppelin", "line 3", "no role"]);
-    }
-
-    /// A reader's `notes` list, wherever its value holds one.
-    #[test]
-    fn every_note_a_read_value_holds_is_found() {
-        #[derive(Debug)]
-        #[allow(dead_code)]
-        struct Read {
-            regions: Vec<u32>,
-            notes: Vec<String>,
-        }
-        let read = Read {
-            regions: vec![1],
-            notes: vec![
-                "map/strategicregions/a b.txt: strategic region with id 0 is deleted".into(),
-                "x \"y\"".into(),
-            ],
-        };
-        assert_eq!(debug_notes(&read), read.notes);
-        assert!(debug_notes(&vec![1]).is_empty());
+        let mut log = Log::default();
+        raid_type_notes(&mut log, &raid);
+        assert_eq!(
+            log.diagnostics
+                .iter()
+                .map(|note| (note.kind, note.message.as_str()))
+                .collect::<Vec<_>>(),
+            [(Kind::Refused, "raid odd: tooltip \"x\" \\ é")]
+        );
     }
 }

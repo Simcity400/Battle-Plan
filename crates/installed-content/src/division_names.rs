@@ -297,9 +297,17 @@ impl Database {
     /// file, the group being read and every name a token of the unknown
     /// rest could declare are refused: 1409B4370 takes each group's name
     /// from a key token, and keys are not variables (1424AC5E0).
-    fn apply(&mut self, bytes: &[u8], names: &KeyNames) -> (Vec<String>, Option<String>) {
+    fn apply(
+        &mut self,
+        bytes: &[u8],
+        names: &KeyNames,
+    ) -> (Vec<crate::Diagnostic>, Option<String>) {
         let read = read_file(bytes, names);
-        let mut notes: Vec<String> = read.misreads.iter().map(ToString::to_string).collect();
+        let mut notes: Vec<_> = read
+            .misreads
+            .iter()
+            .map(|note| (note.kind, note.to_string()))
+            .collect();
         // The group being read when the reading is unsettled is refused
         // below; the others are complete.
         let complete = read
@@ -365,9 +373,15 @@ fn group_name(key: &[u8]) -> &[u8] {
 pub fn parse(bytes: &[u8], names: &KeyNames) -> io::Result<Database> {
     let mut database = Database::default();
     let (mut notes, refusal) = database.apply(bytes, names);
-    notes.extend(refusal);
+    notes.extend(refusal.map(|message| (crate::DiagnosticKind::Unsettled, message)));
     if !notes.is_empty() {
-        return Err(invalid(notes.join("; ")));
+        return Err(invalid(
+            notes
+                .into_iter()
+                .map(|(_, message)| message)
+                .collect::<Vec<_>>()
+                .join("; "),
+        ));
     }
     Ok(database)
 }
@@ -442,7 +456,7 @@ fn read_file(bytes: &[u8], names: &KeyNames) -> native::Read {
 
 /// One group as CNameGroup::vf4 (1409B9A20) read it, in source order, with
 /// the table its last valid `type` picks.
-fn group(key: &str, fields: &[Item], notes: &mut Vec<String>) -> (Table, Group) {
+fn group(key: &str, fields: &[Item], notes: &mut Vec<crate::Diagnostic>) -> (Table, Group) {
     let place = format!("group {key}");
     let mut table = Table::default();
     let mut group = Group::default();
@@ -500,10 +514,10 @@ fn group(key: &str, fields: &[Item], notes: &mut Vec<String>) -> (Table, Group) 
                 .find(|table| value.as_deref() == Some(table.keyword()))
                 {
                     Some(found) => table = found,
-                    None => notes.push(format!(
+                    None => notes.push((crate::DiagnosticKind::Logged, format!(
                         "{place}: type {} is not army, ship, codename or railway_gun; the game records \"unexpected name type\" and keeps the type it had (1409B9A20, 1424ACF90)",
                         shown(field)
-                    )),
+                    ))),
                 }
             }
             // `name`, `can_use`, `division_types`, `link_numbering_with`,
@@ -522,9 +536,9 @@ fn group(key: &str, fields: &[Item], notes: &mut Vec<String>) -> (Table, Group) 
             _ => {
                 let name = String::from_utf8_lossy(field.key.as_deref().unwrap_or_default());
                 let quoted = if field.key_quoted { "quoted " } else { "" };
-                notes.push(format!(
+                notes.push((crate::DiagnosticKind::Logged, format!(
                     "{place}: {quoted}field {name} is not a division-name field; the game rejects it and skips its block (1409B9FF0, 1424ACF90)"
-                ));
+                )));
             }
         }
     }
@@ -547,13 +561,13 @@ fn shown(field: &Item) -> String {
 /// ([`parser::Value::read_string`]); the replay has resolved a variable
 /// (1424AB540). [`read_file`] gives every such field one token, so a block
 /// here is noted, not read.
-fn stored(item: &Item, place: &str, notes: &mut Vec<String>) -> Option<Vec<u8>> {
+fn stored(item: &Item, place: &str, notes: &mut Vec<crate::Diagnostic>) -> Option<Vec<u8>> {
     let text = item.value.read_string().map(<[u8]>::to_vec);
     if text.is_none() {
         let name = String::from_utf8_lossy(item.key.as_deref().unwrap_or(b"entry"));
-        notes.push(format!(
+        notes.push((crate::DiagnosticKind::Unsupported, format!(
             "{place}: {name} is a block where ReadStringInto (1424ABB50) reads one value, so it is not read"
-        ));
+        )));
     }
     text
 }
@@ -561,7 +575,7 @@ fn stored(item: &Item, place: &str, notes: &mut Vec<String>) -> Option<Vec<u8>> 
 /// A name entry's list as CReader::ReadStringList (1401426E0) read it: an
 /// empty list adds no entry (1409B9A20 tests the count) and the name is its
 /// first string. Descriptions/URLs affect the name picker, outside map scope.
-fn list_name(items: &[Item], place: &str, notes: &mut Vec<String>) -> Option<Vec<u8>> {
+fn list_name(items: &[Item], place: &str, notes: &mut Vec<crate::Diagnostic>) -> Option<Vec<u8>> {
     items.first().and_then(|first| stored(first, place, notes))
 }
 
@@ -619,7 +633,9 @@ fn roman(mut number: u32) -> String {
 /// Reads the content stack's name files in the engine's directory order.
 /// Read failures are fatal. What the game only logs about a file, and the
 /// groups of a file the port cannot follow to its end, are warnings.
-pub fn read(layers: &ResolvedLayers) -> io::Result<(Database, Vec<String>)> {
+pub fn read<N: crate::DiagnosticMessage>(
+    layers: &ResolvedLayers,
+) -> io::Result<(Database, Vec<N>)> {
     read_directories(layers, &DIRECTORIES[..1])
 }
 
@@ -634,10 +650,10 @@ pub const DIRECTORIES: [&str; 4] = [
 
 /// [`read`] over several directories, each in the engine's order, into one
 /// database.
-pub fn read_directories(
+pub fn read_directories<N: crate::DiagnosticMessage>(
     layers: &ResolvedLayers,
     directories: &[&str],
-) -> io::Result<(Database, Vec<String>)> {
+) -> io::Result<(Database, Vec<N>)> {
     // 1409B8510: enumerate_directory_wrapper with `.txt` and depth 0.
     let paths = directories
         .iter()
@@ -650,11 +666,19 @@ pub fn read_directories(
         warnings.extend(
             notes
                 .into_iter()
-                .map(|note| format!("Name groups in {path}: {note}.")),
+                .map(|(kind, note)| (kind, format!("Name groups in {path}: {note}."))),
         );
-        warnings.extend(refusal.map(|refusal| format!("Name groups refused in {path}: {refusal}")));
+        warnings.extend(refusal.map(|refusal| {
+            (
+                crate::DiagnosticKind::Unsettled,
+                format!("Name groups refused in {path}: {refusal}"),
+            )
+        }));
     }
-    Ok((database, warnings))
+    Ok((
+        database,
+        warnings.into_iter().map(N::from_diagnostic).collect(),
+    ))
 }
 
 #[cfg(test)]

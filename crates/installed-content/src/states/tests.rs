@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+fn state_reading_note_keeps_misread_kind() {
+    let names = KeyNames::default();
+    let context = Context {
+        resource: &|_| Resource::Null,
+        max_building_levels: 15,
+        province_count: 10,
+        names: &names,
+    };
+    let (_, notes) = parse_states(b"state = { id = 1 impassable = maybe }", &context).unwrap();
+    assert!(
+        notes
+            .iter()
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread),
+        "{notes:?}"
+    );
+}
+
 const RESOURCES: [&str; 2] = ["chromium", "steel"];
 
 /// CStrategicResource::vf4 (140BBD150) through load_file (140AB2ED0):
@@ -117,6 +135,12 @@ fn parse(input: &[u8]) -> io::Result<(Vec<StateDefinition>, Vec<String>)> {
             names: &KeyNames::default(),
         },
     )
+    .map(|(states, notes)| {
+        (
+            states,
+            notes.into_iter().map(|(_, message)| message).collect(),
+        )
+    })
 }
 
 const SAMPLE: &[u8] = br#"

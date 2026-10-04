@@ -133,7 +133,15 @@ impl FrameAssets {
                 names.push(kind.entity.clone());
             }
         }
-        let library = ModelLibrary::load(layers, decode, &roster.descriptors, &names, warnings)?;
+        let mut model_warnings = Vec::new();
+        let library = ModelLibrary::load(
+            layers,
+            decode,
+            &roster.descriptors,
+            &names,
+            &mut model_warnings,
+        )?;
+        warnings.extend(model_warnings.into_iter().map(|(_, message)| message));
         for (kind, name, instance, bucket) in candidates {
             if let Some(slot) = library.slot(&name) {
                 presentation.placements.push(Placement {

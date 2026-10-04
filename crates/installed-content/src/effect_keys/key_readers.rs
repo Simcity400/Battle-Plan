@@ -131,6 +131,7 @@ pub(super) fn shape(address: u64, field: &Field<'_>) -> Shape<()> {
         return Shape::EffectKeys(token);
     }
     Shape::Reported {
+        kind: crate::DiagnosticKind::Unsupported,
         report: format!(
             "Deferred effect `{}`: value reader {READ_SCRIPT:#X}, key reader {address:#X}; by-key reading retained",
             String::from_utf8_lossy(&keyword)
@@ -505,6 +506,7 @@ impl<'n> Shaper<'n> {
             return Shape::One;
         }
         Shape::Reported {
+            kind: crate::DiagnosticKind::Unsupported,
             report: format!(
                 "Deferred effect specialization `{}` (140496280/140496160): block consumption needs the specialization registry",
                 String::from_utf8_lossy(name)
@@ -526,6 +528,7 @@ impl<'n> Shaper<'n> {
             let claim = crate::tokens::Token::c_str(&text);
             if claim.is_rejected() {
                 return Shape::Reported {
+                    kind: crate::DiagnosticKind::Unsupported,
                     report: "Deferred effect generate_character token_base (1403B2F70): dynamic token 0 may already be claimed outside this effect read".into(),
                     read: Box::new(Shape::Unsettled("generate_character token_base 0 needs claims from other reads to choose template reading or skipping".into())),
                 };
@@ -561,6 +564,7 @@ fn victory_point(field: &Field<'_>) -> bool {
 
 fn named_refusal(what: &str, why: &str) -> Shape<Node> {
     Shape::Reported {
+        kind: crate::DiagnosticKind::Unsupported,
         report: format!("Deferred effect {what}: {why}"),
         read: Box::new(Shape::Unsettled(format!("{what}: {why}"))),
     }

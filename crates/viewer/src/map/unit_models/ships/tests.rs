@@ -62,7 +62,7 @@ fn formation_reader_replays_lists_variables_unknowns_and_persistent_stop() {
     assert!(
         warnings
             .iter()
-            .any(|warning| warning.contains("unexpected token")
+            .any(|(_, warning)| warning.contains("unexpected token")
                 && warning.contains("unknown")
                 && warning.contains("1 reader reports"))
     );

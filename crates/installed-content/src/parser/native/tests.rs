@@ -1,5 +1,40 @@
 use super::*;
 
+#[test]
+fn counted_reports_keep_their_source_kind() {
+    let read = read(
+        b"warning=yes unsupported=yes",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field| {
+            if field.keyword_is("warning") {
+                Shape::Reported {
+                    kind: crate::DiagnosticKind::Misread,
+                    report: "refused is only wording".into(),
+                    read: Box::new(Shape::One),
+                }
+            } else {
+                Shape::Reported {
+                    kind: crate::DiagnosticKind::Unsupported,
+                    report: "no severity word".into(),
+                    read: Box::new(Shape::One),
+                }
+            }
+        },
+    );
+    assert_eq!(
+        read.misreads
+            .iter()
+            .map(|note| note.kind)
+            .collect::<Vec<_>>(),
+        [
+            crate::DiagnosticKind::Misread,
+            crate::DiagnosticKind::Unsupported
+        ]
+    );
+}
+
 fn texts(tokens: &[Token]) -> Vec<(Kind, String)> {
     tokens
         .iter()

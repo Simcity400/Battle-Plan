@@ -14,7 +14,7 @@ pub struct Groups {
     database: division_names::Database,
     /// What the game only logs about a file, and the groups of a file the
     /// port cannot follow to its end, by file.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<crate::Diagnostic>,
 }
 
 /// Why a refused group's names are refused.
