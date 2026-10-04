@@ -2147,22 +2147,21 @@ mod tests {
     /// (1405434F0): the tags and character tokens they name, and the
     /// scripted triggers `scripted` holds.
     fn names(scripted: &ScriptedTriggers) -> KeyNames {
-        KeyNames {
-            scripted: scripted.templates.keys().cloned().collect(),
-            countries: [&b"GER"[..], b"SOV", b"ENG"].map(<[u8]>::to_vec).into(),
-            characters: [
-                "ger_leader",
-                "ger_lost_agent",
-                "ger_miscounted",
-                "ger_operative",
-                "ger_politician",
-                "ger_returned",
-                "ger_scientist",
-            ]
-            .map(|token| token.as_bytes().to_vec())
-            .into(),
-            ..KeyNames::default()
-        }
+        let mut names = KeyNames::default();
+        names.scripted = scripted.templates.keys().cloned().collect();
+        names.countries = [&b"GER"[..], b"SOV", b"ENG"].map(<[u8]>::to_vec).into();
+        names.characters = [
+            "ger_leader",
+            "ger_lost_agent",
+            "ger_miscounted",
+            "ger_operative",
+            "ger_politician",
+            "ger_returned",
+            "ger_scientist",
+        ]
+        .map(|token| token.as_bytes().to_vec())
+        .into();
+        names
     }
 
     /// Content read through the real tactic parser.
@@ -3092,14 +3091,12 @@ mod tests {
             "arms_factory".into(),
             installed_content::buildings::BuildingType::default(),
         );
-        let names = KeyNames {
-            counts: CountTriggerNames::new(
-                &buildings,
-                &installed_content::ideologies::Ideologies::default(),
-                &[],
-            ),
-            ..names(&ScriptedTriggers::default())
-        };
+        let mut names = names(&ScriptedTriggers::default());
+        names.counts = CountTriggerNames::new(
+            &buildings,
+            &installed_content::ideologies::Ideologies::default(),
+            &[],
+        );
         let content = parsed_with(
             b"first = { trigger = { arms_factory = 2 } }\n\
               second = { base = { modifier = { OR = { ARMS_FACTORY = { is_attacker = yes } always = no } } } }\n",

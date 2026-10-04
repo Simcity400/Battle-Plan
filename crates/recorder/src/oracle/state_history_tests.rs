@@ -76,12 +76,15 @@ fn a_previously_deferred_if_without_map_effect_runs_the_dependent_comparisons() 
 fn an_unported_history_reader_still_refuses_membership_by_name_and_count() {
     let error = read_membership(
         "state={id=1 provinces={1} history={IF={limit={} \
-         set_capital={state=1} set_capital={state=2}}}}",
+         free_operative={operative=a} free_operative={operative=b}}}}",
         2,
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("Deferred effect `set_capital`"), "{error}");
+    assert!(
+        error.contains("Deferred effect `free_operative`"),
+        "{error}"
+    );
     assert!(error.contains("count: 2"), "{error}");
 }
 

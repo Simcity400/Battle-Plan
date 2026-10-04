@@ -449,7 +449,7 @@ mod tests {
             root.join("common/national_focus/gap.txt"),
             b"focus_tree = {
 focus = { id = test completion_reward = {
-set_capital = { state = 1 } set_capital = { state = 2 }
+free_operative = { operative = a } free_operative = { operative = b }
 } } }",
         )?;
         let layers = ResolvedLayers::from_folders(&[(&root, &[])])?;
@@ -457,13 +457,13 @@ set_capital = { state = 1 } set_capital = { state = 2 }
         assert!(definitions.contains_key("test"));
         let warning = warnings
             .iter()
-            .find(|warning| warning.contains("Deferred effect `set_capital`"))
+            .find(|warning| warning.contains("Deferred effect `free_operative`"))
             .unwrap();
         assert!(
             warning.contains("common/national_focus/gap.txt: line 3:"),
             "{warning}"
         );
-        assert!(warning.contains("key reader 0x1403B4F40"), "{warning}");
+        assert!(warning.contains("key reader 0x1403B3880"), "{warning}");
         assert!(warning.contains("count: 2"), "{warning}");
         std::fs::remove_dir_all(root)?;
         Ok(())

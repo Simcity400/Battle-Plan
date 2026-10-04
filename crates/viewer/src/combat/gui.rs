@@ -489,11 +489,9 @@ impl Retained {
             }
         }
         // Input precedes one smoothing tick in ProcessInputEvents@142247750.
-        if advance {
-            if let Err(why) = self.instance.tick(root, resources, tick) {
-                count(refused, &self.name, why);
-                return None;
-            }
+        if advance && let Err(why) = self.instance.tick(root, resources, tick) {
+            count(refused, &self.name, why);
+            return None;
         }
         let layout = laid(&self.instance, root, resources, refused, true)?;
         let mut hovered = if hovers {
@@ -1060,7 +1058,7 @@ impl Windows {
                     return Ok(drawn);
                 }
             };
-            retained.pending.extend(self.pending.drain(..));
+            retained.pending.append(&mut self.pending);
             // The possible-tactics popup sits ten pixels right of the combat window (1415C7D20).
             let position = *tactics_position
                 .get_or_insert([drawn.rect[0] + drawn.rect[2] + 10.0, drawn.rect[1]]);
@@ -1613,14 +1611,17 @@ mod tests {
         let mut popup_instance = Instance::construct(popup, [800, 600], &resources).unwrap();
         popup_instance.gui_show(popup, popup).unwrap();
         let popup_layout = popup_instance
-            .layout(popup, &resources, None)
+            .layout_with_regions(popup, &resources, None, true)
             .unwrap()
             .unwrap();
         for name in [b"navalcombatview".as_slice(), b"navalcombatresultswindow"] {
             let view = resources.gui_type(name).unwrap();
             let mut instance = Instance::construct(view, [800, 600], &resources).unwrap();
             instance.gui_show(view, view).unwrap();
-            let layout = instance.layout(view, &resources, None).unwrap().unwrap();
+            let layout = instance
+                .layout_with_regions(view, &resources, None, true)
+                .unwrap()
+                .unwrap();
             let mut drawn = Drawn::default();
             controls(view, &layout.regions, [30, 40], &mut drawn, false);
             assert_eq!(

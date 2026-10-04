@@ -25,6 +25,9 @@ use std::{
 /// Combat portrait textures kept resident at once beyond the ones on screen.
 const COMBAT_PORTRAIT_CAPACITY: usize = 256;
 
+/// Portrait decode failures by sprite name: the refusal kind and its reason.
+type PortraitFailures = BTreeMap<String, (Option<native_gui::RefusalKind>, String)>;
+
 pub struct Assets {
     pub(crate) native_windows: NativeWindows,
     pub(crate) gui: GuiResources,
@@ -34,7 +37,7 @@ pub struct Assets {
     /// once `portraits` has decoded the texture.
     lazy_sprites: BTreeMap<String, (String, Plain)>,
     portraits: Arc<LazyImages>,
-    portrait_failures: Arc<Mutex<BTreeMap<String, (Option<native_gui::RefusalKind>, String)>>>,
+    portrait_failures: Arc<Mutex<PortraitFailures>>,
     /// The normal set, decoded as windows draw it.
     flags: Arc<FlagAtlas>,
     /// The range of convoy weapon values the content allows, fixed5.

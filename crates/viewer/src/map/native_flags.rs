@@ -217,18 +217,19 @@ mod tests {
         assert!(atlas.get("SYN").is_none());
         assert!(textures.settle());
         let (texture, uv) = atlas.get("SYN").unwrap();
-        let expected = Some(Texture {
+        let texture = Texture {
             texture,
             uv,
             size: [10, 7],
-        });
+        };
         assert_eq!(
             resolved_flag_cell(&atlas, "SYN_group", true),
             Some(Texture {
                 size: cell.map(|value| value as i32),
-                ..expected.unwrap()
+                ..texture
             })
         );
+        let expected = Some(texture);
         assert_eq!(resolved_text_flag(&atlas, b"SYN_group").unwrap(), expected);
         assert!(textures.settle());
         assert_eq!(atlas.rejected(), 1);
