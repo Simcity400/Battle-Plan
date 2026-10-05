@@ -23,16 +23,26 @@ fn fixture() -> DecodedFrame {
 }
 
 #[test]
-fn dynamic_modifier_vanilla_canal_scope() {
-    // Vanilla map/adjacency_rules.txt:326-332 (KIEL_CANAL) and :174-187
-    // (PANAMA_CANAL), reached by invasion and naval-mission adjacency checks.
-    let mut f = fixture();
-    let kiel =
-        "58 = { has_dynamic_modifier = { modifier = kiel_canal_damaged_modifier scope = THIS } }";
-    let panama = "OR = { has_global_flag = PANAMA_CANAL_BLOCKED has_country_flag = PANAMA_CANAL_BLOCKED_FOR_COUNTRY 685 = { has_dynamic_modifier = { modifier = panama_canal_damaged_modifier scope = THIS } } }";
+fn dynamic_modifier_synthetic_channel_scope() {
+    // Independently authored channel-style rules exercise a direct state
+    // condition and a state condition inside an OR with absent flag branches.
+    let mut f = frame(&[(701, 17, "QXZ", 1, "QXZ", "")], &[]);
+    *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        [117, 229]
+            .map(|id| StateRow {
+                id,
+                owner: 701,
+                controller: 701,
+                ..Default::default()
+            })
+            .into(),
+    ));
+    let direct =
+        "117 = { has_dynamic_modifier = { modifier = fixture_channel_alpha scope = THIS } }";
+    let alternatives = "OR = { has_global_flag = FIXTURE_CHANNEL_CLOSED has_country_flag = FIXTURE_CHANNEL_OWNER_BLOCKED 229 = { has_dynamic_modifier = { modifier = fixture_channel_beta scope = THIS } } }";
     for (state, token, trigger) in [
-        (58, b"kiel_canal_damaged_modifier".as_slice(), kiel),
-        (685, b"panama_canal_damaged_modifier".as_slice(), panama),
+        (117, b"fixture_channel_alpha".as_slice(), direct),
+        (229, b"fixture_channel_beta".as_slice(), alternatives),
     ] {
         *f.tables[TableId::StateDynamicModifiers.index()] =
             TableView::Complete(TableRows::StateDynamicModifiers(vec![
@@ -43,10 +53,10 @@ fn dynamic_modifier_vanilla_canal_scope() {
                     ..Default::default()
                 },
             ]));
-        assert_eq!(check(&f, "", 11, trigger), Eval::True, "{trigger}");
+        assert_eq!(check(&f, "", 17, trigger), Eval::True, "{trigger}");
         *f.tables[TableId::StateDynamicModifiers.index()] =
             TableView::Complete(TableRows::StateDynamicModifiers(vec![]));
-        assert_eq!(check(&f, "", 11, trigger), Eval::False, "{trigger}");
+        assert_eq!(check(&f, "", 17, trigger), Eval::False, "{trigger}");
     }
 }
 
