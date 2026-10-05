@@ -27,41 +27,22 @@ pub(super) fn window_size(element: &native::Element, owner: &str) -> io::Result<
         .map_err(|why| invalid(format!("{owner}: {why}")))
 }
 
-/// Walk the kept native elements in attach order, retaining each container's content origin.
+/// A locally bound child's attach order and its parent's content origin.
 fn placement(
     root: &native::Element,
     target: &native::Element,
 ) -> io::Result<(u32, [f32; 2], [i32; 2])> {
     let frame = native_gui::container_frame(root, None).map_err(invalid)?;
-    let mut pending: Vec<_> = root
+    if let Some(order) = root
         .children
         .iter()
-        .rev()
-        .map(|child| (child, frame, [0; 2]))
-        .collect();
-    let mut order = 0;
-    while let Some((element, frame, origin)) = pending.pop() {
-        let base = [
-            origin[0] + frame.content_at[0],
-            origin[1] + frame.content_at[1],
-        ];
-        if std::ptr::eq(element, target) {
-            return Ok((order, base.map(|value| value as f32), frame.content_size));
-        }
-        order += 1;
-        if element.kind == native::Kind::Container {
-            let child =
-                native_gui::container_frame(element, Some(frame.content_size)).map_err(invalid)?;
-            // Recursive lookup only descends child containers (1422A7170).
-            let at = [base[0] + child.at[0], base[1] + child.at[1]];
-            pending.extend(
-                element
-                    .children
-                    .iter()
-                    .rev()
-                    .map(|element| (element, child, at)),
-            );
-        }
+        .position(|element| std::ptr::eq(element, target))
+    {
+        return Ok((
+            order as u32,
+            frame.content_at.map(|value| value as f32),
+            frame.content_size,
+        ));
     }
     Err(invalid(format!(
         "{} is not attached to {}",
@@ -71,12 +52,13 @@ fn placement(
 
 pub(super) fn child(
     root: &native::Element,
+    kind: native::Kind,
     name: &str,
     owner: &str,
     missing: &mut Vec<String>,
 ) -> io::Result<Child> {
-    // BindControls@1418C70C0 uses FindIconByName's recursive kind lookup.
-    let Some(element) = root.find_recursive(native::Kind::Icon, name) else {
+    // BindControls@1418C70C0: local FindButton@1422A4A20 or FindIcon@1422A6FD0.
+    let Some(element) = root.find(kind, name) else {
         missing.push(format!("{owner}.{name}"));
         return Ok(Child {
             sprite: String::new(),
@@ -88,24 +70,56 @@ pub(super) fn child(
         });
     };
     supported(element)?;
-    let icon = element.icon().expect("icon lookup");
+    let (sprite, position, orientation, scale, frame, rotation) = match &element.fields {
+        native::Fields::Icon(icon) => (
+            &icon.sprite,
+            icon.position,
+            icon.orientation,
+            icon.scale,
+            icon.frame,
+            icon.rotation,
+        ),
+        native::Fields::Button(button) => {
+            // CButtonStandard::ctor@1422BA900: sprite/quadTextureSprite, anchor, scale and
+            // positive frame; an absent/nonpositive frame keeps Up's strip index 0.
+            for (unsupported, field) in [
+                (button.center_position, "centerPosition"),
+                (button.rotation != 0.0, "rotation"),
+                (!button.enabled, "enabled=no"),
+                (!button.font.is_empty(), "font"),
+                (button.sprite.is_empty(), "empty sprite"),
+            ] {
+                if unsupported {
+                    return Err(invalid(format!(
+                        "{}: counter batch cannot draw button {field} (CButtonStandard::ctor@1422BA900)",
+                        element.path
+                    )));
+                }
+            }
+            (
+                &button.sprite,
+                button.position.map(|value| value as f32),
+                button.orientation.unwrap_or_default(),
+                button.scale,
+                button.frame,
+                button.rotation,
+            )
+        }
+        _ => unreachable!("counter sprite lookup"),
+    };
     let (order, base, parent) = placement(root, element)?;
-    let anchor = native_gui::compute_anchor(
-        icon.orientation,
-        native::Orientation::UpperLeft,
-        parent,
-        [0; 2],
-    );
+    let anchor =
+        native_gui::compute_anchor(orientation, native::Orientation::UpperLeft, parent, [0; 2]);
     Ok(Child {
-        sprite: String::from_utf8(icon.sprite.clone())
+        sprite: String::from_utf8(sprite.clone())
             .map_err(|why| invalid(format!("{}: {why}", element.path)))?,
         at: [
-            base[0] + icon.position[0] + anchor[0] as f32,
-            base[1] + icon.position[1] + anchor[1] as f32,
+            base[0] + position[0] + anchor[0] as f32,
+            base[1] + position[1] + anchor[1] as f32,
         ],
-        scale: icon.scale,
-        frame: icon.frame.max(0) as u32,
-        rotation: icon.rotation,
+        scale,
+        frame: frame.max(0) as u32,
+        rotation,
         order,
     })
 }
@@ -116,7 +130,8 @@ pub(super) fn text_child(
     owner: &str,
     missing: &mut Vec<String>,
 ) -> io::Result<TextChild> {
-    let Some(element) = root.find_recursive(native::Kind::TextBox, name) else {
+    // BindControls@1418C70C0: local FindInstantTextBox@1422A7520.
+    let Some(element) = root.find(native::Kind::TextBox, name) else {
         missing.push(format!("{owner}.{name}"));
         return Ok(TextChild {
             font: None,
@@ -163,6 +178,7 @@ pub(super) fn gun_counter(
     guis: &native::Guis,
     missing: &mut Vec<String>,
 ) -> io::Result<Option<GunCounter>> {
+    use native::Kind::{Button, Icon};
     let Some(gun) = guis
         .template(GUN_WINDOW)
         .filter(|element| element.kind == native::Kind::Container)
@@ -172,17 +188,17 @@ pub(super) fn gun_counter(
     };
     Ok(Some(GunCounter {
         size: window_size(gun, GUN_WINDOW)?,
-        plate: child(gun, "count_bg", GUN_WINDOW, missing)?,
-        group_marker: child(gun, "group_marker", GUN_WINDOW, missing)?,
-        overlay: child(gun, "counter_overlay", GUN_WINDOW, missing)?,
-        no_orders: child(gun, "no_orders", GUN_WINDOW, missing)?,
-        type_icon: child(gun, "type", GUN_WINDOW, missing)?,
+        plate: child(gun, Button, "count_bg", GUN_WINDOW, missing)?,
+        group_marker: child(gun, Icon, "group_marker", GUN_WINDOW, missing)?,
+        overlay: child(gun, Icon, "counter_overlay", GUN_WINDOW, missing)?,
+        no_orders: child(gun, Icon, "no_orders", GUN_WINDOW, missing)?,
+        type_icon: child(gun, Icon, "type", GUN_WINDOW, missing)?,
         count: text_child(gun, "count_txt", GUN_WINDOW, missing)?,
-        bar_str: child(gun, "bar_str", GUN_WINDOW, missing)?,
-        flag: child(gun, "flag", GUN_WINDOW, missing)?,
-        large_flag: child(gun, "large_flag", GUN_WINDOW, missing)?,
-        supply: child(gun, "low_supply", GUN_WINDOW, missing)?,
-        action: child(gun, "onmap_action_icon", GUN_WINDOW, missing)?,
+        bar_str: child(gun, Icon, "bar_str", GUN_WINDOW, missing)?,
+        flag: child(gun, Icon, "flag", GUN_WINDOW, missing)?,
+        large_flag: child(gun, Icon, "large_flag", GUN_WINDOW, missing)?,
+        supply: child(gun, Icon, "low_supply", GUN_WINDOW, missing)?,
+        action: child(gun, Icon, "onmap_action_icon", GUN_WINDOW, missing)?,
     }))
 }
 
@@ -192,7 +208,8 @@ pub(super) fn ability_grid(
     missing: &mut Vec<String>,
     unsupported: &mut Vec<String>,
 ) -> io::Result<Option<AbilityGrid>> {
-    let Some(element) = land.find_recursive(native::Kind::Grid, "active_abilities") else {
+    // BindControls@1418C70C0: local FindGridBox@1422A8970.
+    let Some(element) = land.find(native::Kind::Grid, "active_abilities") else {
         missing.push(format!("{LAND_WINDOW}.active_abilities"));
         return Ok(None);
     };
@@ -204,7 +221,8 @@ pub(super) fn ability_grid(
         return Ok(None);
     };
     let Some(icon) = item
-        .find_recursive(native::Kind::Icon, "active_ability")
+        // CActiveAbilityItem::ctor@1418BE190: local FindIcon@1422A6FD0.
+        .find(native::Kind::Icon, "active_ability")
         .and_then(native::Element::icon)
     else {
         missing.push(format!("{ABILITY_WINDOW}.active_ability"));
@@ -249,9 +267,11 @@ pub(super) fn land_counter(
     guis: &native::Guis,
     missing: &mut Vec<String>,
 ) -> io::Result<LandCounter> {
+    use native::Kind::{Button, Icon};
     let land = window(guis, LAND_WINDOW)?;
     let hq_offset = match land
-        .find(native::Kind::PositionType, "unit_counter_hq_x_offset")
+        // BindControls@1418C70C0: FindInstance@1422A7F10, exact position-name check.
+        .find_instance("unit_counter_hq_x_offset")
         .and_then(native::Element::position_type)
     {
         Some(offset) => offset.position.map(|value| value as f32),
@@ -262,25 +282,25 @@ pub(super) fn land_counter(
     };
     Ok(LandCounter {
         size: window_size(land, LAND_WINDOW)?,
-        plate: child(land, "count_bg", LAND_WINDOW, missing)?,
-        overlay: child(land, "counter_overlay", LAND_WINDOW, missing)?,
-        type_icon: child(land, "type", LAND_WINDOW, missing)?,
-        bar_org: child(land, "bar_org", LAND_WINDOW, missing)?,
-        bar_str: child(land, "bar_str", LAND_WINDOW, missing)?,
-        supply: child(land, "low_supply", LAND_WINDOW, missing)?,
-        attrition: child(land, "attrition", LAND_WINDOW, missing)?,
-        digin: child(land, "onmap_digin_icon", LAND_WINDOW, missing)?,
-        training: child(land, "onmap_training_icon", LAND_WINDOW, missing)?,
-        no_orders: child(land, "no_orders", LAND_WINDOW, missing)?,
-        defending_area: child(land, "defending_area", LAND_WINDOW, missing)?,
-        invalid_orders: child(land, "invalid_orders", LAND_WINDOW, missing)?,
-        flag: child(land, "flag", LAND_WINDOW, missing)?,
-        large_flag: child(land, "large_flag", LAND_WINDOW, missing)?,
+        plate: child(land, Button, "count_bg", LAND_WINDOW, missing)?,
+        overlay: child(land, Icon, "counter_overlay", LAND_WINDOW, missing)?,
+        type_icon: child(land, Icon, "type", LAND_WINDOW, missing)?,
+        bar_org: child(land, Icon, "bar_org", LAND_WINDOW, missing)?,
+        bar_str: child(land, Icon, "bar_str", LAND_WINDOW, missing)?,
+        supply: child(land, Icon, "low_supply", LAND_WINDOW, missing)?,
+        attrition: child(land, Icon, "attrition", LAND_WINDOW, missing)?,
+        digin: child(land, Icon, "onmap_digin_icon", LAND_WINDOW, missing)?,
+        training: child(land, Icon, "onmap_training_icon", LAND_WINDOW, missing)?,
+        no_orders: child(land, Icon, "no_orders", LAND_WINDOW, missing)?,
+        defending_area: child(land, Icon, "defending_area", LAND_WINDOW, missing)?,
+        invalid_orders: child(land, Icon, "invalid_orders", LAND_WINDOW, missing)?,
+        flag: child(land, Icon, "flag", LAND_WINDOW, missing)?,
+        large_flag: child(land, Icon, "large_flag", LAND_WINDOW, missing)?,
         count: text_child(land, "count_txt", LAND_WINDOW, missing)?,
-        hq_badge: child(land, "hq_badge", LAND_WINDOW, missing)?,
-        portrait: child(land, "general_portrait", LAND_WINDOW, missing)?,
-        group_marker: child(land, "group_marker", LAND_WINDOW, missing)?,
-        leader_enroute: child(land, "leader_enroute", LAND_WINDOW, missing)?,
+        hq_badge: child(land, Icon, "hq_badge", LAND_WINDOW, missing)?,
+        portrait: child(land, Icon, "general_portrait", LAND_WINDOW, missing)?,
+        group_marker: child(land, Icon, "group_marker", LAND_WINDOW, missing)?,
+        leader_enroute: child(land, Icon, "leader_enroute", LAND_WINDOW, missing)?,
         hq_offset,
     })
 }
@@ -288,7 +308,8 @@ pub(super) fn land_counter(
 pub(super) fn column_layout(guis: &native::Guis) -> io::Result<ColumnLayout> {
     let stack = window(guis, STACK_WINDOW)?;
     stack
-        .find_recursive(native::Kind::Grid, "units_box")
+        // BindStack@141900EC0: local FindGridBox@1422A8970.
+        .find(native::Kind::Grid, "units_box")
         .ok_or_else(|| invalid(format!("{STACK_WINDOW} has no units_box")))?;
     let offset = guis
         .template(ZOOMED_IN_OFFSET)
@@ -350,7 +371,7 @@ mod tests {
                     native::read(
                         br#"guiTypes={
                 containerWindowType={name=UNIT_COUNTER size={width=82 height=28}
-                    iconType={name=COUNT_BG spriteType=GFX_mod position={x=4 y=7}}
+                    buttonType={name=COUNT_BG quadTextureSprite=GFX_mod position={x=4 y=7}}
                     instantTextBoxType={name=count_txt position={x=8 y=9}}
                     instantTextBoxType={name=zero_count maxWidth=0}
                     instantTextBoxType={name=wide_count maxWidth=4294967295}
@@ -381,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn recursive_counter_lookup_keeps_native_kind_and_parent_placement() {
+    fn counter_lookup_keeps_native_kind_and_window_local_depth() {
         let guis = native::Guis {
             files: vec![(
                 MAPICONS_GUI.into(),
@@ -391,17 +412,129 @@ mod tests {
                 buttonType={name=flag spriteType=GFX_wrong_kind}
                 containerWindowType={name=inner size={width=20 height=10} position={x=5 y=6}
                     iconType={name=FLAG spriteType=GFX_flag position={x=1 y=2}}}
+                iconType={name=large_flag spriteType=GFX_large_flag position={x=4 y=5}}
                 instantTextBoxType={name=count_txt font=mod_font maxWidth=17}
             }}"#,
                 ),
             )],
         };
         let root = window(&guis, LAND_WINDOW).unwrap();
-        let flag = child(root, "flag", LAND_WINDOW, &mut Vec::new()).unwrap();
+        let mut missing = Vec::new();
+        let flag = child(root, native::Kind::Icon, "flag", LAND_WINDOW, &mut missing).unwrap();
+        let large_flag = child(
+            root,
+            native::Kind::Icon,
+            "large_flag",
+            LAND_WINDOW,
+            &mut missing,
+        )
+        .unwrap();
         let count = text_child(root, "count_txt", LAND_WINDOW, &mut Vec::new()).unwrap();
         assert_eq!(count.max_width, 17.0);
-        assert_eq!(flag.sprite, "GFX_flag");
-        assert_eq!(flag.at, [6.0, 8.0]);
-        assert!(flag.order < count.order);
+        assert!(flag.sprite.is_empty());
+        assert_eq!(missing, ["unit_counter.flag"]);
+        assert_eq!(large_flag.sprite, "GFX_large_flag");
+        assert_eq!(large_flag.at, [4.0, 5.0]);
+        assert!(large_flag.order < count.order);
+    }
+
+    #[test]
+    fn counter_text_grid_and_ability_lookups_are_window_local() {
+        let guis = native::Guis {
+            files: vec![(
+                MAPICONS_GUI.into(),
+                native::read(
+                    br#"guiTypes={
+                containerWindowType={name=unit_counter size={width=80 height=30}
+                    positionType={name=UNIT_COUNTER_HQ_X_OFFSET position={x=-20 y=0}}
+                    containerWindowType={name=inner
+                        instantTextBoxType={name=count_txt font=mod_font}
+                        gridBoxType={name=active_abilities slotsize={width=25 height=25}
+                            max_slots_vertical=1 format=UPPER_LEFT}}}
+                containerWindowType={name=active_ability_item size={width=20 height=20}
+                    containerWindowType={name=inner iconType={name=active_ability}}}
+                containerWindowType={name=unit_mapicon size={width=58 height=27}
+                    containerWindowType={name=inner gridBoxType={name=units_box}}}
+                positionType={name=unit_counter_zoomed_in_offset position={x=0 y=20}}
+            }"#,
+                ),
+            )],
+        };
+        let mut missing = Vec::new();
+        let land = land_counter(&guis, &mut missing).unwrap();
+        assert_eq!(land.hq_offset, [0.0; 2]);
+        assert!(missing.contains(&"unit_counter.unit_counter_hq_x_offset".into()));
+        assert_eq!(land.count.font, None);
+        assert!(missing.contains(&"unit_counter.count_txt".into()));
+        let root = window(&guis, LAND_WINDOW).unwrap();
+        assert!(
+            ability_grid(&guis, root, &mut missing, &mut Vec::new())
+                .unwrap()
+                .is_none()
+        );
+        assert!(missing.contains(&"unit_counter.active_abilities".into()));
+        assert!(
+            column_layout(&guis)
+                .unwrap_err()
+                .to_string()
+                .contains("units_box")
+        );
+        // A local grid still cannot bind an icon nested in the item window (1418BE190).
+        let mut root = root.clone();
+        let mut grid = root.children[1].children[1].clone();
+        grid.path = "unit_counter.active_abilities".into();
+        root.children.push(grid);
+        assert!(
+            ability_grid(&guis, &root, &mut missing, &mut Vec::new())
+                .unwrap()
+                .is_none()
+        );
+        assert!(missing.contains(&"active_ability_item.active_ability".into()));
+    }
+
+    #[test]
+    fn counter_button_lookup_rejects_icon_and_checkbox_arrays() {
+        for kind in ["iconType", "checkboxType"] {
+            let guis = native::read(format!(
+                "guiTypes={{containerWindowType={{name=test {kind}={{name=count_bg spriteType=GFX_wrong}}}}}}"
+            ).as_bytes());
+            let mut missing = Vec::new();
+            let plate = child(
+                guis.template("test").unwrap(),
+                native::Kind::Button,
+                "count_bg",
+                "test",
+                &mut missing,
+            )
+            .unwrap();
+            assert!(plate.sprite.is_empty(), "{kind}");
+            assert_eq!(missing, ["test.count_bg"], "{kind}");
+        }
+    }
+
+    #[test]
+    fn unported_counter_button_draw_forms_are_refused_by_name() {
+        for (field, name) in [
+            ("centerPosition=yes", "centerPosition"),
+            ("rotation=1", "rotation"),
+            ("enabled=no", "enabled=no"),
+            ("font=Main_14", "font"),
+            ("quadTextureSprite=\"\"", "empty sprite"),
+        ] {
+            let guis = native::read(format!(
+                "guiTypes={{containerWindowType={{name=test buttonType={{name=count_bg quadTextureSprite=GFX_plate {field}}}}}}}"
+            ).as_bytes());
+            let why = child(
+                guis.template("test").unwrap(),
+                native::Kind::Button,
+                "count_bg",
+                "test",
+                &mut Vec::new(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(why.contains("test.count_bg") && why.contains(name), "{why}");
+            assert!(why.contains("1422BA900"), "{why}");
+        }
     }
 }

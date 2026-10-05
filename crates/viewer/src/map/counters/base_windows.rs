@@ -170,13 +170,14 @@ struct Controls<'a> {
 }
 
 fn bind(root: &native::Element, family: Family) -> Result<Controls<'_>, String> {
-    // Air@1418B7F90 and HQ/facility@1418BA830 use recursive button lookups.
+    // Air@1418B7F90 and HQ/facility@1418BA830: local FindButton@1422A4A20.
     let button = root
-        .find_recursive(native::Kind::Button, "bg_btn")
+        .find(native::Kind::Button, "bg_btn")
         .ok_or("no button named bg_btn")?;
     let air = if family == Family::AirBase {
         let find = |kind, name: &str| {
-            root.find_recursive(kind, name)
+            // FindButton@1422A4A20, FindInstantTextBox@1422A7520, FindIcon@1422A6FD0.
+            root.find(kind, name)
                 .ok_or_else(|| format!("no control named {name}"))
         };
         Some([
@@ -234,15 +235,15 @@ mod tests {
     }
 
     #[test]
-    fn air_update_uses_nested_buttons_and_hides_the_air_mode_controls() {
+    fn air_update_uses_local_buttons_and_hides_the_air_mode_controls() {
         let root = window(
             r#"
-            containerWindowType = { name = nested position = { x = 5 y = 6 }
                 buttonType = { name = bg_btn quadTextureSprite = GFX_even }
                 buttonType = { name = bg_strat_btn quadTextureSprite = GFX_even }
                 instantTextBoxType = { name = wings_count font = Main_14 text = authored }
                 instantTextBoxType = { name = permission_wings_count font = Main_14 text = authored }
                 iconType = { name = permission_wings_bg spriteType = GFX_even }
+            containerWindowType = { name = nested position = { x = 5 y = 6 }
                 iconType = { name = mod_decoration spriteType = GFX_even position = { x = 9 y = 10 } }
             }"#,
         );
@@ -276,6 +277,31 @@ mod tests {
         assert_eq!(control.enabled, Some(false));
         assert!(
             matches!(&layout.parts[1].kind, PartKind::Sprite { geometry, .. } if geometry.rect[..2] == [14., 16.])
+        );
+    }
+
+    #[test]
+    fn base_binders_do_not_bind_nested_controls() {
+        let root = window(
+            r#"containerWindowType={name=nested
+            buttonType={name=bg_btn quadTextureSprite=GFX_even}}"#,
+        );
+        for family in [Family::AirBase, Family::Headquarter, Family::Facility] {
+            assert!(bind(&root, family).err().unwrap().contains("bg_btn"));
+        }
+        assert!(
+            naval_windows::update_naval(
+                &mut Instance::construct(&root, [800, 600], &fixture()).unwrap(),
+                &root,
+                &NavalBaseIcon {
+                    province: 1,
+                    frame: 1,
+                    enabled: true
+                },
+                1.0,
+            )
+            .unwrap_err()
+            .contains("bg_btn")
         );
     }
 
@@ -344,7 +370,7 @@ mod tests {
         .unwrap();
         let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
         assert_eq!(layout.parts.len(), 1);
-        let button = root.find_recursive(native::Kind::Button, "bg_btn").unwrap();
+        let button = root.find(native::Kind::Button, "bg_btn").unwrap();
         assert!(
             matches!(&layout.parts[0].kind, PartKind::Sprite { uv, offsets, .. }
             if (offsets[0] / uv[2]).round() as i32 == 10)

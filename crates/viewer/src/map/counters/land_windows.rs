@@ -46,9 +46,10 @@ struct Controls<'a> {
 }
 
 fn controls(root: &native::Element) -> Result<Controls<'_>, String> {
-    // BindCombatMapIconChildren@1418B99C0 requires all six recursive lookups.
+    // BindCombatMapIconChildren@1418B99C0: local button@1422A4A20, icon@1422A6FD0,
+    // instant-text@1422A7520 lookups.
     let find = |kind, name: &str| {
-        root.find_recursive(kind, name)
+        root.find(kind, name)
             .ok_or_else(|| format!("no control named {name}"))
     };
     Ok(Controls {
@@ -244,13 +245,13 @@ mod tests {
     fn window(font: &str) -> native::Element {
         native::read(r#"guiTypes = { containerWindowType = { name = test
             size = { width = 80 height = 40 }
-            containerWindowType = { name = nested
                 buttonType = { name = bg_btn quadTextureSprite = GFX_even }
                 iconType = { name = battle_indicator_direction spriteType = GFX_even }
                 iconType = { name = air_superiority_icon spriteType = GFX_even }
                 iconType = { name = mapicon_land_combat_frame spriteType = GFX_even }
                 iconType = { name = mapicon_land_combat_bombardment spriteType = GFX_even }
                 instantTextBoxType = { name = combat_progress font = Main_14 maxWidth = 40 maxHeight = 20 }
+            containerWindowType = { name = nested
                 iconType = { name = decoration spriteType = GFX_even }
             }
         } }"#.replace("Main_14", font).as_bytes()).template("test").unwrap().clone()
@@ -274,6 +275,20 @@ mod tests {
             terrain: Some("mud".into()),
             text: "x".into(),
         }
+    }
+
+    #[test]
+    fn combat_binder_does_not_bind_nested_controls() {
+        let mut root = window("Main_14");
+        let mut background = root.children.remove(0);
+        background.path = "test.nested.bg_btn".into();
+        root.children.last_mut().unwrap().children.push(background);
+        assert!(controls(&root).err().unwrap().contains("bg_btn"));
+        let resources = fixture();
+        let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+        instance.gui_show(&root, &root).unwrap();
+        let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
+        assert!(naval_markers::background_footprint(&root, &layout).is_none());
     }
 
     #[test]
@@ -345,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_controls_use_authored_terrain_sprite_and_preserve_unchanged_drawable() {
+    fn local_controls_use_authored_terrain_sprite_and_preserve_unchanged_drawable() {
         let root = window("Main_14");
         let mut resources = fixture();
         resources
