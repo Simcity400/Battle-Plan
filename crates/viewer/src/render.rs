@@ -665,6 +665,7 @@ pub fn dump_png(
         // close zoom
         if !layers.omitted.sprawl {
             scene.set_sprawl(&device, &queue, layers.sprawl)?;
+            scene.set_city_damage(layers.map_building_field, true);
         }
         if !layers.omitted.buildings {
             scene.set_map_buildings(

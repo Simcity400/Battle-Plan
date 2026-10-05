@@ -227,7 +227,7 @@ fn a_mesh_setting_overrides_one_shape_and_one_material_index() {
 }
 
 #[test]
-fn the_sprawl_gate_is_water_relative_below_both_defines() {
+fn the_sprawl_gate_is_water_relative_and_independent_of_transient_map_objects() {
     let at = |height| {
         super::super::camera::Placement {
             center: [0.0, 0.0],
@@ -244,6 +244,12 @@ fn the_sprawl_gate_is_water_relative_below_both_defines() {
     // 229.4 - 9.5 = 219.9, just inside; 229.6 - 9.5 = 220.1, just outside.
     assert!(draws_city_sprawl(&at(229.4)));
     assert!(!draws_city_sprawl(&at(229.6)));
+    let mut camera = at(50.178);
+    camera.defines.map_objects_cutoff = 1.0;
+    assert!(
+        draws_city_sprawl(&camera),
+        "14127B3F0 does not gate city-sprawl actors"
+    );
 }
 
 #[test]

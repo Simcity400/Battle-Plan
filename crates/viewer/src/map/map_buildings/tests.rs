@@ -121,6 +121,7 @@ fn prepared(hour: Hour, health: i128, landmark: bool) -> PreparedBuildings {
             }),
         }],
         groups: Arc::from([group([0.0, 0.0, 2.0, 2.0], vec![0])]),
+        city_damage: Default::default(),
     }
 }
 
@@ -1180,10 +1181,14 @@ fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
         )])
     );
     // Only type 0: nothing drawn, nothing refused.
-    let (frame, vision) = buildings_frame(
+    let (mut frame, vision) = buildings_frame(
         TableView::Complete(TableRows::LexicalTokens(Vec::new())),
         &[0],
     );
+    *frame.tables[TableId::Provinces.index()] =
+        TableView::Complete(TableRows::Provinces(Vec::new()));
+    *frame.tables[TableId::ProvinceBuildings.index()] =
+        TableView::Complete(TableRows::ProvinceBuildings(Vec::new()));
     let (_, summary) = assets.field(&frame, &vision, &no_city()).unwrap();
     assert_eq!(
         (summary.built, summary.unnamed_tokens),
@@ -1191,7 +1196,7 @@ fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
         "type 0 is none"
     );
     assert!(summary.refused_tokens.is_empty());
-    assert!(summary.warnings().is_empty());
+    assert!(summary.warnings().is_empty(), "{:?}", summary.warnings());
 }
 
 #[test]
