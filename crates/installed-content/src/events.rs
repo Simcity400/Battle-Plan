@@ -190,8 +190,7 @@ fn parse_selected(bytes: &[u8], source: &str, names: &KeyNames, wanted: Option<&
         let fields = item.value.items().unwrap_or_default();
         let id = fields
             .iter()
-            .filter(|item| item.keyword_is("id"))
-            .last()
+            .rfind(|item| item.keyword_is("id"))
             .and_then(|item| item.value.scalar())
             .map(crate::parser::c_string)
             .unwrap_or_default()
@@ -376,22 +375,19 @@ impl Index {
                             .collect(),
                     );
                 }
-            } else if event_kind(&item) {
-                if let Some(id) = item
+            } else if event_kind(&item)
+                && let Some(id) = item
                     .value
                     .items()
                     .unwrap_or_default()
                     .iter()
-                    .filter(|field| field.keyword_is("id"))
-                    .last()
+                    .rfind(|field| field.keyword_is("id"))
                     .and_then(|field| field.value.scalar())
-                {
-                    if let Ok(key) = identifier_key(id) {
-                        let paths = self.files.entry(key).or_default();
-                        if paths.last().is_none_or(|last| last != path) {
-                            paths.push(path.to_owned());
-                        }
-                    }
+                && let Ok(key) = identifier_key(id)
+            {
+                let paths = self.files.entry(key).or_default();
+                if paths.last().is_none_or(|last| last != path) {
+                    paths.push(path.to_owned());
                 }
             }
         }

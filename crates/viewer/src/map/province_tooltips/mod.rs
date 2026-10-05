@@ -115,9 +115,13 @@ impl Content {
     }
 }
 
+/// The province, viewing country and fog setting a tooltip was built for,
+/// and whether NATO counters were on.
+type CacheKey = (u32, u32, bool, bool);
+
 #[derive(Default)]
 pub struct Cache {
-    held: Option<((u32, u32, bool, bool), Arc<Tooltip>)>,
+    held: Option<(CacheKey, Arc<Tooltip>)>,
     // Keep source identities alive across hour refreshes.
     source: Option<(Arc<document::Content>, Arc<DecodedFrame>, Arc<Vision>)>,
 }

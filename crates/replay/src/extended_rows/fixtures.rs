@@ -2366,7 +2366,6 @@ fn state_flag_payload_keeps_lossless_bytes_and_unchanged_emits_no_delta() {
         border_conflict_countries: Vec::new(),
         state: 978,
         demilitarized: 0,
-        ..Default::default()
     };
     for byte in [0, 1, 255, 2, 0] {
         let row = StateFlagRow {
@@ -2374,7 +2373,6 @@ fn state_flag_payload_keeps_lossless_bytes_and_unchanged_emits_no_delta() {
             border_conflict_countries: Vec::new(),
             state: 978,
             demilitarized: byte,
-            ..Default::default()
         };
         let mut payload = Vec::new();
         row.encode_fields(&mut payload).unwrap();

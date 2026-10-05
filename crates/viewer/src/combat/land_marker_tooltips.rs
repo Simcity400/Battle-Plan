@@ -282,15 +282,14 @@ impl Cache {
                 },
             )?;
             text.body = result;
-            if let Some(border) = &detail.border_war {
-                if let Err(why) =
+            if let Some(border) = &detail.border_war
+                && let Err(why) =
                     super::border_marker::append(document, frame, viewer, &links, border, &mut text)
-                {
-                    *text
-                        .refused
-                        .entry(format!("land marker {id} border-conflict tail: {why}"))
-                        .or_default() += 1;
-                }
+            {
+                *text
+                    .refused
+                    .entry(format!("land marker {id} border-conflict tail: {why}"))
+                    .or_default() += 1;
             }
             Ok(std::mem::take(&mut text.body))
         })();

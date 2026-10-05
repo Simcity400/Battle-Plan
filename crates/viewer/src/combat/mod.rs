@@ -324,6 +324,10 @@ fn hold(
     });
     Some((contents, note))
 }
+
+/// A map hover: its title, delayed body, screen rectangle and province.
+pub type HoverHit<'a> = (&'a str, Option<&'a str>, [f32; 4], Option<u32>);
+
 impl Window {
     /// The native speed-above-3 night picture asks whether the UI is paused
     /// (140B387D0 -> CInGameIdler slot +0x2E8, 140DC3DB0).
@@ -422,7 +426,7 @@ impl Window {
         drawn: Option<&Drawn>,
         assets: &Assets,
         point: Option<[f32; 2]>,
-        map: Option<(&str, Option<&str>, [f32; 4], Option<u32>)>,
+        map: Option<HoverHit<'_>>,
     ) -> Option<(&str, [f32; 2])> {
         let defines = assets.tooltip_defines.as_ref().ok()?;
         let hit = point

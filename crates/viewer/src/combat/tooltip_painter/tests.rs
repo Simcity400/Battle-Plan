@@ -4,7 +4,8 @@ use super::*;
 fn province_binding_restarts_delayed_body_but_hour_refresh_does_not() {
     let start = Instant::now();
     let rect = [0.0, 0.0, 800.0, 600.0];
-    let point = Some([20.0, 20.0]);
+    let at = [20.0, 20.0];
+    let point = Some(at);
     let timing = [0.05, 1.0, 0.05];
     let mut hover = HoverState::default();
     hover.bind_province(Some(7));
@@ -22,7 +23,7 @@ fn province_binding_restarts_delayed_body_but_hour_refresh_does_not() {
             start + Duration::from_millis(1001),
             timing
         ),
-        Some(("Storm\n--------------\ndetails", point.unwrap()))
+        Some(("Storm\n--------------\ndetails", at))
     );
     hover.bind_province(Some(8));
     assert_eq!(
@@ -32,7 +33,7 @@ fn province_binding_restarts_delayed_body_but_hour_refresh_does_not() {
             start + Duration::from_millis(1002),
             timing
         ),
-        Some(("Hills", point.unwrap()))
+        Some(("Hills", at))
     );
     hover.bind_province(None);
     assert_eq!(
@@ -42,7 +43,7 @@ fn province_binding_restarts_delayed_body_but_hour_refresh_does_not() {
             start + Duration::from_millis(1003),
             timing
         ),
-        Some(("Raid", point.unwrap()))
+        Some(("Raid", at))
     );
 }
 

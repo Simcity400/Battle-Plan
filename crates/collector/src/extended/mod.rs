@@ -652,10 +652,10 @@ impl Captured {
                 *countries.1,
             )
         });
-        if let Err(reason) = outcome {
-            if matches!(*countries.1, Outcome::Rows { .. }) {
-                *countries.1 = Outcome::Unavailable { reason };
-            }
+        if let Err(reason) = outcome
+            && matches!(*countries.1, Outcome::Rows { .. })
+        {
+            *countries.1 = Outcome::Unavailable { reason };
         }
         [
             stats_ticks,
