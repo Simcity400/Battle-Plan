@@ -34,3 +34,5 @@ From PowerShell without Git Bash, use `tools\build-slot.ps1 -Owner "dev/<task>" 
 Use the worktree's `.cargo-target` and shared `C:\sccache_cache`; never delete the shared cache. Put local captures/reports under `captures\`, outside Git. Keep other scratch outside source. Never commit dumps, logs or build output.
 
 Keep the root README as an index, shared rules here, component details beside each crate and field evidence beside code. Preserve approved decisions.
+
+Keep game installation files, copied game source/shader/GUI fixtures, captures and private audit reports outside Git. Use synthetic inputs for tests. Before sharing source or artifacts, follow [publication guidance](docs/publication.md) and run `python tools/check-publication.py` on the staged index; this guard does not audit history or establish rights.

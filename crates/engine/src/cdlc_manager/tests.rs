@@ -155,14 +155,17 @@ fn active_membership_and_map_order_are_observed_without_claiming_mount_order() {
 #[test]
 fn mod_selection_matches_the_engine_suffix_rule_including_separator_priority() {
     assert!(requested_matches(
-        b"C:\\users\\Example\\ugc_1.mod",
+        b"C:\\users\\Example\\mod\\ugc_1.mod",
         b"mod/ugc_1.mod"
     ));
-    assert!(requested_matches(b"/users/mod/local.mod", b"mod/local.mod"));
+    assert!(requested_matches(
+        b"/users/example/mod/local.mod",
+        b"mod/local.mod"
+    ));
     assert!(!requested_matches(b"local.mod", b"mod/local.mod"));
     assert!(!requested_matches(b"mod/Local.mod", b"mod/local.mod"));
     assert!(!requested_matches(
-        b"C:\\users/Example/local.mod",
+        b"C:\\users\\Example/mod/local.mod",
         b"mod/local.mod"
     ));
     assert!(requested_matches(b"mod/", b"mod/"));

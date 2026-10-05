@@ -1,16 +1,45 @@
 # Build output
 /.cargo-target/
 /target/
+/.pnpm-store/
+/build_slots/
+/build_slots_check/
 node_modules/
 /ui/dist/
 /crates/desktop/gen/
 *.pdb
 *.obj
+*.exe
+*.dll
+*.dmp
+*.log
+*.spv
+*.dxil
+*.cso
 
 # Local configuration and captures
 /collector.json
 /viewer.json
 /ui/.env.local
+.env
+.env.*
+!.env.example
+!.env.*.example
+/.mcp.json
+/.claude/
+/.codex/
+/.agents/
+/.aws/
+/.ssh/
+/captures/
+/ui/_harness*
+*.bak
+*.bak-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
 *.battleplan
 *.hoi4replay
 *.battleplan.tmp
@@ -26,6 +55,11 @@ desktop.ini
 
 # hoi4re data: decompiled game code and working databases (tools/re/README.md)
 /tools/re/data/
+
+# Private game-derived screenshot and shader comparison fixtures
+/reference/*.png
+/crates/viewer/examples/map_shader_probe.rs
+/crates/viewer/examples/map_shader_probe/
 
 # Python bytecode
 __pycache__/

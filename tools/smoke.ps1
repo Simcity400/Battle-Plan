@@ -68,7 +68,7 @@ param(
         'ShimStatus', 'ShimMask')]
     [string]$Action = 'Smoke',
     [string]$GameExe = 'X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe',
-    [string]$UserDirectory = 'C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV',
+    [string]$UserDirectory = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Paradox Interactive\Hearts of Iron IV'),
     [ValidateRange(0, 2147483647)][int]$GameId = 0,
     [switch]$ContinueLastSave,
     [string]$ExpectedSave,

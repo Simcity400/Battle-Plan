@@ -35,6 +35,8 @@ Each crate's README explains its responsibility, important rules and development
 
 ## Working on the project
 
+Review [publication and third-party material](docs/publication.md) before sharing source, history or build artifacts.
+
 Read [AGENTS.md](AGENTS.md) for development rules and validation commands. Detailed references stay beside their subject: [engine readers](crates/engine/README.md#source-map), [map rendering](crates/viewer/README.md#rendering-rules), [reverse-engineering tools](tools/re/README.md), and [reference captures](reference/).
 
 Preserve exact recorded values and distinguish missing data from zero. Show gaps, uncertainty and carried samples honestly. A passing build is not proof of capture correctness, map fidelity or game-speed performance.

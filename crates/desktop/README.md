@@ -28,7 +28,7 @@ bash tools/build-slot.sh "dev/desktop" "npm.cmd run build:desktop"
 .\.cargo-target\release\replay-desktop.exe C:\recordings\campaign.battleplan
 ```
 
-Keep `replay-desktop.exe` and `viewer.exe` together. Production embeds the frontend and does not need Node or a development server. WebView2 remains a runtime prerequisite. Viewer arguments, including `--game-dir` and `--user-dir`, are forwarded. This workflow produces executables, not an installer or updater.
+Keep `replay-desktop.exe` and `viewer.exe` together. Production embeds the frontend and does not need Node or a development server. WebView2 remains a runtime prerequisite. Viewer arguments, including `--game-dir` and `--user-dir`, are forwarded. This workflow produces executables, not an installer or updater. The build copies [third-party notices](../../THIRD_PARTY_NOTICES.md) beside the executables; retain that file and the compiler directory with its upstream licences when distributing the app. Other bundled dependency notices still require the [publication review](../../docs/publication.md).
 
 ## Test without taking over the screen
 

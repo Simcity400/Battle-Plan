@@ -1,6 +1,7 @@
 // One development command builds the native viewer, then starts Tauri and Vite.
 // No shell interpolation: paths and user arguments remain separate arguments.
 import { spawn } from "node:child_process";
+import { copyFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -52,6 +53,10 @@ try {
     beforeBuildCommand: { script: "npm run build:ui", cwd: root },
   } });
   await run(process.execPath, [cli, mode, "--config", hooks, ...(mode === "build" ? ["--no-bundle"] : []), ...process.argv.slice(3)], path.join(root, "crates", "desktop"));
+  if (mode === "build") {
+    await copyFile(path.join(root, "THIRD_PARTY_NOTICES.md"),
+      path.join(root, ".cargo-target", "release", "THIRD_PARTY_NOTICES.md"));
+  }
 } catch (error) {
   if (!interrupted) console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = interrupted ? 130 : 1;

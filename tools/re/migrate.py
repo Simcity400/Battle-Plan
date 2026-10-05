@@ -9,8 +9,7 @@ import argparse, collections, glob, hashlib, json, os, shutil, sqlite3, subproce
 import hoi4re as H
 import rtti
 
-GHIDRA = H.env("HOI4RE_GHIDRA", r"C:\Users\Example\Downloads\ghidra_12.1.2_PUBLIC_20260605\ghidra_12.1.2_PUBLIC")
-JAVA = H.env("JAVA_HOME", r"C:\Program Files\Microsoft\jdk-21.0.11.10-hotspot")
+GHIDRA = H.env("HOI4RE_GHIDRA", "")
 
 INDEX_SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -32,9 +31,11 @@ def build_dir(build):
 
 
 def export(exe, build, shards):
-    d = build_dir(build)
-    env = dict(os.environ, JAVA_HOME=JAVA)
     headless = os.path.join(GHIDRA, "support", "analyzeHeadless.bat")
+    if not GHIDRA or not os.path.isfile(headless):
+        raise ValueError("set HOI4RE_GHIDRA to the Ghidra installation containing support/analyzeHeadless.bat")
+    d = build_dir(build)
+    env = dict(os.environ)
     scripts = os.path.join(H.HERE, "ghidra")
     project = os.path.join(d, "ghidra-0")
     if not os.path.isdir(project):

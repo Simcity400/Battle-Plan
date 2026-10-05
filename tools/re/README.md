@@ -65,6 +65,9 @@ Struct layouts used by the recorder stay authoritative in `crates/engine/src`; `
   Matching order: RTTI slot, identical bytes, unique instruction shape, call-graph neighbours.
 
 `HOI4RE_DATA`, `HOI4RE_REPO`, `HOI4RE_EXE` and `HOI4RE_BUILD` override the defaults.
+For `migrate export`, set `HOI4RE_GHIDRA` to the Ghidra installation containing
+`support/analyzeHeadless.bat`. Java configuration, including `JAVA_HOME`, is inherited
+from the environment. `migrate index` and `migrate names` do not require Ghidra.
 
 ## Fleet work
 
